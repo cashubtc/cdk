@@ -6,6 +6,7 @@ use std::sync::Arc;
 use cdk::cdk_database::WalletDatabase as CdkWalletDatabase;
 
 use crate::error::FfiError;
+#[cfg(feature = "postgres")]
 use crate::postgres::WalletPostgresDatabase;
 use crate::sqlite::WalletSqliteDatabase;
 use crate::types::*;
@@ -108,6 +109,9 @@ pub trait WalletDatabase: Send + Sync {
         state: Option<Vec<ProofState>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, FfiError>;
+
+    /// Get proofs by Y values
+    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, FfiError>;
 
     /// Get balance efficiently using SQL aggregation
     async fn get_balance(
@@ -450,7 +454,51 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .into_iter()
             .map(|info| {
                 Ok(cdk::types::ProofInfo {
-                    proof: info.proof.inner.clone(),
+                    proof: info.proof.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
+                    y: info.y.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
+                    mint_url: info.mint_url.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
+                    state: info.state.into(),
+                    spending_condition: info
+                        .spending_condition
+                        .map(|sc| sc.try_into())
+                        .transpose()
+                        .map_err(|e: FfiError| {
+                            cdk::cdk_database::Error::Database(e.to_string().into())
+                        })?,
+                    unit: info.unit.into(),
+                })
+            })
+            .collect();
+
+        cdk_result
+    }
+
+    async fn get_proofs_by_ys(
+        &self,
+        ys: Vec<cdk::nuts::PublicKey>,
+    ) -> Result<Vec<cdk::types::ProofInfo>, Self::Err> {
+        let ffi_ys: Vec<PublicKey> = ys.into_iter().map(Into::into).collect();
+
+        let result = self
+            .ffi_db
+            .get_proofs_by_ys(ffi_ys)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
+        // Convert back to CDK ProofInfo
+        let cdk_result: Result<Vec<cdk::types::ProofInfo>, cdk::cdk_database::Error> = result
+            .into_iter()
+            .map(|info| {
+                Ok(cdk::types::ProofInfo {
+                    proof: info.proof.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
                     y: info.y.try_into().map_err(|e: FfiError| {
                         cdk::cdk_database::Error::Database(e.to_string().into())
                     })?,
@@ -600,6 +648,7 @@ pub fn create_wallet_db(backend: WalletDbBackend) -> Result<Arc<dyn WalletDataba
             let sqlite = WalletSqliteDatabase::new(path)?;
             Ok(sqlite as Arc<dyn WalletDatabase>)
         }
+        #[cfg(feature = "postgres")]
         WalletDbBackend::Postgres { url } => {
             let pg = WalletPostgresDatabase::new(url)?;
             Ok(pg as Arc<dyn WalletDatabase>)

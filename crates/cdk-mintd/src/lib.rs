@@ -904,12 +904,17 @@ async fn start_services_with_shutdown(
 
                 let tls_dir = rpc_settings.tls_dir_path.unwrap_or(work_dir.join("tls"));
 
-                if !tls_dir.exists() {
-                    tracing::error!("TLS directory does not exist: {}", tls_dir.display());
-                    bail!("Cannot start RPC server: TLS directory does not exist");
-                }
+                let tls_dir = if tls_dir.exists() {
+                    Some(tls_dir)
+                } else {
+                    tracing::warn!(
+                        "TLS directory does not exist: {}. Starting RPC server in INSECURE mode without TLS encryption",
+                        tls_dir.display()
+                    );
+                    None
+                };
 
-                mint_rpc.start(Some(tls_dir)).await?;
+                mint_rpc.start(tls_dir).await?;
 
                 rpc_server = Some(mint_rpc);
 
@@ -1200,11 +1205,6 @@ pub async fn run_mintd_with_shutdown(
     tracing::debug!("Mint built from builder.");
 
     let mint = Arc::new(mint);
-
-    // Checks the status of all pending melt quotes
-    // Pending melt quotes where the payment has gone through inputs are burnt
-    // Pending melt quotes where the payment has **failed** inputs are reset to unspent
-    mint.check_pending_melt_quotes().await?;
 
     start_services_with_shutdown(
         mint.clone(),

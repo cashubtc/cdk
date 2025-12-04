@@ -16,6 +16,13 @@ pub struct Wallet {
     inner: Arc<CdkWallet>,
 }
 
+impl Wallet {
+    /// Create a Wallet from an existing CDK wallet (internal use only)
+    pub(crate) fn from_inner(inner: Arc<CdkWallet>) -> Self {
+        Self { inner }
+    }
+}
+
 #[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
     /// Create a new Wallet from mnemonic using WalletDatabase trait
@@ -62,6 +69,29 @@ impl Wallet {
         self.inner.unit.clone().into()
     }
 
+    /// Set metadata cache TTL (time-to-live) in seconds
+    ///
+    /// Controls how long cached mint metadata (keysets, keys, mint info) is considered fresh
+    /// before requiring a refresh from the mint server.
+    ///
+    /// # Arguments
+    ///
+    /// * `ttl_secs` - Optional TTL in seconds. If None, cache never expires and is always used.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Cache expires after 5 minutes
+    /// wallet.set_metadata_cache_ttl(Some(300));
+    ///
+    /// // Cache never expires (default)
+    /// wallet.set_metadata_cache_ttl(None);
+    /// ```
+    pub fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>) {
+        let ttl = ttl_secs.map(std::time::Duration::from_secs);
+        self.inner.set_metadata_cache_ttl(ttl);
+    }
+
     /// Get total balance
     pub async fn total_balance(&self) -> Result<Amount, FfiError> {
         let balance = self.inner.total_balance().await?;
@@ -84,6 +114,14 @@ impl Wallet {
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
         let info = self.inner.fetch_mint_info().await?;
         Ok(info.map(Into::into))
+    }
+
+    /// Load mint info
+    ///
+    /// This will get mint info from cache if it is fresh
+    pub async fn load_mint_info(&self) -> Result<MintInfo, FfiError> {
+        let info = self.inner.load_mint_info().await?;
+        Ok(info.into())
     }
 
     /// Receive tokens
@@ -119,8 +157,9 @@ impl Wallet {
         options: ReceiveOptions,
         memo: Option<String>,
     ) -> Result<Amount, FfiError> {
-        let cdk_proofs: Vec<cdk::nuts::Proof> =
-            proofs.into_iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
 
         let amount = self
             .inner
@@ -166,10 +205,7 @@ impl Wallet {
             .inner
             .mint(&quote_id, amount_split_target.into(), conditions)
             .await?;
-        Ok(proofs
-            .into_iter()
-            .map(|p| std::sync::Arc::new(p.into()))
-            .collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Get a melt quote
@@ -186,6 +222,29 @@ impl Wallet {
     /// Melt tokens
     pub async fn melt(&self, quote_id: String) -> Result<Melted, FfiError> {
         let melted = self.inner.melt(&quote_id).await?;
+        Ok(melted.into())
+    }
+
+    /// Melt specific proofs
+    ///
+    /// This method allows melting proofs that may not be in the wallet's database,
+    /// similar to how `receive_proofs` handles external proofs. The proofs will be
+    /// added to the database and used for the melt operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
+    /// * `proofs` - The proofs to melt (can be external proofs not in the wallet's database)
+    ///
+    /// # Returns
+    ///
+    /// A `Melted` result containing the payment details and any change proofs
+    pub async fn melt_proofs(&self, quote_id: String, proofs: Proofs) -> Result<Melted, FfiError> {
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
+
+        let melted = self.inner.melt_proofs(&quote_id, cdk_proofs).await?;
         Ok(melted.into())
     }
 
@@ -222,10 +281,7 @@ impl Wallet {
             )
             .await?;
 
-        Ok(proofs
-            .into_iter()
-            .map(|p| std::sync::Arc::new(p.into()))
-            .collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Get a quote for a bolt12 melt
@@ -248,8 +304,9 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, FfiError> {
-        let cdk_proofs: Vec<cdk::nuts::Proof> =
-            input_proofs.into_iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            input_proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
 
         // Convert spending conditions if provided
         let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
@@ -265,12 +322,7 @@ impl Wallet {
             )
             .await?;
 
-        Ok(result.map(|proofs| {
-            proofs
-                .into_iter()
-                .map(|p| std::sync::Arc::new(p.into()))
-                .collect()
-        }))
+        Ok(result.map(|proofs| proofs.into_iter().map(|p| p.into()).collect()))
     }
 
     /// Get proofs by states
@@ -291,7 +343,7 @@ impl Wallet {
             };
 
             for proof in proofs {
-                all_proofs.push(std::sync::Arc::new(proof.into()));
+                all_proofs.push(proof.into());
             }
         }
 
@@ -300,8 +352,9 @@ impl Wallet {
 
     /// Check if proofs are spent
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<bool>, FfiError> {
-        let cdk_proofs: Vec<cdk::nuts::Proof> =
-            proofs.into_iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
 
         let proof_states = self.inner.check_proofs_spent(cdk_proofs).await?;
         // Convert ProofState to bool (spent = true, unspent = false)
@@ -335,6 +388,19 @@ impl Wallet {
         let cdk_id = id.try_into()?;
         let transaction = self.inner.get_transaction(cdk_id).await?;
         Ok(transaction.map(Into::into))
+    }
+
+    /// Get proofs for a transaction by transaction ID
+    ///
+    /// This retrieves all proofs associated with a transaction by looking up
+    /// the transaction's Y values and fetching the corresponding proofs.
+    pub async fn get_proofs_for_transaction(
+        &self,
+        id: TransactionId,
+    ) -> Result<Vec<Proof>, FfiError> {
+        let cdk_id = id.try_into()?;
+        let proofs = self.inner.get_proofs_for_transaction(cdk_id).await?;
+        Ok(proofs.into_iter().map(Into::into).collect())
     }
 
     /// Revert a transaction
@@ -382,7 +448,9 @@ impl Wallet {
 
     /// Reclaim unspent proofs (mark them as unspent in the database)
     pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), FfiError> {
-        let cdk_proofs: Vec<cdk::nuts::Proof> = proofs.iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.iter().map(|p| p.clone().try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
         self.inner.reclaim_unspent(cdk_proofs).await?;
         Ok(())
     }
@@ -401,9 +469,11 @@ impl Wallet {
     ) -> Result<Amount, FfiError> {
         let id = cdk::nuts::Id::from_str(&keyset_id)
             .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
-        let fee_and_amounts = self.inner.get_keyset_fees_and_amounts_by_id(id).await?;
-        let total_fee = (proof_count as u64 * fee_and_amounts.fee()) / 1000; // fee is per thousand
-        Ok(Amount::new(total_fee))
+        let fee = self
+            .inner
+            .get_keyset_count_fee(&id, proof_count as u64)
+            .await?;
+        Ok(fee.into())
     }
 }
 
@@ -424,6 +494,45 @@ impl Wallet {
         let quote = self
             .inner
             .melt_bip353_quote(&bip353_address, cdk_amount)
+            .await?;
+        Ok(quote.into())
+    }
+
+    /// Get a quote for a Lightning address melt
+    ///
+    /// This method resolves a Lightning address (e.g., "alice@example.com") to a Lightning invoice
+    /// and then creates a melt quote for that invoice.
+    pub async fn melt_lightning_address_quote(
+        &self,
+        lightning_address: String,
+        amount_msat: Amount,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_amount: cdk::Amount = amount_msat.into();
+        let quote = self
+            .inner
+            .melt_lightning_address_quote(&lightning_address, cdk_amount)
+            .await?;
+        Ok(quote.into())
+    }
+
+    /// Get a quote for a human-readable address melt
+    ///
+    /// This method accepts a human-readable address that could be either a BIP353 address
+    /// or a Lightning address. It intelligently determines which to try based on mint support:
+    ///
+    /// 1. If the mint supports Bolt12, it tries BIP353 first
+    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
+    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
+    pub async fn melt_human_readable(
+        &self,
+        address: String,
+        amount_msat: Amount,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_amount: cdk::Amount = amount_msat.into();
+        let quote = self
+            .inner
+            .melt_human_readable_quote(&address, cdk_amount)
             .await?;
         Ok(quote.into())
     }
@@ -453,10 +562,7 @@ impl Wallet {
     /// Mint blind auth tokens
     pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, FfiError> {
         let proofs = self.inner.mint_blind_auth(amount.into()).await?;
-        Ok(proofs
-            .into_iter()
-            .map(|p| std::sync::Arc::new(p.into()))
-            .collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Get unspent auth proofs

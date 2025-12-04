@@ -31,7 +31,7 @@ impl Melted {
     pub fn from_proofs(
         state: MeltQuoteState,
         preimage: Option<String>,
-        amount: Amount,
+        quote_amount: Amount,
         proofs: Proofs,
         change_proofs: Option<Proofs>,
     ) -> Result<Self, Error> {
@@ -41,16 +41,22 @@ impl Melted {
             None => Amount::ZERO,
         };
 
+        tracing::info!(
+            "Proofs amount: {} Amount: {} Change: {}",
+            proofs_amount,
+            quote_amount,
+            change_amount
+        );
+
         let fee_paid = proofs_amount
-            .checked_sub(amount + change_amount)
-            .ok_or(Error::AmountOverflow)
-            .unwrap();
+            .checked_sub(quote_amount + change_amount)
+            .ok_or(Error::AmountOverflow)?;
 
         Ok(Self {
             state,
             preimage,
             change: change_proofs,
-            amount,
+            amount: quote_amount,
             fee_paid,
         })
     }

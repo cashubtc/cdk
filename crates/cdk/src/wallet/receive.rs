@@ -26,9 +26,11 @@ impl Wallet {
         opts: ReceiveOptions,
         memo: Option<String>,
     ) -> Result<Amount, Error> {
-        let mint_url = &self.mint_url;
+        // Incase the wallet is getting ecash for the first time
+        // we want to get the mint info for our db
+        let _mint_info = self.load_mint_info().await?;
 
-        self.refresh_keysets().await?;
+        let mint_url = &self.mint_url;
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 
@@ -128,7 +130,12 @@ impl Wallet {
             }
         }
 
-        let swap_response = self.client.post_swap(pre_swap.swap_request).await?;
+        let swap_response = self
+            .try_proof_operation_or_reclaim(
+                pre_swap.swap_request.inputs().clone(),
+                self.client.post_swap(pre_swap.swap_request),
+            )
+            .await?;
 
         // Proof to keep
         let recv_proofs = construct_proofs(

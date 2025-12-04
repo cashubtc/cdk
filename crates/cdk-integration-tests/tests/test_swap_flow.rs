@@ -18,6 +18,7 @@ use cashu::{CurrencyUnit, Id, PreMintSecrets, SecretKey, SpendingConditions, Sta
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::Amount;
+use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
 
 /// Helper to get the active keyset ID from a mint
@@ -58,6 +59,29 @@ async fn test_swap_happy_path() {
         .expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint).await;
+
+    // Check initial amounts after minting
+    let total_issued = mint.total_issued().await.unwrap();
+    let total_redeemed = mint.total_redeemed().await.unwrap();
+    let initial_issued = total_issued
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let initial_redeemed = total_redeemed
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    assert_eq!(
+        initial_issued,
+        Amount::from(100),
+        "Should have issued 100 sats"
+    );
+    assert_eq!(
+        initial_redeemed,
+        Amount::ZERO,
+        "Should have redeemed 0 sats initially"
+    );
+
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     // Create swap request for same amount (100 sats)
@@ -116,6 +140,29 @@ async fn test_swap_happy_path() {
         saved_signatures.len(),
         swap_response.signatures.len(),
         "All signatures should be saved"
+    );
+
+    // Check keyset amounts after swap
+    // Swap redeems old proofs (100 sats) and issues new proofs (100 sats)
+    let total_issued = mint.total_issued().await.unwrap();
+    let total_redeemed = mint.total_redeemed().await.unwrap();
+    let after_issued = total_issued
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let after_redeemed = total_redeemed
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    assert_eq!(
+        after_issued,
+        Amount::from(200),
+        "Should have issued 200 sats total (initial 100 + swap 100)"
+    );
+    assert_eq!(
+        after_redeemed,
+        Amount::from(100),
+        "Should have redeemed 100 sats from the swap"
     );
 }
 
@@ -303,6 +350,67 @@ async fn test_swap_unbalanced_transaction_detection() {
         }
         Err(err) => panic!("Wrong error type for overpay: {:?}", err),
         Ok(_) => panic!("Unbalanced swap (overpay) should not succeed"),
+    }
+}
+
+/// Tests that swap requests with empty inputs or outputs are rejected:
+/// Case 1: Empty outputs (inputs without outputs)
+/// Case 2: Empty inputs (outputs without inputs)
+/// Both should fail. Currently returns UnitMismatch (11010) instead of
+/// TransactionUnbalanced (11002) because there are no keyset IDs to determine units.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_swap_empty_inputs_or_outputs() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Fund wallet with 100 sats
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let proofs = wallet
+        .get_unspent_proofs()
+        .await
+        .expect("Could not get proofs");
+
+    // Case 1: Swap request with inputs but empty outputs
+    // This represents trying to destroy tokens (inputs with no outputs)
+    let swap_request_empty_outputs = SwapRequest::new(proofs.clone(), vec![]);
+
+    match mint.process_swap_request(swap_request_empty_outputs).await {
+        Err(cdk::Error::TransactionUnbalanced(_, _, _)) => {
+            // This would be the more appropriate error
+        }
+        Err(err) => panic!("Wrong error type for empty outputs: {:?}", err),
+        Ok(_) => panic!("Swap with empty outputs should not succeed"),
+    }
+
+    // Case 2: Swap request with empty inputs but with outputs
+    // This represents trying to create tokens from nothing
+    let keyset_id = get_keyset_id(&mint).await;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
+    let preswap = PreMintSecrets::random(
+        keyset_id,
+        100.into(),
+        &SplitTarget::default(),
+        &fee_and_amounts,
+    )
+    .expect("Failed to create preswap");
+
+    let swap_request_empty_inputs = SwapRequest::new(vec![], preswap.blinded_messages());
+
+    match mint.process_swap_request(swap_request_empty_inputs).await {
+        Err(cdk::Error::TransactionUnbalanced(_, _, _)) => {
+            // This would be the more appropriate error
+        }
+        Err(err) => panic!("Wrong error type for empty inputs: {:?}", err),
+        Ok(_) => panic!("Swap with empty inputs should not succeed"),
     }
 }
 
@@ -611,9 +719,13 @@ async fn test_swap_with_fees() {
         .expect("Failed to create test wallet");
 
     // Rotate to keyset with 1 sat per proof fee
-    mint.rotate_keyset(CurrencyUnit::Sat, 32, 1)
-        .await
-        .expect("Failed to rotate keyset");
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        100,
+    )
+    .await
+    .expect("Failed to rotate keyset");
 
     // Fund with 1000 sats as individual 1-sat proofs using the fee-based keyset
     // Wait a bit for keyset to be available
@@ -675,6 +787,441 @@ async fn test_swap_with_fees() {
             .await
             .expect("Swap with correct fee should succeed");
     }
+}
+
+/// Tests melt with fees enabled and swap-before-melt optimization:
+/// 1. Create mint with keyset that has fees (1000 ppk = 1 sat per proof)
+/// 2. Fund wallet with proofs using default split (optimal denominations)
+/// 3. Call melt() - should automatically swap if proofs don't match exactly
+/// 4. Verify fee calculations are reasonable
+///
+/// Fee calculation:
+/// - Initial: 4096 sats in optimal denominations
+/// - Melt: 1000 sats, fee_reserve = 20 sats (2%)
+/// - inputs_needed = 1020 sats
+/// - Target split for 1020: [512, 256, 128, 64, 32, 16, 8, 4] = 8 proofs
+/// - target_fee = 8 sats
+/// - inputs_total_needed = 1028 sats
+///
+/// The wallet uses two-step selection:
+/// - Step 1: Try to find exact proofs for inputs_needed (no swap fee)
+/// - Step 2: If not exact, select proofs for inputs_total_needed and swap
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_with_fees_swap_before_melt() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Rotate to keyset with 1000 ppk = 1 sat per proof fee
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        1000, // 1 sat per proof
+    )
+    .await
+    .expect("Failed to rotate keyset");
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Fund with default split target to get optimal denominations
+    // Use larger amount to ensure enough margin for swap fees
+    let initial_amount = 4096u64;
+    fund_wallet(wallet.clone(), initial_amount, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let initial_balance: u64 = wallet.total_balance().await.unwrap().into();
+    assert_eq!(initial_balance, initial_amount);
+
+    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    let proof_amounts: Vec<u64> = proofs.iter().map(|p| u64::from(p.amount)).collect();
+    tracing::info!("Proofs after funding: {:?}", proof_amounts);
+
+    let proofs_total: u64 = proof_amounts.iter().sum();
+    assert_eq!(
+        proofs_total, initial_amount,
+        "Total proofs should equal funded amount"
+    );
+
+    // Create melt quote for 1000 sats (1_000_000 msats)
+    // Fake wallet: fee_reserve = max(1, amount * 2%) = 20 sats
+    let invoice = create_fake_invoice(1_000_000, "".to_string()); // 1000 sats in msats
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+
+    let quote_amount: u64 = melt_quote.amount.into();
+    let fee_reserve: u64 = melt_quote.fee_reserve.into();
+
+    tracing::info!(
+        "Melt quote: amount={}, fee_reserve={}",
+        quote_amount,
+        fee_reserve
+    );
+
+    let initial_proof_count = proofs.len();
+
+    tracing::info!(
+        "Initial state: {} proofs, {} sats",
+        initial_proof_count,
+        proofs_total
+    );
+
+    // Perform melt
+    let melted = wallet.melt(&melt_quote.id).await.unwrap();
+
+    let melt_amount: u64 = melted.amount.into();
+    let ln_fee_paid: u64 = melted.fee_paid.into();
+
+    tracing::info!(
+        "Melt completed: amount={}, ln_fee_paid={}",
+        melt_amount,
+        ln_fee_paid
+    );
+
+    assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
+
+    // Get final balance and calculate fees
+    let final_balance: u64 = wallet.total_balance().await.unwrap().into();
+    let total_spent = initial_amount - final_balance;
+    let total_fees = total_spent - melt_amount;
+
+    tracing::info!(
+        "Balance: initial={}, final={}, total_spent={}, melt_amount={}, total_fees={}",
+        initial_amount,
+        final_balance,
+        total_spent,
+        melt_amount,
+        total_fees
+    );
+
+    // Calculate input fees (swap + melt)
+    let input_fees = total_fees - ln_fee_paid;
+
+    tracing::info!(
+        "Fee breakdown: total_fees={}, ln_fee={}, input_fees (swap+melt)={}",
+        total_fees,
+        ln_fee_paid,
+        input_fees
+    );
+
+    // Verify input fees are reasonable
+    // With swap-before-melt optimization, we use fewer proofs for the melt
+    // Melt uses ~8 proofs for optimal split of 1028, so input_fee ~= 8
+    // Swap (if any) also has fees, but the optimization minimizes total fees
+    assert!(
+        input_fees > 0,
+        "Should have some input fees with fee-enabled keyset"
+    );
+    assert!(
+        input_fees <= 20,
+        "Input fees {} should be reasonable (not too high)",
+        input_fees
+    );
+
+    // Verify we have change remaining
+    assert!(final_balance > 0, "Should have change remaining after melt");
+
+    tracing::info!(
+        "Test passed: spent {} sats, fees {} (ln={}, input={}), remaining {}",
+        total_spent,
+        total_fees,
+        ln_fee_paid,
+        input_fees,
+        final_balance
+    );
+}
+
+/// Tests the "exact match" early return path in melt_with_metadata.
+/// When proofs already exactly match inputs_needed_amount, no swap is required.
+///
+/// This tests Step 1 of the two-step selection:
+/// - Select proofs for inputs_needed_amount
+/// - If exact match, use proofs directly without swap
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_exact_match_no_swap() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Use keyset WITHOUT fees to make exact match easier
+    // (default keyset has no fees)
+
+    // Fund with exactly inputs_needed_amount to trigger the exact match path
+    // For a 1000 sat melt, fee_reserve = max(1, 1000 * 2%) = 20 sats
+    // inputs_needed = 1000 + 20 = 1020 sats
+    let initial_amount = 1020u64;
+    fund_wallet(wallet.clone(), initial_amount, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let initial_balance: u64 = wallet.total_balance().await.unwrap().into();
+    assert_eq!(initial_balance, initial_amount);
+
+    let proofs_before = wallet.get_unspent_proofs().await.unwrap();
+    tracing::info!(
+        "Proofs before melt: {:?}",
+        proofs_before
+            .iter()
+            .map(|p| u64::from(p.amount))
+            .collect::<Vec<_>>()
+    );
+
+    // Create melt quote for 1000 sats
+    // fee_reserve = max(1, 1000 * 2%) = 20 sats
+    // inputs_needed = 1000 + 20 = 1020 sats = our exact balance
+    let invoice = create_fake_invoice(1_000_000, "".to_string());
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+
+    let quote_amount: u64 = melt_quote.amount.into();
+    let fee_reserve: u64 = melt_quote.fee_reserve.into();
+    let inputs_needed = quote_amount + fee_reserve;
+
+    tracing::info!(
+        "Melt quote: amount={}, fee_reserve={}, inputs_needed={}",
+        quote_amount,
+        fee_reserve,
+        inputs_needed
+    );
+
+    // Perform melt
+    let melted = wallet.melt(&melt_quote.id).await.unwrap();
+
+    let melt_amount: u64 = melted.amount.into();
+    let ln_fee_paid: u64 = melted.fee_paid.into();
+
+    tracing::info!(
+        "Melt completed: amount={}, ln_fee_paid={}",
+        melt_amount,
+        ln_fee_paid
+    );
+
+    assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
+
+    // Get final balance
+    let final_balance: u64 = wallet.total_balance().await.unwrap().into();
+    let total_spent = initial_amount - final_balance;
+    let total_fees = total_spent - melt_amount;
+
+    tracing::info!(
+        "Balance: initial={}, final={}, total_spent={}, total_fees={}",
+        initial_amount,
+        final_balance,
+        total_spent,
+        total_fees
+    );
+
+    // With no keyset fees and no swap needed, total fees should just be ln_fee
+    // (no input fees since default keyset has 0 ppk)
+    assert_eq!(
+        total_fees, ln_fee_paid,
+        "Total fees should equal LN fee (no swap or input fees with 0 ppk keyset)"
+    );
+
+    tracing::info!("Test passed: exact match path used, no swap needed");
+}
+
+/// Tests melt with small amounts where swap margin is too tight.
+/// When fees are high relative to the melt amount, the swap-before-melt
+/// optimization may not have enough margin to cover both input and output fees.
+/// In this case, the wallet should fall back to using proofs directly.
+///
+/// Scenario:
+/// - Fund with 8 sats
+/// - Melt 5 sats (with 2% fee_reserve = 1 sat min, so inputs_needed = 6)
+/// - With 1 sat per proof fee, the swap margin becomes too tight
+/// - Should still succeed by falling back to direct melt
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_small_amount_tight_margin() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Rotate to keyset with 1000 ppk = 1 sat per proof fee
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        1000,
+    )
+    .await
+    .expect("Failed to rotate keyset");
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Fund with enough to cover melt + fees, but amounts that will trigger swap
+    // 32 sats gives us enough margin even with 1 sat/proof fees
+    let initial_amount = 32;
+    fund_wallet(wallet.clone(), initial_amount, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let initial_balance: u64 = wallet.total_balance().await.unwrap().into();
+    assert_eq!(initial_balance, initial_amount);
+
+    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    tracing::info!(
+        "Proofs after funding: {:?}",
+        proofs
+            .iter()
+            .map(|p| u64::from(p.amount))
+            .collect::<Vec<_>>()
+    );
+
+    // Create melt quote for 5 sats
+    // fee_reserve = max(1, 5 * 2%) = 1 sat
+    // inputs_needed = 5 + 1 = 6 sats
+    let invoice = create_fake_invoice(5_000, "".to_string()); // 5 sats in msats
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+
+    let quote_amount: u64 = melt_quote.amount.into();
+    let fee_reserve: u64 = melt_quote.fee_reserve.into();
+
+    tracing::info!(
+        "Melt quote: amount={}, fee_reserve={}, inputs_needed={}",
+        quote_amount,
+        fee_reserve,
+        quote_amount + fee_reserve
+    );
+
+    // This should succeed even with tight margins
+    let melted = wallet
+        .melt(&melt_quote.id)
+        .await
+        .expect("Melt should succeed even with tight swap margin");
+
+    let melt_amount: u64 = melted.amount.into();
+    assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
+
+    let final_balance: u64 = wallet.total_balance().await.unwrap().into();
+    tracing::info!(
+        "Melt completed: amount={}, fee_paid={}, final_balance={}",
+        melted.amount,
+        melted.fee_paid,
+        final_balance
+    );
+
+    // Verify balance decreased appropriately
+    assert!(
+        final_balance < initial_balance,
+        "Balance should decrease after melt"
+    );
+}
+
+/// Tests melt where swap proofs barely cover swap_amount + input_fee.
+///
+/// This is a regression test for a bug where the swap-before-melt was called
+/// with include_fees=true, causing it to try to add output fees on top of
+/// swap_amount + input_fee. When proofs_to_swap had just barely enough value,
+/// this caused InsufficientFunds error.
+///
+/// Scenario (from the bug):
+/// - Balance: proofs like [4, 2, 1, 1] = 8 sats
+/// - Melt: 5 sats + 1 fee_reserve = 6 inputs_needed
+/// - target_fee = 1 (for optimal output split)
+/// - inputs_total_needed = 7
+/// - proofs_to_send = [4, 2] = 6, proofs_to_swap = [1, 1] = 2
+/// - swap_amount = 1 sat (7 - 6)
+/// - swap input_fee = 1 sat (2 proofs)
+/// - Before fix: include_fees=true tried to add output fee, causing failure
+/// - After fix: include_fees=false, swap succeeds
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_swap_tight_margin_regression() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Rotate to keyset with 250 ppk = 0.25 sat per proof fee (same as original bug scenario)
+    // This means 4 proofs = 1 sat fee
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        250,
+    )
+    .await
+    .expect("Failed to rotate keyset");
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Fund with 100 sats using default split to get optimal denominations
+    // This should give us proofs like [64, 32, 4] or similar power-of-2 split
+    let initial_amount = 100;
+    fund_wallet(wallet.clone(), initial_amount, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let initial_balance: u64 = wallet.total_balance().await.unwrap().into();
+    assert_eq!(initial_balance, initial_amount);
+
+    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    let proof_amounts: Vec<u64> = proofs.iter().map(|p| u64::from(p.amount)).collect();
+    tracing::info!("Proofs after funding: {:?}", proof_amounts);
+
+    // Create melt quote for 5 sats (5000 msats)
+    // fee_reserve = max(1, 5 * 2%) = 1 sat
+    // inputs_needed = 5 + 1 = 6 sats
+    // The optimal split for 6 sats is [4, 2] (2 proofs)
+    // target_fee = 1 sat (2 proofs * 0.25, rounded up)
+    // inputs_total_needed = 7 sats
+    //
+    // If we don't have exact [4, 2] proofs, we'll need to swap.
+    // The swap path is what triggered the original bug when proofs_to_swap
+    // had tight margins and include_fees=true was incorrectly used.
+    let invoice = create_fake_invoice(5_000, "".to_string());
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+
+    let quote_amount: u64 = melt_quote.amount.into();
+    let fee_reserve: u64 = melt_quote.fee_reserve.into();
+
+    tracing::info!(
+        "Melt quote: amount={}, fee_reserve={}, inputs_needed={}",
+        quote_amount,
+        fee_reserve,
+        quote_amount + fee_reserve
+    );
+
+    // This is the key test: melt should succeed even when swap is needed
+    // Before the fix, include_fees=true in swap caused InsufficientFunds
+    // After the fix, include_fees=false allows the swap to succeed
+    let melted = wallet
+        .melt(&melt_quote.id)
+        .await
+        .expect("Melt should succeed with swap-before-melt (regression test)");
+
+    let melt_amount: u64 = melted.amount.into();
+    assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
+
+    let final_balance: u64 = wallet.total_balance().await.unwrap().into();
+    tracing::info!(
+        "Melt completed: amount={}, fee_paid={}, final_balance={}",
+        melted.amount,
+        melted.fee_paid,
+        final_balance
+    );
+
+    // Should have change remaining
+    assert!(
+        final_balance < initial_balance,
+        "Balance should decrease after melt"
+    );
+    assert!(final_balance > 0, "Should have change remaining");
 }
 
 /// Tests that swap correctly handles amount overflow:
@@ -815,7 +1362,7 @@ async fn test_swap_state_transition_notifications() {
             cashu::NotificationPayload::ProofState(cashu::ProofState { y, state, .. }) => {
                 state_transitions
                     .entry(y.to_string())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(state);
             }
             _ => panic!("Unexpected notification type"),
@@ -900,4 +1447,261 @@ async fn test_swap_proof_state_consistency() {
             }
         }
     }
+}
+
+/// Tests that wallet correctly increments keyset counters when receiving proofs
+/// from multiple keysets and then performing operations with them.
+///
+/// This test validates:
+/// 1. Wallet can receive proofs from multiple different keysets
+/// 2. Counter is correctly incremented for the target keyset during swap
+/// 3. Database maintains separate counters for each keyset
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_wallet_multi_keyset_counter_updates() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Fund wallet with initial 100 sats using first keyset
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let first_keyset_id = get_keyset_id(&mint).await;
+
+    // Rotate to a second keyset
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        0,
+    )
+    .await
+    .expect("Failed to rotate keyset");
+
+    // Wait for keyset rotation to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Refresh wallet keysets to know about the new keyset
+    wallet
+        .refresh_keysets()
+        .await
+        .expect("Failed to refresh wallet keysets");
+
+    // Fund wallet again with 100 sats using second keyset
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet with second keyset");
+
+    let second_keyset_id = mint
+        .pubkeys()
+        .keysets
+        .iter()
+        .find(|k| k.id != first_keyset_id)
+        .expect("Should have second keyset")
+        .id;
+
+    // Verify we now have proofs from two different keysets
+    let all_proofs = wallet
+        .get_unspent_proofs()
+        .await
+        .expect("Could not get proofs");
+
+    let keysets_in_use: std::collections::HashSet<_> =
+        all_proofs.iter().map(|p| p.keyset_id).collect();
+
+    assert_eq!(
+        keysets_in_use.len(),
+        2,
+        "Should have proofs from 2 different keysets"
+    );
+    assert!(
+        keysets_in_use.contains(&first_keyset_id),
+        "Should have proofs from first keyset"
+    );
+    assert!(
+        keysets_in_use.contains(&second_keyset_id),
+        "Should have proofs from second keyset"
+    );
+
+    // Get initial total issued and redeemed for both keysets before swap
+    let total_issued_before = mint.total_issued().await.unwrap();
+    let total_redeemed_before = mint.total_redeemed().await.unwrap();
+
+    let first_keyset_issued_before = total_issued_before
+        .get(&first_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let first_keyset_redeemed_before = total_redeemed_before
+        .get(&first_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+
+    let second_keyset_issued_before = total_issued_before
+        .get(&second_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let second_keyset_redeemed_before = total_redeemed_before
+        .get(&second_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+
+    tracing::info!(
+        "Before swap - First keyset: issued={}, redeemed={}",
+        first_keyset_issued_before,
+        first_keyset_redeemed_before
+    );
+    tracing::info!(
+        "Before swap - Second keyset: issued={}, redeemed={}",
+        second_keyset_issued_before,
+        second_keyset_redeemed_before
+    );
+
+    // Both keysets should have issued 100 sats
+    assert_eq!(
+        first_keyset_issued_before,
+        Amount::from(100),
+        "First keyset should have issued 100 sats"
+    );
+    assert_eq!(
+        second_keyset_issued_before,
+        Amount::from(100),
+        "Second keyset should have issued 100 sats"
+    );
+    // Neither should have redeemed anything yet
+    assert_eq!(
+        first_keyset_redeemed_before,
+        Amount::ZERO,
+        "First keyset should have redeemed 0 sats before swap"
+    );
+    assert_eq!(
+        second_keyset_redeemed_before,
+        Amount::ZERO,
+        "Second keyset should have redeemed 0 sats before swap"
+    );
+
+    // Now perform a swap with all proofs - this should only increment the counter
+    // for the active (second) keyset, not for the first keyset
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
+    let total_amount = all_proofs.total_amount().expect("Should get total amount");
+
+    // Create swap using the active (second) keyset
+    let preswap = PreMintSecrets::random(
+        second_keyset_id,
+        total_amount,
+        &SplitTarget::default(),
+        &fee_and_amounts,
+    )
+    .expect("Failed to create preswap");
+
+    let swap_request = SwapRequest::new(all_proofs.clone(), preswap.blinded_messages());
+
+    // Execute the swap
+    let swap_response = mint
+        .process_swap_request(swap_request)
+        .await
+        .expect("Swap should succeed");
+
+    // Verify response
+    assert_eq!(
+        swap_response.signatures.len(),
+        preswap.blinded_messages().len(),
+        "Should receive signature for each blinded message"
+    );
+
+    // All the new proofs should be from the second (active) keyset
+    let keys = mint
+        .pubkeys()
+        .keysets
+        .iter()
+        .find(|k| k.id == second_keyset_id)
+        .expect("Should find second keyset")
+        .keys
+        .clone();
+
+    let new_proofs = construct_proofs(
+        swap_response.signatures,
+        preswap.rs(),
+        preswap.secrets(),
+        &keys,
+    )
+    .expect("Failed to construct proofs");
+
+    // Verify all new proofs use the second keyset
+    for proof in &new_proofs {
+        assert_eq!(
+            proof.keyset_id, second_keyset_id,
+            "All new proofs should use the active (second) keyset"
+        );
+    }
+
+    // Verify total issued and redeemed after swap
+    let total_issued_after = mint.total_issued().await.unwrap();
+    let total_redeemed_after = mint.total_redeemed().await.unwrap();
+
+    let first_keyset_issued_after = total_issued_after
+        .get(&first_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let first_keyset_redeemed_after = total_redeemed_after
+        .get(&first_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+
+    let second_keyset_issued_after = total_issued_after
+        .get(&second_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let second_keyset_redeemed_after = total_redeemed_after
+        .get(&second_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+
+    tracing::info!(
+        "After swap - First keyset: issued={}, redeemed={}",
+        first_keyset_issued_after,
+        first_keyset_redeemed_after
+    );
+    tracing::info!(
+        "After swap - Second keyset: issued={}, redeemed={}",
+        second_keyset_issued_after,
+        second_keyset_redeemed_after
+    );
+
+    // After swap:
+    // - First keyset: issued stays 100, redeemed increases by 100 (all its proofs were spent in swap)
+    // - Second keyset: issued increases by 200 (original 100 + new 100 from swap output),
+    //                  redeemed increases by 100 (its proofs from first funding were spent)
+    assert_eq!(
+        first_keyset_issued_after,
+        Amount::from(100),
+        "First keyset issued should stay 100 sats (no new issuance)"
+    );
+    assert_eq!(
+        first_keyset_redeemed_after,
+        Amount::from(100),
+        "First keyset should have redeemed 100 sats (all its proofs spent in swap)"
+    );
+
+    assert_eq!(
+        second_keyset_issued_after,
+        Amount::from(300),
+        "Second keyset should have issued 300 sats total (100 initial + 100 the second funding + 100 from swap output from the old keyset)"
+    );
+    assert_eq!(
+        second_keyset_redeemed_after,
+        Amount::from(100),
+        "Second keyset should have redeemed 100 sats (its proofs from initial funding spent in swap)"
+    );
+
+    // The test verifies that:
+    // 1. We can have proofs from multiple keysets in a wallet
+    // 2. Swap operation processes inputs from any keyset but creates outputs using active keyset
+    // 3. The keyset_counter table correctly handles counters for different keysets independently
+    // 4. The database upsert logic in increment_keyset_counter works for multiple keysets
+    // 5. Total issued and redeemed are tracked correctly per keyset during multi-keyset swaps
 }

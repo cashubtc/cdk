@@ -553,7 +553,7 @@ ON CONFLICT(id) DO UPDATE SET
                 request,
                 state,
                 expiry,
-                secret_key
+                secret_key,
                 payment_method,
                 amount_issued,
                 amount_paid
@@ -779,14 +779,15 @@ ON CONFLICT(id) DO UPDATE SET
             )
             .execute(&tx).await?;
         }
-
-        query(r#"DELETE FROM proof WHERE y IN (:ys)"#)?
-            .bind_vec(
-                "ys",
-                removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
-            )
-            .execute(&tx)
-            .await?;
+        if !removed_ys.is_empty() {
+            query(r#"DELETE FROM proof WHERE y IN (:ys)"#)?
+                .bind_vec(
+                    "ys",
+                    removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
+                )
+                .execute(&tx)
+                .await?;
+        }
 
         tx.commit().await?;
 
@@ -833,6 +834,41 @@ ON CONFLICT(id) DO UPDATE SET
                 None
             }
         })
+        .collect::<Vec<_>>())
+    }
+
+    #[instrument(skip(self, ys))]
+    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, Self::Err> {
+        if ys.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                amount,
+                unit,
+                keyset_id,
+                secret,
+                c,
+                witness,
+                dleq_e,
+                dleq_s,
+                dleq_r,
+                y,
+                mint_url,
+                state,
+                spending_condition
+            FROM proof
+            WHERE y IN (:ys)
+        "#,
+        )?
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .filter_map(|row| sql_row_to_proof_info(row).ok())
         .collect::<Vec<_>>())
     }
 
@@ -916,16 +952,16 @@ ON CONFLICT(id) DO UPDATE SET
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let tx = ConnectionWithTransaction::new(conn).await?;
 
-        // Lock the row and get current counter
+        // Lock the row and get current counter from keyset_counter table
         let current_counter = query(
             r#"
             SELECT counter
-            FROM keyset
-            WHERE id=:id
+            FROM keyset_counter
+            WHERE keyset_id=:keyset_id
             FOR UPDATE
             "#,
         )?
-        .bind("id", keyset_id.to_string())
+        .bind("keyset_id", keyset_id.to_string())
         .pluck(&tx)
         .await?
         .map(|n| Ok::<_, Error>(column_as_number!(n)))
@@ -934,16 +970,17 @@ ON CONFLICT(id) DO UPDATE SET
 
         let new_counter = current_counter + count;
 
-        // Update with the new counter value
+        // Upsert the new counter value
         query(
             r#"
-            UPDATE keyset
-            SET counter=:new_counter
-            WHERE id=:id
+            INSERT INTO keyset_counter (keyset_id, counter)
+            VALUES (:keyset_id, :new_counter)
+            ON CONFLICT(keyset_id) DO UPDATE SET
+                counter = excluded.counter
             "#,
         )?
+        .bind("keyset_id", keyset_id.to_string())
         .bind("new_counter", new_counter)
-        .bind("id", keyset_id.to_string())
         .execute(&tx)
         .await?;
 

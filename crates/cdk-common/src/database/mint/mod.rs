@@ -7,7 +7,7 @@ use cashu::quote_id::QuoteId;
 use cashu::Amount;
 
 use super::Error;
-use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
+use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote, Operation};
 use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
     State,
@@ -108,7 +108,7 @@ pub trait KeysDatabase {
     /// Mint Keys Database Error
     type Err: Into<Error> + From<Error>;
 
-    /// Beings a transaction
+    /// Begins a transaction
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn KeysDatabaseTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>;
@@ -145,6 +145,7 @@ pub trait QuotesTransaction<'a> {
         &mut self,
         quote_id: Option<&QuoteId>,
         blinded_messages: &[BlindedMessage],
+        operation: &Operation,
     ) -> Result<(), Self::Err>;
 
     /// Delete blinded_messages by their blinded secrets
@@ -265,6 +266,7 @@ pub trait ProofsTransaction<'a> {
         &mut self,
         proof: Proofs,
         quote_id: Option<QuoteId>,
+        operation: &Operation,
     ) -> Result<(), Self::Err>;
     /// Updates the proofs to a given states and return the previous states
     async fn update_proofs_states(
@@ -302,11 +304,15 @@ pub trait ProofsDatabase {
     ) -> Result<Vec<PublicKey>, Self::Err>;
     /// Get [`Proofs`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
+
     /// Get [`Proofs`] by state
     async fn get_proofs_by_keyset_id(
         &self,
         keyset_id: &Id,
     ) -> Result<(Proofs, Vec<Option<State>>), Self::Err>;
+
+    /// Get total proofs redeemed by keyset id
+    async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
 }
 
 #[async_trait]
@@ -341,16 +347,60 @@ pub trait SignaturesDatabase {
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
+
     /// Get [`BlindSignature`]s for keyset_id
     async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
+
     /// Get [`BlindSignature`]s for quote
     async fn get_blind_signatures_for_quote(
         &self,
         quote_id: &QuoteId,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
+
+    /// Get total amount issued by keyset id
+    async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
+}
+
+#[async_trait]
+/// Saga Transaction trait
+pub trait SagaTransaction<'a> {
+    /// Saga Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Get saga by operation_id
+    async fn get_saga(
+        &mut self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Option<mint::Saga>, Self::Err>;
+
+    /// Add saga
+    async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err>;
+
+    /// Update saga state (only updates state and updated_at fields)
+    async fn update_saga(
+        &mut self,
+        operation_id: &uuid::Uuid,
+        new_state: mint::SagaStateEnum,
+    ) -> Result<(), Self::Err>;
+
+    /// Delete saga
+    async fn delete_saga(&mut self, operation_id: &uuid::Uuid) -> Result<(), Self::Err>;
+}
+
+#[async_trait]
+/// Saga Database trait
+pub trait SagaDatabase {
+    /// Saga Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Get all incomplete sagas for a given operation kind
+    async fn get_incomplete_sagas(
+        &self,
+        operation_kind: mint::OperationKind,
+    ) -> Result<Vec<mint::Saga>, Self::Err>;
 }
 
 #[async_trait]
@@ -409,6 +459,7 @@ pub trait Transaction<'a, Error>:
     + SignaturesTransaction<'a, Err = Error>
     + ProofsTransaction<'a, Err = Error>
     + KVStoreTransaction<'a, Error>
+    + SagaTransaction<'a, Err = Error>
 {
 }
 
@@ -437,7 +488,7 @@ pub trait KVStoreDatabase {
 /// Key-Value Store Database trait
 #[async_trait]
 pub trait KVStore: KVStoreDatabase {
-    /// Beings a KV transaction
+    /// Begins a KV transaction
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn KVStoreTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>;
@@ -453,8 +504,9 @@ pub trait Database<Error>:
     + QuotesDatabase<Err = Error>
     + ProofsDatabase<Err = Error>
     + SignaturesDatabase<Err = Error>
+    + SagaDatabase<Err = Error>
 {
-    /// Beings a transaction
+    /// Begins a transaction
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn Transaction<'a, Error> + Send + Sync + 'a>, Error>;

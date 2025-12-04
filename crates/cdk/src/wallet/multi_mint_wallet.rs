@@ -9,9 +9,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Result;
-use cdk_common::database;
 use cdk_common::database::WalletDatabase;
-use cdk_common::wallet::{Transaction, TransactionDirection};
+use cdk_common::task::spawn;
+use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection, TransactionId};
+use cdk_common::{database, KeySetInfo};
 use tokio::sync::RwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
@@ -24,7 +25,7 @@ use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut23::QuoteState;
-use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, Token};
+use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, State, Token};
 use crate::types::Melted;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
@@ -58,6 +59,17 @@ pub struct TransferResult {
     pub source_balance_after: Amount,
     /// New balance in target mint after transfer
     pub target_balance_after: Amount,
+}
+
+/// Data extracted from a token including mint URL, proofs, and memo
+#[derive(Debug, Clone)]
+pub struct TokenData {
+    /// The mint URL from the token
+    pub mint_url: MintUrl,
+    /// The proofs contained in the token
+    pub proofs: Proofs,
+    /// The memo from the token, if present
+    pub memo: Option<String>,
 }
 
 /// Configuration for individual wallets within MultiMintWallet
@@ -519,6 +531,66 @@ impl MultiMintWallet {
         &self.unit
     }
 
+    /// Get keysets for a mint url
+    pub async fn get_mint_keysets(&self, mint_url: &MintUrl) -> Result<Vec<KeySetInfo>, Error> {
+        let wallets = self.wallets.read().await;
+        let target_wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        target_wallet.get_mint_keysets().await
+    }
+
+    /// Get token data (mint URL and proofs) from a token
+    ///
+    /// This method extracts the mint URL and proofs from a token. It will automatically
+    /// fetch the keysets from the mint if needed to properly decode the proofs.
+    ///
+    /// The mint must already be added to the wallet. If the mint is not in the wallet,
+    /// use `add_mint` first or set `allow_untrusted` in receive options.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The token to extract data from
+    ///
+    /// # Returns
+    ///
+    /// A `TokenData` struct containing the mint URL and proofs
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cdk::wallet::MultiMintWallet;
+    /// # use cdk::nuts::Token;
+    /// # use std::str::FromStr;
+    /// # async fn example(wallet: &MultiMintWallet) -> Result<(), Box<dyn std::error::Error>> {
+    /// let token = Token::from_str("cashuA...")?;
+    /// let token_data = wallet.get_token_data(&token).await?;
+    /// println!("Mint: {}", token_data.mint_url);
+    /// println!("Proofs: {} total", token_data.proofs.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[instrument(skip(self, token))]
+    pub async fn get_token_data(&self, token: &Token) -> Result<TokenData, Error> {
+        let mint_url = token.mint_url()?;
+
+        // Get the keysets for this mint
+        let keysets = self.get_mint_keysets(&mint_url).await?;
+
+        // Extract proofs using the keysets
+        let proofs = token.proofs(&keysets)?;
+
+        // Get the memo
+        let memo = token.memo().clone();
+
+        Ok(TokenData {
+            mint_url,
+            proofs,
+            memo,
+        })
+    }
+
     /// Get wallet balances for all mints
     #[instrument(skip(self))]
     pub async fn get_balances(&self) -> Result<BTreeMap<MintUrl, Amount>, Error> {
@@ -544,6 +616,20 @@ impl MultiMintWallet {
         Ok(mint_proofs)
     }
 
+    /// NUT-07 Check the state of proofs with a specific mint
+    #[instrument(skip(self, proofs))]
+    pub async fn check_proofs_state(
+        &self,
+        mint_url: &MintUrl,
+        proofs: Proofs,
+    ) -> Result<Vec<State>, Error> {
+        let wallet = self.get_wallet(mint_url).await.ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+        let states = wallet.check_proofs_spent(proofs).await?;
+        Ok(states.into_iter().map(|s| s.state).collect())
+    }
+
     /// List transactions
     #[instrument(skip(self))]
     pub async fn list_transactions(
@@ -560,6 +646,50 @@ impl MultiMintWallet {
         transactions.sort();
 
         Ok(transactions)
+    }
+
+    /// Get proofs for a transaction by transaction ID
+    ///
+    /// This retrieves all proofs associated with a transaction. If `mint_url` is provided,
+    /// it will only check that specific mint's wallet. Otherwise, it searches across all
+    /// wallets to find which mint the transaction belongs to.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The transaction ID
+    /// * `mint_url` - Optional mint URL to check directly, avoiding iteration over all wallets
+    #[instrument(skip(self))]
+    pub async fn get_proofs_for_transaction(
+        &self,
+        id: TransactionId,
+        mint_url: Option<MintUrl>,
+    ) -> Result<Proofs, Error> {
+        let wallets = self.wallets.read().await;
+
+        // If mint_url is provided, try that wallet directly
+        if let Some(mint_url) = mint_url {
+            if let Some(wallet) = wallets.get(&mint_url) {
+                // Verify the transaction exists in this wallet
+                if wallet.get_transaction(id).await?.is_some() {
+                    return wallet.get_proofs_for_transaction(id).await;
+                }
+            }
+            // Transaction not found in specified mint
+            return Err(Error::TransactionNotFound);
+        }
+
+        // No mint_url provided, search across all wallets
+        for (mint_url, wallet) in wallets.iter() {
+            if let Some(transaction) = wallet.get_transaction(id).await? {
+                // Verify the transaction belongs to this wallet's mint
+                if &transaction.mint_url == mint_url {
+                    return wallet.get_proofs_for_transaction(id).await;
+                }
+            }
+        }
+
+        // Transaction not found in any wallet
+        Err(Error::TransactionNotFound)
     }
 
     /// Get total balance across all wallets (since all wallets use the same currency unit)
@@ -914,20 +1044,7 @@ impl MultiMintWallet {
             let target_mint_url = target_mint_url.clone();
 
             // Spawn parallel transfer task
-            #[cfg(not(target_arch = "wasm32"))]
-            let task = tokio::spawn(async move {
-                self_clone
-                    .transfer(
-                        &source_mint_url,
-                        &target_mint_url,
-                        TransferMode::ExactReceive(transfer_amount),
-                    )
-                    .await
-                    .map(|result| result.amount_received)
-            });
-
-            #[cfg(target_arch = "wasm32")]
-            let task = tokio::task::spawn_local(async move {
+            let task = spawn(async move {
                 self_clone
                     .transfer(
                         &source_mint_url,
@@ -1311,6 +1428,62 @@ impl MultiMintWallet {
         wallet.melt(quote_id).await
     }
 
+    /// Melt specific proofs from a specific mint using a quote ID
+    ///
+    /// This method allows melting proofs that may not be in the wallet's database,
+    /// similar to how `receive_proofs` handles external proofs. The proofs will be
+    /// added to the database and used for the melt operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for the melt operation
+    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
+    /// * `proofs` - The proofs to melt (can be external proofs not in the wallet's database)
+    ///
+    /// # Returns
+    ///
+    /// A `Melted` result containing the payment details and any change proofs
+    #[instrument(skip(self, proofs))]
+    pub async fn melt_proofs(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+        proofs: Proofs,
+    ) -> Result<Melted, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.melt_proofs(quote_id, proofs).await
+    }
+
+    /// Check a specific melt quote status
+    #[instrument(skip(self))]
+    pub async fn check_melt_quote(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+    ) -> Result<MeltQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        // Check the quote state from the mint
+        wallet.melt_quote_status(quote_id).await?;
+
+        // Get the updated quote from local storage
+        let quote = wallet
+            .localstore
+            .get_melt_quote(quote_id)
+            .await
+            .map_err(Error::Database)?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(quote)
+    }
+
     /// Create MPP (Multi-Path Payment) melt quotes from multiple mints
     ///
     /// This function allows manual specification of which mints and amounts to use for MPP.
@@ -1342,14 +1515,7 @@ impl MultiMintWallet {
             let amount_msat = u64::from(amount) * 1000;
             let options = Some(MeltOptions::new_mpp(amount_msat));
 
-            #[cfg(not(target_arch = "wasm32"))]
-            let task = tokio::spawn(async move {
-                let quote = wallet.melt_quote(bolt11_clone, options).await;
-                (mint_url_clone, quote)
-            });
-
-            #[cfg(target_arch = "wasm32")]
-            let task = tokio::task::spawn_local(async move {
+            let task = spawn(async move {
                 let quote = wallet.melt_quote(bolt11_clone, options).await;
                 (mint_url_clone, quote)
             });
@@ -1398,14 +1564,7 @@ impl MultiMintWallet {
 
             let mint_url_clone = mint_url.clone();
 
-            #[cfg(not(target_arch = "wasm32"))]
-            let task = tokio::spawn(async move {
-                let melted = wallet.melt(&quote_id).await;
-                (mint_url_clone, melted)
-            });
-
-            #[cfg(target_arch = "wasm32")]
-            let task = tokio::task::spawn_local(async move {
+            let task = spawn(async move {
                 let melted = wallet.melt(&quote_id).await;
                 (mint_url_clone, melted)
             });
@@ -1682,6 +1841,98 @@ impl MultiMintWallet {
 
         wallet.fetch_mint_info().await
     }
+
+    /// Melt Quote for BIP353 human-readable address
+    ///
+    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Lightning offer
+    /// and then creates a melt quote for that offer at the specified mint.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for creating the melt quote
+    /// * `bip353_address` - Human-readable address in the format "user@domain.com"
+    /// * `amount_msat` - Amount to pay in millisatoshis
+    ///
+    /// # Returns
+    ///
+    /// A `MeltQuote` that can be used to execute the payment
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    #[instrument(skip(self, amount_msat))]
+    pub async fn melt_bip353_quote(
+        &self,
+        mint_url: &MintUrl,
+        bip353_address: &str,
+        amount_msat: impl Into<Amount>,
+    ) -> Result<crate::wallet::types::MeltQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.melt_bip353_quote(bip353_address, amount_msat).await
+    }
+
+    /// Melt Quote for Lightning address
+    ///
+    /// This method resolves a Lightning address (e.g., "alice@example.com") to a Lightning invoice
+    /// and then creates a melt quote for that invoice at the specified mint.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for creating the melt quote
+    /// * `lightning_address` - Lightning address in the format "user@domain.com"
+    /// * `amount_msat` - Amount to pay in millisatoshis
+    ///
+    /// # Returns
+    ///
+    /// A `MeltQuote` that can be used to execute the payment
+    #[instrument(skip(self, amount_msat))]
+    pub async fn melt_lightning_address_quote(
+        &self,
+        mint_url: &MintUrl,
+        lightning_address: &str,
+        amount_msat: impl Into<Amount>,
+    ) -> Result<crate::wallet::types::MeltQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet
+            .melt_lightning_address_quote(lightning_address, amount_msat)
+            .await
+    }
+
+    /// Get a melt quote for a human-readable address
+    ///
+    /// This method accepts a human-readable address that could be either a BIP353 address
+    /// or a Lightning address. It intelligently determines which to try based on mint support:
+    ///
+    /// 1. If the mint supports Bolt12, it tries BIP353 first
+    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
+    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for creating the melt quote
+    /// * `address` - Human-readable address (BIP353 or Lightning address)
+    /// * `amount_msat` - Amount to pay in millisatoshis
+    #[cfg(all(feature = "bip353", feature = "wallet", not(target_arch = "wasm32")))]
+    #[instrument(skip(self, amount_msat))]
+    pub async fn melt_human_readable_quote(
+        &self,
+        mint_url: &MintUrl,
+        address: &str,
+        amount_msat: impl Into<Amount>,
+    ) -> Result<crate::wallet::types::MeltQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.melt_human_readable_quote(address, amount_msat).await
+    }
 }
 
 impl Drop for MultiMintWallet {
@@ -1870,5 +2121,94 @@ mod tests {
         assert_eq!(options.max_transfer_amount, Some(Amount::from(500)));
         assert_eq!(options.allowed_mints, vec![mint1, mint2]);
         assert_eq!(options.excluded_mints, vec![mint3]);
+    }
+
+    #[tokio::test]
+    async fn test_get_mint_keysets_unknown_mint() {
+        use std::str::FromStr;
+
+        let multi_wallet = create_test_multi_wallet().await;
+        let mint_url = MintUrl::from_str("https://unknown-mint.example.com").unwrap();
+
+        // Should error when trying to get keysets for a mint that hasn't been added
+        let result = multi_wallet.get_mint_keysets(&mint_url).await;
+        assert!(result.is_err());
+
+        match result {
+            Err(Error::UnknownMint { mint_url: url }) => {
+                assert!(url.contains("unknown-mint.example.com"));
+            }
+            _ => panic!("Expected UnknownMint error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multi_mint_receive_options() {
+        use std::str::FromStr;
+
+        let mint_url = MintUrl::from_str("https://trusted.mint.example.com").unwrap();
+
+        // Test default options
+        let default_opts = MultiMintReceiveOptions::default();
+        assert!(!default_opts.allow_untrusted);
+        assert!(default_opts.transfer_to_mint.is_none());
+
+        // Test builder pattern
+        let opts = MultiMintReceiveOptions::new()
+            .allow_untrusted(true)
+            .transfer_to_mint(Some(mint_url.clone()));
+
+        assert!(opts.allow_untrusted);
+        assert_eq!(opts.transfer_to_mint, Some(mint_url));
+    }
+
+    #[tokio::test]
+    async fn test_get_token_data_unknown_mint() {
+        use std::str::FromStr;
+
+        let multi_wallet = create_test_multi_wallet().await;
+
+        // Create a token from a mint that isn't in the wallet
+        // This is a valid token structure pointing to an unknown mint
+        let token_str = "cashuBpGF0gaJhaUgArSaMTR9YJmFwgaNhYQFhc3hAOWE2ZGJiODQ3YmQyMzJiYTc2ZGIwZGYxOTcyMTZiMjlkM2I4Y2MxNDU1M2NkMjc4MjdmYzFjYzk0MmZlZGI0ZWFjWCEDhhhUP_trhpXfStS6vN6So0qWvc2X3O4NfM-Y1HISZ5JhZGlUaGFuayB5b3VhbXVodHRwOi8vbG9jYWxob3N0OjMzMzhhdWNzYXQ=";
+        let token = Token::from_str(token_str).unwrap();
+
+        // Should error because the mint (localhost:3338) hasn't been added
+        let result = multi_wallet.get_token_data(&token).await;
+        assert!(result.is_err());
+
+        match result {
+            Err(Error::UnknownMint { mint_url }) => {
+                assert!(mint_url.contains("localhost:3338"));
+            }
+            _ => panic!("Expected UnknownMint error"),
+        }
+    }
+
+    #[test]
+    fn test_token_data_struct() {
+        use std::str::FromStr;
+
+        let mint_url = MintUrl::from_str("https://example.mint.com").unwrap();
+        let proofs = vec![];
+        let memo = Some("Test memo".to_string());
+
+        let token_data = TokenData {
+            mint_url: mint_url.clone(),
+            proofs: proofs.clone(),
+            memo: memo.clone(),
+        };
+
+        assert_eq!(token_data.mint_url, mint_url);
+        assert_eq!(token_data.proofs.len(), 0);
+        assert_eq!(token_data.memo, memo);
+
+        // Test with no memo
+        let token_data_no_memo = TokenData {
+            mint_url: mint_url.clone(),
+            proofs: vec![],
+            memo: None,
+        };
+        assert!(token_data_no_memo.memo.is_none());
     }
 }

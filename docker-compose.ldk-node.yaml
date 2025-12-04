@@ -46,6 +46,7 @@ services:
     container_name: mint-ldk-node
     ports:
       - "8085:8085"
+      - "8091:8091" # LDK admin dashboard (WARNING!!! Do not expose to network! Doing so will leave LDK node funds accessible by whole network)
     environment:
       - CDK_MINTD_URL=https://example.com
       - CDK_MINTD_PAYMENT_BACKEND=ldk-node
@@ -66,9 +67,27 @@ services:
       - CDK_MINTD_PROMETHEUS_ADDRESS=0.0.0.0
       - CDK_MINTD_PROMETHEUS_PORT=9000
       # LDK Node specific configuration
-      - CDK_MINTD_LDK_NODE_NETWORK=testnet
+      - CDK_MINTD_LDK_NODE_BITCOIN_NETWORK=testnet # or: testnet, signet, regtest
       - CDK_MINTD_LDK_NODE_ESPLORA_URL=https://blockstream.info/testnet/api
       - CDK_MINTD_LDK_NODE_LISTENING_ADDRESSES=0.0.0.0:9735
+      # LDK admin dashboard config
+      - CDK_MINTD_LDK_NODE_WEBSERVER_HOST=0.0.0.0
+      # Other Options
+      # - CDK_MINTD_LDK_NODE_WEBSERVER_PORT=
+      # - CDK_MINTD_LDK_NODE_FEE_PERCENT=
+      # - CDK_MINTD_LDK_NODE_RESERVE_FEE_MIN=
+      # - CDK_MINTD_LDK_NODE_CHAIN_SOURCE_TYPE=esplora # or: bitcoinrpc
+      # if chain source is set to bitcoinrpc, the following RPC options need to be set instead
+      # - CDK_MINTD_LDK_NODE_BITCOIND_RPC_HOST=
+      # - CDK_MINTD_LDK_NODE_BITCOIND_RPC_PORT=
+      # - CDK_MINTD_LDK_NODE_BITCOIND_RPC_USER=
+      # - CDK_MINTD_LDK_NODE_BITCOIND_RPC_PASSWORD=
+      # - CDK_MINTD_LDK_NODE_STORAGE_DIR_PATH=
+      # - CDK_MINTD_LDK_NODE_LDK_NODE_HOST=
+      # - CDK_MINTD_LDK_NODE_LDK_NODE_PORT=
+      # - CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE=rgs # or: p2p
+      # - CDK_MINTD_LDK_NODE_RGS_URL=
+
     volumes:
       # Persist LDK node data
       - ldk_node_data:/usr/src/app/ldk_node_data

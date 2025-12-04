@@ -8,7 +8,8 @@ use bip39::Mnemonic;
 use cdk::wallet::multi_mint_wallet::{
     MultiMintReceiveOptions as CdkMultiMintReceiveOptions,
     MultiMintSendOptions as CdkMultiMintSendOptions, MultiMintWallet as CdkMultiMintWallet,
-    TransferMode as CdkTransferMode, TransferResult as CdkTransferResult,
+    TokenData as CdkTokenData, TransferMode as CdkTransferMode,
+    TransferResult as CdkTransferResult,
 };
 
 use crate::error::FfiError;
@@ -111,6 +112,51 @@ impl MultiMintWallet {
         self.inner.unit().clone().into()
     }
 
+    /// Set metadata cache TTL (time-to-live) in seconds for a specific mint
+    ///
+    /// Controls how long cached mint metadata (keysets, keys, mint info) is considered fresh
+    /// before requiring a refresh from the mint server for a specific mint.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint URL to set the TTL for
+    /// * `ttl_secs` - Optional TTL in seconds. If None, cache never expires.
+    pub async fn set_metadata_cache_ttl_for_mint(
+        &self,
+        mint_url: MintUrl,
+        ttl_secs: Option<u64>,
+    ) -> Result<(), FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let wallets = self.inner.get_wallets().await;
+
+        if let Some(wallet) = wallets.iter().find(|w| w.mint_url == cdk_mint_url) {
+            let ttl = ttl_secs.map(std::time::Duration::from_secs);
+            wallet.set_metadata_cache_ttl(ttl);
+            Ok(())
+        } else {
+            Err(FfiError::Generic {
+                msg: format!("Mint not found: {}", cdk_mint_url),
+            })
+        }
+    }
+
+    /// Set metadata cache TTL (time-to-live) in seconds for all mints
+    ///
+    /// Controls how long cached mint metadata is considered fresh for all mints
+    /// in this MultiMintWallet.
+    ///
+    /// # Arguments
+    ///
+    /// * `ttl_secs` - Optional TTL in seconds. If None, cache never expires for any mint.
+    pub async fn set_metadata_cache_ttl_for_all_mints(&self, ttl_secs: Option<u64>) {
+        let wallets = self.inner.get_wallets().await;
+        let ttl = ttl_secs.map(std::time::Duration::from_secs);
+
+        for wallet in wallets.iter() {
+            wallet.set_metadata_cache_ttl(ttl);
+        }
+    }
+
     /// Add a mint to this MultiMintWallet
     pub async fn add_mint(
         &self,
@@ -154,6 +200,27 @@ impl MultiMintWallet {
         }
     }
 
+    pub async fn get_mint_keysets(&self, mint_url: MintUrl) -> Result<Vec<KeySetInfo>, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let keysets = self.inner.get_mint_keysets(&cdk_mint_url).await?;
+
+        let keysets = keysets.into_iter().map(|k| k.into()).collect();
+
+        Ok(keysets)
+    }
+
+    /// Get token data (mint URL and proofs) from a token
+    ///
+    /// This method extracts the mint URL and proofs from a token. It will automatically
+    /// fetch the keysets from the mint if needed to properly decode the proofs.
+    ///
+    /// The mint must already be added to the wallet. If the mint is not in the wallet,
+    /// use `add_mint` first.
+    pub async fn get_token_data(&self, token: Arc<Token>) -> Result<TokenData, FfiError> {
+        let token_data = self.inner.get_token_data(&token.inner).await?;
+        Ok(token_data.into())
+    }
+
     /// Get wallet balances for all mints
     pub async fn get_balances(&self) -> Result<BalanceMap, FfiError> {
         let balances = self.inner.get_balances().await?;
@@ -175,13 +242,29 @@ impl MultiMintWallet {
         let proofs = self.inner.list_proofs().await?;
         let mut proofs_by_mint = HashMap::new();
         for (mint_url, mint_proofs) in proofs {
-            let ffi_proofs: Vec<Arc<Proof>> = mint_proofs
-                .into_iter()
-                .map(|p| Arc::new(p.into()))
-                .collect();
+            let ffi_proofs: Vec<Proof> = mint_proofs.into_iter().map(|p| p.into()).collect();
             proofs_by_mint.insert(mint_url.to_string(), ffi_proofs);
         }
         Ok(proofs_by_mint)
+    }
+
+    /// Check the state of proofs at a specific mint
+    pub async fn check_proofs_state(
+        &self,
+        mint_url: MintUrl,
+        proofs: Proofs,
+    ) -> Result<Vec<ProofState>, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
+
+        let states = self
+            .inner
+            .check_proofs_state(&cdk_mint_url, cdk_proofs)
+            .await?;
+
+        Ok(states.into_iter().map(|s| s.into()).collect())
     }
 
     /// Receive token
@@ -262,7 +345,7 @@ impl MultiMintWallet {
             .inner
             .mint(&cdk_mint_url, &quote_id, conditions)
             .await?;
-        Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Wait for a mint quote to be paid and automatically mint the proofs
@@ -288,7 +371,7 @@ impl MultiMintWallet {
                 timeout_secs,
             )
             .await?;
-        Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Get a melt quote from a specific mint
@@ -305,6 +388,146 @@ impl MultiMintWallet {
             .melt_quote(&cdk_mint_url, request, cdk_options)
             .await?;
         Ok(quote.into())
+    }
+
+    /// Get a melt quote for a BIP353 human-readable address
+    ///
+    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Lightning offer
+    /// and then creates a melt quote for that offer at the specified mint.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for creating the melt quote
+    /// * `bip353_address` - Human-readable address in the format "user@domain.com"
+    /// * `amount_msat` - Amount to pay in millisatoshis
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn melt_bip353_quote(
+        &self,
+        mint_url: MintUrl,
+        bip353_address: String,
+        amount_msat: u64,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let cdk_amount = cdk::Amount::from(amount_msat);
+        let quote = self
+            .inner
+            .melt_bip353_quote(&cdk_mint_url, &bip353_address, cdk_amount)
+            .await?;
+        Ok(quote.into())
+    }
+
+    /// Get a melt quote for a Lightning address
+    ///
+    /// This method resolves a Lightning address (e.g., "alice@example.com") to a Lightning invoice
+    /// and then creates a melt quote for that invoice at the specified mint.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for creating the melt quote
+    /// * `lightning_address` - Lightning address in the format "user@domain.com"
+    /// * `amount_msat` - Amount to pay in millisatoshis
+    pub async fn melt_lightning_address_quote(
+        &self,
+        mint_url: MintUrl,
+        lightning_address: String,
+        amount_msat: u64,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let cdk_amount = cdk::Amount::from(amount_msat);
+        let quote = self
+            .inner
+            .melt_lightning_address_quote(&cdk_mint_url, &lightning_address, cdk_amount)
+            .await?;
+        Ok(quote.into())
+    }
+
+    /// Get a melt quote for a human-readable address
+    ///
+    /// This method accepts a human-readable address that could be either a BIP353 address
+    /// or a Lightning address. It intelligently determines which to try based on mint support:
+    ///
+    /// 1. If the mint supports Bolt12, it tries BIP353 first
+    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
+    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for creating the melt quote
+    /// * `address` - Human-readable address (BIP353 or Lightning address)
+    /// * `amount_msat` - Amount to pay in millisatoshis
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn melt_human_readable_quote(
+        &self,
+        mint_url: MintUrl,
+        address: String,
+        amount_msat: u64,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let cdk_amount = cdk::Amount::from(amount_msat);
+        let quote = self
+            .inner
+            .melt_human_readable_quote(&cdk_mint_url, &address, cdk_amount)
+            .await?;
+        Ok(quote.into())
+    }
+
+    /// Melt tokens
+    pub async fn melt_with_mint(
+        &self,
+        mint_url: MintUrl,
+        quote_id: String,
+    ) -> Result<Melted, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let melted = self.inner.melt_with_mint(&cdk_mint_url, &quote_id).await?;
+        Ok(melted.into())
+    }
+
+    /// Melt specific proofs from a specific mint
+    ///
+    /// This method allows melting proofs that may not be in the wallet's database,
+    /// similar to how `receive_proofs` handles external proofs. The proofs will be
+    /// added to the database and used for the melt operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for the melt operation
+    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
+    /// * `proofs` - The proofs to melt (can be external proofs not in the wallet's database)
+    ///
+    /// # Returns
+    ///
+    /// A `Melted` result containing the payment details and any change proofs
+    pub async fn melt_proofs(
+        &self,
+        mint_url: MintUrl,
+        quote_id: String,
+        proofs: Proofs,
+    ) -> Result<Melted, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
+
+        let melted = self
+            .inner
+            .melt_proofs(&cdk_mint_url, &quote_id, cdk_proofs)
+            .await?;
+        Ok(melted.into())
+    }
+
+    /// Check melt quote status
+    pub async fn check_melt_quote(
+        &self,
+        mint_url: MintUrl,
+        quote_id: String,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let melted = self
+            .inner
+            .check_melt_quote(&cdk_mint_url, &quote_id)
+            .await?;
+        Ok(melted.into())
     }
 
     /// Melt tokens (pay a bolt11 invoice)
@@ -346,7 +569,7 @@ impl MultiMintWallet {
 
         let result = self.inner.swap(amount.map(Into::into), conditions).await?;
 
-        Ok(result.map(|proofs| proofs.into_iter().map(|p| Arc::new(p.into())).collect()))
+        Ok(result.map(|proofs| proofs.into_iter().map(|p| p.into()).collect()))
     }
 
     /// List transactions from all mints
@@ -357,6 +580,30 @@ impl MultiMintWallet {
         let cdk_direction = direction.map(Into::into);
         let transactions = self.inner.list_transactions(cdk_direction).await?;
         Ok(transactions.into_iter().map(Into::into).collect())
+    }
+
+    /// Get proofs for a transaction by transaction ID
+    ///
+    /// This retrieves all proofs associated with a transaction. If `mint_url` is provided,
+    /// it will only check that specific mint's wallet. Otherwise, it searches across all
+    /// wallets to find which mint the transaction belongs to.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The transaction ID
+    /// * `mint_url` - Optional mint URL to check directly, avoiding iteration over all wallets
+    pub async fn get_proofs_for_transaction(
+        &self,
+        id: TransactionId,
+        mint_url: Option<MintUrl>,
+    ) -> Result<Vec<Proof>, FfiError> {
+        let cdk_id = id.try_into()?;
+        let cdk_mint_url = mint_url.map(|url| url.try_into()).transpose()?;
+        let proofs = self
+            .inner
+            .get_proofs_for_transaction(cdk_id, cdk_mint_url)
+            .await?;
+        Ok(proofs.into_iter().map(Into::into).collect())
     }
 
     /// Check all mint quotes and mint if paid
@@ -379,6 +626,24 @@ impl MultiMintWallet {
     pub async fn get_mint_urls(&self) -> Vec<String> {
         let wallets = self.inner.get_wallets().await;
         wallets.iter().map(|w| w.mint_url.to_string()).collect()
+    }
+
+    /// Get all wallets from MultiMintWallet
+    pub async fn get_wallets(&self) -> Vec<Arc<crate::wallet::Wallet>> {
+        let wallets = self.inner.get_wallets().await;
+        wallets
+            .into_iter()
+            .map(|w| Arc::new(crate::wallet::Wallet::from_inner(Arc::new(w))))
+            .collect()
+    }
+
+    /// Get a specific wallet from MultiMintWallet by mint URL
+    pub async fn get_wallet(&self, mint_url: MintUrl) -> Option<Arc<crate::wallet::Wallet>> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into().ok()?;
+        let wallet = self.inner.get_wallet(&cdk_mint_url).await?;
+        Some(Arc::new(crate::wallet::Wallet::from_inner(Arc::new(
+            wallet,
+        ))))
     }
 
     /// Verify token DLEQ proofs
@@ -437,7 +702,7 @@ impl MultiMintWallet {
             .inner
             .mint_blind_auth(&cdk_mint_url, amount.into())
             .await?;
-        Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Get unspent auth proofs for a specific mint
@@ -492,6 +757,27 @@ impl From<CdkTransferResult> for TransferResult {
             fees_paid: result.fees_paid.into(),
             source_balance_after: result.source_balance_after.into(),
             target_balance_after: result.target_balance_after.into(),
+        }
+    }
+}
+
+/// Data extracted from a token including mint URL, proofs, and memo
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TokenData {
+    /// The mint URL from the token
+    pub mint_url: MintUrl,
+    /// The proofs contained in the token
+    pub proofs: Proofs,
+    /// The memo from the token, if present
+    pub memo: Option<String>,
+}
+
+impl From<CdkTokenData> for TokenData {
+    fn from(data: CdkTokenData) -> Self {
+        Self {
+            mint_url: data.mint_url.into(),
+            proofs: data.proofs.into_iter().map(|p| p.into()).collect(),
+            memo: data.memo,
         }
     }
 }
@@ -556,4 +842,4 @@ impl From<MultiMintSendOptions> for CdkMultiMintSendOptions {
 pub type BalanceMap = HashMap<String, Amount>;
 
 /// Type alias for proofs by mint URL
-pub type ProofsByMint = HashMap<String, Vec<Arc<Proof>>>;
+pub type ProofsByMint = HashMap<String, Vec<Proof>>;

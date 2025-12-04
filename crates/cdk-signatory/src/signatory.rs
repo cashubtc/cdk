@@ -111,7 +111,6 @@ impl From<SignatoryKeySet> for MintKeySetInfo {
             input_fee_ppk: val.input_fee_ppk,
             derivation_path: Default::default(),
             derivation_path_index: Default::default(),
-            max_order: 0,
             amounts: val.amounts,
             final_expiry: val.final_expiry,
             valid_from: 0,
@@ -148,7 +147,7 @@ pub trait Signatory {
         blinded_messages: Vec<BlindedMessage>,
     ) -> Result<Vec<BlindSignature>, Error>;
 
-    /// Verify [`Proof`] meets conditions and is signed
+    /// Verify [`Proof`] meets conditions and is signed by the mint (ignores P2PK/HTLC signatures"
     async fn verify_proofs(&self, proofs: Vec<Proof>) -> Result<(), Error>;
 
     /// Retrieve the list of all mint keysets

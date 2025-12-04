@@ -26,8 +26,14 @@ pub mod mint;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
+#[cfg(test)]
+mod test_helpers;
+
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 mod bip353;
+
+#[cfg(feature = "wallet")]
+mod lightning_address;
 
 #[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
 mod oidc_client;
@@ -48,6 +54,7 @@ pub use oidc_client::OidcClient;
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub mod event;
 pub mod fees;
+pub mod invoice;
 
 #[doc(hidden)]
 pub use bitcoin::secp256k1;

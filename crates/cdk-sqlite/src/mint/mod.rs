@@ -32,6 +32,16 @@ mod test {
     mint_db_test!(provide_db);
 
     #[tokio::test]
+    async fn bug_opening_relative_path() {
+        let config: Config = "test.db".into();
+
+        let pool = Pool::<SqliteConnectionManager>::new(config);
+        let db = pool.get();
+        assert!(db.is_ok());
+        let _ = remove_file("test.db");
+    }
+
+    #[tokio::test]
     async fn open_legacy_and_migrate() {
         let file = format!(
             "{}/db.sqlite",

@@ -272,7 +272,7 @@ impl WalletDatabase for WalletSqliteDatabase {
             .into_iter()
             .map(|info| {
                 Ok::<cdk::types::ProofInfo, FfiError>(cdk::types::ProofInfo {
-                    proof: info.proof.inner.clone(),
+                    proof: info.proof.try_into()?,
                     y: info.y.try_into()?,
                     mint_url: info.mint_url.try_into()?,
                     state: info.state.into(),
@@ -318,6 +318,21 @@ impl WalletDatabase for WalletSqliteDatabase {
         let result = self
             .inner
             .get_proofs(cdk_mint_url, cdk_unit, cdk_state, cdk_spending_conditions)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+
+        Ok(result.into_iter().map(Into::into).collect())
+    }
+
+    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, FfiError> {
+        let cdk_ys: Vec<cdk::nuts::PublicKey> = ys
+            .into_iter()
+            .map(|y| y.try_into())
+            .collect::<Result<Vec<_>, FfiError>>()?;
+
+        let result = self
+            .inner
+            .get_proofs_by_ys(cdk_ys)
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })?;
 

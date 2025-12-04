@@ -183,6 +183,19 @@ async fn test_mint_nut06() {
         .expect("Failed to get balance");
     assert_eq!(Amount::from(64), balance_alice);
 
+    // Verify keyset amounts after minting
+    let keyset_id = mint_bob.pubkeys().keysets.first().unwrap().id;
+    let total_issued = mint_bob.total_issued().await.unwrap();
+    let issued_amount = total_issued
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    assert_eq!(
+        issued_amount,
+        Amount::from(64),
+        "Should have issued 64 sats"
+    );
+
     let transaction = wallet_alice
         .list_transactions(None)
         .await
@@ -552,7 +565,11 @@ async fn test_swap_overpay_underpay_fee() {
         .expect("Failed to create test mint");
 
     mint_bob
-        .rotate_keyset(CurrencyUnit::Sat, 32, 1)
+        .rotate_keyset(
+            CurrencyUnit::Sat,
+            cdk_integration_tests::standard_keyset_amounts(32),
+            1,
+        )
         .await
         .unwrap();
 
@@ -627,7 +644,11 @@ async fn test_mint_enforce_fee() {
         .expect("Failed to create test mint");
 
     mint_bob
-        .rotate_keyset(CurrencyUnit::Sat, 32, 1)
+        .rotate_keyset(
+            CurrencyUnit::Sat,
+            cdk_integration_tests::standard_keyset_amounts(32),
+            1,
+        )
         .await
         .unwrap();
 
@@ -736,7 +757,11 @@ async fn test_mint_change_with_fee_melt() {
         .expect("Failed to create test mint");
 
     mint_bob
-        .rotate_keyset(CurrencyUnit::Sat, 32, 1)
+        .rotate_keyset(
+            CurrencyUnit::Sat,
+            cdk_integration_tests::standard_keyset_amounts(32),
+            1,
+        )
         .await
         .unwrap();
 
@@ -752,6 +777,28 @@ async fn test_mint_change_with_fee_melt() {
     )
     .await
     .expect("Failed to fund wallet");
+
+    let keyset_id = mint_bob.pubkeys().keysets.first().unwrap().id;
+
+    // Check amounts after minting
+    let total_issued = mint_bob.total_issued().await.unwrap();
+    let total_redeemed = mint_bob.total_redeemed().await.unwrap();
+    let initial_issued = total_issued.get(&keyset_id).copied().unwrap_or_default();
+    let initial_redeemed = total_redeemed
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    assert_eq!(
+        initial_issued,
+        Amount::from(100),
+        "Should have issued 100 sats, got {:?}",
+        total_issued
+    );
+    assert_eq!(
+        initial_redeemed,
+        Amount::ZERO,
+        "Should have redeemed 0 sats initially, "
+    );
 
     let proofs = wallet_alice
         .get_unspent_proofs()
@@ -771,6 +818,29 @@ async fn test_mint_change_with_fee_melt() {
         .unwrap();
 
     assert_eq!(w.change.unwrap().total_amount().unwrap(), 97.into());
+
+    // Check amounts after melting
+    // Melting redeems 100 sats and issues 97 sats as change
+    let total_issued = mint_bob.total_issued().await.unwrap();
+    let total_redeemed = mint_bob.total_redeemed().await.unwrap();
+    let after_issued = total_issued
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let after_redeemed = total_redeemed
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    assert_eq!(
+        after_issued,
+        Amount::from(197),
+        "Should have issued 197 sats total (100 initial + 97 change)"
+    );
+    assert_eq!(
+        after_redeemed,
+        Amount::from(100),
+        "Should have redeemed 100 sats from the melt"
+    );
 }
 /// Tests concurrent double-spending attempts by trying to use the same proofs
 /// in 3 swap transactions simultaneously using tokio tasks

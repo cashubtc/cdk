@@ -49,6 +49,7 @@ impl MintBuilder {
                 .nut10(true)
                 .nut11(true)
                 .nut12(true)
+                .nut14(true)
                 .nut20(true),
             ..Default::default()
         };
@@ -301,7 +302,7 @@ impl MintBuilder {
     ///
     /// The unit **MUST** already have been added with a ln backend
     pub fn set_unit_fee(&mut self, unit: &CurrencyUnit, input_fee_ppk: u64) -> Result<(), Error> {
-        let (input_fee, _max_order) = self
+        let (input_fee, _) = self
             .supported_units
             .get_mut(unit)
             .ok_or(Error::UnsupportedUnit)?;
@@ -380,5 +381,54 @@ impl MintMeltLimits {
             melt_min: min.into(),
             melt_max: max.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk_sqlite::mint::memory;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_mint_builder_default_nuts_support() {
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        let mint_info = builder.current_mint_info();
+
+        assert!(
+            mint_info.nuts.nut07.supported,
+            "NUT-07 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut08.supported,
+            "NUT-08 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut09.supported,
+            "NUT-09 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut10.supported,
+            "NUT-10 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut11.supported,
+            "NUT-11 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut12.supported,
+            "NUT-12 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut14.supported,
+            "NUT-14 (HTLC) should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut20.supported,
+            "NUT-20 should be supported by default"
+        );
     }
 }

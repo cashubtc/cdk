@@ -49,18 +49,14 @@ impl Wallet {
         amount: Amount,
         description: Option<String>,
     ) -> Result<MintQuote, Error> {
+        let mint_info = self.load_mint_info().await?;
+
         let mint_url = self.mint_url.clone();
         let unit = self.unit.clone();
 
-        self.refresh_keysets().await?;
-
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
-            let settings = self
-                .localstore
-                .get_mint(mint_url.clone())
-                .await?
-                .ok_or(Error::IncorrectMint)?
+            let settings = mint_info
                 .nuts
                 .nut04
                 .get_settings(&unit, &crate::nuts::PaymentMethod::Bolt11)
@@ -196,8 +192,6 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        self.refresh_keysets().await?;
-
         let quote_info = self
             .localstore
             .get_mint_quote(quote_id)
@@ -226,18 +220,25 @@ impl Wallet {
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
+        let split_target = match amount_split_target {
+            SplitTarget::None => {
+                self.determine_split_target_values(amount_mintable, &fee_and_amounts)
+                    .await?
+            }
+            s => s,
+        };
+
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
                 amount_mintable,
-                &amount_split_target,
+                &split_target,
                 spending_conditions,
                 &fee_and_amounts,
             )?,
             None => {
-                // Calculate how many secrets we'll need
                 let amount_split =
-                    amount_mintable.split_targeted(&amount_split_target, &fee_and_amounts)?;
+                    amount_mintable.split_targeted(&split_target, &fee_and_amounts)?;
                 let num_secrets = amount_split.len() as u32;
 
                 tracing::debug!(
@@ -259,7 +260,7 @@ impl Wallet {
                     count,
                     &self.seed,
                     amount_mintable,
-                    &amount_split_target,
+                    &split_target,
                     &fee_and_amounts,
                 )?
             }

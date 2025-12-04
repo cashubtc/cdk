@@ -138,15 +138,25 @@ required-features = ["wallet"]
 name = "mint-token-bolt12"
 required-features = ["wallet"]
 
+[[example]]
+name = "human_readable_payment"
+required-features = ["wallet", "bip353"]
+
+[[example]]
+name = "token-proofs"
+required-features = ["wallet"]
+
 [dev-dependencies]
 rand.workspace = true
 cdk-sqlite.workspace = true
+cdk-fake-wallet.workspace = true
 bip39.workspace = true
 tracing-subscriber.workspace = true
 criterion.workspace = true
 reqwest = { workspace = true }
 anyhow.workspace = true
 ureq = { version = "3.1.0", features = ["json"] }
+tokio = { workspace = true, features = ["full"] }
 
 
 [[bench]]

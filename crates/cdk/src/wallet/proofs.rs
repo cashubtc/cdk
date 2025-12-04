@@ -248,11 +248,6 @@ impl Wallet {
         fees_and_keyset_amounts: &KeysetFeeAndAmounts,
         include_fees: bool,
     ) -> Result<Proofs, Error> {
-        tracing::debug!(
-            "amount={}, proofs={:?}",
-            amount,
-            proofs.iter().map(|p| p.amount.into()).collect::<Vec<u64>>()
-        );
         if amount == Amount::ZERO {
             return Ok(vec![]);
         }
@@ -263,14 +258,18 @@ impl Wallet {
         proofs.sort_by(|a, b| a.cmp(b).reverse());
 
         // Track selected proofs and remaining amounts (include all inactive proofs first)
-        let mut selected_proofs: HashSet<Proof> = proofs
+        let inactive_proofs: Proofs = proofs
             .iter()
             .filter(|p| !p.is_active(active_keyset_ids))
             .cloned()
             .collect();
+        let mut selected_proofs: HashSet<Proof> = inactive_proofs.iter().cloned().collect();
         if selected_proofs.total_amount()? >= amount {
             tracing::debug!("All inactive proofs are sufficient");
-            return Ok(selected_proofs.into_iter().collect());
+            // Still need to filter to minimum set, not return all of them
+            let mut inactive_selected = selected_proofs.into_iter().collect::<Vec<_>>();
+            inactive_selected.sort_by(|a, b| a.cmp(b).reverse());
+            return Self::select_least_amount_over(inactive_selected, amount);
         }
         let mut remaining_amounts: Vec<Amount> = Vec::new();
 
@@ -297,9 +296,15 @@ impl Wallet {
             }
         };
 
-        // Select proofs with the optimal amounts
-        for (_, fee_and_amounts) in fees_and_keyset_amounts.iter() {
-            // Split the amount into optimal amounts
+        // Get fee_and_amounts for the first active keyset (use for optimal amount splitting)
+        // We only need to split once - iterating over all keysets would cause duplicate selections
+        let fee_and_amounts = active_keyset_ids
+            .iter()
+            .find_map(|id| fees_and_keyset_amounts.get(id))
+            .or_else(|| fees_and_keyset_amounts.values().next());
+
+        // Select proofs with the optimal amounts (only split once, not per keyset)
+        if let Some(fee_and_amounts) = fee_and_amounts {
             for optimal_amount in amount.split(fee_and_amounts) {
                 if !select_proof(&proofs, optimal_amount, true) {
                     // Add the remaining amount to the remaining amounts because proof with the optimal amount was not found
@@ -310,17 +315,22 @@ impl Wallet {
 
         // If all the optimal amounts are selected, return the selected proofs
         if remaining_amounts.is_empty() {
-            tracing::debug!("All optimal amounts are selected");
+            let result: Proofs = selected_proofs.into_iter().collect();
+            tracing::debug!(
+                "All optimal amounts are selected, returning {} proofs with total {}",
+                result.len(),
+                result.total_amount().unwrap_or_default()
+            );
             if include_fees {
                 return Self::include_fees(
                     amount,
                     proofs,
-                    selected_proofs.into_iter().collect(),
+                    result,
                     active_keyset_ids,
                     fees_and_keyset_amounts,
                 );
             } else {
-                return Ok(selected_proofs.into_iter().collect());
+                return Ok(result);
             }
         }
 
@@ -438,53 +448,63 @@ impl Wallet {
         fees_and_keyset_amounts: &KeysetFeeAndAmounts,
     ) -> Result<Proofs, Error> {
         tracing::debug!("Including fees");
-        let fee = calculate_fee(
-            &selected_proofs.count_by_keyset(),
-            &fees_and_keyset_amounts
-                .iter()
-                .map(|(key, values)| (*key, values.fee()))
-                .collect(),
-        )
-        .unwrap_or_default();
-        let net_amount = selected_proofs.total_amount()? - fee;
-        tracing::debug!(
-            "Net amount={}, fee={}, total amount={}",
-            net_amount,
-            fee,
-            selected_proofs.total_amount()?
-        );
-        if net_amount >= amount {
-            tracing::debug!(
-                "Selected proofs: {:?}",
-                selected_proofs
-                    .iter()
-                    .map(|p| p.amount.into())
-                    .collect::<Vec<u64>>(),
-            );
-            return Ok(selected_proofs);
-        }
 
-        tracing::debug!("Net amount is less than the required amount");
-        let remaining_amount = amount - net_amount;
-        let remaining_proofs = proofs
+        let keyset_fees: HashMap<Id, u64> = fees_and_keyset_amounts
+            .iter()
+            .map(|(key, values)| (*key, values.fee()))
+            .collect();
+
+        let mut remaining_proofs: Proofs = proofs
             .into_iter()
             .filter(|p| !selected_proofs.contains(p))
-            .collect::<Proofs>();
-        selected_proofs.extend(Wallet::select_proofs(
-            remaining_amount,
-            remaining_proofs,
-            active_keyset_ids,
-            &HashMap::new(), // Fees are already calculated
-            false,
-        )?);
-        tracing::debug!(
-            "Selected proofs: {:?}",
-            selected_proofs
-                .iter()
-                .map(|p| p.amount.into())
-                .collect::<Vec<u64>>(),
-        );
-        Ok(selected_proofs)
+            .collect();
+
+        loop {
+            let fee =
+                calculate_fee(&selected_proofs.count_by_keyset(), &keyset_fees).unwrap_or_default();
+            let total = selected_proofs.total_amount()?;
+            let net_amount = total - fee;
+
+            tracing::debug!(
+                "Net amount={}, fee={}, total amount={}",
+                net_amount,
+                fee,
+                total
+            );
+
+            if net_amount >= amount {
+                tracing::debug!(
+                    "Selected proofs: {:?}",
+                    selected_proofs
+                        .iter()
+                        .map(|p| p.amount.into())
+                        .collect::<Vec<u64>>(),
+                );
+                return Ok(selected_proofs);
+            }
+
+            if remaining_proofs.is_empty() {
+                return Err(Error::InsufficientFunds);
+            }
+
+            let shortfall = amount - net_amount;
+            tracing::debug!("Net amount is less than required, shortfall={}", shortfall);
+
+            let additional = Wallet::select_proofs(
+                shortfall,
+                remaining_proofs.clone(),
+                active_keyset_ids,
+                fees_and_keyset_amounts,
+                false,
+            )?;
+
+            if additional.is_empty() {
+                return Err(Error::InsufficientFunds);
+            }
+
+            remaining_proofs.retain(|p| !additional.contains(p));
+            selected_proofs.extend(additional);
+        }
     }
 }
 
@@ -722,5 +742,1410 @@ mod tests {
         .unwrap();
         assert_eq!(selected_proofs.len(), 1);
         assert_eq!(selected_proofs[0].amount, 32.into());
+    }
+
+    #[test]
+    fn test_select_proofs_include_fees_accounts_for_additional_proof_fees() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active_id,
+            (100, (0..32).map(|x| 2u64.pow(x)).collect()).into(),
+        );
+
+        let proofs = vec![
+            proof(512),
+            proof(256),
+            proof(128),
+            proof(64),
+            proof(32),
+            proof(16),
+            proof(8),
+            proof(4),
+            proof(2),
+            proof(1),
+        ];
+
+        let amount: Amount = 1010.into();
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Net amount {} should be >= requested amount {} (total={}, fee={})",
+            net,
+            amount,
+            total,
+            fee
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_include_fees_iterates_until_stable() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active_id,
+            (100, (0..32).map(|x| 2u64.pow(x)).collect()).into(),
+        );
+
+        let mut proofs = Vec::new();
+        for i in 0..10 {
+            proofs.push(proof(1 << i));
+        }
+        proofs.push(proof(2));
+        proofs.push(proof(4));
+
+        let amount: Amount = 1010.into();
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Net amount {} should be >= requested amount {} (total={}, fee={}, num_proofs={})",
+            net,
+            amount,
+            total,
+            fee,
+            selected_proofs.len()
+        );
+    }
+
+    // ========================================================================
+    // Fee-Aware Proof Selection Tests (fee_ppk = 200)
+    // ========================================================================
+
+    fn keyset_fee_and_amounts_with_fee(
+        fee_ppk: u64,
+    ) -> HashMap<Id, cdk_common::amount::FeeAndAmounts> {
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            id(),
+            (fee_ppk, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+        keyset_fee_and_amounts
+    }
+
+    fn standard_proofs() -> Vec<Proof> {
+        vec![
+            proof(1),
+            proof(2),
+            proof(4),
+            proof(8),
+            proof(16),
+            proof(32),
+            proof(64),
+            proof(128),
+            proof(256),
+            proof(512),
+            proof(1024),
+            proof(2048),
+            proof(4096),
+        ]
+    }
+
+    fn fragmented_proofs() -> Vec<Proof> {
+        let mut proofs = Vec::new();
+        for _ in 0..10 {
+            proofs.push(proof(1));
+        }
+        for _ in 0..8 {
+            proofs.push(proof(2));
+        }
+        for _ in 0..6 {
+            proofs.push(proof(4));
+        }
+        for _ in 0..5 {
+            proofs.push(proof(8));
+        }
+        for _ in 0..4 {
+            proofs.push(proof(16));
+        }
+        for _ in 0..3 {
+            proofs.push(proof(32));
+        }
+        for _ in 0..2 {
+            proofs.push(proof(64));
+        }
+        for _ in 0..2 {
+            proofs.push(proof(128));
+        }
+        for _ in 0..2 {
+            proofs.push(proof(256));
+        }
+        for _ in 0..2 {
+            proofs.push(proof(512));
+        }
+        for _ in 0..2 {
+            proofs.push(proof(1024));
+        }
+        for _ in 0..2 {
+            proofs.push(proof(2048));
+        }
+        proofs
+    }
+
+    fn large_proofs() -> Vec<Proof> {
+        vec![
+            proof(4096),
+            proof(2048),
+            proof(1024),
+            proof(512),
+            proof(256),
+        ]
+    }
+
+    fn mixed_proofs() -> Vec<Proof> {
+        vec![
+            proof(4096),
+            proof(1024),
+            proof(256),
+            proof(256),
+            proof(128),
+            proof(64),
+            proof(32),
+            proof(16),
+            proof(8),
+            proof(4),
+            proof(2),
+            proof(1),
+            proof(1),
+        ]
+    }
+
+    #[test]
+    fn test_select_proofs_with_fees_single_proof_exact() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = vec![proof(4096)];
+        let amount: Amount = 4095.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert_eq!(selected_proofs.len(), 1);
+        assert_eq!(selected_proofs[0].amount, 4096.into());
+        assert!(net >= amount, "4096 - 1 (fee) = 4095 >= 4095");
+    }
+
+    #[test]
+    fn test_select_proofs_with_fees_single_proof_insufficient() {
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = vec![proof(4096)];
+        let amount: Amount = 4096.into();
+
+        let result = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        );
+
+        assert!(result.is_err(), "4096 - 1 (fee) = 4095 < 4096, should fail");
+    }
+
+    #[test]
+    fn test_select_proofs_with_fees_two_proofs_fee_threshold() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = vec![proof(4096), proof(1024)];
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(net >= amount, "5120 - 1 = 5119 >= 5000");
+    }
+
+    #[test]
+    fn test_select_proofs_with_fees_iterative_fee_adjustment() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = vec![
+            proof(4096),
+            proof(1024),
+            proof(512),
+            proof(256),
+            proof(128),
+            proof(8),
+        ];
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Net amount {} should be >= requested amount {} (total={}, fee={})",
+            net,
+            amount,
+            total,
+            fee
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_with_fees_fee_increases_with_proofs() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = vec![
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+        ];
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Net amount {} should be >= requested amount {}",
+            net,
+            amount
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_with_fees_standard_proofs() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = standard_proofs();
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Standard proofs: net {} should be >= {} (total={}, fee={}, num_proofs={})",
+            net,
+            amount,
+            total,
+            fee,
+            selected_proofs.len()
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_with_fees_mixed_proofs() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = mixed_proofs();
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Mixed proofs: net {} should be >= {} (total={}, fee={}, num_proofs={})",
+            net,
+            amount,
+            total,
+            fee,
+            selected_proofs.len()
+        );
+    }
+
+    // ========================================================================
+    // High Fee Tests (fee_ppk = 1000, i.e., 1 sat per proof)
+    // ========================================================================
+
+    #[test]
+    fn test_select_proofs_high_fees_one_sat_per_proof() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(1000);
+
+        let proofs = vec![
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(512),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(512),
+            proof(512),
+            proof(512),
+            proof(512),
+            proof(512),
+            proof(512),
+            proof(256),
+            proof(256),
+            proof(256),
+            proof(256),
+            proof(256),
+            proof(256),
+            proof(128),
+            proof(128),
+            proof(128),
+            proof(128),
+            proof(128),
+            proof(128),
+            proof(128),
+            proof(8),
+            proof(8),
+            proof(8),
+            proof(8),
+            proof(8),
+            proof(8),
+            proof(8),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(4096),
+        ];
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+
+        let net = total - fee;
+
+        assert!(
+            net == amount,
+            "Selected proofs should cover amount after fees"
+        );
+        assert!(fee == Amount::from(selected_proofs.len() as u64));
+        assert!(fee > Amount::ZERO);
+    }
+
+    #[test]
+    fn test_select_proofs_high_fees_prefers_larger_proofs() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(1000);
+
+        let mut proofs = Vec::new();
+        for _ in 0..100 {
+            proofs.push(proof(64));
+        }
+        proofs.push(proof(4096));
+        proofs.push(proof(1024));
+
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(net >= amount, "Net amount {} should be >= {}", net, amount);
+    }
+
+    #[test]
+    fn test_select_proofs_high_fees_exact_with_fee() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(1000);
+
+        let proofs = vec![proof(4096), proof(1024)];
+        let amount: Amount = 5118.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert_eq!(selected_proofs.len(), 2);
+        assert_eq!(net, 5118.into(), "5120 - 2 = 5118");
+    }
+
+    #[test]
+    fn test_select_proofs_high_fees_large_proofs() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(1000);
+
+        let proofs = large_proofs();
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Large proofs: net {} should be >= {} (total={}, fee={}, num_proofs={})",
+            net,
+            amount,
+            total,
+            fee,
+            selected_proofs.len()
+        );
+    }
+
+    // ========================================================================
+    // Edge Case Tests
+    // ========================================================================
+
+    #[test]
+    fn test_select_proofs_with_fees_zero_amount() {
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = standard_proofs();
+        let amount: Amount = 0.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected_proofs.len(),
+            0,
+            "Zero amount should return empty selection"
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_with_fees_empty_proofs() {
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs: Vec<Proof> = vec![];
+        let amount: Amount = 5000.into();
+
+        let result = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        );
+
+        assert!(
+            result.is_err(),
+            "Empty proofs should return InsufficientFunds"
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_with_fees_all_proofs_same_size() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = vec![
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+        ];
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(net >= amount, "Net {} should be >= {}", net, amount);
+    }
+
+    #[test]
+    fn test_select_proofs_with_fees_fee_exceeds_small_proof() {
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(1000);
+
+        let proofs = vec![proof(1)];
+        let amount: Amount = 1.into();
+
+        let result = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        );
+
+        assert!(
+            result.is_err(),
+            "1 sat proof with 1 sat fee is uneconomical"
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_with_fees_barely_sufficient() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = vec![
+            proof(4096),
+            proof(1024),
+            proof(512),
+            proof(256),
+            proof(128),
+            proof(8),
+            proof(1),
+        ];
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Barely sufficient: net {} should be >= {} (total={}, fee={})",
+            net,
+            amount,
+            total,
+            fee
+        );
+    }
+
+    // ========================================================================
+    // Stress Tests
+    // ========================================================================
+
+    #[test]
+    fn test_select_proofs_many_small_proofs_with_fees() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(100);
+
+        let mut proofs: Vec<Proof> = (0..500).map(|_| proof(16)).collect();
+        proofs.extend((0..200).map(|_| proof(8)));
+        proofs.extend((0..100).map(|_| proof(4)));
+
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Net {} should be >= {} (total={}, fee={}, num_proofs={})",
+            net,
+            amount,
+            total,
+            fee,
+            selected_proofs.len()
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_fee_convergence_with_many_proofs() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(100);
+
+        let proofs: Vec<Proof> = (0..600).map(|_| proof(16)).collect();
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Fee convergence should work: net={}, amount={}, total={}, fee={}, proofs={}",
+            net,
+            amount,
+            total,
+            fee,
+            selected_proofs.len()
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_fragmented_proofs_with_fees() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = fragmented_proofs();
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Fragmented proofs: net {} should be >= {} (total={}, fee={}, num_proofs={})",
+            net,
+            amount,
+            total,
+            fee,
+            selected_proofs.len()
+        );
+    }
+
+    // ========================================================================
+    // Regression Tests
+    // ========================================================================
+
+    #[test]
+    fn test_regression_swap_insufficient_small_proof() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = vec![
+            proof(4096),
+            proof(1024),
+            proof(512),
+            proof(256),
+            proof(128),
+            proof(8),
+        ];
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Regression: should handle small proofs correctly. Net={}, expected >= {}",
+            net,
+            amount
+        );
+    }
+
+    #[test]
+    fn test_regression_fragmented_proofs_with_fees() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let mut proofs = Vec::new();
+        for _ in 0..20 {
+            proofs.push(proof(1));
+        }
+        for _ in 0..15 {
+            proofs.push(proof(2));
+        }
+        for _ in 0..12 {
+            proofs.push(proof(4));
+        }
+        for _ in 0..10 {
+            proofs.push(proof(8));
+        }
+        for _ in 0..8 {
+            proofs.push(proof(16));
+        }
+        for _ in 0..6 {
+            proofs.push(proof(32));
+        }
+        for _ in 0..5 {
+            proofs.push(proof(64));
+        }
+        for _ in 0..4 {
+            proofs.push(proof(128));
+        }
+        for _ in 0..3 {
+            proofs.push(proof(256));
+        }
+        for _ in 0..3 {
+            proofs.push(proof(512));
+        }
+        for _ in 0..2 {
+            proofs.push(proof(1024));
+        }
+        for _ in 0..2 {
+            proofs.push(proof(2048));
+        }
+
+        let amount: Amount = 5000.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Fragmented proofs should work: net={}, amount={}",
+            net,
+            amount
+        );
+    }
+
+    #[test]
+    fn test_regression_exact_amount_with_multiple_denominations() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(200);
+
+        let proofs = vec![
+            proof(4096),
+            proof(1024),
+            proof(512),
+            proof(256),
+            proof(128),
+            proof(8),
+            proof(4),
+            proof(2),
+            proof(1),
+        ];
+        let amount: Amount = 5007.into();
+
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        let fee = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &keyset_fee_and_amounts
+                .iter()
+                .map(|(k, v)| (*k, v.fee()))
+                .collect(),
+        )
+        .unwrap();
+        let net = total - fee;
+
+        assert!(
+            net >= amount,
+            "Exact amount with multiple denominations: net {} should be >= {} (total={}, fee={})",
+            net,
+            amount,
+            total,
+            fee
+        );
+    }
+
+    // ========================================================================
+    // Inactive Keyset Tests
+    // ========================================================================
+
+    fn inactive_id() -> Id {
+        Id::from_bytes(&[0x00, 1, 1, 1, 1, 1, 1, 1]).unwrap()
+    }
+
+    fn proof_with_keyset(amount: u64, keyset_id: Id) -> Proof {
+        Proof::new(
+            Amount::from(amount),
+            keyset_id,
+            Secret::generate(),
+            PublicKey::from_hex(
+                "03deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn test_select_proofs_inactive_keyset_exact_amount() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        let inactive = inactive_id();
+        let active = id();
+
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active,
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+
+        let proofs = vec![
+            proof_with_keyset(1, inactive),
+            proof_with_keyset(1, inactive),
+            proof_with_keyset(2, inactive),
+            proof_with_keyset(4, inactive),
+            proof_with_keyset(8, inactive),
+            proof_with_keyset(16, inactive),
+        ];
+
+        let selected_proofs = Wallet::select_proofs(
+            4.into(),
+            proofs,
+            &vec![active],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        assert_eq!(
+            total,
+            4.into(),
+            "Should select exactly 4 sats worth of proofs from inactive keyset, got {}",
+            total
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_inactive_keyset_minimum_over() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        let inactive = inactive_id();
+        let active = id();
+
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active,
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+
+        let proofs = vec![
+            proof_with_keyset(8, inactive),
+            proof_with_keyset(16, inactive),
+            proof_with_keyset(32, inactive),
+        ];
+
+        let selected_proofs = Wallet::select_proofs(
+            5.into(),
+            proofs,
+            &vec![active],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        assert_eq!(
+            total,
+            8.into(),
+            "Should select minimum amount (8) that covers 5 sats, got {}",
+            total
+        );
+        assert_eq!(selected_proofs.len(), 1, "Should select only 1 proof");
+    }
+
+    #[test]
+    fn test_select_proofs_active_keyset_exact_4_sats_with_fee() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        let active = id();
+
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active,
+            (100, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+
+        let proofs = vec![
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(8),
+            proof(8),
+            proof(8),
+            proof(16),
+            proof(16),
+            proof(16),
+        ];
+
+        let selected_proofs = Wallet::select_proofs(
+            4.into(),
+            proofs,
+            &vec![active],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        assert_eq!(
+            total,
+            4.into(),
+            "Should select exactly 4 sats worth of proofs, got {}",
+            total
+        );
+        assert_eq!(
+            selected_proofs.len(),
+            1,
+            "Should select only 1 proof (the 4-sat one)"
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_multiple_keysets_does_not_double_select() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        let active = id();
+        let other_keyset = inactive_id();
+
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active,
+            (100, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+        keyset_fee_and_amounts.insert(
+            other_keyset,
+            (100, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+
+        let proofs = vec![
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(8),
+            proof(8),
+            proof(8),
+            proof(16),
+            proof(16),
+            proof(16),
+        ];
+
+        let selected_proofs = Wallet::select_proofs(
+            4.into(),
+            proofs,
+            &vec![active],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        assert_eq!(
+            total,
+            4.into(),
+            "Should select exactly 4 sats worth even with multiple keysets in fee map, got {}",
+            total
+        );
+        assert_eq!(selected_proofs.len(), 1, "Should select only 1 proof");
     }
 }
