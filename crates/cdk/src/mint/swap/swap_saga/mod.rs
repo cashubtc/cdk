@@ -256,6 +256,7 @@ impl<'a> SwapSaga<'a, Initial> {
             .push_front(Box::new(RemoveSwapSetup {
                 blinded_secrets: blinded_secrets.clone(),
                 input_ys: ys.clone(),
+                operation_id: *self.operation.id(),
             }));
 
         // Transition to SetupComplete state
@@ -487,27 +488,6 @@ impl<S> SwapSaga<'_, S> {
                 );
             }
         }
-
-        // Delete saga - swap was compensated
-        // Use a separate transaction since compensations already ran
-        // Don't fail the compensation if saga cleanup fails (log only)
-        let mut tx = match self.db.begin_transaction().await {
-            Ok(tx) => tx,
-            Err(e) => {
-                tracing::error!(
-                    "Failed to begin tx for saga cleanup after compensation: {}",
-                    e
-                );
-                return Ok(()); // Compensations already ran, don't fail now
-            }
-        };
-
-        if let Err(e) = tx.delete_saga(self.operation.id()).await {
-            tracing::warn!("Failed to delete saga after compensation: {}", e);
-        } else if let Err(e) = tx.commit().await {
-            tracing::error!("Failed to commit saga cleanup after compensation: {}", e);
-        }
-        // Always succeed - compensations are done, saga cleanup is best-effort
 
         Ok(())
     }

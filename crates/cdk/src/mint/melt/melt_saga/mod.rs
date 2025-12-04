@@ -385,6 +385,7 @@ impl MeltSaga<Initial> {
                 input_ys: input_ys.clone(),
                 blinded_secrets,
                 quote_id: quote.id.clone(),
+                operation_id: *self.operation.id(),
             }));
 
         // Transition to SetupComplete state
