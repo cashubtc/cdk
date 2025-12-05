@@ -62,8 +62,8 @@ message KeySet {
   bool active = 3;
   uint64 input_fee_ppk = 4;
   Keys keys = 5;
-  optional uint64 final_expiry = 6;
-  uint64 version = 7;
+  uint32 version  = 6;
+  optional uint64 final_expiry  = 7;
 }
 
 message Keys {
@@ -74,6 +74,8 @@ message RotationRequest {
   CurrencyUnit unit = 1;
   uint64 input_fee_ppk = 2;
   repeated uint64 amounts = 3;
+  // unix timestamp for expiration
+  optional uint64 final_expiry = 4;
 }
 
 enum CurrencyUnitType {
@@ -104,7 +106,6 @@ message Proof {
   bytes secret = 3;
   bytes c = 4;
 }
-
 
 message BlindSignatures {
   repeated BlindSignature blind_signatures = 1;
