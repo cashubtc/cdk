@@ -252,6 +252,7 @@
                 shellHook = "
                   cargo update
                   cargo update home --precise 0.5.11
+                  cargo update typed-index-collections --precise 3.3.0
               ${_shellHook}
               ";
                 buildInputs = buildInputs ++ [ msrv_toolchain ];
