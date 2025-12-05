@@ -545,7 +545,11 @@ pub async fn post_pay_bolt12(
     let payment_id = match offer.amount() {
         Some(_) => {
             // Fixed amount offer - use send() method, ignore user input amount
-            state.node.inner.bolt12_payment().send(&offer, None, None)
+            state
+                .node
+                .inner
+                .bolt12_payment()
+                .send(&offer, None, None, None)
         }
         None => {
             // Variable amount offer - requires user to specify amount via send_using_amount()
@@ -569,11 +573,13 @@ pub async fn post_pay_bolt12(
                 }
             };
             let amount_msats = amount_btc * 1_000;
-            state
-                .node
-                .inner
-                .bolt12_payment()
-                .send_using_amount(&offer, amount_msats, None, None)
+            state.node.inner.bolt12_payment().send_using_amount(
+                &offer,
+                amount_msats,
+                None,
+                None,
+                None,
+            )
         }
     };
 
