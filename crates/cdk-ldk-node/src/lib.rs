@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bip39::Mnemonic;
 use cdk_common::amount::to_unit;
 use cdk_common::common::FeeReserve;
 use cdk_common::payment::{self, *};
@@ -22,6 +23,7 @@ use ldk_node::lightning::ln::channelmanager::PaymentId;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::lightning_invoice::{Bolt11InvoiceDescription, Description};
 use ldk_node::lightning_types::payment::PaymentHash;
+use ldk_node::logger::{LogLevel, LogWriter};
 use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus, SendingParameters};
 use ldk_node::{Builder, Event, Node};
 use tokio::runtime::Runtime;
@@ -30,8 +32,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
 use crate::error::Error;
+use crate::log::StdoutLogWriter;
 
 mod error;
+mod log;
 mod web;
 
 /// CDK Lightning backend using LDK Node
@@ -97,6 +101,71 @@ pub enum GossipSource {
     /// Contains the URL of the RGS server for compressed gossip data
     RapidGossipSync(String),
 }
+/// A builder for an [`CdkLdkNode`] instance.
+pub struct CdkLdkNodeBuilder {
+    network: Network,
+    chain_source: ChainSource,
+    gossip_source: GossipSource,
+    log_dir_path: Option<String>,
+    storage_dir_path: String,
+    fee_reserve: FeeReserve,
+    listening_addresses: Vec<SocketAddress>,
+    runtime: Option<Arc<Runtime>>,
+    seed: Option<Mnemonic>,
+    announcement_addresses: Option<Vec<SocketAddress>>,
+}
+
+impl CdkLdkNodeBuilder {
+    /// Creates a new builder instance.
+    pub fn new(
+        network: Network,
+        chain_source: ChainSource,
+        gossip_source: GossipSource,
+        storage_dir_path: String,
+        fee_reserve: FeeReserve,
+        listening_addresses: Vec<SocketAddress>,
+    ) -> Self {
+        Self {
+            network,
+            chain_source,
+            gossip_source,
+            storage_dir_path,
+            fee_reserve,
+            listening_addresses,
+            runtime: None,
+            seed: None,
+            announcement_addresses: None,
+            log_dir_path: None,
+        }
+    }
+    /// Configures the [`CdkLdkNode`] to use the provided runtime
+    /// deprecated
+    pub fn with_runtime(mut self, runtime: Arc<Runtime>) -> Self {
+        self.runtime = Some(runtime);
+        self
+    }
+
+    /// Configures the [`CdkLdkNode`] to use the Mnemonic for entropy source configuration
+    pub fn with_seed(mut self, seed: Mnemonic) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+    /// Configures the [`CdkLdkNode`] to use announce this address to the lightning network
+    pub fn with_announcement_address(mut self, announcement_addresses: Vec<SocketAddress>) -> Self {
+        self.announcement_addresses = Some(announcement_addresses);
+        self
+    }
+    /// Configures the [`CdkLdkNode`] to use announce this address to the lightning network
+    pub fn with_log_dir_path(mut self, log_dir_path: String) -> Self {
+        self.log_dir_path = Some(log_dir_path);
+        self
+    }
+
+    /// Builds the [`CdkLdkNode`] instance
+    pub fn build(self) -> Result<CdkLdkNode, Error> {
+        CdkLdkNode::new(self)
+    }
+}
 
 impl CdkLdkNode {
     /// Create a new CDK LDK Node instance
@@ -115,23 +184,15 @@ impl CdkLdkNode {
     ///
     /// # Errors
     /// Returns an error if the LDK node builder fails to create the node
-    pub fn new(
-        network: Network,
-        chain_source: ChainSource,
-        gossip_source: GossipSource,
-        storage_dir_path: String,
-        fee_reserve: FeeReserve,
-        listening_address: Vec<SocketAddress>,
-        runtime: Option<Arc<Runtime>>,
-    ) -> Result<Self, Error> {
-        let mut builder = Builder::new();
-        builder.set_network(network);
-        tracing::info!("Storage dir of node is {}", storage_dir_path);
-        builder.set_storage_dir_path(storage_dir_path);
+    pub fn new(builder: CdkLdkNodeBuilder) -> Result<Self, Error> {
+        let mut ldk = Builder::new();
+        ldk.set_network(builder.network);
+        tracing::info!("Storage dir of node is {}", builder.storage_dir_path);
+        ldk.set_storage_dir_path(builder.storage_dir_path);
 
-        match chain_source {
+        match builder.chain_source {
             ChainSource::Esplora(esplora_url) => {
-                builder.set_chain_source_esplora(esplora_url, None);
+                ldk.set_chain_source_esplora(esplora_url, None);
             }
             ChainSource::BitcoinRpc(BitcoinRpcConfig {
                 host,
@@ -139,24 +200,35 @@ impl CdkLdkNode {
                 user,
                 password,
             }) => {
-                builder.set_chain_source_bitcoind_rpc(host, port, user, password);
+                ldk.set_chain_source_bitcoind_rpc(host, port, user, password);
             }
         }
 
-        match gossip_source {
+        match builder.gossip_source {
             GossipSource::P2P => {
-                builder.set_gossip_source_p2p();
+                ldk.set_gossip_source_p2p();
             }
             GossipSource::RapidGossipSync(rgs_url) => {
-                builder.set_gossip_source_rgs(rgs_url);
+                ldk.set_gossip_source_rgs(rgs_url);
             }
         }
 
-        builder.set_listening_addresses(listening_address)?;
+        ldk.set_listening_addresses(builder.listening_addresses)?;
+        if builder.log_dir_path.is_some() {
+            ldk.set_filesystem_logger(builder.log_dir_path, Some(LogLevel::Info));
+        } else {
+            ldk.set_custom_logger(Arc::new(StdoutLogWriter));
+        }
 
-        builder.set_node_alias("cdk-ldk-node".to_string())?;
+        ldk.set_node_alias("cdk-ldk-node".to_string())?;
+        if builder.seed.is_some() {
+            ldk.set_entropy_bip39_mnemonic(builder.seed.unwrap(), None);
+        }
+        if builder.announcement_addresses.is_some() {
+            ldk.set_announcement_addresses(builder.announcement_addresses.unwrap())?;
+        }
 
-        let node = builder.build()?;
+        let node = ldk.build()?;
 
         tracing::info!("Creating tokio channel for payment notifications");
         let (sender, receiver) = tokio::sync::broadcast::channel(8);
@@ -169,18 +241,18 @@ impl CdkLdkNode {
             "Created node {} with address {:?} on network {}",
             id,
             adr,
-            network
+            builder.network
         );
 
         Ok(Self {
             inner: node.into(),
-            fee_reserve,
+            fee_reserve: builder.fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             sender,
             receiver: Arc::new(receiver),
             events_cancel_token: CancellationToken::new(),
-            runtime,
+            runtime: builder.runtime,
             web_addr: None,
         })
     }
