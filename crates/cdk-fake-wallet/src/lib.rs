@@ -10,8 +10,6 @@
 //! which is maintained for all invoice types.
 
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
-#![warn(rustdoc::bare_urls)]
 
 use std::cmp::max;
 use std::collections::{HashMap, HashSet, VecDeque};
