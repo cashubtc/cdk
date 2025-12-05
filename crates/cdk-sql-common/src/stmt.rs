@@ -73,7 +73,6 @@ pub enum SqlParseError {
 /// This function does not validate the SQL statement, it only extracts the placeholder to be
 /// database agnostic.
 // FIXME: Replace unwraps with proper error handling
-#[allow(clippy::unwrap_used)]
 pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
     let mut parts = Vec::new();
     let mut current = String::new();
