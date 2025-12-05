@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.14.2](https://github.com/cashubtc/cdk/releases/tag/v0.14.2)
+
 ### Added
 - cdk-ffi: Add Payment Requests support ([thesimplekid]).
 - cdk-ffi: Add multimint melt with mint functionality ([thesimplekid]).
