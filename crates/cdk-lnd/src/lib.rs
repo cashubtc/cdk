@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use cdk_common::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::common::FeeReserve;
-use cdk_common::database::mint::DynMintKVStore;
+use cdk_common::database::DynKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
@@ -55,7 +55,7 @@ pub struct Lnd {
     _macaroon_file: PathBuf,
     lnd_client: client::Client,
     fee_reserve: FeeReserve,
-    kv_store: DynMintKVStore,
+    kv_store: DynKVStore,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
     settings: Bolt11Settings,
@@ -71,7 +71,7 @@ impl Lnd {
         cert_file: PathBuf,
         macaroon_file: PathBuf,
         fee_reserve: FeeReserve,
-        kv_store: DynMintKVStore,
+        kv_store: DynKVStore,
     ) -> Result<Self, Error> {
         // Validate address is not empty
         if address.is_empty() {
