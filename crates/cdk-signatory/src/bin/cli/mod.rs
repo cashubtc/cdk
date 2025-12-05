@@ -8,7 +8,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::{env, fs};
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use bip39::rand::{thread_rng, Rng};
 use bip39::Mnemonic;
 use cdk_common::database::MintKeysDatabase;
@@ -114,7 +114,7 @@ pub async fn cli_main() -> Result<()> {
     let work_dir = match &args.work_dir {
         Some(work_dir) => work_dir.clone(),
         None => {
-            let home_dir = home::home_dir().unwrap();
+            let home_dir = home::home_dir().ok_or(anyhow!("Unknown how"))?;
             home_dir.join(DEFAULT_WORK_DIR)
         }
     };

@@ -234,11 +234,10 @@ impl WalletDatabase for WalletRedbDatabase {
             .iter()
             .map_err(Error::from)?
             .flatten()
-            .map(|(mint, mint_info)| {
-                (
-                    MintUrl::from_str(mint.value()).unwrap(),
-                    serde_json::from_str(mint_info.value()).ok(),
-                )
+            .filter_map(|(mint, mint_info)| {
+                MintUrl::from_str(mint.value())
+                    .ok()
+                    .map(|url| (url, serde_json::from_str(mint_info.value()).ok()))
             })
             .collect();
 

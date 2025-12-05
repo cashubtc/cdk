@@ -5,6 +5,7 @@
 #[macro_export]
 macro_rules! unpack_into {
     (let ($($var:ident),+) = $array:expr) => {
+        #[allow(unused_parens)]
         let ($($var),+) = {
             let mut vec = $array.to_vec();
             vec.reverse();
@@ -12,11 +13,11 @@ macro_rules! unpack_into {
             if vec.len() < required {
                  Err($crate::ConversionError::MissingColumn(required, vec.len()))?;
             }
-            Ok::<_, cdk_common::database::Error>((
+            (
                 $(
                     vec.pop().expect(&format!("Checked length already for {}", stringify!($var)))
                 ),+
-            ))?
+            )
         };
     };
 }

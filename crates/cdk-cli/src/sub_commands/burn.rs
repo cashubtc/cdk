@@ -18,7 +18,10 @@ pub async fn burn(
 
     match &sub_command_args.mint_url {
         Some(mint_url) => {
-            let wallet = multi_mint_wallet.get_wallet(mint_url).await.unwrap();
+            let wallet = multi_mint_wallet
+                .get_wallet(mint_url)
+                .await
+                .ok_or_else(|| anyhow::anyhow!("Wallet not found for mint: {}", mint_url))?;
             total_burnt = wallet.check_all_pending_proofs().await?;
         }
         None => {

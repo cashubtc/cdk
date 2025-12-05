@@ -135,7 +135,7 @@ fn total_amount<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> Result<Amount, 
 }
 
 fn ys<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> Result<Vec<PublicKey>, Error> {
-    proofs.map(|p| p.y()).collect::<Result<Vec<PublicKey>, _>>()
+    proofs.map(Proof::y).collect::<Result<Vec<PublicKey>, _>>()
 }
 
 /// NUT00 Error
@@ -447,11 +447,11 @@ impl From<Proof> for ProofV4 {
     fn from(proof: Proof) -> ProofV4 {
         let Proof {
             amount,
-            keyset_id: _,
             secret,
             c,
             witness,
             dleq,
+            ..
         } = proof;
         ProofV4 {
             amount,
