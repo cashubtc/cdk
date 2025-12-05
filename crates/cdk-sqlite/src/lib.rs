@@ -6,6 +6,8 @@
 mod async_sqlite;
 mod common;
 
+pub use common::SqliteConnectionManager;
+
 #[cfg(feature = "mint")]
 pub mod mint;
 #[cfg(feature = "wallet")]

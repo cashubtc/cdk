@@ -462,9 +462,18 @@ impl MintMetadataCache {
             versions.insert(storage_id, metadata.status.version);
         }
 
+        let mut tx = if let Ok(ok) = storage
+            .begin_db_transaction()
+            .await
+            .inspect_err(|err| tracing::warn!("Could not begin database transaction: {err}"))
+        {
+            ok
+        } else {
+            return;
+        };
+
         // Save mint info
-        storage
-            .add_mint(mint_url.clone(), Some(metadata.mint_info.clone()))
+        tx.add_mint(mint_url.clone(), Some(metadata.mint_info.clone()))
             .await
             .inspect_err(|e| tracing::warn!("Failed to save mint info for {}: {}", mint_url, e))
             .ok();
@@ -473,8 +482,7 @@ impl MintMetadataCache {
         let keysets: Vec<_> = metadata.keysets.values().map(|ks| (**ks).clone()).collect();
 
         if !keysets.is_empty() {
-            storage
-                .add_mint_keysets(mint_url.clone(), keysets)
+            tx.add_mint_keysets(mint_url.clone(), keysets)
                 .await
                 .inspect_err(|e| tracing::warn!("Failed to save keysets for {}: {}", mint_url, e))
                 .ok();
@@ -484,7 +492,7 @@ impl MintMetadataCache {
         for (keyset_id, keys) in &metadata.keys {
             if let Some(keyset_info) = metadata.keysets.get(keyset_id) {
                 // Check if keys already exist in database to avoid duplicate insertion
-                if storage.get_keys(keyset_id).await.ok().flatten().is_some() {
+                if tx.get_keys(keyset_id).await.ok().flatten().is_some() {
                     tracing::trace!(
                         "Keys for keyset {} already in database, skipping insert",
                         keyset_id
@@ -499,8 +507,7 @@ impl MintMetadataCache {
                     keys: (**keys).clone(),
                 };
 
-                storage
-                    .add_keys(keyset)
+                tx.add_keys(keyset)
                     .await
                     .inspect_err(|e| {
                         tracing::warn!(
@@ -513,6 +520,8 @@ impl MintMetadataCache {
                     .ok();
             }
         }
+
+        let _ = tx.commit().await.ok();
     }
 
     /// Fetch fresh metadata from mint HTTP API and update cache

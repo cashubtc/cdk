@@ -26,7 +26,7 @@ impl Wallet {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
-    /// Create a new Wallet from mnemonic using WalletDatabase trait
+    /// Create a new Wallet from mnemonic using WalletDatabaseFfi trait
     #[uniffi::constructor]
     pub fn new(
         mint_url: String,
