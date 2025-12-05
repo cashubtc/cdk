@@ -2520,9 +2520,8 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
                 "Melt quote from pre migrations defaulting to bolt11 {}.",
                 err
             );
-            let bolt11 = Bolt11Invoice::from_str(&request).map_err(|e| {
-                Error::Internal(format!("Could not parse invoice: {}", e.to_string()))
-            })?;
+            let bolt11 = Bolt11Invoice::from_str(&request)
+                .map_err(|e| Error::Internal(format!("Could not parse invoice: {e}")))?;
             MeltPaymentRequest::Bolt11 { bolt11 }
         }
     };

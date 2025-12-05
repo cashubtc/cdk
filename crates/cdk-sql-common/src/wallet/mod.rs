@@ -515,7 +515,7 @@ where
                 proof
                     .proof
                     .witness
-                    .map(|w| serde_json::to_string(&w).unwrap()),
+                    .and_then(|w| serde_json::to_string(&w).ok()),
             )
             .bind(
                 "dleq_e",

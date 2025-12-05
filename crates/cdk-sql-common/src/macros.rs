@@ -13,11 +13,11 @@ macro_rules! unpack_into {
             if vec.len() < required {
                  Err($crate::ConversionError::MissingColumn(required, vec.len()))?;
             }
-            Ok::<_, cdk_common::database::Error>((
+            (
                 $(
                     vec.pop().expect(&format!("Checked length already for {}", stringify!($var)))
                 ),+
-            ))?
+            )
         };
     };
 }
