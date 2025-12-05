@@ -61,7 +61,9 @@ impl Wallet {
             payment_method: PaymentMethod::Bolt12,
         };
 
-        self.localstore.add_melt_quote(quote.clone()).await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.add_melt_quote(quote.clone()).await?;
+        tx.commit().await?;
 
         Ok(quote)
     }
@@ -74,24 +76,28 @@ impl Wallet {
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let response = self.client.get_melt_bolt12_quote_status(quote_id).await?;
 
-        match self.localstore.get_melt_quote(quote_id).await? {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        match tx.get_melt_quote(quote_id).await? {
             Some(quote) => {
                 let mut quote = quote;
 
                 if let Err(e) = self
-                    .add_transaction_for_pending_melt(&quote, &response)
+                    .add_transaction_for_pending_melt(&mut tx, &quote, &response)
                     .await
                 {
                     tracing::error!("Failed to add transaction for pending melt: {}", e);
                 }
 
                 quote.state = response.state;
-                self.localstore.add_melt_quote(quote).await?;
+                tx.add_melt_quote(quote).await?;
             }
             None => {
                 tracing::info!("Quote melt {} unknown", quote_id);
             }
         }
+
+        tx.commit().await?;
 
         Ok(response)
     }
