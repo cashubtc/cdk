@@ -49,7 +49,7 @@ services:
       - "8091:8091" # LDK admin dashboard (WARNING!!! Do not expose to network! Doing so will leave LDK node funds accessible by whole network)
     environment:
       - CDK_MINTD_URL=https://example.com
-      - CDK_MINTD_LN_BACKEND=ldk-node
+      - CDK_MINTD_PAYMENT_BACKEND=ldk-node
       - CDK_MINTD_LISTEN_HOST=0.0.0.0
       - CDK_MINTD_LISTEN_PORT=8085
       - CDK_MINTD_MNEMONIC=

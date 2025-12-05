@@ -5,7 +5,7 @@ use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
 use cdk_common::common::QuoteTTL;
-use config::{Config, ConfigError, File};
+use config::{Config, ConfigError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -123,7 +123,7 @@ impl std::fmt::Debug for Info {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum LnBackend {
+pub enum PaymentBackendKind {
     #[default]
     None,
     #[cfg(feature = "cln")]
@@ -131,56 +131,89 @@ pub enum LnBackend {
     #[cfg(feature = "lnbits")]
     LNbits,
     #[cfg(feature = "fakewallet")]
+    #[serde(alias = "fake_wallet")]
     FakeWallet,
     #[cfg(feature = "lnd")]
     Lnd,
     #[cfg(feature = "ldk-node")]
+    #[serde(alias = "ldk_node", alias = "ldk-node")]
     LdkNode,
     #[cfg(feature = "grpc-processor")]
+    #[serde(alias = "grpc_processor", alias = "grpc-processor")]
     GrpcProcessor,
 }
 
-impl std::str::FromStr for LnBackend {
+impl std::str::FromStr for PaymentBackendKind {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             #[cfg(feature = "cln")]
-            "cln" => Ok(LnBackend::Cln),
+            "cln" => Ok(PaymentBackendKind::Cln),
             #[cfg(feature = "lnbits")]
-            "lnbits" => Ok(LnBackend::LNbits),
+            "lnbits" => Ok(PaymentBackendKind::LNbits),
             #[cfg(feature = "fakewallet")]
-            "fakewallet" => Ok(LnBackend::FakeWallet),
+            "fakewallet" | "fake_wallet" => Ok(PaymentBackendKind::FakeWallet),
             #[cfg(feature = "lnd")]
-            "lnd" => Ok(LnBackend::Lnd),
+            "lnd" => Ok(PaymentBackendKind::Lnd),
             #[cfg(feature = "ldk-node")]
-            "ldk-node" | "ldknode" => Ok(LnBackend::LdkNode),
+            "ldk-node" | "ldknode" | "ldk_node" => Ok(PaymentBackendKind::LdkNode),
             #[cfg(feature = "grpc-processor")]
-            "grpcprocessor" => Ok(LnBackend::GrpcProcessor),
+            "grpcprocessor" | "grpc-processor" | "grpc_processor" => {
+                Ok(PaymentBackendKind::GrpcProcessor)
+            }
             _ => Err(format!("Unknown Lightning backend: {s}")),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Ln {
-    pub ln_backend: LnBackend,
+pub struct PaymentBackend {
+    pub kind: PaymentBackendKind,
     pub invoice_description: Option<String>,
     pub min_mint: Amount,
     pub max_mint: Amount,
     pub min_melt: Amount,
     pub max_melt: Amount,
+    #[cfg(feature = "cln")]
+    pub cln: Option<Cln>,
+    #[cfg(feature = "lnbits")]
+    pub lnbits: Option<LNbits>,
+    #[cfg(feature = "lnd")]
+    pub lnd: Option<Lnd>,
+    #[cfg(feature = "ldk-node")]
+    pub ldk_node: Option<LdkNode>,
+    #[cfg(feature = "fakewallet")]
+    #[serde(rename = "fake_wallet", alias = "fakewallet")]
+    pub fake_wallet: Option<FakeWallet>,
+    #[serde(
+        rename = "grpc_processor",
+        alias = "grpcprocessor",
+        alias = "grpc-processor"
+    )]
+    pub grpc_processor: Option<GrpcProcessor>,
 }
 
-impl Default for Ln {
+impl Default for PaymentBackend {
     fn default() -> Self {
-        Ln {
-            ln_backend: LnBackend::default(),
+        PaymentBackend {
+            kind: PaymentBackendKind::default(),
             invoice_description: None,
             min_mint: 1.into(),
             max_mint: 500_000.into(),
             min_melt: 1.into(),
             max_melt: 500_000.into(),
+            #[cfg(feature = "cln")]
+            cln: None,
+            #[cfg(feature = "lnd")]
+            lnd: None,
+            #[cfg(feature = "fakewallet")]
+            fake_wallet: None,
+            #[cfg(feature = "lnbits")]
+            lnbits: None,
+            #[cfg(feature = "ldk-node")]
+            ldk_node: None,
+            grpc_processor: None,
         }
     }
 }
@@ -552,18 +585,7 @@ fn default_blind() -> AuthType {
 pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
-    pub ln: Ln,
-    #[cfg(feature = "cln")]
-    pub cln: Option<Cln>,
-    #[cfg(feature = "lnbits")]
-    pub lnbits: Option<LNbits>,
-    #[cfg(feature = "lnd")]
-    pub lnd: Option<Lnd>,
-    #[cfg(feature = "ldk-node")]
-    pub ldk_node: Option<LdkNode>,
-    #[cfg(feature = "fakewallet")]
-    pub fake_wallet: Option<FakeWallet>,
-    pub grpc_processor: Option<GrpcProcessor>,
+    pub payment_backend: PaymentBackend,
     pub database: Database,
     #[cfg(feature = "auth")]
     pub auth_database: Option<AuthDatabase>,
@@ -628,8 +650,9 @@ impl Settings {
             Ok(f) => f,
             Err(e) => {
                 tracing::error!(
-                    "Error reading config file, falling back to defaults. Error: {e:?}"
+                    "Error reading config f ile, falling back to defaults. Error: {e:?}"
                 );
+                eprintln!("[mintd] Failed to load config file: {}", e);
                 default_settings
             }
         }
@@ -651,12 +674,13 @@ impl Settings {
             Some(value) => value.into().to_string_lossy().to_string(),
             None => default_config_file_name.to_string_lossy().to_string(),
         };
+
         let builder = Config::builder();
         let config: Config = builder
             // use defaults
             .add_source(Config::try_from(default)?)
             // override with file contents
-            .add_source(File::with_name(&config))
+            .add_source(config::File::from(std::path::Path::new(&config)))
             .build()?;
         let settings: Settings = config.try_deserialize()?;
 
@@ -782,7 +806,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for LND configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "lnd");
+        env::set_var(crate::env_vars::ENV_PAYMENT_BACKEND, "lnd");
         env::set_var(crate::env_vars::ENV_LND_ADDRESS, "https://localhost:10009");
         env::set_var(crate::env_vars::ENV_LND_CERT_FILE, "/tmp/test_tls.cert");
         env::set_var(
@@ -797,8 +821,8 @@ max_melt = 500000
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
-        assert!(settings.lnd.is_some());
-        let lnd_config = settings.lnd.as_ref().unwrap();
+        assert!(settings.payment_backend.lnd.is_some());
+        let lnd_config = settings.payment_backend.lnd.as_ref().unwrap();
         assert_eq!(lnd_config.address, "https://localhost:10009");
         assert_eq!(lnd_config.cert_file, PathBuf::from("/tmp/test_tls.cert"));
         assert_eq!(
@@ -810,7 +834,7 @@ max_melt = 500000
         assert_eq!(reserve_fee_u64, 4);
 
         // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
         env::remove_var(crate::env_vars::ENV_LND_ADDRESS);
         env::remove_var(crate::env_vars::ENV_LND_CERT_FILE);
         env::remove_var(crate::env_vars::ENV_LND_MACAROON_FILE);
@@ -843,7 +867,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for CLN configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "cln");
+        env::set_var(crate::env_vars::ENV_PAYMENT_BACKEND, "cln");
         env::set_var(crate::env_vars::ENV_CLN_RPC_PATH, "/tmp/lightning-rpc");
         env::set_var(crate::env_vars::ENV_CLN_BOLT12, "false");
         env::set_var(crate::env_vars::ENV_CLN_FEE_PERCENT, "0.01");
@@ -854,8 +878,8 @@ max_melt = 500000
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
-        assert!(settings.cln.is_some());
-        let cln_config = settings.cln.as_ref().unwrap();
+        assert!(settings.payment_backend.cln.is_some());
+        let cln_config = settings.payment_backend.cln.as_ref().unwrap();
         assert_eq!(cln_config.rpc_path, PathBuf::from("/tmp/lightning-rpc"));
         assert_eq!(cln_config.bolt12, false);
         assert_eq!(cln_config.fee_percent, 0.01);
@@ -863,7 +887,7 @@ max_melt = 500000
         assert_eq!(reserve_fee_u64, 4);
 
         // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
         env::remove_var(crate::env_vars::ENV_CLN_RPC_PATH);
         env::remove_var(crate::env_vars::ENV_CLN_BOLT12);
         env::remove_var(crate::env_vars::ENV_CLN_FEE_PERCENT);
@@ -894,7 +918,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for LNbits configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "lnbits");
+        env::set_var(crate::env_vars::ENV_PAYMENT_BACKEND, "lnbits");
         env::set_var(crate::env_vars::ENV_LNBITS_ADMIN_API_KEY, "test_admin_key");
         env::set_var(
             crate::env_vars::ENV_LNBITS_INVOICE_API_KEY,
@@ -912,8 +936,8 @@ max_melt = 500000
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
-        assert!(settings.lnbits.is_some());
-        let lnbits_config = settings.lnbits.as_ref().unwrap();
+        assert!(settings.payment_backend.lnbits.is_some());
+        let lnbits_config = settings.payment_backend.lnbits.as_ref().unwrap();
         assert_eq!(lnbits_config.admin_api_key, "test_admin_key");
         assert_eq!(lnbits_config.invoice_api_key, "test_invoice_key");
         assert_eq!(lnbits_config.lnbits_api, "https://lnbits.example.com");
@@ -922,7 +946,7 @@ max_melt = 500000
         assert_eq!(reserve_fee_u64, 5);
 
         // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
         env::remove_var(crate::env_vars::ENV_LNBITS_ADMIN_API_KEY);
         env::remove_var(crate::env_vars::ENV_LNBITS_INVOICE_API_KEY);
         env::remove_var(crate::env_vars::ENV_LNBITS_API);
@@ -954,7 +978,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for FakeWallet configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "fakewallet");
+        env::set_var(crate::env_vars::ENV_PAYMENT_BACKEND, "fakewallet");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_SUPPORTED_UNITS, "sat,msat");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_FEE_PERCENT, "0.0");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_RESERVE_FEE_MIN, "0");
@@ -966,8 +990,8 @@ max_melt = 500000
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
-        assert!(settings.fake_wallet.is_some());
-        let fakewallet_config = settings.fake_wallet.as_ref().unwrap();
+        assert!(settings.payment_backend.fake_wallet.is_some());
+        let fakewallet_config = settings.payment_backend.fake_wallet.as_ref().unwrap();
         assert_eq!(fakewallet_config.fee_percent, 0.0);
         let reserve_fee_u64: u64 = fakewallet_config.reserve_fee_min.into();
         assert_eq!(reserve_fee_u64, 0);
@@ -975,7 +999,7 @@ max_melt = 500000
         assert_eq!(fakewallet_config.max_delay_time, 5);
 
         // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_SUPPORTED_UNITS);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_FEE_PERCENT);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_RESERVE_FEE_MIN);
@@ -1007,7 +1031,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for GRPC Processor configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "grpcprocessor");
+        env::set_var(crate::env_vars::ENV_PAYMENT_BACKEND, "grpcprocessor");
         env::set_var(
             crate::env_vars::ENV_GRPC_PROCESSOR_SUPPORTED_UNITS,
             "sat,msat",
@@ -1020,13 +1044,13 @@ max_melt = 500000
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
-        assert!(settings.grpc_processor.is_some());
-        let grpc_config = settings.grpc_processor.as_ref().unwrap();
+        assert!(settings.payment_backend.grpc_processor.is_some());
+        let grpc_config = settings.payment_backend.grpc_processor.as_ref().unwrap();
         assert_eq!(grpc_config.addr, "localhost");
         assert_eq!(grpc_config.port, 50051);
 
         // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
         env::remove_var(crate::env_vars::ENV_GRPC_PROCESSOR_SUPPORTED_UNITS);
         env::remove_var(crate::env_vars::ENV_GRPC_PROCESSOR_ADDRESS);
         env::remove_var(crate::env_vars::ENV_GRPC_PROCESSOR_PORT);
@@ -1056,7 +1080,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for LDK Node configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "ldknode");
+        env::set_var(crate::env_vars::ENV_PAYMENT_BACKEND, "ldknode");
         env::set_var(crate::env_vars::LDK_NODE_FEE_PERCENT_ENV_VAR, "0.01");
         env::set_var(crate::env_vars::LDK_NODE_RESERVE_FEE_MIN_ENV_VAR, "4");
         env::set_var(crate::env_vars::LDK_NODE_BITCOIN_NETWORK_ENV_VAR, "regtest");
@@ -1078,8 +1102,8 @@ max_melt = 500000
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
-        assert!(settings.ldk_node.is_some());
-        let ldk_config = settings.ldk_node.as_ref().unwrap();
+        assert!(settings.payment_backend.ldk_node.is_some());
+        let ldk_config = settings.payment_backend.ldk_node.as_ref().unwrap();
         assert_eq!(ldk_config.fee_percent, 0.01);
         let reserve_fee_u64: u64 = ldk_config.reserve_fee_min.into();
         assert_eq!(reserve_fee_u64, 4);
@@ -1092,7 +1116,7 @@ max_melt = 500000
         assert_eq!(ldk_config.storage_dir_path, Some("/tmp/ldk".to_string()));
 
         // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
         env::remove_var(crate::env_vars::LDK_NODE_FEE_PERCENT_ENV_VAR);
         env::remove_var(crate::env_vars::LDK_NODE_RESERVE_FEE_MIN_ENV_VAR);
         env::remove_var(crate::env_vars::LDK_NODE_BITCOIN_NETWORK_ENV_VAR);
