@@ -81,17 +81,11 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        let quote_info = self.localstore.get_mint_quote(quote_id).await?;
-
-        let quote_info = if let Some(quote) = quote_info {
-            if quote.expiry.le(&unix_time()) && quote.expiry.ne(&0) {
-                tracing::info!("Attempting to mint expired quote.");
-            }
-
-            quote.clone()
-        } else {
-            return Err(Error::UnknownQuote);
-        };
+        let mut quote_info = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
         let fee_and_amounts = self
@@ -195,15 +189,7 @@ impl Wallet {
             &keys,
         )?;
 
-        // Remove filled quote from store
-        let mut quote_info = self
-            .localstore
-            .get_mint_quote(quote_id)
-            .await?
-            .ok_or(Error::UnpaidQuote)?;
         quote_info.amount_issued += proofs.total_amount()?;
-
-        self.localstore.add_mint_quote(quote_info.clone()).await?;
 
         let proof_infos = proofs
             .iter()
@@ -233,10 +219,12 @@ impl Wallet {
                 memo: None,
                 metadata: HashMap::new(),
                 quote_id: Some(quote_id.to_string()),
-                payment_request: Some(quote_info.request),
+                payment_request: Some(quote_info.request.clone()),
                 payment_proof: None,
             })
             .await?;
+
+        self.localstore.add_mint_quote(quote_info.clone()).await?;
 
         Ok(proofs)
     }
