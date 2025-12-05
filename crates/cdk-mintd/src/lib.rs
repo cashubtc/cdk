@@ -1,5 +1,4 @@
 //! Cdk mintd lib
-#![deny(clippy::unwrap_used)]
 
 // std
 #[cfg(feature = "auth")]

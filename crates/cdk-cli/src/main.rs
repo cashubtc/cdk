@@ -1,5 +1,3 @@
-#![deny(clippy::unwrap_used)]
-
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;

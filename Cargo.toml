@@ -15,13 +15,13 @@ unwrap_used = "deny"
 # clone_on_ref_ptr = "warn"
 # missing_errors_doc = "warn"
 # missing_panics_doc = "warn"
-# missing_safety_doc = "warn"
+missing_safety_doc = "warn"
 # nursery = { level = "warn", priority = -1 }
 # redundant_else = "warn"
 # redundant_closure_for_method_calls = "warn"
 # unneeded_field_pattern = "warn"
 # use_debug = "warn"
-# large_enum_variant = "warn"
+large_enum_variant = "warn"
 
 [workspace.lints.rustdoc]
 missing_docs = "warn"

@@ -1,7 +1,6 @@
 //! CDK MINTD
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
-#![deny(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

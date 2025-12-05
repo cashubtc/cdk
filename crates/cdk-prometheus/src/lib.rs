@@ -1,5 +1,4 @@
 //! # CDK Prometheus
-#![deny(clippy::unwrap_used)]
 
 pub mod error;
 pub mod metrics;
