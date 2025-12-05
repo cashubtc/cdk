@@ -135,7 +135,6 @@ where
 {
     type Err = Error;
 
-    // FIXME: Replace unwrap with proper error handling
     async fn add_proofs(
         &mut self,
         proofs: Proofs,
@@ -180,7 +179,7 @@ where
             .bind("c", proof.c.to_bytes().to_vec())
             .bind(
                 "witness",
-                proof.witness.map(|w| serde_json::to_string(&w).unwrap()),
+                proof.witness.and_then(|w| serde_json::to_string(&w).inspect_err(|e| tracing::error!("Failed to serialize witness: {:?}", e)).ok()),
             )
             .bind("state", "UNSPENT".to_string())
             .bind("quote_id", quote_id.clone().map(|q| q.to_string()))
@@ -2521,7 +2520,9 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
                 "Melt quote from pre migrations defaulting to bolt11 {}.",
                 err
             );
-            let bolt11 = Bolt11Invoice::from_str(&request).unwrap();
+            let bolt11 = Bolt11Invoice::from_str(&request).map_err(|e| {
+                Error::Internal(format!("Could not parse invoice: {}", e.to_string()))
+            })?;
             MeltPaymentRequest::Bolt11 { bolt11 }
         }
     };

@@ -72,7 +72,6 @@ pub enum SqlParseError {
 ///
 /// This function does not validate the SQL statement, it only extracts the placeholder to be
 /// database agnostic.
-// FIXME: Replace unwraps with proper error handling
 pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -83,16 +82,28 @@ pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
             '\'' | '"' => {
                 // Start of string literal
                 let quote = c;
-                current.push(chars.next().unwrap());
+                current.push(
+                    chars
+                        .next()
+                        .ok_or(SqlParseError::UnterminatedStringLiteral)?,
+                );
 
                 let mut closed = false;
                 while let Some(&next) = chars.peek() {
-                    current.push(chars.next().unwrap());
+                    current.push(
+                        chars
+                            .next()
+                            .ok_or(SqlParseError::UnterminatedStringLiteral)?,
+                    );
 
                     if next == quote {
                         if chars.peek() == Some(&quote) {
                             // Escaped quote (e.g. '' inside strings)
-                            current.push(chars.next().unwrap());
+                            current.push(
+                                chars
+                                    .next()
+                                    .ok_or(SqlParseError::UnterminatedStringLiteral)?,
+                            );
                         } else {
                             closed = true;
                             break;
@@ -106,10 +117,19 @@ pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
             }
 
             '-' => {
-                current.push(chars.next().unwrap());
+                current.push(
+                    chars
+                        .next()
+                        .ok_or(SqlParseError::UnterminatedStringLiteral)?,
+                );
+
                 if chars.peek() == Some(&'-') {
                     while let Some(&next) = chars.peek() {
-                        current.push(chars.next().unwrap());
+                        current.push(
+                            chars
+                                .next()
+                                .ok_or(SqlParseError::UnterminatedStringLiteral)?,
+                        );
                         if next == '\n' {
                             break;
                         }
@@ -129,7 +149,11 @@ pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
 
                 while let Some(&next) = chars.peek() {
                     if next.is_alphanumeric() || next == '_' {
-                        name.push(chars.next().unwrap());
+                        name.push(
+                            chars
+                                .next()
+                                .ok_or(SqlParseError::UnterminatedStringLiteral)?,
+                        );
                     } else {
                         break;
                     }
@@ -143,7 +167,11 @@ pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
             }
 
             _ => {
-                current.push(chars.next().unwrap());
+                current.push(
+                    chars
+                        .next()
+                        .ok_or(SqlParseError::UnterminatedStringLiteral)?,
+                );
             }
         }
     }

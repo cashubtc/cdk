@@ -827,8 +827,9 @@ where
         .fetch_all(conn)
         .await?;
 
-        for id in keys_without_u32 {
-            let id = column_as_string!(id.first().unwrap());
+        for row in keys_without_u32 {
+            unpack_into!(let (id) = row);
+            let id = column_as_string!(id);
 
             if let Ok(id) = Id::from_str(&id) {
                 query(
@@ -858,8 +859,9 @@ where
         .fetch_all(conn)
         .await?;
 
-        for id in keysets_without_u32 {
-            let id = column_as_string!(id.first().unwrap());
+        for row in keysets_without_u32 {
+            unpack_into!(let (id) = row);
+            let id = column_as_string!(id);
 
             if let Ok(id) = Id::from_str(&id) {
                 query(
