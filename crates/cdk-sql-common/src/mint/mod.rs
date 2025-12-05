@@ -1303,7 +1303,67 @@ where
     ) -> Result<MeltQuoteState, Self::Err> {
         let old_state = quote.state;
 
-        check_melt_quote_state_transition(old_state, state)?;
+        check_melt_quote_state_transition(quote.state, state)?;
+
+        // When transitioning to Pending, lock all quotes with the same lookup_id
+        // and check if any are already pending or paid
+        if state == MeltQuoteState::Pending {
+            if let Some(ref lookup_id) = quote.request_lookup_id {
+                // Lock all quotes with the same lookup_id to prevent race conditions
+                let locked_quotes: Vec<(String, String)> = query(
+                    r#"
+                    SELECT id, state
+                    FROM melt_quote
+                    WHERE request_lookup_id = :lookup_id
+                    FOR UPDATE
+                    "#,
+                )?
+                .bind("lookup_id", lookup_id.to_string())
+                .fetch_all(&self.inner)
+                .await?
+                .into_iter()
+                .map(|row| {
+                    unpack_into!(let (id, state) = row);
+                    Ok((column_as_string!(id), column_as_string!(state)))
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+
+                let quote_id = &quote.id;
+
+                // Check if any other quote with the same lookup_id is pending or paid
+                let conflicting_state = locked_quotes.iter().find_map(|(id, state)| {
+                    if id != &quote_id.to_string() {
+                        if state == &MeltQuoteState::Pending.to_string() {
+                            Some(MeltQuoteState::Pending)
+                        } else if state == &MeltQuoteState::Paid.to_string() {
+                            Some(MeltQuoteState::Paid)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(conflict) = conflicting_state {
+                    tracing::warn!(
+                        "Cannot transition quote {} to Pending: another quote with lookup_id {} is already {:?}",
+                        quote_id,
+                        lookup_id,
+                        conflict
+                    );
+                    return Err(match conflict {
+                        MeltQuoteState::Pending => {
+                            Error::InvalidStateTransition(cdk_common::state::Error::Pending)
+                        }
+                        MeltQuoteState::Paid => {
+                            Error::InvalidStateTransition(cdk_common::state::Error::AlreadyPaid)
+                        }
+                        _ => unreachable!(),
+                    });
+                }
+            }
+        }
 
         let rec = if state == MeltQuoteState::Paid {
             let current_time = unix_time();

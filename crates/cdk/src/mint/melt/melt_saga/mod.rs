@@ -289,7 +289,21 @@ impl MeltSaga<Initial> {
             );
         }
 
-        let previous_state = quote.state;
+        // Update quote state to Pending
+        let previous_state = match tx
+            .update_melt_quote_state(&mut quote, MeltQuoteState::Pending, None)
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                tx.rollback().await?;
+                if matches!(err, cdk_common::database::Error::Duplicate) {
+                    return Err(Error::RequestAlreadyPaid);
+                } else {
+                    return Err(err.into());
+                }
+            }
+        };
 
         // Publish proof state changes
         for pk in input_ys.iter() {
