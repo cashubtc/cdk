@@ -5,6 +5,7 @@
 
 mod common;
 pub mod database;
+mod keyvalue;
 mod macros;
 pub mod pool;
 pub mod stmt;
