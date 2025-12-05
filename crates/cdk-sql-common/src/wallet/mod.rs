@@ -1536,3 +1536,110 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
         payment_proof: column_as_nullable_string!(payment_proof),
     })
 }
+
+// KVStore implementations for wallet
+
+#[async_trait]
+impl<RM> database::KVStoreTransaction<'_, Error> for SQLWalletTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn kv_read(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        crate::keyvalue::kv_read_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+        )
+        .await
+    }
+
+    async fn kv_write(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<(), Error> {
+        crate::keyvalue::kv_write_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+            value,
+        )
+        .await
+    }
+
+    async fn kv_remove(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<(), Error> {
+        crate::keyvalue::kv_remove_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+        )
+        .await
+    }
+
+    async fn kv_list(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, Error> {
+        crate::keyvalue::kv_list_in_transaction(&self.inner, primary_namespace, secondary_namespace)
+            .await
+    }
+}
+
+#[async_trait]
+impl<RM> database::KVStoreDatabase for SQLWalletDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    async fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        crate::keyvalue::kv_read(&self.pool, primary_namespace, secondary_namespace, key).await
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, Error> {
+        crate::keyvalue::kv_list(&self.pool, primary_namespace, secondary_namespace).await
+    }
+}
+
+#[async_trait]
+impl<RM> database::KVStore for SQLWalletDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn begin_transaction<'a>(
+        &'a self,
+    ) -> Result<Box<dyn database::KVStoreTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>
+    {
+        Ok(Box::new(SQLWalletTransaction {
+            inner: ConnectionWithTransaction::new(
+                self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
+            )
+            .await?,
+        }))
+    }
+}
