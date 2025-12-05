@@ -5,6 +5,7 @@
 
 use std::str::FromStr;
 
+use cdk_common::database::Error as DatabaseError;
 use cdk_common::mint::OperationKind;
 use cdk_common::QuoteId;
 
@@ -540,14 +541,26 @@ impl Mint {
 
                 // Remove proofs (inputs) - use None for quote_id like swap does
                 if !saga.input_ys.is_empty() {
-                    if let Err(e) = tx.remove_proofs(&saga.input_ys, None).await {
-                        tracing::error!(
-                            "Failed to remove proofs for saga {}: {}",
-                            saga.operation_id,
-                            e
-                        );
-                        tx.rollback().await?;
-                        continue;
+                    match tx.remove_proofs(&saga.input_ys, None).await {
+                        Ok(()) => {}
+                        Err(DatabaseError::AttemptRemoveSpentProof) => {
+                            // Proofs are already spent or missing - this is okay for compensation.
+                            // The goal is to make proofs unusable, and they already are.
+                            // Continue with saga deletion to avoid infinite recovery loop.
+                            tracing::warn!(
+                                "Saga {} compensation: proofs already spent or missing, proceeding with saga cleanup",
+                                saga.operation_id
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to remove proofs for saga {}: {}",
+                                saga.operation_id,
+                                e
+                            );
+                            tx.rollback().await?;
+                            continue;
+                        }
                     }
                 }
 
