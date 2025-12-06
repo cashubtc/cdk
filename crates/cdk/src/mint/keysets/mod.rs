@@ -45,17 +45,32 @@ impl Mint {
         );
     }
 
-    /// Retrieve the public keys of the active keyset for distribution to wallet
-    /// clients
+    /// Retrieve the public keys of a keyset by ID for distribution to wallet clients.
+    /// Supports lookup by both native ID and alternate ID (V1/V2) for backward compatibility.
     #[instrument(skip(self))]
     pub fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
-        self.keysets
-            .load()
+        let keysets = self.keysets.load();
+
+        // Try direct lookup first
+        if let Some(keyset) = keysets.iter().find(|keyset| &keyset.id == keyset_id) {
+            return Ok(KeysResponse {
+                keysets: vec![keyset.into()],
+            });
+        }
+
+        // If not found, try alternate ID lookup
+        keysets
             .iter()
-            .find(|keyset| &keyset.id == keyset_id)
+            .find(|keyset| {
+                if let Some(alternate_id) = self.compute_alternate_id(keyset) {
+                    &alternate_id == keyset_id
+                } else {
+                    false
+                }
+            })
             .ok_or(Error::UnknownKeySet)
-            .map(|key| KeysResponse {
-                keysets: vec![key.into()],
+            .map(|keyset| KeysResponse {
+                keysets: vec![keyset.into()],
             })
     }
 
