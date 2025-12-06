@@ -63,6 +63,8 @@ pub async fn init_keysets(
                 {
                     tracing::debug!("Current highest index keyset matches expect fee and max order. Setting active");
                     let id = highest_index_keyset.id;
+                    // Regenerate keyset using the version from the stored ID
+                    // to maintain consistency with the database
                     let keyset = MintKeySet::generate_from_xpriv(
                         secp_ctx,
                         xpriv,
@@ -70,7 +72,7 @@ pub async fn init_keysets(
                         highest_index_keyset.unit.clone(),
                         highest_index_keyset.derivation_path.clone(),
                         highest_index_keyset.final_expiry,
-                        cdk_common::nut02::KeySetVersion::Version00,
+                        highest_index_keyset.id.get_version(),
                     );
                     active_keysets.insert(id, keyset);
                     let mut keyset_info = highest_index_keyset;
@@ -140,8 +142,9 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
         unit,
         amounts,
         final_expiry,
-        // TODO: change this to Version01 to generate keysets v2
-        cdk_common::nut02::KeySetVersion::Version00,
+        // Generate V2 keysets - V1 IDs are exposed for backward compatibility
+        // via the expose_v1_keyset_ids configuration option
+        cdk_common::nut02::KeySetVersion::Version01,
     );
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
