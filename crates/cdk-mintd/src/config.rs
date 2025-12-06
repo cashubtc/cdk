@@ -75,6 +75,16 @@ pub struct Info {
     /// If not provided, defaults are used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quote_ttl: Option<QuoteTTL>,
+
+    /// When true, expose V1 keyset IDs alongside V2 IDs (default: true)
+    /// When false, only expose V2 keyset IDs in API responses
+    /// Note: V1 IDs will still be accepted for proof verification
+    #[serde(default = "default_expose_v1_ids")]
+    pub expose_v1_keyset_ids: bool,
+}
+
+fn default_expose_v1_ids() -> bool {
+    true
 }
 
 impl Default for Info {
@@ -92,6 +102,7 @@ impl Default for Info {
             enable_swagger_ui: None,
             logging: LoggingConfig::default(),
             quote_ttl: None,
+            expose_v1_keyset_ids: true,
         }
     }
 }

@@ -1,6 +1,7 @@
 //! Cashu Mint
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,6 +77,9 @@ pub struct Mint {
     keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
+    /// When true, expose V1 keyset IDs in API responses (default: true)
+    /// When false, only expose V2 IDs (for future V1 sunset)
+    expose_v1_keyset_ids: Arc<AtomicBool>,
 }
 
 /// State for managing background tasks
@@ -94,6 +98,7 @@ impl Mint {
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: DynMintDatabase,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        expose_v1_keyset_ids: bool,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -102,6 +107,7 @@ impl Mint {
             #[cfg(feature = "auth")]
             None,
             payment_processors,
+            expose_v1_keyset_ids,
         )
         .await
     }
@@ -114,6 +120,7 @@ impl Mint {
         localstore: DynMintDatabase,
         auth_localstore: DynMintAuthDatabase,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        expose_v1_keyset_ids: bool,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -121,6 +128,7 @@ impl Mint {
             localstore,
             Some(auth_localstore),
             payment_processors,
+            expose_v1_keyset_ids,
         )
         .await
     }
@@ -133,6 +141,7 @@ impl Mint {
         localstore: DynMintDatabase,
         #[cfg(feature = "auth")] auth_localstore: Option<DynMintAuthDatabase>,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        expose_v1_keyset_ids: bool,
     ) -> Result<Self, Error> {
         let keysets = signatory.keysets().await?;
         if !keysets
@@ -219,6 +228,7 @@ impl Mint {
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
+            expose_v1_keyset_ids: Arc::new(AtomicBool::new(expose_v1_keyset_ids)),
         })
     }
 
@@ -1022,9 +1032,15 @@ mod tests {
             .expect("Failed to create signatory"),
         );
 
-        Mint::new(MintInfo::default(), signatory, localstore, HashMap::new())
-            .await
-            .unwrap()
+        Mint::new(
+            MintInfo::default(),
+            signatory,
+            localstore,
+            HashMap::new(),
+            true,
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]

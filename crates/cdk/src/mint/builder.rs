@@ -36,6 +36,7 @@ pub struct MintBuilder {
     payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+    expose_v1_keyset_ids: bool,
 }
 
 impl MintBuilder {
@@ -62,6 +63,7 @@ impl MintBuilder {
             payment_processors: HashMap::new(),
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
+            expose_v1_keyset_ids: true,
         }
     }
 
@@ -235,6 +237,14 @@ impl MintBuilder {
         self
     }
 
+    /// Configure V1 keyset ID exposure
+    /// - true (default): Expose both V1 and V2 IDs
+    /// - false: Only expose V2 IDs (sunset V1)
+    pub fn with_v1_keyset_ids(mut self, expose: bool) -> Self {
+        self.expose_v1_keyset_ids = expose;
+        self
+    }
+
     /// Add payment processor
     pub async fn add_payment_processor(
         &mut self,
@@ -325,6 +335,7 @@ impl MintBuilder {
                 self.localstore,
                 auth_localstore,
                 self.payment_processors,
+                self.expose_v1_keyset_ids,
             )
             .await;
         }
@@ -333,6 +344,7 @@ impl MintBuilder {
             signatory,
             self.localstore,
             self.payment_processors,
+            self.expose_v1_keyset_ids,
         )
         .await
     }
