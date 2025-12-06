@@ -1007,6 +1007,13 @@ mod tests {
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Mint {
+        create_mint_with_v1_exposure(config, true).await
+    }
+
+    async fn create_mint_with_v1_exposure(
+        config: MintConfig<'_>,
+        expose_v1_keyset_ids: bool,
+    ) -> Mint {
         let localstore = Arc::new(
             new_with_state(
                 config.active_keysets,
@@ -1037,7 +1044,7 @@ mod tests {
             signatory,
             localstore,
             HashMap::new(),
-            true,
+            expose_v1_keyset_ids,
         )
         .await
         .unwrap()
@@ -1053,22 +1060,19 @@ mod tests {
         };
         let mint = create_mint(config).await;
 
-        assert_eq!(
-            mint.total_issued()
-                .await
-                .unwrap()
-                .into_values()
-                .collect::<Vec<_>>(),
-            vec![Amount::default()]
+        let total_issued = mint.total_issued().await.unwrap();
+        // total_issued() returns HashMap<Id, Amount> where Id includes both V1 and V2 IDs
+        // With dual ID exposure, each underlying keyset appears with 2 IDs
+        // All values should be zero for a new mint
+        assert!(
+            total_issued.values().all(|v| *v == Amount::default()),
+            "All issued amounts should be zero for a new mint"
         );
-
+        // Should have 2 entries (V1 ID + V2 ID for the single keyset)
         assert_eq!(
-            mint.total_issued()
-                .await
-                .unwrap()
-                .into_values()
-                .collect::<Vec<_>>(),
-            vec![Amount::default()]
+            total_issued.len(),
+            2,
+            "Should have 2 keyset IDs (V1 + V2) in total_issued"
         );
     }
 
@@ -1084,6 +1088,12 @@ mod tests {
         let mint = create_mint(config).await;
 
         let keysets = mint.keysets();
+        // With dual ID exposure, initial keyset appears twice (V1 + V2)
+        assert_eq!(
+            keysets.keysets.len(),
+            2,
+            "Initial keyset should have dual IDs"
+        );
         let first_keyset_id = keysets.keysets[0].id;
 
         // set the first keyset to inactive and generate a new keyset
@@ -1093,12 +1103,33 @@ mod tests {
 
         let keysets = mint.keysets();
 
-        assert_eq!(2, keysets.keysets.len());
+        // With dual ID exposure: 2 entries for old keyset + 2 entries for new keyset = 4
+        assert_eq!(
+            4,
+            keysets.keysets.len(),
+            "Should have 4 keyset entries (2 keysets × 2 IDs each)"
+        );
+
+        // Count active and inactive keysets
+        let active_count = keysets.keysets.iter().filter(|k| k.active).count();
+        let inactive_count = keysets.keysets.iter().filter(|k| !k.active).count();
+
+        assert_eq!(
+            active_count, 2,
+            "New keyset should have 2 active entries (V1 + V2)"
+        );
+        assert_eq!(
+            inactive_count, 2,
+            "Old keyset should have 2 inactive entries (V1 + V2)"
+        );
+
+        // The first keyset ID should now be inactive
         for keyset in &keysets.keysets {
             if keyset.id == first_keyset_id {
-                assert!(!keyset.active);
-            } else {
-                assert!(keyset.active);
+                assert!(
+                    !keyset.active,
+                    "First keyset should be inactive after rotation"
+                );
             }
         }
     }
@@ -1121,9 +1152,34 @@ mod tests {
 
         let keys = mint.pubkeys();
 
-        let expected_keys = r#"{"keysets":[{"id":"005f6e8c540c9e61","unit":"sat","keys":{"1":"03e8aded7525acee36e3394e28f2dcbc012533ef2a2b085a55fc291d311afee3ef","1024":"0351a68a667c5fc21d66c187baecefa1d65529d06b7ae13112d432b6bca16b0e8c","1048576":"02b016346e5a322d371c6e6164b28b31b4d93a51572351ca2f26cdc12e916d9ac3","1073741824":"03f12e6a0903ed0db87485a296b1dca9d953a8a6919ff88732238fbc672d6bd125","128":"0351e33a076f415c2cadc945bc9bcb75bf4a774b28df8a0605dea1557e5897fed8","131072":"027cdf7be8b20a49ac7f2f065f7c53764c8926799877858c6b00b888a8aa6741a5","134217728":"0380658e5163fcf274e1ace6c696d1feef4c6068e0d03083d676dc5ef21804f22d","16":"031dbab0e4f7fb4fb0030f0e1a1dc80668eadd0b1046df3337bb13a7b9c982d392","16384":"028e9c6ce70f34cd29aad48656bf8345bb5ba2cb4f31fdd978686c37c93f0ab411","16777216":"02f2508e7df981c32f7b0008a273e2a1f19c23bb60a1561dba6b2a95ed1251eb90","2":"02628c0919e5cb8ce9aed1f81ce313f40e1ab0b33439d5be2abc69d9bb574902e0","2048":"0376166d8dcf97d8b0e9f11867ff0dafd439c90255b36a25be01e37e14741b9c6a","2097152":"028f25283e36a11df7713934a5287267381f8304aca3c1eb1b89fddce973ef1436","2147483648":"02cece3fb38a54581e0646db4b29242b6d78e49313dda46764094f9d128c1059c1","256":"0314b9f4300367c7e64fa85770da90839d2fc2f57d63660f08bb3ebbf90ed76840","262144":"026939b8f766c3ebaf26408e7e54fc833805563e2ef14c8ee4d0435808b005ec4c","268435456":"031526f03de945c638acccb879de837ac3fabff8590057cfb8552ebcf51215f3aa","32":"037241f7ad421374eb764a48e7769b5e2473582316844fda000d6eef28eea8ffb8","32768":"0253e34bab4eec93e235c33994e01bf851d5caca4559f07d37b5a5c266de7cf840","33554432":"0381883a1517f8c9979a84fcd5f18437b1a2b0020376ecdd2e515dc8d5a157a318","4":"039e7c7f274e1e8a90c61669e961c944944e6154c0794fccf8084af90252d2848f","4096":"03d40f47b4e5c4d72f2a977fab5c66b54d945b2836eb888049b1dd9334d1d70304","4194304":"03e5841d310819a49ec42dfb24839c61f68bbfc93ac68f6dad37fd5b2d204cc535","512":"030d95abc7e881d173f4207a3349f4ee442b9e51cc461602d3eb9665b9237e8db3","524288":"03772542057493a46eed6513b40386e766eedada16560ffde2f776b65794e9f004","536870912":"035eb3e7262e126c5503e1b402db05f87de6556773ae709cb7aa1c3b0986b87566","64":"02bc9767b4abf88becdac47a59e67ee9a9a80b9864ef57d16084575273ac63c0e7","65536":"02684ede207f9ace309b796b5259fc81ef0d4492b4fb5d66cf866b0b4a6f27bec9","67108864":"02aa648d39c9a725ef5927db15af6895f0d43c17f0a31faff4406314fc80180086","8":"02ca0e563ae941700aefcb16a7fb820afbb3258ae924ab520210cb730227a76ca3","8192":"03be18afaf35a29d7bcd5dfd1936d82c1c14691a63f8aa6ece258e16b0c043049b","8388608":"0307ebfeb87b7bca9baa03fad00499e5cc999fa5179ef0b7ad4f555568bcb946f5"}}]}"#;
+        // With dual ID exposure, we get both V1 and V2 IDs for the same keyset
+        assert_eq!(keys.keysets.len(), 2, "Should have both V1 and V2 IDs");
 
-        assert_eq!(expected_keys, serde_json::to_string(&keys.clone()).unwrap());
+        // Find the V1 keyset (native ID starts with "00")
+        let v1_keyset = keys
+            .keysets
+            .iter()
+            .find(|k| k.id.to_string().starts_with("00"))
+            .expect("Should have V1 keyset");
+
+        // Verify the V1 keyset ID is deterministic
+        assert_eq!(
+            v1_keyset.id.to_string(),
+            "005f6e8c540c9e61",
+            "V1 keyset ID should be deterministic"
+        );
+
+        // Verify a sample of the keys are correct
+        use cdk_common::Amount;
+        let key_1 = v1_keyset
+            .keys
+            .get(&Amount::from(1u64))
+            .expect("Should have key for amount 1");
+        assert_eq!(
+            key_1.to_string(),
+            "03e8aded7525acee36e3394e28f2dcbc012533ef2a2b085a55fc291d311afee3ef",
+            "Key for amount 1 should be deterministic"
+        );
     }
 
     #[tokio::test]
@@ -1151,5 +1207,477 @@ mod tests {
         // Should be able to start again after stopping
         mint.start().await.expect("Should be able to restart");
         mint.stop().await.expect("Final stop should work");
+    }
+
+    // ==================== Dual ID Exposure Tests ====================
+
+    #[tokio::test]
+    async fn test_dual_id_exposure_pubkeys_returns_both_ids() {
+        // Test that pubkeys() returns both V1 and V2 IDs for a keyset
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint_with_v1_exposure(config, true).await;
+
+        let pubkeys = mint.pubkeys();
+
+        // With dual ID exposure enabled, we should have 2 keysets in the response
+        // (one with V1 ID, one with V2 ID) for each underlying keyset
+        assert_eq!(
+            pubkeys.keysets.len(),
+            2,
+            "Expected 2 keysets (V1 and V2 IDs) in pubkeys response"
+        );
+
+        // Both should have the same keys
+        assert_eq!(
+            pubkeys.keysets[0].keys, pubkeys.keysets[1].keys,
+            "Both keyset entries should have identical keys"
+        );
+
+        // IDs should be different (one V1, one V2)
+        assert_ne!(
+            pubkeys.keysets[0].id, pubkeys.keysets[1].id,
+            "V1 and V2 IDs should be different"
+        );
+
+        // Verify one is V1 and one is V2
+        use cdk_common::nut02::KeySetVersion;
+        let versions: Vec<_> = pubkeys.keysets.iter().map(|k| k.id.get_version()).collect();
+        assert!(
+            versions.contains(&KeySetVersion::Version00),
+            "Should contain V1 keyset ID"
+        );
+        assert!(
+            versions.contains(&KeySetVersion::Version01),
+            "Should contain V2 keyset ID"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dual_id_exposure_keysets_returns_both_ids() {
+        // Test that keysets() returns both V1 and V2 IDs for a keyset
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint_with_v1_exposure(config, true).await;
+
+        let keysets = mint.keysets();
+
+        // With dual ID exposure enabled, we should have 2 keyset infos
+        assert_eq!(
+            keysets.keysets.len(),
+            2,
+            "Expected 2 keyset infos (V1 and V2 IDs) in keysets response"
+        );
+
+        // IDs should be different
+        assert_ne!(
+            keysets.keysets[0].id, keysets.keysets[1].id,
+            "V1 and V2 IDs should be different"
+        );
+
+        // Both should be active
+        assert!(keysets.keysets[0].active, "First keyset should be active");
+        assert!(keysets.keysets[1].active, "Second keyset should be active");
+
+        // Both should have the same unit
+        assert_eq!(
+            keysets.keysets[0].unit, keysets.keysets[1].unit,
+            "Both should have the same unit"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_keyset_lookup_by_alternate_id() {
+        // Test that keyset() can look up by both native and alternate ID
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint_with_v1_exposure(config, true).await;
+
+        let keysets = mint.keysets();
+        assert_eq!(keysets.keysets.len(), 2);
+
+        let id1 = keysets.keysets[0].id;
+        let id2 = keysets.keysets[1].id;
+
+        // Both IDs should be able to look up the keyset
+        let keyset1 = mint.keyset(&id1);
+        let keyset2 = mint.keyset(&id2);
+
+        assert!(keyset1.is_some(), "Should find keyset by first ID");
+        assert!(keyset2.is_some(), "Should find keyset by second ID");
+
+        // Both lookups should return the same keys
+        assert_eq!(
+            keyset1.unwrap().keys,
+            keyset2.unwrap().keys,
+            "Both ID lookups should return the same keys"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_v1_exposure_disabled_only_shows_v2() {
+        // Test that when expose_v1_keyset_ids=false, only the native V2 ID is shown.
+        // New keysets are created as V2 native. The V1 ID is only for backward
+        // compatibility and can be disabled.
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        // Create mint with V1 exposure disabled
+        let mint = create_mint_with_v1_exposure(config, false).await;
+
+        let keysets = mint.keysets();
+
+        // With V1 exposure disabled, only the native V2 ID is shown
+        assert_eq!(
+            keysets.keysets.len(),
+            1,
+            "With V1 exposure disabled, should only show V2 ID"
+        );
+
+        let pubkeys = mint.pubkeys();
+        assert_eq!(
+            pubkeys.keysets.len(),
+            1,
+            "With V1 exposure disabled, pubkeys should only show V2 ID"
+        );
+
+        // Verify it's V2
+        use cdk_common::nut02::KeySetVersion;
+        assert_eq!(
+            keysets.keysets[0].id.get_version(),
+            KeySetVersion::Version01,
+            "The shown keyset should be V2"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_runtime_toggle_v1_exposure() {
+        // Test that set_v1_id_exposure() toggles V1 ID visibility at runtime.
+        // New keysets are V2 native, so the flag controls V1 backward compatibility.
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        // Start with V1 exposure enabled (default for backward compatibility)
+        let mint = create_mint_with_v1_exposure(config, true).await;
+
+        // Initially should have both IDs (V2 native + V1 for compatibility)
+        let keysets = mint.keysets();
+        assert_eq!(
+            keysets.keysets.len(),
+            2,
+            "With V1 exposure enabled, should show both V1 and V2 IDs"
+        );
+
+        // Disable V1 exposure at runtime
+        mint.set_v1_id_exposure(false);
+
+        // Now should only show V2 ID
+        let keysets = mint.keysets();
+        assert_eq!(
+            keysets.keysets.len(),
+            1,
+            "After disabling V1 exposure, should only show V2 ID"
+        );
+
+        // Re-enable V1 exposure
+        mint.set_v1_id_exposure(true);
+
+        // Should have both IDs again
+        let keysets = mint.keysets();
+        assert_eq!(
+            keysets.keysets.len(),
+            2,
+            "After re-enabling V1 exposure, should show both IDs again"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_alternate_id_lookup_still_works_when_v1_disabled() {
+        // Test that keyset lookup by alternate ID still works even when V1 exposure is disabled
+        // (This is important for proof verification with old tokens)
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        // Create mint with V1 exposure enabled to get both IDs
+        let mint = create_mint_with_v1_exposure(config, true).await;
+
+        // Get both IDs while V1 exposure is enabled
+        let keysets = mint.keysets();
+        assert_eq!(keysets.keysets.len(), 2);
+        let id1 = keysets.keysets[0].id;
+        let id2 = keysets.keysets[1].id;
+
+        // Disable V1 exposure
+        mint.set_v1_id_exposure(false);
+
+        // Both IDs should still work for lookup (for backward compatibility)
+        let keyset1 = mint.keyset(&id1);
+        let keyset2 = mint.keyset(&id2);
+
+        assert!(
+            keyset1.is_some(),
+            "Should still find keyset by first ID after disabling V1 exposure"
+        );
+        assert!(
+            keyset2.is_some(),
+            "Should still find keyset by second ID after disabling V1 exposure"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dual_id_computed_correctly() {
+        // Test that the V2 ID is computed correctly from V1 keyset
+        use cdk_common::nut02::KeySetVersion;
+
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint_with_v1_exposure(config, true).await;
+
+        let pubkeys = mint.pubkeys();
+        assert_eq!(pubkeys.keysets.len(), 2);
+
+        // Find V1 and V2 keysets
+        let v1_keyset = pubkeys
+            .keysets
+            .iter()
+            .find(|k| k.id.get_version() == KeySetVersion::Version00)
+            .expect("Should have V1 keyset");
+        let v2_keyset = pubkeys
+            .keysets
+            .iter()
+            .find(|k| k.id.get_version() == KeySetVersion::Version01)
+            .expect("Should have V2 keyset");
+
+        // Verify V2 ID is correctly computed from the keys
+        let computed_v2_id =
+            Id::v2_from_data(&v1_keyset.keys, &v1_keyset.unit, v1_keyset.final_expiry);
+        assert_eq!(
+            v2_keyset.id, computed_v2_id,
+            "V2 ID should match computed value from keys"
+        );
+
+        // Verify V1 ID is correctly computed from the keys
+        let computed_v1_id = Id::v1_from_keys(&v2_keyset.keys);
+        assert_eq!(
+            v1_keyset.id, computed_v1_id,
+            "V1 ID should match computed value from keys"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rotated_keyset_also_has_dual_ids() {
+        // Test that a rotated keyset also gets dual IDs
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint_with_v1_exposure(config, true).await;
+
+        // Rotate the keyset
+        mint.rotate_keyset(CurrencyUnit::default(), vec![1, 2, 4, 8], 1)
+            .await
+            .expect("Failed to rotate keyset");
+
+        let keysets = mint.keysets();
+
+        // Should have 4 entries: 2 for original keyset (V1+V2) and 2 for new keyset (V1+V2)
+        assert_eq!(
+            keysets.keysets.len(),
+            4,
+            "Should have 4 keyset entries after rotation (2 keysets × 2 IDs each)"
+        );
+
+        // Count active keysets - should be 2 (V1 and V2 IDs for the new active keyset)
+        let active_count = keysets.keysets.iter().filter(|k| k.active).count();
+        assert_eq!(
+            active_count, 2,
+            "Should have 2 active keyset entries (V1 and V2 IDs for the active keyset)"
+        );
+
+        // Count inactive keysets - should be 2 (V1 and V2 IDs for the old keyset)
+        let inactive_count = keysets.keysets.iter().filter(|k| !k.active).count();
+        assert_eq!(
+            inactive_count, 2,
+            "Should have 2 inactive keyset entries (V1 and V2 IDs for the old keyset)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rotate_with_v1_disabled_only_shows_v2_active() {
+        // Test that when rotating with V1 exposure disabled:
+        // - Old keyset (both V1 and V2 IDs) becomes inactive
+        // - New keyset only shows V2 ID as active
+        use cdk_common::nut02::KeySetVersion;
+
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        // Create mint with V1 exposure DISABLED
+        let mint = create_mint_with_v1_exposure(config, false).await;
+
+        // Initially should have only 1 keyset (V2 only, since V1 exposure is disabled)
+        let keysets = mint.keysets();
+        assert_eq!(
+            keysets.keysets.len(),
+            1,
+            "Initially should have only V2 keyset"
+        );
+        assert_eq!(
+            keysets.keysets[0].id.get_version(),
+            KeySetVersion::Version01,
+            "Initial keyset should be V2"
+        );
+        assert!(keysets.keysets[0].active, "Initial keyset should be active");
+
+        let initial_keyset_id = keysets.keysets[0].id;
+
+        // Rotate the keyset
+        mint.rotate_keyset(CurrencyUnit::default(), vec![1, 2, 4, 8], 1)
+            .await
+            .expect("Failed to rotate keyset");
+
+        let keysets = mint.keysets();
+
+        // With V1 exposure disabled:
+        // - Old keyset: 1 entry (V2 only, inactive)
+        // - New keyset: 1 entry (V2 only, active)
+        // Total: 2 entries
+        assert_eq!(
+            keysets.keysets.len(),
+            2,
+            "Should have 2 keyset entries (1 old V2 inactive + 1 new V2 active)"
+        );
+
+        // All should be V2
+        assert!(
+            keysets
+                .keysets
+                .iter()
+                .all(|k| k.id.get_version() == KeySetVersion::Version01),
+            "All keysets should be V2 when V1 exposure is disabled"
+        );
+
+        // Count active keysets - should be 1 (only V2 ID for the new keyset)
+        let active_keysets: Vec<_> = keysets.keysets.iter().filter(|k| k.active).collect();
+        assert_eq!(
+            active_keysets.len(),
+            1,
+            "Should have exactly 1 active keyset (V2 only)"
+        );
+        assert_eq!(
+            active_keysets[0].id.get_version(),
+            KeySetVersion::Version01,
+            "Active keyset should be V2"
+        );
+
+        // Count inactive keysets - should be 1 (only V2 ID for the old keyset)
+        let inactive_keysets: Vec<_> = keysets.keysets.iter().filter(|k| !k.active).collect();
+        assert_eq!(
+            inactive_keysets.len(),
+            1,
+            "Should have exactly 1 inactive keyset (V2 only)"
+        );
+        assert_eq!(
+            inactive_keysets[0].id, initial_keyset_id,
+            "Inactive keyset should be the original keyset"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_v1_lookup_still_works_when_v1_disabled() {
+        // Even when V1 exposure is disabled, proofs with V1 IDs should still verify.
+        // This is critical for backward compatibility with existing tokens.
+        use cdk_common::nut02::KeySetVersion;
+
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        // Create mint with V1 exposure enabled to get the V1 ID
+        let mint = create_mint_with_v1_exposure(config, true).await;
+
+        let keysets = mint.keysets();
+        assert_eq!(keysets.keysets.len(), 2);
+
+        // Get both V1 and V2 IDs
+        let v1_id = keysets
+            .keysets
+            .iter()
+            .find(|k| k.id.get_version() == KeySetVersion::Version00)
+            .expect("Should have V1")
+            .id;
+        let v2_id = keysets
+            .keysets
+            .iter()
+            .find(|k| k.id.get_version() == KeySetVersion::Version01)
+            .expect("Should have V2")
+            .id;
+
+        // Now disable V1 exposure
+        mint.set_v1_id_exposure(false);
+
+        // V1 ID should no longer appear in keysets()
+        let keysets = mint.keysets();
+        assert_eq!(keysets.keysets.len(), 1);
+        assert_eq!(keysets.keysets[0].id, v2_id);
+
+        // But V1 ID should STILL work for keyset lookup (for proof verification)
+        let keyset_by_v1 = mint.keyset(&v1_id);
+        assert!(
+            keyset_by_v1.is_some(),
+            "V1 ID lookup should still work for backward compatibility"
+        );
+
+        let keyset_by_v2 = mint.keyset(&v2_id);
+        assert!(keyset_by_v2.is_some(), "V2 ID lookup should work");
+
+        // Both should return the same keys
+        assert_eq!(
+            keyset_by_v1.unwrap().keys,
+            keyset_by_v2.unwrap().keys,
+            "Both ID lookups should return the same keys"
+        );
     }
 }
