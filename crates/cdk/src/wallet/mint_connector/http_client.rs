@@ -360,13 +360,13 @@ mod tests {
         };
 
         let response = client
-            .post_mint_batch_quote_status(request)
+            .post_mint_batch_quote_status(request, PaymentMethod::Bolt11)
             .await
             .expect("batch status call");
 
         assert_eq!(response.0.len(), 1);
         let last_url = transport.last_url().expect("recorded url");
-        assert!(last_url.ends_with("/v1/mint/quote/batch"));
+        assert!(last_url.ends_with("/v1/mint/bolt11/check"));
     }
 }
 
@@ -745,15 +745,20 @@ where
     async fn post_mint_batch_quote_status(
         &self,
         request: BatchQuoteStatusRequest,
+        payment_method: PaymentMethod,
     ) -> Result<BatchQuoteStatusResponse, Error> {
+        let (method_segment, route_path) = match payment_method {
+            PaymentMethod::Bolt11 => ("bolt11", RoutePath::MintBolt11),
+            PaymentMethod::Bolt12 => ("bolt12", RoutePath::MintBolt12),
+            PaymentMethod::Custom(_) => return Err(Error::UnsupportedPaymentMethod),
+        };
+
         let url = self
             .mint_url
-            .join_paths(&["v1", "mint", "quote", "batch"])?;
+            .join_paths(&["v1", "mint", method_segment, "check"])?;
 
         #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintBolt11)
-            .await?;
+        let auth_token = self.get_auth_token(Method::Post, route_path).await?;
 
         #[cfg(not(feature = "auth"))]
         let auth_token = None;

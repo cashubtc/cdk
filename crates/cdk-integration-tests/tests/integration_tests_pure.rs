@@ -27,8 +27,8 @@ use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::subscription::Params;
 use cdk::wallet::types::{TransactionDirection, TransactionId};
-use cdk::wallet::{ReceiveOptions, SendMemo, SendOptions};
-use cdk::Amount;
+use cdk::wallet::{MintConnector, ReceiveOptions, SendMemo, SendOptions};
+use cdk::{Amount, BatchQuoteStatusItem, BatchQuoteStatusRequest};
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
 use tokio::time::sleep;
@@ -1302,6 +1302,53 @@ async fn test_batch_mint_bolt12_two_locked_quotes() {
         assert_eq!(quote.amount_issued, quote.amount_paid);
         assert_eq!(quote.state, cashu::MintQuoteState::Issued);
     }
+}
+
+#[tokio::test]
+async fn test_batch_quote_status_handles_bolt11_and_bolt12() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    let bolt11_quotes = setup_batch_mint_test(&mint, &wallet, &[(100, None)]).await;
+    let bolt12_secret = SecretKey::generate();
+    let bolt12_quotes = setup_bolt12_batch_mint_test(&mint, &wallet, &[(150, bolt12_secret)]).await;
+
+    let connector = DirectMintConnection::new(mint.clone());
+
+    let bolt11_response = connector
+        .post_mint_batch_quote_status(
+            BatchQuoteStatusRequest {
+                quote: bolt11_quotes.clone(),
+            },
+            PaymentMethod::Bolt11,
+        )
+        .await
+        .expect("Bolt11 status response");
+    assert_eq!(bolt11_response.0.len(), bolt11_quotes.len());
+    assert!(bolt11_response
+        .0
+        .iter()
+        .all(|status| matches!(status, BatchQuoteStatusItem::Bolt11(_))));
+
+    let bolt12_response = connector
+        .post_mint_batch_quote_status(
+            BatchQuoteStatusRequest {
+                quote: bolt12_quotes.clone(),
+            },
+            PaymentMethod::Bolt12,
+        )
+        .await
+        .expect("Bolt12 status response");
+    assert_eq!(bolt12_response.0.len(), bolt12_quotes.len());
+    assert!(bolt12_response
+        .0
+        .iter()
+        .all(|status| matches!(status, BatchQuoteStatusItem::Bolt12(_))));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

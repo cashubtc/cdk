@@ -134,6 +134,7 @@ pub trait MintConnector: Debug {
     async fn post_mint_batch_quote_status(
         &self,
         request: BatchQuoteStatusRequest,
+        payment_method: crate::nuts::PaymentMethod,
     ) -> Result<BatchQuoteStatusResponse, Error>;
     /// Batch Mint [NUT-XX]
     async fn post_mint_batch(

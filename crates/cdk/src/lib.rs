@@ -40,7 +40,10 @@ mod oidc_client;
 
 /// Re-export batch mint types
 #[cfg(feature = "mint")]
-pub use cdk_common::mint::{BatchMintRequest, BatchQuoteStatusRequest, BatchQuoteStatusResponse};
+pub use cdk_common::mint::{
+    BatchMintRequest, BatchQuoteStatusItem, BatchQuoteStatusRequest, BatchQuoteStatusResponse,
+    MintQuoteBolt12BatchStatusResponse,
+};
 #[cfg(feature = "mint")]
 #[doc(hidden)]
 pub use cdk_common::payment as cdk_payment;

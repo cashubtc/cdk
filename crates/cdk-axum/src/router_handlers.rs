@@ -11,11 +11,13 @@ use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintRequest, MintResponse, PaymentMethod,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
-use cdk::{BatchMintRequest, BatchQuoteStatusRequest, BatchQuoteStatusResponse};
+use cdk::{
+    BatchMintRequest, BatchQuoteStatusItem, BatchQuoteStatusRequest, BatchQuoteStatusResponse,
+};
 use paste::paste;
 use std::str::FromStr;
 use tracing::instrument;
@@ -191,8 +193,9 @@ post_cache_wrapper_with_prefer!(
     MeltQuoteBolt11Response<QuoteId>
 );
 post_cache_wrapper_with_path!(post_batch_mint, String, BatchMintRequest, MintResponse);
-post_cache_wrapper!(
+post_cache_wrapper_with_path!(
     post_batch_check_mint,
+    String,
     BatchQuoteStatusRequest,
     BatchQuoteStatusResponse
 );
@@ -692,7 +695,8 @@ pub(crate) async fn post_restore(
 #[cfg_attr(feature = "swagger", utoipa::path(
     post,
     context_path = "/v1",
-    path = "/mint/bolt11/check",
+    path = "/mint/{method}/check",
+    params(("method" = String, Path, description = "Payment method (bolt11 or bolt12)")),
     request_body(content = BatchQuoteStatusRequest, description = "Batch quote status params", content_type = "application/json"),
     responses(
         (status = 200, description = "Successful response", body = BatchQuoteStatusResponse, content_type = "application/json"),
@@ -702,21 +706,32 @@ pub(crate) async fn post_restore(
 ))]
 /// Get status of multiple mint quotes in a single batch request
 ///
+/// Exposed at `/v1/mint/{method}/check` where `{method}` is `bolt11` or `bolt12`.
 /// Check the status of multiple mint quotes at once. Unknown quotes are omitted from response.
 #[instrument(skip_all, fields(quote_count = ?payload.quote.len()))]
 pub(crate) async fn post_batch_check_mint(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
+    Path(method): Path<String>,
     Json(payload): Json<BatchQuoteStatusRequest>,
 ) -> Result<Json<BatchQuoteStatusResponse>, Response> {
+    let payment_method = match method.as_str() {
+        "bolt11" => PaymentMethod::Bolt11,
+        "bolt12" => PaymentMethod::Bolt12,
+        _ => return Err(into_response(cdk::error::Error::UnsupportedPaymentMethod)),
+    };
+
     #[cfg(feature = "auth")]
     {
+        let route = match payment_method {
+            PaymentMethod::Bolt11 => RoutePath::MintBolt11,
+            PaymentMethod::Bolt12 => RoutePath::MintBolt12,
+            PaymentMethod::Custom(_) => unreachable!(),
+        };
+
         state
             .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
-            )
+            .verify_auth(auth.into(), &ProtectedEndpoint::new(Method::Post, route))
             .await
             .map_err(into_response)?;
     }
@@ -760,15 +775,22 @@ pub(crate) async fn post_batch_check_mint(
         // Check quote status and get quote response
         match state.mint.check_mint_quote(&quote_id).await {
             Ok(mint_quote_response) => {
-                // Convert response to Bolt11Response<String> format for batch response
-                let bolt11_response: cdk::nuts::MintQuoteBolt11Response<String> =
-                    match mint_quote_response {
-                        cdk::mint::MintQuoteResponse::Bolt11(resp) => resp.into(),
-                        cdk::mint::MintQuoteResponse::Bolt12(_) => {
-                            unimplemented!("Bolt12 batch quote status not yet supported")
-                        }
-                    };
-                responses.push(bolt11_response);
+                let entry = match (&payment_method, mint_quote_response) {
+                    (PaymentMethod::Bolt11, cdk::mint::MintQuoteResponse::Bolt11(resp)) => {
+                        let response: MintQuoteBolt11Response<String> = resp.into();
+                        BatchQuoteStatusItem::from_bolt11(response)
+                    }
+                    (PaymentMethod::Bolt12, cdk::mint::MintQuoteResponse::Bolt12(resp)) => {
+                        let response: MintQuoteBolt12Response<String> = resp.into();
+                        BatchQuoteStatusItem::from_bolt12(response)
+                    }
+                    _ => {
+                        return Err(into_response(
+                            cdk::error::Error::BatchPaymentMethodEndpointMismatch,
+                        ));
+                    }
+                };
+                responses.push(entry);
             }
             Err(_) => {
                 // Quote not found, omit from response (per spec)

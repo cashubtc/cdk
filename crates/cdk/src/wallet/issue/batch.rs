@@ -220,16 +220,6 @@ impl Wallet {
             )
             .await?;
 
-        for quote_id in quote_ids {
-            if let Err(e) = self.localstore.remove_mint_quote(quote_id).await {
-                tracing::warn!(
-                    "Failed to remove quote {} from storage after batch mint: {}",
-                    quote_id,
-                    e
-                );
-            }
-        }
-
         Ok(proofs)
     }
 
@@ -322,11 +312,11 @@ impl Wallet {
 
             let batch_status = self
                 .client
-                .post_mint_batch_quote_status(batch_status_request)
+                .post_mint_batch_quote_status(batch_status_request, payment_method.clone())
                 .await?;
 
             for status in &batch_status.0 {
-                match status.state {
+                match status.state() {
                     MintQuoteState::Paid => (),
                     MintQuoteState::Unpaid => return Err(Error::UnpaidQuote),
                     MintQuoteState::Issued => (),

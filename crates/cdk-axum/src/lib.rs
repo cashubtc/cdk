@@ -49,9 +49,14 @@ mod swagger_imports {
         MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
         MintQuoteBolt11Response,
     };
+    pub use cdk::nuts::nut25::{MintQuoteBolt12Request, MintQuoteBolt12Response};
     #[cfg(feature = "auth")]
     pub use cdk::nuts::MintAuthRequest;
     pub use cdk::nuts::{nut04, nut05, nut15, MeltQuoteState, MintQuoteState};
+    pub use cdk::{
+        BatchQuoteStatusItem, BatchQuoteStatusRequest, BatchQuoteStatusResponse,
+        MintQuoteBolt12BatchStatusResponse,
+    };
 }
 
 #[cfg(feature = "swagger")]
@@ -115,6 +120,9 @@ define_api_doc! {
         BlindedMessage,
         BlindSignature,
         BlindSignatureDleq,
+        BatchQuoteStatusItem,
+        BatchQuoteStatusRequest,
+        BatchQuoteStatusResponse,
         CheckStateRequest,
         CheckStateResponse,
         ContactInfo,
@@ -137,6 +145,9 @@ define_api_doc! {
         MintInfo,
         MintQuoteBolt11Request,
         MintQuoteBolt11Response<String>,
+        MintQuoteBolt12Request,
+        MintQuoteBolt12Response<String>,
+        MintQuoteBolt12BatchStatusResponse<String>,
         MintQuoteState,
         MintMethodSettings,
         MintVersion,
@@ -171,6 +182,9 @@ define_api_doc! {
         BlindedMessage,
         BlindSignature,
         BlindSignatureDleq,
+        BatchQuoteStatusItem,
+        BatchQuoteStatusRequest,
+        BatchQuoteStatusResponse,
         CheckStateRequest,
         CheckStateResponse,
         ContactInfo,
@@ -193,6 +207,9 @@ define_api_doc! {
         MintInfo,
         MintQuoteBolt11Request,
         MintQuoteBolt11Response<String>,
+        MintQuoteBolt12Request,
+        MintQuoteBolt12Response<String>,
+        MintQuoteBolt12BatchStatusResponse<String>,
         MintQuoteState,
         MintMethodSettings,
         MintVersion,
@@ -297,7 +314,7 @@ pub async fn create_mint_router_with_custom_cache(
             get(get_check_mint_bolt11_quote),
         )
         .route("/mint/bolt11", post(cache_post_mint_bolt11))
-        .route("/mint/bolt11/check", post(cache_post_batch_check_mint))
+        .route("/mint/:method/check", post(cache_post_batch_check_mint))
         .route("/mint/:method/batch", post(cache_post_batch_mint))
         .route("/melt/quote/bolt11", post(post_melt_bolt11_quote))
         .route("/ws", get(ws_handler))

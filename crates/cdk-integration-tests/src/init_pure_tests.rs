@@ -12,7 +12,7 @@ use cashu::quote_id::QuoteId;
 use cashu::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
-use cdk::mint::{MintBuilder, MintMeltLimits};
+use cdk::mint::{MintBuilder, MintMeltLimits, MintQuoteResponse};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
@@ -24,6 +24,7 @@ use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
 use cdk::{Amount, Error, Mint, StreamExt};
+use cdk_common::mint::BatchQuoteStatusItem;
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
@@ -224,13 +225,26 @@ impl MintConnector for DirectMintConnection {
     async fn post_mint_batch_quote_status(
         &self,
         request: cdk_common::mint::BatchQuoteStatusRequest,
+        payment_method: PaymentMethod,
     ) -> Result<cdk_common::mint::BatchQuoteStatusResponse, Error> {
         let mut responses = Vec::new();
         for quote_id_str in request.quote {
             let quote_id = QuoteId::from_str(&quote_id_str)?;
             match self.mint.check_mint_quote(&quote_id).await {
                 Ok(quote_response) => {
-                    responses.push(quote_response.into());
+                    let item = match (&payment_method, quote_response) {
+                        (PaymentMethod::Bolt11, MintQuoteResponse::Bolt11(resp)) => {
+                            BatchQuoteStatusItem::from_bolt11(resp.into())
+                        }
+                        (PaymentMethod::Bolt12, MintQuoteResponse::Bolt12(resp)) => {
+                            let quote: MintQuoteBolt12Response<String> = resp.into();
+                            BatchQuoteStatusItem::from_bolt12(quote)
+                        }
+                        _ => {
+                            return Err(Error::BatchPaymentMethodEndpointMismatch);
+                        }
+                    };
+                    responses.push(item);
                 }
                 Err(_) => {
                     // Skip unknown quotes as per spec

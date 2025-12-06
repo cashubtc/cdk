@@ -326,9 +326,7 @@ impl WalletDatabase for WalletRedbDatabase {
             table
                 .insert(
                     quote.id.as_str(),
-                    serde_json::to_string(&quote)
-                        .map_err(Error::from)?
-                        .as_str(),
+                    serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
                 )
                 .map_err(Error::from)?;
         }
