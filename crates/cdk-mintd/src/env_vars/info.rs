@@ -108,6 +108,13 @@ impl Info {
             });
         }
 
+        // V1 keyset ID exposure
+        if let Ok(expose_str) = env::var(ENV_EXPOSE_V1_KEYSET_IDS) {
+            if let Ok(expose) = expose_str.parse() {
+                self.expose_v1_keyset_ids = expose;
+            }
+        }
+
         self
     }
 }
