@@ -277,6 +277,7 @@ fn create_ldk_settings(
             input_fee_ppk: None,
             http_cache: cdk_axum::cache::Config::default(),
             enable_swagger_ui: None,
+            expose_v1_keyset_ids: true,
             logging: LoggingConfig::default(),
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
