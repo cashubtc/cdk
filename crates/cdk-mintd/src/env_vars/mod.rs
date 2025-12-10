@@ -93,13 +93,27 @@ impl Settings {
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
         self.payment_backend = self.payment_backend.clone().from_env();
-
+        // The following section is providing backwards compatability #1127
+        // todo -- remove this section
+        if self.payment_backend.kind == PaymentBackendKind::None && self.ln.ln_backend != PaymentBackendKind::None {
+            self.using_deprecated_config = Some(true);
+            let mut ln = self.ln.clone();
+            // old ln_backend to kind
+            ln.kind = ln.ln_backend.clone();
+            // old specific settings to payment_backend
+            ln.lnbits = self.lnbits.clone();
+            ln.fake_wallet = self.fake_wallet.clone();
+            ln.cln = self.cln.clone();
+            ln.lnd = self.lnd.clone();
+            ln.grpc_processor = self.grpc_processor.clone();
+            self.payment_backend = ln;
+        }
         #[cfg(feature = "auth")]
         {
             // Check env vars for auth config even if None
             let auth = self.auth.clone().unwrap_or_default().from_env();
 
-            // Only set auth if auth_enabled flag is true
+            // Only set auth if the auth_enabled flag is true
             if auth.auth_enabled {
                 self.auth = Some(auth);
             } else {

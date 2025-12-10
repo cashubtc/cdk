@@ -1035,7 +1035,9 @@ async fn start_services_with_shutdown(
             None
         }
     };
-
+    if settings.using_deprecated_config.unwrap_or(false){
+        tracing::error!("DEPRECATED: The 'ln' section is deprecated and will be removed in the next version. Please update your TOML configuration. https://github.com/cashubtc/cdk/blob/main/crates/cdk-mintd/example.config.toml");
+    }
     #[cfg(not(feature = "prometheus"))]
     let prometheus_handle: Option<tokio::task::JoinHandle<()>> = None;
 

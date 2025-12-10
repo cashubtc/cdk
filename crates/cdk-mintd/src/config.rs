@@ -169,6 +169,8 @@ impl std::str::FromStr for PaymentBackendKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentBackend {
+    /// deprecated -- do not use this
+    pub ln_backend: PaymentBackendKind,
     pub kind: PaymentBackendKind,
     pub invoice_description: Option<String>,
     pub min_mint: Amount,
@@ -198,6 +200,7 @@ impl Default for PaymentBackend {
     fn default() -> Self {
         PaymentBackend {
             kind: PaymentBackendKind::default(),
+            ln_backend: PaymentBackendKind::default(),
             invoice_description: None,
             min_mint: 1.into(),
             max_mint: 500_000.into(),
@@ -585,6 +588,29 @@ fn default_blind() -> AuthType {
 pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
+    /// deprecated -- please do not use this
+    pub ln: PaymentBackend,
+    #[cfg(feature = "cln")]
+    /// deprecated -- please do not use this
+    pub cln: Option<Cln>,
+    #[cfg(feature = "lnbits")]
+    /// deprecated -- please do not use this
+    pub lnbits: Option<LNbits>,
+    #[cfg(feature = "lnd")]
+    /// deprecated -- please do not use this
+    pub lnd: Option<Lnd>,
+    #[cfg(feature = "ldk-node")]
+    /// deprecated -- please do not use this
+    pub ldk_node: Option<LdkNode>,
+    #[cfg(feature = "fakewallet")]
+    /// deprecated -- please do not use this
+    pub fake_wallet: Option<FakeWallet>,
+    /// deprecated -- please do not use this
+    pub grpc_processor: Option<GrpcProcessor>,
+    /// deprecated -- please do not use this
+    pub using_deprecated_config: Option<bool>,
+
+
     pub payment_backend: PaymentBackend,
     pub database: Database,
     #[cfg(feature = "auth")]
