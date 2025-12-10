@@ -33,3 +33,6 @@ futures-util = "0.3.31"
 postgres-native-tls = "0.5.1"
 native-tls = "0.2"
 once_cell.workspace = true
+
+[lints]
+workspace = true

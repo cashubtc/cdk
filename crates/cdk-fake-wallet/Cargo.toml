@@ -26,3 +26,6 @@ lightning.workspace = true
 tokio-stream.workspace = true
 reqwest.workspace = true
 uuid.workspace = true
+
+[lints]
+workspace = true
