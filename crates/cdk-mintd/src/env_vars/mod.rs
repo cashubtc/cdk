@@ -93,7 +93,7 @@ impl Settings {
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
         self.payment_backend = self.payment_backend.clone().from_env();
-        // The following section is providing backwards compatability #1127
+        // The following section is providing backwards compatibility #1127
         // todo -- remove this section
         if self.payment_backend.kind == PaymentBackendKind::None
             && self.ln.ln_backend != PaymentBackendKind::None

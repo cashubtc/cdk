@@ -215,7 +215,7 @@ impl Mint {
                         saga.operation_id
                     );
 
-                    // Fallback: Find quote by matching input_ys (for backward compatibility)
+                    // Fallback: Find quote by matching input_ys (for backwards compatibility)
                     let melt_quotes = match self.localstore.get_melt_quotes().await {
                         Ok(quotes) => quotes,
                         Err(e) => {
