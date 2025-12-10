@@ -610,7 +610,6 @@ pub struct Settings {
     /// deprecated -- please do not use this
     pub using_deprecated_config: Option<bool>,
 
-
     pub payment_backend: PaymentBackend,
     pub database: Database,
     #[cfg(feature = "auth")]

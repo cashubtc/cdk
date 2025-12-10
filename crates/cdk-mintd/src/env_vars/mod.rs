@@ -95,7 +95,9 @@ impl Settings {
         self.payment_backend = self.payment_backend.clone().from_env();
         // The following section is providing backwards compatability #1127
         // todo -- remove this section
-        if self.payment_backend.kind == PaymentBackendKind::None && self.ln.ln_backend != PaymentBackendKind::None {
+        if self.payment_backend.kind == PaymentBackendKind::None
+            && self.ln.ln_backend != PaymentBackendKind::None
+        {
             self.using_deprecated_config = Some(true);
             let mut ln = self.ln.clone();
             // old ln_backend to kind
