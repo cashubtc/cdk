@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 fn main() {
     println!("cargo:rerun-if-changed=src/proto/signatory.proto");
 
@@ -7,5 +9,5 @@ fn main() {
         .type_attribute(".", "#[allow(missing_docs)]")
         .field_attribute(".", "#[allow(missing_docs)]")
         .compile_protos(&["src/proto/signatory.proto"], &["src/proto"])
-        .unwrap();
+        .expect("valid proto");
 }

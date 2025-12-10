@@ -1,6 +1,4 @@
 //! CDK MINTD
-#![warn(missing_docs)]
-#![warn(rustdoc::bare_urls)]
 
 use std::sync::Arc;
 

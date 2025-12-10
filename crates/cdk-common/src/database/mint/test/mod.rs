@@ -2,6 +2,7 @@
 //!
 //! This set is generic and checks the default and expected behaviour for a mint database
 //! implementation
+#![allow(clippy::unwrap_used)]
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};

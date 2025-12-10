@@ -37,7 +37,7 @@ impl Wallet {
                 .map(|opt| opt.amount_msat())
                 .or_else(|| amount_for_offer(&offer, &CurrencyUnit::Msat).ok())
                 .ok_or(Error::AmountUndefined)?;
-            let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit).unwrap();
+            let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit)?;
 
             if quote_res.amount != amount_quote_unit {
                 tracing::warn!(

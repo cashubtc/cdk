@@ -3,8 +3,6 @@
 // Copyright (c) 2023 Steffen (MIT)
 
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
-#![warn(rustdoc::bare_urls)]
 
 use std::cmp::max;
 use std::path::PathBuf;
@@ -104,8 +102,7 @@ impl Lnd {
             .map_err(|err| {
                 tracing::error!("Connection error: {}", err.to_string());
                 Error::Connection
-            })
-            .unwrap();
+            })?;
 
         Ok(Self {
             _address: address,
@@ -636,7 +633,7 @@ impl MintPayment for Lnd {
         let mut lnd_client = self.lnd_client.clone();
 
         let invoice_request = lnrpc::PaymentHash {
-            r_hash: hex::decode(payment_identifier.to_string()).unwrap(),
+            r_hash: hex::decode(payment_identifier.to_string())?,
             ..Default::default()
         };
 

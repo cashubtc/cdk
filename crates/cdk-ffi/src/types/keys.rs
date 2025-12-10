@@ -32,7 +32,7 @@ impl From<KeySetInfo> for cdk::nuts::KeySetInfo {
     fn from(keyset: KeySetInfo) -> Self {
         use std::str::FromStr;
         Self {
-            id: cdk::nuts::Id::from_str(&keyset.id).unwrap(),
+            id: cdk::nuts::Id::from_str(&keyset.id).expect("Invalid keyset ID"),
             unit: keyset.unit.into(),
             active: keyset.active,
             final_expiry: None,
@@ -253,6 +253,6 @@ impl From<cdk::nuts::Id> for Id {
 impl From<Id> for cdk::nuts::Id {
     fn from(id: Id) -> Self {
         use std::str::FromStr;
-        Self::from_str(&id.hex).unwrap()
+        Self::from_str(&id.hex).expect("Invalid ID hex")
     }
 }

@@ -1,8 +1,6 @@
 //! CDK lightning backend for CLN
 
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
-#![warn(rustdoc::bare_urls)]
 
 use std::cmp::max;
 use std::path::PathBuf;

@@ -27,7 +27,7 @@ pub async fn pay_request(
 
             let mut user_input = String::new();
             let stdin = io::stdin();
-            io::stdout().flush().unwrap();
+            io::stdout().flush()?;
             stdin.read_line(&mut user_input)?;
 
             let amount: u64 = user_input.trim().parse()?;

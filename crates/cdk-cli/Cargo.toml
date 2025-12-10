@@ -36,3 +36,6 @@ reqwest.workspace = true
 url.workspace = true
 serde_with.workspace = true
 lightning.workspace = true
+
+[lints]
+workspace = true

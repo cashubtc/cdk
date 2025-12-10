@@ -179,7 +179,7 @@ impl Proof {
         let signatures = self
             .witness
             .as_ref()
-            .map(|w| w.signatures())
+            .map(super::nut00::Witness::signatures)
             .unwrap_or_default();
 
         self.witness = Some(Witness::HTLCWitness(HTLCWitness {

@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
         }
 
         // TLS directory exists, configure TLS
-        let server_root_ca_cert = std::fs::read_to_string(work_dir.join("tls/ca.pem")).unwrap();
+        let server_root_ca_cert = std::fs::read_to_string(work_dir.join("tls/ca.pem"))?;
         let server_root_ca_cert = Certificate::from_pem(server_root_ca_cert);
         let client_cert = std::fs::read_to_string(work_dir.join("tls/client.pem"))?;
         let client_key = std::fs::read_to_string(work_dir.join("tls/client.key"))?;

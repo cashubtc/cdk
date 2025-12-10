@@ -654,7 +654,7 @@ impl Mint {
             }
         }
 
-        let unit = unit.ok_or(Error::UnsupportedUnit).unwrap();
+        let unit = unit.ok_or(Error::UnsupportedUnit)?;
         ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
 
         let operation = Operation::new_mint();
