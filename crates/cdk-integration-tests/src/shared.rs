@@ -203,6 +203,7 @@ pub fn create_fake_wallet_settings(
         mint_info: cdk_mintd::config::MintInfo::default(),
         payment_backend: cdk_mintd::config::PaymentBackend {
             kind: cdk_mintd::config::PaymentBackendKind::FakeWallet,
+            ln_backend: cdk_mintd::config::PaymentBackendKind::None,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),
@@ -223,6 +224,22 @@ pub fn create_fake_wallet_settings(
         mint_management_rpc: None,
         auth: None,
         prometheus: Some(Default::default()),
+        cln: None,
+        lnbits: None,
+        lnd: None,
+        ldk_node: None,
+        fake_wallet: None,
+        grpc_processor: None,
+        using_deprecated_config: None,
+        ln: cdk_mintd::config::PaymentBackend {
+            ln_backend: cdk_mintd::config::PaymentBackendKind::LdkNode,
+            invoice_description: None,
+            min_mint: 1.into(),
+            max_mint: 500_000.into(),
+            min_melt: 1.into(),
+            max_melt: 500_000.into(),
+            ..Default::default()
+        },
     }
 }
 
@@ -269,6 +286,22 @@ pub fn create_cln_settings(
         mint_management_rpc: None,
         auth: None,
         prometheus: Some(Default::default()),
+        cln: None,
+        lnbits: None,
+        lnd: None,
+        ldk_node: None,
+        fake_wallet: None,
+        grpc_processor: None,
+        using_deprecated_config: None,
+        ln: cdk_mintd::config::PaymentBackend {
+            ln_backend: cdk_mintd::config::PaymentBackendKind::LdkNode,
+            invoice_description: None,
+            min_mint: 1.into(),
+            max_mint: 500_000.into(),
+            min_melt: 1.into(),
+            max_melt: 500_000.into(),
+            ..Default::default()
+        },
     }
 }
 
@@ -313,5 +346,21 @@ pub fn create_lnd_settings(
         mint_management_rpc: None,
         auth: None,
         prometheus: Some(Default::default()),
+        cln: None,
+        lnbits: None,
+        lnd: None,
+        ldk_node: None,
+        fake_wallet: None,
+        grpc_processor: None,
+        using_deprecated_config: None,
+        ln: cdk_mintd::config::PaymentBackend {
+            ln_backend: cdk_mintd::config::PaymentBackendKind::LdkNode,
+            invoice_description: None,
+            min_mint: 1.into(),
+            max_mint: 500_000.into(),
+            min_melt: 1.into(),
+            max_melt: 500_000.into(),
+            ..Default::default()
+        },
     }
 }
