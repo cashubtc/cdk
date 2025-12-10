@@ -375,7 +375,8 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
     let mut builder = mint_builder
         .with_name(settings.mint_info.name.clone())
         .with_version(mint_version)
-        .with_description(settings.mint_info.description.clone());
+        .with_description(settings.mint_info.description.clone())
+        .with_v1_keyset_ids(settings.info.expose_v1_keyset_ids);
 
     // Add optional information
     if let Some(long_description) = &settings.mint_info.description_long {
