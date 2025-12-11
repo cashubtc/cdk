@@ -29,12 +29,17 @@ pub async fn static_handler(Path(path): Path<String>) -> impl IntoResponse {
         Some(content) => {
             let content_type = get_content_type(cleaned_path);
             let mut headers = HeaderMap::new();
-            headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
+            headers.insert(
+                header::CONTENT_TYPE,
+                content_type.parse().expect("valid content type"),
+            );
 
             // Add cache headers for static assets
             headers.insert(
                 header::CACHE_CONTROL,
-                "public, max-age=31536000".parse().unwrap(),
+                "public, max-age=31536000"
+                    .parse()
+                    .expect("valid cache control"),
             );
 
             (headers, content.data).into_response()
