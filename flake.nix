@@ -94,6 +94,7 @@
         # Crane setup for cached builds
         # ========================================
         craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
+        craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
 
         # Source for crane builds
         src = builtins.path {
@@ -131,6 +132,12 @@
           cargoExtraArgs = "--workspace";
         });
 
+        # MSRV dependencies (separate cache due to different toolchain)
+        workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (commonCraneArgs // {
+          pname = "cdk-deps-msrv";
+          cargoExtraArgs = "--workspace";
+        });
+
         # Helper function to create clippy checks
         mkClippy = name: cargoArgs: craneLib.cargoClippy (commonCraneArgs // {
           pname = "cdk-clippy-${name}";
@@ -156,6 +163,28 @@
             mkdir -p $out/bin
             cp target/release/examples/${name} $out/bin/
           '';
+        });
+
+        # Helper function to create MSRV build checks
+        mkMsrvBuild = name: cargoArgs: craneLibMsrv.cargoBuild (commonCraneArgs // {
+          pname = "cdk-msrv-${name}";
+          cargoArtifacts = workspaceDepsMsrv;
+          cargoExtraArgs = cargoArgs;
+        });
+
+        # Helper function to create WASM build checks
+        # WASM builds don't need native libs like openssl
+        mkWasmBuild = name: cargoArgs: craneLibMsrv.cargoBuild ({
+          inherit src;
+          pname = "cdk-wasm-${name}";
+          version = "0.14.0";
+          cargoArtifacts = workspaceDepsMsrv;
+          cargoExtraArgs = "${cargoArgs} --target wasm32-unknown-unknown";
+          # WASM doesn't need native build inputs
+          nativeBuildInputs = with pkgs; [ pkg-config ];
+          buildInputs = [ ];
+          # Disable tests for WASM (can't run in sandbox)
+          doCheck = false;
         });
 
         # ========================================
@@ -250,6 +279,32 @@
 
           # Binaries: cdk-mint-cli
           "bin-cdk-mint-cli" = "--bin cdk-mint-cli";
+        };
+
+        # ========================================
+        # MSRV build check definitions
+        # ========================================
+        msrvChecks = {
+          # Core library with all features (except swagger which breaks MSRV)
+          "cdk-all-features" = "-p cdk --features \"mint,wallet,auth\"";
+
+          # Mintd with all backends, databases, and features (no swagger)
+          "cdk-mintd-all" = "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,auth,redis,management-rpc\"";
+
+          # CLI - default features (excludes redb which breaks MSRV)
+          "cdk-cli" = "-p cdk-cli";
+
+          # Minimal builds to ensure no-default-features works
+          "cdk-wallet-only" = "-p cdk --no-default-features --features wallet";
+        };
+
+        # ========================================
+        # WASM build check definitions
+        # ========================================
+        wasmChecks = {
+          "cdk" = "-p cdk";
+          "cdk-no-default" = "-p cdk --no-default-features";
+          "cdk-wallet" = "-p cdk --no-default-features --features wallet";
         };
 
         # Common inputs
@@ -370,12 +425,17 @@
         # Expose deps for explicit cache warming
         packages = {
           deps = workspaceDeps;
+          deps-msrv = workspaceDepsMsrv;
         }
         # Example packages (binaries that can be run outside sandbox with network access)
         // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExamplePackage name; }) exampleChecks));
         checks =
           # Generate clippy checks from clippyChecks attrset
           (builtins.mapAttrs (name: args: mkClippy name args) clippyChecks)
+          # Generate MSRV build checks (prefixed with msrv-)
+          // (builtins.listToAttrs (map (name: { name = "msrv-${name}"; value = mkMsrvBuild name msrvChecks.${name}; }) (builtins.attrNames msrvChecks)))
+          # Generate WASM build checks (prefixed with wasm-)
+          // (builtins.listToAttrs (map (name: { name = "wasm-${name}"; value = mkWasmBuild name wasmChecks.${name}; }) (builtins.attrNames wasmChecks)))
           # Generate example checks from exampleChecks list
           // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExample name; }) exampleChecks))
           // {
