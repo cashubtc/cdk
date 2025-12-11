@@ -187,6 +187,67 @@
           doCheck = false;
         });
 
+        # Doc tests check
+        docTests = craneLib.cargoTest (commonCraneArgs // {
+          pname = "cdk-doc-tests";
+          cargoArtifacts = workspaceDeps;
+          cargoTestExtraArgs = "--doc";
+        });
+
+        # Strict docs check - build docs with warnings as errors
+        # Uses mkCargoDerivation for custom RUSTDOCFLAGS
+        strictDocs = craneLib.mkCargoDerivation (commonCraneArgs // {
+          pname = "cdk-strict-docs";
+          cargoArtifacts = workspaceDeps;
+          buildPhaseCargoCommand = ''
+            export RUSTDOCFLAGS="-D warnings"
+            cargo doc --no-deps \
+              -p cashu \
+              -p cdk-common \
+              -p cdk-sql-common \
+              -p cdk \
+              -p cdk-redb \
+              -p cdk-sqlite \
+              -p cdk-axum \
+              -p cdk-cln \
+              -p cdk-lnd \
+              -p cdk-lnbits \
+              -p cdk-fake-wallet \
+              -p cdk-mint-rpc \
+              -p cdk-payment-processor \
+              -p cdk-signatory \
+              -p cdk-cli \
+              -p cdk-mintd
+          '';
+          installPhaseCommand = "mkdir -p $out";
+        });
+
+        # FFI Python tests
+        ffiTests = craneLib.mkCargoDerivation (commonCraneArgs // {
+          pname = "cdk-ffi-tests";
+          cargoArtifacts = workspaceDeps;
+          nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
+            pkgs.python311
+          ];
+          buildPhaseCargoCommand = ''
+            # Build the FFI library
+            cargo build --release --package cdk-ffi --features postgres
+
+            # Generate Python bindings
+            cargo run --bin uniffi-bindgen generate \
+              --library target/release/libcdk_ffi.so \
+              --language python \
+              --out-dir target/bindings/python
+
+            # Copy library to bindings directory
+            cp target/release/libcdk_ffi.so target/bindings/python/
+
+            # Run Python tests
+            python3 crates/cdk-ffi/tests/test_transactions.py
+          '';
+          installPhaseCommand = "mkdir -p $out";
+        });
+
         # ========================================
         # Example definitions - single source of truth
         # ========================================
@@ -439,6 +500,15 @@
           # Generate example checks from exampleChecks list
           // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExample name; }) exampleChecks))
           // {
+            # Doc tests
+            doc-tests = docTests;
+
+            # Strict docs check
+            strict-docs = strictDocs;
+
+            # FFI Python tests
+            ffi-tests = ffiTests;
+
             # Pre-commit checks
             pre-commit-check =
               let
@@ -572,6 +642,24 @@
               // envVars
             );
 
+            # Shell for FFI development (Python bindings)
+            ffi = pkgs.mkShell (
+              {
+                shellHook = ''
+                  ${_shellHook}
+                  echo "FFI development shell"
+                  echo "  just ffi-test        - Run Python FFI tests"
+                  echo "  just ffi-dev-python  - Launch Python REPL with CDK FFI"
+                '';
+                buildInputs = buildInputs ++ [
+                  stable_toolchain
+                  pkgs.python311
+                ];
+                inherit nativeBuildInputs;
+              }
+              // envVars
+            );
+
           in
           {
             inherit
@@ -579,6 +667,7 @@
               stable
               nightly
               integration
+              ffi
               ;
             default = stable;
           };

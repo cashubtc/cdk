@@ -340,7 +340,7 @@ jobs:
           docker compose -f misc/keycloak/docker-compose-recover.yml down
 
   docs:
-    name: "Documentation tests and checks"
+    name: "Documentation tests"
     runs-on: self-hosted
     timeout-minutes: 30
     needs: pre-commit-checks
@@ -354,7 +354,7 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Run doc tests
-        run: nix develop -i -L .#stable --command cargo test --doc
+        run: nix build -L .#checks.x86_64-linux.doc-tests
 
   strict-docs:
     name: "Strict Documentation Check"
@@ -371,7 +371,7 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Check docs with strict warnings
-        run: nix develop -i -L .#stable --command just docs-strict
+        run: nix build -L .#checks.x86_64-linux.strict-docs
 
   ffi-tests:
     name: "FFI Python tests"
@@ -388,4 +388,4 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Run FFI tests
-        run: nix develop -i -L .#integration --command just ffi-test
+        run: nix build -L .#checks.x86_64-linux.ffi-tests
