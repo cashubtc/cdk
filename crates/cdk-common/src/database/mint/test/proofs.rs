@@ -616,3 +616,113 @@ where
     let total: u64 = retrieved_proofs.iter().map(|p| u64::from(p.amount)).sum();
     assert!(total >= 5500); // 100 + 200 + ... + 1000 = 5500
 }
+
+/// Test that removing proofs in Spent state should fail
+///
+/// This test verifies that the storage layer enforces the constraint that proofs
+/// in the `Spent` state cannot be removed via `remove_proofs`. The operation should
+/// fail with an error to prevent accidental deletion of spent proofs.
+pub async fn remove_spent_proofs_should_fail<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use cashu::State;
+
+    let keyset_id = setup_keyset(&db).await;
+    let quote_id = QuoteId::new_uuid();
+
+    let proofs = vec![
+        Proof {
+            amount: Amount::from(100),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+        Proof {
+            amount: Amount::from(200),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+    ];
+
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    // Add proofs to database (initial state is Unspent)
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(
+        proofs.clone(),
+        Some(quote_id.clone()),
+        &Operation::new_swap(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Verify proofs exist and are in Unspent state
+    let states = db.get_proofs_states(&ys).await.unwrap();
+    assert_eq!(states.len(), 2);
+    assert_eq!(states[0], Some(State::Unspent));
+    assert_eq!(states[1], Some(State::Unspent));
+
+    // Removing Unspent proofs should succeed
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx.remove_proofs(&[ys[0]], Some(quote_id.clone())).await;
+    assert!(result.is_ok(), "Removing Unspent proof should succeed");
+    tx.rollback().await.unwrap(); // Rollback to keep proofs for next test
+
+    // Transition proofs to Pending state
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.update_proofs_states(&ys, State::Pending).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Removing Pending proofs should also succeed
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx.remove_proofs(&[ys[0]], Some(quote_id.clone())).await;
+    assert!(result.is_ok(), "Removing Pending proof should succeed");
+    tx.rollback().await.unwrap(); // Rollback to keep proofs for next test
+
+    // Now transition proofs to Spent state
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.update_proofs_states(&ys, State::Spent).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Verify proofs are now in Spent state
+    let states = db.get_proofs_states(&ys).await.unwrap();
+    assert_eq!(states[0], Some(State::Spent));
+    assert_eq!(states[1], Some(State::Spent));
+
+    // Attempt to remove Spent proofs - this should FAIL
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx.remove_proofs(&ys, Some(quote_id.clone())).await;
+    assert!(
+        result.is_err(),
+        "Removing proofs in Spent state should fail"
+    );
+
+    // Verify the error is the expected type
+    assert!(
+        matches!(result.unwrap_err(), Error::AttemptRemoveSpentProof),
+        "Error should be AttemptRemoveSpentProof"
+    );
+
+    // Rollback the failed transaction to release locks
+    tx.rollback().await.unwrap();
+
+    // Verify proofs still exist after failed removal attempt
+    let states = db.get_proofs_states(&ys).await.unwrap();
+    assert_eq!(
+        states[0],
+        Some(State::Spent),
+        "First proof should still exist"
+    );
+    assert_eq!(
+        states[1],
+        Some(State::Spent),
+        "Second proof should still exist"
+    );
+}
