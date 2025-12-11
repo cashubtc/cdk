@@ -212,10 +212,7 @@ impl MeltQuoteBolt11Request {
     /// in the request for an amountless bolt11 or in MPP option.
     pub fn amount_msat(&self) -> Result<Amount, Error> {
         let MeltQuoteBolt11Request {
-            request,
-            unit: _,
-            options,
-            ..
+            request, options, ..
         } = self;
 
         match options {

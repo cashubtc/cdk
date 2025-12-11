@@ -531,9 +531,8 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
     fn try_from(tags: Vec<Vec<String>>) -> Result<Conditions, Self::Error> {
         let tags: HashMap<TagKind, Tag> = tags
             .into_iter()
-            .map(|t| Tag::try_from(t).unwrap())
-            .map(|t| (t.kind(), t))
-            .collect();
+            .map(|t| Tag::try_from(t).map(|tag| (tag.kind(), tag)))
+            .collect::<Result<_, _>>()?;
 
         let pubkeys = match tags.get(&TagKind::Pubkeys) {
             Some(Tag::PubKeys(pubkeys)) => Some(pubkeys.clone()),
