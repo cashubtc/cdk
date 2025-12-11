@@ -37,9 +37,13 @@ where
 
     // Add proofs to database
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs, Some(quote_id), &Operation::new_swap())
-        .await
-        .unwrap();
+    tx.add_proofs(
+        proofs,
+        Some(quote_id),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
     assert!(tx.commit().await.is_ok());
 
     let (proofs, states) = db.get_proofs_by_keyset_id(&keyset_id).await.unwrap();
@@ -94,7 +98,7 @@ where
     tx.add_proofs(
         proofs.clone(),
         Some(quote_id.clone()),
-        &Operation::new_swap(),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
     )
     .await
     .unwrap();
@@ -142,7 +146,7 @@ where
     tx.add_proofs(
         proofs.clone(),
         Some(quote_id.clone()),
-        &Operation::new_swap(),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
     )
     .await
     .unwrap();
@@ -153,7 +157,7 @@ where
         .add_proofs(
             proofs.clone(),
             Some(quote_id.clone()),
-            &Operation::new_swap(),
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
         )
         .await;
 

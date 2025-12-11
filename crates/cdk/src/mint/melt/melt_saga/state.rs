@@ -1,15 +1,20 @@
+use cdk_common::mint::Operation;
 use cdk_common::nuts::BlindedMessage;
 use cdk_common::{Amount, PublicKey};
+use uuid::Uuid;
 
 use crate::cdk_payment::MakePaymentResponse;
 use crate::mint::MeltQuote;
 
-/// Initial state - no data yet.
+/// Initial state - only has operation ID.
 ///
 /// The melt saga starts in this state. Only the `setup_melt` method is available.
-pub struct Initial;
+/// The operation ID is generated upfront but the full Operation (with amounts) is created during setup.
+pub struct Initial {
+    pub operation_id: Uuid,
+}
 
-/// Setup complete - has quote, input Ys, and blinded messages.
+/// Setup complete - has quote, input Ys, blinded messages, and the Operation with actual amounts.
 ///
 /// After successful setup, the saga transitions to this state.
 /// The `attempt_internal_settlement` and `make_payment` methods are available.
@@ -17,6 +22,8 @@ pub struct SetupComplete {
     pub quote: MeltQuote,
     pub input_ys: Vec<PublicKey>,
     pub blinded_messages: Vec<BlindedMessage>,
+    pub operation: Operation,
+    pub fee_breakdown: crate::fees::ProofsFeeBreakdown,
 }
 
 /// Payment confirmed - has everything including payment result.
@@ -29,6 +36,8 @@ pub struct PaymentConfirmed {
     #[allow(dead_code)] // Stored for completeness, accessed from DB in finalize
     pub blinded_messages: Vec<BlindedMessage>,
     pub payment_result: MakePaymentResponse,
+    pub operation: Operation,
+    pub fee_breakdown: crate::fees::ProofsFeeBreakdown,
 }
 
 /// Result of attempting internal settlement for a melt operation.

@@ -6,6 +6,7 @@ use tracing::instrument;
 
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
+use crate::fees::ProofsFeeBreakdown;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     nut10, PreMintSecrets, PreSwap, Proofs, PublicKey, SpendingConditions, State, SwapRequest,
@@ -32,6 +33,8 @@ impl Wallet {
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
+        let fee_breakdown = self.get_proofs_fee(&input_proofs).await?;
+
         let pre_swap = self
             .create_swap(
                 self.localstore.begin_db_transaction().await?,
@@ -42,6 +45,7 @@ impl Wallet {
                 input_proofs.clone(),
                 spending_conditions.clone(),
                 include_fees,
+                &fee_breakdown,
             )
             .await?;
 
@@ -207,19 +211,19 @@ impl Wallet {
         proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
+        proofs_fee_breakdown: &ProofsFeeBreakdown,
     ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
 
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;
-        let fee = self.get_proofs_fee(&proofs).await?;
 
         let ys: Vec<PublicKey> = proofs.ys()?;
         tx.update_proofs_state(ys, State::Reserved).await?;
 
         let total_to_subtract = amount
             .unwrap_or(Amount::ZERO)
-            .checked_add(fee)
+            .checked_add(proofs_fee_breakdown.total)
             .ok_or(Error::AmountOverflow)?;
 
         let change_amount: Amount = proofs_total
@@ -365,7 +369,7 @@ impl Wallet {
             pre_mint_secrets: desired_messages,
             swap_request,
             derived_secret_count: derived_secret_count as u32,
-            fee,
+            fee: proofs_fee_breakdown.total,
         })
     }
 }
