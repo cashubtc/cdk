@@ -42,3 +42,6 @@ postgres = ["cdk-postgres"]
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
+
+[lints]
+workspace = true

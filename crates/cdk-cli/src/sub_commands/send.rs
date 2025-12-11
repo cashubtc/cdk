@@ -139,8 +139,8 @@ pub async fn send(
                     sub_command_args
                         .pubkey
                         .iter()
-                        .map(|p| PublicKey::from_str(p).unwrap())
-                        .collect(),
+                        .map(|p| PublicKey::from_str(p))
+                        .collect::<Result<Vec<_>, _>>()?,
                 ),
             };
 
@@ -150,8 +150,8 @@ pub async fn send(
                     sub_command_args
                         .refund_keys
                         .iter()
-                        .map(|p| PublicKey::from_str(p).unwrap())
-                        .collect(),
+                        .map(|p| PublicKey::from_str(p))
+                        .collect::<Result<Vec<_>, _>>()?,
                 ),
             };
 
@@ -162,8 +162,7 @@ pub async fn send(
                 sub_command_args.required_sigs,
                 None,
                 None,
-            )
-            .unwrap();
+            )?;
 
             Some(SpendingConditions::new_htlc(
                 preimage.clone(),
@@ -177,8 +176,8 @@ pub async fn send(
                     sub_command_args
                         .pubkey
                         .iter()
-                        .map(|p| PublicKey::from_str(p).unwrap())
-                        .collect(),
+                        .map(|p| PublicKey::from_str(p))
+                        .collect::<Result<Vec<_>, _>>()?,
                 ),
             };
 
@@ -188,8 +187,8 @@ pub async fn send(
                     sub_command_args
                         .refund_keys
                         .iter()
-                        .map(|p| PublicKey::from_str(p).unwrap())
-                        .collect(),
+                        .map(|p| PublicKey::from_str(p))
+                        .collect::<Result<Vec<_>, _>>()?,
                 ),
             };
 
@@ -210,14 +209,14 @@ pub async fn send(
                 let pubkeys: Vec<PublicKey> = sub_command_args
                     .pubkey
                     .iter()
-                    .map(|p| PublicKey::from_str(p).unwrap())
-                    .collect();
+                    .map(|p| PublicKey::from_str(p))
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 let refund_keys: Vec<PublicKey> = sub_command_args
                     .refund_keys
                     .iter()
-                    .map(|p| PublicKey::from_str(p).unwrap())
-                    .collect();
+                    .map(|p| PublicKey::from_str(p))
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 let refund_keys = (!refund_keys.is_empty()).then_some(refund_keys);
 

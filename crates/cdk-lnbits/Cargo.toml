@@ -23,3 +23,6 @@ thiserror.workspace = true
 lnbits-rs = "0.9.1"
 serde_json.workspace = true
 rustls.workspace = true
+
+[lints]
+workspace = true

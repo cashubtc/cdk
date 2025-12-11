@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 fn main() {
     // Check that at least one database feature is enabled
     let has_database = cfg!(feature = "sqlite") || cfg!(feature = "postgres");

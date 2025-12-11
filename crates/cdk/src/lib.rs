@@ -1,7 +1,5 @@
 //! Rust implementation of the Cashu Protocol
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
-#![warn(rustdoc::bare_urls)]
 
 // Disallow enabling `tor` feature on wasm32 with a clear error.
 #[cfg(all(target_arch = "wasm32", feature = "tor"))]

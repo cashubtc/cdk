@@ -166,3 +166,6 @@ tokio = { workspace = true, features = ["full"] }
 [[bench]]
 name = "dhke_benchmarks"
 harness = false
+
+[lints]
+workspace = true
