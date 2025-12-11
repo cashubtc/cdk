@@ -220,10 +220,10 @@ impl CdkLdkNode {
 
         ldk.set_node_alias("cdk-ldk-node".to_string())?;
         if builder.seed.is_some() {
-            ldk.set_entropy_bip39_mnemonic(builder.seed.unwrap(), None);
+            ldk.set_entropy_bip39_mnemonic(builder.seed.expect("valid seed"), None);
         }
         if builder.announcement_addresses.is_some() {
-            ldk.set_announcement_addresses(builder.announcement_addresses.unwrap())?;
+            ldk.set_announcement_addresses(builder.announcement_addresses.expect("valid announcement_addresses"))?;
         }
 
         let node = ldk.build()?;
