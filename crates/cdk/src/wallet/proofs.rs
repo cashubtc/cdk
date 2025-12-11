@@ -242,7 +242,7 @@ impl Wallet {
                     .unwrap_or_default();
                 // Convert fee from ppk (parts per thousand) to sats per NUT-02 spec:
                 // fee = ceil(fee_ppk / 1000) for 1 proof
-                let fee: Amount = ((fee_ppk + 999) / 1000).into();
+                let fee: Amount = fee_ppk.div_ceil(1000).into();
 
                 if let Some(exact_amount_to_melt) = total_for_proofs
                     .checked_sub(proof_to_exchange.amount)
