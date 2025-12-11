@@ -280,25 +280,37 @@ fn create_ldk_settings(
             logging: LoggingConfig::default(),
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
-        ln: cdk_mintd::config::Ln {
-            ln_backend: cdk_mintd::config::LnBackend::LdkNode,
+        payment_backend: cdk_mintd::config::PaymentBackend {
+            kind: cdk_mintd::config::PaymentBackendKind::LdkNode,
             invoice_description: None,
             min_mint: 1.into(),
             max_mint: 500_000.into(),
             min_melt: 1.into(),
             max_melt: 500_000.into(),
+            ldk_node: Some(ldk_config.clone()),
+            ..Default::default()
         },
+        database: cdk_mintd::config::Database::default(),
+        auth_database: None,
+        mint_management_rpc: None,
+        prometheus: None,
+        auth: None,
         cln: None,
         lnbits: None,
         lnd: None,
         ldk_node: Some(ldk_config),
         fake_wallet: None,
         grpc_processor: None,
-        database: cdk_mintd::config::Database::default(),
-        auth_database: None,
-        mint_management_rpc: None,
-        prometheus: None,
-        auth: None,
+        using_deprecated_config: None,
+        ln: cdk_mintd::config::PaymentBackend {
+            ln_backend: cdk_mintd::config::PaymentBackendKind::LdkNode,
+            invoice_description: None,
+            min_mint: 1.into(),
+            max_mint: 500_000.into(),
+            min_melt: 1.into(),
+            max_melt: 500_000.into(),
+            ..Default::default()
+        },
     }
 }
 

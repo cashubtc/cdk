@@ -55,7 +55,7 @@ pub use mint_info::*;
 #[cfg(feature = "prometheus")]
 pub use prometheus::*;
 
-use crate::config::{DatabaseEngine, LnBackend, Settings};
+use crate::config::{DatabaseEngine, PaymentBackendKind, Settings};
 
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
@@ -92,14 +92,30 @@ impl Settings {
 
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
-        self.ln = self.ln.clone().from_env();
-
+        self.payment_backend = self.payment_backend.clone().from_env();
+        // The following section is providing backwards compatibility #1127
+        // todo -- remove this section
+        if self.payment_backend.kind == PaymentBackendKind::None
+            && self.ln.ln_backend != PaymentBackendKind::None
+        {
+            self.using_deprecated_config = Some(true);
+            let mut ln = self.ln.clone();
+            // old ln_backend to kind
+            ln.kind = ln.ln_backend.clone();
+            // old specific settings to payment_backend
+            ln.lnbits = self.lnbits.clone();
+            ln.fake_wallet = self.fake_wallet.clone();
+            ln.cln = self.cln.clone();
+            ln.lnd = self.lnd.clone();
+            ln.grpc_processor = self.grpc_processor.clone();
+            self.payment_backend = ln;
+        }
         #[cfg(feature = "auth")]
         {
             // Check env vars for auth config even if None
             let auth = self.auth.clone().unwrap_or_default().from_env();
 
-            // Only set auth if auth_enabled flag is true
+            // Only set auth if the auth_enabled flag is true
             if auth.auth_enabled {
                 self.auth = Some(auth);
             } else {
@@ -122,33 +138,68 @@ impl Settings {
             self.prometheus = Some(self.prometheus.clone().unwrap_or_default().from_env());
         }
 
-        match self.ln.ln_backend {
+        match self.payment_backend.kind {
             #[cfg(feature = "cln")]
-            LnBackend::Cln => {
-                self.cln = Some(self.cln.clone().unwrap_or_default().from_env());
+            PaymentBackendKind::Cln => {
+                self.payment_backend.cln = Some(
+                    self.payment_backend
+                        .cln
+                        .clone()
+                        .unwrap_or_default()
+                        .from_env(),
+                );
             }
             #[cfg(feature = "lnbits")]
-            LnBackend::LNbits => {
-                self.lnbits = Some(self.lnbits.clone().unwrap_or_default().from_env());
+            PaymentBackendKind::LNbits => {
+                self.payment_backend.lnbits = Some(
+                    self.payment_backend
+                        .lnbits
+                        .clone()
+                        .unwrap_or_default()
+                        .from_env(),
+                );
             }
             #[cfg(feature = "fakewallet")]
-            LnBackend::FakeWallet => {
-                self.fake_wallet = Some(self.fake_wallet.clone().unwrap_or_default().from_env());
+            PaymentBackendKind::FakeWallet => {
+                self.payment_backend.fake_wallet = Some(
+                    self.payment_backend
+                        .fake_wallet
+                        .clone()
+                        .unwrap_or_default()
+                        .from_env(),
+                );
             }
             #[cfg(feature = "lnd")]
-            LnBackend::Lnd => {
-                self.lnd = Some(self.lnd.clone().unwrap_or_default().from_env());
+            PaymentBackendKind::Lnd => {
+                self.payment_backend.lnd = Some(
+                    self.payment_backend
+                        .lnd
+                        .clone()
+                        .unwrap_or_default()
+                        .from_env(),
+                );
             }
             #[cfg(feature = "ldk-node")]
-            LnBackend::LdkNode => {
-                self.ldk_node = Some(self.ldk_node.clone().unwrap_or_default().from_env());
+            PaymentBackendKind::LdkNode => {
+                self.payment_backend.ldk_node = Some(
+                    self.payment_backend
+                        .ldk_node
+                        .clone()
+                        .unwrap_or_default()
+                        .from_env(),
+                );
             }
             #[cfg(feature = "grpc-processor")]
-            LnBackend::GrpcProcessor => {
-                self.grpc_processor =
-                    Some(self.grpc_processor.clone().unwrap_or_default().from_env());
+            PaymentBackendKind::GrpcProcessor => {
+                self.payment_backend.grpc_processor = Some(
+                    self.payment_backend
+                        .grpc_processor
+                        .clone()
+                        .unwrap_or_default()
+                        .from_env(),
+                );
             }
-            LnBackend::None => bail!("Ln backend must be set"),
+            PaymentBackendKind::None => bail!("Ln backend must be set"),
             #[allow(unreachable_patterns)]
             _ => bail!("Selected Ln backend is not enabled in this build"),
         }
