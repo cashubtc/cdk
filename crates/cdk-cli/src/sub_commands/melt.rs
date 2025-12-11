@@ -137,7 +137,8 @@ pub async fn pay(
             bail!("MPP is only supported for BOLT11 invoices");
         }
 
-        let bolt11_str = input_or_prompt(sub_command_args.invoice.as_ref(), "Enter bolt11 invoice")?;
+        let bolt11_str =
+            input_or_prompt(sub_command_args.invoice.as_ref(), "Enter bolt11 invoice")?;
         let _bolt11 = Bolt11Invoice::from_str(&bolt11_str)?; // Validate invoice format
 
         // Show available mints and balances
