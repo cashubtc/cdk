@@ -31,6 +31,7 @@ jobs:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
+          installCommand: nix profile install nixpkgs#cachix
         continue-on-error: true
       - name: Cargo fmt
         run: nix develop -i -L .#stable --command cargo fmt --check
