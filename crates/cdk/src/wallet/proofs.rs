@@ -220,12 +220,14 @@ impl Wallet {
                 let fee_ppk = fees_and_keyset_amounts
                     .get(&proof_to_exchange.keyset_id)
                     .map(|fee_and_amounts| fee_and_amounts.fee())
-                    .unwrap_or_default()
-                    .into();
+                    .unwrap_or_default();
+                // Convert fee from ppk (parts per thousand) to sats per NUT-02 spec:
+                // fee = ceil(fee_ppk / 1000) for 1 proof
+                let fee: Amount = ((fee_ppk + 999) / 1000).into();
 
                 if let Some(exact_amount_to_melt) = total_for_proofs
                     .checked_sub(proof_to_exchange.amount)
-                    .and_then(|a| a.checked_add(fee_ppk))
+                    .and_then(|a| a.checked_add(fee))
                     .and_then(|b| amount.checked_sub(b))
                 {
                     exchange = Some((proof_to_exchange, exact_amount_to_melt));
