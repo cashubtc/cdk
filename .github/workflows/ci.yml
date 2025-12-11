@@ -95,8 +95,9 @@ jobs:
       - name: Get clippy check names
         id: checks
         run: |
-          # Get all check names except pre-commit-check and example-* checks
-          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pre-commit-check" && builtins.substring 0 8 n != "example-") (builtins.attrNames attrs)' --json)
+          # Get all check names except pre-commit-check, example-*, msrv-*, wasm-*, doc-tests, strict-docs, ffi-tests
+          # Those have their own dedicated CI jobs
+          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pre-commit-check" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-") (builtins.attrNames attrs)' --json)
           echo "checks=$checks" >> $GITHUB_OUTPUT
           echo "Found checks: $checks"
 

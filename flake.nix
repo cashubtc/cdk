@@ -102,6 +102,13 @@
           name = "cdk-source";
         };
 
+        # Source for MSRV builds - uses Cargo.lock.msrv with MSRV-compatible deps
+        srcMsrv = pkgs.runCommand "cdk-source-msrv" { } ''
+          cp -r ${src} $out
+          chmod -R +w $out
+          cp $out/Cargo.lock.msrv $out/Cargo.lock
+        '';
+
         # Common args for all Crane builds
         commonCraneArgs = {
           inherit src;
@@ -124,6 +131,11 @@
           PROTOC_INCLUDE = "${pkgs.protobuf}/include";
         };
 
+        # Common args for MSRV builds - uses srcMsrv with pinned deps
+        commonCraneArgsMsrv = commonCraneArgs // {
+          src = srcMsrv;
+        };
+
         # Build ALL dependencies once - this is what gets cached by Cachix
         # Note: We exclude swagger feature as it tries to download assets during build
         workspaceDeps = craneLib.buildDepsOnly (commonCraneArgs // {
@@ -133,7 +145,7 @@
         });
 
         # MSRV dependencies (separate cache due to different toolchain)
-        workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (commonCraneArgs // {
+        workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (commonCraneArgsMsrv // {
           pname = "cdk-deps-msrv";
           cargoExtraArgs = "--workspace";
         });
@@ -166,7 +178,7 @@
         });
 
         # Helper function to create MSRV build checks
-        mkMsrvBuild = name: cargoArgs: craneLibMsrv.cargoBuild (commonCraneArgs // {
+        mkMsrvBuild = name: cargoArgs: craneLibMsrv.cargoBuild (commonCraneArgsMsrv // {
           pname = "cdk-msrv-${name}";
           cargoArtifacts = workspaceDepsMsrv;
           cargoExtraArgs = cargoArgs;
@@ -174,11 +186,11 @@
 
         # Helper function to create WASM build checks
         # WASM builds don't need native libs like openssl
-        mkWasmBuild = name: cargoArgs: craneLibMsrv.cargoBuild ({
+        mkWasmBuild = name: cargoArgs: craneLib.cargoBuild ({
           inherit src;
           pname = "cdk-wasm-${name}";
           version = "0.14.0";
-          cargoArtifacts = workspaceDepsMsrv;
+          cargoArtifacts = workspaceDeps;
           cargoExtraArgs = "${cargoArgs} --target wasm32-unknown-unknown";
           # WASM doesn't need native build inputs
           nativeBuildInputs = with pkgs; [ pkg-config ];
