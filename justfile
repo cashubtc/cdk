@@ -411,6 +411,7 @@ release m="":
     "-p cdk-postgres"
     "-p cdk-redb"
     "-p cdk-signatory"
+    "-p cdk-fake-wallet"
     "-p cdk"
     "-p cdk-ffi"
     "-p cdk-axum"
@@ -419,7 +420,6 @@ release m="":
     "-p cdk-lnd"
     "-p cdk-lnbits"
     "-p cdk-ldk-node"
-    "-p cdk-fake-wallet"
     "-p cdk-payment-processor"
     "-p cdk-cli"
     "-p cdk-mintd"
@@ -576,6 +576,14 @@ ffi-generate-all *ARGS="--release": ffi-build
   just ffi-generate swift {{ARGS}}
   just ffi-generate kotlin {{ARGS}}
   @echo "✅ All bindings generated successfully!"
+
+# Run Python FFI tests
+ffi-test: ffi-generate-python
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "🧪 Running Python FFI tests..."
+  python3 crates/cdk-ffi/tests/test_transactions.py
+  echo "✅ Tests completed!"
 
 # Build debug version and generate Python bindings quickly (for development)
 ffi-dev-python:

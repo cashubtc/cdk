@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::common::ProofInfo;
-use cdk_common::database::{ConversionError, Error, WalletDatabase};
+use cdk_common::database::{
+    ConversionError, DbTransactionFinalizer, Error, WalletDatabase, WalletDatabaseTransaction,
+};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
@@ -41,142 +43,25 @@ where
     pool: Arc<Pool<RM>>,
 }
 
-impl<RM> SQLWalletDatabase<RM>
+/// SQL Transaction Writer
+pub struct SQLWalletTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
-    /// Creates a new instance
-    pub async fn new<X>(db: X) -> Result<Self, Error>
-    where
-        X: Into<RM::Config>,
-    {
-        let pool = Pool::new(db.into());
-        Self::migrate(pool.get().map_err(|e| Error::Database(Box::new(e)))?).await?;
-
-        Ok(Self { pool })
-    }
-
-    /// Migrate [`WalletSqliteDatabase`]
-    async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
-        let tx = ConnectionWithTransaction::new(conn).await?;
-        migrate(&tx, RM::Connection::name(), migrations::MIGRATIONS).await?;
-        // Update any existing keys with missing keyset_u32 values
-        Self::add_keyset_u32(&tx).await?;
-        tx.commit().await?;
-
-        Ok(())
-    }
-
-    async fn add_keyset_u32<T>(conn: &T) -> Result<(), Error>
-    where
-        T: DatabaseExecutor,
-    {
-        // First get the keysets where keyset_u32 on key is null
-        let keys_without_u32: Vec<Vec<Column>> = query(
-            r#"
-            SELECT
-                id
-            FROM key
-            WHERE keyset_u32 IS NULL
-            "#,
-        )?
-        .fetch_all(conn)
-        .await?;
-
-        for id in keys_without_u32 {
-            let id = column_as_string!(id.first().unwrap());
-
-            if let Ok(id) = Id::from_str(&id) {
-                query(
-                    r#"
-            UPDATE
-                key
-            SET keyset_u32 = :u32_keyset
-            WHERE id = :keyset_id
-            "#,
-                )?
-                .bind("u32_keyset", u32::from(id))
-                .bind("keyset_id", id.to_string())
-                .execute(conn)
-                .await?;
-            }
-        }
-
-        // Also update keysets where keyset_u32 is null
-        let keysets_without_u32: Vec<Vec<Column>> = query(
-            r#"
-            SELECT
-                id
-            FROM keyset
-            WHERE keyset_u32 IS NULL
-            "#,
-        )?
-        .fetch_all(conn)
-        .await?;
-
-        for id in keysets_without_u32 {
-            let id = column_as_string!(id.first().unwrap());
-
-            if let Ok(id) = Id::from_str(&id) {
-                query(
-                    r#"
-            UPDATE
-                keyset
-            SET keyset_u32 = :u32_keyset
-            WHERE id = :keyset_id
-            "#,
-                )?
-                .bind("u32_keyset", u32::from(id))
-                .bind("keyset_id", id.to_string())
-                .execute(conn)
-                .await?;
-            }
-        }
-
-        Ok(())
-    }
+    inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
 }
 
 #[async_trait]
-impl<RM> WalletDatabase for SQLWalletDatabase<RM>
+impl<RM> WalletDatabaseTransaction<Error> for SQLWalletTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
-    type Err = database::Error;
-
-    #[instrument(skip(self))]
-    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
-        Ok(query(
-            r#"
-              SELECT
-                  id,
-                  unit,
-                  amount,
-                  request,
-                  fee_reserve,
-                  state,
-                  expiry,
-                  payment_preimage,
-                  payment_method
-              FROM
-                  melt_quote
-              "#,
-        )?
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_melt_quote)
-        .collect::<Result<_, _>>()?)
-    }
-
     #[instrument(skip(self, mint_info))]
     async fn add_mint(
-        &self,
+        &mut self,
         mint_url: MintUrl,
         mint_info: Option<MintInfo>,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         let (
             name,
             pubkey,
@@ -227,35 +112,33 @@ where
             ),
         };
 
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
         query(
             r#"
-INSERT INTO mint
-(
-    mint_url, name, pubkey, version, description, description_long,
-    contact, nuts, icon_url, urls, motd, mint_time, tos_url
-)
-VALUES
-(
-    :mint_url, :name, :pubkey, :version, :description, :description_long,
-    :contact, :nuts, :icon_url, :urls, :motd, :mint_time, :tos_url
-)
-ON CONFLICT(mint_url) DO UPDATE SET
-    name = excluded.name,
-    pubkey = excluded.pubkey,
-    version = excluded.version,
-    description = excluded.description,
-    description_long = excluded.description_long,
-    contact = excluded.contact,
-    nuts = excluded.nuts,
-    icon_url = excluded.icon_url,
-    urls = excluded.urls,
-    motd = excluded.motd,
-    mint_time = excluded.mint_time,
-    tos_url = excluded.tos_url
-;
-        "#,
+   INSERT INTO mint
+   (
+       mint_url, name, pubkey, version, description, description_long,
+       contact, nuts, icon_url, urls, motd, mint_time, tos_url
+   )
+   VALUES
+   (
+       :mint_url, :name, :pubkey, :version, :description, :description_long,
+       :contact, :nuts, :icon_url, :urls, :motd, :mint_time, :tos_url
+   )
+   ON CONFLICT(mint_url) DO UPDATE SET
+       name = excluded.name,
+       pubkey = excluded.pubkey,
+       version = excluded.version,
+       description = excluded.description,
+       description_long = excluded.description_long,
+       contact = excluded.contact,
+       nuts = excluded.nuts,
+       icon_url = excluded.icon_url,
+       urls = excluded.urls,
+       motd = excluded.motd,
+       mint_time = excluded.mint_time,
+       tos_url = excluded.tos_url
+   ;
+           "#,
         )?
         .bind("mint_url", mint_url.to_string())
         .bind("name", name)
@@ -270,22 +153,779 @@ ON CONFLICT(mint_url) DO UPDATE SET
         .bind("motd", motd)
         .bind("mint_time", time.map(|v| v as i64))
         .bind("tos_url", tos_url)
-        .execute(&*conn)
+        .execute(&self.inner)
         .await?;
 
         Ok(())
     }
 
     #[instrument(skip(self))]
-    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
+    async fn remove_mint(&mut self, mint_url: MintUrl) -> Result<(), Error> {
         query(r#"DELETE FROM mint WHERE mint_url=:mint_url"#)?
             .bind("mint_url", mint_url.to_string())
-            .execute(&*conn)
+            .execute(&self.inner)
             .await?;
 
         Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn update_mint_url(
+        &mut self,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
+    ) -> Result<(), Error> {
+        let tables = ["mint_quote", "proof"];
+
+        for table in &tables {
+            query(&format!(
+                r#"
+                UPDATE {table}
+                SET mint_url = :new_mint_url
+                WHERE mint_url = :old_mint_url
+            "#
+            ))?
+            .bind("new_mint_url", new_mint_url.to_string())
+            .bind("old_mint_url", old_mint_url.to_string())
+            .execute(&self.inner)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self, keysets))]
+    async fn add_mint_keysets(
+        &mut self,
+        mint_url: MintUrl,
+        keysets: Vec<KeySetInfo>,
+    ) -> Result<(), Error> {
+        for keyset in keysets {
+            query(
+                r#"
+        INSERT INTO keyset
+        (mint_url, id, unit, active, input_fee_ppk, final_expiry, keyset_u32)
+        VALUES
+        (:mint_url, :id, :unit, :active, :input_fee_ppk, :final_expiry, :keyset_u32)
+        ON CONFLICT(id) DO UPDATE SET
+            active = excluded.active,
+            input_fee_ppk = excluded.input_fee_ppk
+        "#,
+            )?
+            .bind("mint_url", mint_url.to_string())
+            .bind("id", keyset.id.to_string())
+            .bind("unit", keyset.unit.to_string())
+            .bind("active", keyset.active)
+            .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
+            .bind("final_expiry", keyset.final_expiry.map(|v| v as i64))
+            .bind("keyset_u32", u32::from(keyset.id))
+            .execute(&self.inner)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<(), Error> {
+        query(
+                r#"
+    INSERT INTO mint_quote
+    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid)
+    VALUES
+    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid)
+    ON CONFLICT(id) DO UPDATE SET
+        mint_url = excluded.mint_url,
+        amount = excluded.amount,
+        unit = excluded.unit,
+        request = excluded.request,
+        state = excluded.state,
+        expiry = excluded.expiry,
+        secret_key = excluded.secret_key,
+        payment_method = excluded.payment_method,
+        amount_issued = excluded.amount_issued,
+        amount_paid = excluded.amount_paid
+    ;
+            "#,
+            )?
+            .bind("id", quote.id.to_string())
+            .bind("mint_url", quote.mint_url.to_string())
+            .bind("amount", quote.amount.map(|a| a.to_i64()))
+            .bind("unit", quote.unit.to_string())
+            .bind("request", quote.request)
+            .bind("state", quote.state.to_string())
+            .bind("expiry", quote.expiry as i64)
+            .bind("secret_key", quote.secret_key.map(|p| p.to_string()))
+            .bind("payment_method", quote.payment_method.to_string())
+            .bind("amount_issued", quote.amount_issued.to_i64())
+            .bind("amount_paid", quote.amount_paid.to_i64())
+            .execute(&self.inner).await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn remove_mint_quote(&mut self, quote_id: &str) -> Result<(), Error> {
+        query(r#"DELETE FROM mint_quote WHERE id=:id"#)?
+            .bind("id", quote_id.to_string())
+            .execute(&self.inner)
+            .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn add_melt_quote(&mut self, quote: wallet::MeltQuote) -> Result<(), Error> {
+        query(
+            r#"
+ INSERT INTO melt_quote
+ (id, unit, amount, request, fee_reserve, state, expiry, payment_method)
+ VALUES
+ (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method)
+ ON CONFLICT(id) DO UPDATE SET
+     unit = excluded.unit,
+     amount = excluded.amount,
+     request = excluded.request,
+     fee_reserve = excluded.fee_reserve,
+     state = excluded.state,
+     expiry = excluded.expiry,
+     payment_method = excluded.payment_method
+ ;
+         "#,
+        )?
+        .bind("id", quote.id.to_string())
+        .bind("unit", quote.unit.to_string())
+        .bind("amount", u64::from(quote.amount) as i64)
+        .bind("request", quote.request)
+        .bind("fee_reserve", u64::from(quote.fee_reserve) as i64)
+        .bind("state", quote.state.to_string())
+        .bind("expiry", quote.expiry as i64)
+        .bind("payment_method", quote.payment_method.to_string())
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn remove_melt_quote(&mut self, quote_id: &str) -> Result<(), Error> {
+        query(r#"DELETE FROM melt_quote WHERE id=:id"#)?
+            .bind("id", quote_id.to_owned())
+            .execute(&self.inner)
+            .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn add_keys(&mut self, keyset: KeySet) -> Result<(), Error> {
+        // Recompute ID for verification
+        keyset.verify_id()?;
+
+        query(
+            r#"
+                INSERT INTO key
+                (id, keys, keyset_u32)
+                VALUES
+                (:id, :keys, :keyset_u32)
+            "#,
+        )?
+        .bind("id", keyset.id.to_string())
+        .bind(
+            "keys",
+            serde_json::to_string(&keyset.keys).map_err(Error::from)?,
+        )
+        .bind("keyset_u32", u32::from(keyset.id))
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn add_transaction(&mut self, transaction: Transaction) -> Result<(), Error> {
+        let mint_url = transaction.mint_url.to_string();
+        let direction = transaction.direction.to_string();
+        let unit = transaction.unit.to_string();
+        let amount = u64::from(transaction.amount) as i64;
+        let fee = u64::from(transaction.fee) as i64;
+        let ys = transaction
+            .ys
+            .iter()
+            .flat_map(|y| y.to_bytes().to_vec())
+            .collect::<Vec<_>>();
+
+        let id = transaction.id();
+
+        query(
+               r#"
+   INSERT INTO transactions
+   (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof)
+   VALUES
+   (:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof)
+   ON CONFLICT(id) DO UPDATE SET
+       mint_url = excluded.mint_url,
+       direction = excluded.direction,
+       unit = excluded.unit,
+       amount = excluded.amount,
+       fee = excluded.fee,
+       timestamp = excluded.timestamp,
+       memo = excluded.memo,
+       metadata = excluded.metadata,
+       quote_id = excluded.quote_id,
+       payment_request = excluded.payment_request,
+       payment_proof = excluded.payment_proof
+   ;
+           "#,
+           )?
+           .bind("id", id.as_slice().to_vec())
+           .bind("mint_url", mint_url)
+           .bind("direction", direction)
+           .bind("unit", unit)
+           .bind("amount", amount)
+           .bind("fee", fee)
+           .bind("ys", ys)
+           .bind("timestamp", transaction.timestamp as i64)
+           .bind("memo", transaction.memo)
+           .bind(
+               "metadata",
+               serde_json::to_string(&transaction.metadata).map_err(Error::from)?,
+           )
+           .bind("quote_id", transaction.quote_id)
+           .bind("payment_request", transaction.payment_request)
+           .bind("payment_proof", transaction.payment_proof)
+           .execute(&self.inner)
+           .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn remove_transaction(&mut self, transaction_id: TransactionId) -> Result<(), Error> {
+        query(r#"DELETE FROM transactions WHERE id=:id"#)?
+            .bind("id", transaction_id.as_slice().to_vec())
+            .execute(&self.inner)
+            .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn increment_keyset_counter(&mut self, keyset_id: &Id, count: u32) -> Result<u32, Error> {
+        // Lock the row and get current counter from keyset_counter table
+        let current_counter = query(
+            r#"
+               SELECT counter
+               FROM keyset_counter
+               WHERE keyset_id=:keyset_id
+               FOR UPDATE
+               "#,
+        )?
+        .bind("keyset_id", keyset_id.to_string())
+        .pluck(&self.inner)
+        .await?
+        .map(|n| Ok::<_, Error>(column_as_number!(n)))
+        .transpose()?
+        .unwrap_or(0);
+
+        let new_counter = current_counter + count;
+
+        // Upsert the new counter value
+        query(
+            r#"
+               INSERT INTO keyset_counter (keyset_id, counter)
+               VALUES (:keyset_id, :new_counter)
+               ON CONFLICT(keyset_id) DO UPDATE SET
+                   counter = excluded.counter
+               "#,
+        )?
+        .bind("keyset_id", keyset_id.to_string())
+        .bind("new_counter", new_counter)
+        .execute(&self.inner)
+        .await?;
+
+        Ok(new_counter)
+    }
+
+    #[instrument(skip(self))]
+    async fn remove_keys(&mut self, id: &Id) -> Result<(), Error> {
+        query(r#"DELETE FROM key WHERE id = :id"#)?
+            .bind("id", id.to_string())
+            .pluck(&self.inner)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn update_proofs_state(&mut self, ys: Vec<PublicKey>, state: State) -> Result<(), Error> {
+        query("UPDATE proof SET state = :state WHERE y IN (:ys)")?
+            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+            .bind("state", state.to_string())
+            .execute(&self.inner)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn update_proofs(
+        &mut self,
+        added: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), Error> {
+        // TODO: Use a transaction for all these operations
+        for proof in added {
+            query(
+                r#"
+    INSERT INTO proof
+    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r)
+    VALUES
+    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r)
+    ON CONFLICT(y) DO UPDATE SET
+        mint_url = excluded.mint_url,
+        state = excluded.state,
+        spending_condition = excluded.spending_condition,
+        unit = excluded.unit,
+        amount = excluded.amount,
+        keyset_id = excluded.keyset_id,
+        secret = excluded.secret,
+        c = excluded.c,
+        witness = excluded.witness,
+        dleq_e = excluded.dleq_e,
+        dleq_s = excluded.dleq_s,
+        dleq_r = excluded.dleq_r
+    ;
+            "#,
+            )?
+            .bind("y", proof.y.to_bytes().to_vec())
+            .bind("mint_url", proof.mint_url.to_string())
+            .bind("state",proof.state.to_string())
+            .bind(
+                "spending_condition",
+                proof
+                    .spending_condition
+                    .map(|s| serde_json::to_string(&s).ok()),
+            )
+            .bind("unit", proof.unit.to_string())
+            .bind("amount", u64::from(proof.proof.amount) as i64)
+            .bind("keyset_id", proof.proof.keyset_id.to_string())
+            .bind("secret", proof.proof.secret.to_string())
+            .bind("c", proof.proof.c.to_bytes().to_vec())
+            .bind(
+                "witness",
+                proof
+                    .proof
+                    .witness
+                    .and_then(|w| serde_json::to_string(&w).ok()),
+            )
+            .bind(
+                "dleq_e",
+                proof.proof.dleq.as_ref().map(|dleq| dleq.e.to_secret_bytes().to_vec()),
+            )
+            .bind(
+                "dleq_s",
+                proof.proof.dleq.as_ref().map(|dleq| dleq.s.to_secret_bytes().to_vec()),
+            )
+            .bind(
+                "dleq_r",
+                proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
+            )
+            .execute(&self.inner).await?;
+        }
+        if !removed_ys.is_empty() {
+            query(r#"DELETE FROM proof WHERE y IN (:ys)"#)?
+                .bind_vec(
+                    "ys",
+                    removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
+                )
+                .execute(&self.inner)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn get_keyset_by_id(&mut self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Error> {
+        get_keyset_by_id_inner(&self.inner, keyset_id, true).await
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %id))]
+    async fn get_keys(&mut self, id: &Id) -> Result<Option<Keys>, Error> {
+        get_keys_inner(&self.inner, id).await
+    }
+
+    #[instrument(skip(self))]
+    async fn get_mint_quote(&mut self, quote_id: &str) -> Result<Option<MintQuote>, Error> {
+        get_mint_quote_inner(&self.inner, quote_id, true).await
+    }
+
+    #[instrument(skip(self))]
+    async fn get_melt_quote(&mut self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Error> {
+        get_melt_quote_inner(&self.inner, quote_id, true).await
+    }
+
+    #[instrument(skip(self, state, spending_conditions))]
+    async fn get_proofs(
+        &mut self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<State>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
+    ) -> Result<Vec<ProofInfo>, Error> {
+        get_proofs_inner(
+            &self.inner,
+            mint_url,
+            unit,
+            state,
+            spending_conditions,
+            true,
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl<RM> DbTransactionFinalizer for SQLWalletTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    async fn commit(self: Box<Self>) -> Result<(), Error> {
+        Ok(self.inner.commit().await?)
+    }
+
+    async fn rollback(self: Box<Self>) -> Result<(), Error> {
+        Ok(self.inner.rollback().await?)
+    }
+}
+
+// Inline helper functions that work with both connections and transactions
+#[inline]
+async fn get_keyset_by_id_inner<T>(
+    executor: &T,
+    keyset_id: &Id,
+    for_update: bool,
+) -> Result<Option<KeySetInfo>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            unit,
+            active,
+            input_fee_ppk,
+            final_expiry
+        FROM
+            keyset
+        WHERE id = :id
+        {for_update_clause}
+        "#
+    );
+
+    query(&query_str)?
+        .bind("id", keyset_id.to_string())
+        .fetch_one(executor)
+        .await?
+        .map(sql_row_to_keyset)
+        .transpose()
+}
+
+#[inline]
+async fn get_keys_inner<T>(executor: &T, id: &Id) -> Result<Option<Keys>, Error>
+where
+    T: DatabaseExecutor,
+{
+    query(
+        r#"
+        SELECT
+            keys
+        FROM key
+        WHERE id = :id
+        "#,
+    )?
+    .bind("id", id.to_string())
+    .pluck(executor)
+    .await?
+    .map(|keys| {
+        let keys = column_as_string!(keys);
+        serde_json::from_str(&keys).map_err(Error::from)
+    })
+    .transpose()
+}
+
+#[inline]
+async fn get_mint_quote_inner<T>(
+    executor: &T,
+    quote_id: &str,
+    for_update: bool,
+) -> Result<Option<MintQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            mint_url,
+            amount,
+            unit,
+            request,
+            state,
+            expiry,
+            secret_key,
+            payment_method,
+            amount_issued,
+            amount_paid
+        FROM
+            mint_quote
+        WHERE
+            id = :id
+        {for_update_clause}
+        "#
+    );
+
+    query(&query_str)?
+        .bind("id", quote_id.to_string())
+        .fetch_one(executor)
+        .await?
+        .map(sql_row_to_mint_quote)
+        .transpose()
+}
+
+#[inline]
+async fn get_melt_quote_inner<T>(
+    executor: &T,
+    quote_id: &str,
+    for_update: bool,
+) -> Result<Option<wallet::MeltQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            unit,
+            amount,
+            request,
+            fee_reserve,
+            state,
+            expiry,
+            payment_preimage,
+            payment_method
+        FROM
+            melt_quote
+        WHERE
+            id=:id
+        {for_update_clause}
+        "#
+    );
+
+    query(&query_str)?
+        .bind("id", quote_id.to_owned())
+        .fetch_one(executor)
+        .await?
+        .map(sql_row_to_melt_quote)
+        .transpose()
+}
+
+#[inline]
+async fn get_proofs_inner<T>(
+    executor: &T,
+    mint_url: Option<MintUrl>,
+    unit: Option<CurrencyUnit>,
+    state: Option<Vec<State>>,
+    spending_conditions: Option<Vec<SpendingConditions>>,
+    for_update: bool,
+) -> Result<Vec<ProofInfo>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            amount,
+            unit,
+            keyset_id,
+            secret,
+            c,
+            witness,
+            dleq_e,
+            dleq_s,
+            dleq_r,
+            y,
+            mint_url,
+            state,
+            spending_condition
+        FROM proof
+        {for_update_clause}
+        "#
+    );
+
+    Ok(query(&query_str)?
+        .fetch_all(executor)
+        .await?
+        .into_iter()
+        .filter_map(|row| {
+            let row = sql_row_to_proof_info(row).ok()?;
+
+            if row.matches_conditions(&mint_url, &unit, &state, &spending_conditions) {
+                Some(row)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>())
+}
+
+impl<RM> SQLWalletDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    /// Creates a new instance
+    pub async fn new<X>(db: X) -> Result<Self, Error>
+    where
+        X: Into<RM::Config>,
+    {
+        let pool = Pool::new(db.into());
+        Self::migrate(pool.get().map_err(|e| Error::Database(Box::new(e)))?).await?;
+
+        Ok(Self { pool })
+    }
+
+    /// Migrate [`WalletSqliteDatabase`]
+    async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
+        let tx = ConnectionWithTransaction::new(conn).await?;
+        migrate(&tx, RM::Connection::name(), migrations::MIGRATIONS).await?;
+        // Update any existing keys with missing keyset_u32 values
+        Self::add_keyset_u32(&tx).await?;
+        tx.commit().await?;
+
+        Ok(())
+    }
+
+    async fn add_keyset_u32<T>(conn: &T) -> Result<(), Error>
+    where
+        T: DatabaseExecutor,
+    {
+        // First get the keysets where keyset_u32 on key is null
+        let keys_without_u32: Vec<Vec<Column>> = query(
+            r#"
+            SELECT
+                id
+            FROM key
+            WHERE keyset_u32 IS NULL
+            "#,
+        )?
+        .fetch_all(conn)
+        .await?;
+
+        for row in keys_without_u32 {
+            unpack_into!(let (id) = row);
+            let id = column_as_string!(id);
+
+            if let Ok(id) = Id::from_str(&id) {
+                query(
+                    r#"
+            UPDATE
+                key
+            SET keyset_u32 = :u32_keyset
+            WHERE id = :keyset_id
+            "#,
+                )?
+                .bind("u32_keyset", u32::from(id))
+                .bind("keyset_id", id.to_string())
+                .execute(conn)
+                .await?;
+            }
+        }
+
+        // Also update keysets where keyset_u32 is null
+        let keysets_without_u32: Vec<Vec<Column>> = query(
+            r#"
+            SELECT
+                id
+            FROM keyset
+            WHERE keyset_u32 IS NULL
+            "#,
+        )?
+        .fetch_all(conn)
+        .await?;
+
+        for row in keysets_without_u32 {
+            unpack_into!(let (id) = row);
+            let id = column_as_string!(id);
+
+            if let Ok(id) = Id::from_str(&id) {
+                query(
+                    r#"
+            UPDATE
+                keyset
+            SET keyset_u32 = :u32_keyset
+            WHERE id = :keyset_id
+            "#,
+                )?
+                .bind("u32_keyset", u32::from(id))
+                .bind("keyset_id", id.to_string())
+                .execute(conn)
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<RM> WalletDatabase for SQLWalletDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = database::Error;
+
+    async fn begin_db_transaction(
+        &self,
+    ) -> Result<Box<dyn WalletDatabaseTransaction<Self::Err> + Send + Sync>, Self::Err> {
+        Ok(Box::new(SQLWalletTransaction {
+            inner: ConnectionWithTransaction::new(
+                self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
+            )
+            .await?,
+        }))
+    }
+
+    #[instrument(skip(self))]
+    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        Ok(query(
+            r#"
+              SELECT
+                  id,
+                  unit,
+                  amount,
+                  request,
+                  fee_reserve,
+                  state,
+                  expiry,
+                  payment_preimage,
+                  payment_method
+              FROM
+                  melt_quote
+              "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_melt_quote)
+        .collect::<Result<_, _>>()?)
     }
 
     #[instrument(skip(self))]
@@ -356,66 +996,6 @@ ON CONFLICT(mint_url) DO UPDATE SET
     }
 
     #[instrument(skip(self))]
-    async fn update_mint_url(
-        &self,
-        old_mint_url: MintUrl,
-        new_mint_url: MintUrl,
-    ) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let tables = ["mint_quote", "proof"];
-
-        for table in &tables {
-            query(&format!(
-                r#"
-                UPDATE {table}
-                SET mint_url = :new_mint_url
-                WHERE mint_url = :old_mint_url
-            "#
-            ))?
-            .bind("new_mint_url", new_mint_url.to_string())
-            .bind("old_mint_url", old_mint_url.to_string())
-            .execute(&*conn)
-            .await?;
-        }
-
-        Ok(())
-    }
-
-    #[instrument(skip(self, keysets))]
-    async fn add_mint_keysets(
-        &self,
-        mint_url: MintUrl,
-        keysets: Vec<KeySetInfo>,
-    ) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
-        for keyset in keysets {
-            query(
-                r#"
-    INSERT INTO keyset
-    (mint_url, id, unit, active, input_fee_ppk, final_expiry, keyset_u32)
-    VALUES
-    (:mint_url, :id, :unit, :active, :input_fee_ppk, :final_expiry, :keyset_u32)
-    ON CONFLICT(id) DO UPDATE SET
-        active = excluded.active,
-        input_fee_ppk = excluded.input_fee_ppk
-    "#,
-            )?
-            .bind("mint_url", mint_url.to_string())
-            .bind("id", keyset.id.to_string())
-            .bind("unit", keyset.unit.to_string())
-            .bind("active", keyset.active)
-            .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
-            .bind("final_expiry", keyset.final_expiry.map(|v| v as i64))
-            .bind("keyset_u32", u32::from(keyset.id))
-            .execute(&*conn)
-            .await?;
-        }
-
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
@@ -451,67 +1031,17 @@ ON CONFLICT(mint_url) DO UPDATE SET
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                unit,
-                active,
-                input_fee_ppk,
-                final_expiry
-            FROM
-                keyset
-            WHERE id = :id
-            "#,
-        )?
-        .bind("id", keyset_id.to_string())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_keyset)
-        .transpose()?)
-    }
-
-    #[instrument(skip_all)]
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-INSERT INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid)
-VALUES
-(:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid)
-ON CONFLICT(id) DO UPDATE SET
-    mint_url = excluded.mint_url,
-    amount = excluded.amount,
-    unit = excluded.unit,
-    request = excluded.request,
-    state = excluded.state,
-    expiry = excluded.expiry,
-    secret_key = excluded.secret_key,
-    payment_method = excluded.payment_method,
-    amount_issued = excluded.amount_issued,
-    amount_paid = excluded.amount_paid
-;
-        "#,
-        )?
-        .bind("id", quote.id.to_string())
-        .bind("mint_url", quote.mint_url.to_string())
-        .bind("amount", quote.amount.map(|a| a.to_i64()))
-        .bind("unit", quote.unit.to_string())
-        .bind("request", quote.request)
-        .bind("state", quote.state.to_string())
-        .bind("expiry", quote.expiry as i64)
-        .bind("secret_key", quote.secret_key.map(|p| p.to_string()))
-        .bind("payment_method", quote.payment_method.to_string())
-        .bind("amount_issued", quote.amount_issued.to_i64())
-        .bind("amount_paid", quote.amount_paid.to_i64())
-        .execute(&*conn).await?;
-
-        Ok(())
+        get_keyset_by_id_inner(&*conn, keyset_id, false).await
     }
 
     #[instrument(skip(self))]
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        get_mint_quote_inner(&*conn, quote_id, false).await
+    }
+
+    #[instrument(skip(self))]
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -529,36 +1059,6 @@ ON CONFLICT(id) DO UPDATE SET
                 amount_paid
             FROM
                 mint_quote
-            WHERE
-                id = :id
-            "#,
-        )?
-        .bind("id", quote_id.to_string())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_mint_quote)
-        .transpose()?)
-    }
-
-    #[instrument(skip(self))]
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                mint_url,
-                amount,
-                unit,
-                request,
-                state,
-                expiry,
-                secret_key
-                payment_method,
-                amount_issued,
-                amount_paid
-            FROM
-                mint_quote
             "#,
         )?
         .fetch_all(&*conn)
@@ -569,229 +1069,15 @@ ON CONFLICT(id) DO UPDATE SET
     }
 
     #[instrument(skip(self))]
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        query(r#"DELETE FROM mint_quote WHERE id=:id"#)?
-            .bind("id", quote_id.to_string())
-            .execute(&*conn)
-            .await?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-INSERT INTO melt_quote
-(id, unit, amount, request, fee_reserve, state, expiry, payment_method)
-VALUES
-(:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method)
-ON CONFLICT(id) DO UPDATE SET
-    unit = excluded.unit,
-    amount = excluded.amount,
-    request = excluded.request,
-    fee_reserve = excluded.fee_reserve,
-    state = excluded.state,
-    expiry = excluded.expiry,
-    payment_method = excluded.payment_method
-;
-        "#,
-        )?
-        .bind("id", quote.id.to_string())
-        .bind("unit", quote.unit.to_string())
-        .bind("amount", u64::from(quote.amount) as i64)
-        .bind("request", quote.request)
-        .bind("fee_reserve", u64::from(quote.fee_reserve) as i64)
-        .bind("state", quote.state.to_string())
-        .bind("expiry", quote.expiry as i64)
-        .bind("payment_method", quote.payment_method.to_string())
-        .execute(&*conn)
-        .await?;
-
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                unit,
-                amount,
-                request,
-                fee_reserve,
-                state,
-                expiry,
-                payment_preimage,
-                payment_method
-            FROM
-                melt_quote
-            WHERE
-                id=:id
-            "#,
-        )?
-        .bind("id", quote_id.to_owned())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_melt_quote)
-        .transpose()?)
-    }
-
-    #[instrument(skip(self))]
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        query(r#"DELETE FROM melt_quote WHERE id=:id"#)?
-            .bind("id", quote_id.to_owned())
-            .execute(&*conn)
-            .await?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn add_keys(&self, keyset: KeySet) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
-        // Recompute ID for verification
-        keyset.verify_id()?;
-
-        query(
-            r#"
-            INSERT INTO key
-            (id, keys, keyset_u32)
-            VALUES
-            (:id, :keys, :keyset_u32)
-        "#,
-        )?
-        .bind("id", keyset.id.to_string())
-        .bind(
-            "keys",
-            serde_json::to_string(&keyset.keys).map_err(Error::from)?,
-        )
-        .bind("keyset_u32", u32::from(keyset.id))
-        .execute(&*conn)
-        .await?;
-
-        Ok(())
+        get_melt_quote_inner(&*conn, quote_id, false).await
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                keys
-            FROM key
-            WHERE id = :id
-            "#,
-        )?
-        .bind("id", keyset_id.to_string())
-        .pluck(&*conn)
-        .await?
-        .map(|keys| {
-            let keys = column_as_string!(keys);
-            serde_json::from_str(&keys).map_err(Error::from)
-        })
-        .transpose()?)
-    }
-
-    #[instrument(skip(self))]
-    async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        query(r#"DELETE FROM key WHERE id = :id"#)?
-            .bind("id", id.to_string())
-            .pluck(&*conn)
-            .await?;
-
-        Ok(())
-    }
-
-    async fn update_proofs(
-        &self,
-        added: Vec<ProofInfo>,
-        removed_ys: Vec<PublicKey>,
-    ) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
-        let tx = ConnectionWithTransaction::new(conn).await?;
-
-        // TODO: Use a transaction for all these operations
-        for proof in added {
-            query(
-                r#"
-    INSERT INTO proof
-    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r)
-    VALUES
-    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r)
-    ON CONFLICT(y) DO UPDATE SET
-        mint_url = excluded.mint_url,
-        state = excluded.state,
-        spending_condition = excluded.spending_condition,
-        unit = excluded.unit,
-        amount = excluded.amount,
-        keyset_id = excluded.keyset_id,
-        secret = excluded.secret,
-        c = excluded.c,
-        witness = excluded.witness,
-        dleq_e = excluded.dleq_e,
-        dleq_s = excluded.dleq_s,
-        dleq_r = excluded.dleq_r
-    ;
-            "#,
-            )?
-            .bind("y", proof.y.to_bytes().to_vec())
-            .bind("mint_url", proof.mint_url.to_string())
-            .bind("state",proof.state.to_string())
-            .bind(
-                "spending_condition",
-                proof
-                    .spending_condition
-                    .map(|s| serde_json::to_string(&s).ok()),
-            )
-            .bind("unit", proof.unit.to_string())
-            .bind("amount", u64::from(proof.proof.amount) as i64)
-            .bind("keyset_id", proof.proof.keyset_id.to_string())
-            .bind("secret", proof.proof.secret.to_string())
-            .bind("c", proof.proof.c.to_bytes().to_vec())
-            .bind(
-                "witness",
-                proof
-                    .proof
-                    .witness
-                    .map(|w| serde_json::to_string(&w).unwrap()),
-            )
-            .bind(
-                "dleq_e",
-                proof.proof.dleq.as_ref().map(|dleq| dleq.e.to_secret_bytes().to_vec()),
-            )
-            .bind(
-                "dleq_s",
-                proof.proof.dleq.as_ref().map(|dleq| dleq.s.to_secret_bytes().to_vec()),
-            )
-            .bind(
-                "dleq_r",
-                proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
-            )
-            .execute(&tx).await?;
-        }
-        if !removed_ys.is_empty() {
-            query(r#"DELETE FROM proof WHERE y IN (:ys)"#)?
-                .bind_vec(
-                    "ys",
-                    removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
-                )
-                .execute(&tx)
-                .await?;
-        }
-
-        tx.commit().await?;
-
-        Ok(())
+        get_keys_inner(&*conn, keyset_id).await
     }
 
     #[instrument(skip(self, state, spending_conditions))]
@@ -802,6 +1088,16 @@ ON CONFLICT(id) DO UPDATE SET
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        get_proofs_inner(&*conn, mint_url, unit, state, spending_conditions, false).await
+    }
+
+    #[instrument(skip(self, ys))]
+    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, Self::Err> {
+        if ys.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -820,20 +1116,14 @@ ON CONFLICT(id) DO UPDATE SET
                 state,
                 spending_condition
             FROM proof
+            WHERE y IN (:ys)
         "#,
         )?
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
         .fetch_all(&*conn)
         .await?
         .into_iter()
-        .filter_map(|row| {
-            let row = sql_row_to_proof_info(row).ok()?;
-
-            if row.matches_conditions(&mint_url, &unit, &state, &spending_conditions) {
-                Some(row)
-            } else {
-                None
-            }
-        })
+        .filter_map(|row| sql_row_to_proof_info(row).ok())
         .collect::<Vec<_>>())
     }
 
@@ -899,119 +1189,6 @@ ON CONFLICT(id) DO UPDATE SET
             .unwrap_or(0);
 
         Ok(balance)
-    }
-
-    async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        query("UPDATE proof SET state = :state WHERE y IN (:ys)")?
-            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-            .bind("state", state.to_string())
-            .execute(&*conn)
-            .await?;
-
-        Ok(())
-    }
-
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<u32, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let tx = ConnectionWithTransaction::new(conn).await?;
-
-        // Lock the row and get current counter from keyset_counter table
-        let current_counter = query(
-            r#"
-            SELECT counter
-            FROM keyset_counter
-            WHERE keyset_id=:keyset_id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("keyset_id", keyset_id.to_string())
-        .pluck(&tx)
-        .await?
-        .map(|n| Ok::<_, Error>(column_as_number!(n)))
-        .transpose()?
-        .unwrap_or(0);
-
-        let new_counter = current_counter + count;
-
-        // Upsert the new counter value
-        query(
-            r#"
-            INSERT INTO keyset_counter (keyset_id, counter)
-            VALUES (:keyset_id, :new_counter)
-            ON CONFLICT(keyset_id) DO UPDATE SET
-                counter = excluded.counter
-            "#,
-        )?
-        .bind("keyset_id", keyset_id.to_string())
-        .bind("new_counter", new_counter)
-        .execute(&tx)
-        .await?;
-
-        tx.commit().await?;
-
-        Ok(new_counter)
-    }
-
-    #[instrument(skip(self))]
-    async fn add_transaction(&self, transaction: Transaction) -> Result<(), Self::Err> {
-        let mint_url = transaction.mint_url.to_string();
-        let direction = transaction.direction.to_string();
-        let unit = transaction.unit.to_string();
-        let amount = u64::from(transaction.amount) as i64;
-        let fee = u64::from(transaction.fee) as i64;
-        let ys = transaction
-            .ys
-            .iter()
-            .flat_map(|y| y.to_bytes().to_vec())
-            .collect::<Vec<_>>();
-
-        let id = transaction.id();
-
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
-        query(
-            r#"
-INSERT INTO transactions
-(id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof)
-VALUES
-(:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof)
-ON CONFLICT(id) DO UPDATE SET
-    mint_url = excluded.mint_url,
-    direction = excluded.direction,
-    unit = excluded.unit,
-    amount = excluded.amount,
-    fee = excluded.fee,
-    timestamp = excluded.timestamp,
-    memo = excluded.memo,
-    metadata = excluded.metadata,
-    quote_id = excluded.quote_id,
-    payment_request = excluded.payment_request,
-    payment_proof = excluded.payment_proof
-;
-        "#,
-        )?
-        .bind("id", id.as_slice().to_vec())
-        .bind("mint_url", mint_url)
-        .bind("direction", direction)
-        .bind("unit", unit)
-        .bind("amount", amount)
-        .bind("fee", fee)
-        .bind("ys", ys)
-        .bind("timestamp", transaction.timestamp as i64)
-        .bind("memo", transaction.memo)
-        .bind(
-            "metadata",
-            serde_json::to_string(&transaction.metadata).map_err(Error::from)?,
-        )
-        .bind("quote_id", transaction.quote_id)
-        .bind("payment_request", transaction.payment_request)
-        .bind("payment_proof", transaction.payment_proof)
-        .execute(&*conn)
-        .await?;
-
-        Ok(())
     }
 
     #[instrument(skip(self))]
@@ -1089,18 +1266,6 @@ ON CONFLICT(id) DO UPDATE SET
             }
         })
         .collect::<Vec<_>>())
-    }
-
-    #[instrument(skip(self))]
-    async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
-        query(r#"DELETE FROM transactions WHERE id=:id"#)?
-            .bind("id", transaction_id.as_slice().to_vec())
-            .execute(&*conn)
-            .await?;
-
-        Ok(())
     }
 }
 

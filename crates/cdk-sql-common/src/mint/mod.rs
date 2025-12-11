@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::mint::{validate_kvstore_params, SagaDatabase, SagaTransaction};
 use cdk_common::database::{
-    self, ConversionError, Error, MintDatabase, MintDbWriterFinalizer, MintKeyDatabaseTransaction,
+    self, ConversionError, DbTransactionFinalizer, Error, MintDatabase, MintKeyDatabaseTransaction,
     MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase, MintQuotesTransaction,
     MintSignatureTransaction, MintSignaturesDatabase,
 };
@@ -179,7 +179,7 @@ where
             .bind("c", proof.c.to_bytes().to_vec())
             .bind(
                 "witness",
-                proof.witness.map(|w| serde_json::to_string(&w).unwrap()),
+                proof.witness.and_then(|w| serde_json::to_string(&w).inspect_err(|e| tracing::error!("Failed to serialize witness: {:?}", e)).ok()),
             )
             .bind("state", "UNSPENT".to_string())
             .bind("quote_id", quote_id.clone().map(|q| q.to_string()))
@@ -258,6 +258,39 @@ where
         .await?;
 
         if total_deleted != ys.len() {
+            // Query current states to provide detailed logging
+            let current_states = get_current_states(&self.inner, ys).await?;
+
+            let missing_count = ys.len() - current_states.len();
+            let spent_count = current_states
+                .values()
+                .filter(|s| **s == State::Spent)
+                .count();
+
+            if missing_count > 0 {
+                tracing::warn!(
+                    "remove_proofs: {} of {} proofs do not exist in database (already removed?)",
+                    missing_count,
+                    ys.len()
+                );
+            }
+
+            if spent_count > 0 {
+                tracing::warn!(
+                    "remove_proofs: {} of {} proofs are in Spent state and cannot be removed",
+                    spent_count,
+                    ys.len()
+                );
+            }
+
+            tracing::debug!(
+                "remove_proofs details: requested={}, deleted={}, missing={}, spent={}",
+                ys.len(),
+                total_deleted,
+                missing_count,
+                spent_count
+            );
+
             return Err(Self::Err::AttemptRemoveSpentProof);
         }
 
@@ -297,7 +330,7 @@ impl<RM> database::MintTransaction<'_, Error> for SQLTransaction<RM> where RM: D
 {}
 
 #[async_trait]
-impl<RM> MintDbWriterFinalizer for SQLTransaction<RM>
+impl<RM> DbTransactionFinalizer for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -393,6 +426,193 @@ WHERE quote_id=:quote_id
     .collect()
 }
 
+// Inline helper functions that work with both connections and transactions
+#[inline]
+async fn get_mint_quote_inner<T>(
+    executor: &T,
+    quote_id: &QuoteId,
+    for_update: bool,
+) -> Result<Option<MintQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let payments = get_mint_quote_payments(executor, quote_id).await?;
+    let issuance = get_mint_quote_issuance(executor, quote_id).await?;
+
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            amount,
+            unit,
+            request,
+            expiry,
+            request_lookup_id,
+            pubkey,
+            created_time,
+            amount_paid,
+            amount_issued,
+            payment_method,
+            request_lookup_id_kind
+        FROM
+            mint_quote
+        WHERE id = :id
+        {for_update_clause}
+        "#
+    );
+
+    query(&query_str)?
+        .bind("id", quote_id.to_string())
+        .fetch_one(executor)
+        .await?
+        .map(|row| sql_row_to_mint_quote(row, payments, issuance))
+        .transpose()
+}
+
+#[inline]
+async fn get_mint_quote_by_request_inner<T>(
+    executor: &T,
+    request: &str,
+    for_update: bool,
+) -> Result<Option<MintQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            amount,
+            unit,
+            request,
+            expiry,
+            request_lookup_id,
+            pubkey,
+            created_time,
+            amount_paid,
+            amount_issued,
+            payment_method,
+            request_lookup_id_kind
+        FROM
+            mint_quote
+        WHERE request = :request
+        {for_update_clause}
+        "#
+    );
+
+    let mut mint_quote = query(&query_str)?
+        .bind("request", request.to_string())
+        .fetch_one(executor)
+        .await?
+        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
+        .transpose()?;
+
+    if let Some(quote) = mint_quote.as_mut() {
+        let payments = get_mint_quote_payments(executor, &quote.id).await?;
+        let issuance = get_mint_quote_issuance(executor, &quote.id).await?;
+        quote.issuance = issuance;
+        quote.payments = payments;
+    }
+
+    Ok(mint_quote)
+}
+
+#[inline]
+async fn get_mint_quote_by_request_lookup_id_inner<T>(
+    executor: &T,
+    request_lookup_id: &PaymentIdentifier,
+    for_update: bool,
+) -> Result<Option<MintQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            amount,
+            unit,
+            request,
+            expiry,
+            request_lookup_id,
+            pubkey,
+            created_time,
+            amount_paid,
+            amount_issued,
+            payment_method,
+            request_lookup_id_kind
+        FROM
+            mint_quote
+        WHERE request_lookup_id = :request_lookup_id
+        AND request_lookup_id_kind = :request_lookup_id_kind
+        {for_update_clause}
+        "#
+    );
+
+    let mut mint_quote = query(&query_str)?
+        .bind("request_lookup_id", request_lookup_id.to_string())
+        .bind("request_lookup_id_kind", request_lookup_id.kind())
+        .fetch_one(executor)
+        .await?
+        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
+        .transpose()?;
+
+    if let Some(quote) = mint_quote.as_mut() {
+        let payments = get_mint_quote_payments(executor, &quote.id).await?;
+        let issuance = get_mint_quote_issuance(executor, &quote.id).await?;
+        quote.issuance = issuance;
+        quote.payments = payments;
+    }
+
+    Ok(mint_quote)
+}
+
+#[inline]
+async fn get_melt_quote_inner<T>(
+    executor: &T,
+    quote_id: &QuoteId,
+    for_update: bool,
+) -> Result<Option<mint::MeltQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            unit,
+            amount,
+            request,
+            fee_reserve,
+            expiry,
+            state,
+            payment_preimage,
+            request_lookup_id,
+            created_time,
+            paid_time,
+            payment_method,
+            options,
+            request_lookup_id_kind
+        FROM
+            melt_quote
+        WHERE
+            id=:id
+        {for_update_clause}
+        "#
+    );
+
+    query(&query_str)?
+        .bind("id", quote_id.to_string())
+        .fetch_one(executor)
+        .await?
+        .map(sql_row_to_melt_quote)
+        .transpose()
+}
+
 #[async_trait]
 impl<RM> MintKeyDatabaseTransaction<'_, Error> for SQLTransaction<RM>
 where
@@ -404,11 +624,11 @@ where
         INSERT INTO
             keyset (
                 id, unit, active, valid_from, valid_to, derivation_path,
-                max_order, amounts, input_fee_ppk, derivation_path_index
+                amounts, input_fee_ppk, derivation_path_index
             )
         VALUES (
             :id, :unit, :active, :valid_from, :valid_to, :derivation_path,
-            :max_order, :amounts, :input_fee_ppk, :derivation_path_index
+            :amounts, :input_fee_ppk, :derivation_path_index
         )
         ON CONFLICT(id) DO UPDATE SET
             unit = excluded.unit,
@@ -416,7 +636,6 @@ where
             valid_from = excluded.valid_from,
             valid_to = excluded.valid_to,
             derivation_path = excluded.derivation_path,
-            max_order = excluded.max_order,
             amounts = excluded.amounts,
             input_fee_ppk = excluded.input_fee_ppk,
             derivation_path_index = excluded.derivation_path_index
@@ -428,7 +647,6 @@ where
         .bind("valid_from", keyset.valid_from as i64)
         .bind("valid_to", keyset.final_expiry.map(|v| v as i64))
         .bind("derivation_path", keyset.derivation_path.to_string())
-        .bind("max_order", keyset.max_order)
         .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
         .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
         .bind("derivation_path_index", keyset.derivation_path_index)
@@ -520,7 +738,6 @@ where
                 valid_to,
                 derivation_path,
                 derivation_path_index,
-                max_order,
                 amounts,
                 input_fee_ppk
             FROM
@@ -545,7 +762,6 @@ where
                 valid_to,
                 derivation_path,
                 derivation_path_index,
-                max_order,
                 amounts,
                 input_fee_ppk
             FROM
@@ -1056,11 +1272,9 @@ VALUES (:quote_id, :amount, :timestamp);
                 melt_quote
             WHERE
                 id=:id
-                AND state != :state
             "#,
         )?
         .bind("id", quote_id.to_string())
-        .bind("state", state.to_string())
         .fetch_one(&self.inner)
         .await?
         .map(sql_row_to_melt_quote)
@@ -1068,6 +1282,47 @@ VALUES (:quote_id, :amount, :timestamp);
         .ok_or(Error::QuoteNotFound)?;
 
         check_melt_quote_state_transition(quote.state, state)?;
+
+        // When transitioning to Pending, lock all quotes with the same lookup_id
+        // and check if any are already pending or paid
+        if state == MeltQuoteState::Pending {
+            if let Some(ref lookup_id) = quote.request_lookup_id {
+                // Lock all quotes with the same lookup_id to prevent race conditions
+                let locked_quotes: Vec<(String, String)> = query(
+                    r#"
+                    SELECT id, state
+                    FROM melt_quote
+                    WHERE request_lookup_id = :lookup_id
+                    FOR UPDATE
+                    "#,
+                )?
+                .bind("lookup_id", lookup_id.to_string())
+                .fetch_all(&self.inner)
+                .await?
+                .into_iter()
+                .map(|row| {
+                    unpack_into!(let (id, state) = row);
+                    Ok((column_as_string!(id), column_as_string!(state)))
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+
+                // Check if any other quote with the same lookup_id is pending or paid
+                let has_conflict = locked_quotes.iter().any(|(id, state)| {
+                    id != &quote_id.to_string()
+                        && (state == &MeltQuoteState::Pending.to_string()
+                            || state == &MeltQuoteState::Paid.to_string())
+                });
+
+                if has_conflict {
+                    tracing::warn!(
+                        "Cannot transition quote {} to Pending: another quote with lookup_id {} is already pending or paid",
+                        quote_id,
+                        lookup_id
+                    );
+                    return Err(Error::Duplicate);
+                }
+            }
+        }
 
         let rec = if state == MeltQuoteState::Paid {
             let current_time = unix_time();
@@ -1105,153 +1360,28 @@ VALUES (:quote_id, :amount, :timestamp);
     }
 
     async fn get_mint_quote(&mut self, quote_id: &QuoteId) -> Result<Option<MintQuote>, Self::Err> {
-        let payments = get_mint_quote_payments(&self.inner, quote_id).await?;
-        let issuance = get_mint_quote_issuance(&self.inner, quote_id).await?;
-
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                amount_paid,
-                amount_issued,
-                payment_method,
-                request_lookup_id_kind
-            FROM
-                mint_quote
-            WHERE id = :id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .map(|row| sql_row_to_mint_quote(row, payments, issuance))
-        .transpose()?)
+        get_mint_quote_inner(&self.inner, quote_id, true).await
     }
 
     async fn get_melt_quote(
         &mut self,
         quote_id: &QuoteId,
     ) -> Result<Option<mint::MeltQuote>, Self::Err> {
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                unit,
-                amount,
-                request,
-                fee_reserve,
-                expiry,
-                state,
-                payment_preimage,
-                request_lookup_id,
-                created_time,
-                paid_time,
-                payment_method,
-                options,
-                request_lookup_id
-            FROM
-                melt_quote
-            WHERE
-                id=:id
-            "#,
-        )?
-        .bind("id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .map(sql_row_to_melt_quote)
-        .transpose()?)
+        get_melt_quote_inner(&self.inner, quote_id, true).await
     }
 
     async fn get_mint_quote_by_request(
         &mut self,
         request: &str,
     ) -> Result<Option<MintQuote>, Self::Err> {
-        let mut mint_quote = query(
-            r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                amount_paid,
-                amount_issued,
-                payment_method,
-                request_lookup_id_kind
-            FROM
-                mint_quote
-            WHERE request = :request
-            FOR UPDATE
-            "#,
-        )?
-        .bind("request", request.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
-        .transpose()?;
-
-        if let Some(quote) = mint_quote.as_mut() {
-            let payments = get_mint_quote_payments(&self.inner, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&self.inner, &quote.id).await?;
-            quote.issuance = issuance;
-            quote.payments = payments;
-        }
-
-        Ok(mint_quote)
+        get_mint_quote_by_request_inner(&self.inner, request, true).await
     }
 
     async fn get_mint_quote_by_request_lookup_id(
         &mut self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
-        let mut mint_quote = query(
-            r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                amount_paid,
-                amount_issued,
-                payment_method,
-                request_lookup_id_kind
-            FROM
-                mint_quote
-            WHERE request_lookup_id = :request_lookup_id
-            AND request_lookup_id_kind = :request_lookup_id_kind
-            FOR UPDATE
-            "#,
-        )?
-        .bind("request_lookup_id", request_lookup_id.to_string())
-        .bind("request_lookup_id_kind", request_lookup_id.kind())
-        .fetch_one(&self.inner)
-        .await?
-        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
-        .transpose()?;
-
-        if let Some(quote) = mint_quote.as_mut() {
-            let payments = get_mint_quote_payments(&self.inner, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&self.inner, &quote.id).await?;
-            quote.issuance = issuance;
-            quote.payments = payments;
-        }
-
-        Ok(mint_quote)
+        get_mint_quote_by_request_lookup_id_inner(&self.inner, request_lookup_id, true).await
     }
 }
 
@@ -1270,36 +1400,7 @@ where
         let start_time = std::time::Instant::now();
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        let result = async {
-            let payments = get_mint_quote_payments(&*conn, quote_id).await?;
-            let issuance = get_mint_quote_issuance(&*conn, quote_id).await?;
-
-            query(
-                r#"
-                SELECT
-                    id,
-                    amount,
-                    unit,
-                    request,
-                    expiry,
-                    request_lookup_id,
-                    pubkey,
-                    created_time,
-                    amount_paid,
-                    amount_issued,
-                    payment_method,
-                    request_lookup_id_kind
-                FROM
-                    mint_quote
-                WHERE id = :id"#,
-            )?
-            .bind("id", quote_id.to_string())
-            .fetch_one(&*conn)
-            .await?
-            .map(|row| sql_row_to_mint_quote(row, payments, issuance))
-            .transpose()
-        }
-        .await;
+        let result = get_mint_quote_inner(&*conn, quote_id, false).await;
 
         #[cfg(feature = "prometheus")]
         {
@@ -1322,39 +1423,7 @@ where
         request: &str,
     ) -> Result<Option<MintQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let mut mint_quote = query(
-            r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                amount_paid,
-                amount_issued,
-                payment_method,
-                request_lookup_id_kind
-            FROM
-                mint_quote
-            WHERE request = :request"#,
-        )?
-        .bind("request", request.to_owned())
-        .fetch_one(&*conn)
-        .await?
-        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
-        .transpose()?;
-
-        if let Some(quote) = mint_quote.as_mut() {
-            let payments = get_mint_quote_payments(&*conn, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&*conn, &quote.id).await?;
-            quote.issuance = issuance;
-            quote.payments = payments;
-        }
-
-        Ok(mint_quote)
+        get_mint_quote_by_request_inner(&*conn, request, false).await
     }
 
     async fn get_mint_quote_by_request_lookup_id(
@@ -1362,43 +1431,7 @@ where
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let mut mint_quote = query(
-            r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                amount_paid,
-                amount_issued,
-                payment_method,
-                request_lookup_id_kind
-            FROM
-                mint_quote
-            WHERE request_lookup_id = :request_lookup_id
-            AND request_lookup_id_kind = :request_lookup_id_kind
-            "#,
-        )?
-        .bind("request_lookup_id", request_lookup_id.to_string())
-        .bind("request_lookup_id_kind", request_lookup_id.kind())
-        .fetch_one(&*conn)
-        .await?
-        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
-        .transpose()?;
-
-        // TODO: these should use an sql join so they can be done in one query
-        if let Some(quote) = mint_quote.as_mut() {
-            let payments = get_mint_quote_payments(&*conn, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&*conn, &quote.id).await?;
-            quote.issuance = issuance;
-            quote.payments = payments;
-        }
-
-        Ok(mint_quote)
+        get_mint_quote_by_request_lookup_id_inner(&*conn, request_lookup_id, false).await
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
@@ -1449,37 +1482,7 @@ where
         let start_time = std::time::Instant::now();
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        let result = async {
-            query(
-                r#"
-                SELECT
-                    id,
-                    unit,
-                    amount,
-                    request,
-                    fee_reserve,
-                    expiry,
-                    state,
-                    payment_preimage,
-                    request_lookup_id,
-                    created_time,
-                    paid_time,
-                    payment_method,
-                    options,
-                    request_lookup_id_kind
-                FROM
-                    melt_quote
-                WHERE
-                    id=:id
-                "#,
-            )?
-            .bind("id", quote_id.to_string())
-            .fetch_one(&*conn)
-            .await?
-            .map(sql_row_to_melt_quote)
-            .transpose()
-        }
-        .await;
+        let result = get_melt_quote_inner(&*conn, quote_id, false).await;
 
         #[cfg(feature = "prometheus")]
         {
@@ -2381,16 +2384,14 @@ fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo, Error> {
             valid_to,
             derivation_path,
             derivation_path_index,
-            max_order,
             amounts,
             row_keyset_ppk
         ) = row
     );
 
-    let max_order: u8 = column_as_number!(max_order);
     let amounts = column_as_nullable_string!(amounts)
         .and_then(|str| serde_json::from_str(&str).ok())
-        .unwrap_or_else(|| (0..max_order).map(|m| 2u64.pow(m.into())).collect());
+        .ok_or_else(|| Error::Database("amounts field is required".to_string().into()))?;
 
     Ok(MintKeySetInfo {
         id: column_as_string!(id, Id::from_str, Id::from_bytes),
@@ -2399,7 +2400,6 @@ fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo, Error> {
         valid_from: column_as_number!(valid_from),
         derivation_path: column_as_string!(derivation_path, DerivationPath::from_str),
         derivation_path_index: column_as_nullable_number!(derivation_path_index),
-        max_order,
         amounts,
         input_fee_ppk: column_as_number!(row_keyset_ppk),
         final_expiry: column_as_nullable_number!(valid_to),
@@ -2455,6 +2455,7 @@ fn sql_row_to_mint_quote(
     ))
 }
 
+// FIXME: Replace unwrap with proper error handling
 fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
     unpack_into!(
         let (
@@ -2519,7 +2520,8 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
                 "Melt quote from pre migrations defaulting to bolt11 {}.",
                 err
             );
-            let bolt11 = Bolt11Invoice::from_str(&request).unwrap();
+            let bolt11 = Bolt11Invoice::from_str(&request)
+                .map_err(|e| Error::Internal(format!("Could not parse invoice: {e}")))?;
             MeltPaymentRequest::Bolt11 { bolt11 }
         }
     };
@@ -2694,11 +2696,12 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
 mod test {
     use super::*;
 
-    mod max_order_to_amounts_migrations {
+    mod keyset_amounts_tests {
         use super::*;
 
         #[test]
-        fn legacy_payload() {
+        fn keyset_with_amounts() {
+            let amounts = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
             let result = sql_row_to_keyset_info(vec![
                 Column::Text("0083a60439303340".to_owned()),
                 Column::Text("sat".to_owned()),
@@ -2707,79 +2710,12 @@ mod test {
                 Column::Null,
                 Column::Text("0'/0'/0'".to_owned()),
                 Column::Integer(0),
-                Column::Integer(32),
-                Column::Null,
+                Column::Text(serde_json::to_string(&amounts).expect("valid json")),
                 Column::Integer(0),
             ]);
             assert!(result.is_ok());
-        }
-
-        #[test]
-        fn migrated_payload() {
-            let legacy = sql_row_to_keyset_info(vec![
-                Column::Text("0083a60439303340".to_owned()),
-                Column::Text("sat".to_owned()),
-                Column::Integer(1),
-                Column::Integer(1749844864),
-                Column::Null,
-                Column::Text("0'/0'/0'".to_owned()),
-                Column::Integer(0),
-                Column::Integer(32),
-                Column::Null,
-                Column::Integer(0),
-            ]);
-            assert!(legacy.is_ok());
-
-            let amounts = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
-            let migrated = sql_row_to_keyset_info(vec![
-                Column::Text("0083a60439303340".to_owned()),
-                Column::Text("sat".to_owned()),
-                Column::Integer(1),
-                Column::Integer(1749844864),
-                Column::Null,
-                Column::Text("0'/0'/0'".to_owned()),
-                Column::Integer(0),
-                Column::Integer(32),
-                Column::Text(serde_json::to_string(&amounts).expect("valid json")),
-                Column::Integer(0),
-            ]);
-            assert!(migrated.is_ok());
-            assert_eq!(legacy.unwrap(), migrated.unwrap());
-        }
-
-        #[test]
-        fn amounts_over_max_order() {
-            let legacy = sql_row_to_keyset_info(vec![
-                Column::Text("0083a60439303340".to_owned()),
-                Column::Text("sat".to_owned()),
-                Column::Integer(1),
-                Column::Integer(1749844864),
-                Column::Null,
-                Column::Text("0'/0'/0'".to_owned()),
-                Column::Integer(0),
-                Column::Integer(32),
-                Column::Null,
-                Column::Integer(0),
-            ]);
-            assert!(legacy.is_ok());
-
-            let amounts = (0..16).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
-            let migrated = sql_row_to_keyset_info(vec![
-                Column::Text("0083a60439303340".to_owned()),
-                Column::Text("sat".to_owned()),
-                Column::Integer(1),
-                Column::Integer(1749844864),
-                Column::Null,
-                Column::Text("0'/0'/0'".to_owned()),
-                Column::Integer(0),
-                Column::Integer(32),
-                Column::Text(serde_json::to_string(&amounts).expect("valid json")),
-                Column::Integer(0),
-            ]);
-            assert!(migrated.is_ok());
-            let migrated = migrated.unwrap();
-            assert_ne!(legacy.unwrap(), migrated);
-            assert_eq!(migrated.amounts.len(), 16);
+            let keyset = result.unwrap();
+            assert_eq!(keyset.amounts.len(), 32);
         }
     }
 }

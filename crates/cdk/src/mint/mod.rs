@@ -749,14 +749,26 @@ impl Mint {
                     payment_amount_quote_unit
                 );
 
-                let total_paid = tx
+                match tx
                     .increment_mint_quote_amount_paid(
                         &mint_quote.id,
                         payment_amount_quote_unit,
-                        wait_payment_response.payment_id,
+                        wait_payment_response.payment_id.clone(),
                     )
-                    .await?;
-                pubsub_manager.mint_quote_payment(mint_quote, total_paid);
+                    .await
+                {
+                    Ok(total_paid) => {
+                        pubsub_manager.mint_quote_payment(mint_quote, total_paid);
+                    }
+                    Err(database::Error::Duplicate) => {
+                        tracing::info!(
+                            "Payment ID {} already processed (caught race condition)",
+                            wait_payment_response.payment_id
+                        );
+                        // This is fine - another concurrent request already processed this payment
+                    }
+                    Err(e) => return Err(e.into()),
+                }
             }
         } else {
             tracing::info!("Received payment notification for already seen payment.");
@@ -1059,7 +1071,7 @@ mod tests {
         let first_keyset_id = keysets.keysets[0].id;
 
         // set the first keyset to inactive and generate a new keyset
-        mint.rotate_keyset(CurrencyUnit::default(), 1, 1)
+        mint.rotate_keyset(CurrencyUnit::default(), vec![1], 1)
             .await
             .expect("test");
 

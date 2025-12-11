@@ -1,8 +1,6 @@
 //! CDK lightning backend for ldk-node
 
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
-#![warn(rustdoc::bare_urls)]
 
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -803,7 +801,8 @@ impl MintPayment for CdkLdkNode {
 
                 let total_spent = payment_details
                     .amount_msat
-                    .ok_or(Error::CouldNotGetAmountSpent)?;
+                    .ok_or(Error::CouldNotGetAmountSpent)?
+                    + payment_details.fee_paid_msat.unwrap_or_default();
 
                 let total_spent = to_unit(total_spent, &CurrencyUnit::Msat, unit)?;
 
@@ -877,7 +876,8 @@ impl MintPayment for CdkLdkNode {
 
                 let total_spent = payment_details
                     .amount_msat
-                    .ok_or(Error::CouldNotGetAmountSpent)?;
+                    .ok_or(Error::CouldNotGetAmountSpent)?
+                    + payment_details.fee_paid_msat.unwrap_or_default();
 
                 let total_spent = to_unit(total_spent, &CurrencyUnit::Msat, unit)?;
 

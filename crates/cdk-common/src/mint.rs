@@ -91,15 +91,15 @@ impl FromStr for SwapSagaState {
 pub enum MeltSagaState {
     /// Setup complete (proofs reserved, quote verified)
     SetupComplete,
-    /// Payment sent to Lightning network
-    PaymentSent,
+    /// Payment attempted to Lightning network (may or may not have succeeded)
+    PaymentAttempted,
 }
 
 impl fmt::Display for MeltSagaState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MeltSagaState::SetupComplete => write!(f, "setup_complete"),
-            MeltSagaState::PaymentSent => write!(f, "payment_sent"),
+            MeltSagaState::PaymentAttempted => write!(f, "payment_attempted"),
         }
     }
 }
@@ -110,7 +110,7 @@ impl FromStr for MeltSagaState {
         let value = value.to_lowercase();
         match value.as_str() {
             "setup_complete" => Ok(MeltSagaState::SetupComplete),
-            "payment_sent" => Ok(MeltSagaState::PaymentSent),
+            "payment_attempted" => Ok(MeltSagaState::PaymentAttempted),
             _ => Err(Error::Custom(format!("Invalid melt saga state: {}", value))),
         }
     }
@@ -147,7 +147,7 @@ impl SagaStateEnum {
             },
             SagaStateEnum::Melt(state) => match state {
                 MeltSagaState::SetupComplete => "setup_complete",
-                MeltSagaState::PaymentSent => "payment_sent",
+                MeltSagaState::PaymentAttempted => "payment_attempted",
             },
         }
     }
@@ -589,8 +589,6 @@ pub struct MintKeySetInfo {
     pub derivation_path: DerivationPath,
     /// DerivationPath index of Keyset
     pub derivation_path_index: Option<u32>,
-    /// Max order of keyset
-    pub max_order: u8,
     /// Supported amounts
     pub amounts: Vec<u64>,
     /// Input Fee ppk
@@ -673,7 +671,6 @@ impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
             payment_preimage: None,
             change: None,
             state: melt_quote.state,
-            paid: Some(melt_quote.state == MeltQuoteState::Paid),
             expiry: melt_quote.expiry,
             amount: melt_quote.amount,
             fee_reserve: melt_quote.fee_reserve,
@@ -685,12 +682,10 @@ impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
 
 impl From<MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
     fn from(melt_quote: MeltQuote) -> MeltQuoteBolt11Response<QuoteId> {
-        let paid = melt_quote.state == MeltQuoteState::Paid;
         MeltQuoteBolt11Response {
             quote: melt_quote.id.clone(),
             amount: melt_quote.amount,
             fee_reserve: melt_quote.fee_reserve,
-            paid: Some(paid),
             state: melt_quote.state,
             expiry: melt_quote.expiry,
             payment_preimage: melt_quote.payment_preimage,

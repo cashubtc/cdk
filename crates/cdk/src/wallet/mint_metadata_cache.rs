@@ -1,13 +1,13 @@
 //! Per-mint cryptographic key and metadata cache
 //!
 //! Provides on-demand fetching and caching of mint metadata (info, keysets, and keys)
-//! with atomic in-memory cache updates and deferred database persistence.
+//! with atomic in-memory cache updates and database persistence.
 //!
 //! # Architecture
 //!
 //! - **Pull-based loading**: Keys fetched on-demand from mint HTTP API
 //! - **Atomic cache**: Single `MintMetadata` snapshot updated via `ArcSwap`
-//! - **Deferred persistence**: Database writes happen asynchronously after cache update
+//! - **Synchronous persistence**: Database writes happen after cache update
 //! - **Multi-database support**: Tracks sync status per storage instance via pointer identity
 //!
 //! # Usage
@@ -27,16 +27,16 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{KeySetInfo, Keys};
 use cdk_common::parking_lot::RwLock;
-use cdk_common::task::spawn;
 use cdk_common::{KeySet, MintInfo};
 use tokio::sync::Mutex;
+use web_time::Instant;
 
 use crate::nuts::Id;
 use crate::wallet::MintConnector;
@@ -99,11 +99,11 @@ pub struct MintMetadata {
     auth_status: FreshnessStatus,
 }
 
-/// On-demand mint metadata cache with deferred database persistence
+/// On-demand mint metadata cache with database persistence
 ///
 /// Manages a single mint's cryptographic keys and metadata. Fetches data from
-/// the mint's HTTP API on-demand and caches it in memory. Database writes are
-/// deferred to background tasks to avoid blocking operations.
+/// the mint's HTTP API on-demand and caches it in memory. Database writes
+/// occur synchronously to ensure persistence.
 ///
 /// # Thread Safety
 ///
@@ -198,8 +198,7 @@ impl MintMetadataCache {
     /// Load metadata from mint server and update cache
     ///
     /// Always performs an HTTP fetch from the mint server to get fresh data.
-    /// Updates the in-memory cache and spawns a background task to persist
-    /// to the database.
+    /// Updates the in-memory cache and persists to the database.
     ///
     /// Uses a mutex to ensure only one fetch runs at a time. If multiple
     /// callers request a fetch simultaneously, only one performs the HTTP
@@ -243,6 +242,20 @@ impl MintMetadataCache {
             return Ok(current_metadata);
         }
 
+        // Load keys from database before fetching from HTTP
+        // This prevents re-fetching keys we already have and avoids duplicate insertions
+        if let Some(keysets) = storage.get_mint_keysets(self.mint_url.clone()).await? {
+            let mut updated_metadata = (*self.metadata.load().clone()).clone();
+            for keyset_info in keysets {
+                if let Some(keys) = storage.get_keys(&keyset_info.id).await? {
+                    tracing::trace!("Loaded keys for keyset {} from database", keyset_info.id);
+                    updated_metadata.keys.insert(keyset_info.id, Arc::new(keys));
+                }
+            }
+            // Update cache with database keys before HTTP fetch
+            self.metadata.store(Arc::new(updated_metadata));
+        }
+
         // Perform the fetch
         #[cfg(feature = "auth")]
         let metadata = self.fetch_from_http(Some(client), None).await?;
@@ -250,8 +263,8 @@ impl MintMetadataCache {
         #[cfg(not(feature = "auth"))]
         let metadata = self.fetch_from_http(Some(client)).await?;
 
-        // Spawn background task to persist to database (non-blocking)
-        self.spawn_database_sync(storage.clone(), metadata.clone());
+        // Persist to database
+        self.database_sync(storage.clone(), metadata.clone()).await;
 
         Ok(metadata)
     }
@@ -305,74 +318,15 @@ impl MintMetadataCache {
         {
             // Cache is ready - check if database needs updating
             if db_synced_version != cached_metadata.status.version {
-                // Database is stale - sync in background
-                // We spawn rather than await to avoid blocking the caller
-                // and to prevent deadlocks with any existing transactions
-                self.spawn_database_sync(storage.clone(), cached_metadata.clone());
+                // Database is stale - sync before returning
+                self.database_sync(storage.clone(), cached_metadata.clone())
+                    .await;
             }
             return Ok(cached_metadata);
         }
 
         // Cache not populated - fetch from mint
         self.load_from_mint(storage, client).await
-    }
-
-    /// Load mint info and keys from storage.
-    ///
-    /// This function should be called without any competing transaction with the storage.
-    pub async fn load_from_storage(
-        &self,
-        storage: &Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
-    ) -> Result<(), Error> {
-        // Load keys from database before fetching from HTTP
-        // This prevents re-fetching keys we already have and avoids duplicate insertions
-        let mut updated_metadata = (*self.metadata.load().clone()).clone();
-
-        updated_metadata.mint_info = storage
-            .get_mint(self.mint_url.clone())
-            .await?
-            .ok_or(Error::UnknownKeySet)?;
-
-        let keysets = storage
-            .get_mint_keysets(self.mint_url.clone())
-            .await?
-            .ok_or(Error::UnknownKeySet)?
-            .into_iter()
-            .map(Arc::new)
-            .collect::<Vec<_>>();
-
-        for keyset_info in keysets.iter() {
-            if let Some(keys) = storage.get_keys(&keyset_info.id).await? {
-                tracing::trace!(
-                    "Loaded keys for keyset {} from database (auth)",
-                    keyset_info.id
-                );
-                updated_metadata.keys.insert(keyset_info.id, Arc::new(keys));
-            }
-            if keyset_info.active {
-                updated_metadata.active_keysets.push(keyset_info.clone());
-            }
-        }
-
-        updated_metadata.keysets = keysets
-            .into_iter()
-            .map(|keyset| (keyset.id, keyset))
-            .collect();
-        updated_metadata.status.is_populated = true;
-        updated_metadata.status.version += 1;
-        updated_metadata.status.updated_at = Instant::now();
-
-        #[cfg(feature = "auth")]
-        {
-            updated_metadata.auth_status.is_populated = true;
-            updated_metadata.auth_status.updated_at = Instant::now();
-            updated_metadata.auth_status.version += 1;
-        }
-
-        // Update cache with database keys before HTTP fetch
-        self.metadata.store(Arc::new(updated_metadata));
-
-        Ok(())
     }
 
     /// Load auth keysets and keys (auth feature only)
@@ -409,8 +363,9 @@ impl MintMetadataCache {
             && cached_metadata.auth_status.updated_at > Instant::now()
         {
             if db_synced_version != cached_metadata.status.version {
-                // Database needs updating - spawn background sync
-                self.spawn_database_sync(storage.clone(), cached_metadata.clone());
+                // Database needs updating - sync before returning
+                self.database_sync(storage.clone(), cached_metadata.clone())
+                    .await;
             }
             return Ok(cached_metadata);
         }
@@ -429,22 +384,39 @@ impl MintMetadataCache {
             return Ok(current_metadata);
         }
 
+        // Load keys from database before fetching from HTTP
+        // This prevents re-fetching keys we already have and avoids duplicate insertions
+        if let Some(keysets) = storage.get_mint_keysets(self.mint_url.clone()).await? {
+            let mut updated_metadata = (*self.metadata.load().clone()).clone();
+            for keyset_info in keysets {
+                if let Some(keys) = storage.get_keys(&keyset_info.id).await? {
+                    tracing::trace!(
+                        "Loaded keys for keyset {} from database (auth)",
+                        keyset_info.id
+                    );
+                    updated_metadata.keys.insert(keyset_info.id, Arc::new(keys));
+                }
+            }
+            // Update cache with database keys before HTTP fetch
+            self.metadata.store(Arc::new(updated_metadata));
+        }
+
         // Auth data not in cache - fetch from mint
         let metadata = self.fetch_from_http(None, Some(auth_client)).await?;
 
-        // Spawn background task to persist
-        self.spawn_database_sync(storage.clone(), metadata.clone());
+        // Persist to database
+        self.database_sync(storage.clone(), metadata.clone()).await;
 
         Ok(metadata)
     }
 
-    /// Spawn a background task to sync metadata to database
+    /// Sync metadata to database
     ///
-    /// This is non-blocking and happens asynchronously. The task will:
+    /// This will:
     /// 1. Check if this sync is still needed (version may be superseded)
     /// 2. Save mint info, keysets, and keys to the database
     /// 3. Update the sync tracking to record this storage has been updated
-    fn spawn_database_sync(
+    async fn database_sync(
         &self,
         storage: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
         metadata: Arc<MintMetadata>,
@@ -452,12 +424,10 @@ impl MintMetadataCache {
         let mint_url = self.mint_url.clone();
         let db_sync_versions = self.db_sync_versions.clone();
 
-        spawn(async move {
-            Self::persist_to_database(mint_url, storage, metadata, db_sync_versions).await
-        });
+        Self::persist_to_database(mint_url, storage, metadata, db_sync_versions).await
     }
 
-    /// Persist metadata to database (called from background task)
+    /// Persist metadata to database
     ///
     /// Saves mint info, keysets, and keys to the database. Checks version
     /// before writing to avoid redundant work if a newer version has already
@@ -492,9 +462,18 @@ impl MintMetadataCache {
             versions.insert(storage_id, metadata.status.version);
         }
 
+        let mut tx = if let Ok(ok) = storage
+            .begin_db_transaction()
+            .await
+            .inspect_err(|err| tracing::warn!("Could not begin database transaction: {err}"))
+        {
+            ok
+        } else {
+            return;
+        };
+
         // Save mint info
-        storage
-            .add_mint(mint_url.clone(), Some(metadata.mint_info.clone()))
+        tx.add_mint(mint_url.clone(), Some(metadata.mint_info.clone()))
             .await
             .inspect_err(|e| tracing::warn!("Failed to save mint info for {}: {}", mint_url, e))
             .ok();
@@ -503,8 +482,7 @@ impl MintMetadataCache {
         let keysets: Vec<_> = metadata.keysets.values().map(|ks| (**ks).clone()).collect();
 
         if !keysets.is_empty() {
-            storage
-                .add_mint_keysets(mint_url.clone(), keysets)
+            tx.add_mint_keysets(mint_url.clone(), keysets)
                 .await
                 .inspect_err(|e| tracing::warn!("Failed to save keysets for {}: {}", mint_url, e))
                 .ok();
@@ -514,7 +492,7 @@ impl MintMetadataCache {
         for (keyset_id, keys) in &metadata.keys {
             if let Some(keyset_info) = metadata.keysets.get(keyset_id) {
                 // Check if keys already exist in database to avoid duplicate insertion
-                if storage.get_keys(keyset_id).await.ok().flatten().is_some() {
+                if tx.get_keys(keyset_id).await.ok().flatten().is_some() {
                     tracing::trace!(
                         "Keys for keyset {} already in database, skipping insert",
                         keyset_id
@@ -529,8 +507,7 @@ impl MintMetadataCache {
                     keys: (**keys).clone(),
                 };
 
-                storage
-                    .add_keys(keyset)
+                tx.add_keys(keyset)
                     .await
                     .inspect_err(|e| {
                         tracing::warn!(
@@ -543,6 +520,8 @@ impl MintMetadataCache {
                     .ok();
             }
         }
+
+        let _ = tx.commit().await.ok();
     }
 
     /// Fetch fresh metadata from mint HTTP API and update cache

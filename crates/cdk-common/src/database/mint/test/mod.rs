@@ -2,6 +2,7 @@
 //!
 //! This set is generic and checks the default and expected behaviour for a mint database
 //! implementation
+#![allow(clippy::unwrap_used)]
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,6 +23,12 @@ mod proofs;
 pub use self::mint::*;
 pub use self::proofs::*;
 
+/// Generate standard keyset amounts as powers of 2
+#[inline]
+fn standard_keyset_amounts(max_order: u32) -> Vec<u64> {
+    (0..max_order).map(|n| 2u64.pow(n)).collect()
+}
+
 #[inline]
 async fn setup_keyset<DB>(db: &DB) -> Id
 where
@@ -36,9 +43,8 @@ where
         final_expiry: None,
         derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
         derivation_path_index: Some(0),
-        max_order: 32,
         input_fee_ppk: 0,
-        amounts: vec![],
+        amounts: standard_keyset_amounts(32),
     };
     let mut writer = db.begin_transaction().await.expect("db.begin()");
     writer.add_keyset_info(keyset_info).await.unwrap();

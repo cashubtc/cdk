@@ -29,20 +29,27 @@ impl Mint {
         // and HTLC (including SIGALL)
         swap_request.verify_spending_conditions()?;
 
+        let input_proofs = swap_request.inputs();
+
+        if input_proofs.is_empty() {
+            return Err(Error::TransactionUnbalanced(
+                0,
+                swap_request.output_amount()?.to_u64(),
+                0,
+            ));
+        }
+
         // We don't need to check P2PK or HTLC again. It has all been checked above
         // and the code doesn't reach here unless such verifications were satisfactory
 
         // Verify inputs (cryptographic verification, no DB needed)
-        let input_verification =
-            self.verify_inputs(swap_request.inputs())
-                .await
-                .map_err(|err| {
-                    #[cfg(feature = "prometheus")]
-                    self.record_swap_failure("process_swap_request");
+        let input_verification = self.verify_inputs(input_proofs).await.map_err(|err| {
+            #[cfg(feature = "prometheus")]
+            self.record_swap_failure("process_swap_request");
 
-                    tracing::debug!("Input verification failed: {:?}", err);
-                    err
-                })?;
+            tracing::debug!("Input verification failed: {:?}", err);
+            err
+        })?;
 
         // Step 1: Initialize the swap saga
         let init_saga = SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone());

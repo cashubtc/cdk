@@ -60,10 +60,12 @@ async fn main() -> Result<(), Error> {
     let bal = wallet.total_balance().await?;
     println!("Total balance: {}", bal);
 
+    let token_amount_to_send = Amount::from(10);
+
     // Send a token with the specified amount and spending conditions
     let prepared_send = wallet
         .prepare_send(
-            10.into(),
+            token_amount_to_send,
             SendOptions {
                 conditions: Some(spending_conditions),
                 include_fee: true,
@@ -71,7 +73,11 @@ async fn main() -> Result<(), Error> {
             },
         )
         .await?;
-    println!("Fee: {}", prepared_send.fee());
+
+    let swap_fee = prepared_send.swap_fee();
+
+    println!("Fee: {}", swap_fee);
+
     let token = prepared_send.confirm(None).await?;
 
     println!("Created token locked to pubkey: {}", secret.public_key());
@@ -87,6 +93,8 @@ async fn main() -> Result<(), Error> {
             },
         )
         .await?;
+
+    assert!(amount == token_amount_to_send);
 
     println!("Redeemed locked token worth: {}", u64::from(amount));
 

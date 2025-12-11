@@ -1,4 +1,7 @@
+use cdk_common::amount::FeeAndAmounts;
+use cdk_common::database::DynWalletDatabaseTransaction;
 use cdk_common::nut02::KeySetInfosMethods;
+use cdk_common::Id;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
@@ -24,9 +27,16 @@ impl Wallet {
         tracing::info!("Swapping");
         let mint_url = &self.mint_url;
         let unit = &self.unit;
+        let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
 
         let pre_swap = self
             .create_swap(
+                self.localstore.begin_db_transaction().await?,
+                active_keyset_id,
+                &fee_and_amounts,
                 amount,
                 amount_split_target.clone(),
                 input_proofs.clone(),
@@ -43,9 +53,6 @@ impl Wallet {
             .await?;
 
         let active_keyset_id = pre_swap.pre_mint_secrets.keyset_id;
-        let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
 
         let active_keys = self.load_keyset_keys(active_keyset_id).await?;
 
@@ -93,16 +100,6 @@ impl Wallet {
                     }
                 };
 
-                let send_amount = proofs_to_send.total_amount()?;
-
-                if send_amount.ne(&(amount + pre_swap.fee)) {
-                    tracing::warn!(
-                        "Send amount proofs is {:?} expected {:?}",
-                        send_amount,
-                        amount
-                    );
-                }
-
                 let send_proofs_info = proofs_to_send
                     .clone()
                     .into_iter()
@@ -133,9 +130,11 @@ impl Wallet {
             .map(|proof| proof.y())
             .collect::<Result<Vec<PublicKey>, _>>()?;
 
-        self.localstore
-            .update_proofs(added_proofs, deleted_ys)
-            .await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        tx.update_proofs(added_proofs, deleted_ys).await?;
+        tx.commit().await?;
+
         Ok(send_proofs)
     }
 
@@ -196,9 +195,13 @@ impl Wallet {
     }
 
     /// Create Swap Payload
-    #[instrument(skip(self, proofs))]
+    #[instrument(skip(self, proofs, tx))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_swap(
         &self,
+        mut tx: DynWalletDatabaseTransaction,
+        active_keyset_id: Id,
+        fee_and_amounts: &FeeAndAmounts,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
         proofs: Proofs,
@@ -206,17 +209,13 @@ impl Wallet {
         include_fees: bool,
     ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
-        let active_keyset_id = self.fetch_active_keyset().await?.id;
 
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;
+        let fee = self.get_proofs_fee(&proofs).await?;
 
         let ys: Vec<PublicKey> = proofs.ys()?;
-        self.localstore
-            .update_proofs_state(ys, State::Reserved)
-            .await?;
-
-        let fee = self.get_proofs_fee(&proofs).await?;
+        tx.update_proofs_state(ys, State::Reserved).await?;
 
         let total_to_subtract = amount
             .unwrap_or(Amount::ZERO)
@@ -227,16 +226,11 @@ impl Wallet {
             .checked_sub(total_to_subtract)
             .ok_or(Error::InsufficientFunds)?;
 
-        let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
-
         let (send_amount, change_amount) = match include_fees {
             true => {
                 let split_count = amount
                     .unwrap_or(Amount::ZERO)
-                    .split_targeted(&SplitTarget::default(), &fee_and_amounts)
-                    .unwrap()
+                    .split_targeted(&SplitTarget::default(), fee_and_amounts)?
                     .len();
 
                 let fee_to_redeem = self
@@ -259,7 +253,7 @@ impl Wallet {
         // else use state refill
         let change_split_target = match amount_split_target {
             SplitTarget::None => {
-                self.determine_split_target_values(change_amount, &fee_and_amounts)
+                self.determine_split_target_values(&mut tx, change_amount, fee_and_amounts)
                     .await?
             }
             s => s,
@@ -272,17 +266,17 @@ impl Wallet {
             Some(_) => {
                 // For spending conditions, we only need to count change secrets
                 change_amount
-                    .split_targeted(&change_split_target, &fee_and_amounts)?
+                    .split_targeted(&change_split_target, fee_and_amounts)?
                     .len() as u32
             }
             None => {
                 // For no spending conditions, count both send and change secrets
                 let send_count = send_amount
                     .unwrap_or(Amount::ZERO)
-                    .split_targeted(&SplitTarget::default(), &fee_and_amounts)?
+                    .split_targeted(&SplitTarget::default(), fee_and_amounts)?
                     .len() as u32;
                 let change_count = change_amount
-                    .split_targeted(&change_split_target, &fee_and_amounts)?
+                    .split_targeted(&change_split_target, fee_and_amounts)?
                     .len() as u32;
                 send_count + change_count
             }
@@ -296,8 +290,7 @@ impl Wallet {
                 total_secrets_needed
             );
 
-            let new_counter = self
-                .localstore
+            let new_counter = tx
                 .increment_keyset_counter(&active_keyset_id, total_secrets_needed)
                 .await?;
 
@@ -316,7 +309,7 @@ impl Wallet {
                     &self.seed,
                     change_amount,
                     &change_split_target,
-                    &fee_and_amounts,
+                    fee_and_amounts,
                 )?;
 
                 derived_secret_count = change_premint_secrets.len();
@@ -327,7 +320,7 @@ impl Wallet {
                         send_amount.unwrap_or(Amount::ZERO),
                         &SplitTarget::default(),
                         &conditions,
-                        &fee_and_amounts,
+                        fee_and_amounts,
                     )?,
                     change_premint_secrets,
                 )
@@ -339,7 +332,7 @@ impl Wallet {
                     &self.seed,
                     send_amount.unwrap_or(Amount::ZERO),
                     &SplitTarget::default(),
-                    &fee_and_amounts,
+                    fee_and_amounts,
                 )?;
 
                 count += premint_secrets.len() as u32;
@@ -350,7 +343,7 @@ impl Wallet {
                     &self.seed,
                     change_amount,
                     &change_split_target,
-                    &fee_and_amounts,
+                    fee_and_amounts,
                 )?;
 
                 derived_secret_count = change_premint_secrets.len() + premint_secrets.len();
@@ -365,6 +358,8 @@ impl Wallet {
         desired_messages.sort_secrets();
 
         let swap_request = SwapRequest::new(proofs, desired_messages.blinded_messages());
+
+        tx.commit().await?;
 
         Ok(PreSwap {
             pre_mint_secrets: desired_messages,

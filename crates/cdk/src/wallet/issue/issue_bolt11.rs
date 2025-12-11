@@ -49,16 +49,14 @@ impl Wallet {
         amount: Amount,
         description: Option<String>,
     ) -> Result<MintQuote, Error> {
+        let mint_info = self.load_mint_info().await?;
+
         let mint_url = self.mint_url.clone();
         let unit = self.unit.clone();
 
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
-            let settings = self
-                .localstore
-                .get_mint(mint_url.clone())
-                .await?
-                .ok_or(Error::IncorrectMint)?
+            let settings = mint_info
                 .nuts
                 .nut04
                 .get_settings(&unit, &crate::nuts::PaymentMethod::Bolt11)
@@ -92,7 +90,9 @@ impl Wallet {
             Some(secret_key),
         );
 
-        self.localstore.add_mint_quote(quote.clone()).await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.add_mint_quote(quote.clone()).await?;
+        tx.commit().await?;
 
         Ok(quote)
     }
@@ -105,17 +105,21 @@ impl Wallet {
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let response = self.client.get_mint_quote_status(quote_id).await?;
 
-        match self.localstore.get_mint_quote(quote_id).await? {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        match tx.get_mint_quote(quote_id).await? {
             Some(quote) => {
                 let mut quote = quote;
 
                 quote.state = response.state;
-                self.localstore.add_mint_quote(quote).await?;
+                tx.add_mint_quote(quote).await?;
             }
             None => {
                 tracing::info!("Quote mint {} unknown", quote_id);
             }
         }
+
+        tx.commit().await?;
 
         Ok(response)
     }
@@ -135,7 +139,9 @@ impl Wallet {
                     .await?;
                 total_amount += proofs.total_amount()?;
             } else if mint_quote.expiry.le(&unix_time()) {
-                self.localstore.remove_mint_quote(&mint_quote.id).await?;
+                let mut tx = self.localstore.begin_db_transaction().await?;
+                tx.remove_mint_quote(&mint_quote.id).await?;
+                tx.commit().await?;
             }
         }
         Ok(total_amount)
@@ -194,8 +200,13 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        let quote_info = self
-            .localstore
+        let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
+
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let quote_info = tx
             .get_mint_quote(quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
@@ -217,23 +228,25 @@ impl Wallet {
             tracing::warn!("Attempting to mint with expired quote.");
         }
 
-        let active_keyset_id = self.fetch_active_keyset().await?.id;
-        let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
+        let split_target = match amount_split_target {
+            SplitTarget::None => {
+                self.determine_split_target_values(&mut tx, amount_mintable, &fee_and_amounts)
+                    .await?
+            }
+            s => s,
+        };
 
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
                 amount_mintable,
-                &amount_split_target,
+                &split_target,
                 spending_conditions,
                 &fee_and_amounts,
             )?,
             None => {
-                // Calculate how many secrets we'll need
                 let amount_split =
-                    amount_mintable.split_targeted(&amount_split_target, &fee_and_amounts)?;
+                    amount_mintable.split_targeted(&split_target, &fee_and_amounts)?;
                 let num_secrets = amount_split.len() as u32;
 
                 tracing::debug!(
@@ -243,8 +256,7 @@ impl Wallet {
                 );
 
                 // Atomically get the counter range we need
-                let new_counter = self
-                    .localstore
+                let new_counter = tx
                     .increment_keyset_counter(&active_keyset_id, num_secrets)
                     .await?;
 
@@ -255,7 +267,7 @@ impl Wallet {
                     count,
                     &self.seed,
                     amount_mintable,
-                    &amount_split_target,
+                    &split_target,
                     &fee_and_amounts,
                 )?
             }
@@ -270,6 +282,8 @@ impl Wallet {
         if let Some(secret_key) = quote_info.secret_key {
             request.sign(secret_key)?;
         }
+
+        tx.commit().await?;
 
         let mint_res = self.client.post_mint(request).await?;
 
@@ -294,8 +308,10 @@ impl Wallet {
             &keys,
         )?;
 
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
         // Remove filled quote from store
-        self.localstore.remove_mint_quote(&quote_info.id).await?;
+        tx.remove_mint_quote(&quote_info.id).await?;
 
         let proof_infos = proofs
             .iter()
@@ -310,25 +326,26 @@ impl Wallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        self.localstore.update_proofs(proof_infos, vec![]).await?;
+        tx.update_proofs(proof_infos, vec![]).await?;
 
         // Add transaction to store
-        self.localstore
-            .add_transaction(Transaction {
-                mint_url: self.mint_url.clone(),
-                direction: TransactionDirection::Incoming,
-                amount: proofs.total_amount()?,
-                fee: Amount::ZERO,
-                unit: self.unit.clone(),
-                ys: proofs.ys()?,
-                timestamp: unix_time,
-                memo: None,
-                metadata: HashMap::new(),
-                quote_id: Some(quote_id.to_string()),
-                payment_request: Some(quote_info.request),
-                payment_proof: None,
-            })
-            .await?;
+        tx.add_transaction(Transaction {
+            mint_url: self.mint_url.clone(),
+            direction: TransactionDirection::Incoming,
+            amount: proofs.total_amount()?,
+            fee: Amount::ZERO,
+            unit: self.unit.clone(),
+            ys: proofs.ys()?,
+            timestamp: unix_time,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: Some(quote_id.to_string()),
+            payment_request: Some(quote_info.request),
+            payment_proof: None,
+        })
+        .await?;
+
+        tx.commit().await?;
 
         Ok(proofs)
     }

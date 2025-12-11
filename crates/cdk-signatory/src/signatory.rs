@@ -111,7 +111,6 @@ impl From<SignatoryKeySet> for MintKeySetInfo {
             input_fee_ppk: val.input_fee_ppk,
             derivation_path: Default::default(),
             derivation_path_index: Default::default(),
-            max_order: 0,
             amounts: val.amounts,
             final_expiry: val.final_expiry,
             valid_from: 0,
