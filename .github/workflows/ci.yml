@@ -139,7 +139,7 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Run workspace tests
-        run: nix develop -i -L .#stable --command cargo test --workspace
+        run: nix develop -i -L .#stable --command cargo test --workspace --exclude cdk-integration-tests
 
   regtest-itest:
     name: "Integration regtest tests"
