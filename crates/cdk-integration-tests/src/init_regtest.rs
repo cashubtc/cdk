@@ -417,6 +417,9 @@ pub async fn start_regtest_end(
                 .connect_peer(pubkey.to_string(), listen_addr.clone(), *port)
                 .await?;
 
+            // Wait for CLN to sync after previous block generation to ensure UTXOs are available
+            cln_client.wait_chain_sync().await?;
+
             cln_client
                 .open_channel(1_500_000, &pubkey.to_string(), Some(750_000))
                 .await
