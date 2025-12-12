@@ -224,16 +224,14 @@ async fn start_ldk_mint(
         rgs_url: None,
         webserver_host: Some("127.0.0.1".to_string()),
         webserver_port: Some(port + 1), // Use next port for web interface
-        ldk_node_mnemonic: None,
+        ldk_node_mnemonic: Some(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+                .to_string(),
+        ),
     };
 
     // Create settings struct for LDK mint using a new shared function
-    let settings = create_ldk_settings(
-        port,
-        ldk_config,
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-            .to_string(),
-    );
+    let settings = create_ldk_settings(port, ldk_config);
 
     println!("Starting LDK mintd on port {port}");
 
@@ -270,7 +268,6 @@ async fn start_ldk_mint(
 fn create_ldk_settings(
     port: u16,
     ldk_config: cdk_mintd::config::LdkNode,
-    mnemonic: String,
 ) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
@@ -279,7 +276,7 @@ fn create_ldk_settings(
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
             seed: None,
-            mnemonic: Some(mnemonic),
+            mnemonic: Some("eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal".to_string()),
             signatory_url: None,
             signatory_certs: None,
             input_fee_ppk: None,
