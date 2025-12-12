@@ -420,10 +420,48 @@ pub async fn start_regtest_end(
             // Wait for CLN to sync after previous block generation to ensure UTXOs are available
             cln_client.wait_chain_sync().await?;
 
-            cln_client
-                .open_channel(1_500_000, &pubkey.to_string(), Some(750_000))
-                .await
-                .unwrap();
+            // Retry opening channel with backoff - UTXO indexing may lag behind chain sync
+            let mut delay = Duration::from_millis(500);
+            let max_retries = 10;
+            let mut last_err = None;
+            for attempt in 1..=max_retries {
+                match cln_client
+                    .open_channel(1_500_000, &pubkey.to_string(), Some(750_000))
+                    .await
+                {
+                    Ok(_) => {
+                        last_err = None;
+                        break;
+                    }
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        // Check if this is a UTXO availability error that might resolve
+                        if err_str.contains("Could not afford") || err_str.contains("UTXO") {
+                            tracing::warn!(
+                                "Channel open failed (attempt {}/{}): {}, retrying in {:?}...",
+                                attempt,
+                                max_retries,
+                                err_str,
+                                delay
+                            );
+                            last_err = Some(e);
+                            tokio::time::sleep(delay).await;
+                            delay = std::cmp::min(delay * 2, Duration::from_secs(5));
+                            // Re-sync chain state before retry
+                            cln_client.wait_chain_sync().await?;
+                        } else {
+                            // For other errors, fail immediately
+                            panic!("Failed to open channel to LDK: {}", e);
+                        }
+                    }
+                }
+            }
+            if let Some(e) = last_err {
+                panic!(
+                    "Failed to open channel to LDK after {} retries: {}",
+                    max_retries, e
+                );
+            }
 
             generate_block(&bitcoin_client)?;
 
