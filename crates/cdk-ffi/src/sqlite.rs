@@ -155,3 +155,38 @@ impl WalletDatabase for WalletSqliteDatabase {
             .await
     }
 }
+
+use crate::database::{KVStore, KVStoreDatabase, KVStoreTransactionWrapper};
+
+#[uniffi::export(async_runtime = "tokio")]
+#[async_trait::async_trait]
+impl KVStoreDatabase for WalletSqliteDatabase {
+    async fn kv_read(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        self.inner
+            .kv_read(primary_namespace, secondary_namespace, key)
+            .await
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+    ) -> Result<Vec<String>, FfiError> {
+        self.inner
+            .kv_list(primary_namespace, secondary_namespace)
+            .await
+    }
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+#[async_trait::async_trait]
+impl KVStore for WalletSqliteDatabase {
+    async fn begin_kv_transaction(&self) -> Result<Arc<KVStoreTransactionWrapper>, FfiError> {
+        self.inner.begin_kv_transaction().await
+    }
+}
