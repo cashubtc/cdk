@@ -140,7 +140,7 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Run workspace tests
-        run: nix develop -i -L .#stable --command cargo test --workspace --exclude cdk-integration-tests
+        run: nix develop -i -L .#stable --command bash -c "start-postgres && cargo test --workspace --exclude cdk-integration-tests"
 
   regtest-itest:
     name: "Integration regtest tests"
