@@ -219,15 +219,13 @@ impl CdkLdkNode {
         }
 
         ldk.set_node_alias("cdk-ldk-node".to_string())?;
-        if builder.seed.is_some() {
-            ldk.set_entropy_bip39_mnemonic(builder.seed.expect("valid seed"), None);
+        // set the seed as bip39 entropy mnemonic
+        if let Some(seed) = builder.seed {
+            ldk.set_entropy_bip39_mnemonic(seed, None);
         }
-        if builder.announcement_addresses.is_some() {
-            ldk.set_announcement_addresses(
-                builder
-                    .announcement_addresses
-                    .expect("valid announcement_addresses"),
-            )?;
+        // set the announcement addresses
+        if let Some(announcement_addresses) = builder.announcement_addresses {
+            ldk.set_announcement_addresses(announcement_addresses)?;
         }
 
         let node = ldk.build()?;
