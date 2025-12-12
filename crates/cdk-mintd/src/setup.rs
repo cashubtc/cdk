@@ -352,11 +352,8 @@ impl LnBackendSetup for config::LdkNode {
             let storage_dir = PathBuf::from(&storage_dir_path);
             let keys_seed_file = storage_dir.join("keys_seed");
 
-            if !keys_seed_file.exists() && !storage_dir.exists() {
-                // This is a new node and no mnemonic is provided
-                tracing::warn!(
-                    "ldk_node_mnemonic should be set in the [ldk_node] configuration section."
-                );
+            if !keys_seed_file.exists() {
+                bail!("ldk_node_mnemonic should be set in the [ldk_node] configuration section.");
             }
 
             // Existing node with stored seed, don't set a mnemonic
