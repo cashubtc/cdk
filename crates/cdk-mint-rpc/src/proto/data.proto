@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package cdk_mint_data_rpc;
+
+service CdkMintData {
+    rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {}
+    rpc GetKeysets(GetKeysetsRequest) returns (GetKeysetsResponse) {}
+}
+
+message GetInfoRequest {
+}
+
+message ContactInfo {
+    string method = 1;
+    string info = 2;
+}
+
+message GetInfoResponse {
+    optional string name = 1;
+    optional string version = 2;
+    optional string description = 3;
+    optional string long_description = 4;
+    repeated ContactInfo contact = 5;
+    optional string motd = 6;
+    optional string icon_url = 7;
+    repeated string urls = 8;
+    optional string tos_url = 9;
+    uint64 total_issued = 10;
+    uint64 total_redeemed = 11;
+}
+
+message GetKeysetsRequest {
+    repeated string units = 1;
+    optional bool active_only = 2;
+}
+
+message Keyset {
+    string id = 1;
+    string unit = 2;
+    bool active = 3;
+}
+
+message GetKeysetsResponse {
+    repeated Keyset keysets = 1;
+}

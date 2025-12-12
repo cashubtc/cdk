@@ -3,7 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cdk_mint_client::CdkMintClient;
+use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateTosUrlRequest;
 
 /// Command to update the mint's terms of service URL
@@ -24,7 +24,7 @@ pub struct UpdateTosUrlCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new icon URL to set
 pub async fn update_tos_url(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut CdkMintManagementClient<Channel>,
     sub_command_args: &UpdateTosUrlCommand,
 ) -> Result<()> {
     let _response = client

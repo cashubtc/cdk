@@ -1,3 +1,5 @@
+/// Module for getting the mint's info
+mod get_info;
 /// Module for rotating to the next keyset
 mod rotate_next_keyset;
 /// Module for updating mint contact information
@@ -25,6 +27,7 @@ mod update_ttl;
 /// Module for managing mint URLs
 mod update_urls;
 
+pub use get_info::get_info;
 pub use rotate_next_keyset::{rotate_next_keyset, RotateNextKeysetCommand};
 pub use update_contact::{add_contact, remove_contact, AddContactCommand, RemoveContactCommand};
 pub use update_icon_url::{update_icon_url, UpdateIconUrlCommand};

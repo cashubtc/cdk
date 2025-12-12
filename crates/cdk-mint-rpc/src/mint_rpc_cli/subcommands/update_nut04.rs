@@ -3,7 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cdk_mint_client::CdkMintClient;
+use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::{MintMethodOptions, UpdateNut04Request};
 
 /// Command to update NUT-04 (mint process) settings for the mint
@@ -43,7 +43,7 @@ pub struct UpdateNut04Command {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The NUT-04 configuration parameters to update
 pub async fn update_nut04(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut CdkMintManagementClient<Channel>,
     sub_command_args: &UpdateNut04Command,
 ) -> Result<()> {
     // Create options if description is set

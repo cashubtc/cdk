@@ -1,9 +1,8 @@
 syntax = "proto3";
 
-package cdk_mint_rpc;
+package cdk_mint_management_rpc;
 
-service CdkMint {
-    rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {}
+service CdkMintManagement {
     rpc UpdateMotd(UpdateMotdRequest) returns (UpdateResponse) {}
     rpc UpdateShortDescription(UpdateDescriptionRequest) returns (UpdateResponse) {}
     rpc UpdateLongDescription(UpdateDescriptionRequest) returns (UpdateResponse) {}
@@ -20,28 +19,6 @@ service CdkMint {
     rpc GetQuoteTtl(GetQuoteTtlRequest) returns (GetQuoteTtlResponse) {}
     rpc UpdateNut04Quote(UpdateNut04QuoteRequest) returns (UpdateNut04QuoteRequest) {}
     rpc RotateNextKeyset(RotateNextKeysetRequest) returns (RotateNextKeysetResponse) {}
-}
-
-message GetInfoRequest {
-}
-
-message ContactInfo {
-    string method = 1;
-    string info = 2;
-}
-
-message GetInfoResponse {
-    optional string name = 1;
-    optional string version = 2;
-    optional string description = 3;
-    optional string long_description = 4;
-    repeated ContactInfo contact = 5;
-    optional string motd = 6;
-    optional string icon_url = 7;
-    repeated string urls = 8;
-    optional string tos_url = 9;
-    uint64 total_issued = 10;
-    uint64 total_redeemed = 11;
 }
 
 message UpdateResponse{
