@@ -9,6 +9,7 @@ service CdkMint {
     rpc UpdateLongDescription(UpdateDescriptionRequest) returns (UpdateResponse) {}
     rpc UpdateIconUrl(UpdateIconUrlRequest) returns (UpdateResponse) {}
     rpc UpdateName(UpdateNameRequest) returns (UpdateResponse) {}
+    rpc UpdateTosUrl(UpdateTosUrlRequest) returns (UpdateResponse) {}
     rpc AddUrl(UpdateUrlRequest) returns (UpdateResponse) {}
     rpc RemoveUrl(UpdateUrlRequest) returns (UpdateResponse) {}
     rpc AddContact(UpdateContactRequest) returns (UpdateResponse) {}
@@ -38,8 +39,9 @@ message GetInfoResponse {
     optional string motd = 6;
     optional string icon_url = 7;
     repeated string urls = 8;
-    uint64 total_issued = 9;
-    uint64 total_redeemed = 10;
+    optional string tos_url = 9;
+    uint64 total_issued = 10;
+    uint64 total_redeemed = 11;
 }
 
 message UpdateResponse{
@@ -60,6 +62,10 @@ message UpdateIconUrlRequest {
 
 message UpdateNameRequest {
     string name = 1;
+}
+
+message UpdateTosUrlRequest {
+    string tos_url = 1;
 }
 
 

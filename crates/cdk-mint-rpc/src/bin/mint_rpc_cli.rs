@@ -78,6 +78,8 @@ enum Commands {
     UpdateName(subcommands::UpdateNameCommand),
     /// Update icon url
     UpdateIconUrl(subcommands::UpdateIconUrlCommand),
+    /// Update terms of service url
+    UpdateTosUrl(subcommands::UpdateTosUrlCommand),
     /// Add Url
     AddUrl(subcommands::AddUrlCommand),
     /// Remove Url
@@ -169,15 +171,24 @@ async fn main() -> Result<()> {
                 "long description: {}",
                 info.long_description.unwrap_or("None".to_string())
             );
-            println!("motd: {}", info.motd.unwrap_or("None".to_string()));
-            println!("icon_url: {}", info.icon_url.unwrap_or("None".to_string()));
-
+            println!(
+                "motd:             {}",
+                info.motd.unwrap_or("None".to_string())
+            );
+            println!(
+                "icon_url:         {}",
+                info.icon_url.unwrap_or("None".to_string())
+            );
+            println!(
+                "tos_url:          {}",
+                info.tos_url.unwrap_or("None".to_string())
+            );
             for url in info.urls {
-                println!("mint_url: {url}");
+                println!("mint_url:         {url}");
             }
-
             for contact in info.contact {
-                println!("method: {}, info: {}", contact.method, contact.info);
+                println!("contact:          method: {}", contact.method);
+                println!("                  info:  {}", contact.info);
             }
             println!("total issued:     {} sat", info.total_issued);
             println!("total redeemed:   {} sat", info.total_redeemed);
@@ -196,6 +207,9 @@ async fn main() -> Result<()> {
         }
         Commands::UpdateIconUrl(sub_command_args) => {
             subcommands::update_icon_url(&mut client, &sub_command_args).await?;
+        }
+        Commands::UpdateTosUrl(sub_command_args) => {
+            subcommands::update_tos_url(&mut client, &sub_command_args).await?;
         }
         Commands::AddUrl(sub_command_args) => {
             subcommands::add_url(&mut client, &sub_command_args).await?;

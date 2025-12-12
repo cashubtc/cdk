@@ -23,7 +23,7 @@ use crate::{
     RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
     UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest, UpdateNameRequest,
     UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request, UpdateQuoteTtlRequest,
-    UpdateResponse, UpdateUrlRequest,
+    UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest,
 };
 
 /// Error
@@ -231,6 +231,7 @@ impl CdkMint for MintRPCServer {
             motd: info.motd,
             icon_url: info.icon_url,
             urls: info.urls.unwrap_or_default(),
+            tos_url: info.tos_url,
             total_issued: total_issued.into(),
             total_redeemed: total_redeemed.into(),
         }))
@@ -334,6 +335,28 @@ impl CdkMint for MintRPCServer {
             .map_err(|err| Status::internal(err.to_string()))?;
 
         info.icon_url = Some(icon_url);
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    /// Updates the mint's terms of service URL
+    async fn update_tos_url(
+        &self,
+        request: Request<UpdateTosUrlRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let tos_url = request.into_inner().tos_url;
+
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        info.tos_url = Some(tos_url);
 
         self.mint
             .set_mint_info(info)
