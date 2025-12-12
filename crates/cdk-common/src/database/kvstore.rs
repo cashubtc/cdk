@@ -67,7 +67,7 @@ pub fn validate_kvstore_params(
 
 /// Key-Value Store Transaction trait
 #[async_trait]
-pub trait KVStoreTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
+pub trait KVStoreTransaction<Error>: DbTransactionFinalizer<Err = Error> {
     /// Read value from key-value store
     async fn kv_read(
         &mut self,
@@ -127,7 +127,7 @@ pub trait KVStoreDatabase {
 #[async_trait]
 pub trait KVStore: KVStoreDatabase {
     /// Begins a KV transaction
-    async fn begin_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn KVStoreTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>;
+    async fn begin_transaction(
+        &self,
+    ) -> Result<Box<dyn KVStoreTransaction<Self::Err> + Send + Sync>, Error>;
 }

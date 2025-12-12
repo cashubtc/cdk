@@ -393,7 +393,7 @@ pub trait Transaction<'a, Error>:
     + QuotesTransaction<'a, Err = Error>
     + SignaturesTransaction<'a, Err = Error>
     + ProofsTransaction<'a, Err = Error>
-    + KVStoreTransaction<'a, Error>
+    + KVStoreTransaction<Error>
     + SagaTransaction<'a, Err = Error>
     + CompletedOperationsTransaction<'a, Err = Error>
 {

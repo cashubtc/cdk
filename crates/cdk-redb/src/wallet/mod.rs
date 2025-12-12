@@ -587,10 +587,9 @@ impl KVStoreDatabase for WalletRedbDatabase {
 
 #[async_trait]
 impl KVStore for WalletRedbDatabase {
-    async fn begin_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn KVStoreTransaction<'a, Self::Err> + Send + Sync + 'a>, database::Error>
-    {
+    async fn begin_transaction(
+        &self,
+    ) -> Result<Box<dyn KVStoreTransaction<Self::Err> + Send + Sync>, database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         Ok(Box::new(RedbWalletTransaction::new(write_txn)))
     }
@@ -1089,7 +1088,7 @@ impl WalletDatabaseTransaction<database::Error> for RedbWalletTransaction {
 }
 
 #[async_trait]
-impl KVStoreTransaction<'_, database::Error> for RedbWalletTransaction {
+impl KVStoreTransaction<database::Error> for RedbWalletTransaction {
     #[instrument(skip_all)]
     async fn kv_read(
         &mut self,

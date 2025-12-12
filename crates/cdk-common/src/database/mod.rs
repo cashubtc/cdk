@@ -44,7 +44,7 @@ pub type DynWalletKVStore = std::sync::Arc<WalletKVStore>;
 pub type WalletKVStoreDatabase = dyn KVStoreDatabase<Err = Error> + Send + Sync;
 /// Wallet Key-Value Store Transaction trait object
 #[cfg(feature = "wallet")]
-pub type WalletKVStoreTransaction<'a> = dyn KVStoreTransaction<'a, Error> + Send + Sync + 'a;
+pub type WalletKVStoreTransaction = dyn KVStoreTransaction<Error> + Send + Sync;
 
 /// Data conversion error
 #[derive(thiserror::Error, Debug)]

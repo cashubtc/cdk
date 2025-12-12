@@ -1996,7 +1996,7 @@ where
 }
 
 #[async_trait]
-impl<RM> database::KVStoreTransaction<'_, Error> for SQLTransaction<RM>
+impl<RM> database::KVStoreTransaction<Error> for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2087,10 +2087,9 @@ impl<RM> database::KVStore for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
-    async fn begin_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn database::KVStoreTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>
-    {
+    async fn begin_transaction(
+        &self,
+    ) -> Result<Box<dyn database::KVStoreTransaction<Self::Err> + Send + Sync>, Error> {
         Ok(Box::new(SQLTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
