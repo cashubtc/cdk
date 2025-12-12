@@ -3,17 +3,17 @@ use std::collections::HashMap;
 #[cfg(feature = "fakewallet")]
 use std::collections::HashSet;
 use std::path::Path;
+#[cfg(feature = "ldk-node")]
+use std::path::PathBuf;
 use std::sync::Arc;
 
-#[cfg(feature = "cln")]
-use anyhow::anyhow;
-#[cfg(any(feature = "lnbits", feature = "lnd"))]
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
-use bip39::Mnemonic;
+
 use cdk::cdk_database::MintKVStore;
+
 use cdk::cdk_payment::MintPayment;
 use cdk::nuts::CurrencyUnit;
 #[cfg(any(
@@ -240,6 +240,7 @@ impl LnBackendSetup for config::LdkNode {
         work_dir: &Path,
         _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_ldk_node::CdkLdkNode> {
+        use bip39::Mnemonic;
         use std::net::SocketAddr;
 
         use bitcoin::Network;
@@ -330,7 +331,38 @@ impl LnBackendSetup for config::LdkNode {
         // We need to get the actual socket address struct from ldk_node
         // For now, let's construct it manually based on the cdk-ldk-node implementation
         let listen_address = vec![socket_addr.into()];
-        let mem: Mnemonic = settings.clone().info.mnemonic.unwrap().parse().unwrap();
+
+        // Check if ldk_node_mnemonic is provided in the ldk_node config
+        let mnemonic_opt = settings
+            .clone()
+            .ldk_node
+            .as_ref()
+            .and_then(|ldk_config| ldk_config.ldk_node_mnemonic.clone());
+
+        // Only set seed if mnemonic is explicitly provided
+        // This maintains backward compatibility with existing nodes that use LDK's default seed storage
+        let seed = if let Some(mnemonic_str) = mnemonic_opt {
+            Some(
+                mnemonic_str
+                    .parse::<Mnemonic>()
+                    .map_err(|e| anyhow!("invalid ldk_node_mnemonic in config: {e}"))?,
+            )
+        } else {
+            // Check if this is a new node or an existing node
+            let storage_dir = PathBuf::from(&storage_dir_path);
+            let keys_seed_file = storage_dir.join("keys_seed");
+
+            if !keys_seed_file.exists() && !storage_dir.exists() {
+                // This is a new node and no mnemonic is provided
+                tracing::warn!(
+                    "ldk_node_mnemonic should be set in the [ldk_node] configuration section."
+                );
+            }
+
+            // Existing node with stored seed, don't set a mnemonic
+            None
+        };
+
         let announce = settings
             .clone()
             .ldk_node
@@ -350,7 +382,12 @@ impl LnBackendSetup for config::LdkNode {
             fee_reserve,
             listen_address,
         );
-        ldk_node_builder = ldk_node_builder.with_seed(mem);
+
+        // Only set seed if provided
+        if let Some(mnemonic) = seed {
+            ldk_node_builder = ldk_node_builder.with_seed(mnemonic);
+        }
+
         ldk_node_builder = ldk_node_builder.with_runtime(runtime.unwrap());
         if !announce_addrs.is_empty() {
             ldk_node_builder = ldk_node_builder.with_announcement_address(announce_addrs)

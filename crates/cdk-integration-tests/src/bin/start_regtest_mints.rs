@@ -224,6 +224,7 @@ async fn start_ldk_mint(
         rgs_url: None,
         webserver_host: Some("127.0.0.1".to_string()),
         webserver_port: Some(port + 1), // Use next port for web interface
+        ldk_node_mnemonic: None,
     };
 
     // Create settings struct for LDK mint using a new shared function

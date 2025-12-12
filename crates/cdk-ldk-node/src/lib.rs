@@ -223,7 +223,11 @@ impl CdkLdkNode {
             ldk.set_entropy_bip39_mnemonic(builder.seed.expect("valid seed"), None);
         }
         if builder.announcement_addresses.is_some() {
-            ldk.set_announcement_addresses(builder.announcement_addresses.expect("valid announcement_addresses"))?;
+            ldk.set_announcement_addresses(
+                builder
+                    .announcement_addresses
+                    .expect("valid announcement_addresses"),
+            )?;
         }
 
         let node = ldk.build()?;

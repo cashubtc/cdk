@@ -304,6 +304,9 @@ pub struct LdkNode {
     /// Webserver port
     #[serde(default = "default_webserver_port")]
     pub webserver_port: Option<u16>,
+    /// LDK node mnemonic
+    /// If not set, LDK node will use its default seed storage mechanism
+    pub ldk_node_mnemonic: Option<String>,
 }
 
 #[cfg(feature = "ldk-node")]
@@ -328,6 +331,7 @@ impl Default for LdkNode {
             rgs_url: None,
             webserver_host: default_webserver_host(),
             webserver_port: default_webserver_port(),
+            ldk_node_mnemonic: None,
         }
     }
 }

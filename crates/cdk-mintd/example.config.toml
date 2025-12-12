@@ -150,6 +150,8 @@ ln_backend = "fakewallet"
 # # Node configuration
 # ldk_node_host = "127.0.0.1"
 # ldk_node_port = 8090
+# ldk_node_mnemonic = ""
+
 # 
 # # Gossip source configuration  
 # gossip_source_type = "p2p"  # p2p (direct peer-to-peer) or rgs (rapid gossip sync)
