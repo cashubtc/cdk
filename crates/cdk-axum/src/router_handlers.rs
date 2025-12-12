@@ -873,13 +873,6 @@ pub(crate) async fn post_batch_mint(
         }
     }
 
-    // Validation: outputs length matches quotes length
-    if payload.outputs.len() != payload.quote.len() {
-        return Err(into_response(cdk::error::Error::Custom(
-            "Outputs count must match quotes count".to_string(),
-        )));
-    }
-
     // Validation: signature array (if present) matches quotes length
     if let Some(ref signatures) = payload.signature {
         if signatures.len() != payload.quote.len() {

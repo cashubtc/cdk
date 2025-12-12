@@ -697,6 +697,10 @@ impl Mint {
             return Err(Error::BatchPaymentMethodEndpointMismatch);
         }
 
+        // For Bolt12 batch minting, signatures are required
+        let requires_signature = payment_method == PaymentMethod::Bolt12
+            || quotes.iter().any(|quote| quote.pubkey.is_some());
+
         let unit = quotes
             .first()
             .map(|q| q.unit.clone())
@@ -729,10 +733,14 @@ impl Mint {
                     return Err(Error::SignatureMissingOrInvalid);
                 }
             }
-        } else if origin == MintRequestOrigin::Single
-            && quotes.iter().any(|quote| quote.pubkey.is_some())
-        {
-            return Err(Error::SignatureMissingOrInvalid);
+        } else if requires_signature {
+            // For Bolt12 or any quote with pubkey, signatures are required
+            if origin == MintRequestOrigin::Single {
+                return Err(Error::SignatureMissingOrInvalid);
+            } else if origin == MintRequestOrigin::Batch && payment_method == PaymentMethod::Bolt12
+            {
+                return Err(Error::SignatureMissingOrInvalid);
+            }
         }
 
         for quote in &quotes {
