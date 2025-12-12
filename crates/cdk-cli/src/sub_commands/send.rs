@@ -58,6 +58,9 @@ pub struct SendSubCommand {
     /// Specific mints to exclude from transfers (can be specified multiple times)
     #[arg(long, action = clap::ArgAction::Append)]
     excluded_mints: Vec<String>,
+    /// Amount to send
+    #[arg(short, long)]
+    amount: Option<u64>,
 }
 
 pub async fn send(
@@ -112,10 +115,13 @@ pub async fn send(
         }
     };
 
-    let token_amount = Amount::from(get_number_input::<u64>(&format!(
-        "Enter value of token in {}",
-        multi_mint_wallet.unit()
-    ))?);
+    let token_amount = match sub_command_args.amount {
+        Some(amount) => Amount::from(amount),
+        None => Amount::from(get_number_input::<u64>(&format!(
+            "Enter value of token in {}",
+            multi_mint_wallet.unit()
+        ))?),
+    };
 
     // Check total balance across all wallets
     let total_balance = multi_mint_wallet.total_balance().await?;
