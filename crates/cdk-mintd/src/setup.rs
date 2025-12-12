@@ -3,16 +3,17 @@ use std::collections::HashMap;
 #[cfg(feature = "fakewallet")]
 use std::collections::HashSet;
 use std::path::Path;
+#[cfg(feature = "ldk-node")]
+use std::path::PathBuf;
 use std::sync::Arc;
 
-#[cfg(feature = "cln")]
-use anyhow::anyhow;
-#[cfg(any(feature = "lnbits", feature = "lnd"))]
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
+
 use cdk::cdk_database::MintKVStore;
+
 use cdk::cdk_payment::MintPayment;
 use cdk::nuts::CurrencyUnit;
 #[cfg(any(
@@ -233,12 +234,13 @@ impl LnBackendSetup for config::GrpcProcessor {
 impl LnBackendSetup for config::LdkNode {
     async fn setup(
         &self,
-        _settings: &Settings,
+        settings: &Settings,
         _unit: CurrencyUnit,
         runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
         _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_ldk_node::CdkLdkNode> {
+        use bip39::Mnemonic;
         use std::net::SocketAddr;
 
         use bitcoin::Network;
@@ -330,16 +332,63 @@ impl LnBackendSetup for config::LdkNode {
         // For now, let's construct it manually based on the cdk-ldk-node implementation
         let listen_address = vec![socket_addr.into()];
 
-        let mut ldk_node = cdk_ldk_node::CdkLdkNode::new(
+        // Check if ldk_node_mnemonic is provided in the ldk_node config
+        let mnemonic_opt = settings
+            .clone()
+            .ldk_node
+            .as_ref()
+            .and_then(|ldk_config| ldk_config.ldk_node_mnemonic.clone());
+
+        // Only set seed if mnemonic is explicitly provided
+        // This maintains backward compatibility with existing nodes that use LDK's default seed storage
+        let seed = if let Some(mnemonic_str) = mnemonic_opt {
+            Some(
+                mnemonic_str
+                    .parse::<Mnemonic>()
+                    .map_err(|e| anyhow!("invalid ldk_node_mnemonic in config: {e}"))?,
+            )
+        } else {
+            // Check if this is a new node or an existing node
+            let storage_dir = PathBuf::from(&storage_dir_path);
+            let keys_seed_file = storage_dir.join("keys_seed");
+
+            if !keys_seed_file.exists() {
+                bail!("ldk_node_mnemonic should be set in the [ldk_node] configuration section.");
+            }
+
+            // Existing node with stored seed, don't set a mnemonic
+            None
+        };
+
+        let ldk_node_settings = settings
+            .ldk_node
+            .as_ref()
+            .ok_or_else(|| anyhow!("ldk_node configuration is required"))?;
+        let announce_addrs: Vec<_> = ldk_node_settings
+            .ldk_node_announce_addresses
+            .as_ref()
+            .map(|addrs| addrs.iter().filter_map(|addr| addr.parse().ok()).collect())
+            .unwrap_or_default();
+
+        let mut ldk_node_builder = cdk_ldk_node::CdkLdkNodeBuilder::new(
             network,
             chain_source,
             gossip_source,
             storage_dir_path,
             fee_reserve,
             listen_address,
-            runtime,
-        )?;
+        );
 
+        // Only set seed if provided
+        if let Some(mnemonic) = seed {
+            ldk_node_builder = ldk_node_builder.with_seed(mnemonic);
+        }
+
+        ldk_node_builder = ldk_node_builder
+            .with_runtime(runtime.ok_or_else(|| anyhow!("runtime is required for ldk-node"))?);
+        if !announce_addrs.is_empty() {
+            ldk_node_builder = ldk_node_builder.with_announcement_address(announce_addrs)
+        }
         // Configure webserver address if specified
         let webserver_addr = if let Some(host) = &self.webserver_host {
             let port = self.webserver_port.unwrap_or(8091);
@@ -356,7 +405,10 @@ impl LnBackendSetup for config::LdkNode {
         };
 
         println!("webserver: {:?}", webserver_addr);
-
+        if let Some(log_dir_path) = ldk_node_settings.log_dir_path.as_ref() {
+            ldk_node_builder = ldk_node_builder.with_log_dir_path(log_dir_path.clone());
+        }
+        let mut ldk_node = ldk_node_builder.build()?;
         ldk_node.set_web_addr(webserver_addr);
 
         Ok(ldk_node)
