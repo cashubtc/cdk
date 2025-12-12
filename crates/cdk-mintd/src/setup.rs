@@ -363,16 +363,15 @@ impl LnBackendSetup for config::LdkNode {
             None
         };
 
-        let announce = settings
-            .clone()
+        let ldk_node_settings = settings
             .ldk_node
-            .unwrap()
-            .ldk_node_announce_addresses;
-        let announce_addrs: Vec<_> = announce
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|addr| addr.parse().ok())
-            .collect();
+            .as_ref()
+            .ok_or_else(|| anyhow!("ldk_node configuration is required"))?;
+        let announce_addrs: Vec<_> = ldk_node_settings
+            .ldk_node_announce_addresses
+            .as_ref()
+            .map(|addrs| addrs.iter().filter_map(|addr| addr.parse().ok()).collect())
+            .unwrap_or_default();
 
         let mut ldk_node_builder = cdk_ldk_node::CdkLdkNodeBuilder::new(
             network,
@@ -388,7 +387,8 @@ impl LnBackendSetup for config::LdkNode {
             ldk_node_builder = ldk_node_builder.with_seed(mnemonic);
         }
 
-        ldk_node_builder = ldk_node_builder.with_runtime(runtime.unwrap());
+        ldk_node_builder = ldk_node_builder
+            .with_runtime(runtime.ok_or_else(|| anyhow!("runtime is required for ldk-node"))?);
         if !announce_addrs.is_empty() {
             ldk_node_builder = ldk_node_builder.with_announcement_address(announce_addrs)
         }
@@ -408,16 +408,8 @@ impl LnBackendSetup for config::LdkNode {
         };
 
         println!("webserver: {:?}", webserver_addr);
-        if settings.clone().ldk_node.unwrap().log_dir_path.is_some() {
-            ldk_node_builder = ldk_node_builder.with_log_dir_path(
-                settings
-                    .clone()
-                    .ldk_node
-                    .unwrap()
-                    .log_dir_path
-                    .clone()
-                    .unwrap(),
-            );
+        if let Some(log_dir_path) = ldk_node_settings.log_dir_path.as_ref() {
+            ldk_node_builder = ldk_node_builder.with_log_dir_path(log_dir_path.clone());
         }
         let mut ldk_node = ldk_node_builder.build()?;
         ldk_node.set_web_addr(webserver_addr);
