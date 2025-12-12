@@ -276,7 +276,10 @@ fn create_ldk_settings(
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
             seed: None,
-            mnemonic: Some("eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal".to_string()),
+            mnemonic: Some(
+                "eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
+                    .to_string(),
+            ),
             signatory_url: None,
             signatory_certs: None,
             input_fee_ppk: None,
