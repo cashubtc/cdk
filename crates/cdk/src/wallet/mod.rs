@@ -90,7 +90,7 @@ pub struct Wallet {
     /// Unit
     pub unit: CurrencyUnit,
     /// Storage backend
-    pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+    pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     /// Mint metadata cache for this mint (lock-free cached access to keys, keysets, and mint info)
     pub metadata_cache: Arc<MintMetadataCache>,
     /// The targeted amount of proofs to have at each size
@@ -190,7 +190,7 @@ impl Wallet {
     pub fn new(
         mint_url: &str,
         unit: CurrencyUnit,
-        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         seed: [u8; 64],
         target_proof_count: Option<usize>,
     ) -> Result<Self, Error> {

@@ -32,6 +32,10 @@ pub use wallet::{
     DynWalletDatabaseTransaction,
 };
 
+/// Type alias for dynamic Wallet Database
+#[cfg(feature = "wallet")]
+pub type DynWalletDatabase = std::sync::Arc<dyn WalletDatabase<Error> + Send + Sync>;
+
 // Wallet-specific KVStore type aliases
 /// Wallet Key-Value Store trait object
 #[cfg(feature = "wallet")]

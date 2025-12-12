@@ -884,15 +884,14 @@ where
 }
 
 #[async_trait]
-impl<RM> WalletDatabase for SQLWalletDatabase<RM>
+impl<RM> WalletDatabase<database::Error> for SQLWalletDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
-    type Err = database::Error;
-
     async fn begin_db_transaction(
         &self,
-    ) -> Result<Box<dyn WalletDatabaseTransaction<Self::Err> + Send + Sync>, Self::Err> {
+    ) -> Result<Box<dyn WalletDatabaseTransaction<database::Error> + Send + Sync>, database::Error>
+    {
         Ok(Box::new(SQLWalletTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
@@ -902,7 +901,7 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Self::Err> {
+    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         Ok(query(
@@ -929,7 +928,7 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -959,7 +958,7 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err> {
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -999,7 +998,7 @@ where
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
+    ) -> Result<Option<Vec<KeySetInfo>>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         let keysets = query(
@@ -1029,19 +1028,22 @@ where
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+    async fn get_keyset_by_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Option<KeySetInfo>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         get_keyset_by_id_inner(&*conn, keyset_id, false).await
     }
 
     #[instrument(skip(self))]
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         get_mint_quote_inner(&*conn, quote_id, false).await
     }
 
     #[instrument(skip(self))]
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -1101,13 +1103,16 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
+    async fn get_melt_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<wallet::MeltQuote>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         get_melt_quote_inner(&*conn, quote_id, false).await
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
+    async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         get_keys_inner(&*conn, keyset_id).await
     }
@@ -1119,13 +1124,16 @@ where
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Vec<ProofInfo>, Self::Err> {
+    ) -> Result<Vec<ProofInfo>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         get_proofs_inner(&*conn, mint_url, unit, state, spending_conditions, false).await
     }
 
     #[instrument(skip(self, ys))]
-    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, Self::Err> {
+    async fn get_proofs_by_ys(
+        &self,
+        ys: Vec<PublicKey>,
+    ) -> Result<Vec<ProofInfo>, database::Error> {
         if ys.is_empty() {
             return Ok(Vec::new());
         }
@@ -1164,7 +1172,7 @@ where
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         states: Option<Vec<State>>,
-    ) -> Result<u64, Self::Err> {
+    ) -> Result<u64, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         let mut query_str = "SELECT COALESCE(SUM(amount), 0) as total FROM proof".to_string();
@@ -1227,7 +1235,7 @@ where
     async fn get_transaction(
         &self,
         transaction_id: TransactionId,
-    ) -> Result<Option<Transaction>, Self::Err> {
+    ) -> Result<Option<Transaction>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -1263,7 +1271,7 @@ where
         mint_url: Option<MintUrl>,
         direction: Option<TransactionDirection>,
         unit: Option<CurrencyUnit>,
-    ) -> Result<Vec<Transaction>, Self::Err> {
+    ) -> Result<Vec<Transaction>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         Ok(query(
