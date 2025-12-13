@@ -19,6 +19,10 @@ use tracing::instrument;
 use crate::mint::Verification;
 use crate::Mint;
 
+/// Maximum number of quotes permitted in a batch request
+/// TODO: Make this configurable via mint settings instead of hardcoded constant
+pub const MAX_BATCH_SIZE: usize = 100;
+
 #[cfg(feature = "auth")]
 mod auth;
 
@@ -634,13 +638,12 @@ impl Mint {
         endpoint_payment_method: PaymentMethod,
         origin: MintRequestOrigin,
     ) -> Result<MintResponse, Error> {
-        const BATCH_SIZE_LIMIT: usize = 100;
-
+        // Top-level batch validation (size, dedup) before we touch storage
         if batch_request.quote.is_empty() {
             return Err(Error::BatchEmpty);
         }
 
-        if origin == MintRequestOrigin::Batch && batch_request.quote.len() > BATCH_SIZE_LIMIT {
+        if origin == MintRequestOrigin::Batch && batch_request.quote.len() > MAX_BATCH_SIZE {
             return Err(Error::BatchSizeExceeded);
         }
 
@@ -669,16 +672,9 @@ impl Mint {
                 .await?
                 .ok_or(Error::UnknownQuote)?;
 
+            // bolt12 quotes carry their own payment status
             if quote.payment_method == PaymentMethod::Bolt11 {
                 self.check_mint_quote_paid(&mut quote).await?;
-            }
-
-            if origin == MintRequestOrigin::Single
-                && quote.payment_method == PaymentMethod::Bolt12
-                && quote.pubkey.is_none()
-            {
-                tracing::warn!("Bolt12 mint quote created without pubkey");
-                return Err(Error::SignatureMissingOrInvalid);
             }
 
             quotes.push(quote);
@@ -697,10 +693,6 @@ impl Mint {
             return Err(Error::BatchPaymentMethodEndpointMismatch);
         }
 
-        // For Bolt12 batch minting, signatures are required
-        let requires_signature = payment_method == PaymentMethod::Bolt12
-            || quotes.iter().any(|quote| quote.pubkey.is_some());
-
         let unit = quotes
             .first()
             .map(|q| q.unit.clone())
@@ -709,14 +701,23 @@ impl Mint {
             return Err(Error::BatchCurrencyUnitMismatch);
         }
 
+        // Enforce NUT-20 signature semantics: locked quotes (pubkey present) must provide a sig,
+        // unlocked quotes must not. This applies to both bolt11 with NUT-20 locks and bolt12.
+        let locked_quotes: Vec<bool> = quotes.iter().map(|q| q.pubkey.is_some()).collect();
+        let has_locked_quotes = locked_quotes.iter().any(|locked| *locked);
+
         if let Some(signatures) = &batch_request.signature {
             if signatures.len() != quotes.len() {
                 return Err(Error::BatchSignatureCountMismatch);
             }
 
             for (i, (quote, signature)) in quotes.iter().zip(signatures.iter()).enumerate() {
-                if let Some(sig_str) = signature {
-                    if let Some(pubkey) = &quote.pubkey {
+                match (locked_quotes[i], signature) {
+                    (true, Some(sig_str)) => {
+                        let pubkey = quote
+                            .pubkey
+                            .clone()
+                            .ok_or(Error::SignatureMissingOrInvalid)?;
                         let mint_req = cdk_common::nuts::MintRequest {
                             quote: batch_request.quote[i].clone(),
                             outputs: batch_request.outputs.clone(),
@@ -724,27 +725,32 @@ impl Mint {
                         };
 
                         mint_req
-                            .verify_signature(pubkey.clone())
+                            .verify_signature(pubkey)
                             .map_err(|_| Error::BatchInvalidSignature)?;
-                    } else {
-                        return Err(Error::BatchUnexpectedSignature);
                     }
-                } else if quote.pubkey.is_some() && origin == MintRequestOrigin::Single {
-                    return Err(Error::SignatureMissingOrInvalid);
+                    (true, None) => {
+                        return if origin == MintRequestOrigin::Batch {
+                            Err(Error::BatchSignatureMissing)
+                        } else {
+                            Err(Error::SignatureMissingOrInvalid)
+                        };
+                    }
+                    (false, Some(_)) => return Err(Error::BatchUnexpectedSignature),
+                    (false, None) => {}
                 }
             }
-        } else if requires_signature {
-            // For Bolt12 or any quote with pubkey, signatures are required
-            if origin == MintRequestOrigin::Single {
-                return Err(Error::SignatureMissingOrInvalid);
-            } else if origin == MintRequestOrigin::Batch && payment_method == PaymentMethod::Bolt12
-            {
-                return Err(Error::SignatureMissingOrInvalid);
-            }
+        } else if has_locked_quotes {
+            return if origin == MintRequestOrigin::Batch {
+                Err(Error::BatchSignatureMissing)
+            } else {
+                Err(Error::SignatureMissingOrInvalid)
+            };
         }
 
         for quote in &quotes {
             match quote.state() {
+                // Bolt12 “paid” is enforced by state/amount: Unpaid state gets rejected here,
+                // and amount_mintable() below must be > 0 or we return UnpaidQuote.
                 MintQuoteState::Unpaid => {
                     return Err(Error::UnpaidQuote);
                 }
@@ -761,9 +767,10 @@ impl Mint {
             }
         }
 
-        let mut total_mint_amount = Amount::ZERO;
-        let mut per_quote_amounts = Vec::with_capacity(quotes.len());
+        let mut total_available_amount = Amount::ZERO;
+        let mut mintable_per_quote = Vec::with_capacity(quotes.len());
         for quote in &quotes {
+            // Bolt11: mintable must equal quoted amount; Bolt12: use remaining mintable balance.
             let quote_amount = match payment_method {
                 PaymentMethod::Bolt11 => {
                     let amt = quote.amount.ok_or(Error::AmountUndefined)?;
@@ -791,10 +798,10 @@ impl Mint {
                 _ => return Err(Error::UnsupportedPaymentMethod),
             };
 
-            total_mint_amount = total_mint_amount
+            total_available_amount = total_available_amount
                 .checked_add(quote_amount)
                 .ok_or(Error::AmountOverflow)?;
-            per_quote_amounts.push(quote_amount);
+            mintable_per_quote.push(quote_amount);
         }
 
         let Verification {
@@ -809,20 +816,38 @@ impl Mint {
         };
 
         if payment_method == PaymentMethod::Bolt11 {
-            if outputs_amount != total_mint_amount {
+            if outputs_amount != total_available_amount {
                 return Err(Error::TransactionUnbalanced(
-                    total_mint_amount.into(),
+                    total_available_amount.into(),
                     batch_request.total_amount()?.into(),
                     0,
                 ));
             }
-        } else if outputs_amount > total_mint_amount {
+        } else if outputs_amount > total_available_amount {
             return Err(Error::TransactionUnbalanced(
-                total_mint_amount.into(),
+                total_available_amount.into(),
                 batch_request.total_amount()?.into(),
                 0,
             ));
         }
+
+        // Allocate how much each quote actually mints: bolt11 must issue full amount, bolt12 caps at remaining.
+        let minted_amounts_per_quote = match payment_method {
+            PaymentMethod::Bolt11 => mintable_per_quote.clone(),
+            PaymentMethod::Bolt12 => {
+                let mut remaining = outputs_amount;
+                let mut per_quote = Vec::with_capacity(mintable_per_quote.len());
+
+                for available in &mintable_per_quote {
+                    let minted = std::cmp::min(*available, remaining);
+                    per_quote.push(minted);
+                    remaining = remaining.checked_sub(minted).ok_or(Error::AmountOverflow)?;
+                }
+
+                per_quote
+            }
+            _ => unreachable!(),
+        };
 
         let output_unit = output_unit.ok_or(Error::UnsupportedUnit)?;
         ensure_cdk!(output_unit == unit, Error::UnsupportedUnit);
@@ -855,7 +880,7 @@ impl Mint {
         let mut total_issued_per_quote = Vec::with_capacity(quote_ids.len());
         for (i, quote_id) in quote_ids.iter().enumerate() {
             let total_issued = tx
-                .increment_mint_quote_amount_issued(quote_id, per_quote_amounts[i])
+                .increment_mint_quote_amount_issued(quote_id, minted_amounts_per_quote[i])
                 .await?;
             total_issued_per_quote.push(total_issued);
         }

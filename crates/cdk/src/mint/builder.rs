@@ -13,6 +13,7 @@ use cdk_common::payment::{Bolt11Settings, DynMintPayment};
 use cdk_common::{database::DynMintAuthDatabase, nut21, nut22};
 use cdk_signatory::signatory::Signatory;
 
+use super::issue::MAX_BATCH_SIZE;
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
 use super::Nuts;
@@ -277,6 +278,12 @@ impl MintBuilder {
 
         self.mint_info.nuts.nut04.methods.push(mint_method_settings);
         self.mint_info.nuts.nut04.disabled = false;
+        if !self.mint_info.nuts.nutxx.methods.contains(&method) {
+            self.mint_info.nuts.nutxx.methods.push(method.clone());
+        }
+        if self.mint_info.nuts.nutxx.max_batch_size.is_none() {
+            self.mint_info.nuts.nutxx.max_batch_size = Some(MAX_BATCH_SIZE as u16);
+        }
 
         let melt_method_settings = MeltMethodSettings {
             method,

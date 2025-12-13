@@ -8,6 +8,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::nut00::PaymentMethod;
 use super::nut01::PublicKey;
 use super::nut17::SupportedMethods;
 use super::nut19::CachedEndpoint;
@@ -270,6 +271,34 @@ impl MintInfo {
     }
 }
 
+/// Batch minting settings (NUT-XX)
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct BatchMintSettings {
+    /// Maximum quotes allowed in a batch request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_batch_size: Option<u16>,
+    /// Supported payment methods for batch minting
+    #[serde(default)]
+    pub methods: Vec<PaymentMethod>,
+}
+
+impl Default for BatchMintSettings {
+    fn default() -> Self {
+        Self {
+            max_batch_size: Some(100),
+            methods: Vec::new(),
+        }
+    }
+}
+
+impl BatchMintSettings {
+    /// Returns true when no batch capabilities should be advertised
+    pub fn is_empty(&self) -> bool {
+        self.methods.is_empty()
+    }
+}
+
 /// Supported nuts and settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
@@ -327,6 +356,11 @@ pub struct Nuts {
     #[serde(default)]
     #[serde(rename = "20")]
     pub nut20: SupportedSettings,
+    /// NUTXX Batch mint settings
+    #[serde(default)]
+    #[serde(rename = "XX")]
+    #[serde(skip_serializing_if = "BatchMintSettings::is_empty")]
+    pub nutxx: BatchMintSettings,
     /// NUT21 Settings
     #[serde(rename = "21")]
     #[serde(skip_serializing_if = "Option::is_none")]

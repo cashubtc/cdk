@@ -339,6 +339,9 @@ pub enum Error {
     /// Batch size exceeds limit (max 100 quotes)
     #[error("Batch size exceeds limit (max 100 quotes)")]
     BatchSizeExceeded,
+    /// Signature missing for locked quote
+    #[error("Signature missing for locked quote")]
+    BatchSignatureMissing,
     /// Signature array size mismatch with quote count
     #[error("Signature array size does not match quote count")]
     BatchSignatureCountMismatch,
@@ -476,18 +479,33 @@ pub struct ErrorResponse {
     /// Human readable description
     #[serde(default)]
     pub detail: String,
+    /// Optional quote identifier
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
 }
 
 impl fmt::Display for ErrorResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "code: {}, detail: {}", self.code, self.detail)
+        if let Some(quote) = &self.quote {
+            write!(
+                f,
+                "code: {}, quote: {}, detail: {}",
+                self.code, quote, self.detail
+            )
+        } else {
+            write!(f, "code: {}, detail: {}", self.code, self.detail)
+        }
     }
 }
 
 impl ErrorResponse {
     /// Create new [`ErrorResponse`]
     pub fn new(code: ErrorCode, detail: String) -> Self {
-        Self { code, detail }
+        Self {
+            code,
+            detail,
+            quote: None,
+        }
     }
 
     /// Error response from json
@@ -504,6 +522,7 @@ impl ErrorResponse {
             Err(_) => Ok(Self {
                 code: ErrorCode::Unknown(999),
                 detail: value.to_string(),
+                quote: None,
             }),
         }
     }
@@ -525,18 +544,22 @@ impl From<Error> for ErrorResponse {
             Error::TokenAlreadySpent => ErrorResponse {
                 code: ErrorCode::TokenAlreadySpent,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::UnsupportedUnit => ErrorResponse {
                 code: ErrorCode::UnsupportedUnit,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::PaymentFailed => ErrorResponse {
                 code: ErrorCode::LightningError,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::RequestAlreadyPaid => ErrorResponse {
                 code: ErrorCode::InvoiceAlreadyPaid,
                 detail: "Invoice already paid.".to_string(),
+                quote: None,
             },
             Error::TransactionUnbalanced(inputs_total, outputs_total, fee_expected) => {
                 ErrorResponse {
@@ -544,75 +567,98 @@ impl From<Error> for ErrorResponse {
                     detail: format!(
                         "Inputs: {inputs_total}, Outputs: {outputs_total}, expected_fee: {fee_expected}. Transaction inputs should equal outputs less fee"
                     ),
+                    quote: None,
                 }
             }
             Error::MintingDisabled => ErrorResponse {
                 code: ErrorCode::MintingDisabled,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::BlindedMessageAlreadySigned => ErrorResponse {
                 code: ErrorCode::BlindedMessageAlreadySigned,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::InsufficientFunds => ErrorResponse {
                 code: ErrorCode::TransactionUnbalanced,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::AmountOutofLimitRange(_min, _max, _amount) => ErrorResponse {
                 code: ErrorCode::AmountOutofLimitRange,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::ExpiredQuote(_, _) => ErrorResponse {
                 code: ErrorCode::QuoteExpired,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::PendingQuote => ErrorResponse {
                 code: ErrorCode::QuotePending,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::TokenPending => ErrorResponse {
                 code: ErrorCode::TokenPending,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::ClearAuthRequired => ErrorResponse {
                 code: ErrorCode::ClearAuthRequired,
                 detail: Error::ClearAuthRequired.to_string(),
+                quote: None,
             },
             Error::ClearAuthFailed => ErrorResponse {
                 code: ErrorCode::ClearAuthFailed,
                 detail: Error::ClearAuthFailed.to_string(),
+                quote: None,
             },
             Error::BlindAuthRequired => ErrorResponse {
                 code: ErrorCode::BlindAuthRequired,
                 detail: Error::BlindAuthRequired.to_string(),
+                quote: None,
             },
             Error::BlindAuthFailed => ErrorResponse {
                 code: ErrorCode::BlindAuthFailed,
                 detail: Error::BlindAuthFailed.to_string(),
+                quote: None,
             },
             Error::NUT20(err) => ErrorResponse {
                 code: ErrorCode::WitnessMissingOrInvalid,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::DuplicateInputs => ErrorResponse {
                 code: ErrorCode::DuplicateInputs,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::DuplicateOutputs => ErrorResponse {
                 code: ErrorCode::DuplicateOutputs,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::MultipleUnits => ErrorResponse {
                 code: ErrorCode::MultipleUnits,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::UnitMismatch => ErrorResponse {
                 code: ErrorCode::UnitMismatch,
                 detail: err.to_string(),
+                quote: None,
             },
             Error::UnpaidQuote => ErrorResponse {
                 code: ErrorCode::QuoteNotPaid,
                 detail: Error::UnpaidQuote.to_string(),
+                quote: None,
+            },
+            Error::UnknownQuote => ErrorResponse {
+                code: ErrorCode::UnknownQuote,
+                detail: err.to_string(),
+                quote: None,
             },
             Error::NUT11(err) => {
                 let code = map_nut11_error(&err);
@@ -627,15 +673,68 @@ impl From<Error> for ErrorResponse {
                         Some(extra) => format!("{err}. {extra}"),
                         None => err.to_string(),
                     },
+                    quote: None,
                 }
             },
             Error::DuplicateSignatureError => ErrorResponse {
                 code: ErrorCode::DuplicateSignature,
                 detail: err.to_string(),
+                quote: None,
+            },
+            Error::BatchEmpty => ErrorResponse {
+                code: ErrorCode::BatchEmpty,
+                detail: err.to_string(),
+                quote: None,
+            },
+            Error::DuplicateQuoteIdInBatch => ErrorResponse {
+                code: ErrorCode::DuplicateQuoteIds,
+                detail: err.to_string(),
+                quote: None,
+            },
+            Error::BatchPaymentMethodMismatch => ErrorResponse {
+                code: ErrorCode::PaymentMethodMismatch,
+                detail: err.to_string(),
+                quote: None,
+            },
+            Error::BatchCurrencyUnitMismatch => ErrorResponse {
+                code: ErrorCode::BatchUnitMismatch,
+                detail: err.to_string(),
+                quote: None,
+            },
+            Error::BatchPaymentMethodEndpointMismatch => ErrorResponse {
+                code: ErrorCode::EndpointMethodMismatch,
+                detail: err.to_string(),
+                quote: None,
+            },
+            Error::BatchInvalidSignature => ErrorResponse {
+                code: ErrorCode::SignatureInvalid,
+                detail: err.to_string(),
+                quote: None,
+            },
+            Error::BatchUnexpectedSignature => ErrorResponse {
+                code: ErrorCode::SignatureUnexpected,
+                detail: err.to_string(),
+                quote: None,
+            },
+            Error::BatchSizeExceeded => ErrorResponse {
+                code: ErrorCode::BatchSizeExceeded,
+                detail: err.to_string(),
+                quote: None,
+            },
+            Error::BatchSignatureCountMismatch => ErrorResponse {
+                code: ErrorCode::SignatureCountMismatch,
+                detail: err.to_string(),
+                quote: None,
+            },
+            Error::BatchSignatureMissing => ErrorResponse {
+                code: ErrorCode::SignatureMissing,
+                detail: err.to_string(),
+                quote: None,
             },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
                 detail: err.to_string(),
+                quote: None,
             },
         }
     }
@@ -690,6 +789,17 @@ impl From<ErrorResponse> for Error {
             ErrorCode::ClearAuthRequired => Self::ClearAuthRequired,
             ErrorCode::BlindAuthRequired => Self::BlindAuthRequired,
             ErrorCode::DuplicateSignature => Self::DuplicateSignatureError,
+            ErrorCode::BatchEmpty => Self::BatchEmpty,
+            ErrorCode::BatchSizeExceeded => Self::BatchSizeExceeded,
+            ErrorCode::DuplicateQuoteIds => Self::DuplicateQuoteIdInBatch,
+            ErrorCode::UnknownQuote => Self::UnknownQuote,
+            ErrorCode::PaymentMethodMismatch => Self::BatchPaymentMethodMismatch,
+            ErrorCode::EndpointMethodMismatch => Self::BatchPaymentMethodEndpointMismatch,
+            ErrorCode::BatchUnitMismatch => Self::BatchCurrencyUnitMismatch,
+            ErrorCode::SignatureInvalid => Self::BatchInvalidSignature,
+            ErrorCode::SignatureMissing => Self::BatchSignatureMissing,
+            ErrorCode::SignatureUnexpected => Self::BatchUnexpectedSignature,
+            ErrorCode::SignatureCountMismatch => Self::BatchSignatureCountMismatch,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
@@ -737,6 +847,28 @@ pub enum ErrorCode {
     DuplicateInputs,
     /// Duplicate Outputs
     DuplicateOutputs,
+    /// Batch request is empty
+    BatchEmpty,
+    /// Batch size exceeds limit
+    BatchSizeExceeded,
+    /// Duplicate quote ids in batch
+    DuplicateQuoteIds,
+    /// Unknown quote id
+    UnknownQuote,
+    /// Batch payment method mismatch
+    PaymentMethodMismatch,
+    /// Batch endpoint method mismatch
+    EndpointMethodMismatch,
+    /// Batch unit mismatch
+    BatchUnitMismatch,
+    /// Invalid signature in batch
+    SignatureInvalid,
+    /// Signature missing for locked quote
+    SignatureMissing,
+    /// Unexpected signature for unlocked quote
+    SignatureUnexpected,
+    /// Signature count mismatch for batch
+    SignatureCountMismatch,
     /// Multiple Units
     MultipleUnits,
     /// Input unit does not match output
@@ -781,6 +913,17 @@ impl ErrorCode {
             20007 => Self::QuoteExpired,
             20008 => Self::WitnessMissingOrInvalid,
             20009 => Self::DuplicateSignature,
+            21001 => Self::BatchEmpty,
+            21002 => Self::BatchSizeExceeded,
+            21003 => Self::DuplicateQuoteIds,
+            21004 => Self::UnknownQuote,
+            21005 => Self::PaymentMethodMismatch,
+            21006 => Self::EndpointMethodMismatch,
+            21007 => Self::BatchUnitMismatch,
+            21008 => Self::SignatureInvalid,
+            21009 => Self::SignatureMissing,
+            21010 => Self::SignatureUnexpected,
+            21011 => Self::SignatureCountMismatch,
             30001 => Self::ClearAuthRequired,
             30002 => Self::ClearAuthFailed,
             31001 => Self::BlindAuthRequired,
@@ -814,6 +957,17 @@ impl ErrorCode {
             Self::QuoteExpired => 20007,
             Self::WitnessMissingOrInvalid => 20008,
             Self::DuplicateSignature => 20009,
+            Self::BatchEmpty => 21001,
+            Self::BatchSizeExceeded => 21002,
+            Self::DuplicateQuoteIds => 21003,
+            Self::UnknownQuote => 21004,
+            Self::PaymentMethodMismatch => 21005,
+            Self::EndpointMethodMismatch => 21006,
+            Self::BatchUnitMismatch => 21007,
+            Self::SignatureInvalid => 21008,
+            Self::SignatureMissing => 21009,
+            Self::SignatureUnexpected => 21010,
+            Self::SignatureCountMismatch => 21011,
             Self::ClearAuthRequired => 30001,
             Self::ClearAuthFailed => 30002,
             Self::BlindAuthRequired => 31001,

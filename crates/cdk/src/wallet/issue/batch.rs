@@ -275,7 +275,6 @@ impl Wallet {
             outputs: blinded_messages,
             signature: Some(signatures),
         };
-
         let proofs = self
             .execute_batch_mint(
                 quote_ids,
@@ -287,10 +286,29 @@ impl Wallet {
             )
             .await?;
 
-        self.finalize_bolt12_quotes(quote_infos, &mintable_amounts)
+        let minted_total = proofs.total_amount()?;
+        let minted_amounts = Self::distribute_minted_amounts(minted_total, &mintable_amounts)?;
+
+        self.finalize_bolt12_quotes(quote_infos, &minted_amounts)
             .await?;
 
         Ok(proofs)
+    }
+
+    fn distribute_minted_amounts(
+        minted_total: Amount,
+        mintable_amounts: &[Amount],
+    ) -> Result<Vec<Amount>, Error> {
+        let mut remaining = minted_total;
+        let mut per_quote = Vec::with_capacity(mintable_amounts.len());
+
+        for available in mintable_amounts {
+            let minted = std::cmp::min(*available, remaining);
+            per_quote.push(minted);
+            remaining = remaining.checked_sub(minted).ok_or(Error::AmountOverflow)?;
+        }
+
+        Ok(per_quote)
     }
 
     async fn execute_batch_mint(

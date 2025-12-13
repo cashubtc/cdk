@@ -28,6 +28,7 @@ use crate::ws::main_websocket;
 use crate::MintState;
 
 const PREFER_HEADER_KEY: &str = "Prefer";
+const MAX_BATCH_SIZE: usize = 100;
 
 /// Header extractor for the Prefer header
 ///
@@ -738,25 +739,19 @@ pub(crate) async fn post_batch_check_mint(
 
     // Validation: empty quotes
     if payload.quote.is_empty() {
-        return Err(into_response(cdk::error::Error::Custom(
-            "Quote list cannot be empty".to_string(),
-        )));
+        return Err(into_response(cdk::error::Error::BatchEmpty));
     }
 
     // Validation: max 100 quotes per batch
-    if payload.quote.len() > 100 {
-        return Err(into_response(cdk::error::Error::Custom(
-            "Maximum 100 quotes per batch".to_string(),
-        )));
+    if payload.quote.len() > MAX_BATCH_SIZE {
+        return Err(into_response(cdk::error::Error::BatchSizeExceeded));
     }
 
     // Validation: no duplicate quotes
     let mut unique_quotes = std::collections::HashSet::new();
     for quote_id in &payload.quote {
         if !unique_quotes.insert(quote_id.clone()) {
-            return Err(into_response(cdk::error::Error::Custom(
-                "Duplicate quote IDs in request".to_string(),
-            )));
+            return Err(into_response(cdk::error::Error::DuplicateQuoteIdInBatch));
         }
     }
 
@@ -805,7 +800,7 @@ pub(crate) async fn post_batch_check_mint(
 #[cfg_attr(feature = "swagger", utoipa::path(
     post,
     context_path = "/v1",
-    path = "/mint/bolt11/batch",
+    path = "/mint/{method}/batch",
     request_body(content = BatchMintRequest, description = "Batch mint params", content_type = "application/json"),
     responses(
         (status = 200, description = "Successful response", body = MintResponse, content_type = "application/json"),
@@ -821,8 +816,7 @@ pub(crate) async fn post_batch_check_mint(
 /// Per NUT-XX specification, all quotes in a batch MUST be from the same payment method
 /// as indicated by the URL path (`{method}`). The endpoint is:
 /// - `POST /v1/mint/{method}/batch` for batch minting
-/// - Supports bolt11
-/// - TODO: bolt12
+/// - Supports bolt11 and bolt12
 ///
 /// The handler validates that all quotes match the payment method in the URL path.
 #[instrument(skip_all, fields(quote_count = ?payload.quote.len(), outputs_count = ?payload.outputs.len()))]
@@ -834,51 +828,48 @@ pub(crate) async fn post_batch_mint(
 ) -> Result<Json<MintResponse>, Response> {
     let payment_method = match method.as_str() {
         "bolt11" => PaymentMethod::Bolt11,
-        "bolt12" => unimplemented!("Bolt12 batch minting not yet implemented"),
+        "bolt12" => PaymentMethod::Bolt12,
         _ => return Err(into_response(cdk::error::Error::UnsupportedPaymentMethod)),
     };
     #[cfg(feature = "auth")]
     {
+        let route = match payment_method {
+            PaymentMethod::Bolt11 => RoutePath::MintBolt11,
+            PaymentMethod::Bolt12 => RoutePath::MintBolt12,
+            PaymentMethod::Custom(_) => unreachable!(),
+        };
+
         state
             .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
-            )
+            .verify_auth(auth.into(), &ProtectedEndpoint::new(Method::Post, route))
             .await
             .map_err(into_response)?;
     }
 
     // Validation: empty quotes
     if payload.quote.is_empty() {
-        return Err(into_response(cdk::error::Error::Custom(
-            "Quote list cannot be empty".to_string(),
-        )));
+        return Err(into_response(cdk::error::Error::BatchEmpty));
     }
 
     // Validation: max 100 quotes per batch
-    if payload.quote.len() > 100 {
-        return Err(into_response(cdk::error::Error::Custom(
-            "Maximum 100 quotes per batch".to_string(),
-        )));
+    if payload.quote.len() > MAX_BATCH_SIZE {
+        return Err(into_response(cdk::error::Error::BatchSizeExceeded));
     }
 
     // Validation: no duplicate quotes
     let mut unique_quotes = std::collections::HashSet::new();
     for quote_id in &payload.quote {
         if !unique_quotes.insert(quote_id.clone()) {
-            return Err(into_response(cdk::error::Error::Custom(
-                "Duplicate quote IDs in request".to_string(),
-            )));
+            return Err(into_response(cdk::error::Error::DuplicateQuoteIdInBatch));
         }
     }
 
     // Validation: signature array (if present) matches quotes length
     if let Some(ref signatures) = payload.signature {
         if signatures.len() != payload.quote.len() {
-            return Err(into_response(cdk::error::Error::Custom(
-                "Signature array length must match quotes count".to_string(),
-            )));
+            return Err(into_response(
+                cdk::error::Error::BatchSignatureCountMismatch,
+            ));
         }
     }
 
@@ -932,6 +923,17 @@ where
 
         // Lightning/payment errors and unknown errors (500 Internal Server Error)
         ErrorCode::LightningError | ErrorCode::Unknown(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ErrorCode::BatchEmpty
+        | ErrorCode::BatchSizeExceeded
+        | ErrorCode::DuplicateQuoteIds
+        | ErrorCode::UnknownQuote
+        | ErrorCode::PaymentMethodMismatch
+        | ErrorCode::EndpointMethodMismatch
+        | ErrorCode::BatchUnitMismatch
+        | ErrorCode::SignatureInvalid
+        | ErrorCode::SignatureMissing
+        | ErrorCode::SignatureUnexpected
+        | ErrorCode::SignatureCountMismatch => StatusCode::BAD_REQUEST,
     };
 
     (status_code, Json(err_response)).into_response()

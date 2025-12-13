@@ -482,6 +482,8 @@ pub struct Nuts {
     pub nut14_supported: bool,
     /// NUT20 Settings - Web sockets
     pub nut20_supported: bool,
+    /// NUTXX Settings - Batch minting
+    pub nutxx: Option<BatchMintSettings>,
     /// NUT21 Settings - Clear authentication
     pub nut21: Option<ClearAuthSettings>,
     /// NUT22 Settings - Blind authentication
@@ -490,6 +492,13 @@ pub struct Nuts {
     pub mint_units: Vec<CurrencyUnit>,
     /// Supported currency units for melting
     pub melt_units: Vec<CurrencyUnit>,
+}
+
+/// FFI-friendly batch mint settings
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct BatchMintSettings {
+    pub max_batch_size: Option<u16>,
+    pub methods: Vec<PaymentMethod>,
 }
 
 impl From<cdk::nuts::Nuts> for Nuts {
@@ -516,6 +525,11 @@ impl From<cdk::nuts::Nuts> for Nuts {
             nut12_supported: nuts.nut12.supported,
             nut14_supported: nuts.nut14.supported,
             nut20_supported: nuts.nut20.supported,
+            nutxx: if nuts.nutxx.is_empty() {
+                None
+            } else {
+                Some(nuts.nutxx.clone().into())
+            },
             nut21: nuts.nut21.map(Into::into),
             nut22: nuts.nut22.map(Into::into),
             mint_units,
@@ -558,9 +572,28 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
             nut20: cdk::nuts::nut06::SupportedSettings {
                 supported: n.nut20_supported,
             },
+            nutxx: n.nutxx.map(Into::into).unwrap_or_default(),
             nut21: n.nut21.map(|s| s.try_into()).transpose()?,
             nut22: n.nut22.map(|s| s.try_into()).transpose()?,
         })
+    }
+}
+
+impl From<cdk::nuts::nut06::BatchMintSettings> for BatchMintSettings {
+    fn from(settings: cdk::nuts::nut06::BatchMintSettings) -> Self {
+        Self {
+            max_batch_size: settings.max_batch_size,
+            methods: settings.methods.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<BatchMintSettings> for cdk::nuts::nut06::BatchMintSettings {
+    fn from(settings: BatchMintSettings) -> Self {
+        Self {
+            max_batch_size: settings.max_batch_size,
+            methods: settings.methods.into_iter().map(Into::into).collect(),
+        }
     }
 }
 
@@ -714,6 +747,7 @@ mod tests {
             nut17: Default::default(),
             nut19: Default::default(),
             nut20: cdk::nuts::nut06::SupportedSettings { supported: true },
+            nutxx: Default::default(),
             nut21: Some(cdk::nuts::ClearAuthSettings {
                 openid_discovery: "https://example.com/.well-known/openid-configuration"
                     .to_string(),
@@ -867,6 +901,7 @@ mod tests {
             nut17: Default::default(),
             nut19: Default::default(),
             nut20: cdk::nuts::nut06::SupportedSettings { supported: false },
+            nutxx: Default::default(),
             nut21: None,
             nut22: None,
         };
@@ -898,6 +933,7 @@ mod tests {
             nut12_supported: false,
             nut14_supported: false,
             nut20_supported: false,
+            nutxx: None,
             nut21: None,
             nut22: None,
             mint_units: vec![],
