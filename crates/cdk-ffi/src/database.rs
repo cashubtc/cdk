@@ -5,8 +5,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use cdk_common::database::{
-    DbTransactionFinalizer, DynWalletDatabaseTransaction, WalletDatabase as CdkWalletDatabase,
-    WalletDatabaseTransaction as CdkWalletDatabaseTransaction,
+    DbTransactionFinalizer, DynWalletDatabaseTransaction, KVStore as CdkKVStore,
+    KVStoreDatabase as CdkKVStoreDatabase, KVStoreTransaction as CdkKVStoreTransaction,
+    WalletDatabase as CdkWalletDatabase, WalletDatabaseTransaction as CdkWalletDatabaseTransaction,
 };
 use cdk_common::task::spawn;
 use cdk_sql_common::pool::DatabasePool;
@@ -197,6 +198,145 @@ pub trait WalletDatabaseTransaction: Send + Sync {
 
     /// Remove transaction from storage
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError>;
+}
+
+/// FFI-compatible Key-Value store database trait (read-only operations)
+/// This trait mirrors the CDK KVStoreDatabase trait structure
+#[uniffi::export]
+#[async_trait::async_trait]
+pub trait KVStoreDatabase: Send + Sync {
+    /// Read a value from the KV store
+    async fn kv_read(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, FfiError>;
+
+    /// List keys in a namespace
+    async fn kv_list(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+    ) -> Result<Vec<String>, FfiError>;
+}
+
+/// FFI-compatible KVStore trait with transaction support
+#[uniffi::export]
+#[async_trait::async_trait]
+pub trait KVStore: KVStoreDatabase {
+    /// Begin a KV store transaction
+    async fn begin_kv_transaction(&self) -> Result<Arc<KVStoreTransactionWrapper>, FfiError>;
+}
+
+/// FFI-compatible KVStore transaction trait for write operations
+#[uniffi::export(with_foreign)]
+#[async_trait::async_trait]
+pub trait KVStoreTransaction: Send + Sync {
+    /// Commit the transaction
+    async fn commit(self: Arc<Self>) -> Result<(), FfiError>;
+
+    /// Rollback the transaction
+    async fn rollback(self: Arc<Self>) -> Result<(), FfiError>;
+
+    /// Read value from key-value store
+    async fn kv_read(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, FfiError>;
+
+    /// Write value to key-value store
+    async fn kv_write(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), FfiError>;
+
+    /// Remove value from key-value store
+    async fn kv_remove(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<(), FfiError>;
+
+    /// List keys in a namespace
+    async fn kv_list(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+    ) -> Result<Vec<String>, FfiError>;
+}
+
+/// KV Store transaction wrapper
+#[derive(uniffi::Object)]
+pub struct KVStoreTransactionWrapper {
+    inner: Arc<dyn KVStoreTransaction>,
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl KVStoreTransactionWrapper {
+    /// Commit the transaction
+    pub async fn commit(&self) -> Result<(), FfiError> {
+        self.inner.clone().commit().await
+    }
+
+    /// Rollback the transaction
+    pub async fn rollback(&self) -> Result<(), FfiError> {
+        self.inner.clone().rollback().await
+    }
+
+    /// Read value from key-value store
+    pub async fn kv_read(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        self.inner
+            .kv_read(primary_namespace, secondary_namespace, key)
+            .await
+    }
+
+    /// Write value to key-value store
+    pub async fn kv_write(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), FfiError> {
+        self.inner
+            .kv_write(primary_namespace, secondary_namespace, key, value)
+            .await
+    }
+
+    /// Remove value from key-value store
+    pub async fn kv_remove(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<(), FfiError> {
+        self.inner
+            .kv_remove(primary_namespace, secondary_namespace, key)
+            .await
+    }
+
+    /// List keys in a namespace
+    pub async fn kv_list(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+    ) -> Result<Vec<String>, FfiError> {
+        self.inner
+            .kv_list(primary_namespace, secondary_namespace)
+            .await
+    }
 }
 
 /// Wallet database transaction wrapper
@@ -1248,6 +1388,181 @@ where
             .map_err(|e| FfiError::Database { msg: e.to_string() })?;
 
         Ok(result.into_iter().map(Into::into).collect())
+    }
+}
+
+// Implement KVStoreDatabase for FfiWalletSQLDatabase
+#[async_trait::async_trait]
+impl<RM> KVStoreDatabase for FfiWalletSQLDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn kv_read(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        self.inner
+            .kv_read(&primary_namespace, &secondary_namespace, &key)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+    ) -> Result<Vec<String>, FfiError> {
+        self.inner
+            .kv_list(&primary_namespace, &secondary_namespace)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+}
+
+/// Type alias for a boxed KV store transaction
+type DynKVStoreTransaction =
+    Box<dyn CdkKVStoreTransaction<cdk_common::database::Error> + Send + Sync>;
+
+/// FFI KV Store transaction wrapper
+pub(crate) struct FfiKVStoreTransaction {
+    tx: Arc<Mutex<Option<DynKVStoreTransaction>>>,
+    is_finalized: AtomicBool,
+}
+
+impl Drop for FfiKVStoreTransaction {
+    fn drop(&mut self) {
+        if !self.is_finalized.load(std::sync::atomic::Ordering::SeqCst) {
+            let tx = self.tx.clone();
+            spawn(async move {
+                if let Some(s) = tx.lock().await.take() {
+                    let _ = s.rollback().await;
+                }
+            });
+        }
+    }
+}
+
+impl FfiKVStoreTransaction {
+    pub fn new(tx: DynKVStoreTransaction) -> Arc<Self> {
+        Arc::new(Self {
+            tx: Arc::new(Mutex::new(Some(tx))),
+            is_finalized: false.into(),
+        })
+    }
+}
+
+// Implement KVStore for FfiWalletSQLDatabase
+#[async_trait::async_trait]
+impl<RM> KVStore for FfiWalletSQLDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn begin_kv_transaction(&self) -> Result<Arc<KVStoreTransactionWrapper>, FfiError> {
+        let tx = self
+            .inner
+            .begin_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+
+        Ok(Arc::new(KVStoreTransactionWrapper {
+            inner: FfiKVStoreTransaction::new(tx),
+        }))
+    }
+}
+
+// Implement KVStoreTransaction FFI trait for FfiKVStoreTransaction
+#[async_trait::async_trait]
+impl KVStoreTransaction for FfiKVStoreTransaction {
+    async fn commit(self: Arc<Self>) -> Result<(), FfiError> {
+        self.is_finalized
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.tx
+            .lock()
+            .await
+            .take()
+            .ok_or(FfiError::Database {
+                msg: "Transaction already finalized".to_owned(),
+            })?
+            .commit()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn rollback(self: Arc<Self>) -> Result<(), FfiError> {
+        self.is_finalized
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.tx
+            .lock()
+            .await
+            .take()
+            .ok_or(FfiError::Database {
+                msg: "Transaction already finalized".to_owned(),
+            })?
+            .rollback()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn kv_read(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or(FfiError::Database {
+            msg: "Transaction already finalized".to_owned(),
+        })?;
+        tx.kv_read(&primary_namespace, &secondary_namespace, &key)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn kv_write(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), FfiError> {
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or(FfiError::Database {
+            msg: "Transaction already finalized".to_owned(),
+        })?;
+        tx.kv_write(&primary_namespace, &secondary_namespace, &key, &value)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn kv_remove(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<(), FfiError> {
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or(FfiError::Database {
+            msg: "Transaction already finalized".to_owned(),
+        })?;
+        tx.kv_remove(&primary_namespace, &secondary_namespace, &key)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+    ) -> Result<Vec<String>, FfiError> {
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or(FfiError::Database {
+            msg: "Transaction already finalized".to_owned(),
+        })?;
+        tx.kv_list(&primary_namespace, &secondary_namespace)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
 }
 
