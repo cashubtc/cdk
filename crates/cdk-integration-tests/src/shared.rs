@@ -77,10 +77,10 @@ pub async fn wait_for_mint_ready_with_shutdown(
                     port
                 ));
             }
-
-
-
         }
+
+        // Wait before retrying to avoid overwhelming the mint during startup
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 

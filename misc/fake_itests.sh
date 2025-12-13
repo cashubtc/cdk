@@ -57,7 +57,7 @@ echo "Temp directory created: $CDK_ITESTS_DIR"
 # Check if a database type was provided as first argument, default to sqlite
 export CDK_MINTD_DATABASE="${1:-sqlite}"
 
-cargo build -p cdk-integration-tests
+cargo build --bin start_fake_mint
 
 # Start the fake mint binary with the new Rust-based approach
 echo "Starting fake mint using Rust binary..."
