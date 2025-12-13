@@ -83,9 +83,9 @@ test-all db="memory":
     #!/usr/bin/env bash
     set -euo pipefail
     just test {{db}}
-    ./misc/itests.sh "{{db}}"
-    ./misc/fake_itests.sh "{{db}}" external_signatory
-    ./misc/fake_itests.sh "{{db}}"
+    bash ./misc/itests.sh "{{db}}"
+    bash ./misc/fake_itests.sh "{{db}}" external_signatory
+    bash ./misc/fake_itests.sh "{{db}}"
     
 # Mutation Testing Commands
 
@@ -273,34 +273,34 @@ goose-changelog-commits *COMMITS="5":
 itest db:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/itests.sh "{{db}}"
+  bash ./misc/itests.sh "{{db}}"
 
 fake-mint-itest db:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/fake_itests.sh "{{db}}"
-  ./misc/fake_itests.sh "{{db}}" external_signatory
+  bash ./misc/fake_itests.sh "{{db}}"
+  bash ./misc/fake_itests.sh "{{db}}" external_signatory
 
 itest-payment-processor ln:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/mintd_payment_processor.sh "{{ln}}"
+  bash ./misc/mintd_payment_processor.sh "{{ln}}"
 
 fake-auth-mint-itest db openid_discovery:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/fake_auth_itests.sh "{{db}}" "{{openid_discovery}}"
+  bash ./misc/fake_auth_itests.sh "{{db}}" "{{openid_discovery}}"
 
 nutshell-wallet-itest:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/nutshell_wallet_itest.sh
+  bash ./misc/nutshell_wallet_itest.sh
 
 # Start interactive regtest environment (Bitcoin + 4 LN nodes + 2 CDK mints)
 regtest db="sqlite":
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/interactive_regtest_mprocs.sh {{db}}
+  bash ./misc/interactive_regtest_mprocs.sh {{db}}
 
 # Lightning Network Commands (require regtest environment to be running)
 
@@ -308,67 +308,67 @@ regtest db="sqlite":
 ln-cln1 *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/regtest_helper.sh ln-cln1 {{ARGS}}
+  bash ./misc/regtest_helper.sh ln-cln1 {{ARGS}}
 
 # Get CLN node 2 info  
 ln-cln2 *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/regtest_helper.sh ln-cln2 {{ARGS}}
+  bash ./misc/regtest_helper.sh ln-cln2 {{ARGS}}
 
 # Get LND node 1 info
 ln-lnd1 *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/regtest_helper.sh ln-lnd1 {{ARGS}}
+  bash ./misc/regtest_helper.sh ln-lnd1 {{ARGS}}
 
 # Get LND node 2 info
 ln-lnd2 *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/regtest_helper.sh ln-lnd2 {{ARGS}}
+  bash ./misc/regtest_helper.sh ln-lnd2 {{ARGS}}
 
 # Bitcoin regtest commands
 btc *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/regtest_helper.sh btc {{ARGS}}
+  bash ./misc/regtest_helper.sh btc {{ARGS}}
 
 # Mine blocks in regtest
 btc-mine blocks="10":
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/regtest_helper.sh btc-mine {{blocks}}
+  bash ./misc/regtest_helper.sh btc-mine {{blocks}}
 
 # Show mint information
 mint-info:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/regtest_helper.sh mint-info
+  bash ./misc/regtest_helper.sh mint-info
 
 # Run integration tests against regtest environment
 mint-test:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/regtest_helper.sh mint-test
+  bash ./misc/regtest_helper.sh mint-test
 
 # Restart mints after recompiling (useful for development)
 restart-mints:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/regtest_helper.sh restart-mints
+  bash ./misc/regtest_helper.sh restart-mints
 
 # Show regtest environment status
 regtest-status:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/regtest_helper.sh show-status
+  bash ./misc/regtest_helper.sh show-status
 
 # Show regtest environment logs
 regtest-logs:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/regtest_helper.sh show-logs
+  bash ./misc/regtest_helper.sh show-logs
 
 run-examples:
   cargo r --example p2pk
