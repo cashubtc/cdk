@@ -615,6 +615,14 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::PubkeyRequired,
                 detail: err.to_string(),
             },
+            Error::PaidQuote => ErrorResponse {
+                code: ErrorCode::InvoiceAlreadyPaid,
+                detail: err.to_string(),
+            },
+            Error::DuplicatePaymentId => ErrorResponse {
+                code: ErrorCode::InvoiceAlreadyPaid,
+                detail: err.to_string(),
+            },
             // Fallback: use TokenNotVerified (10001) for unhandled errors
             // as it's the most generic verification failure code in the spec
             _ => ErrorResponse {
@@ -632,6 +640,7 @@ impl From<crate::database::Error> for Error {
             crate::database::Error::InvalidStateTransition(state) => match state {
                 crate::state::Error::Pending => Self::TokenPending,
                 crate::state::Error::AlreadySpent => Self::TokenAlreadySpent,
+                crate::state::Error::AlreadyPaid => Self::RequestAlreadyPaid,
                 state => Self::Database(crate::database::Error::InvalidStateTransition(state)),
             },
             db_error => Self::Database(db_error),

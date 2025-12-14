@@ -258,7 +258,11 @@ impl MeltSaga<Initial> {
             Ok(result) => result,
             Err(err) => {
                 tx.rollback().await?;
-                return Err(err.into());
+                if matches!(err, cdk_common::database::Error::Duplicate) {
+                    return Err(Error::RequestAlreadyPaid);
+                } else {
+                    return Err(err.into());
+                }
             }
         };
 
