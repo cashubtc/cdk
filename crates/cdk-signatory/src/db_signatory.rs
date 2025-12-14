@@ -298,9 +298,78 @@ mod test {
 
     use bitcoin::key::Secp256k1;
     use bitcoin::Network;
+    use cdk_common::nut02::KeySetVersion;
     use cdk_common::{Amount, MintKeySet, PublicKey};
 
     use super::*;
+
+    #[tokio::test]
+    async fn test_dual_id_lookup_in_signatory() {
+        // Create a signatory with a V2 keyset
+        let seed = b"test_seed_for_dual_id";
+        let localstore = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("create db"));
+
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::Sat, (0u64, 4u8)); // Small keyset for test
+
+        let signatory = DbSignatory::new(localstore, seed, supported_units, HashMap::new())
+            .await
+            .expect("create signatory");
+
+        // Get the keysets
+        let keysets_response = signatory.keysets().await.expect("get keysets");
+        assert_eq!(keysets_response.keysets.len(), 2); // Sat + Auth
+
+        // Find the Sat keyset (should be V2 native)
+        let sat_keyset = keysets_response
+            .keysets
+            .iter()
+            .find(|k| k.unit == CurrencyUnit::Sat)
+            .expect("find sat keyset");
+
+        assert_eq!(
+            sat_keyset.id.get_version(),
+            KeySetVersion::Version01,
+            "Keyset should be V2 native"
+        );
+
+        // Compute the V1 ID from the keys
+        let v1_id = Id::v1_from_keys(&sat_keyset.keys);
+        assert_ne!(v1_id, sat_keyset.id, "V1 and V2 IDs should be different");
+
+        // Verify the signatory has both IDs in its keysets HashMap
+        {
+            let keysets = signatory.keysets.read().await;
+            assert!(
+                keysets.contains_key(&sat_keyset.id),
+                "Should have native V2 ID"
+            );
+            assert!(keysets.contains_key(&v1_id), "Should have alternate V1 ID");
+        }
+
+        // Now test that blind_sign works with the V1 ID
+        use cdk_common::dhke::blind_message;
+        use cdk_common::secret::Secret;
+
+        let secret = Secret::generate();
+        let (blinded_message, _blinding_factor) =
+            blind_message(secret.as_bytes(), None).expect("blind message");
+
+        let blinded_msg = cdk_common::BlindedMessage {
+            amount: Amount::from(1),
+            blinded_secret: blinded_message,
+            keyset_id: v1_id, // Use V1 ID
+            witness: None,
+        };
+
+        // This should succeed because the signatory stores with both IDs
+        let result = signatory.blind_sign(vec![blinded_msg]).await;
+        assert!(
+            result.is_ok(),
+            "blind_sign should work with V1 ID: {:?}",
+            result.err()
+        );
+    }
 
     #[test]
     fn mint_mod_generate_keyset_from_seed() {
