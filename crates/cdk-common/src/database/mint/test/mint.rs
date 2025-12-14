@@ -972,9 +972,13 @@ where
 
     // Add blinded messages
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_blinded_messages(None, &blinded_messages, &Operation::new_mint())
-        .await
-        .unwrap();
+    tx.add_blinded_messages(
+        None,
+        &blinded_messages,
+        &Operation::new_mint(Amount::ZERO, cashu::PaymentMethod::Bolt11),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     // Delete one blinded message
@@ -987,11 +991,19 @@ where
     // Try to add same blinded messages again - first should succeed, second should fail
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     assert!(tx
-        .add_blinded_messages(None, &[blinded_message1], &Operation::new_mint())
+        .add_blinded_messages(
+            None,
+            &[blinded_message1],
+            &Operation::new_mint(Amount::ZERO, cashu::PaymentMethod::Bolt11)
+        )
         .await
         .is_ok());
     assert!(tx
-        .add_blinded_messages(None, &[blinded_message2], &Operation::new_mint())
+        .add_blinded_messages(
+            None,
+            &[blinded_message2],
+            &Operation::new_mint(Amount::ZERO, cashu::PaymentMethod::Bolt11)
+        )
         .await
         .is_err());
     tx.rollback().await.unwrap();
