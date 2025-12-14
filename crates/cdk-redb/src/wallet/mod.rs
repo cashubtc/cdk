@@ -1241,3 +1241,19 @@ impl Drop for RedbWalletTransaction {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::path::PathBuf;
+
+    use cdk_common::wallet_db_test;
+
+    use super::WalletRedbDatabase;
+
+    async fn provide_db(test_id: String) -> WalletRedbDatabase {
+        let path = PathBuf::from(format!("/tmp/cdk-test-{}.redb", test_id));
+        WalletRedbDatabase::new(&path).expect("database")
+    }
+
+    wallet_db_test!(provide_db);
+}
