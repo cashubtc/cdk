@@ -180,8 +180,12 @@ test-nutshell:
   
   # Trap to ensure cleanup happens on exit (success or failure)
   trap cleanup EXIT
-  
-  docker run -d -p 3338:3338 --name nutshell -e MINT_LIGHTNING_BACKEND=FakeWallet -e MINT_LISTEN_HOST=0.0.0.0 -e MINT_LISTEN_PORT=3338 -e MINT_PRIVATE_KEY=TEST_PRIVATE_KEY -e MINT_INPUT_FEE_PPK=100  cashubtc/nutshell:latest poetry run mint
+
+  # Clean up any leftover containers from previous runs
+  docker stop nutshell 2>/dev/null || true
+  docker rm nutshell 2>/dev/null || true
+
+  docker run -d --network=host --name nutshell -e MINT_LIGHTNING_BACKEND=FakeWallet -e MINT_LISTEN_HOST=0.0.0.0 -e MINT_LISTEN_PORT=3338 -e MINT_PRIVATE_KEY=TEST_PRIVATE_KEY -e MINT_INPUT_FEE_PPK=100  cashubtc/nutshell:latest poetry run mint
   
   export CDK_ITESTS_DIR=$(mktemp -d)
 
@@ -193,9 +197,18 @@ test-nutshell:
     attempt=$((attempt+1))
     if [ $attempt -ge $max_attempts ]; then
       echo "Nutshell failed to start after $max_attempts attempts"
+      echo "=== Docker container status ==="
+      docker ps -a --filter name=nutshell
+      echo "=== Docker logs ==="
+      docker logs nutshell 2>&1 || true
       exit 1
     fi
     echo "Waiting for Nutshell to start (attempt $attempt/$max_attempts)..."
+    # Show container status every 10 attempts
+    if [ $((attempt % 10)) -eq 0 ]; then
+      echo "=== Container status check ==="
+      docker ps -a --filter name=nutshell
+    fi
     sleep 1
   done
   echo "Nutshell is ready!"
