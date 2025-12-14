@@ -830,18 +830,26 @@ impl Mint {
     }
 
     /// Get keyset info
+    /// Supports lookup by both native ID and alternate ID (V1/V2) for backward compatibility.
     pub fn get_keyset_info(&self, id: &Id) -> Option<MintKeySetInfo> {
-        self.keysets
-            .load()
+        let keysets = self.keysets.load();
+
+        // Try direct lookup first
+        if let Some(keyset) = keysets.iter().find(|keyset| keyset.id == *id) {
+            return Some(keyset.into());
+        }
+
+        // If not found, try alternate ID lookup
+        keysets
             .iter()
-            .filter_map(|keyset| {
-                if keyset.id == *id {
-                    Some(keyset.into())
+            .find(|keyset| {
+                if let Some(alternate_id) = self.compute_alternate_id(keyset) {
+                    alternate_id == *id
                 } else {
-                    None
+                    false
                 }
             })
-            .next()
+            .map(|keyset| keyset.into())
     }
 
     /// Blind Sign
@@ -1678,6 +1686,85 @@ mod tests {
             keyset_by_v1.unwrap().keys,
             keyset_by_v2.unwrap().keys,
             "Both ID lookups should return the same keys"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_keyset_info_supports_alternate_id_lookup() {
+        // Test that get_keyset_info works with both native and alternate IDs.
+        // This is critical for verification during minting/swapping when wallet
+        // uses the V2 ID it received from the keysets endpoint.
+        use cdk_common::nut02::KeySetVersion;
+
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        // Create mint with V1 exposure enabled to get both IDs
+        let mint = create_mint_with_v1_exposure(config, true).await;
+
+        let keysets = mint.keysets();
+        assert_eq!(keysets.keysets.len(), 2);
+
+        // Get both V1 and V2 IDs
+        let v1_id = keysets
+            .keysets
+            .iter()
+            .find(|k| k.id.get_version() == KeySetVersion::Version00)
+            .expect("Should have V1")
+            .id;
+        let v2_id = keysets
+            .keysets
+            .iter()
+            .find(|k| k.id.get_version() == KeySetVersion::Version01)
+            .expect("Should have V2")
+            .id;
+
+        // get_keyset_info should work with native ID
+        let info_by_native = mint.get_keyset_info(&v2_id);
+        assert!(
+            info_by_native.is_some(),
+            "get_keyset_info should find keyset by native V2 ID"
+        );
+
+        // get_keyset_info should also work with alternate ID
+        let info_by_alternate = mint.get_keyset_info(&v1_id);
+        assert!(
+            info_by_alternate.is_some(),
+            "get_keyset_info should find keyset by alternate V1 ID"
+        );
+
+        // Both should return the same keyset info
+        let info1 = info_by_native.unwrap();
+        let info2 = info_by_alternate.unwrap();
+        assert_eq!(
+            info1.unit, info2.unit,
+            "Both lookups should return the same unit"
+        );
+        assert_eq!(
+            info1.active, info2.active,
+            "Both lookups should return the same active status"
+        );
+        assert_eq!(
+            info1.input_fee_ppk, info2.input_fee_ppk,
+            "Both lookups should return the same fee"
+        );
+
+        // Test with V1 exposure disabled - should still work for verification
+        mint.set_v1_id_exposure(false);
+
+        // V1 ID should no longer appear in keysets()
+        let keysets = mint.keysets();
+        assert_eq!(keysets.keysets.len(), 1);
+
+        // But get_keyset_info should STILL work with V1 ID (for verification)
+        let info_by_v1_after_disable = mint.get_keyset_info(&v1_id);
+        assert!(
+            info_by_v1_after_disable.is_some(),
+            "get_keyset_info should still find keyset by V1 ID after V1 exposure is disabled"
         );
     }
 }

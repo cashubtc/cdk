@@ -14,7 +14,7 @@ mod auth;
 
 impl Mint {
     /// Compute the alternate keyset ID (V1 <-> V2)
-    fn compute_alternate_id(&self, keyset: &SignatoryKeySet) -> Option<Id> {
+    pub(crate) fn compute_alternate_id(&self, keyset: &SignatoryKeySet) -> Option<Id> {
         match keyset.id.get_version() {
             KeySetVersion::Version00 => {
                 // Current is V1, compute V2
