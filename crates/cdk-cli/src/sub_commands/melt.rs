@@ -32,6 +32,15 @@ pub struct MeltSubCommand {
     /// Payment method (bolt11, bolt12, or bip353)
     #[arg(long, default_value = "bolt11")]
     method: PaymentType,
+    /// BOLT11 invoice to pay (for bolt11 method)
+    #[arg(long, conflicts_with_all = ["offer", "address"])]
+    invoice: Option<String>,
+    /// BOLT12 offer to pay (for bolt12 method)
+    #[arg(long, conflicts_with_all = ["invoice", "address"])]
+    offer: Option<String>,
+    /// BIP353 address to pay (for bip353 method)
+    #[arg(long, conflicts_with_all = ["invoice", "offer"])]
+    address: Option<String>,
 }
 
 /// Helper function to check if there are enough funds and create appropriate MeltOptions
@@ -58,6 +67,13 @@ fn create_melt_options(
 
             Ok(Some(MeltOptions::new_amountless(user_amount)))
         }
+    }
+}
+
+fn input_or_prompt(arg: Option<&String>, prompt: &str) -> Result<String> {
+    match arg {
+        Some(value) => Ok(value.clone()),
+        None => get_user_input(prompt),
     }
 }
 
@@ -127,7 +143,8 @@ pub async fn pay(
             bail!("MPP is only supported for BOLT11 invoices");
         }
 
-        let bolt11_str = get_user_input("Enter bolt11 invoice")?;
+        let bolt11_str =
+            input_or_prompt(sub_command_args.invoice.as_ref(), "Enter bolt11 invoice")?;
         let _bolt11 = Bolt11Invoice::from_str(&bolt11_str)?; // Validate invoice format
 
         // Show available mints and balances
@@ -219,7 +236,8 @@ pub async fn pay(
         match sub_command_args.method {
             PaymentType::Bolt11 => {
                 // Process BOLT11 payment
-                let bolt11_str = get_user_input("Enter bolt11 invoice")?;
+                let bolt11_str =
+                    input_or_prompt(sub_command_args.invoice.as_ref(), "Enter bolt11 invoice")?;
                 let bolt11 = Bolt11Invoice::from_str(&bolt11_str)?;
 
                 // Determine payment amount and options
@@ -258,7 +276,8 @@ pub async fn pay(
             }
             PaymentType::Bolt12 => {
                 // Process BOLT12 payment (offer)
-                let offer_str = get_user_input("Enter BOLT12 offer")?;
+                let offer_str =
+                    input_or_prompt(sub_command_args.offer.as_ref(), "Enter BOLT12 offer")?;
                 let offer = Offer::from_str(&offer_str)
                     .map_err(|e| anyhow::anyhow!("Invalid BOLT12 offer: {:?}", e))?;
 
@@ -315,7 +334,8 @@ pub async fn pay(
                 }
             }
             PaymentType::Bip353 => {
-                let bip353_addr = get_user_input("Enter Bip353 address")?;
+                let bip353_addr =
+                    input_or_prompt(sub_command_args.address.as_ref(), "Enter Bip353 address")?;
 
                 let prompt = format!(
                     "Enter the amount you would like to pay in {} for this amountless offer:",
