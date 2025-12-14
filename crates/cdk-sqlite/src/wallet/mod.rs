@@ -365,11 +365,17 @@ mod tests {
             amount_paid: Amount::from(0),
         };
 
-        // Add all quotes to the database
-        db.add_mint_quote(quote1).await.unwrap();
-        db.add_mint_quote(quote2.clone()).await.unwrap();
-        db.add_mint_quote(quote3.clone()).await.unwrap();
-        db.add_mint_quote(quote4.clone()).await.unwrap();
+        {
+            let mut tx = db.begin_db_transaction().await.unwrap();
+
+            // Add all quotes to the database
+            tx.add_mint_quote(quote1).await.unwrap();
+            tx.add_mint_quote(quote2.clone()).await.unwrap();
+            tx.add_mint_quote(quote3.clone()).await.unwrap();
+            tx.add_mint_quote(quote4.clone()).await.unwrap();
+
+            tx.commit().await.unwrap();
+        }
 
         // Get unissued mint quotes
         let unissued_quotes = db.get_unissued_mint_quotes().await.unwrap();
