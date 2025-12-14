@@ -132,6 +132,6 @@ async fn test_fake_melt_change_in_quote() {
 
     assert_eq!(
         wallet.total_balance().await.unwrap(),
-        Amount::from(100 - invoice_amount - u64::from(fee) - ln_fee)
+        Amount::from(100 - invoice_amount - u64::from(fee_breakdown.total) - ln_fee)
     );
 }
