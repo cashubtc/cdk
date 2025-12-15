@@ -111,6 +111,8 @@ impl Wallet {
             }
         }
 
+        let fee_breakdown = self.get_proofs_fee(&proofs).await?;
+
         // Since the proofs are unknown they need to be added to the database
         let proofs_info = proofs
             .clone()
@@ -131,6 +133,7 @@ impl Wallet {
                 proofs,
                 None,
                 false,
+                &fee_breakdown,
             )
             .await?;
 

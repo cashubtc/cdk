@@ -403,6 +403,42 @@ pub trait SagaDatabase {
     ) -> Result<Vec<mint::Saga>, Self::Err>;
 }
 
+#[async_trait]
+/// Completed Operations Transaction trait
+pub trait CompletedOperationsTransaction<'a> {
+    /// Completed Operations Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Add completed operation
+    async fn add_completed_operation(
+        &mut self,
+        operation: &mint::Operation,
+        fee_by_keyset: &std::collections::HashMap<crate::nuts::Id, crate::Amount>,
+    ) -> Result<(), Self::Err>;
+}
+
+#[async_trait]
+/// Completed Operations Database trait
+pub trait CompletedOperationsDatabase {
+    /// Completed Operations Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Get completed operation by operation_id
+    async fn get_completed_operation(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Option<mint::Operation>, Self::Err>;
+
+    /// Get completed operations by operation kind
+    async fn get_completed_operations_by_kind(
+        &self,
+        operation_kind: mint::OperationKind,
+    ) -> Result<Vec<mint::Operation>, Self::Err>;
+
+    /// Get all completed operations
+    async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err>;
+}
+
 /// Key-Value Store Transaction trait
 #[async_trait]
 pub trait KVStoreTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
@@ -447,6 +483,7 @@ pub trait Transaction<'a, Error>:
     + ProofsTransaction<'a, Err = Error>
     + KVStoreTransaction<'a, Error>
     + SagaTransaction<'a, Err = Error>
+    + CompletedOperationsTransaction<'a, Err = Error>
 {
 }
 
@@ -492,6 +529,7 @@ pub trait Database<Error>:
     + ProofsDatabase<Err = Error>
     + SignaturesDatabase<Err = Error>
     + SagaDatabase<Err = Error>
+    + CompletedOperationsDatabase<Err = Error>
 {
     /// Begins a transaction
     async fn begin_transaction<'a>(

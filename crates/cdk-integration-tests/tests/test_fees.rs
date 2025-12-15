@@ -60,7 +60,7 @@ async fn test_swap() {
 
     let proofs = send.proofs();
 
-    let fee = wallet.get_proofs_fee(&proofs).await.unwrap();
+    let fee = wallet.get_proofs_fee(&proofs).await.unwrap().total;
 
     assert_eq!(fee, 1.into());
 
@@ -115,7 +115,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let proofs_total = proofs.total_amount().unwrap();
 
-    let fee = wallet.get_proofs_fee(&proofs).await.unwrap();
+    let fee_breakdown = wallet.get_proofs_fee(&proofs).await.unwrap();
     let melt = wallet
         .melt_proofs(&melt_quote.id, proofs.clone())
         .await
@@ -124,7 +124,7 @@ async fn test_fake_melt_change_in_quote() {
     let idk = proofs.total_amount().unwrap() - Amount::from(invoice_amount) - change;
 
     println!("{}", idk);
-    println!("{}", fee);
+    println!("{}", fee_breakdown.total);
     println!("{}", proofs_total);
     println!("{}", change);
 
@@ -132,6 +132,6 @@ async fn test_fake_melt_change_in_quote() {
 
     assert_eq!(
         wallet.total_balance().await.unwrap(),
-        Amount::from(100 - invoice_amount - u64::from(fee) - ln_fee)
+        Amount::from(100 - invoice_amount - u64::from(fee_breakdown.total) - ln_fee)
     );
 }
