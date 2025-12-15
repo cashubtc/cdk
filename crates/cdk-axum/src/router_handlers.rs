@@ -727,7 +727,9 @@ pub(crate) async fn post_batch_check_mint(
         let route = match payment_method {
             PaymentMethod::Bolt11 => RoutePath::MintBolt11,
             PaymentMethod::Bolt12 => RoutePath::MintBolt12,
-            PaymentMethod::Custom(_) => unreachable!(),
+            PaymentMethod::Custom(_) => {
+                return Err(into_response(cdk::error::Error::UnsupportedPaymentMethod))
+            }
         };
 
         state
@@ -836,7 +838,9 @@ pub(crate) async fn post_batch_mint(
         let route = match payment_method {
             PaymentMethod::Bolt11 => RoutePath::MintBolt11,
             PaymentMethod::Bolt12 => RoutePath::MintBolt12,
-            PaymentMethod::Custom(_) => unreachable!(),
+            PaymentMethod::Custom(_) => {
+                return Err(into_response(cdk::error::Error::UnsupportedPaymentMethod))
+            }
         };
 
         state
