@@ -435,9 +435,13 @@ where
     tx.add_melt_request(&quote.id, inputs_amount, inputs_fee)
         .await
         .unwrap();
-    tx.add_blinded_messages(Some(&quote.id), &blinded_messages, &Operation::new_melt())
-        .await
-        .unwrap();
+    tx.add_blinded_messages(
+        Some(&quote.id),
+        &blinded_messages,
+        &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     // Verify retrieval
@@ -497,7 +501,11 @@ where
         .await
         .unwrap();
     let result = tx
-        .add_blinded_messages(Some(&quote2.id), &blinded_messages, &Operation::new_melt())
+        .add_blinded_messages(
+            Some(&quote2.id),
+            &blinded_messages,
+            &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11),
+        )
         .await;
     assert!(result.is_err() && matches!(result.unwrap_err(), Error::Duplicate));
     tx.rollback().await.unwrap(); // Rollback to avoid partial state
@@ -530,7 +538,11 @@ where
         .await
         .unwrap();
     assert!(tx
-        .add_blinded_messages(Some(&quote.id), &blinded_messages, &Operation::new_melt())
+        .add_blinded_messages(
+            Some(&quote.id),
+            &blinded_messages,
+            &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11)
+        )
         .await
         .is_ok());
     tx.commit().await.unwrap();
@@ -543,7 +555,11 @@ where
         .await
         .unwrap();
     let result = tx
-        .add_blinded_messages(Some(&quote.id), &blinded_messages, &Operation::new_melt())
+        .add_blinded_messages(
+            Some(&quote.id),
+            &blinded_messages,
+            &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11),
+        )
         .await;
     // Expect a database error due to unique violation
     assert!(result.is_err()); // Specific error might be DB-specific, e.g., SqliteError or PostgresError
@@ -576,9 +592,13 @@ where
     tx1.add_melt_request(&quote.id, inputs_amount, inputs_fee)
         .await
         .unwrap();
-    tx1.add_blinded_messages(Some(&quote.id), &blinded_messages, &Operation::new_melt())
-        .await
-        .unwrap();
+    tx1.add_blinded_messages(
+        Some(&quote.id),
+        &blinded_messages,
+        &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11),
+    )
+    .await
+    .unwrap();
     tx1.commit().await.unwrap();
 
     // Simulate processing: get and delete
@@ -952,9 +972,13 @@ where
 
     // Add blinded messages
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_blinded_messages(None, &blinded_messages, &Operation::new_mint())
-        .await
-        .unwrap();
+    tx.add_blinded_messages(
+        None,
+        &blinded_messages,
+        &Operation::new_mint(Amount::ZERO, cashu::PaymentMethod::Bolt11),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     // Delete one blinded message
@@ -967,11 +991,19 @@ where
     // Try to add same blinded messages again - first should succeed, second should fail
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     assert!(tx
-        .add_blinded_messages(None, &[blinded_message1], &Operation::new_mint())
+        .add_blinded_messages(
+            None,
+            &[blinded_message1],
+            &Operation::new_mint(Amount::ZERO, cashu::PaymentMethod::Bolt11)
+        )
         .await
         .is_ok());
     assert!(tx
-        .add_blinded_messages(None, &[blinded_message2], &Operation::new_mint())
+        .add_blinded_messages(
+            None,
+            &[blinded_message2],
+            &Operation::new_mint(Amount::ZERO, cashu::PaymentMethod::Bolt11)
+        )
         .await
         .is_err());
     tx.rollback().await.unwrap();

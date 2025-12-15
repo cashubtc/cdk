@@ -433,6 +433,13 @@ impl Mint {
 
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
+        // Fetch the quote to get payment_method for operation tracking
+        let quote = self
+            .localstore
+            .get_melt_quote(melt_request.quote())
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
         let init_saga = MeltSaga::new(
             std::sync::Arc::new(self.clone()),
             self.localstore.clone(),
@@ -440,7 +447,9 @@ impl Mint {
         );
 
         // Step 1: Setup (TX1 - reserves inputs and outputs)
-        let setup_saga = init_saga.setup_melt(melt_request, verification).await?;
+        let setup_saga = init_saga
+            .setup_melt(melt_request, verification, quote.payment_method)
+            .await?;
 
         // Step 2: Attempt internal settlement (returns saga + SettlementDecision)
         // Note: Compensation is handled internally if this fails
@@ -464,21 +473,23 @@ impl Mint {
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
-        let init_saga = MeltSaga::new(
-            std::sync::Arc::new(self.clone()),
-            self.localstore.clone(),
-            std::sync::Arc::clone(&self.pubsub_manager),
-        );
-
-        let setup_saga = init_saga.setup_melt(melt_request, verification).await?;
-
-        // Get the quote to return with PENDING state
+        // Get the quote first for payment_method and to return with PENDING state
         let quote_id = melt_request.quote().clone();
         let quote = self
             .localstore
             .get_melt_quote(&quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
+
+        let init_saga = MeltSaga::new(
+            std::sync::Arc::new(self.clone()),
+            self.localstore.clone(),
+            std::sync::Arc::clone(&self.pubsub_manager),
+        );
+
+        let setup_saga = init_saga
+            .setup_melt(melt_request, verification, quote.payment_method.clone())
+            .await?;
 
         // Spawn background task to complete the melt operation
         let melt_request_clone = melt_request.clone();

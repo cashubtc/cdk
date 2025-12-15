@@ -175,7 +175,7 @@ impl Wallet {
 
         // Calculate change accounting for input fees
         // The mint deducts input fees from available funds before calculating change
-        let input_fee = self.get_proofs_fee(&proofs).await?;
+        let input_fee = self.get_proofs_fee(&proofs).await?.total;
         let change_amount = proofs_total - quote_info.amount - input_fee;
 
         let premint_secrets = if change_amount <= Amount::ZERO {
@@ -448,7 +448,8 @@ impl Wallet {
                     .into_iter()
                     .collect(),
             )
-            .await?;
+            .await?
+            .total;
 
         // Since we could not select the correct inputs amount needed for melting,
         // we select again this time including the amount we will now have to pay as a fee for the swap.

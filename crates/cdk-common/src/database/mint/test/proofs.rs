@@ -37,9 +37,13 @@ where
 
     // Add proofs to database
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs, Some(quote_id), &Operation::new_swap())
-        .await
-        .unwrap();
+    tx.add_proofs(
+        proofs,
+        Some(quote_id),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
     assert!(tx.commit().await.is_ok());
 
     let (proofs, states) = db.get_proofs_by_keyset_id(&keyset_id).await.unwrap();
@@ -94,7 +98,7 @@ where
     tx.add_proofs(
         proofs.clone(),
         Some(quote_id.clone()),
-        &Operation::new_swap(),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
     )
     .await
     .unwrap();
@@ -142,7 +146,7 @@ where
     tx.add_proofs(
         proofs.clone(),
         Some(quote_id.clone()),
-        &Operation::new_swap(),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
     )
     .await
     .unwrap();
@@ -153,7 +157,7 @@ where
         .add_proofs(
             proofs.clone(),
             Some(quote_id.clone()),
-            &Operation::new_swap(),
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
         )
         .await;
 
@@ -196,9 +200,13 @@ where
 
     // Add proofs
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs.clone(), Some(quote_id), &Operation::new_swap())
-        .await
-        .unwrap();
+    tx.add_proofs(
+        proofs.clone(),
+        Some(quote_id),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     // Check initial state - states may vary by implementation
@@ -263,7 +271,7 @@ where
     tx.add_proofs(
         proofs.clone(),
         Some(quote_id.clone()),
-        &Operation::new_swap(),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
     )
     .await
     .unwrap();
@@ -327,9 +335,13 @@ where
 
     // Add proofs
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs.clone(), Some(quote_id), &Operation::new_swap())
-        .await
-        .unwrap();
+    tx.add_proofs(
+        proofs.clone(),
+        Some(quote_id),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     // First update to Pending (valid state transition)
@@ -399,14 +411,14 @@ where
     tx.add_proofs(
         proofs1.clone(),
         Some(quote_id1.clone()),
-        &Operation::new_swap(),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
     )
     .await
     .unwrap();
     tx.add_proofs(
         proofs2.clone(),
         Some(quote_id2.clone()),
-        &Operation::new_swap(),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
     )
     .await
     .unwrap();
@@ -457,9 +469,13 @@ where
 
     // Add proofs
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs.clone(), Some(quote_id), &Operation::new_swap())
-        .await
-        .unwrap();
+    tx.add_proofs(
+        proofs.clone(),
+        Some(quote_id),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     // Get states - behavior may vary by implementation
@@ -537,9 +553,13 @@ where
 
     // Start a transaction and add proof but don't commit
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(vec![proof.clone()], Some(quote_id), &Operation::new_swap())
-        .await
-        .unwrap();
+    tx.add_proofs(
+        vec![proof.clone()],
+        Some(quote_id),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
 
     // Commit the transaction
     tx.commit().await.unwrap();
@@ -571,9 +591,13 @@ where
 
     // Start a transaction, add proof, then rollback
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(vec![proof.clone()], Some(quote_id), &Operation::new_swap())
-        .await
-        .unwrap();
+    tx.add_proofs(
+        vec![proof.clone()],
+        Some(quote_id),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
     tx.rollback().await.unwrap();
 
     // Proof should not exist after rollback
@@ -602,9 +626,13 @@ where
 
     // Add all proofs
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs.clone(), None, &Operation::new_swap())
-        .await
-        .unwrap();
+    tx.add_proofs(
+        proofs.clone(),
+        None,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     // Get proofs by keyset
@@ -657,7 +685,7 @@ where
     tx.add_proofs(
         proofs.clone(),
         Some(quote_id.clone()),
-        &Operation::new_swap(),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
     )
     .await
     .unwrap();

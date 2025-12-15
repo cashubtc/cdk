@@ -214,7 +214,10 @@ impl Wallet {
 
     /// Fee required for proof set
     #[instrument(skip_all)]
-    pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
+    pub async fn get_proofs_fee(
+        &self,
+        proofs: &Proofs,
+    ) -> Result<crate::fees::ProofsFeeBreakdown, Error> {
         let proofs_per_keyset = proofs.count_by_keyset();
         self.get_proofs_fee_by_count(proofs_per_keyset).await
     }
@@ -223,7 +226,7 @@ impl Wallet {
     pub async fn get_proofs_fee_by_count(
         &self,
         proofs_per_keyset: HashMap<Id, u64>,
-    ) -> Result<Amount, Error> {
+    ) -> Result<crate::fees::ProofsFeeBreakdown, Error> {
         let mut fee_per_keyset = HashMap::new();
         let metadata = self
             .metadata_cache
@@ -241,9 +244,9 @@ impl Wallet {
             fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk);
         }
 
-        let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
+        let fee_breakdown = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
 
-        Ok(fee)
+        Ok(fee_breakdown)
     }
 
     /// Get fee for count of proofs in a keyset

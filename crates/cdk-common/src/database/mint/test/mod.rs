@@ -86,9 +86,13 @@ where
 
     // Add proofs to database
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs.clone(), None, &Operation::new_swap())
-        .await
-        .unwrap();
+    tx.add_proofs(
+        proofs.clone(),
+        None,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
 
     // Mark one proof as `pending`
     assert!(tx
