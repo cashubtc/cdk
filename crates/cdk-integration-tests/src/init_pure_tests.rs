@@ -24,7 +24,6 @@ use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
 use cdk::{Amount, Error, Mint, StreamExt};
-use cdk_common::mint::BatchQuoteStatusItem;
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
@@ -234,11 +233,12 @@ impl MintConnector for DirectMintConnection {
                 Ok(quote_response) => {
                     let item = match (&payment_method, quote_response) {
                         (PaymentMethod::Bolt11, MintQuoteResponse::Bolt11(resp)) => {
-                            BatchQuoteStatusItem::from_bolt11(resp.into())
+                            let response: MintQuoteBolt11Response<String> = resp.into();
+                            response.into()
                         }
                         (PaymentMethod::Bolt12, MintQuoteResponse::Bolt12(resp)) => {
                             let quote: MintQuoteBolt12Response<String> = resp.into();
-                            BatchQuoteStatusItem::from_bolt12(quote)
+                            quote.into()
                         }
                         _ => {
                             return Err(Error::BatchPaymentMethodEndpointMismatch);

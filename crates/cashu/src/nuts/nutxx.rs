@@ -109,17 +109,6 @@ pub enum BatchQuoteStatusItem {
 }
 
 impl BatchQuoteStatusItem {
-    /// Create a batch entry from a Bolt11 quote
-    pub fn from_bolt11(response: MintQuoteBolt11Response<String>) -> Self {
-        Self::Bolt11(response)
-    }
-
-    /// Create a batch entry from a Bolt12 quote
-    pub fn from_bolt12(response: MintQuoteBolt12Response<String>) -> Self {
-        let batch_response = MintQuoteBolt12BatchStatusResponse::from(response);
-        Self::Bolt12(batch_response)
-    }
-
     /// Quote state (UNPAID, PAID, ISSUED)
     pub fn state(&self) -> MintQuoteState {
         match self {
@@ -131,7 +120,14 @@ impl BatchQuoteStatusItem {
 
 impl From<MintQuoteBolt11Response<String>> for BatchQuoteStatusItem {
     fn from(value: MintQuoteBolt11Response<String>) -> Self {
-        Self::from_bolt11(value)
+        Self::Bolt11(value)
+    }
+}
+
+impl From<MintQuoteBolt12Response<String>> for BatchQuoteStatusItem {
+    fn from(value: MintQuoteBolt12Response<String>) -> Self {
+        let batch_response = MintQuoteBolt12BatchStatusResponse::from(value);
+        Self::Bolt12(batch_response)
     }
 }
 
@@ -201,7 +197,7 @@ mod tests {
             pubkey: None,
         };
 
-        let item = BatchQuoteStatusItem::from_bolt11(response.clone());
+        let item: BatchQuoteStatusItem = response.clone().into();
         assert_eq!(item.state(), MintQuoteState::Paid);
 
         match item {
@@ -228,7 +224,7 @@ mod tests {
             amount_issued: Amount::from(50u64),
         };
 
-        let item = BatchQuoteStatusItem::from_bolt12(response);
+        let item: BatchQuoteStatusItem = response.into();
         assert_eq!(item.state(), MintQuoteState::Paid);
 
         match item {

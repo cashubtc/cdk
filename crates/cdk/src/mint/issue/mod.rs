@@ -592,11 +592,11 @@ impl Mint {
                         let entry = match (&payment_method, mint_quote_response) {
                             (PaymentMethod::Bolt11, MintQuoteResponse::Bolt11(resp)) => {
                                 let response: MintQuoteBolt11Response<String> = resp.into();
-                                BatchQuoteStatusItem::from_bolt11(response)
+                                response.into()
                             }
                             (PaymentMethod::Bolt12, MintQuoteResponse::Bolt12(resp)) => {
                                 let response: MintQuoteBolt12Response<String> = resp.into();
-                                BatchQuoteStatusItem::from_bolt12(response)
+                                response.into()
                             }
                             _ => {
                                 // Payment method mismatch, skip this quote
