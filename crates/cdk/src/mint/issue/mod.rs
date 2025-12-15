@@ -569,7 +569,7 @@ impl Mint {
             let mut seen = HashSet::new();
             for quote_id_str in &request.quote {
                 if !seen.insert(quote_id_str) {
-                    return Err(Error::DuplicateQuoteIdInBatch);
+                    return Err(Error::DuplicatePaymentId);
                 }
             }
 
@@ -750,7 +750,7 @@ impl Mint {
             let mut seen = HashSet::new();
             for quote_id_str in &batch_request.quote {
                 if !seen.insert(quote_id_str) {
-                    return Err(Error::DuplicateQuoteIdInBatch);
+                    return Err(Error::DuplicatePaymentId);
                 }
             }
         }
@@ -797,7 +797,7 @@ impl Mint {
             .map(|q| q.unit.clone())
             .ok_or(Error::UnknownQuote)?;
         if !quotes.iter().all(|q| q.unit == unit) {
-            return Err(Error::BatchCurrencyUnitMismatch);
+            return Err(Error::MultipleUnits);
         }
 
         // Enforce NUT-20 signature semantics: locked quotes (pubkey present) must provide a sig,
@@ -825,25 +825,17 @@ impl Mint {
 
                         mint_req
                             .verify_signature(pubkey)
-                            .map_err(|_| Error::BatchInvalidSignature)?;
+                            .map_err(|_| Error::SignatureMissingOrInvalid)?;
                     }
                     (true, None) => {
-                        return if origin == MintRequestOrigin::Batch {
-                            Err(Error::BatchSignatureMissing)
-                        } else {
-                            Err(Error::SignatureMissingOrInvalid)
-                        };
+                        return Err(Error::SignatureMissingOrInvalid);
                     }
                     (false, Some(_)) => return Err(Error::BatchUnexpectedSignature),
                     (false, None) => {}
                 }
             }
         } else if has_locked_quotes {
-            return if origin == MintRequestOrigin::Batch {
-                Err(Error::BatchSignatureMissing)
-            } else {
-                Err(Error::SignatureMissingOrInvalid)
-            };
+            return Err(Error::SignatureMissingOrInvalid);
         }
 
         for quote in &quotes {

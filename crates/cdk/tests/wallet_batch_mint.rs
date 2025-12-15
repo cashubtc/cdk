@@ -79,10 +79,7 @@ async fn test_wallet_batch_mint_validates_same_unit() -> anyhow::Result<()> {
         )
         .await;
 
-    assert!(matches!(
-        result,
-        Err(cdk::error::Error::BatchCurrencyUnitMismatch)
-    ));
+    assert!(matches!(result, Err(cdk::error::Error::MultipleUnits)));
 
     Ok(())
 }

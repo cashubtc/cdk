@@ -79,7 +79,7 @@ impl Wallet {
         let unit = quote_infos[0].unit.clone();
         for quote_info in &quote_infos {
             if quote_info.unit != unit {
-                return Err(Error::BatchCurrencyUnitMismatch);
+                return Err(Error::MultipleUnits);
             }
         }
 

@@ -318,36 +318,21 @@ pub enum Error {
     /// Batch request is empty (no quotes provided)
     #[error("Batch request is empty")]
     BatchEmpty,
-    /// Duplicate quote ID in batch request
-    #[error("Duplicate quote ID in batch")]
-    DuplicateQuoteIdInBatch,
     /// All quotes in batch must use same payment method
     #[error("All quotes in batch must use same payment method")]
     BatchPaymentMethodMismatch,
-    /// All quotes in batch must use same currency unit
-    #[error("All quotes in batch must use same currency unit")]
-    BatchCurrencyUnitMismatch,
     /// Quote payment method doesn't match endpoint
     #[error("Batch quote payment method does not match endpoint")]
     BatchPaymentMethodEndpointMismatch,
-    /// Invalid NUT-20 signature in batch
-    #[error("Invalid NUT-20 signature in batch")]
-    BatchInvalidSignature,
     /// Signature provided for unlocked quote (no pubkey)
     #[error("Signature provided for unlocked quote")]
     BatchUnexpectedSignature,
     /// Batch size exceeds limit (max 100 quotes)
     #[error("Batch size exceeds limit (max 100 quotes)")]
     BatchSizeExceeded,
-    /// Signature missing for locked quote
-    #[error("Signature missing for locked quote")]
-    BatchSignatureMissing,
     /// Signature array size mismatch with quote count
     #[error("Signature array size does not match quote count")]
     BatchSignatureCountMismatch,
-    /// Bolt12 quotes not supported for batch minting
-    #[error("Bolt12 quotes are not supported for batch minting")]
-    BatchBolt12NotSupported,
     /// Bolt12 batch minting requires spending conditions
     #[error("Bolt12 batch minting requires spending conditions")]
     BatchBolt12RequiresSpendingConditions,
@@ -686,28 +671,13 @@ impl From<Error> for ErrorResponse {
                 detail: err.to_string(),
                 quote: None,
             },
-            Error::DuplicateQuoteIdInBatch => ErrorResponse {
-                code: ErrorCode::DuplicateQuoteIds,
-                detail: err.to_string(),
-                quote: None,
-            },
             Error::BatchPaymentMethodMismatch => ErrorResponse {
                 code: ErrorCode::PaymentMethodMismatch,
                 detail: err.to_string(),
                 quote: None,
             },
-            Error::BatchCurrencyUnitMismatch => ErrorResponse {
-                code: ErrorCode::BatchUnitMismatch,
-                detail: err.to_string(),
-                quote: None,
-            },
             Error::BatchPaymentMethodEndpointMismatch => ErrorResponse {
                 code: ErrorCode::EndpointMethodMismatch,
-                detail: err.to_string(),
-                quote: None,
-            },
-            Error::BatchInvalidSignature => ErrorResponse {
-                code: ErrorCode::SignatureInvalid,
                 detail: err.to_string(),
                 quote: None,
             },
@@ -723,11 +693,6 @@ impl From<Error> for ErrorResponse {
             },
             Error::BatchSignatureCountMismatch => ErrorResponse {
                 code: ErrorCode::SignatureCountMismatch,
-                detail: err.to_string(),
-                quote: None,
-            },
-            Error::BatchSignatureMissing => ErrorResponse {
-                code: ErrorCode::SignatureMissing,
                 detail: err.to_string(),
                 quote: None,
             },
@@ -791,13 +756,13 @@ impl From<ErrorResponse> for Error {
             ErrorCode::DuplicateSignature => Self::DuplicateSignatureError,
             ErrorCode::BatchEmpty => Self::BatchEmpty,
             ErrorCode::BatchSizeExceeded => Self::BatchSizeExceeded,
-            ErrorCode::DuplicateQuoteIds => Self::DuplicateQuoteIdInBatch,
+            ErrorCode::DuplicateQuoteIds => Self::DuplicatePaymentId,
             ErrorCode::UnknownQuote => Self::UnknownQuote,
             ErrorCode::PaymentMethodMismatch => Self::BatchPaymentMethodMismatch,
             ErrorCode::EndpointMethodMismatch => Self::BatchPaymentMethodEndpointMismatch,
-            ErrorCode::BatchUnitMismatch => Self::BatchCurrencyUnitMismatch,
-            ErrorCode::SignatureInvalid => Self::BatchInvalidSignature,
-            ErrorCode::SignatureMissing => Self::BatchSignatureMissing,
+            ErrorCode::BatchUnitMismatch => Self::MultipleUnits,
+            ErrorCode::SignatureInvalid => Self::SignatureMissingOrInvalid,
+            ErrorCode::SignatureMissing => Self::SignatureMissingOrInvalid,
             ErrorCode::SignatureUnexpected => Self::BatchUnexpectedSignature,
             ErrorCode::SignatureCountMismatch => Self::BatchSignatureCountMismatch,
             _ => Self::UnknownErrorResponse(err.to_string()),

@@ -310,8 +310,8 @@ async fn test_batch_mint_handler_rejects_duplicates() {
         .await;
     assert!(result.is_err(), "Mint should reject duplicate quote IDs");
     match result {
-        Err(Error::DuplicateQuoteIdInBatch) => {} // Expected
-        Err(e) => panic!("Expected DuplicateQuoteIdInBatch, got: {:?}", e),
+        Err(Error::DuplicatePaymentId) => {} // Expected
+        Err(e) => panic!("Expected DuplicatePaymentId, got: {:?}", e),
         Ok(_) => panic!("Should have returned error"),
     }
 }
@@ -439,8 +439,8 @@ async fn test_batch_mint_rejects_invalid_nut20_signatures() {
         .await;
     assert!(result.is_err(), "Should reject invalid signature");
     match result {
-        Err(Error::BatchInvalidSignature) => {} // Expected
-        Err(e) => panic!("Expected BatchInvalidSignature, got: {:?}", e),
+        Err(Error::SignatureMissingOrInvalid) => {} // Expected
+        Err(e) => panic!("Expected SignatureMissingOrInvalid, got: {:?}", e),
         Ok(_) => panic!("Should have returned error"),
     }
 }
@@ -692,8 +692,8 @@ async fn test_batch_mint_enforces_single_currency_unit() {
         "Batch should fail if quotes have different currency units"
     );
     match result {
-        Err(Error::BatchCurrencyUnitMismatch) => {} // Expected
-        Err(e) => panic!("Expected BatchCurrencyUnitMismatch, got: {:?}", e),
+        Err(Error::MultipleUnits) => {} // Expected
+        Err(e) => panic!("Expected MultipleUnits, got: {:?}", e),
         Ok(_) => panic!("Should have returned error"),
     }
 }
