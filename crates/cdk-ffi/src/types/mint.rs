@@ -579,8 +579,8 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
     }
 }
 
-impl From<cdk::nuts::nut06::BatchMintSettings> for BatchMintSettings {
-    fn from(settings: cdk::nuts::nut06::BatchMintSettings) -> Self {
+impl From<cdk::nuts::BatchMintSettings> for BatchMintSettings {
+    fn from(settings: cdk::nuts::BatchMintSettings) -> Self {
         Self {
             max_batch_size: settings.max_batch_size,
             methods: settings.methods.into_iter().map(Into::into).collect(),
@@ -588,7 +588,7 @@ impl From<cdk::nuts::nut06::BatchMintSettings> for BatchMintSettings {
     }
 }
 
-impl From<BatchMintSettings> for cdk::nuts::nut06::BatchMintSettings {
+impl From<BatchMintSettings> for cdk::nuts::BatchMintSettings {
     fn from(settings: BatchMintSettings) -> Self {
         Self {
             max_batch_size: settings.max_batch_size,

@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::nut00::BlindedMessage;
+use super::nut00::{BlindedMessage, PaymentMethod};
 use super::nut23::MintQuoteBolt11Response;
 use super::nut25::MintQuoteBolt12Response;
 use super::MintQuoteState;
@@ -37,6 +37,34 @@ impl BatchMintRequest {
 pub struct BatchQuoteStatusRequest {
     /// Quote IDs
     pub quote: Vec<String>,
+}
+
+/// Batch minting settings (NUT-XX)
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct BatchMintSettings {
+    /// Maximum quotes allowed in a batch request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_batch_size: Option<u16>,
+    /// Supported payment methods for batch minting
+    #[serde(default)]
+    pub methods: Vec<PaymentMethod>,
+}
+
+impl Default for BatchMintSettings {
+    fn default() -> Self {
+        Self {
+            max_batch_size: Some(100),
+            methods: Vec::new(),
+        }
+    }
+}
+
+impl BatchMintSettings {
+    /// Returns true when no batch capabilities should be advertised
+    pub fn is_empty(&self) -> bool {
+        self.methods.is_empty()
+    }
 }
 
 /// Bolt12 batch status payload extends the standard Bolt12 quote with a derived state.

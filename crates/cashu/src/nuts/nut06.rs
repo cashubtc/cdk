@@ -8,10 +8,10 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::nut00::PaymentMethod;
 use super::nut01::PublicKey;
 use super::nut17::SupportedMethods;
 use super::nut19::CachedEndpoint;
+use super::nutxx::BatchMintSettings;
 use super::{nut04, nut05, nut15, nut19, MppMethodSettings};
 #[cfg(feature = "auth")]
 use super::{AuthRequired, BlindAuthSettings, ClearAuthSettings, ProtectedEndpoint};
@@ -268,34 +268,6 @@ impl MintInfo {
         units.extend(self.nuts.supported_melt_units());
 
         units.into_iter().collect()
-    }
-}
-
-/// Batch minting settings (NUT-XX)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct BatchMintSettings {
-    /// Maximum quotes allowed in a batch request
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_batch_size: Option<u16>,
-    /// Supported payment methods for batch minting
-    #[serde(default)]
-    pub methods: Vec<PaymentMethod>,
-}
-
-impl Default for BatchMintSettings {
-    fn default() -> Self {
-        Self {
-            max_batch_size: Some(100),
-            methods: Vec::new(),
-        }
-    }
-}
-
-impl BatchMintSettings {
-    /// Returns true when no batch capabilities should be advertised
-    pub fn is_empty(&self) -> bool {
-        self.methods.is_empty()
     }
 }
 

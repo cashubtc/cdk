@@ -71,6 +71,6 @@ pub use nut23::{
 };
 pub use nut25::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
 pub use nutxx::{
-    BatchMintRequest, BatchQuoteStatusItem, BatchQuoteStatusRequest, BatchQuoteStatusResponse,
-    MintQuoteBolt12BatchStatusResponse,
+    BatchMintRequest, BatchMintSettings, BatchQuoteStatusItem, BatchQuoteStatusRequest,
+    BatchQuoteStatusResponse, MintQuoteBolt12BatchStatusResponse,
 };
