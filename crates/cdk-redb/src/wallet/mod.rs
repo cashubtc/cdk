@@ -569,14 +569,15 @@ impl KVStoreDatabase for WalletRedbDatabase {
         let mut keys = Vec::new();
 
         // Use range iterator for efficient lookup by namespace prefix
-        // Range from (primary, secondary, "") to (primary, secondary, "\u{10FFFF}") to get all keys in this namespace
         let start = (primary_namespace, secondary_namespace, "");
-        let end = (primary_namespace, secondary_namespace, "\u{10FFFF}");
 
-        for result in table.range(start..=end).map_err(Error::from)? {
+        for result in table.range(start..).map_err(Error::from)? {
             let (key_tuple, _) = result.map_err(Error::from)?;
-            let (_primary, _secondary, k) = key_tuple.value();
-            keys.push(k.to_string());
+            let (primary_from_db, secondary_from_db, key) = key_tuple.value();
+            if primary_from_db != primary_namespace || secondary_from_db != secondary_namespace {
+                break;
+            }
+            keys.push(key.to_string());
         }
 
         // Keys are already sorted by the B-tree structure
@@ -1165,13 +1166,14 @@ impl KVStoreTransaction<database::Error> for RedbWalletTransaction {
         let mut keys = Vec::new();
 
         // Use range iterator for efficient lookup by namespace prefix
-        // Range from (primary, secondary, "") to (primary, secondary, "\u{10FFFF}") to get all keys in this namespace
         let start = (primary_namespace, secondary_namespace, "");
-        let end = (primary_namespace, secondary_namespace, "\u{10FFFF}");
 
-        for result in table.range(start..=end).map_err(Error::from)? {
+        for result in table.range(start..).map_err(Error::from)? {
             let (key_tuple, _) = result.map_err(Error::from)?;
-            let (_primary, _secondary, k) = key_tuple.value();
+            let (primary_from_db, secondary_from_db, k) = key_tuple.value();
+            if primary_from_db != primary_namespace || secondary_from_db != secondary_namespace {
+                break;
+            }
             keys.push(k.to_string());
         }
 
