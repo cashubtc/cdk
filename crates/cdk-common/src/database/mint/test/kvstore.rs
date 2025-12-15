@@ -84,16 +84,16 @@ mod tests {
     #[test]
     fn test_validate_kvstore_params_valid() {
         // Test valid parameter combinations
-        assert!(validate_kvstore_params("primary", "secondary", "key").is_ok());
-        assert!(validate_kvstore_params("primary", "", "key").is_ok());
-        assert!(validate_kvstore_params("", "", "key").is_ok());
-        assert!(validate_kvstore_params("p1", "s1", "different_key").is_ok());
+        assert!(validate_kvstore_params("primary", "secondary", Some("key")).is_ok());
+        assert!(validate_kvstore_params("primary", "", Some("key")).is_ok());
+        assert!(validate_kvstore_params("", "", Some("key")).is_ok());
+        assert!(validate_kvstore_params("p1", "s1", Some("different_key")).is_ok());
     }
 
     #[test]
     fn test_validate_kvstore_params_empty_namespace_rules() {
         // Test empty namespace rules: if primary is empty, secondary must be empty too
-        let result = validate_kvstore_params("", "secondary", "key");
+        let result = validate_kvstore_params("", "secondary", Some("key"));
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -110,7 +110,7 @@ mod tests {
         ];
 
         for (primary, secondary, key) in test_cases {
-            let result = validate_kvstore_params(primary, secondary, key);
+            let result = validate_kvstore_params(primary, secondary, Some(key));
             assert!(
                 result.is_err(),
                 "Expected collision for key '{}' with namespaces '{}'/'{}'",
@@ -123,20 +123,20 @@ mod tests {
         }
 
         // Test that a combined namespace string would be invalid due to the slash character
-        let result = validate_kvstore_params("primary", "secondary", "primary_secondary");
+        let result = validate_kvstore_params("primary", "secondary", Some("primary_secondary"));
         assert!(result.is_ok(), "This should be valid - no actual collision");
     }
 
     #[test]
     fn test_validate_kvstore_params_invalid_strings() {
         // Test invalid characters in any parameter
-        let result = validate_kvstore_params("primary@", "secondary", "key");
+        let result = validate_kvstore_params("primary@", "secondary", Some("key"));
         assert!(result.is_err());
 
-        let result = validate_kvstore_params("primary", "secondary!", "key");
+        let result = validate_kvstore_params("primary", "secondary!", Some("key"));
         assert!(result.is_err());
 
-        let result = validate_kvstore_params("primary", "secondary", "key with space");
+        let result = validate_kvstore_params("primary", "secondary", Some("key with space"));
         assert!(result.is_err());
     }
 
@@ -179,7 +179,7 @@ mod tests {
 
         for (primary, secondary, key) in valid_examples {
             assert!(
-                validate_kvstore_params(primary, secondary, key).is_ok(),
+                validate_kvstore_params(primary, secondary, Some(key)).is_ok(),
                 "Valid example should pass: '{}'/'{}'/'{}'",
                 primary,
                 secondary,
@@ -196,12 +196,12 @@ mod tests {
         // but ensures naming conflicts don't occur between keys and namespaces.
 
         // These should be valid (different namespaces)
-        assert!(validate_kvstore_params("ns1", "sub1", "key1").is_ok());
-        assert!(validate_kvstore_params("ns2", "sub1", "key1").is_ok()); // same key, different primary namespace
-        assert!(validate_kvstore_params("ns1", "sub2", "key1").is_ok()); // same key, different secondary namespace
+        assert!(validate_kvstore_params("ns1", "sub1", Some("key1")).is_ok());
+        assert!(validate_kvstore_params("ns2", "sub1", Some("key1")).is_ok()); // same key, different primary namespace
+        assert!(validate_kvstore_params("ns1", "sub2", Some("key1")).is_ok()); // same key, different secondary namespace
 
         // These should fail (collision within namespace)
-        assert!(validate_kvstore_params("ns1", "sub1", "ns1").is_err()); // key conflicts with primary namespace
-        assert!(validate_kvstore_params("ns1", "sub1", "sub1").is_err()); // key conflicts with secondary namespace
+        assert!(validate_kvstore_params("ns1", "sub1", Some("ns1")).is_err()); // key conflicts with primary namespace
+        assert!(validate_kvstore_params("ns1", "sub1", Some("sub1")).is_err()); // key conflicts with secondary namespace
     }
 }

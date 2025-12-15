@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use cdk_common::database::{validate_kvstore_params, validate_kvstore_string, Error};
+use cdk_common::database::{validate_kvstore_params, Error};
 use cdk_common::util::unix_time;
 
 use crate::column_as_string;
@@ -24,7 +24,7 @@ where
     RM: DatabasePool,
 {
     // Validate parameters according to KV store requirements
-    validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
+    validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
     Ok(query(
         r#"
         SELECT value
@@ -57,7 +57,7 @@ where
     RM: DatabasePool,
 {
     // Validate parameters according to KV store requirements
-    validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
+    validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
     let current_time = unix_time();
 
@@ -95,7 +95,7 @@ where
     RM: DatabasePool,
 {
     // Validate parameters according to KV store requirements
-    validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
+    validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
     query(
         r#"
         DELETE FROM kv_store
@@ -123,15 +123,7 @@ where
     RM: DatabasePool,
 {
     // Validate namespace parameters according to KV store requirements
-    validate_kvstore_string(primary_namespace)?;
-    validate_kvstore_string(secondary_namespace)?;
-
-    // Check empty namespace rules
-    if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
-        return Err(Error::KVStoreInvalidKey(
-            "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
-        ));
-    }
+    validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
     query(
         r#"
         SELECT key
@@ -161,7 +153,7 @@ where
     RM: DatabasePool + 'static,
 {
     // Validate parameters according to KV store requirements
-    validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
+    validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
     let conn = pool.get().map_err(|e| Error::Database(Box::new(e)))?;
     Ok(query(
@@ -194,15 +186,7 @@ where
     RM: DatabasePool + 'static,
 {
     // Validate namespace parameters according to KV store requirements
-    validate_kvstore_string(primary_namespace)?;
-    validate_kvstore_string(secondary_namespace)?;
-
-    // Check empty namespace rules
-    if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
-        return Err(Error::KVStoreInvalidKey(
-            "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
-        ));
-    }
+    validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
 
     let conn = pool.get().map_err(|e| Error::Database(Box::new(e)))?;
     query(

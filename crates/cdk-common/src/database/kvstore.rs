@@ -36,16 +36,13 @@ pub fn validate_kvstore_string(s: &str) -> Result<(), Error> {
 pub fn validate_kvstore_params(
     primary_namespace: &str,
     secondary_namespace: &str,
-    key: &str,
+    key: Option<&str>,
 ) -> Result<(), Error> {
     // Validate primary namespace
     validate_kvstore_string(primary_namespace)?;
 
     // Validate secondary namespace
     validate_kvstore_string(secondary_namespace)?;
-
-    // Validate key
-    validate_kvstore_string(key)?;
 
     // Check empty namespace rules
     if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
@@ -54,12 +51,17 @@ pub fn validate_kvstore_params(
         ));
     }
 
-    // Check for potential collisions between keys and namespaces in the same namespace
-    let namespace_key = format!("{primary_namespace}/{secondary_namespace}");
-    if key == primary_namespace || key == secondary_namespace || key == namespace_key {
-        return Err(Error::KVStoreInvalidKey(format!(
-            "Key '{key}' conflicts with namespace names"
-        )));
+    if let Some(key) = key {
+        // Validate key
+        validate_kvstore_string(key)?;
+
+        // Check for potential collisions between keys and namespaces in the same namespace
+        let namespace_key = format!("{primary_namespace}/{secondary_namespace}");
+        if key == primary_namespace || key == secondary_namespace || key == namespace_key {
+            return Err(Error::KVStoreInvalidKey(format!(
+                "Key '{key}' conflicts with namespace names"
+            )));
+        }
     }
 
     Ok(())

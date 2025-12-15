@@ -9,8 +9,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk_common::common::ProofInfo;
 use cdk_common::database::{
-    validate_kvstore_params, validate_kvstore_string, DbTransactionFinalizer, KVStore,
-    KVStoreDatabase, KVStoreTransaction, WalletDatabase, WalletDatabaseTransaction,
+    validate_kvstore_params, DbTransactionFinalizer, KVStore, KVStoreDatabase, KVStoreTransaction,
+    WalletDatabase, WalletDatabaseTransaction,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::util::unix_time;
@@ -542,7 +542,7 @@ impl KVStoreDatabase for WalletRedbDatabase {
         key: &str,
     ) -> Result<Option<Vec<u8>>, Self::Err> {
         // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
+        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
@@ -561,16 +561,7 @@ impl KVStoreDatabase for WalletRedbDatabase {
         primary_namespace: &str,
         secondary_namespace: &str,
     ) -> Result<Vec<String>, Self::Err> {
-        // Validate namespace parameters according to KV store requirements
-        validate_kvstore_string(primary_namespace)?;
-        validate_kvstore_string(secondary_namespace)?;
-
-        // Check empty namespace rules
-        if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
-            return Err(database::Error::KVStoreInvalidKey(
-                "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
-            ));
-        }
+        validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
 
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
@@ -1105,7 +1096,7 @@ impl KVStoreTransaction<database::Error> for RedbWalletTransaction {
         key: &str,
     ) -> Result<Option<Vec<u8>>, database::Error> {
         // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
+        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
         let txn = self.txn()?;
         let table = txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
@@ -1127,7 +1118,7 @@ impl KVStoreTransaction<database::Error> for RedbWalletTransaction {
         value: &[u8],
     ) -> Result<(), database::Error> {
         // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
+        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
         let txn = self.txn()?;
         let mut table = txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
@@ -1147,7 +1138,7 @@ impl KVStoreTransaction<database::Error> for RedbWalletTransaction {
         key: &str,
     ) -> Result<(), database::Error> {
         // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
+        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
         let txn = self.txn()?;
         let mut table = txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
@@ -1166,15 +1157,7 @@ impl KVStoreTransaction<database::Error> for RedbWalletTransaction {
         secondary_namespace: &str,
     ) -> Result<Vec<String>, database::Error> {
         // Validate namespace parameters according to KV store requirements
-        validate_kvstore_string(primary_namespace)?;
-        validate_kvstore_string(secondary_namespace)?;
-
-        // Check empty namespace rules
-        if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
-            return Err(database::Error::KVStoreInvalidKey(
-                "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
-            ));
-        }
+        validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
 
         let txn = self.txn()?;
         let table = txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
