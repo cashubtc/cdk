@@ -11,15 +11,12 @@ use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintRequest, MintResponse, PaymentMethod,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
-use cdk::{
-    BatchMintRequest, BatchQuoteStatusItem, BatchQuoteStatusRequest, BatchQuoteStatusResponse,
-};
+use cdk::{BatchMintRequest, BatchQuoteStatusRequest, BatchQuoteStatusResponse};
 use paste::paste;
-use std::str::FromStr;
 use tracing::instrument;
 
 #[cfg(feature = "auth")]
@@ -28,7 +25,6 @@ use crate::ws::main_websocket;
 use crate::MintState;
 
 const PREFER_HEADER_KEY: &str = "Prefer";
-const MAX_BATCH_SIZE: usize = 100;
 
 /// Header extractor for the Prefer header
 ///
@@ -739,64 +735,13 @@ pub(crate) async fn post_batch_check_mint(
             .map_err(into_response)?;
     }
 
-    // Validation: empty quotes
-    if payload.quote.is_empty() {
-        return Err(into_response(cdk::error::Error::BatchEmpty));
-    }
+    let response = state
+        .mint
+        .batch_check_mint_quotes(payment_method, payload)
+        .await
+        .map_err(into_response)?;
 
-    // Validation: max 100 quotes per batch
-    if payload.quote.len() > MAX_BATCH_SIZE {
-        return Err(into_response(cdk::error::Error::BatchSizeExceeded));
-    }
-
-    // Validation: no duplicate quotes
-    let mut unique_quotes = std::collections::HashSet::new();
-    for quote_id in &payload.quote {
-        if !unique_quotes.insert(quote_id.clone()) {
-            return Err(into_response(cdk::error::Error::DuplicateQuoteIdInBatch));
-        }
-    }
-
-    let mut responses = Vec::new();
-
-    for quote_id_str in &payload.quote {
-        // Try to parse as QuoteId
-        let quote_id = match QuoteId::from_str(quote_id_str) {
-            Ok(id) => id,
-            Err(_) => {
-                // Invalid quote ID format, skip
-                continue;
-            }
-        };
-
-        // Check quote status and get quote response
-        match state.mint.check_mint_quote(&quote_id).await {
-            Ok(mint_quote_response) => {
-                let entry = match (&payment_method, mint_quote_response) {
-                    (PaymentMethod::Bolt11, cdk::mint::MintQuoteResponse::Bolt11(resp)) => {
-                        let response: MintQuoteBolt11Response<String> = resp.into();
-                        BatchQuoteStatusItem::from_bolt11(response)
-                    }
-                    (PaymentMethod::Bolt12, cdk::mint::MintQuoteResponse::Bolt12(resp)) => {
-                        let response: MintQuoteBolt12Response<String> = resp.into();
-                        BatchQuoteStatusItem::from_bolt12(response)
-                    }
-                    _ => {
-                        return Err(into_response(
-                            cdk::error::Error::BatchPaymentMethodEndpointMismatch,
-                        ));
-                    }
-                };
-                responses.push(entry);
-            }
-            Err(_) => {
-                // Quote not found, omit from response (per spec)
-                continue;
-            }
-        }
-    }
-
-    Ok(Json(BatchQuoteStatusResponse(responses)))
+    Ok(Json(response))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -850,44 +795,13 @@ pub(crate) async fn post_batch_mint(
             .map_err(into_response)?;
     }
 
-    // Validation: empty quotes
-    if payload.quote.is_empty() {
-        return Err(into_response(cdk::error::Error::BatchEmpty));
-    }
-
-    // Validation: max 100 quotes per batch
-    if payload.quote.len() > MAX_BATCH_SIZE {
-        return Err(into_response(cdk::error::Error::BatchSizeExceeded));
-    }
-
-    // Validation: no duplicate quotes
-    let mut unique_quotes = std::collections::HashSet::new();
-    for quote_id in &payload.quote {
-        if !unique_quotes.insert(quote_id.clone()) {
-            return Err(into_response(cdk::error::Error::DuplicateQuoteIdInBatch));
-        }
-    }
-
-    // Validation: signature array (if present) matches quotes length
-    if let Some(ref signatures) = payload.signature {
-        if signatures.len() != payload.quote.len() {
-            return Err(into_response(
-                cdk::error::Error::BatchSignatureCountMismatch,
-            ));
-        }
-    }
-
-    match state
+    let response = state
         .mint
         .process_batch_mint_request(payload, payment_method)
         .await
-    {
-        Ok(response) => Ok(Json(response)),
-        Err(err) => {
-            tracing::error!("Could not process batch mint: {}", err);
-            Err(into_response(err))
-        }
-    }
+        .map_err(into_response)?;
+
+    Ok(Json(response))
 }
 
 #[instrument(skip_all)]

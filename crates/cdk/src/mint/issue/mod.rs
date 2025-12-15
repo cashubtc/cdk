@@ -1,6 +1,9 @@
 use std::{collections::HashSet, str::FromStr};
 
-use cdk_common::mint::{BatchMintRequest, MintQuote, Operation};
+use cdk_common::mint::{
+    BatchMintRequest, BatchQuoteStatusItem, BatchQuoteStatusRequest, BatchQuoteStatusResponse,
+    MintQuote, Operation,
+};
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
     IncomingPaymentOptions, WaitPaymentResponse,
@@ -521,6 +524,102 @@ impl Mint {
         {
             METRICS.dec_in_flight_requests("check_mint_quote");
             METRICS.record_mint_operation("check_mint_quote", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
+            }
+        }
+
+        result
+    }
+
+    /// Check status of multiple mint quotes in a single batch request
+    ///
+    /// This function:
+    /// 1. Validates the batch request (empty, max size, duplicates)
+    /// 2. Checks each quote's status
+    /// 3. Returns all quote statuses, omitting unknown quotes
+    ///
+    /// # Arguments
+    /// * `payment_method` - The payment method from the URL path (bolt11 or bolt12)
+    /// * `request` - The batch quote status request
+    ///
+    /// # Returns
+    /// * `BatchQuoteStatusResponse` - Response containing quote statuses
+    /// * `Error` if validation fails
+    #[instrument(skip_all, fields(quote_count = request.quote.len()))]
+    pub async fn batch_check_mint_quotes(
+        &self,
+        payment_method: PaymentMethod,
+        request: BatchQuoteStatusRequest,
+    ) -> Result<BatchQuoteStatusResponse, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("batch_check_mint_quotes");
+        let result = async {
+            // Validation: empty quotes
+            if request.quote.is_empty() {
+                return Err(Error::BatchEmpty);
+            }
+
+            // Validation: max batch size
+            if request.quote.len() > MAX_BATCH_SIZE {
+                return Err(Error::BatchSizeExceeded);
+            }
+
+            // Validation: no duplicate quotes
+            let mut seen = HashSet::new();
+            for quote_id_str in &request.quote {
+                if !seen.insert(quote_id_str) {
+                    return Err(Error::DuplicateQuoteIdInBatch);
+                }
+            }
+
+            // Check each quote and collect responses
+            let mut responses = Vec::new();
+
+            for quote_id_str in &request.quote {
+                // Try to parse as QuoteId
+                let quote_id = match QuoteId::from_str(quote_id_str) {
+                    Ok(id) => id,
+                    Err(_) => {
+                        // Invalid quote ID format, skip
+                        continue;
+                    }
+                };
+
+                // Check quote status
+                match self.check_mint_quote(&quote_id).await {
+                    Ok(mint_quote_response) => {
+                        let entry = match (&payment_method, mint_quote_response) {
+                            (PaymentMethod::Bolt11, MintQuoteResponse::Bolt11(resp)) => {
+                                let response: MintQuoteBolt11Response<String> = resp.into();
+                                BatchQuoteStatusItem::from_bolt11(response)
+                            }
+                            (PaymentMethod::Bolt12, MintQuoteResponse::Bolt12(resp)) => {
+                                let response: MintQuoteBolt12Response<String> = resp.into();
+                                BatchQuoteStatusItem::from_bolt12(response)
+                            }
+                            _ => {
+                                // Payment method mismatch, skip this quote
+                                continue;
+                            }
+                        };
+                        responses.push(entry);
+                    }
+                    Err(_) => {
+                        // Quote not found or error checking, skip
+                        continue;
+                    }
+                }
+            }
+
+            Ok(BatchQuoteStatusResponse(responses))
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("batch_check_mint_quotes");
+            METRICS.record_mint_operation("batch_check_mint_quotes", result.is_ok());
             if result.is_err() {
                 METRICS.record_error();
             }
