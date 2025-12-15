@@ -2,11 +2,11 @@ use anyhow::Result;
 use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cdk_mint_data_client::CdkMintDataClient;
+use crate::cdk_mint_reporting_client::CdkMintReportingClient;
 use crate::GetInfoRequest;
 
 /// Executes the get_info command against the mint server
-pub async fn get_info(client: &mut CdkMintDataClient<Channel>) -> Result<()> {
+pub async fn get_info(client: &mut CdkMintReportingClient<Channel>) -> Result<()> {
     let response = client.get_info(Request::new(GetInfoRequest {})).await?;
     let info = response.into_inner();
 

@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package cdk_mint_data_rpc;
+package cdk_mint_reporting_rpc;
 
-service CdkMintData {
+service CdkMintReporting {
     rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {}
     rpc GetKeysets(GetKeysetsRequest) returns (GetKeysetsResponse) {}
 }

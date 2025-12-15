@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use cdk_mint_rpc::cdk_mint_data_client::CdkMintDataClient;
 use cdk_mint_rpc::cdk_mint_management_client::CdkMintManagementClient;
+use cdk_mint_rpc::cdk_mint_reporting_client::CdkMintReportingClient;
 use cdk_mint_rpc::mint_rpc_cli::subcommands;
 use clap::{Parser, Subcommand};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
@@ -65,8 +65,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Get info
-    GetInfo,
     /// Update motd
     UpdateMotd(subcommands::UpdateMotdCommand),
     /// Update short description
@@ -99,6 +97,10 @@ enum Commands {
     UpdateNut04QuoteState(subcommands::UpdateNut04QuoteCommand),
     /// Rotate next keyset
     RotateNextKeyset(subcommands::RotateNextKeysetCommand),
+    /// Get info
+    GetInfo,
+    /// Get keysets
+    GetKeysets(subcommands::GetKeysetsCommand),
 }
 
 #[tokio::main]
@@ -149,7 +151,7 @@ async fn main() -> Result<()> {
     };
 
     let mut management_client = CdkMintManagementClient::new(channel.clone());
-    let mut data_client = CdkMintDataClient::new(channel);
+    let mut reporting_client = CdkMintReportingClient::new(channel);
 
     match cli.command {
         Commands::UpdateMotd(sub_command_args) => {
@@ -203,7 +205,10 @@ async fn main() -> Result<()> {
             subcommands::rotate_next_keyset(&mut management_client, &sub_command_args).await?;
         }
         Commands::GetInfo => {
-            subcommands::get_info(&mut data_client).await?;
+            subcommands::get_info(&mut reporting_client).await?;
+        }
+        Commands::GetKeysets(sub_command_args) => {
+            subcommands::get_keysets(&mut reporting_client, &sub_command_args).await?;
         }
     }
 
