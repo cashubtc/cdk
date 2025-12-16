@@ -70,6 +70,12 @@ pub struct TokenData {
     pub proofs: Proofs,
     /// The memo from the token, if present
     pub memo: Option<String>,
+    /// Value of token
+    pub value: Amount,
+    /// Unit of token
+    pub unit: CurrencyUnit,
+    // /// Fee to reedem
+    // pub reedem_fee: Amount,
 }
 
 /// Configuration for individual wallets within MultiMintWallet
@@ -585,9 +591,11 @@ impl MultiMintWallet {
         let memo = token.memo().clone();
 
         Ok(TokenData {
+            value: proofs.total_amount()?,
             mint_url,
             proofs,
             memo,
+            unit: token.unit().unwrap_or_default(),
         })
     }
 
@@ -1385,7 +1393,7 @@ impl MultiMintWallet {
         wallet.verify_token_p2pk(token, conditions).await
     }
 
-    /// Verifys all proofs in token have valid dleq proof
+    /// Verifies all proofs in token have valid dleq proof
     #[instrument(skip(self, token))]
     pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
         let mint_url = token.mint_url()?;
@@ -2194,9 +2202,11 @@ mod tests {
         let memo = Some("Test memo".to_string());
 
         let token_data = TokenData {
+            value: Amount::ZERO,
             mint_url: mint_url.clone(),
             proofs: proofs.clone(),
             memo: memo.clone(),
+            unit: CurrencyUnit::Sat,
         };
 
         assert_eq!(token_data.mint_url, mint_url);
@@ -2205,9 +2215,11 @@ mod tests {
 
         // Test with no memo
         let token_data_no_memo = TokenData {
+            value: Amount::ZERO,
             mint_url: mint_url.clone(),
             proofs: vec![],
             memo: None,
+            unit: CurrencyUnit::Sat,
         };
         assert!(token_data_no_memo.memo.is_none());
     }
