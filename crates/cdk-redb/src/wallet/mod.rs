@@ -318,19 +318,9 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip_all)]
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
-        let write_txn = self.db.begin_write().map_err(Error::from)?;
-        {
-            let mut table = write_txn
-                .open_table(MINT_QUOTES_TABLE)
-                .map_err(Error::from)?;
-            table
-                .insert(
-                    quote.id.as_str(),
-                    serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
-                )
-                .map_err(Error::from)?;
-        }
-        write_txn.commit().map_err(Error::from)?;
+        let mut txn = self.begin_db_transaction().await?;
+        txn.add_mint_quote(quote).await?;
+        txn.commit().await?;
         Ok(())
     }
 
