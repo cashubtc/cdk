@@ -5,7 +5,7 @@ mod kvstore;
 #[cfg(feature = "mint")]
 pub mod mint;
 #[cfg(feature = "wallet")]
-mod wallet;
+pub mod wallet;
 
 // Re-export shared KVStore types at the top level for both mint and wallet
 pub use kvstore::{
