@@ -657,7 +657,7 @@ impl MultiMintWallet {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet.get_proofs_fee(proofs).await
+        Ok(wallet.get_proofs_fee(proofs).await?.total)
     }
 
     /// List transactions
