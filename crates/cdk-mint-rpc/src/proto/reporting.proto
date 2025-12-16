@@ -3,8 +3,25 @@ syntax = "proto3";
 package cdk_mint_reporting_rpc;
 
 service CdkMintReporting {
+    rpc GetBalances(GetBalancesRequest) returns (GetBalancesResponse) {}
     rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {}
     rpc GetKeysets(GetKeysetsRequest) returns (GetKeysetsResponse) {}
+}
+
+message Balance {
+    string unit = 1;
+    uint64 total_balance = 2;
+    uint64 total_issued = 3;
+    uint64 total_redeemed = 4;
+    uint64 total_fees_collected = 5;
+}
+
+message GetBalancesRequest {
+    optional string unit = 1;
+}
+
+message GetBalancesResponse {
+    repeated Balance balances = 1;
 }
 
 message GetInfoRequest {
@@ -25,21 +42,31 @@ message GetInfoResponse {
     optional string icon_url = 7;
     repeated string urls = 8;
     optional string tos_url = 9;
-    uint64 total_issued = 10;
-    uint64 total_redeemed = 11;
 }
 
 message GetKeysetsRequest {
     repeated string units = 1;
-    optional bool active_only = 2;
+    optional bool exclude_inactive = 2;
+    optional bool include_auth = 3;
+    optional bool include_balances = 4;
 }
 
 message Keyset {
     string id = 1;
     string unit = 2;
     bool active = 3;
+    uint64 valid_from = 4;
+    uint64 valid_to = 5;
+    uint64 input_fee_ppk = 6;
+    string derivation_path_index = 8;
+    repeated uint64 amounts = 9;
+    optional uint64 total_balance = 10;
+    optional uint64 total_issued = 11;
+    optional uint64 total_redeemed = 12;
+    optional uint64 total_fees_collected = 13;
 }
 
 message GetKeysetsResponse {
     repeated Keyset keysets = 1;
 }
+

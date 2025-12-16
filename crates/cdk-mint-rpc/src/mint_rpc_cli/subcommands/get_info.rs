@@ -45,8 +45,6 @@ pub async fn get_info(client: &mut CdkMintReportingClient<Channel>) -> Result<()
         println!("contact:          method: {}", contact.method);
         println!("                  info:  {}", contact.info);
     }
-    println!("total issued:     {} sat", info.total_issued);
-    println!("total redeemed:   {} sat", info.total_redeemed);
 
     Ok(())
 }

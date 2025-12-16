@@ -313,6 +313,9 @@ pub trait ProofsDatabase {
 
     /// Get total proofs redeemed by keyset id
     async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
+
+    /// Get total fees collected by keyset id
+    async fn get_total_fees_collected(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
 }
 
 #[async_trait]

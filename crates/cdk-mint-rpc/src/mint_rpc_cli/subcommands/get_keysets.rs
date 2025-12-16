@@ -14,7 +14,13 @@ pub struct GetKeysetsCommand {
     units: Option<String>,
     /// Only show active keysets
     #[arg(short, long)]
-    active_only: Option<bool>,
+    exclude_inactive: Option<bool>,
+    /// Include auth keysets
+    #[arg(short, long)]
+    include_auth: Option<bool>,
+    /// Include proof counts
+    #[arg(short, long)]
+    include_balances: Option<bool>,
 }
 
 /// Executes the get_keysets command against the mint server
@@ -31,7 +37,9 @@ pub async fn get_keysets(
     let response = client
         .get_keysets(Request::new(GetKeysetsRequest {
             units,
-            active_only: sub_command_args.active_only,
+            exclude_inactive: sub_command_args.exclude_inactive,
+            include_auth: sub_command_args.include_auth,
+            include_balances: sub_command_args.include_balances,
         }))
         .await?;
 

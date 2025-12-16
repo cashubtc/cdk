@@ -366,6 +366,71 @@ where
     assert!(total >= Amount::from(300));
 }
 
+/// Test get total fees collected by keyset
+pub async fn get_total_fees_collected<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use cashu::State;
+
+    let keyset_id = setup_keyset(&db).await;
+    let quote_id = QuoteId::new_uuid();
+
+    let proofs = vec![
+        Proof {
+            amount: Amount::from(100),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+        Proof {
+            amount: Amount::from(200),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+    ];
+
+    // Add proofs and mark as spent (which triggers fee collection)
+    let operation = crate::mint::Operation::new(
+        uuid::Uuid::new_v4(),
+        crate::mint::OperationKind::Melt,
+        Amount::ZERO,
+        Amount::from(300),
+        Amount::from(10), // fee_collected
+        None,
+        None,
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(proofs.clone(), Some(quote_id.clone()), &operation)
+        .await
+        .unwrap();
+
+    // Update states to Spent
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+    tx.update_proofs_states(&ys, State::Spent).await.unwrap();
+
+    // Add completed operation with fee breakdown
+    let mut fee_by_keyset = std::collections::HashMap::new();
+    fee_by_keyset.insert(keyset_id, Amount::from(10));
+    tx.add_completed_operation(&operation, &fee_by_keyset)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // Get total fees
+    let totals = db.get_total_fees_collected().await.unwrap();
+    let total = totals.get(&keyset_id).copied().unwrap_or(Amount::ZERO);
+
+    // Should be 10
+    assert!(total >= Amount::from(10));
+}
+
 /// Test get proof ys by quote id
 pub async fn get_proof_ys_by_quote_id<DB>(db: DB)
 where

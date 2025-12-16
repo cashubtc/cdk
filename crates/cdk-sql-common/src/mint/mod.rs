@@ -1660,6 +1660,25 @@ where
         .map(sql_row_to_hashmap_amount)
         .collect()
     }
+
+    /// Get total fees collected by keyset id
+    async fn get_total_fees_collected(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                keyset_id,
+                fee_collected as amount
+            FROM
+                keyset_amounts
+        "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_hashmap_amount)
+        .collect()
+    }
 }
 
 #[async_trait]

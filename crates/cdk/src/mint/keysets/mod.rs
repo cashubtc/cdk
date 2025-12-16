@@ -69,6 +69,17 @@ impl Mint {
             .map(|x| x.into())
     }
 
+    /// Return a list of all keyset infos (including auth keysets)
+    /// for reporting purposes in the mint RPC server
+    #[instrument(skip_all)]
+    pub fn keyset_infos(&self) -> Vec<MintKeySetInfo> {
+        self.keysets
+            .load()
+            .iter()
+            .map(|keyset| keyset.into())
+            .collect()
+    }
+
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     #[instrument(skip(self))]

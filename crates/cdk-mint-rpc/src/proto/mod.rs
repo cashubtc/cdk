@@ -3,6 +3,7 @@
 tonic::include_proto!("cdk_mint_management_rpc");
 tonic::include_proto!("cdk_mint_reporting_rpc");
 
+mod helpers;
 mod management;
 mod reporting;
 mod server;
