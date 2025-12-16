@@ -147,7 +147,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn check_output_already_signed(
         &self,
-        tx: &mut Box<dyn cdk_database::MintTransaction<'_, cdk_database::Error> + Send + Sync + '_>,
+        tx: &mut Box<dyn cdk_database::MintTransaction<cdk_database::Error> + Send + Sync>,
         outputs: &[BlindedMessage],
     ) -> Result<(), Error> {
         let blinded_messages: Vec<PublicKey> = outputs.iter().map(|o| o.blinded_secret).collect();
@@ -173,7 +173,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn verify_outputs(
         &self,
-        tx: &mut Box<dyn cdk_database::MintTransaction<'_, cdk_database::Error> + Send + Sync + '_>,
+        tx: &mut Box<dyn cdk_database::MintTransaction<cdk_database::Error> + Send + Sync>,
         outputs: &[BlindedMessage],
     ) -> Result<Verification, Error> {
         if outputs.is_empty() {
@@ -217,7 +217,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn verify_transaction_balanced(
         &self,
-        tx: &mut Box<dyn cdk_database::MintTransaction<'_, cdk_database::Error> + Send + Sync + '_>,
+        tx: &mut Box<dyn cdk_database::MintTransaction<cdk_database::Error> + Send + Sync>,
         input_verification: Verification,
         inputs: &Proofs,
         outputs: &[BlindedMessage],

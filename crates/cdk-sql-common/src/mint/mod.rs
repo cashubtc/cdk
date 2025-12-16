@@ -131,7 +131,7 @@ where
 }
 
 #[async_trait]
-impl<RM> database::MintProofsTransaction<'_> for SQLTransaction<RM>
+impl<RM> database::MintProofsTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -328,8 +328,7 @@ where
 }
 
 #[async_trait]
-impl<RM> database::MintTransaction<'_, Error> for SQLTransaction<RM> where RM: DatabasePool + 'static
-{}
+impl<RM> database::MintTransaction<Error> for SQLTransaction<RM> where RM: DatabasePool + 'static {}
 
 #[async_trait]
 impl<RM> DbTransactionFinalizer for SQLTransaction<RM>
@@ -779,7 +778,7 @@ where
 }
 
 #[async_trait]
-impl<RM> MintQuotesTransaction<'_> for SQLTransaction<RM>
+impl<RM> MintQuotesTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -1662,7 +1661,7 @@ where
 }
 
 #[async_trait]
-impl<RM> MintSignatureTransaction<'_> for SQLTransaction<RM>
+impl<RM> MintSignatureTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2100,7 +2099,7 @@ where
 }
 
 #[async_trait]
-impl<RM> SagaTransaction<'_> for SQLTransaction<RM>
+impl<RM> SagaTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2244,7 +2243,7 @@ where
 }
 
 #[async_trait]
-impl<RM> CompletedOperationsTransaction<'_> for SQLTransaction<RM>
+impl<RM> CompletedOperationsTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2392,9 +2391,9 @@ impl<RM> MintDatabase<Error> for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
-    async fn begin_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn database::MintTransaction<'a, Error> + Send + Sync + 'a>, Error> {
+    async fn begin_transaction(
+        &self,
+    ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
         let tx = SQLTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,

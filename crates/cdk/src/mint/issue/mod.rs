@@ -451,7 +451,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn pay_mint_quote(
         &self,
-        tx: &mut Box<dyn database::MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
         mint_quote: &MintQuote,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
