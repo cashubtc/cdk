@@ -13,18 +13,30 @@ use thiserror::Error;
 use super::nut01::PublicKey;
 use super::Conditions;
 
+/// Refund path requirements (available after locktime for HTLC)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RefundPath {
+    /// Public keys that can provide valid signatures for refund
+    pub pubkeys: Vec<PublicKey>,
+    /// Minimum number of signatures required from the refund pubkeys
+    pub required_sigs: u64,
+}
+
 /// Spending requirements for P2PK or HTLC verification
 ///
 /// Returned by `get_pubkeys_and_required_sigs` to indicate what conditions
 /// must be met to spend a proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SpendingRequirements {
-    /// Whether a preimage is required (HTLC only, before locktime)
+    /// Whether a preimage is required (HTLC only, for receiver path)
     pub preimage_needed: bool,
-    /// Public keys that can provide valid signatures
+    /// Public keys that can provide valid signatures (receiver path)
     pub pubkeys: Vec<PublicKey>,
     /// Minimum number of signatures required from the pubkeys
     pub required_sigs: u64,
+    /// Refund path (available after locktime for HTLC)
+    /// Per NUT-14: receiver path is ALWAYS available, refund path is available after locktime
+    pub refund_path: Option<RefundPath>,
 }
 
 /// NUT13 Error
@@ -125,18 +137,23 @@ impl Secret {
 /// Get the relevant public keys and required signature count for P2PK or HTLC verification
 /// This is for NUT-11(P2PK) and NUT-14(HTLC)
 ///
-/// Takes into account locktime - if locktime has passed, returns refund keys,
-/// otherwise returns primary pubkeys/hash path.
-/// From NUT-11: "If the tag locktime is the unix time and the mint's local clock is greater than
-/// locktime, the Proof becomes spendable by anyone, except [... if refund keys are specified]"
+/// For P2PK (NUT-11):
+/// - Before locktime: only primary pubkeys path available
+/// - After locktime with refund keys: refund path available
+/// - After locktime without refund keys: anyone can spend
+///
+/// For HTLC (NUT-14):
+/// - Receiver path (preimage + pubkeys): ALWAYS available
+/// - Sender/Refund path (refund keys, no preimage): available AFTER locktime
+///
+/// From NUT-14: "This pathway is ALWAYS available to the receivers, as possession
+/// of the preimage confirms performance of the Sender's wishes."
 ///
 /// Returns `SpendingRequirements` containing:
-/// - `preimage_needed`: For P2PK, always false. For HTLC, true before locktime.
-/// - `pubkeys`: The public keys that can provide valid signatures
-/// - `required_sigs`: The minimum number of signatures required
-///
-/// From NUT-14: "if the current system time is later than Secret.tag.locktime, the Proof can
-/// be spent if Proof.witness includes a signature from the key in Secret.tags.refund."
+/// - `preimage_needed`: For P2PK, always false. For HTLC, true (receiver path).
+/// - `pubkeys`: The public keys for the primary/receiver path
+/// - `required_sigs`: The minimum number of signatures required for primary path
+/// - `refund_path`: Optional refund path (available after locktime)
 pub(crate) fn get_pubkeys_and_required_sigs(
     secret: &Secret,
     current_time: u64,
@@ -159,65 +176,86 @@ pub(crate) fn get_pubkeys_and_required_sigs(
         .map(|locktime| locktime < current_time)
         .unwrap_or(false);
 
-    // Determine which keys and signature count to use
-    if locktime_passed {
-        // After locktime: use refund path (no preimage needed)
-        if let Some(refund_keys) = &conditions.refund_keys {
-            // Locktime has passed and refund keys exist - use refund keys
-            let refund_sigs = conditions.num_sigs_refund.unwrap_or(1);
+    match secret.kind() {
+        Kind::P2PK => {
+            // P2PK: never needs preimage
+            // Per NUT-11: "Locktime Multisig conditions continue to apply, and the proof
+            // can continue to be spent according to Locktime Multisig rules."
+            // This means the primary path (data + pubkeys) is ALWAYS available.
+
+            // Build primary pubkeys (data + pubkeys tag)
+            let mut primary_keys = vec![];
+
+            // Add the pubkey from secret.data
+            let data_pubkey = PublicKey::from_str(secret.secret_data().data())?;
+            primary_keys.push(data_pubkey);
+
+            // Add any additional pubkeys from conditions
+            if let Some(additional_keys) = &conditions.pubkeys {
+                primary_keys.extend(additional_keys.clone());
+            }
+
+            let primary_num_sigs_required = conditions.num_sigs.unwrap_or(1);
+
+            // Refund path is available after locktime
+            let refund_path = if locktime_passed {
+                if let Some(refund_keys) = &conditions.refund_keys {
+                    Some(RefundPath {
+                        pubkeys: refund_keys.clone(),
+                        required_sigs: conditions.num_sigs_refund.unwrap_or(1),
+                    })
+                } else {
+                    // Locktime passed, no refund keys: anyone can spend via refund path
+                    Some(RefundPath {
+                        pubkeys: vec![],
+                        required_sigs: 0,
+                    })
+                }
+            } else {
+                None
+            };
+
             Ok(SpendingRequirements {
                 preimage_needed: false,
-                pubkeys: refund_keys.clone(),
-                required_sigs: refund_sigs,
-            })
-        } else {
-            // Locktime has passed with no refund keys - anyone can spend
-            Ok(SpendingRequirements {
-                preimage_needed: false,
-                pubkeys: vec![],
-                required_sigs: 0,
+                pubkeys: primary_keys,
+                required_sigs: primary_num_sigs_required,
+                refund_path,
             })
         }
-    } else {
-        // Before locktime: logic differs between P2PK and HTLC
-        match secret.kind() {
-            Kind::P2PK => {
-                // P2PK: never needs preimage, use primary pubkeys
-                let mut primary_keys = vec![];
+        Kind::HTLC => {
+            // HTLC: receiver path (preimage + pubkeys) is ALWAYS available per NUT-14
+            // "This pathway is ALWAYS available to the receivers"
+            let pubkeys = conditions.pubkeys.clone().unwrap_or_default();
+            let required_sigs = if pubkeys.is_empty() {
+                0
+            } else {
+                conditions.num_sigs.unwrap_or(1)
+            };
 
-                // Add the pubkey from secret.data
-                let data_pubkey = PublicKey::from_str(secret.secret_data().data())?;
-                primary_keys.push(data_pubkey);
-
-                // Add any additional pubkeys from conditions
-                if let Some(additional_keys) = &conditions.pubkeys {
-                    primary_keys.extend(additional_keys.clone());
-                }
-
-                let primary_num_sigs_required = conditions.num_sigs.unwrap_or(1);
-                Ok(SpendingRequirements {
-                    preimage_needed: false,
-                    pubkeys: primary_keys,
-                    required_sigs: primary_num_sigs_required,
-                })
-            }
-            Kind::HTLC => {
-                // HTLC: needs preimage before locktime, pubkeys from conditions
-                // (data contains hash, not pubkey)
-                let pubkeys = conditions.pubkeys.clone().unwrap_or_default();
-                // If no pubkeys are specified, require 0 signatures (only preimage needed)
-                // Otherwise, default to requiring 1 signature
-                let required_sigs = if pubkeys.is_empty() {
-                    0
+            // Refund path is available after locktime
+            let refund_path = if locktime_passed {
+                if let Some(refund_keys) = &conditions.refund_keys {
+                    Some(RefundPath {
+                        pubkeys: refund_keys.clone(),
+                        required_sigs: conditions.num_sigs_refund.unwrap_or(1),
+                    })
                 } else {
-                    conditions.num_sigs.unwrap_or(1)
-                };
-                Ok(SpendingRequirements {
-                    preimage_needed: true,
-                    pubkeys,
-                    required_sigs,
-                })
-            }
+                    // Locktime passed, no refund keys: anyone can spend via refund path
+                    Some(RefundPath {
+                        pubkeys: vec![],
+                        required_sigs: 0,
+                    })
+                }
+            } else {
+                None
+            };
+
+            Ok(SpendingRequirements {
+                preimage_needed: true,
+                pubkeys,
+                required_sigs,
+                refund_path,
+            })
         }
     }
 }
@@ -251,6 +289,26 @@ pub fn verify_htlc_preimage(
     }
 
     Ok(())
+}
+
+/// Extract and parse Schnorr signatures from a witness
+///
+/// This helper function extracts signature strings from a witness and parses them
+/// into bitcoin secp256k1 Schnorr signatures.
+pub fn extract_signatures_from_witness(
+    witness: &super::Witness,
+) -> Result<Vec<bitcoin::secp256k1::schnorr::Signature>, super::nut11::Error> {
+    use std::str::FromStr;
+
+    let witness_sigs = witness
+        .signatures()
+        .ok_or(super::nut11::Error::SignaturesNotProvided)?;
+
+    witness_sigs
+        .iter()
+        .map(|s| bitcoin::secp256k1::schnorr::Signature::from_str(s))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| super::nut11::Error::InvalidSignature)
 }
 
 /// Trait for requests that spend proofs (SwapRequest, MeltRequest)
@@ -440,6 +498,10 @@ pub trait SpendingConditionVerification {
     /// Do NOT call this directly. This is called only from 'verify_full_sig_all_check',
     /// which has already done many important SIG_ALL checks. This performs the final
     /// signature verification for SIG_ALL+P2PK transactions.
+    ///
+    /// Per NUT-11, there are two spending pathways after locktime:
+    /// 1. Primary path (data + pubkeys): ALWAYS available
+    /// 2. Refund path (refund keys): available AFTER locktime
     fn verify_sig_all_p2pk(&self) -> Result<(), super::nut11::Error> {
         // Get the first input, as it's the one with the signatures
         let first_input = self
@@ -452,7 +514,7 @@ pub trait SpendingConditionVerification {
         // Record current time for locktime evaluation
         let current_time = crate::util::unix_time();
 
-        // Get the relevant public keys and required signature count based on locktime
+        // Get spending requirements (includes both primary and refund paths)
         let requirements = get_pubkeys_and_required_sigs(&first_secret, current_time)?;
 
         debug_assert!(
@@ -460,45 +522,53 @@ pub trait SpendingConditionVerification {
             "P2PK should never require preimage"
         );
 
-        // Handle "anyone can spend" case (locktime passed with no refund keys)
-        if requirements.required_sigs == 0 {
-            return Ok(());
+        // Check for "anyone can spend" case first (locktime passed, no refund keys)
+        // This doesn't require any signatures
+        if let Some(refund_path) = &requirements.refund_path {
+            if refund_path.required_sigs == 0 {
+                return Ok(());
+            }
         }
 
         // Construct the message that should be signed
         let msg_to_sign = self.sig_all_msg_to_sign();
 
-        // Extract signatures from the first input's witness
+        // Get the witness (needed for signature extraction)
         let first_witness = first_input
             .witness
             .as_ref()
             .ok_or(super::nut11::Error::SignaturesNotProvided)?;
 
-        let witness_sigs = first_witness
-            .signatures()
-            .ok_or(super::nut11::Error::SignaturesNotProvided)?;
-
-        // Convert witness strings to Signature objects
-        use std::str::FromStr;
-        let signatures: Vec<bitcoin::secp256k1::schnorr::Signature> = witness_sigs
-            .iter()
-            .map(|s| bitcoin::secp256k1::schnorr::Signature::from_str(s))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| super::nut11::Error::InvalidSignature)?;
-
-        // Verify signatures using the existing valid_signatures function
-        let valid_sig_count = super::nut11::valid_signatures(
-            msg_to_sign.as_bytes(),
-            &requirements.pubkeys,
-            &signatures,
-        )?;
-
-        // Check if we have enough valid signatures
-        if valid_sig_count < requirements.required_sigs {
-            return Err(super::nut11::Error::SpendConditionsNotMet);
+        // Try primary path first (data + pubkeys)
+        // Per NUT-11: "Locktime Multisig conditions continue to apply"
+        if let Ok(signatures) = extract_signatures_from_witness(first_witness) {
+            if let Ok(valid_sig_count) = super::nut11::valid_signatures(
+                msg_to_sign.as_bytes(),
+                &requirements.pubkeys,
+                &signatures,
+            ) {
+                if valid_sig_count >= requirements.required_sigs {
+                    return Ok(());
+                }
+            }
         }
 
-        Ok(())
+        // Primary path failed - try refund path if available
+        if let Some(refund_path) = &requirements.refund_path {
+            let signatures = extract_signatures_from_witness(first_witness)?;
+            let valid_sig_count = super::nut11::valid_signatures(
+                msg_to_sign.as_bytes(),
+                &refund_path.pubkeys,
+                &signatures,
+            )?;
+
+            if valid_sig_count >= refund_path.required_sigs {
+                return Ok(());
+            }
+        }
+
+        // Neither path succeeded
+        Err(super::nut11::Error::SpendConditionsNotMet)
     }
 
     /// Verify HTLC SIG_ALL signatures
@@ -506,6 +576,10 @@ pub trait SpendingConditionVerification {
     /// Do NOT call this directly. This is called only from 'verify_full_sig_all_check',
     /// which has already done many important SIG_ALL checks. This performs the final
     /// signature verification for SIG_ALL+HTLC transactions.
+    ///
+    /// Per NUT-14, there are two spending pathways:
+    /// 1. Receiver path (preimage + pubkeys): ALWAYS available
+    /// 2. Sender/Refund path (refund keys, no preimage): available AFTER locktime
     fn verify_sig_all_htlc(&self) -> Result<(), super::nut11::Error> {
         // Get the first input, as it's the one with the signatures
         let first_input = self
@@ -518,61 +592,79 @@ pub trait SpendingConditionVerification {
         // Record current time for locktime evaluation
         let current_time = crate::util::unix_time();
 
-        // Get the relevant public keys, required signature count, and whether preimage is needed
+        // Get the spending requirements (includes both receiver and refund paths)
         let requirements = get_pubkeys_and_required_sigs(&first_secret, current_time)?;
 
-        // If preimage is needed (before locktime), verify it
-        if requirements.preimage_needed {
-            // Extract HTLC witness
-            let htlc_witness = match first_input.witness.as_ref() {
-                Some(super::Witness::HTLCWitness(witness)) => witness,
-                _ => return Err(super::nut11::Error::SignaturesNotProvided),
-            };
+        // Try to extract HTLC witness and check if preimage is valid
+        let htlc_witness = match first_input.witness.as_ref() {
+            Some(super::Witness::HTLCWitness(witness)) => Some(witness),
+            _ => None,
+        };
 
-            // Verify the preimage matches the hash in the secret
-            verify_htlc_preimage(htlc_witness, &first_secret)
-                .map_err(|_| super::nut11::Error::SpendConditionsNotMet)?;
+        // Check if a valid preimage is provided
+        let preimage_valid = htlc_witness
+            .map(|w| verify_htlc_preimage(w, &first_secret).is_ok())
+            .unwrap_or(false);
+
+        // Check for "anyone can spend" case first (preimage invalid, locktime passed, no refund keys)
+        // This doesn't require any signatures
+        if !preimage_valid {
+            if let Some(refund_path) = &requirements.refund_path {
+                if refund_path.required_sigs == 0 {
+                    return Ok(());
+                }
+            }
         }
 
-        // Handle "anyone can spend" case (locktime passed with no refund keys)
-        if requirements.required_sigs == 0 {
-            return Ok(());
-        }
-
-        // Construct the message that should be signed
+        // Construct the message that should be signed (same for both paths)
         let msg_to_sign = self.sig_all_msg_to_sign();
 
-        // Extract signatures from the first input's witness
+        // Get the witness (needed for signature extraction)
         let first_witness = first_input
             .witness
             .as_ref()
             .ok_or(super::nut11::Error::SignaturesNotProvided)?;
 
-        let witness_sigs = first_witness
-            .signatures()
-            .ok_or(super::nut11::Error::SignaturesNotProvided)?;
+        // Determine which path to use:
+        // - If preimage is valid → use receiver path (always available)
+        // - If preimage is invalid/missing → try refund path (if available)
+        if preimage_valid {
+            // Receiver path: preimage valid, now check SIG_ALL signatures against pubkeys
+            if requirements.required_sigs == 0 {
+                return Ok(());
+            }
 
-        // Convert witness strings to Signature objects
-        use std::str::FromStr;
-        let signatures: Vec<bitcoin::secp256k1::schnorr::Signature> = witness_sigs
-            .iter()
-            .map(|s| bitcoin::secp256k1::schnorr::Signature::from_str(s))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| super::nut11::Error::InvalidSignature)?;
+            let signatures = extract_signatures_from_witness(first_witness)?;
+            let valid_sig_count = super::nut11::valid_signatures(
+                msg_to_sign.as_bytes(),
+                &requirements.pubkeys,
+                &signatures,
+            )?;
 
-        // Verify signatures using the existing valid_signatures function
-        let valid_sig_count = super::nut11::valid_signatures(
-            msg_to_sign.as_bytes(),
-            &requirements.pubkeys,
-            &signatures,
-        )?;
+            if valid_sig_count >= requirements.required_sigs {
+                Ok(())
+            } else {
+                Err(super::nut11::Error::SpendConditionsNotMet)
+            }
+        } else if let Some(refund_path) = &requirements.refund_path {
+            // Refund path: preimage not valid/provided, but locktime has passed
+            // Check SIG_ALL signatures against refund keys
+            let signatures = extract_signatures_from_witness(first_witness)?;
+            let valid_sig_count = super::nut11::valid_signatures(
+                msg_to_sign.as_bytes(),
+                &refund_path.pubkeys,
+                &signatures,
+            )?;
 
-        // Check if we have enough valid signatures
-        if valid_sig_count < requirements.required_sigs {
-            return Err(super::nut11::Error::SpendConditionsNotMet);
+            if valid_sig_count >= refund_path.required_sigs {
+                Ok(())
+            } else {
+                Err(super::nut11::Error::SpendConditionsNotMet)
+            }
+        } else {
+            // No valid preimage and refund path not available (locktime not passed)
+            Err(super::nut11::Error::SpendConditionsNotMet)
         }
-
-        Ok(())
     }
 }
 
