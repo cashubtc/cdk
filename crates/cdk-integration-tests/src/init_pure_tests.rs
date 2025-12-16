@@ -505,6 +505,11 @@ pub async fn setup_batch_mint_test(
     tx.commit().await.expect("Failed to commit update");
 
     // Create wallet quotes
+    let mut wallet_tx = wallet
+        .localstore
+        .begin_db_transaction()
+        .await
+        .expect("Failed to begin wallet tx");
     for (_, _, quote_id, amount, invoice, secret_key) in &mint_quotes {
         let mut wallet_quote = cdk_common::wallet::MintQuote::new(
             quote_id.clone(),
@@ -519,12 +524,15 @@ pub async fn setup_batch_mint_test(
         wallet_quote.state = cashu::MintQuoteState::Paid;
         wallet_quote.amount_paid = Amount::from(*amount);
 
-        wallet
-            .localstore
+        wallet_tx
             .add_mint_quote(wallet_quote)
             .await
             .expect("Failed to add quote to wallet");
     }
+    wallet_tx
+        .commit()
+        .await
+        .expect("Failed to commit wallet quotes");
 
     quote_ids
 }
@@ -601,6 +609,11 @@ pub async fn setup_bolt12_batch_mint_test(
     }
     tx.commit().await.expect("Failed to commit payments");
 
+    let mut wallet_tx = wallet
+        .localstore
+        .begin_db_transaction()
+        .await
+        .expect("Failed to begin wallet tx");
     for (_, _, quote_id, amount, request, secret_key) in &mint_quotes {
         let mut wallet_quote = cdk_common::wallet::MintQuote::new(
             quote_id.clone(),
@@ -614,12 +627,15 @@ pub async fn setup_bolt12_batch_mint_test(
         );
         wallet_quote.state = cashu::MintQuoteState::Paid;
         wallet_quote.amount_paid = Amount::from(*amount);
-        wallet
-            .localstore
+        wallet_tx
             .add_mint_quote(wallet_quote)
             .await
             .expect("Failed to add bolt12 quote to wallet");
     }
+    wallet_tx
+        .commit()
+        .await
+        .expect("Failed to commit wallet quotes");
 
     quote_ids
 }

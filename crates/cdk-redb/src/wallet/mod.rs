@@ -317,14 +317,6 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
-        let mut txn = self.begin_db_transaction().await?;
-        txn.add_mint_quote(quote).await?;
-        txn.commit().await?;
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn

@@ -1108,7 +1108,12 @@ async fn test_wallet_quote_idempotency() {
         .unwrap()
         .unwrap();
 
-    let result = wallet.localstore.add_mint_quote(quote_data).await;
+    let result = {
+        let mut tx = wallet.localstore.begin_db_transaction().await.unwrap();
+        let res = tx.add_mint_quote(quote_data).await;
+        tx.commit().await.unwrap();
+        res
+    };
     assert!(result.is_ok(), "Should handle idempotent quote storage");
 
     // Verify quote is still retrievable
@@ -1144,7 +1149,11 @@ async fn test_wallet_quote_storage_with_nut20_locks() {
     quote_data.secret_key = Some(secret_key.clone());
 
     // Update quote with secret key (idempotent - just re-add it)
-    wallet.localstore.add_mint_quote(quote_data).await.unwrap();
+    {
+        let mut tx = wallet.localstore.begin_db_transaction().await.unwrap();
+        tx.add_mint_quote(quote_data).await.unwrap();
+        tx.commit().await.unwrap();
+    }
 
     // Verify quote is stored with correct secret key
     let stored = wallet

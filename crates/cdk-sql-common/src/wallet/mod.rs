@@ -1035,14 +1035,6 @@ where
         get_keyset_by_id_inner(&*conn, keyset_id, false).await
     }
 
-    #[instrument(skip_all)]
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
-        let mut txn = self.begin_db_transaction().await?;
-        txn.add_mint_quote(quote).await?;
-        txn.commit().await?;
-        Ok(())
-    }
-
     #[instrument(skip(self))]
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;

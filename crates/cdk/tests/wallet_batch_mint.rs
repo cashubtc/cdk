@@ -4,7 +4,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::SecretKey;
 use cdk::nuts::SpendingConditions;
 use cdk::wallet::Wallet;
-use cdk_common::{MintQuoteState, PaymentMethod};
+use cdk_common::{wallet::MintQuote, MintQuoteState, PaymentMethod};
 use cdk_sqlite::wallet::memory;
 
 async fn store_test_quote(
@@ -30,12 +30,21 @@ async fn store_test_quote(
         quote.state = MintQuoteState::Paid;
         quote.amount_paid = amount;
     }
-    wallet
+    let mut tx = wallet
         .localstore
-        .add_mint_quote(quote)
+        .begin_db_transaction()
         .await
-        .expect("quote stored");
+        .expect("begin tx");
+    tx.add_mint_quote(quote).await.expect("quote stored");
+    tx.commit().await.expect("commit");
     quote_id
+}
+
+async fn insert_quote(wallet: &Wallet, quote: MintQuote) -> anyhow::Result<()> {
+    let mut tx = wallet.localstore.begin_db_transaction().await?;
+    tx.add_mint_quote(quote).await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 // Validation tests for batch minting - detailed integration tests will be in cdk-integration-tests
@@ -286,7 +295,7 @@ async fn test_wallet_batch_mint_bolt12_requires_spending_conditions() -> anyhow:
     );
     quote.state = MintQuoteState::Paid;
     quote.amount_paid = Amount::from(100);
-    wallet.localstore.add_mint_quote(quote.clone()).await?;
+    insert_quote(&wallet, quote.clone()).await?;
 
     let result = wallet
         .mint_batch(
@@ -341,7 +350,7 @@ async fn test_wallet_batch_mint_bolt12_requires_secret_keys() -> anyhow::Result<
     );
     quote.state = MintQuoteState::Paid;
     quote.amount_paid = Amount::from(50);
-    wallet.localstore.add_mint_quote(quote.clone()).await?;
+    insert_quote(&wallet, quote.clone()).await?;
 
     let recipient_key = SecretKey::generate();
     let spending_conditions =
@@ -545,7 +554,7 @@ async fn test_batch_mint_enforces_url_payment_method() -> anyhow::Result<()> {
         1000,
         None,
     );
-    wallet.localstore.add_mint_quote(quote1.clone()).await?;
+    insert_quote(&wallet, quote1.clone()).await?;
 
     let quote2 = cdk_common::wallet::MintQuote::new(
         "quote_bolt12_2".to_string(),
@@ -557,13 +566,13 @@ async fn test_batch_mint_enforces_url_payment_method() -> anyhow::Result<()> {
         1000,
         None,
     );
-    wallet.localstore.add_mint_quote(quote2.clone()).await?;
+    insert_quote(&wallet, quote2.clone()).await?;
 
     // Mark both as paid
     for quote_id in [&quote1.id, &quote2.id] {
         let mut quote_info = wallet.localstore.get_mint_quote(quote_id).await?.unwrap();
         quote_info.state = MintQuoteState::Paid;
-        wallet.localstore.add_mint_quote(quote_info).await?;
+        insert_quote(&wallet, quote_info).await?;
     }
 
     // Quotes are Bolt12 but endpoint is Bolt11

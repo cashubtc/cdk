@@ -46,9 +46,6 @@ pub trait WalletDatabase: Send + Sync {
     /// Get mint quote from storage
     async fn get_mint_quote(&self, quote_id: String) -> Result<Option<MintQuote>, FfiError>;
 
-    /// Add mint quote to storage
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError>;
-
     /// Get mint quotes from storage
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError>;
 
@@ -451,17 +448,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
                     .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
             })
             .transpose()?)
-    }
-
-    async fn add_mint_quote(
-        &self,
-        quote: cdk::wallet::MintQuote,
-    ) -> Result<(), cdk::cdk_database::Error> {
-        let ffi_quote = quote.into();
-        self.ffi_db
-            .add_mint_quote(ffi_quote)
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<cdk::wallet::MintQuote>, Self::Err> {
@@ -1149,14 +1135,6 @@ where
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })?;
         Ok(result.map(|q| q.into()))
-    }
-
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError> {
-        let cdk_quote = quote.try_into()?;
-        self.inner
-            .add_mint_quote(cdk_quote)
-            .await
-            .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {

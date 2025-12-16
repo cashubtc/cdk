@@ -139,9 +139,6 @@ pub trait Database: Debug {
     /// Get mint quote from storage
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<WalletMintQuote>, Self::Err>;
 
-    /// Add mint quote to storage
-    async fn add_mint_quote(&self, quote: WalletMintQuote) -> Result<(), Self::Err>;
-
     /// Get mint quotes from storage
     async fn get_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Self::Err>;
 

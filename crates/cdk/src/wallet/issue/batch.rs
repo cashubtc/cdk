@@ -443,6 +443,7 @@ impl Wallet {
     ) -> Result<(), Error> {
         debug_assert_eq!(quote_infos.len(), minted_amounts.len());
 
+        let mut tx = self.localstore.begin_db_transaction().await?;
         for (quote, minted_amount) in quote_infos.iter().zip(minted_amounts.iter()) {
             let mut updated_quote = quote.clone();
             updated_quote.amount_issued += *minted_amount;
@@ -451,8 +452,9 @@ impl Wallet {
             {
                 updated_quote.state = MintQuoteState::Issued;
             }
-            self.localstore.add_mint_quote(updated_quote).await?;
+            tx.add_mint_quote(updated_quote).await?;
         }
+        tx.commit().await?;
         Ok(())
     }
 }
@@ -481,6 +483,13 @@ mod tests {
         quote
     }
 
+    async fn insert_quote(wallet: &Wallet, quote: WalletMintQuote) -> Result<(), Error> {
+        let mut tx = wallet.localstore.begin_db_transaction().await?;
+        tx.add_mint_quote(quote).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn finalize_bolt12_quotes_marks_issued_when_fully_redeemed() -> Result<(), Error> {
         let seed = random::<[u8; 64]>();
@@ -494,9 +503,7 @@ mod tests {
         )?;
 
         let quote = build_test_quote(Amount::from(200), Amount::from(100));
-        wallet
-            .localstore
-            .add_mint_quote(quote.clone())
+        insert_quote(&wallet, quote.clone())
             .await
             .expect("store quote");
 
@@ -528,9 +535,7 @@ mod tests {
         )?;
 
         let quote = build_test_quote(Amount::from(200), Amount::from(50));
-        wallet
-            .localstore
-            .add_mint_quote(quote.clone())
+        insert_quote(&wallet, quote.clone())
             .await
             .expect("store quote");
 
