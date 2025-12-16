@@ -5,8 +5,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use cdk_common::database::{
-    DbTransactionFinalizer, DynWalletDatabaseTransaction, WalletDatabase as CdkWalletDatabase,
-    WalletDatabaseTransaction as CdkWalletDatabaseTransaction,
+    DbTransactionFinalizer, DynWalletDatabaseTransaction, KVStoreDatabase as CdkKVStoreDatabase,
+    WalletDatabase as CdkWalletDatabase, WalletDatabaseTransaction as CdkWalletDatabaseTransaction,
 };
 use cdk_common::task::spawn;
 use cdk_sql_common::pool::DatabasePool;
@@ -95,6 +95,21 @@ pub trait WalletDatabase: Send + Sync {
         direction: Option<TransactionDirection>,
         unit: Option<CurrencyUnit>,
     ) -> Result<Vec<Transaction>, FfiError>;
+
+    /// Read a value from the KV store
+    async fn kv_read(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, FfiError>;
+
+    /// List keys in a namespace
+    async fn kv_list(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+    ) -> Result<Vec<String>, FfiError>;
 }
 
 /// FFI-compatible transaction trait for wallet database write operations
@@ -201,6 +216,39 @@ pub trait WalletDatabaseTransaction: Send + Sync {
 
     /// Remove transaction from storage
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError>;
+
+    // KV Store Methods
+    /// Read a value from the KV store
+    async fn kv_read(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, FfiError>;
+
+    /// Write a value to the KV store
+    async fn kv_write(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), FfiError>;
+
+    /// Remove a value from the KV store
+    async fn kv_remove(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<(), FfiError>;
+
+    /// List keys in the KV store
+    async fn kv_list(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+    ) -> Result<Vec<String>, FfiError>;
 }
 
 /// Wallet database transaction wrapper
@@ -352,6 +400,54 @@ impl WalletDatabaseTransactionWrapper {
     pub async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError> {
         self.inner.remove_transaction(transaction_id).await
     }
+
+    /// Read a value from the KV store
+    pub async fn kv_read(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        self.inner
+            .kv_read(primary_namespace, secondary_namespace, key)
+            .await
+    }
+
+    /// Write a value to the KV store
+    pub async fn kv_write(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), FfiError> {
+        self.inner
+            .kv_write(primary_namespace, secondary_namespace, key, value)
+            .await
+    }
+
+    /// Remove a value from the KV store
+    pub async fn kv_remove(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<(), FfiError> {
+        self.inner
+            .kv_remove(primary_namespace, secondary_namespace, key)
+            .await
+    }
+
+    /// List keys in the KV store
+    pub async fn kv_list(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+    ) -> Result<Vec<String>, FfiError> {
+        self.inner
+            .kv_list(primary_namespace, secondary_namespace)
+            .await
+    }
 }
 
 /// Internal bridge trait to convert from the FFI trait to the CDK database trait
@@ -373,14 +469,47 @@ impl std::fmt::Debug for WalletDatabaseBridge {
 }
 
 #[async_trait::async_trait]
-impl CdkWalletDatabase for WalletDatabaseBridge {
+impl cdk_common::database::KVStoreDatabase for WalletDatabaseBridge {
     type Err = cdk::cdk_database::Error;
 
+    async fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Self::Err> {
+        self.ffi_db
+            .kv_read(
+                primary_namespace.to_string(),
+                secondary_namespace.to_string(),
+                key.to_string(),
+            )
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, Self::Err> {
+        self.ffi_db
+            .kv_list(
+                primary_namespace.to_string(),
+                secondary_namespace.to_string(),
+            )
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+}
+
+#[async_trait::async_trait]
+impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     // Mint Management
     async fn get_mint(
         &self,
         mint_url: cdk::mint_url::MintUrl,
-    ) -> Result<Option<cdk::nuts::MintInfo>, Self::Err> {
+    ) -> Result<Option<cdk::nuts::MintInfo>, cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.into();
         let result = self
             .ffi_db
@@ -392,7 +521,10 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 
     async fn get_mints(
         &self,
-    ) -> Result<HashMap<cdk::mint_url::MintUrl, Option<cdk::nuts::MintInfo>>, Self::Err> {
+    ) -> Result<
+        HashMap<cdk::mint_url::MintUrl, Option<cdk::nuts::MintInfo>>,
+        cdk::cdk_database::Error,
+    > {
         let result = self
             .ffi_db
             .get_mints()
@@ -413,7 +545,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
     async fn get_mint_keysets(
         &self,
         mint_url: cdk::mint_url::MintUrl,
-    ) -> Result<Option<Vec<cdk::nuts::KeySetInfo>>, Self::Err> {
+    ) -> Result<Option<Vec<cdk::nuts::KeySetInfo>>, cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.into();
         let result = self
             .ffi_db
@@ -426,7 +558,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
     async fn get_keyset_by_id(
         &self,
         keyset_id: &cdk::nuts::Id,
-    ) -> Result<Option<cdk::nuts::KeySetInfo>, Self::Err> {
+    ) -> Result<Option<cdk::nuts::KeySetInfo>, cdk::cdk_database::Error> {
         let ffi_id = (*keyset_id).into();
         let result = self
             .ffi_db
@@ -440,7 +572,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
     async fn get_mint_quote(
         &self,
         quote_id: &str,
-    ) -> Result<Option<cdk::wallet::MintQuote>, Self::Err> {
+    ) -> Result<Option<cdk::wallet::MintQuote>, cdk::cdk_database::Error> {
         let result = self
             .ffi_db
             .get_mint_quote(quote_id.to_string())
@@ -454,7 +586,9 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .transpose()?)
     }
 
-    async fn get_mint_quotes(&self) -> Result<Vec<cdk::wallet::MintQuote>, Self::Err> {
+    async fn get_mint_quotes(
+        &self,
+    ) -> Result<Vec<cdk::wallet::MintQuote>, cdk::cdk_database::Error> {
         let result = self
             .ffi_db
             .get_mint_quotes()
@@ -488,7 +622,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
     async fn get_melt_quote(
         &self,
         quote_id: &str,
-    ) -> Result<Option<cdk::wallet::MeltQuote>, Self::Err> {
+    ) -> Result<Option<cdk::wallet::MeltQuote>, cdk::cdk_database::Error> {
         let result = self
             .ffi_db
             .get_melt_quote(quote_id.to_string())
@@ -502,7 +636,9 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .transpose()?)
     }
 
-    async fn get_melt_quotes(&self) -> Result<Vec<cdk::wallet::MeltQuote>, Self::Err> {
+    async fn get_melt_quotes(
+        &self,
+    ) -> Result<Vec<cdk::wallet::MeltQuote>, cdk::cdk_database::Error> {
         let result = self
             .ffi_db
             .get_melt_quotes()
@@ -518,7 +654,10 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
     }
 
     // Keys Management
-    async fn get_keys(&self, id: &cdk::nuts::Id) -> Result<Option<cdk::nuts::Keys>, Self::Err> {
+    async fn get_keys(
+        &self,
+        id: &cdk::nuts::Id,
+    ) -> Result<Option<cdk::nuts::Keys>, cdk::cdk_database::Error> {
         let ffi_id: Id = (*id).into();
         let result = self
             .ffi_db
@@ -543,7 +682,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         unit: Option<cdk::nuts::CurrencyUnit>,
         state: Option<Vec<cdk::nuts::State>>,
         spending_conditions: Option<Vec<cdk::nuts::SpendingConditions>>,
-    ) -> Result<Vec<cdk::types::ProofInfo>, Self::Err> {
+    ) -> Result<Vec<cdk::types::ProofInfo>, cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.map(Into::into);
         let ffi_unit = unit.map(Into::into);
         let ffi_state = state.map(|s| s.into_iter().map(Into::into).collect());
@@ -589,7 +728,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
     async fn get_proofs_by_ys(
         &self,
         ys: Vec<cdk::nuts::PublicKey>,
-    ) -> Result<Vec<cdk::types::ProofInfo>, Self::Err> {
+    ) -> Result<Vec<cdk::types::ProofInfo>, cdk::cdk_database::Error> {
         let ffi_ys: Vec<PublicKey> = ys.into_iter().map(Into::into).collect();
 
         let result = self
@@ -633,7 +772,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         mint_url: Option<cdk::mint_url::MintUrl>,
         unit: Option<cdk::nuts::CurrencyUnit>,
         state: Option<Vec<cdk::nuts::State>>,
-    ) -> Result<u64, Self::Err> {
+    ) -> Result<u64, cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.map(Into::into);
         let ffi_unit = unit.map(Into::into);
         let ffi_state = state.map(|s| s.into_iter().map(Into::into).collect());
@@ -648,7 +787,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
     async fn get_transaction(
         &self,
         transaction_id: cdk::wallet::types::TransactionId,
-    ) -> Result<Option<cdk::wallet::types::Transaction>, Self::Err> {
+    ) -> Result<Option<cdk::wallet::types::Transaction>, cdk::cdk_database::Error> {
         let ffi_id = transaction_id.into();
         let result = self
             .ffi_db
@@ -667,7 +806,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         mint_url: Option<cdk::mint_url::MintUrl>,
         direction: Option<cdk::wallet::types::TransactionDirection>,
         unit: Option<cdk::nuts::CurrencyUnit>,
-    ) -> Result<Vec<cdk::wallet::types::Transaction>, Self::Err> {
+    ) -> Result<Vec<cdk::wallet::types::Transaction>, cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.map(Into::into);
         let ffi_direction = direction.map(Into::into);
         let ffi_unit = unit.map(Into::into);
@@ -687,7 +826,10 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 
     async fn begin_db_transaction(
         &self,
-    ) -> Result<Box<dyn CdkWalletDatabaseTransaction<Self::Err> + Send + Sync>, Self::Err> {
+    ) -> Result<
+        Box<dyn CdkWalletDatabaseTransaction<cdk::cdk_database::Error> + Send + Sync>,
+        cdk::cdk_database::Error,
+    > {
         let ffi_tx = self
             .ffi_db
             .begin_db_transaction()
@@ -991,6 +1133,75 @@ impl CdkWalletDatabaseTransaction<cdk::cdk_database::Error> for WalletDatabaseTr
 }
 
 #[async_trait::async_trait]
+impl cdk_common::database::KVStoreTransaction<cdk::cdk_database::Error>
+    for WalletDatabaseTransactionBridge
+{
+    async fn kv_read(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, cdk::cdk_database::Error> {
+        self.ffi_tx
+            .kv_read(
+                primary_namespace.to_string(),
+                secondary_namespace.to_string(),
+                key.to_string(),
+            )
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn kv_write(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<(), cdk::cdk_database::Error> {
+        self.ffi_tx
+            .kv_write(
+                primary_namespace.to_string(),
+                secondary_namespace.to_string(),
+                key.to_string(),
+                value.to_vec(),
+            )
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn kv_remove(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        self.ffi_tx
+            .kv_remove(
+                primary_namespace.to_string(),
+                secondary_namespace.to_string(),
+                key.to_string(),
+            )
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn kv_list(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, cdk::cdk_database::Error> {
+        self.ffi_tx
+            .kv_list(
+                primary_namespace.to_string(),
+                secondary_namespace.to_string(),
+            )
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+}
+
+#[async_trait::async_trait]
 impl DbTransactionFinalizer for WalletDatabaseTransactionBridge {
     type Err = cdk::cdk_database::Error;
 
@@ -1276,6 +1487,29 @@ where
             .map_err(|e| FfiError::Database { msg: e.to_string() })?;
 
         Ok(result.into_iter().map(Into::into).collect())
+    }
+
+    async fn kv_read(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        self.inner
+            .kv_read(&primary_namespace, &secondary_namespace, &key)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+    ) -> Result<Vec<String>, FfiError> {
+        self.inner
+            .kv_list(&primary_namespace, &secondary_namespace)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
 }
 
@@ -1608,6 +1842,66 @@ impl WalletDatabaseTransaction for FfiWalletTransaction {
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
+
+    async fn kv_read(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or(FfiError::Database {
+            msg: "Transaction already finalized".to_owned(),
+        })?;
+        tx.kv_read(&primary_namespace, &secondary_namespace, &key)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn kv_write(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), FfiError> {
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or(FfiError::Database {
+            msg: "Transaction already finalized".to_owned(),
+        })?;
+        tx.kv_write(&primary_namespace, &secondary_namespace, &key, &value)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn kv_remove(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<(), FfiError> {
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or(FfiError::Database {
+            msg: "Transaction already finalized".to_owned(),
+        })?;
+        tx.kv_remove(&primary_namespace, &secondary_namespace, &key)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+    ) -> Result<Vec<String>, FfiError> {
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or(FfiError::Database {
+            msg: "Transaction already finalized".to_owned(),
+        })?;
+        tx.kv_list(&primary_namespace, &secondary_namespace)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
 }
 
 /// FFI-safe database type enum
@@ -1641,6 +1935,6 @@ pub fn create_wallet_db(backend: WalletDbBackend) -> Result<Arc<dyn WalletDataba
 /// Helper function to create a CDK database from the FFI trait
 pub fn create_cdk_database_from_ffi(
     ffi_db: Arc<dyn WalletDatabase>,
-) -> Arc<dyn CdkWalletDatabase<Err = cdk::cdk_database::Error> + Send + Sync> {
+) -> Arc<dyn CdkWalletDatabase<cdk::cdk_database::Error> + Send + Sync> {
     Arc::new(WalletDatabaseBridge::new(ffi_db))
 }

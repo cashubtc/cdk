@@ -224,7 +224,7 @@ impl MintMetadataCache {
     #[inline(always)]
     pub async fn load_from_mint(
         &self,
-        storage: &Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        storage: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         client: &Arc<dyn MintConnector + Send + Sync>,
     ) -> Result<Arc<MintMetadata>, Error> {
         // Acquire lock to ensure only one fetch at a time
@@ -296,7 +296,7 @@ impl MintMetadataCache {
     #[inline(always)]
     pub async fn load(
         &self,
-        storage: &Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        storage: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         client: &Arc<dyn MintConnector + Send + Sync>,
         ttl: Option<Duration>,
     ) -> Result<Arc<MintMetadata>, Error> {
@@ -345,7 +345,7 @@ impl MintMetadataCache {
     #[cfg(feature = "auth")]
     pub async fn load_auth(
         &self,
-        storage: &Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        storage: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         auth_client: &Arc<dyn AuthMintConnector + Send + Sync>,
     ) -> Result<Arc<MintMetadata>, Error> {
         let cached_metadata = self.metadata.load().clone();
@@ -418,7 +418,7 @@ impl MintMetadataCache {
     /// 3. Update the sync tracking to record this storage has been updated
     async fn database_sync(
         &self,
-        storage: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        storage: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         metadata: Arc<MintMetadata>,
     ) {
         let mint_url = self.mint_url.clone();
@@ -441,7 +441,7 @@ impl MintMetadataCache {
     /// * `db_sync_versions` - Shared version tracker
     async fn persist_to_database(
         mint_url: MintUrl,
-        storage: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        storage: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         metadata: Arc<MintMetadata>,
         db_sync_versions: Arc<RwLock<HashMap<usize, usize>>>,
     ) {

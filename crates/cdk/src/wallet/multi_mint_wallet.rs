@@ -165,7 +165,7 @@ impl WalletConfig {
 #[derive(Clone)]
 pub struct MultiMintWallet {
     /// Storage backend
-    localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+    localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     seed: [u8; 64],
     /// The currency unit this wallet supports
     unit: CurrencyUnit,
@@ -181,7 +181,7 @@ pub struct MultiMintWallet {
 impl MultiMintWallet {
     /// Create a new [MultiMintWallet] for a specific currency unit
     pub async fn new(
-        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         seed: [u8; 64],
         unit: CurrencyUnit,
     ) -> Result<Self, Error> {
@@ -206,7 +206,7 @@ impl MultiMintWallet {
     /// All wallets in this MultiMintWallet will use the specified proxy.
     /// This allows you to route all mint connections through a proxy server.
     pub async fn new_with_proxy(
-        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         seed: [u8; 64],
         unit: CurrencyUnit,
         proxy_url: url::Url,
@@ -235,7 +235,7 @@ impl MultiMintWallet {
     /// is bootstrapped and shared across wallets.
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     pub async fn new_with_tor(
-        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         seed: [u8; 64],
         unit: CurrencyUnit,
     ) -> Result<Self, Error> {
@@ -2055,7 +2055,7 @@ mod tests {
     use super::*;
 
     async fn create_test_multi_wallet() -> MultiMintWallet {
-        let localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync> = Arc::new(
+        let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
             cdk_sqlite::wallet::memory::empty()
                 .await
                 .expect("Failed to create in-memory database"),

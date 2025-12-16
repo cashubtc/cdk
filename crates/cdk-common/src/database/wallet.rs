@@ -8,6 +8,7 @@ use cashu::KeySet;
 
 use super::{DbTransactionFinalizer, Error};
 use crate::common::ProofInfo;
+use crate::database::{KVStoreDatabase, KVStoreTransaction};
 use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
@@ -24,7 +25,9 @@ pub type DynWalletDatabaseTransaction = Box<dyn DatabaseTransaction<super::Error
 /// This trait encapsulates all the changes to be done in the wallet
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait DatabaseTransaction<Error>: DbTransactionFinalizer<Err = Error> {
+pub trait DatabaseTransaction<Error>:
+    KVStoreTransaction<Error> + DbTransactionFinalizer<Err = Error>
+{
     /// Add Mint to storage
     async fn add_mint(
         &mut self,
@@ -112,48 +115,45 @@ pub trait DatabaseTransaction<Error>: DbTransactionFinalizer<Err = Error> {
 /// Wallet Database trait
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait Database: Debug {
-    /// Wallet Database Error
-    type Err: Into<Error> + From<Error>;
-
+pub trait Database<Err>: KVStoreDatabase<Err = Err> + Debug
+where
+    Err: Into<Error> + From<Error>,
+{
     /// Begins a DB transaction
     async fn begin_db_transaction(
         &self,
-    ) -> Result<Box<dyn DatabaseTransaction<Self::Err> + Send + Sync>, Self::Err>;
+    ) -> Result<Box<dyn DatabaseTransaction<Err> + Send + Sync>, Err>;
 
     /// Get mint from storage
-    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err>;
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Err>;
 
     /// Get all mints from storage
-    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err>;
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Err>;
 
     /// Get mint keysets for mint url
-    async fn get_mint_keysets(
-        &self,
-        mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err>;
+    async fn get_mint_keysets(&self, mint_url: MintUrl) -> Result<Option<Vec<KeySetInfo>>, Err>;
 
     /// Get mint keyset by id
-    async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err>;
+    async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Err>;
 
     /// Get mint quote from storage
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<WalletMintQuote>, Self::Err>;
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<WalletMintQuote>, Err>;
 
     /// Get mint quotes from storage
-    async fn get_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Self::Err>;
+    async fn get_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Err>;
     /// Get unissued mint quotes from storage
     /// Returns bolt11 quotes where nothing has been issued yet (amount_issued = 0) and all bolt12 quotes.
     /// Includes unpaid bolt11 quotes to allow checking with the mint if they've been paid (wallet state may be outdated).
-    async fn get_unissued_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Self::Err>;
+    async fn get_unissued_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Err>;
 
     /// Get melt quote from storage
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err>;
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Err>;
 
     /// Get melt quotes from storage
-    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Self::Err>;
+    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Err>;
 
     /// Get [`Keys`] from storage
-    async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Self::Err>;
+    async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Err>;
 
     /// Get proofs from storage
     async fn get_proofs(
@@ -162,10 +162,10 @@ pub trait Database: Debug {
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Vec<ProofInfo>, Self::Err>;
+    ) -> Result<Vec<ProofInfo>, Err>;
 
     /// Get proofs by Y values
-    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, Self::Err>;
+    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, Err>;
 
     /// Get balance
     async fn get_balance(
@@ -173,13 +173,13 @@ pub trait Database: Debug {
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
-    ) -> Result<u64, Self::Err>;
+    ) -> Result<u64, Err>;
 
     /// Get transaction from storage
     async fn get_transaction(
         &self,
         transaction_id: TransactionId,
-    ) -> Result<Option<Transaction>, Self::Err>;
+    ) -> Result<Option<Transaction>, Err>;
 
     /// List transactions from storage
     async fn list_transactions(
@@ -187,5 +187,5 @@ pub trait Database: Debug {
         mint_url: Option<MintUrl>,
         direction: Option<TransactionDirection>,
         unit: Option<CurrencyUnit>,
-    ) -> Result<Vec<Transaction>, Self::Err>;
+    ) -> Result<Vec<Transaction>, Err>;
 }

@@ -596,6 +596,7 @@ ffi-test: ffi-generate-python
   set -euo pipefail
   echo "🧪 Running Python FFI tests..."
   python3 crates/cdk-ffi/tests/test_transactions.py
+  python3 crates/cdk-ffi/tests/test_kvstore.py
   echo "✅ Tests completed!"
 
 # Build debug version and generate Python bindings quickly (for development)

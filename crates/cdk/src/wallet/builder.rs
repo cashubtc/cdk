@@ -22,7 +22,7 @@ use crate::wallet::{HttpClient, MintConnector, SubscriptionManager, Wallet};
 pub struct WalletBuilder {
     mint_url: Option<MintUrl>,
     unit: Option<CurrencyUnit>,
-    localstore: Option<Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>>,
+    localstore: Option<Arc<dyn WalletDatabase<database::Error> + Send + Sync>>,
     target_proof_count: Option<usize>,
     #[cfg(feature = "auth")]
     auth_wallet: Option<AuthWallet>,
@@ -93,7 +93,7 @@ impl WalletBuilder {
     /// Set the local storage backend
     pub fn localstore(
         mut self,
-        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     ) -> Self {
         self.localstore = Some(localstore);
         self

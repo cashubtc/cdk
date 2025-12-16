@@ -158,4 +158,25 @@ impl WalletDatabase for WalletSqliteDatabase {
             .list_transactions(mint_url, direction, unit)
             .await
     }
+
+    async fn kv_read(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        self.inner
+            .kv_read(primary_namespace, secondary_namespace, key)
+            .await
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+    ) -> Result<Vec<String>, FfiError> {
+        self.inner
+            .kv_list(primary_namespace, secondary_namespace)
+            .await
+    }
 }

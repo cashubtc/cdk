@@ -8,7 +8,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::common::ProofInfo;
-use cdk_common::database::WalletDatabase;
+use cdk_common::database::{
+    validate_kvstore_params, DbTransactionFinalizer, KVStore, KVStoreDatabase, KVStoreTransaction,
+    WalletDatabase, WalletDatabaseTransaction,
+};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
@@ -18,6 +21,79 @@ use cdk_common::{
 };
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
+
+/// Enum to abstract over read-only and read-write table access for KV store operations
+enum KvTable<'txn> {
+    ReadOnly(redb::ReadOnlyTable<(&'static str, &'static str, &'static str), &'static [u8]>),
+    ReadWrite(redb::Table<'txn, (&'static str, &'static str, &'static str), &'static [u8]>),
+}
+
+impl KvTable<'_> {
+    /// Read a value from the KV store table
+    #[inline(always)]
+    fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        let result = match self {
+            KvTable::ReadOnly(table) => table
+                .get((primary_namespace, secondary_namespace, key))
+                .map_err(Error::from)?
+                .map(|v| v.value().to_vec()),
+            KvTable::ReadWrite(table) => table
+                .get((primary_namespace, secondary_namespace, key))
+                .map_err(Error::from)?
+                .map(|v| v.value().to_vec()),
+        };
+
+        Ok(result)
+    }
+
+    /// List all keys in a namespace from the KV store table
+    #[inline(always)]
+    fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, Error> {
+        let mut keys = Vec::new();
+
+        // Use range iterator for efficient lookup by namespace prefix
+        let start = (primary_namespace, secondary_namespace, "");
+
+        match self {
+            KvTable::ReadOnly(table) => {
+                for result in table.range(start..).map_err(Error::from)? {
+                    let (key_tuple, _) = result.map_err(Error::from)?;
+                    let (primary_from_db, secondary_from_db, k) = key_tuple.value();
+                    if primary_from_db != primary_namespace
+                        || secondary_from_db != secondary_namespace
+                    {
+                        break;
+                    }
+                    keys.push(k.to_string());
+                }
+            }
+            KvTable::ReadWrite(table) => {
+                for result in table.range(start..).map_err(Error::from)? {
+                    let (key_tuple, _) = result.map_err(Error::from)?;
+                    let (primary_from_db, secondary_from_db, k) = key_tuple.value();
+                    if primary_from_db != primary_namespace
+                        || secondary_from_db != secondary_namespace
+                    {
+                        break;
+                    }
+                    keys.push(k.to_string());
+                }
+            }
+        }
+
+        // Keys are already sorted by the B-tree structure
+        Ok(keys)
+    }
+}
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
@@ -45,6 +121,8 @@ const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_
 const TRANSACTIONS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("transactions");
 
 const KEYSET_U32_MAPPING: TableDefinition<u32, &str> = TableDefinition::new("keyset_u32_mapping");
+// <(primary_namespace, secondary_namespace, key), value>
+const KV_STORE_TABLE: TableDefinition<(&str, &str, &str), &[u8]> = TableDefinition::new("kv_store");
 
 const DATABASE_VERSION: u32 = 4;
 
@@ -180,6 +258,7 @@ impl WalletRedbDatabase {
                         let _ = write_txn.open_table(KEYSET_COUNTER)?;
                         let _ = write_txn.open_table(TRANSACTIONS_TABLE)?;
                         let _ = write_txn.open_table(KEYSET_U32_MAPPING)?;
+                        let _ = write_txn.open_table(KV_STORE_TABLE)?;
                         table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
                     }
 
@@ -208,11 +287,9 @@ impl WalletRedbDatabase {
 }
 
 #[async_trait]
-impl WalletDatabase for WalletRedbDatabase {
-    type Err = database::Error;
-
+impl WalletDatabase<database::Error> for WalletRedbDatabase {
     #[instrument(skip(self))]
-    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
 
@@ -227,7 +304,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
-    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err> {
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
         let mints = table
@@ -248,7 +325,7 @@ impl WalletDatabase for WalletRedbDatabase {
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
+    ) -> Result<Option<Vec<KeySetInfo>>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_multimap_table(MINT_KEYSETS_TABLE)
@@ -283,7 +360,10 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+    async fn get_keyset_by_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Option<KeySetInfo>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
 
@@ -302,7 +382,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
@@ -316,7 +396,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
@@ -348,7 +428,10 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
+    async fn get_melt_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<wallet::MeltQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(MELT_QUOTES_TABLE)
@@ -362,7 +445,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Self::Err> {
+    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(MELT_QUOTES_TABLE)
@@ -377,7 +460,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
+    async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
 
@@ -398,7 +481,7 @@ impl WalletDatabase for WalletRedbDatabase {
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Vec<ProofInfo>, Self::Err> {
+    ) -> Result<Vec<ProofInfo>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
 
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
@@ -425,7 +508,10 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self, ys))]
-    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, Self::Err> {
+    async fn get_proofs_by_ys(
+        &self,
+        ys: Vec<PublicKey>,
+    ) -> Result<Vec<ProofInfo>, database::Error> {
         if ys.is_empty() {
             return Ok(Vec::new());
         }
@@ -462,7 +548,7 @@ impl WalletDatabase for WalletRedbDatabase {
     async fn get_transaction(
         &self,
         transaction_id: TransactionId,
-    ) -> Result<Option<Transaction>, Self::Err> {
+    ) -> Result<Option<Transaction>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(TRANSACTIONS_TABLE)
@@ -481,7 +567,7 @@ impl WalletDatabase for WalletRedbDatabase {
         mint_url: Option<MintUrl>,
         direction: Option<TransactionDirection>,
         unit: Option<CurrencyUnit>,
-    ) -> Result<Vec<Transaction>, Self::Err> {
+    ) -> Result<Vec<Transaction>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
 
         let table = read_txn
@@ -510,17 +596,60 @@ impl WalletDatabase for WalletRedbDatabase {
 
     async fn begin_db_transaction(
         &self,
-    ) -> Result<
-        Box<dyn cdk_common::database::WalletDatabaseTransaction<Self::Err> + Send + Sync>,
-        Self::Err,
-    > {
+    ) -> Result<Box<dyn WalletDatabaseTransaction<database::Error> + Send + Sync>, database::Error>
+    {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         Ok(Box::new(RedbWalletTransaction::new(write_txn)))
     }
 }
 
 #[async_trait]
-impl cdk_common::database::WalletDatabaseTransaction<database::Error> for RedbWalletTransaction {
+impl KVStoreDatabase for WalletRedbDatabase {
+    type Err = database::Error;
+
+    #[instrument(skip_all)]
+    async fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Self::Err> {
+        // Validate parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
+
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = KvTable::ReadOnly(read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?);
+
+        Ok(table.kv_read(primary_namespace, secondary_namespace, key)?)
+    }
+
+    #[instrument(skip_all)]
+    async fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, Self::Err> {
+        validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
+
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = KvTable::ReadOnly(read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?);
+
+        Ok(table.kv_list(primary_namespace, secondary_namespace)?)
+    }
+}
+
+#[async_trait]
+impl KVStore for WalletRedbDatabase {
+    async fn begin_transaction(
+        &self,
+    ) -> Result<Box<dyn KVStoreTransaction<Self::Err> + Send + Sync>, database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        Ok(Box::new(RedbWalletTransaction::new(write_txn)))
+    }
+}
+
+#[async_trait]
+impl WalletDatabaseTransaction<database::Error> for RedbWalletTransaction {
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_by_id(
         &mut self,
@@ -1012,7 +1141,82 @@ impl cdk_common::database::WalletDatabaseTransaction<database::Error> for RedbWa
 }
 
 #[async_trait]
-impl cdk_common::database::DbTransactionFinalizer for RedbWalletTransaction {
+impl KVStoreTransaction<database::Error> for RedbWalletTransaction {
+    #[instrument(skip_all)]
+    async fn kv_read(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, database::Error> {
+        // Validate parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
+
+        let txn = self.txn()?;
+        let table = KvTable::ReadWrite(txn.open_table(KV_STORE_TABLE).map_err(Error::from)?);
+
+        Ok(table.kv_read(primary_namespace, secondary_namespace, key)?)
+    }
+
+    #[instrument(skip_all)]
+    async fn kv_write(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<(), database::Error> {
+        // Validate parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
+
+        let txn = self.txn()?;
+        let mut table = txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
+
+        table
+            .insert((primary_namespace, secondary_namespace, key), value)
+            .map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn kv_remove(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<(), database::Error> {
+        // Validate parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
+
+        let txn = self.txn()?;
+        let mut table = txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
+
+        table
+            .remove((primary_namespace, secondary_namespace, key))
+            .map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn kv_list(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, database::Error> {
+        // Validate namespace parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
+
+        let txn = self.txn()?;
+        let table = KvTable::ReadWrite(txn.open_table(KV_STORE_TABLE).map_err(Error::from)?);
+
+        Ok(table.kv_list(primary_namespace, secondary_namespace)?)
+    }
+}
+
+#[async_trait]
+impl DbTransactionFinalizer for RedbWalletTransaction {
     type Err = database::Error;
 
     async fn commit(mut self: Box<Self>) -> Result<(), database::Error> {
