@@ -31,9 +31,25 @@ fn unique_id() -> String {
     format!("test_{}_{}", now, n)
 }
 
-/// Create empty test keys
-fn test_keys() -> Keys {
-    Keys::new(BTreeMap::new())
+/// Generate valid test keys and return both the keys and the matching keyset ID.
+/// The keyset ID is derived from the keys using the v1 algorithm:
+fn test_keys_with_id() -> (Keys, Id) {
+    // Generate deterministic keys for amounts 1, 2, 4, 8
+    let mut keys_map = BTreeMap::new();
+
+    // Use deterministic secret keys for reproducibility
+    let secret_bytes: [[u8; 32]; 4] = [[1u8; 32], [2u8; 32], [4u8; 32], [8u8; 32]];
+
+    for (i, amount) in [1u64, 2, 4, 8].iter().enumerate() {
+        let sk = SecretKey::from_slice(&secret_bytes[i]).expect("valid secret key");
+        let pk = sk.public_key();
+        keys_map.insert(Amount::from(*amount), pk);
+    }
+
+    let keys = Keys::new(keys_map);
+    let id = Id::v1_from_keys(&keys);
+
+    (keys, id)
 }
 
 /// Generate a unique test keyset ID
@@ -280,8 +296,8 @@ pub async fn add_and_get_keys<DB>(db: DB)
 where
     DB: Database<Err = crate::database::Error>,
 {
-    let keyset_id = test_keyset_id();
-    let keys = test_keys();
+    // Generate valid keys with matching keyset ID
+    let (keys, keyset_id) = test_keys_with_id();
     let keyset = cashu::KeySet {
         id: keyset_id,
         unit: CurrencyUnit::Sat,
@@ -297,6 +313,8 @@ where
     // Get keys
     let retrieved = db.get_keys(&keyset_id).await.unwrap();
     assert!(retrieved.is_some());
+    let retrieved_keys = retrieved.unwrap();
+    assert_eq!(retrieved_keys.len(), keys.len());
 }
 
 /// Test getting keys in transaction
@@ -304,8 +322,8 @@ pub async fn get_keys_in_transaction<DB>(db: DB)
 where
     DB: Database<Err = crate::database::Error>,
 {
-    let keyset_id = test_keyset_id();
-    let keys = test_keys();
+    // Generate valid keys with matching keyset ID
+    let (keys, keyset_id) = test_keys_with_id();
     let keyset = cashu::KeySet {
         id: keyset_id,
         unit: CurrencyUnit::Sat,
@@ -322,6 +340,8 @@ where
     let mut tx = db.begin_db_transaction().await.unwrap();
     let retrieved = tx.get_keys(&keyset_id).await.unwrap();
     assert!(retrieved.is_some());
+    let retrieved_keys = retrieved.unwrap();
+    assert_eq!(retrieved_keys.len(), keys.len());
     tx.rollback().await.unwrap();
 }
 
@@ -330,8 +350,8 @@ pub async fn remove_keys<DB>(db: DB)
 where
     DB: Database<Err = crate::database::Error>,
 {
-    let keyset_id = test_keyset_id();
-    let keys = test_keys();
+    // Generate valid keys with matching keyset ID
+    let (keys, keyset_id) = test_keys_with_id();
     let keyset = cashu::KeySet {
         id: keyset_id,
         unit: CurrencyUnit::Sat,
@@ -343,6 +363,10 @@ where
     let mut tx = db.begin_db_transaction().await.unwrap();
     tx.add_keys(keyset).await.unwrap();
     tx.commit().await.unwrap();
+
+    // Verify keys were added
+    let retrieved = db.get_keys(&keyset_id).await.unwrap();
+    assert!(retrieved.is_some());
 
     // Remove keys
     let mut tx = db.begin_db_transaction().await.unwrap();
@@ -943,8 +967,9 @@ macro_rules! wallet_db_test {
             update_mint_url,
             add_and_get_keysets,
             get_keyset_by_id_in_transaction,
-            // Note: add_and_get_keys, get_keys_in_transaction, remove_keys tests are skipped
-            // because they require valid keyset generation (keyset ID must match key hashes)
+            add_and_get_keys,
+            get_keys_in_transaction,
+            remove_keys,
             add_and_get_mint_quote,
             get_mint_quote_in_transaction,
             remove_mint_quote,
