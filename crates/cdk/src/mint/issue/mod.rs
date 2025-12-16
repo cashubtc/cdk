@@ -937,7 +937,7 @@ impl Mint {
 
                 per_quote
             }
-            _ => unreachable!(),
+            _ => return Err(Error::UnsupportedPaymentMethod),
         };
 
         let output_unit = output_unit.ok_or(Error::UnsupportedUnit)?;
