@@ -13,7 +13,7 @@ use cashu::secret::Secret;
 use cashu::{Amount, CurrencyUnit, SecretKey};
 
 use super::*;
-use crate::database::MintKVStoreDatabase;
+use crate::database::KVStoreDatabase;
 use crate::mint::MintKeySetInfo;
 
 mod keys;
@@ -111,7 +111,7 @@ where
 /// Test KV store functionality including write, read, list, update, and remove operations
 pub async fn kvstore_functionality<DB>(db: DB)
 where
-    DB: Database<crate::database::Error> + MintKVStoreDatabase<Err = crate::database::Error>,
+    DB: Database<crate::database::Error> + KVStoreDatabase<Err = crate::database::Error>,
 {
     // Test basic read/write operations in transaction
     {

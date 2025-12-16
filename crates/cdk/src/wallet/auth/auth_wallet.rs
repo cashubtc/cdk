@@ -39,7 +39,7 @@ pub struct AuthWallet {
     /// Mint Url
     pub mint_url: MintUrl,
     /// Storage backend
-    pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+    pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     /// Mint metadata cache (lock-free cached access to keys, keysets, and mint info)
     pub metadata_cache: Arc<MintMetadataCache>,
     /// Protected methods
@@ -56,7 +56,7 @@ impl AuthWallet {
     pub fn new(
         mint_url: MintUrl,
         cat: Option<AuthToken>,
-        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         metadata_cache: Arc<MintMetadataCache>,
         protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
         oidc_client: Option<OidcClient>,

@@ -315,7 +315,7 @@ pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
-    let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
+    let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> =
         match db_type.to_lowercase().as_str() {
             "sqlite" => {
                 // Create a temporary directory for SQLite database

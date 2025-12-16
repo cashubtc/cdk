@@ -1,18 +1,27 @@
 //! CDK Database
 
+mod kvstore;
+
 #[cfg(feature = "mint")]
 pub mod mint;
 #[cfg(feature = "wallet")]
 mod wallet;
 
+// Re-export shared KVStore types at the top level for both mint and wallet
+pub use kvstore::{
+    validate_kvstore_params, validate_kvstore_string, KVStore, KVStoreDatabase, KVStoreTransaction,
+    KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
+};
+
+/// Arc-wrapped KV store for shared ownership
+pub type DynKVStore = std::sync::Arc<dyn KVStore<Err = Error> + Send + Sync>;
+
 #[cfg(feature = "mint")]
 pub use mint::{
-    Database as MintDatabase, DynMintDatabase, KVStore as MintKVStore,
-    KVStoreDatabase as MintKVStoreDatabase, KVStoreTransaction as MintKVStoreTransaction,
-    KeysDatabase as MintKeysDatabase, KeysDatabaseTransaction as MintKeyDatabaseTransaction,
-    ProofsDatabase as MintProofsDatabase, ProofsTransaction as MintProofsTransaction,
-    QuotesDatabase as MintQuotesDatabase, QuotesTransaction as MintQuotesTransaction,
-    SignaturesDatabase as MintSignaturesDatabase,
+    Database as MintDatabase, DynMintDatabase, KeysDatabase as MintKeysDatabase,
+    KeysDatabaseTransaction as MintKeyDatabaseTransaction, ProofsDatabase as MintProofsDatabase,
+    ProofsTransaction as MintProofsTransaction, QuotesDatabase as MintQuotesDatabase,
+    QuotesTransaction as MintQuotesTransaction, SignaturesDatabase as MintSignaturesDatabase,
     SignaturesTransaction as MintSignatureTransaction, Transaction as MintTransaction,
 };
 #[cfg(all(feature = "mint", feature = "auth"))]
@@ -22,6 +31,24 @@ pub use wallet::{
     Database as WalletDatabase, DatabaseTransaction as WalletDatabaseTransaction,
     DynWalletDatabaseTransaction,
 };
+
+/// Type alias for dynamic Wallet Database
+#[cfg(feature = "wallet")]
+pub type DynWalletDatabase = std::sync::Arc<dyn WalletDatabase<Error> + Send + Sync>;
+
+// Wallet-specific KVStore type aliases
+/// Wallet Key-Value Store trait object
+#[cfg(feature = "wallet")]
+pub type WalletKVStore = dyn KVStore<Err = Error> + Send + Sync;
+/// Arc-wrapped wallet KV store for shared ownership
+#[cfg(feature = "wallet")]
+pub type DynWalletKVStore = std::sync::Arc<WalletKVStore>;
+/// Wallet Key-Value Store Database trait object
+#[cfg(feature = "wallet")]
+pub type WalletKVStoreDatabase = dyn KVStoreDatabase<Err = Error> + Send + Sync;
+/// Wallet Key-Value Store Transaction trait object
+#[cfg(feature = "wallet")]
+pub type WalletKVStoreTransaction = dyn KVStoreTransaction<Error> + Send + Sync;
 
 /// Data conversion error
 #[derive(thiserror::Error, Debug)]

@@ -884,15 +884,14 @@ where
 }
 
 #[async_trait]
-impl<RM> WalletDatabase for SQLWalletDatabase<RM>
+impl<RM> WalletDatabase<database::Error> for SQLWalletDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
-    type Err = database::Error;
-
     async fn begin_db_transaction(
         &self,
-    ) -> Result<Box<dyn WalletDatabaseTransaction<Self::Err> + Send + Sync>, Self::Err> {
+    ) -> Result<Box<dyn WalletDatabaseTransaction<database::Error> + Send + Sync>, database::Error>
+    {
         Ok(Box::new(SQLWalletTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
@@ -902,7 +901,7 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Self::Err> {
+    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         Ok(query(
@@ -929,7 +928,7 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -959,7 +958,7 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err> {
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -999,7 +998,7 @@ where
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
+    ) -> Result<Option<Vec<KeySetInfo>>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         let keysets = query(
@@ -1029,19 +1028,22 @@ where
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+    async fn get_keyset_by_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Option<KeySetInfo>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         get_keyset_by_id_inner(&*conn, keyset_id, false).await
     }
 
     #[instrument(skip(self))]
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         get_mint_quote_inner(&*conn, quote_id, false).await
     }
 
     #[instrument(skip(self))]
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -1101,13 +1103,16 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
+    async fn get_melt_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<wallet::MeltQuote>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         get_melt_quote_inner(&*conn, quote_id, false).await
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
+    async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         get_keys_inner(&*conn, keyset_id).await
     }
@@ -1119,13 +1124,16 @@ where
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Vec<ProofInfo>, Self::Err> {
+    ) -> Result<Vec<ProofInfo>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         get_proofs_inner(&*conn, mint_url, unit, state, spending_conditions, false).await
     }
 
     #[instrument(skip(self, ys))]
-    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, Self::Err> {
+    async fn get_proofs_by_ys(
+        &self,
+        ys: Vec<PublicKey>,
+    ) -> Result<Vec<ProofInfo>, database::Error> {
         if ys.is_empty() {
             return Ok(Vec::new());
         }
@@ -1164,7 +1172,7 @@ where
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         states: Option<Vec<State>>,
-    ) -> Result<u64, Self::Err> {
+    ) -> Result<u64, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         let mut query_str = "SELECT COALESCE(SUM(amount), 0) as total FROM proof".to_string();
@@ -1227,7 +1235,7 @@ where
     async fn get_transaction(
         &self,
         transaction_id: TransactionId,
-    ) -> Result<Option<Transaction>, Self::Err> {
+    ) -> Result<Option<Transaction>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -1263,7 +1271,7 @@ where
         mint_url: Option<MintUrl>,
         direction: Option<TransactionDirection>,
         unit: Option<CurrencyUnit>,
-    ) -> Result<Vec<Transaction>, Self::Err> {
+    ) -> Result<Vec<Transaction>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         Ok(query(
@@ -1535,4 +1543,110 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
         payment_request: column_as_nullable_string!(payment_request),
         payment_proof: column_as_nullable_string!(payment_proof),
     })
+}
+
+// KVStore implementations for wallet
+
+#[async_trait]
+impl<RM> database::KVStoreTransaction<Error> for SQLWalletTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn kv_read(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        crate::keyvalue::kv_read_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+        )
+        .await
+    }
+
+    async fn kv_write(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<(), Error> {
+        crate::keyvalue::kv_write_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+            value,
+        )
+        .await
+    }
+
+    async fn kv_remove(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<(), Error> {
+        crate::keyvalue::kv_remove_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+        )
+        .await
+    }
+
+    async fn kv_list(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, Error> {
+        crate::keyvalue::kv_list_in_transaction(&self.inner, primary_namespace, secondary_namespace)
+            .await
+    }
+}
+
+#[async_trait]
+impl<RM> database::KVStoreDatabase for SQLWalletDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    async fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        crate::keyvalue::kv_read(&self.pool, primary_namespace, secondary_namespace, key).await
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, Error> {
+        crate::keyvalue::kv_list(&self.pool, primary_namespace, secondary_namespace).await
+    }
+}
+
+#[async_trait]
+impl<RM> database::KVStore for SQLWalletDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn begin_transaction(
+        &self,
+    ) -> Result<Box<dyn database::KVStoreTransaction<Self::Err> + Send + Sync>, Error> {
+        Ok(Box::new(SQLWalletTransaction {
+            inner: ConnectionWithTransaction::new(
+                self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
+            )
+            .await?,
+        }))
+    }
 }

@@ -16,8 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::mint::{
-    validate_kvstore_params, CompletedOperationsDatabase, CompletedOperationsTransaction,
-    SagaDatabase, SagaTransaction,
+    CompletedOperationsDatabase, CompletedOperationsTransaction, SagaDatabase, SagaTransaction,
 };
 use cdk_common::database::{
     self, ConversionError, DbTransactionFinalizer, Error, MintDatabase, MintKeyDatabaseTransaction,
@@ -1997,7 +1996,7 @@ where
 }
 
 #[async_trait]
-impl<RM> database::MintKVStoreTransaction<'_, Error> for SQLTransaction<RM>
+impl<RM> database::KVStoreTransaction<Error> for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2007,26 +2006,13 @@ where
         secondary_namespace: &str,
         key: &str,
     ) -> Result<Option<Vec<u8>>, Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
-        Ok(query(
-            r#"
-            SELECT value
-            FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            AND key = :key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .bind("key", key.to_owned())
-        .pluck(&self.inner)
-        .await?
-        .and_then(|col| match col {
-            Column::Blob(data) => Some(data),
-            _ => None,
-        }))
+        crate::keyvalue::kv_read_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+        )
+        .await
     }
 
     async fn kv_write(
@@ -2036,32 +2022,14 @@ where
         key: &str,
         value: &[u8],
     ) -> Result<(), Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
-
-        let current_time = unix_time();
-
-        query(
-            r#"
-            INSERT INTO kv_store
-            (primary_namespace, secondary_namespace, key, value, created_time, updated_time)
-            VALUES (:primary_namespace, :secondary_namespace, :key, :value, :created_time, :updated_time)
-            ON CONFLICT(primary_namespace, secondary_namespace, key)
-            DO UPDATE SET
-                value = excluded.value,
-                updated_time = excluded.updated_time
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .bind("key", key.to_owned())
-        .bind("value", value.to_vec())
-        .bind("created_time", current_time as i64)
-        .bind("updated_time", current_time as i64)
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
+        crate::keyvalue::kv_write_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+            value,
+        )
+        .await
     }
 
     async fn kv_remove(
@@ -2070,23 +2038,13 @@ where
         secondary_namespace: &str,
         key: &str,
     ) -> Result<(), Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
-        query(
-            r#"
-            DELETE FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            AND key = :key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .bind("key", key.to_owned())
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
+        crate::keyvalue::kv_remove_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+        )
+        .await
     }
 
     async fn kv_list(
@@ -2094,37 +2052,13 @@ where
         primary_namespace: &str,
         secondary_namespace: &str,
     ) -> Result<Vec<String>, Error> {
-        // Validate namespace parameters according to KV store requirements
-        cdk_common::database::mint::validate_kvstore_string(primary_namespace)?;
-        cdk_common::database::mint::validate_kvstore_string(secondary_namespace)?;
-
-        // Check empty namespace rules
-        if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
-            return Err(Error::KVStoreInvalidKey(
-                "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
-            ));
-        }
-        Ok(query(
-            r#"
-            SELECT key
-            FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            ORDER BY key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .fetch_all(&self.inner)
-        .await?
-        .into_iter()
-        .map(|row| Ok(column_as_string!(&row[0])))
-        .collect::<Result<Vec<_>, Error>>()?)
+        crate::keyvalue::kv_list_in_transaction(&self.inner, primary_namespace, secondary_namespace)
+            .await
     }
 }
 
 #[async_trait]
-impl<RM> database::MintKVStoreDatabase for SQLMintDatabase<RM>
+impl<RM> database::KVStoreDatabase for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2136,28 +2070,7 @@ where
         secondary_namespace: &str,
         key: &str,
     ) -> Result<Option<Vec<u8>>, Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
-
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT value
-            FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            AND key = :key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .bind("key", key.to_owned())
-        .pluck(&*conn)
-        .await?
-        .and_then(|col| match col {
-            Column::Blob(data) => Some(data),
-            _ => None,
-        }))
+        crate::keyvalue::kv_read(&self.pool, primary_namespace, secondary_namespace, key).await
     }
 
     async fn kv_list(
@@ -2165,46 +2078,18 @@ where
         primary_namespace: &str,
         secondary_namespace: &str,
     ) -> Result<Vec<String>, Error> {
-        // Validate namespace parameters according to KV store requirements
-        cdk_common::database::mint::validate_kvstore_string(primary_namespace)?;
-        cdk_common::database::mint::validate_kvstore_string(secondary_namespace)?;
-
-        // Check empty namespace rules
-        if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
-            return Err(Error::KVStoreInvalidKey(
-                "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
-            ));
-        }
-
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT key
-            FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            ORDER BY key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(|row| Ok(column_as_string!(&row[0])))
-        .collect::<Result<Vec<_>, Error>>()?)
+        crate::keyvalue::kv_list(&self.pool, primary_namespace, secondary_namespace).await
     }
 }
 
 #[async_trait]
-impl<RM> database::MintKVStore for SQLMintDatabase<RM>
+impl<RM> database::KVStore for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
-    async fn begin_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn database::MintKVStoreTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>
-    {
+    async fn begin_transaction(
+        &self,
+    ) -> Result<Box<dyn database::KVStoreTransaction<Self::Err> + Send + Sync>, Error> {
         Ok(Box::new(SQLTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
