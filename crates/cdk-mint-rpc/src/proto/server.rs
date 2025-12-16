@@ -653,8 +653,8 @@ impl CdkMint for MintRPCServer {
             MintQuoteState::Paid => {
                 // Create a dummy payment response
                 let response = WaitPaymentResponse {
-                    payment_id: String::new(),
-                    payment_amount: mint_quote.amount_paid(),
+                    payment_id: mint_quote.request_lookup_id.to_string(),
+                    payment_amount: mint_quote.amount.unwrap_or(mint_quote.amount_paid()).clone(),
                     unit: mint_quote.unit.clone(),
                     payment_identifier: mint_quote.request_lookup_id.clone(),
                 };
