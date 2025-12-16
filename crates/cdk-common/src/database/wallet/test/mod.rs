@@ -156,7 +156,7 @@ fn test_transaction(mint_url: MintUrl, direction: TransactionDirection) -> Trans
 /// Test adding and retrieving a mint
 pub async fn add_and_get_mint<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let mint_info = MintInfo::default();
@@ -180,7 +180,7 @@ where
 /// Test adding mint without info
 pub async fn add_mint_without_info<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
 
@@ -196,7 +196,7 @@ where
 /// Test removing a mint
 pub async fn remove_mint<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
 
@@ -217,7 +217,7 @@ where
 /// Test updating mint URL
 pub async fn update_mint_url<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let old_url = test_mint_url();
     let new_url = test_mint_url_2();
@@ -242,7 +242,7 @@ where
 /// Test adding and retrieving keysets
 pub async fn add_and_get_keysets<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
@@ -270,7 +270,7 @@ where
 /// Test getting keyset by ID in transaction
 pub async fn get_keyset_by_id_in_transaction<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
@@ -294,7 +294,7 @@ where
 /// Test adding and retrieving keys
 pub async fn add_and_get_keys<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     // Generate valid keys with matching keyset ID
     let (keys, keyset_id) = test_keys_with_id();
@@ -320,7 +320,7 @@ where
 /// Test getting keys in transaction
 pub async fn get_keys_in_transaction<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     // Generate valid keys with matching keyset ID
     let (keys, keyset_id) = test_keys_with_id();
@@ -348,7 +348,7 @@ where
 /// Test removing keys
 pub async fn remove_keys<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     // Generate valid keys with matching keyset ID
     let (keys, keyset_id) = test_keys_with_id();
@@ -384,7 +384,7 @@ where
 /// Test adding and retrieving mint quotes
 pub async fn add_and_get_mint_quote<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let quote = test_mint_quote(mint_url);
@@ -407,7 +407,7 @@ where
 /// Test getting mint quote in transaction
 pub async fn get_mint_quote_in_transaction<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let quote = test_mint_quote(mint_url);
@@ -427,7 +427,7 @@ where
 /// Test removing mint quote
 pub async fn remove_mint_quote<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let quote = test_mint_quote(mint_url);
@@ -453,7 +453,7 @@ where
 /// Test adding and retrieving melt quotes
 pub async fn add_and_get_melt_quote<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let quote = test_melt_quote();
 
@@ -475,7 +475,7 @@ where
 /// Test getting melt quote in transaction
 pub async fn get_melt_quote_in_transaction<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let quote = test_melt_quote();
 
@@ -494,7 +494,7 @@ where
 /// Test removing melt quote
 pub async fn remove_melt_quote<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let quote = test_melt_quote();
 
@@ -519,7 +519,7 @@ where
 /// Test adding and retrieving proofs
 pub async fn add_and_get_proofs<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
@@ -552,7 +552,7 @@ where
 /// Test getting proofs in transaction
 pub async fn get_proofs_in_transaction<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
@@ -575,7 +575,7 @@ where
 /// Test updating proofs (add and remove)
 pub async fn update_proofs<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
@@ -605,7 +605,7 @@ where
 /// Test updating proofs state
 pub async fn update_proofs_state<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
@@ -636,7 +636,7 @@ where
 /// Test filtering proofs by unit
 pub async fn filter_proofs_by_unit<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
@@ -667,7 +667,7 @@ where
 /// Test filtering proofs by state
 pub async fn filter_proofs_by_state<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
@@ -702,7 +702,7 @@ where
 /// Test getting balance
 pub async fn get_balance<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
@@ -728,7 +728,7 @@ where
 /// Test getting balance by state
 pub async fn get_balance_by_state<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
@@ -763,7 +763,7 @@ where
 /// Test incrementing keyset counter
 pub async fn increment_keyset_counter<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let keyset_id = test_keyset_id();
 
@@ -785,7 +785,7 @@ where
 /// Test keyset counter isolation between keysets
 pub async fn keyset_counter_isolation<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let keyset_id_1 = test_keyset_id();
     let keyset_id_2 = test_keyset_id_2();
@@ -818,7 +818,7 @@ where
 /// Test adding and retrieving transactions
 pub async fn add_and_get_transaction<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let transaction = test_transaction(mint_url.clone(), TransactionDirection::Incoming);
@@ -838,7 +838,7 @@ where
 /// Test listing transactions
 pub async fn list_transactions<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let tx_incoming = test_transaction(mint_url.clone(), TransactionDirection::Incoming);
@@ -871,7 +871,7 @@ where
 /// Test filtering transactions by mint
 pub async fn filter_transactions_by_mint<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url_1 = test_mint_url();
     let mint_url_2 = test_mint_url_2();
@@ -895,7 +895,7 @@ where
 /// Test removing transaction
 pub async fn remove_transaction<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let transaction = test_transaction(mint_url, TransactionDirection::Incoming);
@@ -922,7 +922,7 @@ where
 /// Test transaction rollback
 pub async fn transaction_rollback<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
 
@@ -939,7 +939,7 @@ where
 /// Test proof rollback
 pub async fn proof_rollback<DB>(db: DB)
 where
-    DB: Database<Err = crate::database::Error>,
+    DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
