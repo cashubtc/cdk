@@ -72,6 +72,9 @@ pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::AuthHttpClient;
 pub use mint_connector::{HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector};
 pub use multi_mint_wallet::{MultiMintReceiveOptions, MultiMintSendOptions, MultiMintWallet};
+pub use payment_request::CreateRequestParams;
+#[cfg(feature = "nostr")]
+pub use payment_request::NostrWaitInfo;
 pub use receive::ReceiveOptions;
 pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
