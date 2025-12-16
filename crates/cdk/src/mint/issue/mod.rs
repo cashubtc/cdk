@@ -4,6 +4,7 @@ use cdk_common::mint::{
     BatchMintRequest, BatchQuoteStatusItem, BatchQuoteStatusRequest, BatchQuoteStatusResponse,
     MintQuote, Operation,
 };
+use cdk_common::nuts::{BlindSignature, BlindedMessage};
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
     IncomingPaymentOptions, WaitPaymentResponse,
@@ -737,6 +738,8 @@ impl Mint {
         endpoint_payment_method: PaymentMethod,
         origin: MintRequestOrigin,
     ) -> Result<MintResponse, Error> {
+        // Sanity checks on the request shape before we touch state: non-empty, within batch size,
+        // and no duplicate quote IDs when called via the batch endpoint.
         // Top-level batch validation (size, dedup) before we touch storage
         if batch_request.quote.is_empty() {
             return Err(Error::BatchEmpty);
@@ -755,15 +758,18 @@ impl Mint {
             }
         }
 
+        // Parse quote IDs and collect them in the same order as provided.
         let mut quote_ids = Vec::with_capacity(batch_request.quote.len());
         for quote_id_str in &batch_request.quote {
             let quote_id = QuoteId::from_str(quote_id_str).map_err(|_| Error::UnknownQuote)?;
             quote_ids.push(quote_id);
         }
 
+        // Blind sign outputs early; we only commit to state once all checks pass.
         let blind_signatures = self.blind_sign(batch_request.outputs.clone()).await?;
         let mut tx = self.localstore.begin_transaction().await?;
 
+        // Load all quotes (locked row-level by transaction) and ensure they’re paid/known.
         let mut quotes = Vec::with_capacity(quote_ids.len());
         for quote_id in &quote_ids {
             let mut quote = tx
@@ -779,6 +785,7 @@ impl Mint {
             quotes.push(quote);
         }
 
+        // All quotes must share the same payment method and match the endpoint used.
         let payment_method = quotes
             .first()
             .map(|q| q.payment_method.clone())
@@ -792,6 +799,7 @@ impl Mint {
             return Err(Error::BatchPaymentMethodEndpointMismatch);
         }
 
+        // All quotes must share the same unit.
         let unit = quotes
             .first()
             .map(|q| q.unit.clone())
@@ -944,29 +952,76 @@ impl Mint {
         ensure_cdk!(output_unit == unit, Error::UnsupportedUnit);
 
         let operation = Operation::new_mint();
-        let associated_quote = if origin == MintRequestOrigin::Single {
-            quote_ids.first().cloned()
-        } else {
-            None
-        };
+        // Split blinded messages and signatures per quote so we can record the linkage in storage.
+        let mut grouped_msgs: Vec<(QuoteId, Vec<BlindedMessage>, Vec<BlindSignature>)> =
+            Vec::with_capacity(quote_ids.len());
+        let mut quote_idx = 0;
+        let mut remaining_for_quote = minted_amounts_per_quote
+            .get(quote_idx)
+            .cloned()
+            .unwrap_or_default();
+        let mut current_msgs = Vec::new();
+        let mut current_sigs = Vec::new();
 
-        tx.add_blinded_messages(
-            associated_quote.as_ref(),
-            &batch_request.outputs,
-            &operation,
-        )
-        .await?;
+        for (msg, sig) in batch_request
+            .outputs
+            .iter()
+            .cloned()
+            .zip(blind_signatures.iter().cloned())
+        {
+            // Advance to next quote if the previous one is fully allocated.
+            while remaining_for_quote == Amount::ZERO {
+                quote_idx += 1;
+                remaining_for_quote = minted_amounts_per_quote
+                    .get(quote_idx)
+                    .cloned()
+                    .unwrap_or(Amount::ZERO);
+            }
 
-        tx.add_blind_signatures(
-            &batch_request
-                .outputs
-                .iter()
-                .map(|p| p.blinded_secret)
-                .collect::<Vec<PublicKey>>(),
-            &blind_signatures,
-            associated_quote.clone(),
-        )
-        .await?;
+            if msg.amount > remaining_for_quote {
+                return Err(Error::TransactionUnbalanced(
+                    total_available_amount.into(),
+                    batch_request.total_amount()?.into(),
+                    0,
+                ));
+            }
+
+            remaining_for_quote -= msg.amount;
+            current_msgs.push(msg);
+            current_sigs.push(sig);
+
+            if remaining_for_quote == Amount::ZERO {
+                grouped_msgs.push((
+                    quote_ids
+                        .get(quote_idx)
+                        .cloned()
+                        .ok_or(Error::UnknownQuote)?,
+                    current_msgs,
+                    current_sigs,
+                ));
+                current_msgs = Vec::new();
+                current_sigs = Vec::new();
+            }
+        }
+
+        // If we still have unfulfilled quota for the last quote, the request was malformed.
+        if remaining_for_quote > Amount::ZERO || quote_idx + 1 < minted_amounts_per_quote.len() {
+            return Err(Error::TransactionUnbalanced(
+                total_available_amount.into(),
+                batch_request.total_amount()?.into(),
+                0,
+            ));
+        }
+
+        for (quote_id, msgs, sigs) in grouped_msgs {
+            tx.add_blinded_messages(Some(&quote_id), &msgs, &operation)
+                .await?;
+
+            let blinded_secrets: Vec<PublicKey> = msgs.iter().map(|p| p.blinded_secret).collect();
+
+            tx.add_blind_signatures(&blinded_secrets, &sigs, Some(quote_id.clone()))
+                .await?;
+        }
 
         let mut total_issued_per_quote = Vec::with_capacity(quote_ids.len());
         for (i, quote_id) in quote_ids.iter().enumerate() {
