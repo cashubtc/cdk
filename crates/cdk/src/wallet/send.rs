@@ -388,6 +388,7 @@ impl PreparedSend {
             quote_id: None,
             payment_request: None,
             payment_proof: None,
+            payment_method: None,
         })
         .await?;
 
