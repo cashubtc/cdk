@@ -17,6 +17,9 @@ use crate::wallet::{
     self, MintQuote as WalletMintQuote, Transaction, TransactionDirection, TransactionId,
 };
 
+#[cfg(feature = "test")]
+pub mod test;
+
 /// Easy to use Dynamic Database type alias
 pub type DynWalletDatabaseTransaction = Box<dyn DatabaseTransaction<super::Error> + Sync + Send>;
 

@@ -1023,9 +1023,6 @@ async fn start_services_with_shutdown(
         }
     };
 
-    #[cfg(not(feature = "prometheus"))]
-    let prometheus_handle: Option<tokio::task::JoinHandle<()>> = None;
-
     mint.start().await?;
 
     let socket_addr = SocketAddr::from_str(&format!("{listen_addr}:{listen_port}"))?;
