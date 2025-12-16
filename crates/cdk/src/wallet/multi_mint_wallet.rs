@@ -2229,6 +2229,7 @@ mod tests {
             proofs: proofs.clone(),
             memo: memo.clone(),
             unit: CurrencyUnit::Sat,
+            redeem_fee: None,
         };
 
         assert_eq!(token_data.mint_url, mint_url);
@@ -2242,6 +2243,7 @@ mod tests {
             proofs: vec![],
             memo: None,
             unit: CurrencyUnit::Sat,
+            redeem_fee: None,
         };
         assert!(token_data_no_memo.memo.is_none());
     }
