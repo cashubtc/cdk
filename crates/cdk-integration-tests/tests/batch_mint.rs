@@ -231,6 +231,7 @@ async fn test_batch_mint_handler_rejects_empty_quotes() {
 
     let request = BatchMintRequest {
         quote: vec![],
+        quote_amounts: None,
         outputs: vec![],
         signature: None,
     };
@@ -255,7 +256,8 @@ async fn test_batch_mint_handler_rejects_duplicates() {
 
     // Try to mint with duplicate quote ID
     let request = BatchMintRequest {
-        quote: vec!["q1".to_string(), "q1".to_string()],
+        quote: vec!["q1".to_string(),
+            quote_amounts: None, "q1".to_string()],
         outputs, // Correct count with realistic blinded messages
         signature: None,
     };
@@ -283,6 +285,7 @@ async fn test_batch_mint_handler_rejects_over_limit() {
 
     let request = BatchMintRequest {
         quote: quotes,
+        quote_amounts: None,
         outputs, // Correct count with realistic blinded messages
         signature: None,
     };
@@ -337,7 +340,8 @@ async fn test_batch_mint_handler_validates_signature_count() {
 
     // Provide only 1 signature for 2 quotes - this is the mismatch we're testing
     let request = BatchMintRequest {
-        quote: vec![quote_id_1.to_string(), quote_id_2.to_string()],
+        quote: vec![quote_id_1.to_string(),
+            quote_amounts: None, quote_id_2.to_string()],
         outputs,
         signature: Some(vec![
             sig_req.signature.clone(), // Valid sig for q1
@@ -385,6 +389,7 @@ async fn test_batch_mint_rejects_invalid_nut20_signatures() {
 
     let request = BatchMintRequest {
         quote: vec![quote_id.to_string()],
+        quote_amounts: None,
         outputs,
         signature: Some(vec![Some("asdf".to_string())]), // Invalid signature
     };
@@ -431,6 +436,7 @@ async fn test_batch_mint_rejects_signature_without_pubkey() {
     // Try to provide signature for unlocked quote (should be rejected)
     let request = BatchMintRequest {
         quote: vec![quote_id.to_string()],
+        quote_amounts: None,
         outputs, // Realistic blinded messages
         signature: Some(vec![mint_req.signature.clone()]),
     };
@@ -474,6 +480,7 @@ async fn test_batch_mint_rejects_unpaid_quotes() {
     // Request with the valid but unpaid quote
     let request = BatchMintRequest {
         quote: vec![quote_id.to_string()],
+        quote_amounts: None,
         outputs,
         signature: None,
     };
@@ -521,7 +528,8 @@ async fn test_batch_mint_enforces_single_payment_method() {
     let outputs = create_test_outputs(&mint, 2).await;
 
     let request = BatchMintRequest {
-        quote: vec![quote_id_1.to_string(), quote_id_2.to_string()],
+        quote: vec![quote_id_1.to_string(),
+            quote_amounts: None, quote_id_2.to_string()],
         outputs,
         signature: None,
     };
@@ -634,7 +642,8 @@ async fn test_batch_mint_enforces_single_currency_unit() {
     let outputs = create_test_outputs(&mint, 2).await;
 
     let request = BatchMintRequest {
-        quote: vec![quote_id_1.to_string(), quote_id_2.to_string()],
+        quote: vec![quote_id_1.to_string(),
+            quote_amounts: None, quote_id_2.to_string()],
         outputs,
         signature: None,
     };
@@ -673,6 +682,7 @@ async fn test_batch_mint_validates_url_path_payment_method() {
 
     let request = BatchMintRequest {
         quote: vec![quote_id.to_string()],
+        quote_amounts: None,
         outputs,
         signature: None,
     };
@@ -806,6 +816,7 @@ async fn test_batch_mint_with_p2pk_spending_conditions() {
     // Create batch mint request
     let request = BatchMintRequest {
         quote: vec![quote_id.to_string()],
+        quote_amounts: None,
         outputs,
         signature: None, // No NUT-20 signature needed
     };
@@ -896,6 +907,7 @@ async fn test_batch_mint_with_htlc_spending_conditions() {
     // Create batch mint request
     let request = BatchMintRequest {
         quote: vec![quote_id.to_string()],
+        quote_amounts: None,
         outputs,
         signature: None,
     };
@@ -1022,7 +1034,8 @@ async fn test_batch_mint_with_mixed_spending_conditions() {
 
     // Create batch mint request with mixed conditions
     let request = BatchMintRequest {
-        quote: vec![quote_id_1.to_string(), quote_id_2.to_string()],
+        quote: vec![quote_id_1.to_string(),
+            quote_amounts: None, quote_id_2.to_string()],
         outputs: all_outputs,
         signature: None,
     };

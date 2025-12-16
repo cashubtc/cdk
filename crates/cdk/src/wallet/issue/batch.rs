@@ -205,6 +205,7 @@ impl Wallet {
 
         let batch_request = BatchMintRequest {
             quote: quote_ids.to_vec(),
+            quote_amounts: Some(vec![total_amount]),
             outputs: blinded_messages,
             signature: batch_signatures,
         };
@@ -272,6 +273,7 @@ impl Wallet {
 
         let batch_request = BatchMintRequest {
             quote: quote_ids.to_vec(),
+            quote_amounts: Some(mintable_amounts.clone()),
             outputs: blinded_messages,
             signature: Some(signatures),
         };

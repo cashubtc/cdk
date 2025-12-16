@@ -322,6 +322,7 @@ mod tests {
 
         let request = BatchMintRequest {
             quote: vec!["q1".to_string()],
+            quote_amounts: Some(vec![Amount::ZERO]),
             outputs: Vec::new(),
             signature: None,
         };

@@ -16,6 +16,9 @@ use crate::Amount;
 pub struct BatchMintRequest {
     /// Quote IDs
     pub quote: Vec<String>,
+    /// Expected amount to mint per quote, in the same order as `quote`
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub quote_amounts: Option<Vec<Amount>>,
     /// Blinded messages
     pub outputs: Vec<BlindedMessage>,
     /// Signatures for NUT-20 locked quotes (optional)
@@ -28,6 +31,14 @@ impl BatchMintRequest {
     pub fn total_amount(&self) -> Result<Amount, crate::nuts::nut04::Error> {
         Amount::try_sum(self.outputs.iter().map(|msg| msg.amount))
             .map_err(|_| crate::nuts::nut04::Error::AmountOverflow)
+    }
+
+    /// Total amount the client expects to mint per quote, if provided
+    pub fn total_quote_amounts(&self) -> Option<Result<Amount, crate::nuts::nut04::Error>> {
+        self.quote_amounts.as_ref().map(|amounts| {
+            Amount::try_sum(amounts.iter().cloned())
+                .map_err(|_| crate::nuts::nut04::Error::AmountOverflow)
+        })
     }
 }
 

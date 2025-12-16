@@ -659,8 +659,15 @@ impl Mint {
                 signature,
             } = mint_request;
 
+            let total_amount = outputs
+                .iter()
+                .map(|o| o.amount)
+                .try_fold(Amount::ZERO, |acc, amt| acc.checked_add(amt))
+                .expect("amount sum");
+
             let normalized_request = BatchMintRequest {
                 quote: vec![quote.to_string()],
+                quote_amounts: Some(vec![total_amount]),
                 outputs,
                 signature: signature.map(|sig| vec![Some(sig)]),
             };
@@ -930,23 +937,59 @@ impl Mint {
             ));
         }
 
-        // Allocate how much each quote actually mints: bolt11 must issue full amount, bolt12 caps at remaining.
-        let minted_amounts_per_quote = match payment_method {
-            PaymentMethod::Bolt11 => mintable_per_quote.clone(),
-            PaymentMethod::Bolt12 => {
-                let mut remaining = outputs_amount;
-                let mut per_quote = Vec::with_capacity(mintable_per_quote.len());
+        // Allocate how much each quote actually mints:
+        // - bolt11: must issue full amount for each quote
+        // - bolt12: wallet specifies per-quote expected amounts; mint enforces they don't exceed remaining
+        let minted_amounts_per_quote =
+            match payment_method {
+                PaymentMethod::Bolt11 => mintable_per_quote.clone(),
+                PaymentMethod::Bolt12 => {
+                    let requested = batch_request.quote_amounts.as_ref().ok_or(
+                        Error::TransactionUnbalanced(
+                            total_available_amount.into(),
+                            batch_request.total_amount()?.into(),
+                            0,
+                        ),
+                    )?;
 
-                for available in &mintable_per_quote {
-                    let minted = std::cmp::min(*available, remaining);
-                    per_quote.push(minted);
-                    remaining = remaining.checked_sub(minted).ok_or(Error::AmountOverflow)?;
+                    if requested.len() != mintable_per_quote.len() {
+                        return Err(Error::TransactionUnbalanced(
+                            total_available_amount.into(),
+                            batch_request.total_amount()?.into(),
+                            0,
+                        ));
+                    }
+
+                    let mut remaining = outputs_amount;
+                    let mut per_quote = Vec::with_capacity(mintable_per_quote.len());
+
+                    for (i, available) in mintable_per_quote.iter().enumerate() {
+                        let requested_amount = requested[i];
+                        if requested_amount > *available || requested_amount > remaining {
+                            return Err(Error::TransactionUnbalanced(
+                                total_available_amount.into(),
+                                batch_request.total_amount()?.into(),
+                                0,
+                            ));
+                        }
+                        per_quote.push(requested_amount);
+                        remaining = remaining
+                            .checked_sub(requested_amount)
+                            .ok_or(Error::AmountOverflow)?;
+                    }
+
+                    if remaining != Amount::ZERO {
+                        return Err(Error::TransactionUnbalanced(
+                            total_available_amount.into(),
+                            batch_request.total_amount()?.into(),
+                            0,
+                        ));
+                    }
+
+                    per_quote
                 }
-
-                per_quote
-            }
-            _ => return Err(Error::UnsupportedPaymentMethod),
-        };
+                _ => return Err(Error::UnsupportedPaymentMethod),
+            };
 
         let output_unit = output_unit.ok_or(Error::UnsupportedUnit)?;
         ensure_cdk!(output_unit == unit, Error::UnsupportedUnit);
@@ -1091,8 +1134,15 @@ mod tests {
 
         let (outputs, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
 
+        let total_amount = outputs
+            .iter()
+            .map(|o| o.amount)
+            .try_fold(Amount::ZERO, |acc, amt| acc.checked_add(amt))
+            .expect("amount sum should not overflow in test");
+
         let batch_request = BatchMintRequest {
             quote: vec![quote_id.to_string()],
+            quote_amounts: Some(vec![total_amount]),
             outputs: outputs.clone(),
             signature: None,
         };
