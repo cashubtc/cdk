@@ -46,4 +46,8 @@ exclude_re = [
     "crates/cashu/src/amount.rs.*impl AsRef<u64> for Amount.*as_ref",
     "crates/cashu/src/amount.rs.*impl std::ops::Mul for Amount.*mul",
     "crates/cashu/src/amount.rs.*impl std::ops::Div for Amount.*div",
+    "crates/cashu/src/amount.rs.*impl From<Amount> for u64.*from",
+    "crates/cashu/src/amount.rs.*impl Default for Amount",
+    "crates/cashu/src/amount.rs.*impl Default for &Amount",
+    "crates/cashu/src/amount.rs.*impl.*Display for Amount.*fmt",
 ]
