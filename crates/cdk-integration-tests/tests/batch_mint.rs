@@ -48,53 +48,8 @@ use cdk::Amount;
 use cdk_common::mint::{BatchMintRequest, IncomingPayment, MintQuote};
 use cdk_common::Error;
 use cdk_fake_wallet::FakeWallet;
+use cdk_integration_tests::init_pure_tests::create_and_start_test_mint;
 use cdk_sqlite::mint::memory;
-
-/// Helper function to create a test mint with fake wallet
-async fn create_test_mint() -> Arc<cdk::Mint> {
-    let mnemonic = Mnemonic::generate(12).unwrap();
-    let fee_reserve = FeeReserve {
-        min_fee_reserve: 1.into(),
-        percent_fee_reserve: 1.0,
-    };
-
-    let database = memory::empty().await.expect("valid db instance");
-
-    let fake_wallet = FakeWallet::new(
-        fee_reserve,
-        HashMap::default(),
-        HashSet::default(),
-        0,
-        CurrencyUnit::Sat,
-    );
-
-    let localstore = Arc::new(database);
-    let mut mint_builder = MintBuilder::new(localstore.clone());
-
-    mint_builder = mint_builder
-        .with_name("test mint".to_string())
-        .with_description("test mint".to_string());
-
-    mint_builder
-        .add_payment_processor(
-            CurrencyUnit::Sat,
-            PaymentMethod::Bolt11,
-            MintMeltLimits::new(1, 5_000),
-            Arc::new(fake_wallet),
-        )
-        .await
-        .unwrap();
-
-    let mint = mint_builder
-        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
-        .await
-        .unwrap();
-
-    let quote_ttl = QuoteTTL::new(10000, 10000);
-    mint.set_quote_ttl(quote_ttl).await.unwrap();
-
-    Arc::new(mint)
-}
 
 /// Helper to create realistic blinded messages for testing
 async fn create_test_outputs(mint: &Arc<cdk::Mint>, count: usize) -> Vec<BlindedMessage> {
@@ -272,7 +227,7 @@ fn test_batch_mint_round_trip_serialization() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_handler_rejects_empty_quotes() {
-    let mint = create_test_mint().await;
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     let request = BatchMintRequest {
         quote: vec![],
@@ -293,7 +248,7 @@ async fn test_batch_mint_handler_rejects_empty_quotes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_handler_rejects_duplicates() {
-    let mint = create_test_mint().await;
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create realistic outputs for 2 quotes
     let outputs = create_test_outputs(&mint, 2).await;
@@ -318,7 +273,7 @@ async fn test_batch_mint_handler_rejects_duplicates() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_handler_rejects_over_limit() {
-    let mint = create_test_mint().await;
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create 101 quote IDs (exceeds the 100 limit)
     let quotes: Vec<String> = (0..101).map(|i| format!("quote_{}", i)).collect();
@@ -345,7 +300,7 @@ async fn test_batch_mint_handler_rejects_over_limit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_handler_validates_signature_count() {
-    let mint = create_test_mint().await;
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create two unlocked quotes (no pubkey required for this test)
     let quote_id_1 = create_and_store_mint_quote(
@@ -410,7 +365,7 @@ async fn test_batch_mint_handler_validates_signature_count() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_rejects_invalid_nut20_signatures() {
-    let mint = create_test_mint().await;
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create a locked quote (with pubkey) that is PAID
     let secret_key = SecretKey::generate();
@@ -447,7 +402,7 @@ async fn test_batch_mint_rejects_invalid_nut20_signatures() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_rejects_signature_without_pubkey() {
-    let mint = create_test_mint().await;
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create an unlocked quote (no pubkey) that is PAID
     // This tests that signature validation is properly rejected when quote has no pubkey
@@ -500,7 +455,7 @@ async fn test_batch_mint_rejects_signature_without_pubkey() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_rejects_unpaid_quotes() {
-    let mint = create_test_mint().await;
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create a valid quote that is NOT paid (amount_paid = 0)
     let quote_id = create_and_store_mint_quote(
@@ -537,7 +492,7 @@ async fn test_batch_mint_rejects_unpaid_quotes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_enforces_single_payment_method() {
-    let mint = create_test_mint().await;
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create two quotes: one Bolt11, one Bolt12 (different payment methods)
     // First quote: Bolt11
@@ -700,7 +655,7 @@ async fn test_batch_mint_enforces_single_currency_unit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_validates_url_path_payment_method() {
-    let mint = create_test_mint().await;
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create a Bolt12 quote (which shouldn't be used with the Bolt11 batch endpoint)
     let quote_id = create_and_store_mint_quote(
@@ -823,7 +778,7 @@ fn create_outputs_with_htlc(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_with_p2pk_spending_conditions() {
-    let mint = create_test_mint().await;
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create a quote that is paid (no NUT-20 lock)
     let quote_id = create_and_store_mint_quote(
@@ -918,7 +873,7 @@ async fn test_batch_mint_with_p2pk_spending_conditions() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_with_htlc_spending_conditions() {
-    let mint = create_test_mint().await;
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create a quote that is paid
     let quote_id = create_and_store_mint_quote(
@@ -1016,7 +971,7 @@ async fn test_batch_mint_with_htlc_spending_conditions() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_with_mixed_spending_conditions() {
-    let mint = create_test_mint().await;
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create two quotes
     let quote_id_1 = create_and_store_mint_quote(
