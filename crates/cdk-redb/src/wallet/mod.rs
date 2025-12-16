@@ -22,6 +22,79 @@ use cdk_common::{
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
 
+/// Enum to abstract over read-only and read-write table access for KV store operations
+enum KvTable<'txn> {
+    ReadOnly(redb::ReadOnlyTable<(&'static str, &'static str, &'static str), &'static [u8]>),
+    ReadWrite(redb::Table<'txn, (&'static str, &'static str, &'static str), &'static [u8]>),
+}
+
+impl KvTable<'_> {
+    /// Read a value from the KV store table
+    #[inline(always)]
+    fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        let result = match self {
+            KvTable::ReadOnly(table) => table
+                .get((primary_namespace, secondary_namespace, key))
+                .map_err(Error::from)?
+                .map(|v| v.value().to_vec()),
+            KvTable::ReadWrite(table) => table
+                .get((primary_namespace, secondary_namespace, key))
+                .map_err(Error::from)?
+                .map(|v| v.value().to_vec()),
+        };
+
+        Ok(result)
+    }
+
+    /// List all keys in a namespace from the KV store table
+    #[inline(always)]
+    fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, Error> {
+        let mut keys = Vec::new();
+
+        // Use range iterator for efficient lookup by namespace prefix
+        let start = (primary_namespace, secondary_namespace, "");
+
+        match self {
+            KvTable::ReadOnly(table) => {
+                for result in table.range(start..).map_err(Error::from)? {
+                    let (key_tuple, _) = result.map_err(Error::from)?;
+                    let (primary_from_db, secondary_from_db, k) = key_tuple.value();
+                    if primary_from_db != primary_namespace
+                        || secondary_from_db != secondary_namespace
+                    {
+                        break;
+                    }
+                    keys.push(k.to_string());
+                }
+            }
+            KvTable::ReadWrite(table) => {
+                for result in table.range(start..).map_err(Error::from)? {
+                    let (key_tuple, _) = result.map_err(Error::from)?;
+                    let (primary_from_db, secondary_from_db, k) = key_tuple.value();
+                    if primary_from_db != primary_namespace
+                        || secondary_from_db != secondary_namespace
+                    {
+                        break;
+                    }
+                    keys.push(k.to_string());
+                }
+            }
+        }
+
+        // Keys are already sorted by the B-tree structure
+        Ok(keys)
+    }
+}
+
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
 use crate::wallet::migrations::{migrate_01_to_02, migrate_02_to_03, migrate_03_to_04};
@@ -545,14 +618,9 @@ impl KVStoreDatabase for WalletRedbDatabase {
         validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
         let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
+        let table = KvTable::ReadOnly(read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?);
 
-        let result = table
-            .get((primary_namespace, secondary_namespace, key))
-            .map_err(Error::from)?
-            .map(|v| v.value().to_vec());
-
-        Ok(result)
+        Ok(table.kv_read(primary_namespace, secondary_namespace, key)?)
     }
 
     #[instrument(skip_all)]
@@ -564,24 +632,9 @@ impl KVStoreDatabase for WalletRedbDatabase {
         validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
 
         let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
+        let table = KvTable::ReadOnly(read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?);
 
-        let mut keys = Vec::new();
-
-        // Use range iterator for efficient lookup by namespace prefix
-        let start = (primary_namespace, secondary_namespace, "");
-
-        for result in table.range(start..).map_err(Error::from)? {
-            let (key_tuple, _) = result.map_err(Error::from)?;
-            let (primary_from_db, secondary_from_db, key) = key_tuple.value();
-            if primary_from_db != primary_namespace || secondary_from_db != secondary_namespace {
-                break;
-            }
-            keys.push(key.to_string());
-        }
-
-        // Keys are already sorted by the B-tree structure
-        Ok(keys)
+        Ok(table.kv_list(primary_namespace, secondary_namespace)?)
     }
 }
 
@@ -1100,14 +1153,9 @@ impl KVStoreTransaction<database::Error> for RedbWalletTransaction {
         validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
         let txn = self.txn()?;
-        let table = txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
+        let table = KvTable::ReadWrite(txn.open_table(KV_STORE_TABLE).map_err(Error::from)?);
 
-        let result = table
-            .get((primary_namespace, secondary_namespace, key))
-            .map_err(Error::from)?
-            .map(|v| v.value().to_vec());
-
-        Ok(result)
+        Ok(table.kv_read(primary_namespace, secondary_namespace, key)?)
     }
 
     #[instrument(skip_all)]
@@ -1161,24 +1209,9 @@ impl KVStoreTransaction<database::Error> for RedbWalletTransaction {
         validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
 
         let txn = self.txn()?;
-        let table = txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
+        let table = KvTable::ReadWrite(txn.open_table(KV_STORE_TABLE).map_err(Error::from)?);
 
-        let mut keys = Vec::new();
-
-        // Use range iterator for efficient lookup by namespace prefix
-        let start = (primary_namespace, secondary_namespace, "");
-
-        for result in table.range(start..).map_err(Error::from)? {
-            let (key_tuple, _) = result.map_err(Error::from)?;
-            let (primary_from_db, secondary_from_db, k) = key_tuple.value();
-            if primary_from_db != primary_namespace || secondary_from_db != secondary_namespace {
-                break;
-            }
-            keys.push(k.to_string());
-        }
-
-        // Keys are already sorted by the B-tree structure
-        Ok(keys)
+        Ok(table.kv_list(primary_namespace, secondary_namespace)?)
     }
 }
 
