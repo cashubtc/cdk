@@ -1842,6 +1842,27 @@ impl MultiMintWallet {
         wallet.fetch_mint_info().await
     }
 
+    /// Get mint info for all wallets
+    ///
+    /// This method loads the mint info for each wallet in the MultiMintWallet
+    /// and returns a map of mint URLs to their corresponding mint info.
+    ///
+    /// Uses cached mint info when available, only fetching from the mint if the cache
+    /// has expired.
+    #[instrument(skip(self))]
+    pub async fn get_all_mint_info(
+        &self,
+    ) -> Result<BTreeMap<MintUrl, crate::nuts::MintInfo>, Error> {
+        let mut mint_infos = BTreeMap::new();
+
+        for (mint_url, wallet) in self.wallets.read().await.iter() {
+            let mint_info = wallet.load_mint_info().await?;
+            mint_infos.insert(mint_url.clone(), mint_info);
+        }
+
+        Ok(mint_infos)
+    }
+
     /// Melt Quote for BIP353 human-readable address
     ///
     /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Lightning offer
