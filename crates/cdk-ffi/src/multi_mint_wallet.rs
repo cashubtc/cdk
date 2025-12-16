@@ -663,6 +663,22 @@ impl MultiMintWallet {
         let mint_info = self.inner.fetch_mint_info(&cdk_mint_url).await?;
         Ok(mint_info.map(Into::into))
     }
+
+    /// Get mint info for all wallets
+    ///
+    /// This method loads the mint info for each wallet in the MultiMintWallet
+    /// and returns a map of mint URLs to their corresponding mint info.
+    ///
+    /// Uses cached mint info when available, only fetching from the mint if the cache
+    /// has expired.
+    pub async fn get_all_mint_info(&self) -> Result<MintInfoMap, FfiError> {
+        let mint_infos = self.inner.get_all_mint_info().await?;
+        let mut result = HashMap::new();
+        for (mint_url, mint_info) in mint_infos {
+            result.insert(mint_url.to_string(), mint_info.into());
+        }
+        Ok(result)
+    }
 }
 
 /// Payment request methods for MultiMintWallet
@@ -938,3 +954,6 @@ pub type BalanceMap = HashMap<String, Amount>;
 
 /// Type alias for proofs by mint URL
 pub type ProofsByMint = HashMap<String, Vec<Proof>>;
+
+/// Type alias for mint info by mint URL
+pub type MintInfoMap = HashMap<String, MintInfo>;
