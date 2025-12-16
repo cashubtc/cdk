@@ -74,8 +74,12 @@ pub struct TokenData {
     pub value: Amount,
     /// Unit of token
     pub unit: CurrencyUnit,
-    // /// Fee to reedem
-    // pub reedem_fee: Amount,
+    /// Fee to redeem
+    ///
+    /// If the token is for a proof that we do not know, we cannot get the fee.
+    /// To avoid just erroring and still allow decoding, this is an option.
+    /// None does not mean there is no fee, it means we do not know the fee.
+    pub redeem_fee: Option<Amount>,
 }
 
 /// Configuration for individual wallets within MultiMintWallet
@@ -590,12 +594,15 @@ impl MultiMintWallet {
         // Get the memo
         let memo = token.memo().clone();
 
+        let redeem_fee = self.get_proofs_fee(&mint_url, &proofs).await.ok();
+
         Ok(TokenData {
             value: proofs.total_amount()?,
             mint_url,
             proofs,
             memo,
             unit: token.unit().unwrap_or_default(),
+            redeem_fee,
         })
     }
 
@@ -636,6 +643,21 @@ impl MultiMintWallet {
         })?;
         let states = wallet.check_proofs_spent(proofs).await?;
         Ok(states.into_iter().map(|s| s.state).collect())
+    }
+
+    /// Fee required to redeem proof set
+    #[instrument(skip(self, proofs))]
+    pub async fn get_proofs_fee(
+        &self,
+        mint_url: &MintUrl,
+        proofs: &Proofs,
+    ) -> Result<Amount, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.get_proofs_fee(proofs).await
     }
 
     /// List transactions

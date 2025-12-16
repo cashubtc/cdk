@@ -865,6 +865,16 @@ pub struct TokenData {
     pub proofs: Proofs,
     /// The memo from the token, if present
     pub memo: Option<String>,
+    /// Value of token
+    pub value: Amount,
+    /// Unit of token
+    pub unit: CurrencyUnit,
+    /// Fee to redeem
+    ///
+    /// If the token is for a proof that we do not know, we cannot get the fee.
+    /// To avoid just erroring and still allow decoding, this is an option.
+    /// None does not mean there is no fee, it means we do not know the fee.
+    pub redeem_fee: Option<Amount>,
 }
 
 impl From<CdkTokenData> for TokenData {
@@ -873,6 +883,9 @@ impl From<CdkTokenData> for TokenData {
             mint_url: data.mint_url.into(),
             proofs: data.proofs.into_iter().map(|p| p.into()).collect(),
             memo: data.memo,
+            value: data.value.into(),
+            unit: data.unit.into(),
+            redeem_fee: data.redeem_fee.map(|a| a.into()),
         }
     }
 }
