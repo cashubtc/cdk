@@ -212,7 +212,7 @@ impl Wallet {
             .expect("FIXME")
     }
 
-    /// Fee required for proof set
+    /// Fee required to redeem proof set
     #[instrument(skip_all)]
     pub async fn get_proofs_fee(
         &self,
@@ -222,7 +222,7 @@ impl Wallet {
         self.get_proofs_fee_by_count(proofs_per_keyset).await
     }
 
-    /// Fee required for proof set by count
+    /// Fee required to redeem proof set by count
     pub async fn get_proofs_fee_by_count(
         &self,
         proofs_per_keyset: HashMap<Id, u64>,

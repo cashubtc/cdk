@@ -70,6 +70,16 @@ pub struct TokenData {
     pub proofs: Proofs,
     /// The memo from the token, if present
     pub memo: Option<String>,
+    /// Value of token
+    pub value: Amount,
+    /// Unit of token
+    pub unit: CurrencyUnit,
+    /// Fee to redeem
+    ///
+    /// If the token is for a proof that we do not know, we cannot get the fee.
+    /// To avoid just erroring and still allow decoding, this is an option.
+    /// None does not mean there is no fee, it means we do not know the fee.
+    pub redeem_fee: Option<Amount>,
 }
 
 /// Configuration for individual wallets within MultiMintWallet
@@ -584,10 +594,15 @@ impl MultiMintWallet {
         // Get the memo
         let memo = token.memo().clone();
 
+        let redeem_fee = self.get_proofs_fee(&mint_url, &proofs).await.ok();
+
         Ok(TokenData {
+            value: proofs.total_amount()?,
             mint_url,
             proofs,
             memo,
+            unit: token.unit().unwrap_or_default(),
+            redeem_fee,
         })
     }
 
@@ -628,6 +643,21 @@ impl MultiMintWallet {
         })?;
         let states = wallet.check_proofs_spent(proofs).await?;
         Ok(states.into_iter().map(|s| s.state).collect())
+    }
+
+    /// Fee required to redeem proof set
+    #[instrument(skip(self, proofs))]
+    pub async fn get_proofs_fee(
+        &self,
+        mint_url: &MintUrl,
+        proofs: &Proofs,
+    ) -> Result<Amount, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        Ok(wallet.get_proofs_fee(proofs).await?.total)
     }
 
     /// List transactions
@@ -1385,7 +1415,7 @@ impl MultiMintWallet {
         wallet.verify_token_p2pk(token, conditions).await
     }
 
-    /// Verifys all proofs in token have valid dleq proof
+    /// Verifies all proofs in token have valid dleq proof
     #[instrument(skip(self, token))]
     pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
         let mint_url = token.mint_url()?;
@@ -2215,9 +2245,12 @@ mod tests {
         let memo = Some("Test memo".to_string());
 
         let token_data = TokenData {
+            value: Amount::ZERO,
             mint_url: mint_url.clone(),
             proofs: proofs.clone(),
             memo: memo.clone(),
+            unit: CurrencyUnit::Sat,
+            redeem_fee: None,
         };
 
         assert_eq!(token_data.mint_url, mint_url);
@@ -2226,9 +2259,12 @@ mod tests {
 
         // Test with no memo
         let token_data_no_memo = TokenData {
+            value: Amount::ZERO,
             mint_url: mint_url.clone(),
             proofs: vec![],
             memo: None,
+            unit: CurrencyUnit::Sat,
+            redeem_fee: None,
         };
         assert!(token_data_no_memo.memo.is_none());
     }
