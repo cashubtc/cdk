@@ -83,6 +83,7 @@ impl Wallet {
                     quote_id: Some(quote.id.clone()),
                     payment_request: Some(quote.request.clone()),
                     payment_proof: response.payment_preimage.clone(),
+                    payment_method: Some(quote.payment_method.clone()),
                 })
                 .await?;
             }

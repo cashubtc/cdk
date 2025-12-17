@@ -208,6 +208,9 @@ pub struct Transaction {
     pub payment_request: Option<String>,
     /// Payment proof (e.g., preimage for Lightning melt transactions)
     pub payment_proof: Option<String>,
+    /// Payment method (e.g., Bolt11, Bolt12) for mint/melt transactions
+    #[serde(default)]
+    pub payment_method: Option<PaymentMethod>,
 }
 
 impl Transaction {

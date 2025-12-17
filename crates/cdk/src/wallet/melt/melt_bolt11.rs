@@ -294,6 +294,7 @@ impl Wallet {
         quote_info.state = cdk_common::MeltQuoteState::Paid;
 
         let payment_request = quote_info.request.clone();
+        let payment_method = quote_info.payment_method.clone();
         tx.add_melt_quote(quote_info).await?;
 
         let deleted_ys = proofs.ys()?;
@@ -314,6 +315,7 @@ impl Wallet {
             quote_id: Some(quote_id.to_string()),
             payment_request: Some(payment_request),
             payment_proof: payment_preimage,
+            payment_method: Some(payment_method),
         })
         .await?;
 

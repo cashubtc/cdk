@@ -8,6 +8,7 @@ use super::amount::{Amount, CurrencyUnit};
 use super::keys::PublicKey;
 use super::mint::MintUrl;
 use super::proof::Proofs;
+use super::quote::PaymentMethod;
 use crate::error::FfiError;
 
 /// FFI-compatible Transaction
@@ -39,6 +40,8 @@ pub struct Transaction {
     pub payment_request: Option<String>,
     /// Payment proof (e.g., preimage for Lightning melt transactions)
     pub payment_proof: Option<String>,
+    /// Payment method (e.g., Bolt11, Bolt12) for mint/melt transactions
+    pub payment_method: Option<PaymentMethod>,
 }
 
 impl From<cdk::wallet::types::Transaction> for Transaction {
@@ -57,6 +60,7 @@ impl From<cdk::wallet::types::Transaction> for Transaction {
             quote_id: tx.quote_id,
             payment_request: tx.payment_request,
             payment_proof: tx.payment_proof,
+            payment_method: tx.payment_method.map(Into::into),
         }
     }
 }
@@ -83,6 +87,7 @@ impl TryFrom<Transaction> for cdk::wallet::types::Transaction {
             quote_id: tx.quote_id,
             payment_request: tx.payment_request,
             payment_proof: tx.payment_proof,
+            payment_method: tx.payment_method.map(Into::into),
         })
     }
 }

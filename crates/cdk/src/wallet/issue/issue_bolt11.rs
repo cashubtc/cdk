@@ -367,6 +367,7 @@ impl Wallet {
             quote_id: Some(quote_id.to_string()),
             payment_request: Some(quote_info.request),
             payment_proof: None,
+            payment_method: Some(quote_info.payment_method),
         })
         .await?;
 
