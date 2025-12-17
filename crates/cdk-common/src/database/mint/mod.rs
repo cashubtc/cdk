@@ -117,20 +117,20 @@ pub trait QuotesTransaction {
         quote_id: &QuoteId,
     ) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Add [`MintMintQuote`]
-    async fn add_mint_quote(&mut self, quote: MintMintQuote) -> Result<(), Self::Err>;
+    async fn add_mint_quote(&mut self, quote: MintMintQuote) -> Result<MintMintQuote, Self::Err>;
     /// Increment amount paid [`MintMintQuote`]
     async fn increment_mint_quote_amount_paid(
         &mut self,
-        quote_id: &QuoteId,
+        quote: mint::MintQuote,
         amount_paid: Amount,
         payment_id: String,
-    ) -> Result<Amount, Self::Err>;
+    ) -> Result<mint::MintQuote, Self::Err>;
     /// Increment amount paid [`MintMintQuote`]
     async fn increment_mint_quote_amount_issued(
         &mut self,
-        quote_id: &QuoteId,
+        quote: mint::MintQuote,
         amount_issued: Amount,
-    ) -> Result<Amount, Self::Err>;
+    ) -> Result<mint::MintQuote, Self::Err>;
 
     /// Get [`mint::MeltQuote`] and lock it for update in this transaction
     async fn get_melt_quote(
@@ -223,6 +223,12 @@ pub trait ProofsTransaction {
         proofs_state: State,
     ) -> Result<Vec<Option<State>>, Self::Err>;
 
+    /// get proofs states
+    async fn get_proofs_states(
+        &mut self,
+        ys: &[PublicKey],
+    ) -> Result<Vec<Option<State>>, Self::Err>;
+
     /// Remove [`Proofs`]
     async fn remove_proofs(
         &mut self,
@@ -232,7 +238,7 @@ pub trait ProofsTransaction {
 
     /// Get ys by quote id
     async fn get_proof_ys_by_quote_id(
-        &self,
+        &mut self,
         quote_id: &QuoteId,
     ) -> Result<Vec<PublicKey>, Self::Err>;
 

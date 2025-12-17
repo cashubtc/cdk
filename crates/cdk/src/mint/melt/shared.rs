@@ -8,6 +8,7 @@
 
 use cdk_common::database::{self, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, State};
+use cdk_common::state::check_state_transition;
 use cdk_common::{Amount, Error, PublicKey, QuoteId};
 use cdk_signatory::signatory::SignatoryKeySet;
 
@@ -322,6 +323,17 @@ pub async fn finalize_melt_core(
 
         tx.update_melt_quote_request_lookup_id(&quote.id, payment_lookup_id)
             .await?;
+    }
+
+    for current_state in tx
+        .get_proofs_states(input_ys)
+        .await?
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or(Error::UnexpectedProofState)?
+    {
+        check_state_transition(current_state, State::Spent)
+            .map_err(|_| Error::UnexpectedProofState)?;
     }
 
     // Mark input proofs as spent

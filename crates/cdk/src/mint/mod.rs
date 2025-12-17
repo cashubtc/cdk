@@ -690,7 +690,7 @@ impl Mint {
         {
             Self::handle_mint_quote_payment(
                 &mut tx,
-                &mint_quote,
+                mint_quote,
                 wait_payment_response,
                 pubsub_manager,
             )
@@ -710,7 +710,7 @@ impl Mint {
     #[instrument(skip_all)]
     async fn handle_mint_quote_payment(
         tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
-        mint_quote: &MintQuote,
+        mint_quote: MintQuote,
         wait_payment_response: WaitPaymentResponse,
         pubsub_manager: &Arc<PubSubManager>,
     ) -> Result<(), Error> {
@@ -751,14 +751,15 @@ impl Mint {
 
                 match tx
                     .increment_mint_quote_amount_paid(
-                        &mint_quote.id,
+                        mint_quote,
                         payment_amount_quote_unit,
                         wait_payment_response.payment_id.clone(),
                     )
                     .await
                 {
-                    Ok(total_paid) => {
-                        pubsub_manager.mint_quote_payment(mint_quote, total_paid);
+                    Ok(updated_quote) => {
+                        pubsub_manager
+                            .mint_quote_payment(&updated_quote, updated_quote.amount_paid());
                     }
                     Err(database::Error::Duplicate) => {
                         tracing::info!(

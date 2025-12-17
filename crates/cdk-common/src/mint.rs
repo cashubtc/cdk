@@ -452,15 +452,26 @@ impl MintQuote {
     }
 
     /// Increment the amount issued on the mint quote by a given amount
+    ///
+    /// # Errors
+    /// Returns an error if the new issued amount would exceed the paid amount
+    /// (can't issue more than what's been paid) or if the addition would overflow.
     #[instrument(skip(self))]
     pub fn increment_amount_issued(
         &mut self,
         additional_amount: Amount,
     ) -> Result<Amount, crate::Error> {
-        self.amount_issued = self
+        let new_amount_issued = self
             .amount_issued
             .checked_add(additional_amount)
             .ok_or(crate::Error::AmountOverflow)?;
+
+        // Can't issue more than what's been paid
+        if new_amount_issued > self.amount_paid {
+            return Err(crate::Error::OverIssue);
+        }
+
+        self.amount_issued = new_amount_issued;
         Ok(self.amount_issued)
     }
 

@@ -6,6 +6,7 @@ use cdk_common::database::mint::MeltRequestInfo;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nuts::MeltQuoteState;
+use cdk_common::state::check_state_transition;
 use cdk_common::{Amount, Error, ProofsMethods, PublicKey, QuoteId, State};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -235,6 +236,17 @@ impl MeltSaga<Initial> {
         }
 
         let input_ys = melt_request.inputs().ys()?;
+
+        for current_state in tx
+            .get_proofs_states(&input_ys)
+            .await?
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(Error::UnexpectedProofState)?
+        {
+            check_state_transition(current_state, State::Pending)
+                .map_err(|_| Error::UnexpectedProofState)?;
+        }
 
         // Update proof states to Pending
         let original_states = match tx.update_proofs_states(&input_ys, State::Pending).await {
@@ -527,15 +539,16 @@ impl MeltSaga<SetupComplete> {
         )
         .await?;
 
-        let total_paid = tx
+        let mint_quote = tx
             .increment_mint_quote_amount_paid(
-                &mint_quote.id,
+                mint_quote,
                 amount,
                 self.state_data.quote.id.to_string(),
             )
             .await?;
 
-        self.pubsub.mint_quote_payment(&mint_quote, total_paid);
+        self.pubsub
+            .mint_quote_payment(&mint_quote, mint_quote.amount_paid());
 
         tracing::info!(
             "Melt quote {} paid Mint quote {}",

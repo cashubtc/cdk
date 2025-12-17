@@ -121,6 +121,7 @@ where
     }
 
     async fn add_proof(&mut self, proof: AuthProof) -> Result<(), database::Error> {
+        let y = proof.y()?;
         if let Err(err) = query(
             r#"
                 INSERT INTO proof
@@ -129,7 +130,7 @@ where
                 (:y, :keyset_id, :secret, :c, :state)
                 "#,
         )?
-        .bind("y", proof.y()?.to_bytes().to_vec())
+        .bind("y", y.to_bytes().to_vec())
         .bind("keyset_id", proof.keyset_id.to_string())
         .bind("secret", proof.secret.to_string())
         .bind("c", proof.c.to_bytes().to_vec())
@@ -139,6 +140,7 @@ where
         {
             tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
         }
+        self.locked_records.lock(y);
         Ok(())
     }
 
@@ -147,6 +149,7 @@ where
         y: &PublicKey,
         proofs_state: State,
     ) -> Result<Option<State>, Self::Err> {
+        self.locked_records.is_locked(y)?;
         let current_state = query(r#"SELECT state FROM proof WHERE y = :y FOR UPDATE"#)?
             .bind("y", y.to_bytes().to_vec())
             .pluck(&self.inner)
@@ -154,12 +157,8 @@ where
             .map(|state| Ok::<_, Error>(column_as_string!(state, State::from_str)))
             .transpose()?;
 
-        query(r#"UPDATE proof SET state = :new_state WHERE state = :state AND y = :y"#)?
+        query(r#"UPDATE proof SET state = :new_state WHERE  y = :y"#)?
             .bind("y", y.to_bytes().to_vec())
-            .bind(
-                "state",
-                current_state.as_ref().map(|state| state.to_string()),
-            )
             .bind("new_state", proofs_state.to_string())
             .execute(&self.inner)
             .await?;
@@ -255,6 +254,7 @@ where
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
+            locked_records: Default::default(),
         }))
     }
 

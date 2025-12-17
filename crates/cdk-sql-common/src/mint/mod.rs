@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
+use cdk_common::database::locked_row::LockedRows;
 use cdk_common::database::mint::{
     CompletedOperationsDatabase, CompletedOperationsTransaction, SagaDatabase, SagaTransaction,
 };
@@ -31,7 +32,7 @@ use cdk_common::nut00::ProofsMethods;
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
-use cdk_common::state::{check_melt_quote_state_transition, check_state_transition};
+use cdk_common::state::check_melt_quote_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, MeltQuoteState,
@@ -78,31 +79,7 @@ where
     RM: DatabasePool + 'static,
 {
     inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
-}
-
-#[inline(always)]
-async fn get_current_states<C>(
-    conn: &C,
-    ys: &[PublicKey],
-) -> Result<HashMap<PublicKey, State>, Error>
-where
-    C: DatabaseExecutor + Send + Sync,
-{
-    if ys.is_empty() {
-        return Ok(Default::default());
-    }
-    query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)?
-        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-        .fetch_all(conn)
-        .await?
-        .into_iter()
-        .map(|row| {
-            Ok((
-                column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice),
-                column_as_string!(&row[1], State::from_str),
-            ))
-        })
-        .collect::<Result<HashMap<_, _>, _>>()
+    locked_records: LockedRows,
 }
 
 impl<RM> SQLMintDatabase<RM>
@@ -166,6 +143,9 @@ where
         }?;
 
         for proof in proofs {
+            let y = proof.y()?;
+            self.locked_records.lock(y);
+
             query(
                 r#"
                   INSERT INTO proof
@@ -174,7 +154,7 @@ where
                   (:y, :amount, :keyset_id, :secret, :c, :witness, :state, :quote_id, :created_time, :operation_kind, :operation_id)
                   "#,
             )?
-            .bind("y", proof.y()?.to_bytes().to_vec())
+            .bind("y", y.to_bytes().to_vec())
             .bind("amount", proof.amount.to_i64())
             .bind("keyset_id", proof.keyset_id.to_string())
             .bind("secret", proof.secret.to_string())
@@ -200,7 +180,9 @@ where
         ys: &[PublicKey],
         new_state: State,
     ) -> Result<Vec<Option<State>>, Self::Err> {
-        let mut current_states = get_current_states(&self.inner, ys).await?;
+        self.locked_records.is_locked_many(ys.to_owned())?;
+
+        let mut current_states = get_current_states(&self.inner, ys, true).await?;
 
         if current_states.len() != ys.len() {
             tracing::warn!(
@@ -209,10 +191,6 @@ where
                 ys.len()
             );
             return Err(database::Error::ProofNotFound);
-        }
-
-        for state in current_states.values() {
-            check_state_transition(*state, new_state)?;
         }
 
         query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)?
@@ -261,7 +239,7 @@ where
 
         if total_deleted != ys.len() {
             // Query current states to provide detailed logging
-            let current_states = get_current_states(&self.inner, ys).await?;
+            let current_states = get_current_states(&self.inner, ys, true).await?;
 
             let missing_count = ys.len() - current_states.len();
             let spent_count = current_states
@@ -300,7 +278,7 @@ where
     }
 
     async fn get_proof_ys_by_quote_id(
-        &self,
+        &mut self,
         quote_id: &QuoteId,
     ) -> Result<Vec<PublicKey>, Self::Err> {
         Ok(query(
@@ -315,13 +293,18 @@ where
                 proof
             WHERE
                 quote_id = :quote_id
+            FOR UPDATE
             "#,
         )?
         .bind("quote_id", quote_id.to_string())
         .fetch_all(&self.inner)
         .await?
         .into_iter()
-        .map(sql_row_to_proof)
+        .map(|row| {
+            sql_row_to_proof(row).inspect(|row| {
+                let _ = row.y().map(|c| self.locked_records.lock(c));
+            })
+        })
         .collect::<Result<Vec<Proof>, _>>()?
         .ys()?)
     }
@@ -352,6 +335,21 @@ where
             ))
         })
         .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn get_proofs_states(
+        &mut self,
+        ys: &[PublicKey],
+    ) -> Result<Vec<Option<State>>, Self::Err> {
+        let mut current_states =
+            get_current_states(&self.inner, ys, true)
+                .await
+                .inspect(|public_keys| {
+                    self.locked_records
+                        .lock_many(public_keys.keys().collect::<Vec<_>>());
+                })?;
+
+        Ok(ys.iter().map(|y| current_states.remove(y)).collect())
     }
 }
 
@@ -388,6 +386,37 @@ where
         }
         Ok(result?)
     }
+}
+
+#[inline(always)]
+async fn get_current_states<C>(
+    conn: &C,
+    ys: &[PublicKey],
+    for_update: bool,
+) -> Result<HashMap<PublicKey, State>, Error>
+where
+    C: DatabaseExecutor + Send + Sync,
+{
+    if ys.is_empty() {
+        return Ok(Default::default());
+    }
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+
+    query(&format!(
+        r#"SELECT y, state FROM proof WHERE y IN (:ys) {}"#,
+        for_update_clause
+    ))?
+    .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+    .fetch_all(conn)
+    .await?
+    .into_iter()
+    .map(|row| {
+        Ok((
+            column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice),
+            column_as_string!(&row[1], State::from_str),
+        ))
+    })
+    .collect::<Result<HashMap<_, _>, _>>()
 }
 
 #[inline(always)]
@@ -716,6 +745,7 @@ where
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
+            locked_records: Default::default(),
         };
 
         Ok(Box::new(tx))
@@ -1001,10 +1031,11 @@ where
     #[instrument(skip(self))]
     async fn increment_mint_quote_amount_paid(
         &mut self,
-        quote_id: &QuoteId,
+        mut quote: mint::MintQuote,
         amount_paid: Amount,
         payment_id: String,
-    ) -> Result<Amount, Self::Err> {
+    ) -> Result<mint::MintQuote, Self::Err> {
+        self.locked_records.is_locked(&quote.id)?;
         if amount_paid == Amount::ZERO {
             tracing::warn!("Amount payments of zero amount should not be recorded.");
             return Err(Error::Duplicate);
@@ -1028,37 +1059,14 @@ where
             return Err(database::Error::Duplicate);
         }
 
-        // Get current amount_paid from quote
-        let current_amount = query(
-            r#"
-            SELECT amount_paid
-            FROM mint_quote
-            WHERE id = :quote_id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("quote_id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await
-        .inspect_err(|err| {
-            tracing::error!("SQLite could not get mint quote amount_paid: {}", err);
-        })?;
-
-        let current_amount_paid = if let Some(current_amount) = current_amount {
-            let amount: u64 = column_as_number!(current_amount[0].clone());
-            Amount::from(amount)
-        } else {
-            Amount::ZERO
-        };
-
-        // Calculate new amount_paid with overflow check
-        let new_amount_paid = current_amount_paid
-            .checked_add(amount_paid)
-            .ok_or_else(|| database::Error::AmountOverflow)?;
+        let current_amount_paid = quote.amount_paid();
+        let new_amount_paid = quote
+            .increment_amount_paid(amount_paid)
+            .map_err(|_| Error::AmountOverflow)?;
 
         tracing::debug!(
             "Mint quote {} amount paid was {} is now {}.",
-            quote_id,
+            quote.id,
             current_amount_paid,
             new_amount_paid
         );
@@ -1072,7 +1080,7 @@ where
             "#,
         )?
         .bind("amount_paid", new_amount_paid.to_i64())
-        .bind("quote_id", quote_id.to_string())
+        .bind("quote_id", quote.id.to_string())
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
@@ -1087,7 +1095,7 @@ where
             VALUES (:quote_id, :payment_id, :amount, :timestamp)
             "#,
         )?
-        .bind("quote_id", quote_id.to_string())
+        .bind("quote_id", quote.id.to_string())
         .bind("payment_id", payment_id)
         .bind("amount", amount_paid.to_i64())
         .bind("timestamp", unix_time() as i64)
@@ -1098,55 +1106,20 @@ where
             err
         })?;
 
-        Ok(new_amount_paid)
+        Ok(quote)
     }
 
     #[instrument(skip_all)]
     async fn increment_mint_quote_amount_issued(
         &mut self,
-        quote_id: &QuoteId,
+        mut quote: mint::MintQuote,
         amount_issued: Amount,
-    ) -> Result<Amount, Self::Err> {
-        // Get current amount_issued from quote
-        let current_amounts = query(
-            r#"
-            SELECT amount_issued, amount_paid
-            FROM mint_quote
-            WHERE id = :quote_id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("quote_id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await
-        .inspect_err(|err| {
-            tracing::error!("SQLite could not get mint quote amount_issued: {}", err);
-        })?
-        .ok_or(Error::QuoteNotFound)?;
+    ) -> Result<mint::MintQuote, Self::Err> {
+        self.locked_records.is_locked(&quote.id)?;
 
-        let new_amount_issued = {
-            // Make sure the db protects issuing not paid quotes
-            unpack_into!(
-                let (current_amount_issued, current_amount_paid) = current_amounts
-            );
-
-            let current_amount_issued: u64 = column_as_number!(current_amount_issued);
-            let current_amount_paid: u64 = column_as_number!(current_amount_paid);
-
-            let current_amount_issued = Amount::from(current_amount_issued);
-            let current_amount_paid = Amount::from(current_amount_paid);
-
-            // Calculate new amount_issued with overflow check
-            let new_amount_issued = current_amount_issued
-                .checked_add(amount_issued)
-                .ok_or_else(|| database::Error::AmountOverflow)?;
-
-            current_amount_paid
-                .checked_sub(new_amount_issued)
-                .ok_or(Error::Internal("Over-issued not allowed".to_owned()))?;
-
-            new_amount_issued
-        };
+        let new_amount_issued = quote
+            .increment_amount_issued(amount_issued)
+            .map_err(|_| Error::AmountOverflow)?;
 
         // Update the amount_issued
         query(
@@ -1157,7 +1130,7 @@ where
             "#,
         )?
         .bind("amount_issued", new_amount_issued.to_i64())
-        .bind("quote_id", quote_id.to_string())
+        .bind("quote_id", quote.id.to_string())
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
@@ -1173,17 +1146,17 @@ INSERT INTO mint_quote_issued
 VALUES (:quote_id, :amount, :timestamp);
             "#,
         )?
-        .bind("quote_id", quote_id.to_string())
+        .bind("quote_id", quote.id.to_string())
         .bind("amount", amount_issued.to_i64())
         .bind("timestamp", current_time as i64)
         .execute(&self.inner)
         .await?;
 
-        Ok(new_amount_issued)
+        Ok(quote)
     }
 
     #[instrument(skip_all)]
-    async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<(), Self::Err> {
+    async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<MintQuote, Self::Err> {
         query(
             r#"
                 INSERT INTO mint_quote (
@@ -1197,7 +1170,7 @@ VALUES (:quote_id, :amount, :timestamp);
         .bind("id", quote.id.to_string())
         .bind("amount", quote.amount.map(|a| a.to_i64()))
         .bind("unit", quote.unit.to_string())
-        .bind("request", quote.request)
+        .bind("request", quote.request.clone())
         .bind("expiry", quote.expiry as i64)
         .bind(
             "request_lookup_id",
@@ -1210,7 +1183,9 @@ VALUES (:quote_id, :amount, :timestamp);
         .execute(&self.inner)
         .await?;
 
-        Ok(())
+        self.locked_records.lock(&quote.id);
+
+        Ok(quote)
     }
 
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
@@ -1256,6 +1231,8 @@ VALUES (:quote_id, :amount, :timestamp);
         .bind("payment_method", quote.payment_method.to_string())
         .execute(&self.inner)
         .await?;
+
+        self.locked_records.lock(&quote.id);
 
         Ok(())
     }
@@ -1389,28 +1366,52 @@ VALUES (:quote_id, :amount, :timestamp);
     }
 
     async fn get_mint_quote(&mut self, quote_id: &QuoteId) -> Result<Option<MintQuote>, Self::Err> {
-        get_mint_quote_inner(&self.inner, quote_id, true).await
+        get_mint_quote_inner(&self.inner, quote_id, true)
+            .await
+            .inspect(|quote| {
+                quote.as_ref().inspect(|mint_quote| {
+                    self.locked_records.lock(&mint_quote.id);
+                });
+            })
     }
 
     async fn get_melt_quote(
         &mut self,
         quote_id: &QuoteId,
     ) -> Result<Option<mint::MeltQuote>, Self::Err> {
-        get_melt_quote_inner(&self.inner, quote_id, true).await
+        get_melt_quote_inner(&self.inner, quote_id, true)
+            .await
+            .inspect(|quote| {
+                quote.as_ref().inspect(|melt_quote| {
+                    self.locked_records.lock(&melt_quote.id);
+                });
+            })
     }
 
     async fn get_mint_quote_by_request(
         &mut self,
         request: &str,
     ) -> Result<Option<MintQuote>, Self::Err> {
-        get_mint_quote_by_request_inner(&self.inner, request, true).await
+        get_mint_quote_by_request_inner(&self.inner, request, true)
+            .await
+            .inspect(|quote| {
+                quote.as_ref().inspect(|mint_quote| {
+                    self.locked_records.lock(&mint_quote.id);
+                });
+            })
     }
 
     async fn get_mint_quote_by_request_lookup_id(
         &mut self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
-        get_mint_quote_by_request_lookup_id_inner(&self.inner, request_lookup_id, true).await
+        get_mint_quote_by_request_lookup_id_inner(&self.inner, request_lookup_id, true)
+            .await
+            .inspect(|quote| {
+                quote.as_ref().inspect(|mint_quote| {
+                    self.locked_records.lock(&mint_quote.id);
+                });
+            })
     }
 }
 
@@ -1633,7 +1634,7 @@ where
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let mut current_states = get_current_states(&*conn, ys).await?;
+        let mut current_states = get_current_states(&*conn, ys, false).await?;
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
     }
@@ -2180,6 +2181,7 @@ where
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
+            locked_records: Default::default(),
         }))
     }
 }
@@ -2473,6 +2475,7 @@ where
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
+            locked_records: Default::default(),
         };
 
         Ok(Box::new(tx))
