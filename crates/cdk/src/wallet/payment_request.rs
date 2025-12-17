@@ -20,9 +20,8 @@ use reqwest::Client;
 use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
-use crate::nuts::Nut10Secret;
 use crate::nuts::nut18::Nut10SecretRequest;
-use crate::nuts::{CurrencyUnit, Transport};
+use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
 #[cfg(feature = "nostr")]
 use crate::wallet::MultiMintReceiveOptions;
 use crate::wallet::{MultiMintWallet, SendOptions};
