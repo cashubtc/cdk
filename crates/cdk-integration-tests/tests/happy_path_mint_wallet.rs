@@ -168,6 +168,19 @@ async fn test_happy_mint_melt_round_trip() {
 
     assert_eq!(response_json, expected_json);
 
+    // Read the initial state notification before starting the melt to ensure we capture Unpaid
+    let initial_notification =
+        get_notifications(&mut reader, Duration::from_millis(15000), 1).await;
+    let (sub_id, payload) = &initial_notification[0];
+    assert_eq!("test-sub", sub_id);
+    let initial_melt = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(m) => m,
+        _ => panic!("Wrong payload"),
+    };
+    assert_eq!(initial_melt.state, MeltQuoteState::Unpaid);
+    assert_eq!(initial_melt.quote.to_string(), melt.id);
+
+    // Now start the melt
     let mut metadata = HashMap::new();
     metadata.insert("test".to_string(), "value".to_string());
 
@@ -186,42 +199,27 @@ async fn test_happy_mint_melt_round_trip() {
     assert_eq!(tx.amount, melt.amount);
     assert_eq!(tx.metadata, metadata);
 
-    let mut notifications = get_notifications(&mut reader, Duration::from_millis(15000), 3).await;
-    notifications.reverse();
+    // Read remaining notifications (Pending -> Paid)
+    let notifications = get_notifications(&mut reader, Duration::from_millis(15000), 2).await;
 
-    let (sub_id, payload) = notifications.pop().unwrap();
-
-    // first message is the current state
+    let (sub_id, payload) = &notifications[0];
     assert_eq!("test-sub", sub_id);
-    let payload = match payload {
-        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
+    let pending_melt = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(m) => m,
         _ => panic!("Wrong payload"),
     };
+    assert_eq!(pending_melt.state, MeltQuoteState::Pending);
+    assert_eq!(pending_melt.quote.to_string(), melt.id);
 
-    // assert_eq!(payload.amount + payload.fee_reserve, 50.into());
-    assert_eq!(payload.quote.to_string(), melt.id);
-    assert_eq!(payload.state, MeltQuoteState::Unpaid);
-
-    // get current state
-    let (sub_id, payload) = notifications.pop().unwrap();
+    let (sub_id, payload) = &notifications[1];
     assert_eq!("test-sub", sub_id);
-    let payload = match payload {
-        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
+    let final_melt = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(m) => m,
         _ => panic!("Wrong payload"),
     };
-    assert_eq!(payload.quote.to_string(), melt.id);
-    assert_eq!(payload.state, MeltQuoteState::Pending);
-
-    // get current state
-    let (sub_id, payload) = notifications.pop().unwrap();
-    assert_eq!("test-sub", sub_id);
-    let payload = match payload {
-        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
-        _ => panic!("Wrong payload"),
-    };
-    assert_eq!(payload.amount, 50.into());
-    assert_eq!(payload.quote.to_string(), melt.id);
-    assert_eq!(payload.state, MeltQuoteState::Paid);
+    assert_eq!(final_melt.state, MeltQuoteState::Paid);
+    assert_eq!(final_melt.amount, 50.into());
+    assert_eq!(final_melt.quote.to_string(), melt.id);
 }
 
 /// Tests basic minting functionality with payment verification
