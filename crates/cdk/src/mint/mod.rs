@@ -709,7 +709,7 @@ impl Mint {
     /// Handle payment for a specific mint quote (extracted from pay_mint_quote)
     #[instrument(skip_all)]
     async fn handle_mint_quote_payment(
-        tx: &mut Box<dyn database::MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
         mint_quote: &MintQuote,
         wait_payment_response: WaitPaymentResponse,
         pubsub_manager: &Arc<PubSubManager>,
