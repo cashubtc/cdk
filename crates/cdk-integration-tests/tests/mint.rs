@@ -241,15 +241,15 @@ async fn test_concurrent_duplicate_payment_handling() {
         "Exactly one task should successfully process the payment (got {})",
         success_count
     );
-    assert_eq!(
-        duplicate_errors, 9,
-        "Nine tasks should receive Duplicate error (got {})",
-        duplicate_errors
-    );
     assert!(
         other_errors.is_empty(),
         "No unexpected errors should occur. Got: {:?}",
         other_errors
+    );
+    assert_eq!(
+        duplicate_errors, 9,
+        "Nine tasks should receive Duplicate error (got {})",
+        duplicate_errors
     );
 
     // Verify the quote was incremented exactly once
