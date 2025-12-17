@@ -656,8 +656,7 @@ impl CdkMint for MintRPCServer {
                     payment_id: mint_quote.request_lookup_id.to_string(),
                     payment_amount: mint_quote
                         .amount
-                        .unwrap_or(mint_quote.amount_paid())
-                        .clone(),
+                        .unwrap_or(mint_quote.amount_paid()),
                     unit: mint_quote.unit.clone(),
                     payment_identifier: mint_quote.request_lookup_id.clone(),
                 };
