@@ -541,29 +541,37 @@ pub trait SpendingConditionVerification {
 
         // Try primary path first (data + pubkeys)
         // Per NUT-11: "Locktime Multisig conditions continue to apply"
-        if let Ok(signatures) = extract_signatures_from_witness(first_witness) {
-            if let Ok(valid_sig_count) = super::nut11::valid_signatures(
-                msg_to_sign.as_bytes(),
-                &requirements.pubkeys,
-                &signatures,
-            ) {
-                if valid_sig_count >= requirements.required_sigs {
-                    return Ok(());
-                }
+        {
+            let primary_valid = extract_signatures_from_witness(first_witness)
+                .ok()
+                .and_then(|sigs| {
+                    super::nut11::valid_signatures(
+                        msg_to_sign.as_bytes(),
+                        &requirements.pubkeys,
+                        &sigs,
+                    )
+                    .ok()
+                })
+                .is_some_and(|count| count >= requirements.required_sigs);
+
+            if primary_valid {
+                return Ok(());
             }
         }
 
         // Primary path failed - try refund path if available
-        if let Some(refund_path) = &requirements.refund_path {
-            let signatures = extract_signatures_from_witness(first_witness)?;
-            let valid_sig_count = super::nut11::valid_signatures(
-                msg_to_sign.as_bytes(),
-                &refund_path.pubkeys,
-                &signatures,
-            )?;
+        {
+            if let Some(refund_path) = &requirements.refund_path {
+                let signatures = extract_signatures_from_witness(first_witness)?;
+                let valid_sig_count = super::nut11::valid_signatures(
+                    msg_to_sign.as_bytes(),
+                    &refund_path.pubkeys,
+                    &signatures,
+                )?;
 
-            if valid_sig_count >= refund_path.required_sigs {
-                return Ok(());
+                if valid_sig_count >= refund_path.required_sigs {
+                    return Ok(());
+                }
             }
         }
 

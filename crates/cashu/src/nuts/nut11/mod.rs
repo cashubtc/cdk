@@ -177,39 +177,45 @@ impl Proof {
 
         // Try primary path first (data + pubkeys)
         // Per NUT-11: "Locktime Multisig conditions continue to apply"
-        if let Some(sigs) = &witness_signatures {
-            let signatures: Result<Vec<Signature>, _> =
-                sigs.iter().map(|s| Signature::from_str(s)).collect();
-            if let Ok(signatures) = signatures {
-                if let Ok(valid_sig_count) =
-                    valid_signatures(msg, &requirements.pubkeys, &signatures)
-                {
-                    if valid_sig_count >= requirements.required_sigs {
-                        return Ok(());
-                    }
-                }
+        {
+            let primary_valid = witness_signatures
+                .as_ref()
+                .and_then(|sigs| {
+                    sigs.iter()
+                        .map(|s| Signature::from_str(s))
+                        .collect::<Result<Vec<_>, _>>()
+                        .ok()
+                })
+                .and_then(|sigs| valid_signatures(msg, &requirements.pubkeys, &sigs).ok())
+                .is_some_and(|count| count >= requirements.required_sigs);
+
+            if primary_valid {
+                return Ok(());
             }
         }
 
         // Primary path failed or no signatures - try refund path if available
-        if let Some(refund_path) = &requirements.refund_path {
-            // Anyone can spend (locktime passed, no refund keys)
-            if refund_path.required_sigs == 0 {
-                return Ok(());
-            }
+        {
+            if let Some(refund_path) = &requirements.refund_path {
+                // Anyone can spend (locktime passed, no refund keys)
+                if refund_path.required_sigs == 0 {
+                    return Ok(());
+                }
 
-            // Need signatures for refund path
-            if let Some(sigs) = &witness_signatures {
-                let signatures: Result<Vec<Signature>, _> =
-                    sigs.iter().map(|s| Signature::from_str(s)).collect();
-                if let Ok(signatures) = signatures {
-                    if let Ok(valid_sig_count) =
-                        valid_signatures(msg, &refund_path.pubkeys, &signatures)
-                    {
-                        if valid_sig_count >= refund_path.required_sigs {
-                            return Ok(());
-                        }
-                    }
+                // Need signatures for refund path
+                let refund_valid = witness_signatures
+                    .as_ref()
+                    .and_then(|sigs| {
+                        sigs.iter()
+                            .map(|s| Signature::from_str(s))
+                            .collect::<Result<Vec<_>, _>>()
+                            .ok()
+                    })
+                    .and_then(|sigs| valid_signatures(msg, &refund_path.pubkeys, &sigs).ok())
+                    .is_some_and(|count| count >= refund_path.required_sigs);
+
+                if refund_valid {
+                    return Ok(());
                 }
             }
         }
