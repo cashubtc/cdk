@@ -547,7 +547,7 @@ impl Mint {
     /// # Returns
     /// * `BatchQuoteStatusResponse` - Response containing quote statuses
     /// * `Error` if validation fails
-    #[instrument(skip_all, fields(quote_count = request.quote.len()))]
+    #[instrument(skip_all, fields(quote_count = request.quotes.len()))]
     pub async fn batch_check_mint_quotes(
         &self,
         payment_method: PaymentMethod,
@@ -557,18 +557,18 @@ impl Mint {
         METRICS.inc_in_flight_requests("batch_check_mint_quotes");
         let result = async {
             // Validation: empty quotes
-            if request.quote.is_empty() {
+            if request.quotes.is_empty() {
                 return Err(Error::BatchEmpty);
             }
 
             // Validation: max batch size
-            if request.quote.len() > MAX_BATCH_SIZE {
+            if request.quotes.len() > MAX_BATCH_SIZE {
                 return Err(Error::BatchSizeExceeded);
             }
 
             // Validation: no duplicate quotes
             let mut seen = HashSet::new();
-            for quote_id_str in &request.quote {
+            for quote_id_str in &request.quotes {
                 if !seen.insert(quote_id_str) {
                     return Err(Error::DuplicatePaymentId);
                 }
@@ -577,7 +577,7 @@ impl Mint {
             // Check each quote and collect responses
             let mut responses = Vec::new();
 
-            for quote_id_str in &request.quote {
+            for quote_id_str in &request.quotes {
                 // Try to parse as QuoteId
                 let quote_id = match QuoteId::from_str(quote_id_str) {
                     Ok(id) => id,
@@ -666,10 +666,10 @@ impl Mint {
                 .expect("amount sum");
 
             let normalized_request = BatchMintRequest {
-                quote: vec![quote.to_string()],
+                quotes: vec![quote.to_string()],
                 quote_amounts: Some(vec![total_amount]),
                 outputs,
-                signature: signature.map(|sig| vec![Some(sig)]),
+                signatures: signature.map(|sig| vec![Some(sig)]),
             };
 
             self.process_mint_workload(
@@ -709,7 +709,7 @@ impl Mint {
     /// # Returns
     /// * `MintResponse` - Response containing blind signatures in order
     /// * `Error` if validation fails, quotes are not found, or signing fails
-    #[instrument(skip_all, fields(quote_count = batch_request.quote.len()))]
+    #[instrument(skip_all, fields(quote_count = batch_request.quotes.len()))]
     pub async fn process_batch_mint_request(
         &self,
         batch_request: BatchMintRequest,
@@ -738,7 +738,7 @@ impl Mint {
         result
     }
 
-    #[instrument(skip_all, fields(origin = ?origin, quote_count = batch_request.quote.len()))]
+    #[instrument(skip_all, fields(origin = ?origin, quote_count = batch_request.quotes.len()))]
     async fn process_mint_workload(
         &self,
         batch_request: BatchMintRequest,
@@ -748,17 +748,17 @@ impl Mint {
         // Sanity checks on the request shape before we touch state: non-empty, within batch size,
         // and no duplicate quote IDs when called via the batch endpoint.
         // Top-level batch validation (size, dedup) before we touch storage
-        if batch_request.quote.is_empty() {
+        if batch_request.quotes.is_empty() {
             return Err(Error::BatchEmpty);
         }
 
-        if origin == MintRequestOrigin::Batch && batch_request.quote.len() > MAX_BATCH_SIZE {
+        if origin == MintRequestOrigin::Batch && batch_request.quotes.len() > MAX_BATCH_SIZE {
             return Err(Error::BatchSizeExceeded);
         }
 
         if origin == MintRequestOrigin::Batch {
             let mut seen = HashSet::new();
-            for quote_id_str in &batch_request.quote {
+            for quote_id_str in &batch_request.quotes {
                 if !seen.insert(quote_id_str) {
                     return Err(Error::DuplicatePaymentId);
                 }
@@ -766,8 +766,8 @@ impl Mint {
         }
 
         // Parse quote IDs and collect them in the same order as provided.
-        let mut quote_ids = Vec::with_capacity(batch_request.quote.len());
-        for quote_id_str in &batch_request.quote {
+        let mut quote_ids = Vec::with_capacity(batch_request.quotes.len());
+        for quote_id_str in &batch_request.quotes {
             let quote_id = QuoteId::from_str(quote_id_str).map_err(|_| Error::UnknownQuote)?;
             quote_ids.push(quote_id);
         }
@@ -820,7 +820,7 @@ impl Mint {
         let locked_quotes: Vec<bool> = quotes.iter().map(|q| q.pubkey.is_some()).collect();
         let has_locked_quotes = locked_quotes.iter().any(|locked| *locked);
 
-        if let Some(signatures) = &batch_request.signature {
+        if let Some(signatures) = &batch_request.signatures {
             if signatures.len() != quotes.len() {
                 return Err(Error::BatchSignatureCountMismatch);
             }
@@ -833,7 +833,7 @@ impl Mint {
                             .clone()
                             .ok_or(Error::SignatureMissingOrInvalid)?;
                         let mint_req = cdk_common::nuts::MintRequest {
-                            quote: batch_request.quote[i].clone(),
+                            quote: batch_request.quotes[i].clone(),
                             outputs: batch_request.outputs.clone(),
                             signature: Some(sig_str.clone()),
                         };
@@ -921,15 +921,8 @@ impl Mint {
             }
         };
 
-        if payment_method == PaymentMethod::Bolt11 {
-            if outputs_amount != total_available_amount {
-                return Err(Error::TransactionUnbalanced(
-                    total_available_amount.into(),
-                    batch_request.total_amount()?.into(),
-                    0,
-                ));
-            }
-        } else if outputs_amount > total_available_amount {
+        // Validate output totals vs. available amount
+        if outputs_amount > total_available_amount {
             return Err(Error::TransactionUnbalanced(
                 total_available_amount.into(),
                 batch_request.total_amount()?.into(),
@@ -942,7 +935,41 @@ impl Mint {
         // - bolt12: wallet specifies per-quote expected amounts; mint enforces they don't exceed remaining
         let minted_amounts_per_quote =
             match payment_method {
-                PaymentMethod::Bolt11 => mintable_per_quote.clone(),
+                PaymentMethod::Bolt11 => {
+                    let expected = match &batch_request.quote_amounts {
+                        Some(requested) => {
+                            if requested.len() != mintable_per_quote.len() {
+                                return Err(Error::TransactionUnbalanced(
+                                    total_available_amount.into(),
+                                    batch_request.total_amount()?.into(),
+                                    0,
+                                ));
+                            }
+                            for (i, expected_amt) in requested.iter().enumerate() {
+                                if *expected_amt != mintable_per_quote[i] {
+                                    return Err(Error::IncorrectQuoteAmount);
+                                }
+                            }
+                            requested.clone()
+                        }
+                        None => mintable_per_quote.clone(),
+                    };
+
+                    let expected_total: Amount = expected
+                        .iter()
+                        .try_fold(Amount::ZERO, |acc, amt| acc.checked_add(*amt))
+                        .ok_or(Error::AmountOverflow)?;
+
+                    if outputs_amount != expected_total {
+                        return Err(Error::TransactionUnbalanced(
+                            expected_total.into(),
+                            batch_request.total_amount()?.into(),
+                            0,
+                        ));
+                    }
+
+                    expected
+                }
                 PaymentMethod::Bolt12 => {
                     let requested = batch_request.quote_amounts.as_ref().ok_or(
                         Error::TransactionUnbalanced(
@@ -960,12 +987,10 @@ impl Mint {
                         ));
                     }
 
-                    let mut remaining = outputs_amount;
                     let mut per_quote = Vec::with_capacity(mintable_per_quote.len());
-
                     for (i, available) in mintable_per_quote.iter().enumerate() {
                         let requested_amount = requested[i];
-                        if requested_amount > *available || requested_amount > remaining {
+                        if requested_amount > *available {
                             return Err(Error::TransactionUnbalanced(
                                 total_available_amount.into(),
                                 batch_request.total_amount()?.into(),
@@ -973,14 +998,16 @@ impl Mint {
                             ));
                         }
                         per_quote.push(requested_amount);
-                        remaining = remaining
-                            .checked_sub(requested_amount)
-                            .ok_or(Error::AmountOverflow)?;
                     }
 
-                    if remaining != Amount::ZERO {
+                    let requested_total: Amount = per_quote
+                        .iter()
+                        .try_fold(Amount::ZERO, |acc, amt| acc.checked_add(*amt))
+                        .ok_or(Error::AmountOverflow)?;
+
+                    if outputs_amount != requested_total {
                         return Err(Error::TransactionUnbalanced(
-                            total_available_amount.into(),
+                            requested_total.into(),
                             batch_request.total_amount()?.into(),
                             0,
                         ));
@@ -995,76 +1022,17 @@ impl Mint {
         ensure_cdk!(output_unit == unit, Error::UnsupportedUnit);
 
         let operation = Operation::new_mint();
-        // Split blinded messages and signatures per quote so we can record the linkage in storage.
-        let mut grouped_msgs: Vec<(QuoteId, Vec<BlindedMessage>, Vec<BlindSignature>)> =
-            Vec::with_capacity(quote_ids.len());
-        let mut quote_idx = 0;
-        let mut remaining_for_quote = minted_amounts_per_quote
-            .get(quote_idx)
-            .cloned()
-            .unwrap_or_default();
-        let mut current_msgs = Vec::new();
-        let mut current_sigs = Vec::new();
+        tx.add_blinded_messages(None, &batch_request.outputs, &operation)
+            .await?;
 
-        for (msg, sig) in batch_request
+        let blinded_secrets: Vec<PublicKey> = batch_request
             .outputs
             .iter()
-            .cloned()
-            .zip(blind_signatures.iter().cloned())
-        {
-            // Advance to next quote if the previous one is fully allocated.
-            while remaining_for_quote == Amount::ZERO {
-                quote_idx += 1;
-                remaining_for_quote = minted_amounts_per_quote
-                    .get(quote_idx)
-                    .cloned()
-                    .unwrap_or(Amount::ZERO);
-            }
+            .map(|p| p.blinded_secret)
+            .collect();
 
-            if msg.amount > remaining_for_quote {
-                return Err(Error::TransactionUnbalanced(
-                    total_available_amount.into(),
-                    batch_request.total_amount()?.into(),
-                    0,
-                ));
-            }
-
-            remaining_for_quote -= msg.amount;
-            current_msgs.push(msg);
-            current_sigs.push(sig);
-
-            if remaining_for_quote == Amount::ZERO {
-                grouped_msgs.push((
-                    quote_ids
-                        .get(quote_idx)
-                        .cloned()
-                        .ok_or(Error::UnknownQuote)?,
-                    current_msgs,
-                    current_sigs,
-                ));
-                current_msgs = Vec::new();
-                current_sigs = Vec::new();
-            }
-        }
-
-        // If we still have unfulfilled quota for the last quote, the request was malformed.
-        if remaining_for_quote > Amount::ZERO || quote_idx + 1 < minted_amounts_per_quote.len() {
-            return Err(Error::TransactionUnbalanced(
-                total_available_amount.into(),
-                batch_request.total_amount()?.into(),
-                0,
-            ));
-        }
-
-        for (quote_id, msgs, sigs) in grouped_msgs {
-            tx.add_blinded_messages(Some(&quote_id), &msgs, &operation)
-                .await?;
-
-            let blinded_secrets: Vec<PublicKey> = msgs.iter().map(|p| p.blinded_secret).collect();
-
-            tx.add_blind_signatures(&blinded_secrets, &sigs, Some(quote_id.clone()))
-                .await?;
-        }
+        tx.add_blind_signatures(&blinded_secrets, &blind_signatures, None)
+            .await?;
 
         let mut total_issued_per_quote = Vec::with_capacity(quote_ids.len());
         for (i, quote_id) in quote_ids.iter().enumerate() {
@@ -1141,10 +1109,10 @@ mod tests {
             .expect("amount sum should not overflow in test");
 
         let batch_request = BatchMintRequest {
-            quote: vec![quote_id.to_string()],
+            quotes: vec![quote_id.to_string()],
             quote_amounts: Some(vec![total_amount]),
             outputs: outputs.clone(),
-            signature: None,
+            signatures: None,
         };
 
         let response = mint

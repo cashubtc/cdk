@@ -15,7 +15,7 @@ use crate::Amount;
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct BatchMintRequest {
     /// Quote IDs
-    pub quote: Vec<String>,
+    pub quotes: Vec<String>,
     /// Expected amount to mint per quote, in the same order as `quote`
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub quote_amounts: Option<Vec<Amount>>,
@@ -23,7 +23,7 @@ pub struct BatchMintRequest {
     pub outputs: Vec<BlindedMessage>,
     /// Signatures for NUT-20 locked quotes (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub signature: Option<Vec<Option<String>>>,
+    pub signatures: Option<Vec<Option<String>>>,
 }
 
 impl BatchMintRequest {
@@ -47,7 +47,7 @@ impl BatchMintRequest {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct BatchQuoteStatusRequest {
     /// Quote IDs
-    pub quote: Vec<String>,
+    pub quotes: Vec<String>,
 }
 
 /// Batch minting settings (NUT-XX)

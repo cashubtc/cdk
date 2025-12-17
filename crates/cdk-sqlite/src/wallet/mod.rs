@@ -177,7 +177,6 @@ mod tests {
                 payment_method: payment_method.clone(),
                 amount_issued: Amount::from(0),
                 amount_paid: Amount::from(0),
-                spending_condition: None,
             };
 
             // Store the quote

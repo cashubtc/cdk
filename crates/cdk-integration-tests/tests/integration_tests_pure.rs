@@ -1332,7 +1332,7 @@ async fn test_batch_quote_status_handles_bolt11_and_bolt12() {
     let bolt11_response = connector
         .post_mint_batch_quote_status(
             BatchQuoteStatusRequest {
-                quote: bolt11_quotes.clone(),
+                quotes: bolt11_quotes.clone(),
             },
             PaymentMethod::Bolt11,
         )
@@ -1347,7 +1347,7 @@ async fn test_batch_quote_status_handles_bolt11_and_bolt12() {
     let bolt12_response = connector
         .post_mint_batch_quote_status(
             BatchQuoteStatusRequest {
-                quote: bolt12_quotes.clone(),
+                quotes: bolt12_quotes.clone(),
             },
             PaymentMethod::Bolt12,
         )

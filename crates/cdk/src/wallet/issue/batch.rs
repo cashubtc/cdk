@@ -125,11 +125,13 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
         let mut total_amount = Amount::ZERO;
+        let mut quote_amounts = Vec::with_capacity(quote_infos.len());
         for quote in quote_infos {
             let amount = quote.amount_mintable();
             if amount == Amount::ZERO {
                 return Err(Error::AmountUndefined);
             }
+            quote_amounts.push(amount);
             total_amount += amount;
         }
 
@@ -204,10 +206,10 @@ impl Wallet {
         }
 
         let batch_request = BatchMintRequest {
-            quote: quote_ids.to_vec(),
-            quote_amounts: Some(vec![total_amount]),
+            quotes: quote_ids.to_vec(),
+            quote_amounts: Some(quote_amounts),
             outputs: blinded_messages,
-            signature: batch_signatures,
+            signatures: batch_signatures,
         };
 
         let proofs = self
@@ -272,10 +274,10 @@ impl Wallet {
             self.prepare_bolt12_batch_signatures(quote_ids, quote_infos, &blinded_messages)?;
 
         let batch_request = BatchMintRequest {
-            quote: quote_ids.to_vec(),
+            quotes: quote_ids.to_vec(),
             quote_amounts: Some(mintable_amounts.clone()),
             outputs: blinded_messages,
-            signature: Some(signatures),
+            signatures: Some(signatures),
         };
         let proofs = self
             .execute_batch_mint(
@@ -327,7 +329,7 @@ impl Wallet {
             crate::nuts::PaymentMethod::Bolt11 | crate::nuts::PaymentMethod::Bolt12
         ) {
             let batch_status_request = BatchQuoteStatusRequest {
-                quote: quote_ids.to_vec(),
+                quotes: quote_ids.to_vec(),
             };
 
             let batch_status = self

@@ -146,7 +146,7 @@ async fn create_and_store_mint_quote_with_unit(
 fn test_batch_mint_parses_unlocked_quotes() {
     // Test parsing: batch with multiple unlocked quotes (no signatures)
     let request_json = r#"{
-        "quote": ["quote1", "quote2"],
+        "quotes": ["quote1", "quote2"],
         "outputs": []
     }"#;
 
@@ -154,9 +154,9 @@ fn test_batch_mint_parses_unlocked_quotes() {
     assert!(request.is_ok(), "Should parse unlocked quotes request");
     let req = request.unwrap();
 
-    assert_eq!(req.quote.len(), 2);
+    assert_eq!(req.quotes.len(), 2);
     assert!(
-        req.signature.is_none(),
+        req.signatures.is_none(),
         "Unlocked quotes should have no signatures"
     );
 }
@@ -165,28 +165,34 @@ fn test_batch_mint_parses_unlocked_quotes() {
 fn test_batch_mint_parses_locked_quotes() {
     // Test parsing: batch with NUT-20 locked quotes (with signatures)
     let request_json = r#"{
-        "quote": ["locked_quote1", "locked_quote2"],
+        "quotes": ["locked_quote1", "locked_quote2"],
         "outputs": [],
-        "signature": ["sig1", "sig2"]
+        "signatures": ["sig1", "sig2"]
     }"#;
 
     let request: Result<BatchMintRequest, _> = serde_json::from_str(request_json);
     assert!(request.is_ok(), "Should parse locked quotes request");
     let req = request.unwrap();
 
-    assert_eq!(req.quote.len(), 2);
-    assert_eq!(req.signature.as_ref().unwrap().len(), 2);
-    assert_eq!(req.signature.as_ref().unwrap()[0], Some("sig1".to_string()));
-    assert_eq!(req.signature.as_ref().unwrap()[1], Some("sig2".to_string()));
+    assert_eq!(req.quotes.len(), 2);
+    assert_eq!(req.signatures.as_ref().unwrap().len(), 2);
+    assert_eq!(
+        req.signatures.as_ref().unwrap()[0],
+        Some("sig1".to_string())
+    );
+    assert_eq!(
+        req.signatures.as_ref().unwrap()[1],
+        Some("sig2".to_string())
+    );
 }
 
 #[test]
 fn test_batch_mint_parses_mixed_locked_unlocked() {
     // Test parsing: batch with mix of locked and unlocked quotes (some nulls in signature array)
     let request_json = r#"{
-        "quote": ["locked", "unlocked", "locked"],
+        "quotes": ["locked", "unlocked", "locked"],
         "outputs": [],
-        "signature": ["sig1", null, "sig3"]
+        "signatures": ["sig1", null, "sig3"]
     }"#;
 
     let request: Result<BatchMintRequest, _> = serde_json::from_str(request_json);
@@ -196,8 +202,8 @@ fn test_batch_mint_parses_mixed_locked_unlocked() {
     );
     let req = request.unwrap();
 
-    assert_eq!(req.quote.len(), 3);
-    let sigs = req.signature.as_ref().unwrap();
+    assert_eq!(req.quotes.len(), 3);
+    let sigs = req.signatures.as_ref().unwrap();
     assert_eq!(sigs.len(), 3);
     assert_eq!(sigs[0], Some("sig1".to_string()));
     assert_eq!(sigs[1], None, "Unlocked quote should have null signature");
@@ -208,17 +214,17 @@ fn test_batch_mint_parses_mixed_locked_unlocked() {
 fn test_batch_mint_round_trip_serialization() {
     // Test: serialization and deserialization preserves request structure
     let request_json = r#"{
-        "quote": ["q1", "q2"],
+        "quotes": ["q1", "q2"],
         "outputs": [],
-        "signature": ["sig1", null]
+        "signatures": ["sig1", null]
     }"#;
 
     let original: BatchMintRequest = serde_json::from_str(request_json).unwrap();
     let serialized = serde_json::to_string(&original).expect("serialize");
     let deserialized: BatchMintRequest = serde_json::from_str(&serialized).expect("deserialize");
 
-    assert_eq!(original.quote, deserialized.quote);
-    assert_eq!(original.signature, deserialized.signature);
+    assert_eq!(original.quotes, deserialized.quotes);
+    assert_eq!(original.signatures, deserialized.signatures);
 }
 
 // ============================================================================
@@ -230,10 +236,10 @@ async fn test_batch_mint_handler_rejects_empty_quotes() {
     let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     let request = BatchMintRequest {
-        quote: vec![],
+        quotes: vec![],
         quote_amounts: None,
         outputs: vec![],
-        signature: None,
+        signatures: None,
     };
 
     let result = mint
@@ -256,10 +262,10 @@ async fn test_batch_mint_handler_rejects_duplicates() {
 
     // Try to mint with duplicate quote ID
     let request = BatchMintRequest {
-        quote: vec!["q1".to_string(),
-            quote_amounts: None, "q1".to_string()],
+        quotes: vec!["q1".to_string(), "q1".to_string()],
+        quote_amounts: None,
         outputs, // Correct count with realistic blinded messages
-        signature: None,
+        signatures: None,
     };
 
     let result = mint
@@ -284,10 +290,10 @@ async fn test_batch_mint_handler_rejects_over_limit() {
     let outputs = create_test_outputs(&mint, 101).await;
 
     let request = BatchMintRequest {
-        quote: quotes,
+        quotes: quotes,
         quote_amounts: None,
         outputs, // Correct count with realistic blinded messages
-        signature: None,
+        signatures: None,
     };
 
     let result = mint
@@ -340,10 +346,10 @@ async fn test_batch_mint_handler_validates_signature_count() {
 
     // Provide only 1 signature for 2 quotes - this is the mismatch we're testing
     let request = BatchMintRequest {
-        quote: vec![quote_id_1.to_string(),
-            quote_amounts: None, quote_id_2.to_string()],
+        quotes: vec![quote_id_1.to_string(), quote_id_2.to_string()],
+        quote_amounts: None,
         outputs,
-        signature: Some(vec![
+        signatures: Some(vec![
             sig_req.signature.clone(), // Valid sig for q1
                                        // Missing sig for q2 - count mismatch
         ]),
@@ -388,10 +394,10 @@ async fn test_batch_mint_rejects_invalid_nut20_signatures() {
     let outputs = create_test_outputs(&mint, 1).await;
 
     let request = BatchMintRequest {
-        quote: vec![quote_id.to_string()],
+        quotes: vec![quote_id.to_string()],
         quote_amounts: None,
         outputs,
-        signature: Some(vec![Some("asdf".to_string())]), // Invalid signature
+        signatures: Some(vec![Some("asdf".to_string())]), // Invalid signature
     };
 
     let result = mint
@@ -435,10 +441,10 @@ async fn test_batch_mint_rejects_signature_without_pubkey() {
 
     // Try to provide signature for unlocked quote (should be rejected)
     let request = BatchMintRequest {
-        quote: vec![quote_id.to_string()],
+        quotes: vec![quote_id.to_string()],
         quote_amounts: None,
         outputs, // Realistic blinded messages
-        signature: Some(vec![mint_req.signature.clone()]),
+        signatures: Some(vec![mint_req.signature.clone()]),
     };
 
     let result = mint
@@ -479,10 +485,10 @@ async fn test_batch_mint_rejects_unpaid_quotes() {
 
     // Request with the valid but unpaid quote
     let request = BatchMintRequest {
-        quote: vec![quote_id.to_string()],
+        quotes: vec![quote_id.to_string()],
         quote_amounts: None,
         outputs,
-        signature: None,
+        signatures: None,
     };
 
     let result = mint
@@ -502,7 +508,7 @@ async fn test_batch_mint_enforces_single_payment_method() {
     let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create two quotes: one Bolt11, one Bolt12 (different payment methods)
-    // First quote: Bolt11
+    // First quotes: Bolt11
     let quote_id_1 = create_and_store_mint_quote(
         &mint,
         Some(100.into()),
@@ -513,7 +519,7 @@ async fn test_batch_mint_enforces_single_payment_method() {
     .await
     .expect("Failed to create first quote");
 
-    // Second quote: Bolt12 (different payment method)
+    // Second quotes: Bolt12 (different payment method)
     let quote_id_2 = create_and_store_mint_quote(
         &mint,
         Some(100.into()),
@@ -528,10 +534,10 @@ async fn test_batch_mint_enforces_single_payment_method() {
     let outputs = create_test_outputs(&mint, 2).await;
 
     let request = BatchMintRequest {
-        quote: vec![quote_id_1.to_string(),
-            quote_amounts: None, quote_id_2.to_string()],
+        quotes: vec![quote_id_1.to_string(), quote_id_2.to_string()],
+        quote_amounts: None,
         outputs,
-        signature: None,
+        signatures: None,
     };
 
     let result = mint
@@ -615,7 +621,7 @@ async fn test_batch_mint_enforces_single_currency_unit() {
     let mint = Arc::new(mint);
 
     // Create two quotes with different units
-    // First quote: SAT unit
+    // First quotes: SAT unit
     let quote_id_1 = create_and_store_mint_quote(
         &mint,
         Some(100.into()),
@@ -626,7 +632,7 @@ async fn test_batch_mint_enforces_single_currency_unit() {
     .await
     .expect("Failed to create first quote");
 
-    // Second quote: Msat unit (different from SAT)
+    // Second quotes: Msat unit (different from SAT)
     let quote_id_2 = create_and_store_mint_quote_with_unit(
         &mint,
         Some(1000.into()),
@@ -642,10 +648,10 @@ async fn test_batch_mint_enforces_single_currency_unit() {
     let outputs = create_test_outputs(&mint, 2).await;
 
     let request = BatchMintRequest {
-        quote: vec![quote_id_1.to_string(),
-            quote_amounts: None, quote_id_2.to_string()],
+        quotes: vec![quote_id_1.to_string(), quote_id_2.to_string()],
+        quote_amounts: None,
         outputs,
-        signature: None,
+        signatures: None,
     };
 
     let result = mint
@@ -681,10 +687,10 @@ async fn test_batch_mint_validates_url_path_payment_method() {
     let outputs = create_test_outputs(&mint, 1).await;
 
     let request = BatchMintRequest {
-        quote: vec![quote_id.to_string()],
+        quotes: vec![quote_id.to_string()],
         quote_amounts: None,
         outputs,
-        signature: None,
+        signatures: None,
     };
 
     // Call with Bolt11 as the endpoint payment method
@@ -815,10 +821,10 @@ async fn test_batch_mint_with_p2pk_spending_conditions() {
 
     // Create batch mint request
     let request = BatchMintRequest {
-        quote: vec![quote_id.to_string()],
+        quotes: vec![quote_id.to_string()],
         quote_amounts: None,
         outputs,
-        signature: None, // No NUT-20 signature needed
+        signatures: None, // No NUT-20 signature needed
     };
 
     let result = mint
@@ -906,10 +912,10 @@ async fn test_batch_mint_with_htlc_spending_conditions() {
 
     // Create batch mint request
     let request = BatchMintRequest {
-        quote: vec![quote_id.to_string()],
+        quotes: vec![quote_id.to_string()],
         quote_amounts: None,
         outputs,
-        signature: None,
+        signatures: None,
     };
 
     let result = mint
@@ -1034,10 +1040,10 @@ async fn test_batch_mint_with_mixed_spending_conditions() {
 
     // Create batch mint request with mixed conditions
     let request = BatchMintRequest {
-        quote: vec![quote_id_1.to_string(),
-            quote_amounts: None, quote_id_2.to_string()],
+        quotes: vec![quote_id_1.to_string(), quote_id_2.to_string()],
+        quote_amounts: None,
         outputs: all_outputs,
-        signature: None,
+        signatures: None,
     };
 
     let result = mint

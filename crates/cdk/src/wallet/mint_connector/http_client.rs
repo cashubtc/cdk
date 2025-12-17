@@ -321,10 +321,10 @@ mod tests {
         let client = HttpClient::with_transport(mint_url.clone(), transport.clone());
 
         let request = BatchMintRequest {
-            quote: vec!["q1".to_string()],
+            quotes: vec!["q1".to_string()],
             quote_amounts: Some(vec![Amount::ZERO]),
             outputs: Vec::new(),
-            signature: None,
+            signatures: None,
         };
 
         client
@@ -357,7 +357,7 @@ mod tests {
         let client = HttpClient::with_transport(mint_url.clone(), transport.clone());
 
         let request = BatchQuoteStatusRequest {
-            quote: vec!["q1".to_string()],
+            quotes: vec!["q1".to_string()],
         };
 
         let response = client

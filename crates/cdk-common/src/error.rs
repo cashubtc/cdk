@@ -940,6 +940,26 @@ impl ErrorCode {
             Self::Unknown(code) => *code,
         }
     }
+
+    /// Spec-friendly code string for APIs that expect symbolic codes
+    pub fn as_spec_str(&self) -> Option<&'static str> {
+        match self {
+            Self::BatchEmpty => Some("BATCH_EMPTY"),
+            Self::BatchSizeExceeded => Some("BATCH_SIZE_EXCEEDED"),
+            Self::DuplicateQuoteIds => Some("DUPLICATE_QUOTE_IDS"),
+            Self::UnknownQuote => Some("UNKNOWN_QUOTE"),
+            Self::PaymentMethodMismatch => Some("PAYMENT_METHOD_MISMATCH"),
+            Self::EndpointMethodMismatch => Some("ENDPOINT_METHOD_MISMATCH"),
+            Self::BatchUnitMismatch | Self::MultipleUnits => Some("UNIT_MISMATCH"),
+            Self::TransactionUnbalanced => Some("TRANSACTION_UNBALANCED"),
+            Self::SignatureInvalid => Some("SIGNATURE_INVALID"),
+            Self::SignatureMissing => Some("SIGNATURE_MISSING"),
+            Self::SignatureUnexpected => Some("UNEXPECTED_SIGNATURE"),
+            Self::SignatureCountMismatch => Some("SIGNATURE_COUNT_MISMATCH"),
+            Self::QuoteNotPaid => Some("QUOTE_NOT_PAID"),
+            _ => None,
+        }
+    }
 }
 
 impl Serialize for ErrorCode {
@@ -947,7 +967,11 @@ impl Serialize for ErrorCode {
     where
         S: Serializer,
     {
-        serializer.serialize_u16(self.to_code())
+        if let Some(spec) = self.as_spec_str() {
+            serializer.serialize_str(spec)
+        } else {
+            serializer.serialize_u16(self.to_code())
+        }
     }
 }
 
@@ -956,14 +980,62 @@ impl<'de> Deserialize<'de> for ErrorCode {
     where
         D: Deserializer<'de>,
     {
-        let code = u16::deserialize(deserializer)?;
+        struct Visitor;
 
-        Ok(ErrorCode::from_code(code))
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = ErrorCode;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a numeric error code or symbolic code string")
+            }
+
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(ErrorCode::from_code(v as u16))
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let normalized = v.to_ascii_uppercase();
+                let code = match normalized.as_str() {
+                    "BATCH_EMPTY" => ErrorCode::BatchEmpty,
+                    "BATCH_SIZE_EXCEEDED" => ErrorCode::BatchSizeExceeded,
+                    "DUPLICATE_QUOTE_IDS" => ErrorCode::DuplicateQuoteIds,
+                    "UNKNOWN_QUOTE" => ErrorCode::UnknownQuote,
+                    "PAYMENT_METHOD_MISMATCH" => ErrorCode::PaymentMethodMismatch,
+                    "ENDPOINT_METHOD_MISMATCH" => ErrorCode::EndpointMethodMismatch,
+                    "UNIT_MISMATCH" => ErrorCode::BatchUnitMismatch,
+                    "TRANSACTION_UNBALANCED" => ErrorCode::TransactionUnbalanced,
+                    "SIGNATURE_INVALID" => ErrorCode::SignatureInvalid,
+                    "SIGNATURE_MISSING" => ErrorCode::SignatureMissing,
+                    "UNEXPECTED_SIGNATURE" => ErrorCode::SignatureUnexpected,
+                    "SIGNATURE_COUNT_MISMATCH" => ErrorCode::SignatureCountMismatch,
+                    "QUOTE_NOT_PAID" => ErrorCode::QuoteNotPaid,
+                    other => {
+                        if let Ok(num) = other.parse::<u16>() {
+                            return Ok(ErrorCode::from_code(num));
+                        }
+                        return Err(E::custom(format!("unknown error code `{other}`")));
+                    }
+                };
+                Ok(code)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
     }
 }
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_code())
+        if let Some(spec) = self.as_spec_str() {
+            write!(f, "{spec}")
+        } else {
+            write!(f, "{}", self.to_code())
+        }
     }
 }

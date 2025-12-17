@@ -705,7 +705,7 @@ pub(crate) async fn post_restore(
 ///
 /// Exposed at `/v1/mint/{method}/check` where `{method}` is `bolt11` or `bolt12`.
 /// Check the status of multiple mint quotes at once. Unknown quotes are omitted from response.
-#[instrument(skip_all, fields(quote_count = ?payload.quote.len()))]
+#[instrument(skip_all, fields(quote_count = ?payload.quotes.len()))]
 pub(crate) async fn post_batch_check_mint(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
@@ -766,7 +766,7 @@ pub(crate) async fn post_batch_check_mint(
 /// - Supports bolt11 and bolt12
 ///
 /// The handler validates that all quotes match the payment method in the URL path.
-#[instrument(skip_all, fields(quote_count = ?payload.quote.len(), outputs_count = ?payload.outputs.len()))]
+#[instrument(skip_all, fields(quote_count = ?payload.quotes.len(), outputs_count = ?payload.outputs.len()))]
 pub(crate) async fn post_batch_mint(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
