@@ -6,7 +6,6 @@ use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::DynMintPayment;
-use cdk_common::util::unix_time;
 use cdk_common::{database, Amount, MintQuoteState, PaymentMethod};
 use tracing::instrument;
 
@@ -85,18 +84,17 @@ impl Mint {
 
                 match tx
                     .increment_mint_quote_amount_paid(
-                        &quote.id,
+                        quote.clone(),
                         amount_paid,
                         payment.payment_id.clone(),
                     )
                     .await
                 {
-                    Ok(total_paid) => {
-                        quote.increment_amount_paid(amount_paid)?;
-                        quote.add_payment(amount_paid, payment.payment_id.clone(), unix_time())?;
+                    Ok(updated_quote) => {
                         if let Some(pubsub_manager) = pubsub_manager.as_ref() {
-                            pubsub_manager.mint_quote_payment(quote, total_paid);
+                            pubsub_manager.mint_quote_payment(quote, updated_quote.amount_paid());
                         }
+                        *quote = updated_quote;
                     }
                     Err(database::Error::Duplicate) => {
                         tracing::debug!(

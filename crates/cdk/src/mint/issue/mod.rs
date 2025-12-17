@@ -409,7 +409,7 @@ impl Mint {
                 .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
                 .await
             {
-                self.pay_mint_quote(&mut tx, &mint_quote, wait_payment_response)
+                self.pay_mint_quote(&mut tx, mint_quote, wait_payment_response)
                     .await?;
             } else {
                 tracing::warn!(
@@ -452,7 +452,7 @@ impl Mint {
     pub async fn pay_mint_quote(
         &self,
         tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
-        mint_quote: &MintQuote,
+        mint_quote: MintQuote,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
         #[cfg(feature = "prometheus")]
@@ -674,8 +674,8 @@ impl Mint {
             .await?;
 
 
-        let total_issued = tx
-            .increment_mint_quote_amount_issued(&mint_request.quote, amount_issued)
+        let updated_quote = tx
+            .increment_mint_quote_amount_issued(mint_quote.clone(), amount_issued)
             .await?;
 
 
@@ -686,7 +686,7 @@ impl Mint {
         tx.commit().await?;
 
         self.pubsub_manager
-            .mint_quote_issue(&mint_quote, total_issued);
+            .mint_quote_issue(&mint_quote, updated_quote.amount_issued());
 
         Ok(MintResponse {
             signatures: blind_signatures,

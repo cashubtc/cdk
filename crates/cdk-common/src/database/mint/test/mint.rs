@@ -88,24 +88,24 @@ where
     );
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    assert!(tx.add_mint_quote(mint_quote.clone()).await.is_ok());
+    let mint_quote = tx.add_mint_quote(mint_quote).await.unwrap();
 
     let p1 = unique_string();
     let p2 = unique_string();
 
-    let new_paid_amount = tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 100.into(), p1.clone())
+    let mint_quote = tx
+        .increment_mint_quote_amount_paid(mint_quote, 100.into(), p1.clone())
         .await
         .unwrap();
 
-    assert_eq!(new_paid_amount, 100.into());
+    assert_eq!(mint_quote.amount_paid(), 100.into());
 
-    let new_paid_amount = tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 250.into(), p2.clone())
+    let mint_quote = tx
+        .increment_mint_quote_amount_paid(mint_quote, 250.into(), p2.clone())
         .await
         .unwrap();
 
-    assert_eq!(new_paid_amount, 350.into());
+    assert_eq!(mint_quote.amount_paid(), 350.into());
 
     tx.commit().await.unwrap();
 
@@ -150,19 +150,19 @@ where
     let p2 = unique_string();
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_mint_quote(mint_quote.clone()).await.unwrap();
-    let new_paid_amount = tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 100.into(), p1.clone())
+    let mint_quote = tx.add_mint_quote(mint_quote.clone()).await.unwrap();
+    let mint_quote = tx
+        .increment_mint_quote_amount_paid(mint_quote, 100.into(), p1.clone())
         .await
         .unwrap();
 
-    assert_eq!(new_paid_amount, 100.into());
+    assert_eq!(mint_quote.amount_paid(), 100.into());
 
-    let new_paid_amount = tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 250.into(), p2.clone())
+    let mint_quote = tx
+        .increment_mint_quote_amount_paid(mint_quote, 250.into(), p2.clone())
         .await
         .unwrap();
-    assert_eq!(new_paid_amount, 350.into());
+    assert_eq!(mint_quote.amount_paid(), 350.into());
     tx.commit().await.unwrap();
 
     let mint_quote_from_db = db
@@ -213,14 +213,14 @@ where
     let p1 = unique_string();
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_mint_quote(mint_quote.clone()).await.unwrap();
-    let amount_paid = tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 100.into(), p1.clone())
+    let mint_quote = tx.add_mint_quote(mint_quote.clone()).await.unwrap();
+    let mint_quote = tx
+        .increment_mint_quote_amount_paid(mint_quote, 100.into(), p1.clone())
         .await
         .unwrap();
 
     assert!(tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 100.into(), p1)
+        .increment_mint_quote_amount_paid(mint_quote.clone(), 100.into(), p1)
         .await
         .is_err());
     tx.commit().await.unwrap();
@@ -230,7 +230,7 @@ where
         .await
         .unwrap()
         .expect("mint_from_db");
-    assert_eq!(mint_quote_from_db.amount_paid(), amount_paid);
+    assert_eq!(mint_quote_from_db.amount_paid(), mint_quote.amount_paid());
     assert_eq!(mint_quote_from_db.payments.len(), 1);
 }
 
@@ -258,16 +258,21 @@ where
     );
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_mint_quote(mint_quote.clone()).await.unwrap();
-    let amount_paid = tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 100.into(), p1.clone())
+    let mint_quote = tx.add_mint_quote(mint_quote.clone()).await.unwrap();
+    let mint_quote = tx
+        .increment_mint_quote_amount_paid(mint_quote, 100.into(), p1.clone())
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mint_quote = tx
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("no error")
+        .expect("quote");
     assert!(tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 100.into(), p1)
+        .increment_mint_quote_amount_paid(mint_quote.clone(), 100.into(), p1)
         .await
         .is_err());
     tx.commit().await.unwrap(); // although in theory nothing has changed, let's try it out
@@ -277,7 +282,7 @@ where
         .await
         .unwrap()
         .expect("mint_from_db");
-    assert_eq!(mint_quote_from_db.amount_paid(), amount_paid);
+    assert_eq!(mint_quote_from_db.amount_paid(), mint_quote.amount_paid());
     assert_eq!(mint_quote_from_db.payments.len(), 1);
 }
 
@@ -303,9 +308,9 @@ where
     );
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_mint_quote(mint_quote.clone()).await.unwrap();
+    let mint_quote = tx.add_mint_quote(mint_quote.clone()).await.unwrap();
     assert!(tx
-        .increment_mint_quote_amount_issued(&mint_quote.id, 100.into())
+        .increment_mint_quote_amount_issued(mint_quote, 100.into())
         .await
         .is_err());
 }
@@ -336,8 +341,13 @@ where
     tx.commit().await.unwrap();
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mint_quote = tx
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("no error")
+        .expect("quote");
     assert!(tx
-        .increment_mint_quote_amount_issued(&mint_quote.id, 100.into())
+        .increment_mint_quote_amount_issued(mint_quote, 100.into())
         .await
         .is_err());
 }
@@ -365,12 +375,13 @@ where
 
     let p1 = unique_string();
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_mint_quote(mint_quote.clone()).await.unwrap();
-    tx.increment_mint_quote_amount_paid(&mint_quote.id, 100.into(), p1.clone())
+    let mint_quote = tx.add_mint_quote(mint_quote.clone()).await.unwrap();
+    let mint_quote = tx
+        .increment_mint_quote_amount_paid(mint_quote, 100.into(), p1.clone())
         .await
         .unwrap();
     assert!(tx
-        .increment_mint_quote_amount_issued(&mint_quote.id, 101.into())
+        .increment_mint_quote_amount_issued(mint_quote, 101.into())
         .await
         .is_err());
 }
@@ -398,15 +409,21 @@ where
 
     let p1 = unique_string();
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_mint_quote(mint_quote.clone()).await.unwrap();
-    tx.increment_mint_quote_amount_paid(&mint_quote.id, 100.into(), p1.clone())
+    let mint_quote = tx.add_mint_quote(mint_quote).await.unwrap();
+    let quote_id = mint_quote.id.clone();
+    tx.increment_mint_quote_amount_paid(mint_quote, 100.into(), p1.clone())
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mint_quote = tx
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("no error")
+        .expect("quote");
     assert!(tx
-        .increment_mint_quote_amount_issued(&mint_quote.id, 101.into())
+        .increment_mint_quote_amount_issued(mint_quote, 101.into())
         .await
         .is_err());
 }
@@ -1034,25 +1051,35 @@ where
 
     // Add quote
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_mint_quote(mint_quote.clone()).await.unwrap();
+    let mint_quote = tx.add_mint_quote(mint_quote).await.unwrap();
     tx.commit().await.unwrap();
 
     // Increment amount paid first time
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let new_total = tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 300.into(), "payment_1".to_string())
+    let mint_quote = tx
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("valid quote")
+        .expect("valid result");
+    let mint_quote = tx
+        .increment_mint_quote_amount_paid(mint_quote, 300.into(), "payment_1".to_string())
         .await
         .unwrap();
-    assert_eq!(new_total, 300.into());
+    assert_eq!(mint_quote.amount_paid(), 300.into());
     tx.commit().await.unwrap();
 
     // Increment amount paid second time
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let new_total = tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 200.into(), "payment_2".to_string())
+    let mint_quote = tx
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("valid quote")
+        .expect("valid result");
+    let mint_quote = tx
+        .increment_mint_quote_amount_paid(mint_quote, 200.into(), "payment_2".to_string())
         .await
         .unwrap();
-    assert_eq!(new_total, 500.into());
+    assert_eq!(mint_quote.amount_paid(), 500.into());
     tx.commit().await.unwrap();
 
     // Verify final state
@@ -1090,27 +1117,42 @@ where
 
     // First increment amount_paid to allow issuing
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.increment_mint_quote_amount_paid(&mint_quote.id, 1000.into(), "payment_1".to_string())
+    let mint_quote = tx
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("valid quote")
+        .expect("valid result");
+    tx.increment_mint_quote_amount_paid(mint_quote.clone(), 1000.into(), "payment_1".to_string())
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
     // Increment amount issued first time
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let new_total = tx
-        .increment_mint_quote_amount_issued(&mint_quote.id, 400.into())
+    let mint_quote = tx
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("valid quote")
+        .expect("valid result");
+    let mint_quote = tx
+        .increment_mint_quote_amount_issued(mint_quote, 400.into())
         .await
         .unwrap();
-    assert_eq!(new_total, 400.into());
+    assert_eq!(mint_quote.amount_issued(), 400.into());
     tx.commit().await.unwrap();
 
     // Increment amount issued second time
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let new_total = tx
-        .increment_mint_quote_amount_issued(&mint_quote.id, 300.into())
+    let mint_quote = tx
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("valid quote")
+        .expect("valid result");
+    let mint_quote = tx
+        .increment_mint_quote_amount_issued(mint_quote, 300.into())
         .await
         .unwrap();
-    assert_eq!(new_total, 700.into());
+    assert_eq!(mint_quote.amount_issued(), 700.into());
     tx.commit().await.unwrap();
 
     // Verify final state
@@ -1335,17 +1377,27 @@ where
 
     // First payment with payment_id "payment_1"
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let new_total = tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 300.into(), "payment_1".to_string())
+    let mint_quote = tx
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("valid quote")
+        .expect("valid result");
+    let mint_quote = tx
+        .increment_mint_quote_amount_paid(mint_quote, 300.into(), "payment_1".to_string())
         .await
         .unwrap();
-    assert_eq!(new_total, 300.into());
+    assert_eq!(mint_quote.amount_paid(), 300.into());
     tx.commit().await.unwrap();
 
     // Try to add the same payment_id again - should fail with Duplicate error
     let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mint_quote = tx
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("valid quote")
+        .expect("valid result");
     let result = tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 300.into(), "payment_1".to_string())
+        .increment_mint_quote_amount_paid(mint_quote.clone(), 300.into(), "payment_1".to_string())
         .await;
 
     assert!(
@@ -1360,14 +1412,182 @@ where
 
     // A different payment_id should succeed
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let new_total = tx
-        .increment_mint_quote_amount_paid(&mint_quote.id, 200.into(), "payment_2".to_string())
+    let mint_quote = tx
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("valid quote")
+        .expect("valid result");
+    let mint_quote = tx
+        .increment_mint_quote_amount_paid(mint_quote, 200.into(), "payment_2".to_string())
         .await
         .unwrap();
-    assert_eq!(new_total, 500.into());
+    assert_eq!(mint_quote.amount_paid(), 500.into());
     tx.commit().await.unwrap();
 
     // Verify final state
     let retrieved = db.get_mint_quote(&mint_quote.id).await.unwrap().unwrap();
     assert_eq!(retrieved.amount_paid(), 500.into());
+}
+
+/// Test that modifying a mint quote without loading it first fails
+///
+/// This test verifies that the database layer rejects attempts to modify
+/// records that weren't first read (and locked) within the transaction.
+pub async fn modify_mint_quote_without_loading_fails<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use crate::database::mint::test::unique_string;
+
+    // First, create a mint quote in the database
+    let mint_quote = MintQuote::new(
+        None,
+        "".to_owned(),
+        cashu::CurrencyUnit::Sat,
+        None,
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        None,
+        1000.into(),
+        500.into(), // already has some amount paid
+        cashu::PaymentMethod::Bolt11,
+        0,
+        vec![],
+        vec![],
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mint_quote = tx.add_mint_quote(mint_quote).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Now try to modify the quote in a new transaction WITHOUT loading it first
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+
+    // Clone the quote from our local variable (simulating having a stale reference)
+    // and try to increment amount_paid without first calling get_mint_quote
+    let result = tx
+        .increment_mint_quote_amount_paid(mint_quote.clone(), 100.into(), unique_string())
+        .await;
+
+    // This should fail because we didn't load (and lock) the quote first
+    assert!(
+        result.is_err(),
+        "Modifying mint quote without loading should fail"
+    );
+
+    // Verify the error is the expected UpdatingUnlockedRecord error
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, Error::UpdatingUnlockedRecord(_)),
+        "Expected UpdatingUnlockedRecord error, got: {:?}",
+        err
+    );
+
+    tx.rollback().await.unwrap();
+}
+
+/// Test that incrementing amount_issued without loading the quote first fails
+pub async fn increment_amount_issued_without_loading_fails<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use crate::database::mint::test::unique_string;
+
+    // Create a mint quote with amount_paid already set
+    let mint_quote = MintQuote::new(
+        None,
+        "".to_owned(),
+        cashu::CurrencyUnit::Sat,
+        None,
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        None,
+        1000.into(),
+        500.into(), // has paid amount to allow issuing
+        cashu::PaymentMethod::Bolt11,
+        0,
+        vec![],
+        vec![],
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mint_quote = tx.add_mint_quote(mint_quote).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Try to increment amount_issued without loading the quote first
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+
+    let result = tx
+        .increment_mint_quote_amount_issued(mint_quote.clone(), 100.into())
+        .await;
+
+    // This should fail
+    assert!(
+        result.is_err(),
+        "Incrementing amount_issued without loading should fail"
+    );
+
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, Error::UpdatingUnlockedRecord(_)),
+        "Expected UpdatingUnlockedRecord error, got: {:?}",
+        err
+    );
+
+    tx.rollback().await.unwrap();
+}
+
+/// Test that loading the quote first allows modifications
+pub async fn modify_mint_quote_after_loading_succeeds<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use crate::database::mint::test::unique_string;
+
+    let mint_quote = MintQuote::new(
+        None,
+        "".to_owned(),
+        cashu::CurrencyUnit::Sat,
+        None,
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        None,
+        1000.into(),
+        0.into(),
+        cashu::PaymentMethod::Bolt11,
+        0,
+        vec![],
+        vec![],
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_mint_quote(mint_quote.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Now load the quote first, then modify it
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+
+    // First load the quote (this should lock it)
+    let loaded_quote = tx
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .unwrap()
+        .expect("quote should exist");
+
+    // Now modification should succeed
+    let result = tx
+        .increment_mint_quote_amount_paid(loaded_quote, 100.into(), unique_string())
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Modifying after loading should succeed, got: {:?}",
+        result.err()
+    );
+
+    tx.commit().await.unwrap();
+
+    // Verify the modification was persisted
+    let retrieved = db.get_mint_quote(&mint_quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.amount_paid(), 100.into());
 }
