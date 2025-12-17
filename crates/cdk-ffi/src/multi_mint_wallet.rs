@@ -684,6 +684,44 @@ impl MultiMintWallet {
 /// Payment request methods for MultiMintWallet
 #[uniffi::export(async_runtime = "tokio")]
 impl MultiMintWallet {
+    /// Pay a NUT-18 PaymentRequest
+    ///
+    /// This method handles paying a payment request by selecting an appropriate mint:
+    /// - If `mint_url` is provided, it verifies the payment request accepts that mint
+    ///   and uses it to pay.
+    /// - If `mint_url` is None, it automatically selects the mint that:
+    ///   1. Is accepted by the payment request (matches one of the request's mints, or request accepts any mint)
+    ///   2. Has the highest balance among matching mints
+    ///
+    /// # Arguments
+    ///
+    /// * `payment_request` - The NUT-18 payment request to pay
+    /// * `mint_url` - Optional specific mint to use. If None, automatically selects the best matching mint.
+    /// * `custom_amount` - Custom amount to pay (required if payment request has no amount)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The payment request has no amount and no custom amount is provided
+    /// - The specified mint is not accepted by the payment request
+    /// - No matching mint has sufficient balance
+    /// - No transport is available in the payment request
+    pub async fn pay_request(
+        &self,
+        payment_request: Arc<PaymentRequest>,
+        mint_url: Option<MintUrl>,
+        custom_amount: Option<Amount>,
+    ) -> Result<(), FfiError> {
+        let cdk_mint_url = mint_url.map(|url| url.try_into()).transpose()?;
+        let cdk_amount = custom_amount.map(Into::into);
+
+        self.inner
+            .pay_request(payment_request.inner().clone(), cdk_mint_url, cdk_amount)
+            .await?;
+
+        Ok(())
+    }
+
     /// Create a NUT-18 payment request
     ///
     /// Creates a payment request that can be shared to receive Cashu tokens.
