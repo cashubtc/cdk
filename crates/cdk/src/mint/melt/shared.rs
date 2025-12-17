@@ -176,9 +176,9 @@ pub async fn rollback_melt_quote(
 /// - Change calculation fails
 /// - Blind signing fails
 /// - Database operations fail
-pub async fn process_melt_change<'a>(
+pub async fn process_melt_change(
     mint: &super::super::Mint,
-    db: &'a DynMintDatabase,
+    db: &DynMintDatabase,
     quote_id: &QuoteId,
     inputs_amount: Amount,
     total_spent: Amount,
@@ -187,7 +187,7 @@ pub async fn process_melt_change<'a>(
 ) -> Result<
     (
         Option<Vec<BlindSignature>>,
-        Box<dyn database::MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+        Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     ),
     Error,
 > {
@@ -281,7 +281,7 @@ pub async fn process_melt_change<'a>(
 /// - Database operations fail
 #[allow(clippy::too_many_arguments)]
 pub async fn finalize_melt_core(
-    tx: &mut Box<dyn database::MintTransaction<'_, database::Error> + Send + Sync + '_>,
+    tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     pubsub: &PubSubManager,
     quote: &MeltQuote,
     input_ys: &[PublicKey],

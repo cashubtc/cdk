@@ -17,7 +17,6 @@ use crate::database::KVStoreDatabase;
 use crate::mint::MintKeySetInfo;
 
 mod keys;
-mod kvstore;
 mod mint;
 mod proofs;
 mod saga;

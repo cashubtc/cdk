@@ -76,7 +76,7 @@ pub trait KeysDatabase {
 
 /// Mint Quote Database writer trait
 #[async_trait]
-pub trait QuotesTransaction<'a> {
+pub trait QuotesTransaction {
     /// Mint Quotes Database Error
     type Err: Into<Error> + From<Error>;
 
@@ -202,7 +202,7 @@ pub trait QuotesDatabase {
 
 /// Mint Proof Transaction trait
 #[async_trait]
-pub trait ProofsTransaction<'a> {
+pub trait ProofsTransaction {
     /// Mint Proof Database Error
     type Err: Into<Error> + From<Error>;
 
@@ -265,7 +265,7 @@ pub trait ProofsDatabase {
 
 #[async_trait]
 /// Mint Signatures Transaction trait
-pub trait SignaturesTransaction<'a> {
+pub trait SignaturesTransaction {
     /// Mint Signature Database Error
     type Err: Into<Error> + From<Error>;
 
@@ -314,7 +314,7 @@ pub trait SignaturesDatabase {
 
 #[async_trait]
 /// Saga Transaction trait
-pub trait SagaTransaction<'a> {
+pub trait SagaTransaction {
     /// Saga Database Error
     type Err: Into<Error> + From<Error>;
 
@@ -353,7 +353,7 @@ pub trait SagaDatabase {
 
 #[async_trait]
 /// Completed Operations Transaction trait
-pub trait CompletedOperationsTransaction<'a> {
+pub trait CompletedOperationsTransaction {
     /// Completed Operations Database Error
     type Err: Into<Error> + From<Error>;
 
@@ -388,14 +388,14 @@ pub trait CompletedOperationsDatabase {
 }
 
 /// Base database writer
-pub trait Transaction<'a, Error>:
+pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>
-    + QuotesTransaction<'a, Err = Error>
-    + SignaturesTransaction<'a, Err = Error>
-    + ProofsTransaction<'a, Err = Error>
+    + QuotesTransaction<Err = Error>
+    + SignaturesTransaction<Err = Error>
+    + ProofsTransaction<Err = Error>
     + KVStoreTransaction<Error>
-    + SagaTransaction<'a, Err = Error>
-    + CompletedOperationsTransaction<'a, Err = Error>
+    + SagaTransaction<Err = Error>
+    + CompletedOperationsTransaction<Err = Error>
 {
 }
 
@@ -410,9 +410,7 @@ pub trait Database<Error>:
     + CompletedOperationsDatabase<Err = Error>
 {
     /// Begins a transaction
-    async fn begin_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn Transaction<'a, Error> + Send + Sync + 'a>, Error>;
+    async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;
 }
 
 /// Type alias for Mint Database
