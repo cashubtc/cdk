@@ -146,6 +146,7 @@ fn test_transaction(mint_url: MintUrl, direction: TransactionDirection) -> Trans
         quote_id: None,
         payment_request: None,
         payment_proof: None,
+        payment_method: None,
     }
 }
 
