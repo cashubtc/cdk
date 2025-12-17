@@ -303,12 +303,12 @@ impl From<HTLCWitness> for Witness {
 
 impl Witness {
     /// Add signatures to [`Witness`]
-    pub fn add_signatures(&mut self, signatues: Vec<String>) {
+    pub fn add_signatures(&mut self, signatures: Vec<String>) {
         match self {
-            Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatues),
+            Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatures),
             Self::HTLCWitness(htlc_witness) => match &mut htlc_witness.signatures {
-                Some(sigs) => sigs.extend(signatues),
-                None => htlc_witness.signatures = Some(signatues),
+                Some(sigs) => sigs.extend(signatures),
+                None => htlc_witness.signatures = Some(signatures),
             },
         }
     }
