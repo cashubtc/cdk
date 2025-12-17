@@ -15,9 +15,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::database::mint::{validate_kvstore_params, SagaDatabase, SagaTransaction};
+use cdk_common::database::mint::{
+    CompletedOperationsDatabase, CompletedOperationsTransaction, SagaDatabase, SagaTransaction,
+};
 use cdk_common::database::{
-    self, ConversionError, Error, MintDatabase, MintDbWriterFinalizer, MintKeyDatabaseTransaction,
+    self, ConversionError, DbTransactionFinalizer, Error, MintDatabase, MintKeyDatabaseTransaction,
     MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase, MintQuotesTransaction,
     MintSignatureTransaction, MintSignaturesDatabase,
 };
@@ -129,7 +131,7 @@ where
 }
 
 #[async_trait]
-impl<RM> database::MintProofsTransaction<'_> for SQLTransaction<RM>
+impl<RM> database::MintProofsTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -179,12 +181,12 @@ where
             .bind("c", proof.c.to_bytes().to_vec())
             .bind(
                 "witness",
-                proof.witness.map(|w| serde_json::to_string(&w).unwrap()),
+                proof.witness.and_then(|w| serde_json::to_string(&w).inspect_err(|e| tracing::error!("Failed to serialize witness: {:?}", e)).ok()),
             )
             .bind("state", "UNSPENT".to_string())
             .bind("quote_id", quote_id.clone().map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
-            .bind("operation_kind", operation.kind())
+            .bind("operation_kind", operation.kind().to_string())
             .bind("operation_id", operation.id().to_string())
             .execute(&self.inner)
             .await?;
@@ -258,6 +260,39 @@ where
         .await?;
 
         if total_deleted != ys.len() {
+            // Query current states to provide detailed logging
+            let current_states = get_current_states(&self.inner, ys).await?;
+
+            let missing_count = ys.len() - current_states.len();
+            let spent_count = current_states
+                .values()
+                .filter(|s| **s == State::Spent)
+                .count();
+
+            if missing_count > 0 {
+                tracing::warn!(
+                    "remove_proofs: {} of {} proofs do not exist in database (already removed?)",
+                    missing_count,
+                    ys.len()
+                );
+            }
+
+            if spent_count > 0 {
+                tracing::warn!(
+                    "remove_proofs: {} of {} proofs are in Spent state and cannot be removed",
+                    spent_count,
+                    ys.len()
+                );
+            }
+
+            tracing::debug!(
+                "remove_proofs details: requested={}, deleted={}, missing={}, spent={}",
+                ys.len(),
+                total_deleted,
+                missing_count,
+                spent_count
+            );
+
             return Err(Self::Err::AttemptRemoveSpentProof);
         }
 
@@ -293,11 +328,10 @@ where
 }
 
 #[async_trait]
-impl<RM> database::MintTransaction<'_, Error> for SQLTransaction<RM> where RM: DatabasePool + 'static
-{}
+impl<RM> database::MintTransaction<Error> for SQLTransaction<RM> where RM: DatabasePool + 'static {}
 
 #[async_trait]
-impl<RM> MintDbWriterFinalizer for SQLTransaction<RM>
+impl<RM> DbTransactionFinalizer for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -744,7 +778,7 @@ where
 }
 
 #[async_trait]
-impl<RM> MintQuotesTransaction<'_> for SQLTransaction<RM>
+impl<RM> MintQuotesTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -801,7 +835,7 @@ where
             .bind("keyset_id", message.keyset_id.to_string())
             .bind("quote_id", quote_id.map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
-            .bind("operation_kind", operation.kind())
+            .bind("operation_kind", operation.kind().to_string())
             .bind("operation_id", operation.id().to_string())
             .execute(&self.inner)
             .await
@@ -1627,7 +1661,7 @@ where
 }
 
 #[async_trait]
-impl<RM> MintSignatureTransaction<'_> for SQLTransaction<RM>
+impl<RM> MintSignatureTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -1961,7 +1995,7 @@ where
 }
 
 #[async_trait]
-impl<RM> database::MintKVStoreTransaction<'_, Error> for SQLTransaction<RM>
+impl<RM> database::KVStoreTransaction<Error> for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -1971,26 +2005,13 @@ where
         secondary_namespace: &str,
         key: &str,
     ) -> Result<Option<Vec<u8>>, Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
-        Ok(query(
-            r#"
-            SELECT value
-            FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            AND key = :key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .bind("key", key.to_owned())
-        .pluck(&self.inner)
-        .await?
-        .and_then(|col| match col {
-            Column::Blob(data) => Some(data),
-            _ => None,
-        }))
+        crate::keyvalue::kv_read_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+        )
+        .await
     }
 
     async fn kv_write(
@@ -2000,32 +2021,14 @@ where
         key: &str,
         value: &[u8],
     ) -> Result<(), Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
-
-        let current_time = unix_time();
-
-        query(
-            r#"
-            INSERT INTO kv_store
-            (primary_namespace, secondary_namespace, key, value, created_time, updated_time)
-            VALUES (:primary_namespace, :secondary_namespace, :key, :value, :created_time, :updated_time)
-            ON CONFLICT(primary_namespace, secondary_namespace, key)
-            DO UPDATE SET
-                value = excluded.value,
-                updated_time = excluded.updated_time
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .bind("key", key.to_owned())
-        .bind("value", value.to_vec())
-        .bind("created_time", current_time as i64)
-        .bind("updated_time", current_time as i64)
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
+        crate::keyvalue::kv_write_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+            value,
+        )
+        .await
     }
 
     async fn kv_remove(
@@ -2034,23 +2037,13 @@ where
         secondary_namespace: &str,
         key: &str,
     ) -> Result<(), Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
-        query(
-            r#"
-            DELETE FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            AND key = :key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .bind("key", key.to_owned())
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
+        crate::keyvalue::kv_remove_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+        )
+        .await
     }
 
     async fn kv_list(
@@ -2058,37 +2051,13 @@ where
         primary_namespace: &str,
         secondary_namespace: &str,
     ) -> Result<Vec<String>, Error> {
-        // Validate namespace parameters according to KV store requirements
-        cdk_common::database::mint::validate_kvstore_string(primary_namespace)?;
-        cdk_common::database::mint::validate_kvstore_string(secondary_namespace)?;
-
-        // Check empty namespace rules
-        if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
-            return Err(Error::KVStoreInvalidKey(
-                "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
-            ));
-        }
-        Ok(query(
-            r#"
-            SELECT key
-            FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            ORDER BY key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .fetch_all(&self.inner)
-        .await?
-        .into_iter()
-        .map(|row| Ok(column_as_string!(&row[0])))
-        .collect::<Result<Vec<_>, Error>>()?)
+        crate::keyvalue::kv_list_in_transaction(&self.inner, primary_namespace, secondary_namespace)
+            .await
     }
 }
 
 #[async_trait]
-impl<RM> database::MintKVStoreDatabase for SQLMintDatabase<RM>
+impl<RM> database::KVStoreDatabase for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2100,28 +2069,7 @@ where
         secondary_namespace: &str,
         key: &str,
     ) -> Result<Option<Vec<u8>>, Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
-
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT value
-            FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            AND key = :key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .bind("key", key.to_owned())
-        .pluck(&*conn)
-        .await?
-        .and_then(|col| match col {
-            Column::Blob(data) => Some(data),
-            _ => None,
-        }))
+        crate::keyvalue::kv_read(&self.pool, primary_namespace, secondary_namespace, key).await
     }
 
     async fn kv_list(
@@ -2129,46 +2077,18 @@ where
         primary_namespace: &str,
         secondary_namespace: &str,
     ) -> Result<Vec<String>, Error> {
-        // Validate namespace parameters according to KV store requirements
-        cdk_common::database::mint::validate_kvstore_string(primary_namespace)?;
-        cdk_common::database::mint::validate_kvstore_string(secondary_namespace)?;
-
-        // Check empty namespace rules
-        if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
-            return Err(Error::KVStoreInvalidKey(
-                "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
-            ));
-        }
-
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT key
-            FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            ORDER BY key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(|row| Ok(column_as_string!(&row[0])))
-        .collect::<Result<Vec<_>, Error>>()?)
+        crate::keyvalue::kv_list(&self.pool, primary_namespace, secondary_namespace).await
     }
 }
 
 #[async_trait]
-impl<RM> database::MintKVStore for SQLMintDatabase<RM>
+impl<RM> database::KVStore for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
-    async fn begin_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn database::MintKVStoreTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>
-    {
+    async fn begin_transaction(
+        &self,
+    ) -> Result<Box<dyn database::KVStoreTransaction<Self::Err> + Send + Sync>, Error> {
         Ok(Box::new(SQLTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
@@ -2179,7 +2099,7 @@ where
 }
 
 #[async_trait]
-impl<RM> SagaTransaction<'_> for SQLTransaction<RM>
+impl<RM> SagaTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2323,13 +2243,157 @@ where
 }
 
 #[async_trait]
+impl<RM> CompletedOperationsTransaction for SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    async fn add_completed_operation(
+        &mut self,
+        operation: &mint::Operation,
+        fee_by_keyset: &std::collections::HashMap<cdk_common::nuts::Id, cdk_common::Amount>,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            INSERT INTO completed_operations
+            (operation_id, operation_kind, completed_at, total_issued, total_redeemed, fee_collected, payment_amount, payment_fee, payment_method)
+            VALUES
+            (:operation_id, :operation_kind, :completed_at, :total_issued, :total_redeemed, :fee_collected, :payment_amount, :payment_fee, :payment_method)
+            "#,
+        )?
+        .bind("operation_id", operation.id().to_string())
+        .bind("operation_kind", operation.kind().to_string())
+        .bind("completed_at", operation.completed_at().unwrap_or(unix_time()) as i64)
+        .bind("total_issued", operation.total_issued().to_u64() as i64)
+        .bind("total_redeemed", operation.total_redeemed().to_u64() as i64)
+        .bind("fee_collected", operation.fee_collected().to_u64() as i64)
+        .bind("payment_amount", operation.payment_amount().map(|a| a.to_u64() as i64))
+        .bind("payment_fee", operation.payment_fee().map(|a| a.to_u64() as i64))
+        .bind("payment_method", operation.payment_method().map(|m| m.to_string()))
+        .execute(&self.inner)
+        .await?;
+
+        // Update keyset_amounts with fee_collected from the breakdown
+        for (keyset_id, fee) in fee_by_keyset {
+            if fee.to_u64() > 0 {
+                query(
+                    r#"
+                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, fee_collected)
+                    VALUES (:keyset_id, 0, 0, :fee)
+                    ON CONFLICT (keyset_id)
+                    DO UPDATE SET fee_collected = keyset_amounts.fee_collected + EXCLUDED.fee_collected
+                    "#,
+                )?
+                .bind("keyset_id", keyset_id.to_string())
+                .bind("fee", fee.to_u64() as i64)
+                .execute(&self.inner)
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<RM> CompletedOperationsDatabase for SQLMintDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    async fn get_completed_operation(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Option<mint::Operation>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                operation_id,
+                operation_kind,
+                completed_at,
+                total_issued,
+                total_redeemed,
+                fee_collected,
+                payment_method
+            FROM
+                completed_operations
+            WHERE
+                operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_completed_operation)
+        .transpose()?)
+    }
+
+    async fn get_completed_operations_by_kind(
+        &self,
+        operation_kind: mint::OperationKind,
+    ) -> Result<Vec<mint::Operation>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                operation_id,
+                operation_kind,
+                completed_at,
+                total_issued,
+                total_redeemed,
+                fee_collected,
+                payment_method
+            FROM
+                completed_operations
+            WHERE
+                operation_kind = :operation_kind
+            ORDER BY completed_at DESC
+            "#,
+        )?
+        .bind("operation_kind", operation_kind.to_string())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_completed_operation)
+        .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                operation_id,
+                operation_kind,
+                completed_at,
+                total_issued,
+                total_redeemed,
+                fee_collected,
+                payment_method
+            FROM
+                completed_operations
+            ORDER BY completed_at DESC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_completed_operation)
+        .collect::<Result<Vec<_>, _>>()?)
+    }
+}
+
+#[async_trait]
 impl<RM> MintDatabase<Error> for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
-    async fn begin_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn database::MintTransaction<'a, Error> + Send + Sync + 'a>, Error> {
+    async fn begin_transaction(
+        &self,
+    ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
         let tx = SQLTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
@@ -2422,6 +2486,7 @@ fn sql_row_to_mint_quote(
     ))
 }
 
+// FIXME: Replace unwrap with proper error handling
 fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
     unpack_into!(
         let (
@@ -2486,7 +2551,8 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
                 "Melt quote from pre migrations defaulting to bolt11 {}.",
                 err
             );
-            let bolt11 = Bolt11Invoice::from_str(&request).unwrap();
+            let bolt11 = Bolt11Invoice::from_str(&request)
+                .map_err(|e| Error::Internal(format!("Could not parse invoice: {e}")))?;
             MeltPaymentRequest::Bolt11 { bolt11 }
         }
     };
@@ -2655,6 +2721,52 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
         created_at,
         updated_at,
     })
+}
+
+fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, Error> {
+    unpack_into!(
+        let (
+            operation_id,
+            operation_kind,
+            completed_at,
+            total_issued,
+            total_redeemed,
+            fee_collected,
+            payment_method
+        ) = row
+    );
+
+    let operation_id_str = column_as_string!(&operation_id);
+    let operation_id = uuid::Uuid::parse_str(&operation_id_str)
+        .map_err(|e| Error::Internal(format!("Invalid operation_id UUID: {e}")))?;
+
+    let operation_kind_str = column_as_string!(&operation_kind);
+    let operation_kind = mint::OperationKind::from_str(&operation_kind_str)
+        .map_err(|e| Error::Internal(format!("Invalid operation kind: {e}")))?;
+
+    let completed_at: u64 = column_as_number!(completed_at);
+    let total_issued_u64: u64 = column_as_number!(total_issued);
+    let total_redeemed_u64: u64 = column_as_number!(total_redeemed);
+    let fee_collected_u64: u64 = column_as_number!(fee_collected);
+
+    let total_issued = Amount::from(total_issued_u64);
+    let total_redeemed = Amount::from(total_redeemed_u64);
+    let fee_collected = Amount::from(fee_collected_u64);
+
+    let payment_method = column_as_nullable_string!(payment_method)
+        .map(|s| PaymentMethod::from_str(&s))
+        .transpose()
+        .map_err(|e| Error::Internal(format!("Invalid payment method: {e}")))?;
+
+    Ok(mint::Operation::new(
+        operation_id,
+        operation_kind,
+        total_issued,
+        total_redeemed,
+        fee_collected,
+        Some(completed_at),
+        payment_method,
+    ))
 }
 
 #[cfg(test)]

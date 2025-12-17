@@ -372,7 +372,7 @@ pub fn amount_for_offer(offer: &Offer, unit: &CurrencyUnit) -> Result<Amount, Er
             amount,
         } => (
             amount,
-            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.to_vec())?)
+            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.as_bytes().to_vec())?)
                 .map_err(|_| Error::CannotConvertUnits)?,
         ),
     };
@@ -1181,5 +1181,88 @@ mod tests {
         let below_max = Amount::from(i64::MAX as u64 - 1);
         assert!(below_max.to_i64().is_some());
         assert_eq!(below_max.to_i64().unwrap(), i64::MAX - 1);
+    }
+
+    /// Tests Amount::from_i64 returns the correct value.
+    ///
+    /// Mutant testing: Catches mutations that:
+    /// - Replace return with None
+    /// - Replace return with Some(Default::default())
+    /// - Replace >= with < in the condition
+    #[test]
+    fn test_amount_from_i64() {
+        // Positive value - should return Some with correct value
+        let result = Amount::from_i64(100);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), Amount::from(100));
+        assert_ne!(result, None);
+        assert_ne!(result, Some(Amount::ZERO));
+
+        // Zero - boundary case for >= vs <
+        // If >= becomes <, this would return None instead of Some
+        let result = Amount::from_i64(0);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), Amount::ZERO);
+
+        // Negative value - should return None
+        let result = Amount::from_i64(-1);
+        assert!(result.is_none());
+
+        let result = Amount::from_i64(-100);
+        assert!(result.is_none());
+
+        // Large positive value
+        let result = Amount::from_i64(i64::MAX);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), Amount::from(i64::MAX as u64));
+        assert_ne!(result, Some(Amount::ZERO));
+
+        // Value 1 - catches Some(Default::default()) mutation
+        let result = Amount::from_i64(1);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), Amount::ONE);
+        assert_ne!(result, Some(Amount::ZERO));
+    }
+
+    /// Tests AddAssign actually modifies the value.
+    ///
+    /// Mutant testing: Catches mutation that replaces add_assign with ().
+    #[test]
+    fn test_add_assign() {
+        let mut amount = Amount::from(100);
+        amount += Amount::from(50);
+        assert_eq!(amount, Amount::from(150));
+        assert_ne!(amount, Amount::from(100)); // Should have changed
+
+        let mut amount = Amount::from(1);
+        amount += Amount::from(1);
+        assert_eq!(amount, Amount::from(2));
+        assert_ne!(amount, Amount::ONE); // Should have changed
+
+        let mut amount = Amount::ZERO;
+        amount += Amount::from(42);
+        assert_eq!(amount, Amount::from(42));
+        assert_ne!(amount, Amount::ZERO); // Should have changed
+    }
+
+    /// Tests SubAssign actually modifies the value.
+    ///
+    /// Mutant testing: Catches mutation that replaces sub_assign with ().
+    #[test]
+    fn test_sub_assign() {
+        let mut amount = Amount::from(100);
+        amount -= Amount::from(30);
+        assert_eq!(amount, Amount::from(70));
+        assert_ne!(amount, Amount::from(100)); // Should have changed
+
+        let mut amount = Amount::from(50);
+        amount -= Amount::from(1);
+        assert_eq!(amount, Amount::from(49));
+        assert_ne!(amount, Amount::from(50)); // Should have changed
+
+        let mut amount = Amount::from(10);
+        amount -= Amount::from(10);
+        assert_eq!(amount, Amount::ZERO);
+        assert_ne!(amount, Amount::from(10)); // Should have changed
     }
 }

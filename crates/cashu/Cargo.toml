@@ -44,3 +44,6 @@ uuid = { workspace = true, features = ["js"], optional = true }
 
 [dev-dependencies]
 bip39.workspace = true
+
+[lints]
+workspace = true

@@ -12,7 +12,7 @@ use anyhow::bail;
 use async_trait::async_trait;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
-use cdk::cdk_database::MintKVStore;
+use cdk::cdk_database::KVStore;
 use cdk::cdk_payment::MintPayment;
 use cdk::nuts::CurrencyUnit;
 #[cfg(any(
@@ -36,7 +36,7 @@ pub trait LnBackendSetup {
         unit: CurrencyUnit,
         runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
-        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<impl MintPayment>;
 }
 
@@ -49,7 +49,7 @@ impl LnBackendSetup for config::Cln {
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
-        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_cln::Cln> {
         // Validate required connection field
         if self.rpc_path.as_os_str().is_empty() {
@@ -90,7 +90,7 @@ impl LnBackendSetup for config::LNbits {
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
-        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_lnbits::LNbits> {
         // Validate required connection fields
         if self.admin_api_key.is_empty() {
@@ -137,7 +137,7 @@ impl LnBackendSetup for config::Lnd {
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
-        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_lnd::Lnd> {
         // Validate required connection fields
         if self.address.is_empty() {
@@ -183,7 +183,7 @@ impl LnBackendSetup for config::FakeWallet {
         unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
-        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_fake_wallet::FakeWallet> {
         let fee_reserve = FeeReserve {
             min_fee_reserve: self.reserve_fee_min,
@@ -215,7 +215,7 @@ impl LnBackendSetup for config::GrpcProcessor {
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
-        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_payment_processor::PaymentProcessorClient> {
         let payment_processor = cdk_payment_processor::PaymentProcessorClient::new(
             &self.addr,
@@ -235,9 +235,9 @@ impl LnBackendSetup for config::LdkNode {
         &self,
         _settings: &Settings,
         _unit: CurrencyUnit,
-        runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
-        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_ldk_node::CdkLdkNode> {
         use std::net::SocketAddr;
 
@@ -337,7 +337,6 @@ impl LnBackendSetup for config::LdkNode {
             storage_dir_path,
             fee_reserve,
             listen_address,
-            runtime,
         )?;
 
         // Configure webserver address if specified

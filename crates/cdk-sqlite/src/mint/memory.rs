@@ -56,10 +56,18 @@ pub async fn new_with_state(
         tx.add_melt_quote(quote).await?;
     }
 
-    tx.add_proofs(pending_proofs, None, &Operation::new_swap())
-        .await?;
-    tx.add_proofs(spent_proofs, None, &Operation::new_swap())
-        .await?;
+    tx.add_proofs(
+        pending_proofs,
+        None,
+        &Operation::new_swap(Default::default(), Default::default(), Default::default()),
+    )
+    .await?;
+    tx.add_proofs(
+        spent_proofs,
+        None,
+        &Operation::new_swap(Default::default(), Default::default(), Default::default()),
+    )
+    .await?;
     let mint_info_bytes = serde_json::to_vec(&mint_info)?;
     tx.kv_write(
         CDK_MINT_PRIMARY_NAMESPACE,

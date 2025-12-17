@@ -32,6 +32,10 @@ serde.workspace = true
 serde_json.workspace = true
 lightning-invoice.workspace = true
 uuid.workspace = true
+paste = "1.0.15"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"] }
+
+[lints]
+workspace = true

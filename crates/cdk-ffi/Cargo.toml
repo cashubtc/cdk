@@ -15,12 +15,13 @@ name = "cdk_ffi"
 [dependencies]
 async-trait = { workspace = true }
 bip39 = { workspace = true }
-cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "bip353"] }
+cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "bip353", "nostr"] }
 cdk-sqlite = { workspace = true }
 cdk-postgres = { workspace = true, optional = true }
 futures = { workspace = true }
 once_cell = { workspace = true }
 rand = { workspace = true }
+cdk-sql-common = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -28,6 +29,7 @@ tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
 uniffi = { version = "0.29", features = ["cli", "tokio"] }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+cdk-common.workspace = true
 
 
 [features]
@@ -40,3 +42,6 @@ postgres = ["cdk-postgres"]
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
+
+[lints]
+workspace = true

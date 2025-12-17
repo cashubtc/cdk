@@ -1861,3 +1861,199 @@ async fn test_melt_exact_proofs_no_swap_needed() {
         initial_balance - melted.amount - melted.fee_paid
     );
 }
+
+/// Tests the check_all_mint_quotes functionality for Bolt11 quotes
+///
+/// This test verifies that:
+/// 1. Paid mint quotes are automatically minted when check_all_mint_quotes is called
+/// 2. The total amount returned matches the minted proofs
+/// 3. Quote state is properly updated after minting
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_check_all_mint_quotes_bolt11() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    // Create first mint quote and pay it (using proof_stream triggers fake wallet payment)
+    let mint_quote_1 = wallet.mint_quote(100.into(), None).await.unwrap();
+
+    // Wait for the payment to be registered (fake wallet auto-pays)
+    let mut payment_stream_1 = wallet.payment_stream(&mint_quote_1);
+    payment_stream_1
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    // Create second mint quote and pay it
+    let mint_quote_2 = wallet.mint_quote(50.into(), None).await.unwrap();
+
+    let mut payment_stream_2 = wallet.payment_stream(&mint_quote_2);
+    payment_stream_2
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    // Verify no proofs have been minted yet
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::ZERO);
+
+    // Call check_all_mint_quotes - this should mint both paid quotes
+    let total_minted = wallet.check_all_mint_quotes().await.unwrap();
+
+    // Verify the total amount minted is correct (100 + 50 = 150)
+    assert_eq!(total_minted, Amount::from(150));
+
+    // Verify wallet balance matches
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(150));
+
+    // Calling check_all_mint_quotes again should return 0 (quotes already minted)
+    let second_check = wallet.check_all_mint_quotes().await.unwrap();
+    assert_eq!(second_check, Amount::ZERO);
+}
+
+/// Tests the get_unissued_mint_quotes wallet method
+///
+/// This test verifies that:
+/// 1. Unpaid quotes are included (wallet needs to check with mint)
+/// 2. Paid but not issued quotes are included
+/// 3. Fully issued quotes are excluded
+/// 4. Only quotes for the current mint URL are returned
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_get_unissued_mint_quotes_wallet() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    // Create a quote but don't pay it (stays unpaid)
+    let unpaid_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+
+    // Create another quote and pay it but don't mint
+    let paid_quote = wallet.mint_quote(50.into(), None).await.unwrap();
+    let mut payment_stream = wallet.payment_stream(&paid_quote);
+    payment_stream
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    // Create a third quote and fully mint it
+    let minted_quote = wallet.mint_quote(25.into(), None).await.unwrap();
+    let mut proof_stream = wallet.proof_stream(minted_quote.clone(), SplitTarget::default(), None);
+    proof_stream
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    // Get unissued quotes
+    let unissued_quotes = wallet.get_unissued_mint_quotes().await.unwrap();
+
+    // Should have 2 quotes: unpaid and paid-but-not-issued
+    // The fully minted quote should be excluded
+    assert_eq!(
+        unissued_quotes.len(),
+        2,
+        "Should have 2 unissued quotes (unpaid and paid-not-issued)"
+    );
+
+    let quote_ids: Vec<&str> = unissued_quotes.iter().map(|q| q.id.as_str()).collect();
+    assert!(
+        quote_ids.contains(&unpaid_quote.id.as_str()),
+        "Unpaid quote should be included"
+    );
+    assert!(
+        quote_ids.contains(&paid_quote.id.as_str()),
+        "Paid but not issued quote should be included"
+    );
+    assert!(
+        !quote_ids.contains(&minted_quote.id.as_str()),
+        "Fully minted quote should NOT be included"
+    );
+}
+
+/// Tests that mint quote state is properly updated after minting
+///
+/// This test verifies that:
+/// 1. amount_issued is updated after successful minting
+/// 2. Quote state is updated correctly
+/// 3. The quote is stored properly in the localstore
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_mint_quote_state_updates_after_minting() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_amount = Amount::from(100);
+    let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+
+    // Get the quote from localstore before minting
+    let quote_before = wallet
+        .localstore
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .unwrap()
+        .expect("Quote should exist");
+
+    // Verify initial state
+    assert_eq!(quote_before.amount_issued, Amount::ZERO);
+
+    // Mint the tokens using wait_and_mint_quote
+    let proofs = wallet
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("minting should succeed");
+
+    let minted_amount = proofs.total_amount().unwrap();
+    assert_eq!(minted_amount, mint_amount);
+
+    // Check the quote is now either removed or updated in the localstore
+    // After minting, the quote should be removed from localstore (it's fully issued)
+    let quote_after = wallet
+        .localstore
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .unwrap();
+
+    // The quote should either be removed or have amount_issued updated
+    match quote_after {
+        Some(quote) => {
+            // If still present, amount_issued should equal the minted amount
+            assert_eq!(
+                quote.amount_issued, minted_amount,
+                "amount_issued should be updated after minting"
+            );
+        }
+        None => {
+            // Quote was removed after being fully issued - this is also valid behavior
+        }
+    }
+
+    // Verify the unissued quotes no longer contains this quote
+    let unissued = wallet.get_unissued_mint_quotes().await.unwrap();
+    let unissued_ids: Vec<&str> = unissued.iter().map(|q| q.id.as_str()).collect();
+    assert!(
+        !unissued_ids.contains(&mint_quote.id.as_str()),
+        "Fully minted quote should not appear in unissued quotes"
+    );
+}

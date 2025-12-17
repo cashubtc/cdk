@@ -709,7 +709,7 @@ impl Mint {
     /// Handle payment for a specific mint quote (extracted from pay_mint_quote)
     #[instrument(skip_all)]
     async fn handle_mint_quote_payment(
-        tx: &mut Box<dyn database::MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
         mint_quote: &MintQuote,
         wait_payment_response: WaitPaymentResponse,
         pubsub_manager: &Arc<PubSubManager>,
@@ -779,7 +779,10 @@ impl Mint {
 
     /// Fee required for proof set
     #[instrument(skip_all)]
-    pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
+    pub async fn get_proofs_fee(
+        &self,
+        proofs: &Proofs,
+    ) -> Result<crate::fees::ProofsFeeBreakdown, Error> {
         let mut proofs_per_keyset = HashMap::new();
         let mut fee_per_keyset = HashMap::new();
 
@@ -799,9 +802,9 @@ impl Mint {
                 .or_insert(1);
         }
 
-        let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
+        let fee_breakdown = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
 
-        Ok(fee)
+        Ok(fee_breakdown)
     }
 
     /// Get active keysets

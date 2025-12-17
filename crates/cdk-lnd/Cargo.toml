@@ -31,3 +31,6 @@ rustls-pemfile = "2.2.0"
 
 [build-dependencies]
 tonic-build.workspace = true
+
+[lints]
+workspace = true

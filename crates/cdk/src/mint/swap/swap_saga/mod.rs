@@ -4,7 +4,7 @@ use std::sync::Arc;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
-use cdk_common::{database, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
+use cdk_common::{database, Amount, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tokio::sync::Mutex;
 use tracing::instrument;
 
@@ -96,19 +96,22 @@ pub struct SwapSaga<'a, S> {
     pubsub: Arc<PubSubManager>,
     /// Compensating actions in LIFO order (most recent first)
     compensations: Arc<Mutex<VecDeque<Box<dyn CompensatingAction>>>>,
-    operation: Operation,
+    /// Operation ID (used for saga tracking, generated upfront)
+    operation_id: uuid::Uuid,
     state_data: S,
 }
 
 impl<'a> SwapSaga<'a, Initial> {
     pub fn new(mint: &'a super::Mint, db: DynMintDatabase, pubsub: Arc<PubSubManager>) -> Self {
+        let operation_id = uuid::Uuid::new_v4();
+
         Self {
             mint,
             db,
             pubsub,
             compensations: Arc::new(Mutex::new(VecDeque::new())),
-            operation: Operation::new_swap(),
-            state_data: Initial,
+            operation_id,
+            state_data: Initial { operation_id },
         }
     }
 
@@ -152,15 +155,31 @@ impl<'a> SwapSaga<'a, Initial> {
         self.mint
             .verify_transaction_balanced(
                 &mut tx,
-                input_verification,
+                input_verification.clone(),
                 input_proofs,
                 blinded_messages,
             )
             .await?;
 
+        // Calculate amounts to create Operation
+        let total_redeemed = input_verification.amount;
+        let total_issued = Amount::try_sum(blinded_messages.iter().map(|bm| bm.amount))?;
+        let fee_breakdown = self.mint.get_proofs_fee(input_proofs).await?;
+
+        // Create Operation with actual amounts now that we know them
+        let operation = Operation::new(
+            self.state_data.operation_id,
+            cdk_common::mint::OperationKind::Swap,
+            total_issued,
+            total_redeemed,
+            fee_breakdown.total,
+            None, // complete_at
+            None, // payment_method (not applicable for swap)
+        );
+
         // Add input proofs to DB
         if let Err(err) = tx
-            .add_proofs(input_proofs.clone(), quote_id.clone(), &self.operation)
+            .add_proofs(input_proofs.clone(), quote_id.clone(), &operation)
             .await
         {
             tx.rollback().await?;
@@ -211,7 +230,7 @@ impl<'a> SwapSaga<'a, Initial> {
 
         // Add output blinded messages
         if let Err(err) = tx
-            .add_blinded_messages(quote_id.as_ref(), blinded_messages, &self.operation)
+            .add_blinded_messages(quote_id.as_ref(), blinded_messages, &operation)
             .await
         {
             tx.rollback().await?;
@@ -235,7 +254,7 @@ impl<'a> SwapSaga<'a, Initial> {
 
         // Persist saga state for crash recovery (atomic with TX1)
         let saga = Saga::new_swap(
-            *self.operation.id(),
+            self.operation_id,
             SwapSagaState::SetupComplete,
             blinded_secrets.clone(),
             ys.clone(),
@@ -256,6 +275,7 @@ impl<'a> SwapSaga<'a, Initial> {
             .push_front(Box::new(RemoveSwapSetup {
                 blinded_secrets: blinded_secrets.clone(),
                 input_ys: ys.clone(),
+                operation_id: self.operation_id,
             }));
 
         // Transition to SetupComplete state
@@ -264,10 +284,12 @@ impl<'a> SwapSaga<'a, Initial> {
             db: self.db,
             pubsub: self.pubsub,
             compensations: self.compensations,
-            operation: self.operation,
+            operation_id: self.operation_id,
             state_data: SetupComplete {
                 blinded_messages: blinded_messages_vec,
                 ys,
+                operation,
+                fee_breakdown,
             },
         })
     }
@@ -312,11 +334,13 @@ impl<'a> SwapSaga<'a, SetupComplete> {
                     db: self.db,
                     pubsub: self.pubsub,
                     compensations: self.compensations,
-                    operation: self.operation,
+                    operation_id: self.operation_id,
                     state_data: Signed {
                         blinded_messages: self.state_data.blinded_messages,
                         ys: self.state_data.ys,
                         signatures,
+                        operation: self.state_data.operation,
+                        fee_breakdown: self.state_data.fee_breakdown,
                     },
                 })
             }
@@ -432,10 +456,16 @@ impl SwapSaga<'_, Signed> {
             self.pubsub.proof_state((*pk, State::Spent));
         }
 
+        tx.add_completed_operation(
+            &self.state_data.operation,
+            &self.state_data.fee_breakdown.per_keyset,
+        )
+        .await?;
+
         // Delete saga - swap completed successfully (best-effort, atomic with TX2)
         // Don't fail the swap if saga deletion fails - orphaned saga will be
         // cleaned up on next recovery
-        if let Err(e) = tx.delete_saga(self.operation.id()).await {
+        if let Err(e) = tx.delete_saga(&self.operation_id).await {
             tracing::warn!(
                 "Failed to delete saga in finalize (will be cleaned up on recovery): {}",
                 e
@@ -487,27 +517,6 @@ impl<S> SwapSaga<'_, S> {
                 );
             }
         }
-
-        // Delete saga - swap was compensated
-        // Use a separate transaction since compensations already ran
-        // Don't fail the compensation if saga cleanup fails (log only)
-        let mut tx = match self.db.begin_transaction().await {
-            Ok(tx) => tx,
-            Err(e) => {
-                tracing::error!(
-                    "Failed to begin tx for saga cleanup after compensation: {}",
-                    e
-                );
-                return Ok(()); // Compensations already ran, don't fail now
-            }
-        };
-
-        if let Err(e) = tx.delete_saga(self.operation.id()).await {
-            tracing::warn!("Failed to delete saga after compensation: {}", e);
-        } else if let Err(e) = tx.commit().await {
-            tracing::error!("Failed to commit saga cleanup after compensation: {}", e);
-        }
-        // Always succeed - compensations are done, saga cleanup is best-effort
 
         Ok(())
     }

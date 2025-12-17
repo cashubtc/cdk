@@ -6,21 +6,21 @@ resolver = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
-unreachable_pub = "warn"
-missing_debug_implementations = "warn"
+# unreachable_pub = "warn"
+# missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
-pedantic = "warn"
-unwrap_used = "warn"
-clone_on_ref_ptr = "warn"
-missing_errors_doc = "warn"
-missing_panics_doc = "warn"
+# pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+# clone_on_ref_ptr = "warn"
+# missing_errors_doc = "warn"
+# missing_panics_doc = "warn"
 missing_safety_doc = "warn"
-nursery = "warn"
-redundant_else = "warn"
-redundant_closure_for_method_calls = "warn"
-unneeded_field_pattern = "warn"
-use_debug = "warn"
+# nursery = { level = "warn", priority = -1 }
+# redundant_else = "warn"
+# redundant_closure_for_method_calls = "warn"
+# unneeded_field_pattern = "warn"
+# use_debug = "warn"
 large_enum_variant = "warn"
 
 [workspace.lints.rustdoc]
@@ -68,9 +68,9 @@ cbor-diag = "0.1.12"
 config = { version = "0.15.11", features = ["toml"] }
 criterion = "0.6.0"
 futures = { version = "0.3.28", default-features = false, features = ["async-await"] }
-lightning-invoice = { version = "0.33.0", features = ["serde", "std"] }
-lightning = { version = "0.1.2", default-features = false, features = ["std"]}
-ldk-node = "0.6.2"
+lightning-invoice = { version = "0.34.0", features = ["serde", "std"] }
+lightning = { version = "0.2.0", default-features = false, features = ["std"]}
+ldk-node = "0.7.0"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = { version = "2" }

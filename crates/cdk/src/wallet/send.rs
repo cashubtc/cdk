@@ -46,6 +46,7 @@ impl Wallet {
         // Get available proofs matching conditions
         let mut available_proofs = self
             .get_proofs_with(
+                None,
                 Some(vec![State::Unspent]),
                 opts.conditions.clone().map(|c| vec![c]),
             )
@@ -105,7 +106,7 @@ impl Wallet {
                         .collect(),
                 )
                 .await?;
-            amount + send_fee
+            amount + send_fee.total
         } else {
             amount
         };
@@ -121,7 +122,7 @@ impl Wallet {
 
         // Check if selected proofs are exact
         let send_fee = if opts.include_fee {
-            self.get_proofs_fee(&selected_proofs).await?
+            self.get_proofs_fee(&selected_proofs).await?.total
         } else {
             Amount::ZERO
         };
@@ -174,19 +175,23 @@ impl Wallet {
             (send_split, send_fee)
         } else {
             let send_split = amount.split(&fee_and_amounts);
-            let send_fee = Amount::ZERO;
+            let send_fee = crate::fees::ProofsFeeBreakdown {
+                total: Amount::ZERO,
+                per_keyset: std::collections::HashMap::new(),
+            };
             (send_split, send_fee)
         };
         tracing::debug!("Send amounts: {:?}", send_amounts);
         tracing::debug!("Send fee: {:?}", send_fee);
 
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
         // Reserve proofs
-        self.localstore
-            .update_proofs_state(proofs.ys()?, State::Reserved)
+        tx.update_proofs_state(proofs.ys()?, State::Reserved)
             .await?;
 
         // Check if proofs are exact send amount (and does not exceed max_proofs)
-        let mut exact_proofs = proofs.total_amount()? == amount + send_fee;
+        let mut exact_proofs = proofs.total_amount()? == amount + send_fee.total;
         if let Some(max_proofs) = opts.max_proofs {
             exact_proofs &= proofs.len() <= max_proofs;
         }
@@ -207,11 +212,13 @@ impl Wallet {
             proofs,
             &send_amounts,
             amount,
-            send_fee,
+            send_fee.total,
             &keyset_fees,
             force_swap,
             is_exact_or_offline,
         )?;
+
+        tx.commit().await?;
 
         // Return prepared send
         Ok(PreparedSend {
@@ -221,7 +228,7 @@ impl Wallet {
             proofs_to_swap: split_result.proofs_to_swap,
             swap_fee: split_result.swap_fee,
             proofs_to_send: split_result.proofs_to_send,
-            send_fee,
+            send_fee: send_fee.total,
         })
     }
 }
@@ -333,10 +340,13 @@ impl PreparedSend {
             return Err(Error::InsufficientFunds);
         }
 
+        let mut tx = self.wallet.localstore.begin_db_transaction().await?;
+
         // Check if proofs are reserved or unspent
         let sendable_proof_ys = self
             .wallet
             .get_proofs_with(
+                Some(&mut tx),
                 Some(vec![State::Reserved, State::Unspent]),
                 self.options.conditions.clone().map(|c| vec![c]),
             )
@@ -356,9 +366,8 @@ impl PreparedSend {
             "Updating proofs state to pending spent: {:?}",
             proofs_to_send.ys()?
         );
-        self.wallet
-            .localstore
-            .update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
+
+        tx.update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
             .await?;
 
         // Include token memo
@@ -366,23 +375,24 @@ impl PreparedSend {
         let memo = send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
 
         // Add transaction to store
-        self.wallet
-            .localstore
-            .add_transaction(Transaction {
-                mint_url: self.wallet.mint_url.clone(),
-                direction: TransactionDirection::Outgoing,
-                amount: self.amount,
-                fee: total_send_fee,
-                unit: self.wallet.unit.clone(),
-                ys: proofs_to_send.ys()?,
-                timestamp: unix_time(),
-                memo: memo.clone(),
-                metadata: self.options.metadata,
-                quote_id: None,
-                payment_request: None,
-                payment_proof: None,
-            })
-            .await?;
+        tx.add_transaction(Transaction {
+            mint_url: self.wallet.mint_url.clone(),
+            direction: TransactionDirection::Outgoing,
+            amount: self.amount,
+            fee: total_send_fee,
+            unit: self.wallet.unit.clone(),
+            ys: proofs_to_send.ys()?,
+            timestamp: unix_time(),
+            memo: memo.clone(),
+            metadata: self.options.metadata,
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+        })
+        .await?;
+
+        tx.commit().await?;
 
         // Create and return token
         Ok(Token::new(
@@ -397,8 +407,15 @@ impl PreparedSend {
     pub async fn cancel(self) -> Result<(), Error> {
         tracing::info!("Cancelling prepared send");
 
+        let mut tx = self.wallet.localstore.begin_db_transaction().await?;
+
         // Double-check proofs state
-        let reserved_proofs = self.wallet.get_reserved_proofs().await?.ys()?;
+        let reserved_proofs = self
+            .wallet
+            .get_proofs_with(Some(&mut tx), Some(vec![State::Reserved]), None)
+            .await?
+            .ys()?;
+
         if !self
             .proofs()
             .ys()?
@@ -408,10 +425,10 @@ impl PreparedSend {
             return Err(Error::UnexpectedProofState);
         }
 
-        self.wallet
-            .localstore
-            .update_proofs_state(self.proofs().ys()?, State::Unspent)
+        tx.update_proofs_state(self.proofs().ys()?, State::Unspent)
             .await?;
+
+        tx.commit().await?;
 
         Ok(())
     }
@@ -557,7 +574,7 @@ pub fn split_proofs_for_send(
                 // Ensure proofs_to_swap can cover the swap's input fee plus the needed output
                 loop {
                     let swap_input_fee =
-                        calculate_fee(&proofs_to_swap.count_by_keyset(), keyset_fees)?;
+                        calculate_fee(&proofs_to_swap.count_by_keyset(), keyset_fees)?.total;
                     let swap_total = proofs_to_swap.total_amount()?;
 
                     let swap_can_produce = swap_total.checked_sub(swap_input_fee);
@@ -582,7 +599,7 @@ pub fn split_proofs_for_send(
         }
     }
 
-    let swap_fee = calculate_fee(&proofs_to_swap.count_by_keyset(), keyset_fees)?;
+    let swap_fee = calculate_fee(&proofs_to_swap.count_by_keyset(), keyset_fees)?.total;
 
     Ok(ProofSplitResult {
         proofs_to_send,

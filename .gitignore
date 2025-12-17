@@ -8,12 +8,21 @@
 config.toml
 .pre-commit-config.yaml
 result
-Cargo.lock
 .aider*
 **/postgres_data/
+.pg_data/
 **/.env
 
 # Mutation testing artifacts
 mutants.out/
 mutants-*.log
 .mutants.lock
+
+
+# Python ffi
+__pycache__
+libcdk_ffi*
+cdk_ffi.py
+
+# llm artifacts
+AGENTS.md

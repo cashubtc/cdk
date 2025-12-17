@@ -143,6 +143,10 @@ name = "human_readable_payment"
 required-features = ["wallet", "bip353"]
 
 [[example]]
+name = "payment_request"
+required-features = ["wallet", "nostr"]
+
+[[example]]
 name = "token-proofs"
 required-features = ["wallet"]
 
@@ -162,3 +166,6 @@ tokio = { workspace = true, features = ["full"] }
 [[bench]]
 name = "dhke_benchmarks"
 harness = false
+
+[lints]
+workspace = true

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cdk_common::amount::KeysetFeeAndAmounts;
+use cdk_common::database::DynWalletDatabaseTransaction;
 use cdk_common::wallet::TransactionId;
 use cdk_common::Id;
 use tracing::instrument;
@@ -18,38 +19,40 @@ impl Wallet {
     /// Get unspent proofs for mint
     #[instrument(skip(self))]
     pub async fn get_unspent_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Unspent]), None).await
+        self.get_proofs_with(None, Some(vec![State::Unspent]), None)
+            .await
     }
 
     /// Get pending [`Proofs`]
     #[instrument(skip(self))]
     pub async fn get_pending_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Pending]), None).await
+        self.get_proofs_with(None, Some(vec![State::Pending]), None)
+            .await
     }
 
     /// Get reserved [`Proofs`]
     #[instrument(skip(self))]
     pub async fn get_reserved_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Reserved]), None)
+        self.get_proofs_with(None, Some(vec![State::Reserved]), None)
             .await
     }
 
     /// Get pending spent [`Proofs`]
     #[instrument(skip(self))]
     pub async fn get_pending_spent_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::PendingSpent]), None)
+        self.get_proofs_with(None, Some(vec![State::PendingSpent]), None)
             .await
     }
 
     /// Get this wallet's [Proofs] that match the args
     pub async fn get_proofs_with(
         &self,
+        tx: Option<&mut DynWalletDatabaseTransaction>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Proofs, Error> {
-        Ok(self
-            .localstore
-            .get_proofs(
+        Ok(if let Some(tx) = tx {
+            tx.get_proofs(
                 Some(self.mint_url.clone()),
                 Some(self.unit.clone()),
                 state,
@@ -58,16 +61,28 @@ impl Wallet {
             .await?
             .into_iter()
             .map(|p| p.proof)
-            .collect())
+            .collect()
+        } else {
+            self.localstore
+                .get_proofs(
+                    Some(self.mint_url.clone()),
+                    Some(self.unit.clone()),
+                    state,
+                    spending_conditions,
+                )
+                .await?
+                .into_iter()
+                .map(|p| p.proof)
+                .collect()
+        })
     }
 
     /// Return proofs to unspent allowing them to be selected and spent
     #[instrument(skip(self))]
     pub async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
-        Ok(self
-            .localstore
-            .update_proofs_state(ys, State::Unspent)
-            .await?)
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.update_proofs_state(ys, State::Unspent).await?;
+        Ok(tx.commit().await?)
     }
 
     /// Reclaim unspent proofs
@@ -93,13 +108,14 @@ impl Wallet {
 
         self.swap(None, SplitTarget::default(), unspent, None, false)
             .await?;
-
-        match self.localstore.remove_transaction(transaction_id).await {
-            Ok(_) => (),
-            Err(e) => {
-                tracing::warn!("Failed to remove transaction: {:?}", e);
-            }
-        }
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let _ = tx
+            .remove_transaction(transaction_id)
+            .await
+            .inspect_err(|err| {
+                tracing::warn!("Failed to remove transaction: {:?}", err);
+            });
+        tx.commit().await?;
 
         Ok(())
     }
@@ -121,7 +137,9 @@ impl Wallet {
             })
             .collect();
 
-        self.localstore.update_proofs(vec![], spent_ys).await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.update_proofs(vec![], spent_ys).await?;
+        tx.commit().await?;
 
         Ok(spendable.states)
     }
@@ -165,12 +183,13 @@ impl Wallet {
 
         let amount = Amount::try_sum(pending_proofs.iter().map(|p| p.proof.amount))?;
 
-        self.localstore
-            .update_proofs(
-                vec![],
-                non_pending_proofs.into_iter().map(|p| p.y).collect(),
-            )
-            .await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.update_proofs(
+            vec![],
+            non_pending_proofs.into_iter().map(|p| p.y).collect(),
+        )
+        .await?;
+        tx.commit().await?;
 
         balance += amount;
 
@@ -220,12 +239,14 @@ impl Wallet {
                 let fee_ppk = fees_and_keyset_amounts
                     .get(&proof_to_exchange.keyset_id)
                     .map(|fee_and_amounts| fee_and_amounts.fee())
-                    .unwrap_or_default()
-                    .into();
+                    .unwrap_or_default();
+                // Convert fee from ppk (parts per thousand) to sats per NUT-02 spec:
+                // fee = ceil(fee_ppk / 1000) for 1 proof
+                let fee: Amount = fee_ppk.div_ceil(1000).into();
 
                 if let Some(exact_amount_to_melt) = total_for_proofs
                     .checked_sub(proof_to_exchange.amount)
-                    .and_then(|a| a.checked_add(fee_ppk))
+                    .and_then(|a| a.checked_add(fee))
                     .and_then(|b| amount.checked_sub(b))
                 {
                     exchange = Some((proof_to_exchange, exact_amount_to_melt));
@@ -448,6 +469,30 @@ impl Wallet {
         fees_and_keyset_amounts: &KeysetFeeAndAmounts,
     ) -> Result<Proofs, Error> {
         tracing::debug!("Including fees");
+        let fee_breakdown = calculate_fee(
+            &selected_proofs.count_by_keyset(),
+            &fees_and_keyset_amounts
+                .iter()
+                .map(|(key, values)| (*key, values.fee()))
+                .collect(),
+        )?;
+        let net_amount = selected_proofs.total_amount()? - fee_breakdown.total;
+        tracing::debug!(
+            "Net amount={}, fee={}, total amount={}",
+            net_amount,
+            fee_breakdown.total,
+            selected_proofs.total_amount()?
+        );
+        if net_amount >= amount {
+            tracing::debug!(
+                "Selected proofs: {:?}",
+                selected_proofs
+                    .iter()
+                    .map(|p| p.amount.into())
+                    .collect::<Vec<u64>>(),
+            );
+            return Ok(selected_proofs);
+        }
 
         let keyset_fees: HashMap<Id, u64> = fees_and_keyset_amounts
             .iter()
@@ -460,8 +505,7 @@ impl Wallet {
             .collect();
 
         loop {
-            let fee =
-                calculate_fee(&selected_proofs.count_by_keyset(), &keyset_fees).unwrap_or_default();
+            let fee = calculate_fee(&selected_proofs.count_by_keyset(), &keyset_fees)?.total;
             let total = selected_proofs.total_amount()?;
             let net_amount = total - fee;
 
@@ -788,7 +832,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -839,7 +884,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -984,7 +1030,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert_eq!(selected_proofs.len(), 1);
@@ -1040,7 +1087,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(net >= amount, "5120 - 1 = 5119 >= 5000");
@@ -1082,7 +1130,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1130,7 +1179,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1170,7 +1220,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1213,7 +1264,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1326,7 +1378,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
 
         let net = total - fee;
 
@@ -1373,7 +1426,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(net >= amount, "Net amount {} should be >= {}", net, amount);
@@ -1408,7 +1462,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert_eq!(selected_proofs.len(), 2);
@@ -1444,7 +1499,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1544,7 +1600,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(net >= amount, "Net {} should be >= {}", net, amount);
@@ -1609,7 +1666,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1658,7 +1716,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1701,7 +1760,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1744,7 +1804,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1798,7 +1859,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1875,7 +1937,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1925,7 +1988,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -2147,5 +2211,244 @@ mod tests {
             total
         );
         assert_eq!(selected_proofs.len(), 1, "Should select only 1 proof");
+    }
+
+    // ========================================================================
+    // select_exact_proofs Fee Tests (NUT-02 compliance)
+    // ========================================================================
+
+    /// Test select_exact_proofs with fee_ppk=100 (0.1 sat per proof)
+    ///
+    /// Per NUT-02 spec: fee = ceil(sum(input_fee_ppk) / 1000)
+    /// For 1 proof with fee_ppk=100: fee = ceil(100/1000) = 1 sat
+    #[test]
+    fn test_select_exact_proofs_with_fee_ppk_100() {
+        let active_id = id();
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active_id,
+            (100, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+        // Proofs: 64 + 32 + 4 = 100 sats total
+        let proofs = vec![proof(64), proof(4), proof(32)];
+
+        // Request 97 sats
+        let (selected_proofs, exchange) = Wallet::select_exact_proofs(
+            97.into(),
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
+
+        assert!(exchange.is_some(), "Should have a proof to exchange");
+        let (proof_to_exchange, exact_amount_to_melt) = exchange.unwrap();
+
+        // selected_proofs should be [32, 4] = 36 sats
+        assert_eq!(selected_proofs.len(), 2);
+        let selected_total: u64 = selected_proofs.iter().map(|p| u64::from(p.amount)).sum();
+        assert_eq!(selected_total, 36, "Selected proofs should total 36 sats");
+
+        // proof_to_exchange should be the 64 sat proof
+        assert_eq!(proof_to_exchange.amount, 64.into());
+
+        // Per NUT-02: fee for 1 proof with fee_ppk=100 is ceil(100/1000) = 1 sat
+        // exact_amount_to_melt = amount - (selected_total + fee)
+        //                      = 97 - (36 + 1) = 60 sats
+        assert_eq!(
+            exact_amount_to_melt,
+            60.into(),
+            "exact_amount_to_melt should be 60 (97 - 36 - 1 fee)"
+        );
+    }
+
+    /// Test select_exact_proofs with fee_ppk=1000 (1 sat per proof)
+    ///
+    /// Per NUT-02 spec: fee = ceil(sum(input_fee_ppk) / 1000)
+    /// For 1 proof with fee_ppk=1000: fee = ceil(1000/1000) = 1 sat
+    #[test]
+    fn test_select_exact_proofs_with_fee_ppk_1000() {
+        let active_id = id();
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active_id,
+            (1000, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+        let proofs = vec![proof(64), proof(4), proof(32)];
+
+        let (selected_proofs, exchange) = Wallet::select_exact_proofs(
+            97.into(),
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
+
+        assert!(exchange.is_some(), "Should have a proof to exchange");
+        let (proof_to_exchange, exact_amount_to_melt) = exchange.unwrap();
+
+        assert_eq!(proof_to_exchange.amount, 64.into());
+
+        let selected_total: u64 = selected_proofs.iter().map(|p| u64::from(p.amount)).sum();
+        assert_eq!(selected_total, 36);
+
+        // Per NUT-02: fee for 1 proof with fee_ppk=1000 is ceil(1000/1000) = 1 sat
+        // exact_amount_to_melt = 97 - (36 + 1) = 60 sats
+        assert_eq!(
+            exact_amount_to_melt,
+            60.into(),
+            "exact_amount_to_melt should be 60 (97 - 36 - 1 fee)"
+        );
+    }
+
+    /// Test select_exact_proofs with fee_ppk=200 (0.2 sat per proof)
+    ///
+    /// Per NUT-02 spec: fee = ceil(sum(input_fee_ppk) / 1000)
+    /// For 1 proof with fee_ppk=200: fee = ceil(200/1000) = 1 sat
+    #[test]
+    fn test_select_exact_proofs_with_fee_ppk_200() {
+        let active_id = id();
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active_id,
+            (200, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+        let proofs = vec![proof(64), proof(4), proof(32)];
+
+        let (selected_proofs, exchange) = Wallet::select_exact_proofs(
+            97.into(),
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
+
+        assert!(exchange.is_some());
+        let (proof_to_exchange, exact_amount_to_melt) = exchange.unwrap();
+
+        assert_eq!(proof_to_exchange.amount, 64.into());
+
+        let selected_total: u64 = selected_proofs.iter().map(|p| u64::from(p.amount)).sum();
+        assert_eq!(selected_total, 36);
+
+        // fee = ceil(200/1000) = 1 sat
+        // exact_amount_to_melt = 97 - 36 - 1 = 60
+        assert_eq!(
+            exact_amount_to_melt,
+            60.into(),
+            "exact_amount_to_melt should be 60 (97 - 36 - 1 fee)"
+        );
+    }
+
+    /// Test select_exact_proofs with fee_ppk=2000 (2 sats per proof)
+    ///
+    /// Per NUT-02 spec: fee = ceil(sum(input_fee_ppk) / 1000)
+    /// For 1 proof with fee_ppk=2000: fee = ceil(2000/1000) = 2 sats
+    #[test]
+    fn test_select_exact_proofs_with_fee_ppk_2000() {
+        let active_id = id();
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active_id,
+            (2000, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+        let proofs = vec![proof(64), proof(4), proof(32)];
+
+        let (selected_proofs, exchange) = Wallet::select_exact_proofs(
+            97.into(),
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
+
+        assert!(exchange.is_some());
+        let (proof_to_exchange, exact_amount_to_melt) = exchange.unwrap();
+
+        assert_eq!(proof_to_exchange.amount, 64.into());
+
+        let selected_total: u64 = selected_proofs.iter().map(|p| u64::from(p.amount)).sum();
+        assert_eq!(selected_total, 36);
+
+        // fee = ceil(2000/1000) = 2 sats
+        // exact_amount_to_melt = 97 - 36 - 2 = 59
+        assert_eq!(
+            exact_amount_to_melt,
+            59.into(),
+            "exact_amount_to_melt should be 59 (97 - 36 - 2 fee)"
+        );
+    }
+
+    /// Test that select_exact_proofs correctly handles the fee calculation
+    /// by verifying the math: exact_amount = amount - selected_total - fee
+    #[test]
+    fn test_select_exact_proofs_fee_calculation_math() {
+        let active_id = id();
+
+        // Test multiple fee_ppk values
+        let test_cases: Vec<(u64, u64)> = vec![
+            (100, 1),    // ceil(100/1000) = 1
+            (500, 1),    // ceil(500/1000) = 1
+            (1000, 1),   // ceil(1000/1000) = 1
+            (1001, 2),   // ceil(1001/1000) = 2
+            (1500, 2),   // ceil(1500/1000) = 2
+            (2000, 2),   // ceil(2000/1000) = 2
+            (5000, 5),   // ceil(5000/1000) = 5
+            (10000, 10), // ceil(10000/1000) = 10
+        ];
+
+        for (fee_ppk, expected_fee) in test_cases {
+            let mut keyset_fee_and_amounts = HashMap::new();
+            keyset_fee_and_amounts.insert(
+                active_id,
+                (fee_ppk, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+            );
+
+            // Use proofs that will definitely trigger the exchange path
+            // 128 + 64 + 32 = 224, request 200
+            let proofs = vec![proof(128), proof(64), proof(32)];
+            let amount: Amount = 200.into();
+
+            let (selected_proofs, exchange) = Wallet::select_exact_proofs(
+                amount,
+                proofs,
+                &vec![active_id],
+                &keyset_fee_and_amounts,
+                false,
+            )
+            .unwrap();
+
+            if let Some((proof_to_exchange, exact_amount_to_melt)) = exchange {
+                let selected_total: u64 = selected_proofs.iter().map(|p| u64::from(p.amount)).sum();
+
+                // Per NUT-02 spec:
+                // exact_amount_to_melt = amount - selected_total - fee
+                let expected_exact = u64::from(amount) - selected_total - expected_fee;
+
+                assert_eq!(
+                    u64::from(exact_amount_to_melt),
+                    expected_exact,
+                    "fee_ppk={}: exact_amount_to_melt should be {} (amount {} - selected {} - fee {}), got {}",
+                    fee_ppk,
+                    expected_exact,
+                    u64::from(amount),
+                    selected_total,
+                    expected_fee,
+                    u64::from(exact_amount_to_melt)
+                );
+
+                // Also verify the proof to exchange has enough to cover exact_amount_to_melt
+                assert!(
+                    proof_to_exchange.amount >= exact_amount_to_melt,
+                    "Proof to exchange ({}) must be >= exact_amount_to_melt ({})",
+                    proof_to_exchange.amount,
+                    exact_amount_to_melt
+                );
+            }
+        }
     }
 }

@@ -30,3 +30,6 @@ serde_json.workspace = true
 lightning-invoice.workspace = true
 once_cell.workspace = true
 uuid.workspace = true
+
+[lints]
+workspace = true

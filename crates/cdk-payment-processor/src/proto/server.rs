@@ -247,7 +247,8 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
 
                 cdk_common::payment::OutgoingPaymentOptions::Bolt12(Box::new(
                     cdk_common::payment::Bolt12OutgoingPaymentOptions {
-                        offer: Offer::from_str(&request.request).unwrap(),
+                        offer: Offer::from_str(&request.request)
+                            .expect("Already validated offer above"),
                         max_fee_amount: None,
                         timeout_secs: None,
                         melt_options: request.options.map(Into::into),
@@ -298,9 +299,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                 (CurrencyUnit::Msat, payment_options)
             }
             outgoing_payment_variant::Options::Bolt12(opts) => {
-                let offer = Offer::from_str(&opts.offer)
-                    .map_err(|_| Error::Bolt12Parse)
-                    .unwrap();
+                let offer = Offer::from_str(&opts.offer).map_err(|_| Error::Bolt12Parse)?;
 
                 let payment_options = cdk_common::payment::OutgoingPaymentOptions::Bolt12(
                     Box::new(cdk_common::payment::Bolt12OutgoingPaymentOptions {

@@ -10,170 +10,162 @@ on:
   release:
     types: [created]
 
+# Cancel previous runs on same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   pre-commit-checks:
     name: "Cargo fmt, typos"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/cachix-action@v16
         with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+          installCommand: nix profile install nixpkgs#cachix
+        continue-on-error: true
       - name: Cargo fmt
         run: nix develop -i -L .#stable --command cargo fmt --check
       - name: typos
         run: nix develop -i -L .#stable --command typos
 
+  # Discover example checks from flake - single source of truth
+  discover-examples:
+    name: "Discover examples"
+    runs-on: self-hosted
+    timeout-minutes: 5
+    outputs:
+      examples: ${{ steps.examples.outputs.examples }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Get example check names
+        id: examples
+        run: |
+          # Get all example check names (prefixed with "example-")
+          examples=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 8 n == "example-") (builtins.attrNames attrs)' --json)
+          echo "examples=$examples" >> $GITHUB_OUTPUT
+          echo "Found examples: $examples"
+
   examples:
-    name: "Run examples"
-    runs-on: ubuntu-latest
+    name: "Example: ${{ matrix.example }}"
+    runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: [pre-commit-checks, discover-examples]
     strategy:
       fail-fast: true
       matrix:
-        build-args: [mint-token, melt-token, p2pk, proof-selection, wallet]
+        example: ${{ fromJson(needs.discover-examples.outputs.examples) }}
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/cachix-action@v16
         with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build example
+        run: nix build -L .#${{ matrix.example }}
       - name: Run example
-        run: nix develop -i -L .#stable --command cargo r --example ${{ matrix.build-args }}
+        run: |
+          # Extract binary name by removing "example-" prefix
+          BINARY_NAME="${{ matrix.example }}"
+          BINARY_NAME="${BINARY_NAME#example-}"
+          ./result/bin/$BINARY_NAME
 
-  clippy:
-    name: "Stable build, clippy and test"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    strategy:
-      fail-fast: true
-      matrix:
-        build-args: [
-            # Core crate testing
-            -p cashu,
-            -p cashu --no-default-features,
-            -p cashu --no-default-features --features wallet,
-            -p cashu --no-default-features --features mint,
-            -p cashu --no-default-features --features auth,
-            -p cdk-common,
-            -p cdk-common --no-default-features,
-            -p cdk-common --no-default-features --features wallet,
-            -p cdk-common --no-default-features --features mint,
-            -p cdk-common --no-default-features --features auth,
-            -p cdk,
-            -p cdk --no-default-features,
-            -p cdk --no-default-features --features wallet,
-            -p cdk --no-default-features --features mint,
-            -p cdk --no-default-features --features auth,
-            -p cdk-sql-common,
-            -p cdk-sql-common --no-default-features --features wallet,
-            -p cdk-sql-common --no-default-features --features mint,
-
-            # Database and infrastructure crates
-            -p cdk-redb,
-            -p cdk-sqlite,
-            -p cdk-sqlite --features sqlcipher,
-
-            # HTTP/API layer - consolidated
-            -p cdk-axum,
-            -p cdk-axum --no-default-features,
-            -p cdk-axum --no-default-features --features redis,
-            -p cdk-axum --no-default-features --features "redis swagger",
-
-            # Lightning backends
-            -p cdk-cln,
-            -p cdk-lnd,
-            -p cdk-lnbits,
-            -p cdk-fake-wallet,
-            -p cdk-payment-processor,
-            -p cdk-ldk-node,
-
-            -p cdk-signatory,
-            -p cdk-mint-rpc,
-
-            -p cdk-prometheus,
-
-            # FFI bindings
-            -p cdk-ffi,
-            -p cdk-ffi --no-default-features,
-
-            # Binaries
-            --bin cdk-cli,
-            --bin cdk-cli --features sqlcipher,
-            --bin cdk-cli --features redb,
-            --bin cdk-mintd,
-            --bin cdk-mintd --features redis,
-            --bin cdk-mintd --features sqlcipher,
-            --bin cdk-mintd --no-default-features --features lnd --features sqlite,
-            --bin cdk-mintd --no-default-features --features cln --features postgres,
-            --bin cdk-mintd --no-default-features --features lnbits --features sqlite,
-            --bin cdk-mintd --no-default-features --features fakewallet --features sqlite,
-            --bin cdk-mintd --no-default-features --features grpc-processor --features sqlite,
-            --bin cdk-mintd --no-default-features --features "management-rpc lnd sqlite",
-            --bin cdk-mintd --no-default-features --features cln --features sqlite,
-            --bin cdk-mintd --no-default-features --features lnd --features postgres,
-            --bin cdk-mintd --no-default-features --features lnbits --features postgres,
-            --bin cdk-mintd --no-default-features --features fakewallet --features postgres,
-            --bin cdk-mintd --no-default-features --features grpc-processor --features postgres,
-            --bin cdk-mintd --no-default-features --features "management-rpc cln postgres",
-            --bin cdk-mintd --no-default-features --features "auth sqlite fakewallet",
-            --bin cdk-mintd --no-default-features --features "auth postgres lnd",
-            --bin cdk-mint-cli,
-          ]
+  # Discover clippy checks from flake - single source of truth
+  discover-checks:
+    name: "Discover clippy checks"
+    runs-on: self-hosted
+    timeout-minutes: 5
+    outputs:
+      checks: ${{ steps.checks.outputs.checks }}
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Get clippy check names
+        id: checks
+        run: |
+          # Get all check names except pre-commit-check, example-*, msrv-*, wasm-*, doc-tests, strict-docs, ffi-tests
+          # Those have their own dedicated CI jobs
+          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pre-commit-check" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-") (builtins.attrNames attrs)' --json)
+          echo "checks=$checks" >> $GITHUB_OUTPUT
+          echo "Found checks: $checks"
+
+  # Dynamic clippy matrix - uses cached deps from Cachix
+  clippy:
+    name: "Clippy: ${{ matrix.check }}"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: [pre-commit-checks, discover-checks]
+    strategy:
+      fail-fast: false
+      matrix:
+        check: ${{ fromJson(needs.discover-checks.outputs.checks) }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
         with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Run clippy check
+        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
+
+  # Run tests using nix develop (tests need to execute, not just build)
+  tests:
+    name: "Tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
         with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
-      - name: Clippy
-        run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
-      - name: Test
-        run: nix develop -i -L .#stable --command cargo test ${{ matrix.build-args }}
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Run workspace tests
+        run: nix develop -i -L .#stable --command bash -c "start-postgres && cargo test --workspace --exclude cdk-integration-tests"
 
   regtest-itest:
     name: "Integration regtest tests"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    strategy:
+      fail-fast: true
+      matrix:
+        database: [SQLITE, POSTGRES]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Test
+        run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
+
+  fake-mint-itest:
+    name: "Integration fake mint tests"
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
@@ -184,78 +176,18 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+      - uses: cachix/cachix-action@v16
         with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
-      - name: Test
-        run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
-
-  fake-mint-itest:
-    name: "Integration fake mint tests"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    strategy:
-      fail-fast: true
-      matrix:
-        build-args: [-p cdk-integration-tests]
-        database: [SQLITE]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
-      - name: Clippy
-        run: nix develop -i -L .#stable --command cargo clippy -- -D warnings
-      - name: Test fake auth mint
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Test fake mint
         run: nix develop -i -L .#stable --command just fake-mint-itest ${{ matrix.database }}
 
   pure-itest:
     name: "Integration fake wallet tests"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
@@ -265,40 +197,20 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+      - uses: cachix/cachix-action@v16
         with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
       - name: Test fake mint
         run: nix develop -i -L .#stable --command just test-pure ${{ matrix.database }}
-      - name: Install Postgres
-        run: bash -x crates/cdk-postgres/start_db_for_test.sh
-      - name: Test mint
-        run: nix develop -i -L .#stable --command just test
+      - name: Test mint with PostgreSQL
+        run: nix develop -i -L .#stable --command bash -c "start-postgres && just test"
 
   payment-processor-itests:
     name: "Payment processor tests"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
@@ -308,116 +220,96 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+      - uses: cachix/cachix-action@v16
         with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
       - name: Test
         run: nix develop -i -L .#stable --command just itest-payment-processor ${{matrix.ln}}
 
+  # Discover MSRV checks from flake - single source of truth
+  discover-msrv-checks:
+    name: "Discover MSRV checks"
+    runs-on: self-hosted
+    timeout-minutes: 5
+    outputs:
+      checks: ${{ steps.checks.outputs.checks }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Get MSRV check names
+        id: checks
+        run: |
+          # Get all MSRV check names (prefixed with "msrv-")
+          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "msrv-") (builtins.attrNames attrs)' --json)
+          echo "checks=$checks" >> $GITHUB_OUTPUT
+          echo "Found MSRV checks: $checks"
+
   msrv-build:
-    name: "MSRV build"
-    runs-on: ubuntu-latest
+    name: "MSRV: ${{ matrix.check }}"
+    runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: [pre-commit-checks, discover-msrv-checks]
     strategy:
       fail-fast: true
       matrix:
-        build-args: [
-            # Core library - all features EXCEPT swagger (which breaks MSRV)
-            '-p cdk --features "mint,wallet,auth,nostr,bip353,tor,prometheus"',
-
-            # Mintd with all backends, databases, and features (no swagger)
-            # This also validates cdk-axum, all LN backends, all databases as dependencies
-            '-p cdk-mintd --no-default-features --features "cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,auth,prometheus,redis,management-rpc"',
-
-            # CLI - default features (excludes redb which breaks MSRV)
-            -p cdk-cli,
-
-            # Minimal builds to ensure no-default-features works
-            -p cdk --no-default-features --features wallet,
-          ]
+        check: ${{ fromJson(needs.discover-msrv-checks.outputs.checks) }}
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/cachix-action@v16
         with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "msrv-${{ steps.flake-hash.outputs.hash }}"
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
       - name: Build
-        run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
+        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
 
-  check-wasm-msrv:
-    name: Check WASM
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    strategy:
-      fail-fast: true
-      matrix:
-        rust:
-          - msrv
-        target:
-          - wasm32-unknown-unknown
-        build-args:
-          [
-            -p cdk,
-            -p cdk --no-default-features,
-            -p cdk --no-default-features --features wallet,
-          ]
+  # Discover WASM checks from flake - single source of truth
+  discover-wasm-checks:
+    name: "Discover WASM checks"
+    runs-on: self-hosted
+    timeout-minutes: 5
+    outputs:
+      checks: ${{ steps.checks.outputs.checks }}
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Get WASM check names
+        id: checks
+        run: |
+          # Get all WASM check names (prefixed with "wasm-")
+          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "wasm-") (builtins.attrNames attrs)' --json)
+          echo "checks=$checks" >> $GITHUB_OUTPUT
+          echo "Found WASM checks: $checks"
+
+  check-wasm:
+    name: "WASM: ${{ matrix.check }}"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: [pre-commit-checks, discover-wasm-checks]
+    strategy:
+      fail-fast: true
+      matrix:
+        check: ${{ fromJson(needs.discover-wasm-checks.outputs.checks) }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
         with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "msrv-${{ steps.flake-hash.outputs.hash }}"
-      - name: Build cdk wasm
-        run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build WASM
+        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
 
   fake-mint-auth-itest:
     name: "Integration fake mint auth tests"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
@@ -427,38 +319,22 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+      - uses: cachix/cachix-action@v16
         with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
       - name: Start Keycloak with Backup
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml up -d
           until docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") | grep "Keycloak 25.0.6 on JVM (powered by Quarkus 3.8.5) started"; do sleep 1; done
-
       - name: Verify Keycloak Import
         run: |
-          docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") | grep "Imported"
+          # Wait a bit more for import to complete
+          sleep 5
+          # Check if the realm endpoint is accessible (better verification than log grep)
+          curl -f -s http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null && echo "Keycloak realm successfully imported" || (docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") && exit 1)
       - name: Test fake auth mint
         run: nix develop -i -L .#stable --command just fake-auth-mint-itest ${{ matrix.database }} http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration
       - name: Stop and clean up Docker Compose
@@ -466,63 +342,52 @@ jobs:
           docker compose -f misc/keycloak/docker-compose-recover.yml down
 
   docs:
-    name: "Documentation tests and checks"
-    runs-on: ubuntu-latest
+    name: "Documentation tests"
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: pre-commit-checks
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+      - uses: cachix/cachix-action@v16
         with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
       - name: Run doc tests
-        run: nix develop -i -L .#stable --command cargo test --doc
+        run: nix build -L .#checks.x86_64-linux.doc-tests
+
+  strict-docs:
+    name: "Strict Documentation Check"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: docs
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
       - name: Check docs with strict warnings
-        run: nix develop -i -L .#stable --command just docs-strict
+        run: nix build -L .#checks.x86_64-linux.strict-docs
 
   ffi-tests:
     name: "FFI Python tests"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: pre-commit-checks
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/cachix-action@v16
         with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
       - name: Run FFI tests
-        run: nix develop -i -L .#integration --command just ffi-test
+        run: nix build -L .#checks.x86_64-linux.ffi-tests

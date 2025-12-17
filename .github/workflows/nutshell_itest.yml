@@ -10,38 +10,25 @@ on:
   release:
     types: [created]
 
+# Cancel previous runs on same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   nutshell-integration-tests:
     name: Nutshell Mint Integration Tests
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+      - uses: cachix/cachix-action@v16
         with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "integration-${{ steps.flake-hash.outputs.hash }}"
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
       - name: Test Nutshell
         run: nix develop -i -L .#integration --command just test-nutshell
       - name: Show logs if tests fail
@@ -50,40 +37,19 @@ jobs:
 
   nutshell-wallet-integration-tests:
     name: Nutshell Wallet Integration Tests
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+      - uses: cachix/cachix-action@v16
         with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-      - name: Pull Nutshell Docker image
-        run: docker pull cashubtc/nutshell:latest
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "integration-${{ steps.flake-hash.outputs.hash }}"
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
       - name: Test Nutshell Wallet
-        run: |
-          nix develop -i -L .#integration --command just nutshell-wallet-itest
+        run: nix develop -i -L .#integration --command just nutshell-wallet-itest
       - name: Show Docker logs if tests fail
         if: failure()
         run: docker logs nutshell-wallet || true

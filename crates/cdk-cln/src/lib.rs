@@ -1,8 +1,6 @@
 //! CDK lightning backend for CLN
 
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
-#![warn(rustdoc::bare_urls)]
 
 use std::cmp::max;
 use std::path::PathBuf;
@@ -16,7 +14,7 @@ use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
 use cdk_common::amount::{to_unit, Amount};
 use cdk_common::common::FeeReserve;
-use cdk_common::database::mint::DynMintKVStore;
+use cdk_common::database::DynKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
     self, Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
@@ -56,7 +54,7 @@ pub struct Cln {
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
-    kv_store: DynMintKVStore,
+    kv_store: DynKVStore,
 }
 
 impl Cln {
@@ -64,7 +62,7 @@ impl Cln {
     pub async fn new(
         rpc_socket: PathBuf,
         fee_reserve: FeeReserve,
-        kv_store: DynMintKVStore,
+        kv_store: DynKVStore,
     ) -> Result<Self, Error> {
         Ok(Self {
             rpc_socket,

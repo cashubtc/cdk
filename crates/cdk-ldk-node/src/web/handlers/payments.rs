@@ -371,13 +371,13 @@ pub async fn post_pay_bolt11(
                     a href="/payments" { button { "← Try Again" } }
                 }
             };
-            return Ok(Response::builder()
+            return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
                     layout_with_status("Payment Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
@@ -415,13 +415,13 @@ pub async fn post_pay_bolt11(
                     a href="/payments" { button { "← Try Again" } }
                 }
             };
-            return Ok(Response::builder()
+            return Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .header("content-type", "text/html")
                 .body(Body::from(
                     layout_with_status("Payment Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
@@ -503,12 +503,12 @@ pub async fn post_pay_bolt11(
         }
     };
 
-    Ok(Response::builder()
+    Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
             layout_with_status("Payment Result", content, true).into_string(),
         ))
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 pub async fn post_pay_bolt12(
@@ -525,13 +525,13 @@ pub async fn post_pay_bolt12(
                     a href="/payments" { button { "← Try Again" } }
                 }
             };
-            return Ok(Response::builder()
+            return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
                     layout_with_status("Payment Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
@@ -545,7 +545,11 @@ pub async fn post_pay_bolt12(
     let payment_id = match offer.amount() {
         Some(_) => {
             // Fixed amount offer - use send() method, ignore user input amount
-            state.node.inner.bolt12_payment().send(&offer, None, None)
+            state
+                .node
+                .inner
+                .bolt12_payment()
+                .send(&offer, None, None, None)
         }
         None => {
             // Variable amount offer - requires user to specify amount via send_using_amount()
@@ -559,21 +563,23 @@ pub async fn post_pay_bolt12(
                             a href="/payments" { button { "← Try Again" } }
                         }
                     };
-                    return Ok(Response::builder()
+                    return Response::builder()
                         .status(StatusCode::BAD_REQUEST)
                         .header("content-type", "text/html")
                         .body(Body::from(
                             layout_with_status("Payment Error", content, true).into_string(),
                         ))
-                        .unwrap());
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
                 }
             };
             let amount_msats = amount_btc * 1_000;
-            state
-                .node
-                .inner
-                .bolt12_payment()
-                .send_using_amount(&offer, amount_msats, None, None)
+            state.node.inner.bolt12_payment().send_using_amount(
+                &offer,
+                amount_msats,
+                None,
+                None,
+                None,
+            )
         }
     };
 
@@ -593,13 +599,13 @@ pub async fn post_pay_bolt12(
                     a href="/payments" { button { "← Try Again" } }
                 }
             };
-            return Ok(Response::builder()
+            return Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .header("content-type", "text/html")
                 .body(Body::from(
                     layout_with_status("Payment Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
@@ -688,10 +694,10 @@ pub async fn post_pay_bolt12(
         }
     };
 
-    Ok(Response::builder()
+    Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
             layout_with_status("Payment Result", content, true).into_string(),
         ))
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }

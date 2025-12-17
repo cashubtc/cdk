@@ -5,6 +5,7 @@
 
 use std::str::FromStr;
 
+use cdk_common::database::Error as DatabaseError;
 use cdk_common::mint::OperationKind;
 use cdk_common::QuoteId;
 
@@ -126,12 +127,14 @@ impl Mint {
             );
 
             // Use the same compensation logic as in-process failures
+            // Saga deletion is included in the compensation transaction
             let compensation = RemoveSwapSetup {
                 blinded_secrets: saga.blinded_secrets.clone(),
                 input_ys: saga.input_ys.clone(),
+                operation_id: saga.operation_id,
             };
 
-            // Execute compensation
+            // Execute compensation (includes saga deletion)
             if let Err(e) = compensation.execute(&self.localstore).await {
                 tracing::error!(
                     "Failed to compensate saga {}: {}. Continuing...",
@@ -140,15 +143,6 @@ impl Mint {
                 );
                 continue;
             }
-
-            // Delete saga after successful compensation
-            let mut tx = self.localstore.begin_transaction().await?;
-            if let Err(e) = tx.delete_saga(&saga.operation_id).await {
-                tracing::error!("Failed to delete saga for {}: {}", saga.operation_id, e);
-                tx.rollback().await?;
-                continue;
-            }
-            tx.commit().await?;
 
             tracing::info!("Successfully recovered saga {}", saga.operation_id);
         }
@@ -547,14 +541,26 @@ impl Mint {
 
                 // Remove proofs (inputs) - use None for quote_id like swap does
                 if !saga.input_ys.is_empty() {
-                    if let Err(e) = tx.remove_proofs(&saga.input_ys, None).await {
-                        tracing::error!(
-                            "Failed to remove proofs for saga {}: {}",
-                            saga.operation_id,
-                            e
-                        );
-                        tx.rollback().await?;
-                        continue;
+                    match tx.remove_proofs(&saga.input_ys, None).await {
+                        Ok(()) => {}
+                        Err(DatabaseError::AttemptRemoveSpentProof) => {
+                            // Proofs are already spent or missing - this is okay for compensation.
+                            // The goal is to make proofs unusable, and they already are.
+                            // Continue with saga deletion to avoid infinite recovery loop.
+                            tracing::warn!(
+                                "Saga {} compensation: proofs already spent or missing, proceeding with saga cleanup",
+                                saga.operation_id
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to remove proofs for saga {}: {}",
+                                saga.operation_id,
+                                e
+                            );
+                            tx.rollback().await?;
+                            continue;
+                        }
                     }
                 }
 

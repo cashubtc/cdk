@@ -1,7 +1,5 @@
 //! Rust implementation of the Cashu Protocol
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
-#![warn(rustdoc::bare_urls)]
 
 // Disallow enabling `tor` feature on wasm32 with a clear error.
 #[cfg(all(target_arch = "wasm32", feature = "tor"))]
@@ -16,7 +14,7 @@ pub mod cdk_database {
     pub use cdk_common::database::WalletDatabase;
     #[cfg(feature = "mint")]
     pub use cdk_common::database::{
-        MintDatabase, MintKVStore, MintKVStoreDatabase, MintKVStoreTransaction, MintKeysDatabase,
+        KVStore, KVStoreDatabase, KVStoreTransaction, MintDatabase, MintKeysDatabase,
         MintProofsDatabase, MintQuotesDatabase, MintSignaturesDatabase, MintTransaction,
     };
 }

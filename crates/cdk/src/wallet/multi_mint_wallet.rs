@@ -70,6 +70,16 @@ pub struct TokenData {
     pub proofs: Proofs,
     /// The memo from the token, if present
     pub memo: Option<String>,
+    /// Value of token
+    pub value: Amount,
+    /// Unit of token
+    pub unit: CurrencyUnit,
+    /// Fee to redeem
+    ///
+    /// If the token is for a proof that we do not know, we cannot get the fee.
+    /// To avoid just erroring and still allow decoding, this is an option.
+    /// None does not mean there is no fee, it means we do not know the fee.
+    pub redeem_fee: Option<Amount>,
 }
 
 /// Configuration for individual wallets within MultiMintWallet
@@ -165,7 +175,7 @@ impl WalletConfig {
 #[derive(Clone)]
 pub struct MultiMintWallet {
     /// Storage backend
-    localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+    localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     seed: [u8; 64],
     /// The currency unit this wallet supports
     unit: CurrencyUnit,
@@ -181,7 +191,7 @@ pub struct MultiMintWallet {
 impl MultiMintWallet {
     /// Create a new [MultiMintWallet] for a specific currency unit
     pub async fn new(
-        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         seed: [u8; 64],
         unit: CurrencyUnit,
     ) -> Result<Self, Error> {
@@ -206,7 +216,7 @@ impl MultiMintWallet {
     /// All wallets in this MultiMintWallet will use the specified proxy.
     /// This allows you to route all mint connections through a proxy server.
     pub async fn new_with_proxy(
-        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         seed: [u8; 64],
         unit: CurrencyUnit,
         proxy_url: url::Url,
@@ -235,7 +245,7 @@ impl MultiMintWallet {
     /// is bootstrapped and shared across wallets.
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     pub async fn new_with_tor(
-        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         seed: [u8; 64],
         unit: CurrencyUnit,
     ) -> Result<Self, Error> {
@@ -584,10 +594,15 @@ impl MultiMintWallet {
         // Get the memo
         let memo = token.memo().clone();
 
+        let redeem_fee = self.get_proofs_fee(&mint_url, &proofs).await.ok();
+
         Ok(TokenData {
+            value: proofs.total_amount()?,
             mint_url,
             proofs,
             memo,
+            unit: token.unit().unwrap_or_default(),
+            redeem_fee,
         })
     }
 
@@ -628,6 +643,21 @@ impl MultiMintWallet {
         })?;
         let states = wallet.check_proofs_spent(proofs).await?;
         Ok(states.into_iter().map(|s| s.state).collect())
+    }
+
+    /// Fee required to redeem proof set
+    #[instrument(skip(self, proofs))]
+    pub async fn get_proofs_fee(
+        &self,
+        mint_url: &MintUrl,
+        proofs: &Proofs,
+    ) -> Result<Amount, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        Ok(wallet.get_proofs_fee(proofs).await?.total)
     }
 
     /// List transactions
@@ -1385,7 +1415,7 @@ impl MultiMintWallet {
         wallet.verify_token_p2pk(token, conditions).await
     }
 
-    /// Verifys all proofs in token have valid dleq proof
+    /// Verifies all proofs in token have valid dleq proof
     #[instrument(skip(self, token))]
     pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
         let mint_url = token.mint_url()?;
@@ -1842,6 +1872,27 @@ impl MultiMintWallet {
         wallet.fetch_mint_info().await
     }
 
+    /// Get mint info for all wallets
+    ///
+    /// This method loads the mint info for each wallet in the MultiMintWallet
+    /// and returns a map of mint URLs to their corresponding mint info.
+    ///
+    /// Uses cached mint info when available, only fetching from the mint if the cache
+    /// has expired.
+    #[instrument(skip(self))]
+    pub async fn get_all_mint_info(
+        &self,
+    ) -> Result<BTreeMap<MintUrl, crate::nuts::MintInfo>, Error> {
+        let mut mint_infos = BTreeMap::new();
+
+        for (mint_url, wallet) in self.wallets.read().await.iter() {
+            let mint_info = wallet.load_mint_info().await?;
+            mint_infos.insert(mint_url.clone(), mint_info);
+        }
+
+        Ok(mint_infos)
+    }
+
     /// Melt Quote for BIP353 human-readable address
     ///
     /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Lightning offer
@@ -2055,7 +2106,7 @@ mod tests {
     use super::*;
 
     async fn create_test_multi_wallet() -> MultiMintWallet {
-        let localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync> = Arc::new(
+        let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
             cdk_sqlite::wallet::memory::empty()
                 .await
                 .expect("Failed to create in-memory database"),
@@ -2194,9 +2245,12 @@ mod tests {
         let memo = Some("Test memo".to_string());
 
         let token_data = TokenData {
+            value: Amount::ZERO,
             mint_url: mint_url.clone(),
             proofs: proofs.clone(),
             memo: memo.clone(),
+            unit: CurrencyUnit::Sat,
+            redeem_fee: None,
         };
 
         assert_eq!(token_data.mint_url, mint_url);
@@ -2205,9 +2259,12 @@ mod tests {
 
         // Test with no memo
         let token_data_no_memo = TokenData {
+            value: Amount::ZERO,
             mint_url: mint_url.clone(),
             proofs: vec![],
             memo: None,
+            unit: CurrencyUnit::Sat,
+            redeem_fee: None,
         };
         assert!(token_data_no_memo.memo.is_none());
     }

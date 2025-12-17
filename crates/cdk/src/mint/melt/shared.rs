@@ -76,16 +76,18 @@ pub async fn rollback_melt_quote(
     quote_id: &QuoteId,
     input_ys: &[PublicKey],
     blinded_secrets: &[PublicKey],
+    operation_id: &uuid::Uuid,
 ) -> Result<(), Error> {
     if input_ys.is_empty() && blinded_secrets.is_empty() {
         return Ok(());
     }
 
     tracing::info!(
-        "Rolling back melt quote {} ({} proofs, {} blinded messages)",
+        "Rolling back melt quote {} ({} proofs, {} blinded messages, saga {})",
         quote_id,
         input_ys.len(),
-        blinded_secrets.len()
+        blinded_secrets.len(),
+        operation_id
     );
 
     let mut tx = db.begin_transaction().await?;
@@ -115,9 +117,23 @@ pub async fn rollback_melt_quote(
     // Delete melt request tracking record
     tx.delete_melt_request(quote_id).await?;
 
+    // Delete saga state record
+    if let Err(e) = tx.delete_saga(operation_id).await {
+        tracing::warn!(
+            "Failed to delete saga {} during rollback: {}",
+            operation_id,
+            e
+        );
+        // Continue anyway - saga cleanup is best-effort
+    }
+
     tx.commit().await?;
 
-    tracing::info!("Successfully rolled back melt quote {}", quote_id);
+    tracing::info!(
+        "Successfully rolled back melt quote {} and deleted saga {}",
+        quote_id,
+        operation_id
+    );
 
     Ok(())
 }
@@ -160,9 +176,9 @@ pub async fn rollback_melt_quote(
 /// - Change calculation fails
 /// - Blind signing fails
 /// - Database operations fail
-pub async fn process_melt_change<'a>(
+pub async fn process_melt_change(
     mint: &super::super::Mint,
-    db: &'a DynMintDatabase,
+    db: &DynMintDatabase,
     quote_id: &QuoteId,
     inputs_amount: Amount,
     total_spent: Amount,
@@ -171,7 +187,7 @@ pub async fn process_melt_change<'a>(
 ) -> Result<
     (
         Option<Vec<BlindSignature>>,
-        Box<dyn database::MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+        Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     ),
     Error,
 > {
@@ -265,7 +281,7 @@ pub async fn process_melt_change<'a>(
 /// - Database operations fail
 #[allow(clippy::too_many_arguments)]
 pub async fn finalize_melt_core(
-    tx: &mut Box<dyn database::MintTransaction<'_, database::Error> + Send + Sync + '_>,
+    tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     pubsub: &PubSubManager,
     quote: &MeltQuote,
     input_ys: &[PublicKey],

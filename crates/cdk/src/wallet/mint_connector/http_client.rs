@@ -257,7 +257,11 @@ where
         let transport = self.transport.clone();
         let keys_response = transport.http_get::<KeysResponse>(url, None).await?;
 
-        Ok(keys_response.keysets.first().unwrap().clone())
+        Ok(keys_response
+            .keysets
+            .first()
+            .ok_or(Error::UnknownKeySet)?
+            .clone())
     }
 
     /// Get Keysets [NUT-02]
