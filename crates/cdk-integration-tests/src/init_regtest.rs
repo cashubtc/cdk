@@ -402,6 +402,10 @@ pub async fn start_regtest_end(
         generate_block(&bitcoin_client)?;
 
         if let Some(node) = ldk_node {
+            // Sync LDK wallet so it sees its confirmed on-chain balance
+            // This is needed for anchor channel reserves
+            node.sync_wallets()?;
+
             let pubkey = node.node_id();
             let listen_addr = node.listening_addresses();
             let listen_addr = listen_addr.as_ref().unwrap().first().unwrap();
