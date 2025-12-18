@@ -1097,6 +1097,19 @@ mod tests {
     }
 
     #[test]
+    fn nut_18_payment_request() {
+        use nostr_sdk::prelude::*;
+        let nprofile = "nprofile1qqsrhuxx8l9ex335q7he0f09aej04zpazpl0ne2cgukyawd24mayt8gprpmhxue69uhhyetvv9unztn90psk6urvv5hxxmmdqyv8wumn8ghj7un9d3shjv3wv4uxzmtsd3jjucm0d5q3samnwvaz7tmjv4kxz7fn9ejhsctdwpkx2tnrdaksxzjpjp";
+
+        let nostr_decoded =
+            Nip19Profile::from_bech32(&nprofile).expect("nostr-sdk should decode our nprofile");
+
+        let encoded = nostr_decoded.to_bech32().unwrap();
+
+        assert_eq!(nprofile, encoded);
+    }
+
+    #[test]
     fn test_nostr_transport_with_nprofile_no_relays() {
         // Create a payment request with nostr transport using nprofile with empty relay list
         let pubkey_hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
@@ -1756,6 +1769,8 @@ mod tests {
         assert!(relay_values.contains(&"wss://relay1.example.com"));
         assert!(relay_values.contains(&"wss://relay2.example.com"));
         assert!(relay_values.contains(&"wss://relay3.example.com"));
+
+        assert_eq!("nprofile1qqsrhuxx8l9ex335q7he0f09aej04zpazpl0ne2cgukyawd24mayt8gprpmhxue69uhhyetvv9unztn90psk6urvv5hxxmmdqyv8wumn8ghj7un9d3shjv3wv4uxzmtsd3jjucm0d5q3samnwvaz7tmjv4kxz7fn9ejhsctdwpkx2tnrdaksxzjpjp", decoded.transports[0].target);
 
         // Also verify the nprofile contains the relays
         let (_, decoded_relays) =
