@@ -192,7 +192,7 @@ where
         let time = Instant::now();
 
         loop {
-            if let Some((stale, resource)) = resources.pop() {
+            while let Some((stale, resource)) = resources.pop() {
                 if !stale.load(Ordering::SeqCst) {
                     // Increment counter BEFORE releasing the mutex to prevent race condition
                     // where another thread sees in_use < max_size and creates a duplicate connection.
