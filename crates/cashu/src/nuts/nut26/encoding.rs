@@ -713,15 +713,6 @@ impl PaymentRequest {
         Ok(data)
     }
 
-    /// Encode 32-byte pubkey to npub bech32 string
-    fn encode_npub(pubkey: &[u8]) -> Result<String, Error> {
-        if pubkey.len() != 32 {
-            return Err(Error::InvalidPrefix);
-        }
-        let hrp = Hrp::parse("npub").map_err(|_| Error::InvalidPrefix)?;
-        bech32::encode::<Bech32>(hrp, pubkey).map_err(|_| Error::InvalidPrefix)
-    }
-
     /// Decode nprofile bech32 string to (pubkey, relays)
     /// NIP-19 nprofile TLV format:
     /// - Type 0: 32-byte pubkey (required, only one)
@@ -939,7 +930,7 @@ mod tests {
         // Test with wrong HRP (npub instead of creqb)
         let pubkey_hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
         let pubkey_bytes = hex::decode(pubkey_hex).unwrap();
-        let npub = PaymentRequest::encode_npub(&pubkey_bytes).expect("should encode npub");
+        let npub = PaymentRequest::encode_nprofile(&pubkey_bytes, &[]).expect("should encode npub");
         assert!(PaymentRequest::from_bech32_string(&npub).is_err());
     }
 
@@ -992,18 +983,20 @@ mod tests {
         let pubkey_bytes = hex::decode(pubkey_hex).unwrap();
 
         // Encode to npub
-        let npub = PaymentRequest::encode_npub(&pubkey_bytes).expect("should encode npub");
-        assert!(npub.starts_with("npub"));
+        let npub = PaymentRequest::encode_nprofile(&pubkey_bytes, &[]).expect("should encode npub");
+        assert!(npub.starts_with("nprofile"));
 
         // Decode back
-        let decoded = PaymentRequest::decode_npub(&npub).expect("should decode npub");
-        assert_eq!(decoded, pubkey_bytes);
+        let decoded = PaymentRequest::decode_nprofile(&npub).expect("should decode npub");
+        assert_eq!(decoded.0, pubkey_bytes);
     }
 
     #[test]
     fn test_nprofile_encoding_decoding() {
-        let pubkey_hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
-        let pubkey_bytes = hex::decode(pubkey_hex).unwrap();
+        use nostr_sdk::prelude::*;
+
+        let keys = Keys::generate();
+        let pubkey_bytes = keys.public_key().to_bytes().to_vec();
         let relays = vec![
             "wss://relay.example.com".to_string(),
             "wss://another-relay.example.com".to_string(),
@@ -1019,6 +1012,88 @@ mod tests {
             PaymentRequest::decode_nprofile(&nprofile).expect("should decode nprofile");
         assert_eq!(decoded_pubkey, pubkey_bytes);
         assert_eq!(decoded_relays, relays);
+    }
+
+    #[test]
+    fn test_nprofile_matches_nostr_crate() {
+        use nostr_sdk::prelude::*;
+
+        let keys = Keys::generate();
+        let nostr_pubkey = keys.public_key();
+        let pubkey_bytes = nostr_pubkey.to_bytes().to_vec();
+        let relays = vec![
+            "wss://relay.example.com".to_string(),
+            "wss://relay.damus.io".to_string(),
+        ];
+
+        // Create nostr-sdk relay URLs
+        let nostr_relays: Vec<RelayUrl> = relays
+            .iter()
+            .map(|r| RelayUrl::parse(r).expect("valid relay url"))
+            .collect();
+
+        // Test 1: Encode with our implementation, decode with nostr-sdk
+        let our_nprofile = PaymentRequest::encode_nprofile(&pubkey_bytes, &relays)
+            .expect("should encode nprofile");
+
+        let nostr_decoded =
+            Nip19Profile::from_bech32(&our_nprofile).expect("nostr-sdk should decode our nprofile");
+        assert_eq!(nostr_decoded.public_key, nostr_pubkey);
+        assert_eq!(nostr_decoded.relays.len(), relays.len());
+        for (decoded_relay, expected_relay) in nostr_decoded.relays.iter().zip(nostr_relays.iter())
+        {
+            assert_eq!(decoded_relay, expected_relay);
+        }
+
+        // Test 2: Encode with nostr-sdk, decode with our implementation
+        let nostr_profile = Nip19Profile::new(nostr_pubkey, nostr_relays.clone());
+        let nostr_nprofile = nostr_profile.to_bech32().expect("should encode nprofile");
+
+        let (our_decoded_pubkey, our_decoded_relays) =
+            PaymentRequest::decode_nprofile(&nostr_nprofile)
+                .expect("should decode nostr-sdk nprofile");
+        assert_eq!(our_decoded_pubkey, pubkey_bytes);
+        assert_eq!(our_decoded_relays.len(), relays.len());
+        for (decoded_relay, expected_relay) in our_decoded_relays.iter().zip(relays.iter()) {
+            assert_eq!(decoded_relay, expected_relay);
+        }
+
+        // Test 3: Both implementations produce identical bech32 strings
+        assert_eq!(our_nprofile, nostr_nprofile);
+    }
+
+    #[test]
+    fn test_nprofile_empty_relays_matches_nostr_crate() {
+        use nostr_sdk::prelude::*;
+
+        let keys = Keys::generate();
+        let nostr_pubkey = keys.public_key();
+        let pubkey_bytes = nostr_pubkey.to_bytes().to_vec();
+
+        // Create nostr-sdk types with empty relays
+        let nostr_relays: Vec<RelayUrl> = vec![];
+
+        // Test with empty relays
+        let our_nprofile =
+            PaymentRequest::encode_nprofile(&pubkey_bytes, &[]).expect("should encode nprofile");
+
+        let nostr_profile = Nip19Profile::new(nostr_pubkey, nostr_relays);
+        let nostr_nprofile = nostr_profile.to_bech32().expect("should encode nprofile");
+
+        // Verify both can decode each other's output
+        let nostr_decoded =
+            Nip19Profile::from_bech32(&our_nprofile).expect("nostr-sdk should decode our nprofile");
+        assert_eq!(nostr_decoded.public_key, nostr_pubkey);
+        assert!(nostr_decoded.relays.is_empty());
+
+        let (our_decoded_pubkey, our_decoded_relays) =
+            PaymentRequest::decode_nprofile(&nostr_nprofile)
+                .expect("should decode nostr-sdk nprofile");
+        assert_eq!(our_decoded_pubkey, pubkey_bytes);
+        assert!(our_decoded_relays.is_empty());
+
+        // Both should produce identical strings
+        assert_eq!(our_nprofile, nostr_nprofile);
     }
 
     #[test]
