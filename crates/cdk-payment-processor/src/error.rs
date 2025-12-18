@@ -30,6 +30,9 @@ pub enum Error {
     /// NUT00 Error
     #[error(transparent)]
     NUT00(#[from] cdk_common::nuts::nut00::Error),
+    /// NUT01 Error
+    #[error(transparent)]
+    NUT01(#[from] cdk_common::nuts::nut01::Error),
     /// NUT05 error
     #[error(transparent)]
     NUT05(#[from] cdk_common::nuts::nut05::Error),
@@ -53,6 +56,7 @@ impl From<Error> for Status {
             Error::Hex(err) => Status::invalid_argument(format!("Hex decode error: {err}")),
             Error::Bolt12Parse => Status::invalid_argument("BOLT12 parse error"),
             Error::NUT00(err) => Status::internal(format!("NUT00 error: {err}")),
+            Error::NUT01(err) => Status::internal(format!("NUT01 error: {err}")),
             Error::NUT05(err) => Status::internal(format!("NUT05 error: {err}")),
             Error::Payment(err) => Status::internal(format!("Payment error: {err}")),
         }
@@ -74,6 +78,7 @@ impl From<Error> for cdk_common::payment::Error {
             Error::Hex(err) => Self::Custom(format!("Hex decode error: {err}")),
             Error::Bolt12Parse => Self::Custom("BOLT12 parse error".to_string()),
             Error::NUT00(err) => Self::Custom(format!("NUT00 error: {err}")),
+            Error::NUT01(err) => Self::Custom(format!("NUT01 error: {err}")),
             Error::NUT05(err) => err.into(),
             Error::Payment(err) => err,
         }

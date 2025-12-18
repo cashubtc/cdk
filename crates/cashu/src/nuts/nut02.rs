@@ -23,7 +23,7 @@ use thiserror::Error;
 use super::nut01::Keys;
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
-use crate::nuts::nut00::CurrencyUnit;
+use crate::nuts::nut01::CurrencyUnit;
 use crate::util::hex;
 use crate::{ensure_cdk, Amount};
 

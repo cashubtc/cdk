@@ -35,12 +35,12 @@ pub use auth::{
     ClearAuthSettings, Method, MintAuthRequest, ProtectedEndpoint, RoutePath,
 };
 pub use nut00::{
-    BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proof, Proofs, ProofsMethods,
-    Token, TokenV3, TokenV4, Witness,
+    BlindSignature, BlindedMessage, PaymentMethod, Proof, Proofs, ProofsMethods, Token, TokenV3,
+    TokenV4, Witness,
 };
 #[cfg(feature = "wallet")]
 pub use nut00::{PreMint, PreMintSecrets};
-pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
+pub use nut01::{CurrencyUnit, Keys, KeysResponse, PublicKey, SecretKey};
 #[cfg(feature = "mint")]
 pub use nut02::MintKeySet;
 pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
