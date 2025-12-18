@@ -394,3 +394,84 @@ async fn test_htlc_multisig_2of3() {
     );
     println!("✓ HTLC spent with preimage + 2-of-3 signatures");
 }
+
+/// Test: HTLC receiver path still works after locktime (NUT-14 compliance)
+///
+/// Per NUT-14: "This pathway is ALWAYS available to the receivers, as possession
+/// of the preimage confirms performance of the Sender's wishes."
+///
+/// This test verifies that even after locktime has passed, the receiver can still
+/// spend using the preimage + pubkeys path (not just the refund path).
+#[tokio::test]
+async fn test_htlc_receiver_path_after_locktime() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+
+    let (alice_secret, alice_pubkey) = create_test_keypair();
+    let (_bob_secret, bob_pubkey) = create_test_keypair();
+    let (hash, preimage) = create_test_hash_and_preimage();
+
+    // Create HTLC with locktime in the PAST (already expired)
+    // Alice is the receiver (pubkeys), Bob is the refund key
+    let past_locktime = cdk_common::util::unix_time() - 1000;
+
+    let input_amount = Amount::from(10);
+    let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
+
+    let spending_conditions = SpendingConditions::new_htlc_hash(
+        &hash,
+        Some(Conditions {
+            locktime: Some(past_locktime),
+            pubkeys: Some(vec![alice_pubkey]),
+            refund_keys: Some(vec![bob_pubkey]),
+            num_sigs: None,
+            sig_flag: SigFlag::default(),
+            num_sigs_refund: None,
+        }),
+    )
+    .unwrap();
+
+    let split_amounts = test_mint.split_amount(input_amount).unwrap();
+    let (htlc_outputs, blinding_factors, secrets) = unzip3(
+        split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &spending_conditions))
+            .collect(),
+    );
+
+    let swap_request =
+        cdk_common::nuts::SwapRequest::new(input_proofs.clone(), htlc_outputs.clone());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+
+    use cdk_common::dhke::construct_proofs;
+    let htlc_proofs = construct_proofs(
+        swap_response.signatures.clone(),
+        blinding_factors.clone(),
+        secrets.clone(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    )
+    .unwrap();
+
+    // Even though locktime has passed, Alice (receiver) should STILL be able to spend
+    // using the preimage + her signature (receiver path is ALWAYS available per NUT-14)
+    use crate::test_helpers::mint::create_test_blinded_messages;
+    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+        .await
+        .unwrap();
+    let mut swap_request =
+        cdk_common::nuts::SwapRequest::new(htlc_proofs.clone(), new_outputs.clone());
+
+    // Alice provides preimage and signs (receiver path)
+    for proof in swap_request.inputs_mut() {
+        proof.add_preimage(preimage.clone());
+        proof.sign_p2pk(alice_secret.clone()).unwrap();
+    }
+
+    let result = mint.process_swap_request(swap_request).await;
+    assert!(
+        result.is_ok(),
+        "Receiver should be able to spend with preimage even after locktime: {:?}",
+        result.err()
+    );
+    println!("✓ HTLC receiver path works after locktime (NUT-14 compliant)");
+}
