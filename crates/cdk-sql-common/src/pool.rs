@@ -199,7 +199,6 @@ where
                     // For in-memory SQLite, each connection is a separate database, so this race
                     // would cause some connections to miss migrations.
                     self.increment_connection_counter();
-                    drop(resources);
 
                     return Ok(PooledResource {
                         resource: Some((stale, resource)),
@@ -215,7 +214,6 @@ where
                 // This ensures other threads see the updated count and wait instead of
                 // creating additional connections beyond max_size.
                 self.increment_connection_counter();
-                drop(resources);
                 let stale: Arc<AtomicBool> = Arc::new(false.into());
                 match RM::new_resource(&self.config, stale.clone(), timeout) {
                     Ok(new_resource) => {
@@ -239,7 +237,9 @@ where
                 .wait_timeout(resources, timeout)
                 .map_err(|_| Error::Poison)
                 .and_then(|(lock, timeout_result)| {
+                    #[allow(unreachable_code)]
                     if timeout_result.timed_out() {
+                        panic!("Debug for a backtrace");
                         tracing::warn!(
                             "Timeout waiting for the resource (pool size: {}). Waited {} ms",
                             self.max_size,
