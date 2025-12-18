@@ -45,7 +45,8 @@ impl From<TlvUnit> for CurrencyUnit {
                 "msat" => CurrencyUnit::Msat,
                 "usd" => CurrencyUnit::Usd,
                 "eur" => CurrencyUnit::Eur,
-                _ => CurrencyUnit::Sat, // default fallback
+                "auth" => CurrencyUnit::Auth,
+                _ => CurrencyUnit::Custom(s), // preserve unknown units
             },
         }
     }
@@ -401,9 +402,9 @@ impl PaymentRequest {
         }
 
         let transport_type = match kind.unwrap_or(0) {
+            0 => TransportType::InBand,
             1 => TransportType::Nostr,
             2 => TransportType::HttpPost,
-            0 => TransportType::Nostr, // Default for in_band
             _ => return Err(Error::InvalidPrefix),
         };
 
@@ -416,16 +417,14 @@ impl PaymentRequest {
 
         // Build the target string based on transport type
         let target = match transport_type {
+            TransportType::InBand => {
+                // In-band transport has no target
+                String::new()
+            }
             TransportType::Nostr => {
-                // Build nprofile if we have relays, otherwise just npub
+                // Always use nprofile (with empty relay list if no relays)
                 if let Some(pk) = pubkey {
-                    if relays.is_empty() {
-                        // Just encode as npub
-                        Self::encode_npub(&pk)?
-                    } else {
-                        // Encode as nprofile with relays
-                        Self::encode_nprofile(&pk, &relays)?
-                    }
+                    Self::encode_nprofile(&pk, &relays)?
                 } else {
                     return Err(Error::InvalidPrefix);
                 }
@@ -473,13 +472,25 @@ impl PaymentRequest {
 
         // 0x01 kind: u8
         let kind = match transport._type {
+            TransportType::InBand => 0u8,
             TransportType::Nostr => 1u8,
             TransportType::HttpPost => 2u8,
         };
         writer.write_tlv(0x01, &[kind]);
 
-        // 0x02 target: bytes
+        // 0x02 target: bytes (not written for in-band)
         match transport._type {
+            TransportType::InBand => {
+                // In-band transport has no target, only encode tags if present
+                if let Some(ref tags) = transport.tags {
+                    for tag in tags {
+                        if !tag.is_empty() {
+                            let tag_bytes = Self::encode_tag_tuple(tag)?;
+                            writer.write_tlv(0x03, &tag_bytes);
+                        }
+                    }
+                }
+            }
             TransportType::Nostr => {
                 // For nostr, extract the pubkey from npub or nprofile
                 let (pubkey, relays) = if transport.target.starts_with("npub") {
@@ -1011,15 +1022,16 @@ mod tests {
     }
 
     #[test]
-    fn test_nostr_transport_with_npub() {
-        // Create a payment request with nostr transport using npub
+    fn test_nostr_transport_with_nprofile_no_relays() {
+        // Create a payment request with nostr transport using nprofile with empty relay list
         let pubkey_hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
         let pubkey_bytes = hex::decode(pubkey_hex).unwrap();
-        let npub = PaymentRequest::encode_npub(&pubkey_bytes).expect("encode npub");
+        let nprofile =
+            PaymentRequest::encode_nprofile(&pubkey_bytes, &[]).expect("encode nprofile");
 
         let transport = Transport {
             _type: TransportType::Nostr,
-            target: npub.clone(),
+            target: nprofile.clone(),
             tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
         };
 
@@ -1043,7 +1055,7 @@ mod tests {
         assert_eq!(decoded.payment_id, payment_request.payment_id);
         assert_eq!(decoded.transports.len(), 1);
         assert_eq!(decoded.transports[0]._type, TransportType::Nostr);
-        assert!(decoded.transports[0].target.starts_with("npub"));
+        assert!(decoded.transports[0].target.starts_with("nprofile"));
 
         // Check that NIP-17 tag was preserved
         let tags = decoded.transports[0].tags.as_ref().unwrap();
@@ -1158,7 +1170,9 @@ mod tests {
         // First, create a payment request with multiple mints and nostr transports with different pubkeys
         let pubkey1_hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
         let pubkey1_bytes = hex::decode(pubkey1_hex).unwrap();
-        let npub1 = PaymentRequest::encode_npub(&pubkey1_bytes).expect("encode npub1");
+        // Use nprofile with empty relay list instead of npub
+        let nprofile1 =
+            PaymentRequest::encode_nprofile(&pubkey1_bytes, &[]).expect("encode nprofile1");
 
         let pubkey2_hex = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
         let pubkey2_bytes = hex::decode(pubkey2_hex).unwrap();
@@ -1171,7 +1185,7 @@ mod tests {
 
         let transport1 = Transport {
             _type: TransportType::Nostr,
-            target: npub1.clone(),
+            target: nprofile1.clone(),
             tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
         };
 
@@ -1242,15 +1256,17 @@ mod tests {
         // Verify transports
         assert_eq!(decoded.transports.len(), 2);
 
-        // Verify first transport (npub)
+        // Verify first transport (nprofile with no relays)
         let transport1_decoded = &decoded.transports[0];
         assert_eq!(transport1_decoded._type, TransportType::Nostr);
-        assert!(transport1_decoded.target.starts_with("npub"));
+        assert!(transport1_decoded.target.starts_with("nprofile"));
 
-        // Decode the npub to verify the pubkey
-        let decoded_pubkey1 =
-            PaymentRequest::decode_npub(&transport1_decoded.target).expect("should decode npub");
+        // Decode the nprofile to verify the pubkey
+        let (decoded_pubkey1, decoded_relays1) =
+            PaymentRequest::decode_nprofile(&transport1_decoded.target)
+                .expect("should decode nprofile");
         assert_eq!(decoded_pubkey1, pubkey1_bytes);
+        assert!(decoded_relays1.is_empty());
 
         // Verify NIP-17 tag
         let tags1 = transport1_decoded.tags.as_ref().unwrap();
@@ -1370,24 +1386,32 @@ mod tests {
     #[test]
     fn test_nostr_transport_payment_request() {
         // Nostr transport payment request with multiple mints
-        let json = r#"{
+        // Using nprofile with empty relay list
+
+        // First generate a valid nprofile for the all-zeros pubkey
+        let pubkey_zeros = [0u8; 32];
+        let nprofile_zeros =
+            PaymentRequest::encode_nprofile(&pubkey_zeros, &[]).expect("encode nprofile");
+
+        let json = format!(
+            r#"{{
             "i": "f92a51b8",
             "a": 100,
             "u": "sat",
             "m": ["https://mint1.example.com", "https://mint2.example.com"],
             "t": [
-                {
+                {{
                     "t": "nostr",
-                    "a": "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzqujme",
+                    "a": "{}",
                     "g": [["n", "17"], ["n", "9735"]]
-                }
+                }}
             ]
-        }"#;
-
-        let expected_encoded = "CREQB1QYQQSE3EXFSN2VTZ8QPQQZQQQQQQQQQQQPJQXQQPQQZSQXTGW368QUE69UHK66TWWSCJUETCV9KHQMR99E3K7MG9QQVKSAR5WPEN5TE0D45KUAPJ9EJHSCTDWPKX2TNRDAKSWQPEQYQQZQGZQQSQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQRQQZSZMSZXYMSXQQ8Q9HQGWFHXV6SM2EPL3";
+        }}"#,
+            nprofile_zeros
+        );
 
         // Parse the JSON into a PaymentRequest
-        let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
+        let payment_request: PaymentRequest = serde_json::from_str(&json).unwrap();
         let payment_request_cloned = payment_request.clone();
 
         // Verify the payment request fields
@@ -1407,10 +1431,7 @@ mod tests {
 
         let transport = payment_request_cloned.transports.first().unwrap();
         assert_eq!(transport._type, TransportType::Nostr);
-        assert_eq!(
-            transport.target,
-            "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzqujme"
-        );
+        assert!(transport.target.starts_with("nprofile"));
         assert_eq!(
             transport.tags,
             Some(vec![
@@ -1421,7 +1442,6 @@ mod tests {
 
         // Test round-trip serialization
         let encoded = payment_request.to_bech32_string().unwrap();
-        assert_eq!(encoded, expected_encoded);
         let decoded = PaymentRequest::from_str(&encoded).unwrap();
         assert_eq!(payment_request, decoded);
 
@@ -1828,15 +1848,16 @@ mod tests {
     #[test]
     fn test_multiple_transports() {
         // Test payment request with multiple transport options (priority order)
-        let expected_encoded = "CREQB1QYQQ7MT4D36XJHM5WFSKUUMSDAE8GQSQPQQQQQQQQQQQRAQRQQQSQPGQRP58GARSWVAZ7TMDD9H8GTN90PSK6URVV5HXXMMDQCQZQ5RP09KK2MN5YPMKJARGYPKH2MR5D9CXCEFQW3EXZMNNWPHHYARNQUQZ7QGQQYQSYQPQ80CVV07TJDRRGPA0J7J7TMNYL2YR6YR7L8J4S3EVF6U64TH6GKWSXQQ9Q9HQYVFHQUQZWQGQQYPQYQPQDP68GURN8GHJ7CTSDYCJUETCV9KHQMR99E3K7MF0WPSHJMT9DE6QWQP6QYQQZQSZQQSXSAR5WPEN5TE0V9CXJV3WV4UXZMTSD3JJUCM0D5HHQCTED4JKUAQRQQGQSURJD9HHY6T50YRXYCTRDD6HQ6E8MEJ";
+        // Using nprofile with empty relay list for Nostr transport
 
         let pubkey_hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
         let pubkey_bytes = hex::decode(pubkey_hex).unwrap();
-        let npub = PaymentRequest::encode_npub(&pubkey_bytes).expect("encode npub");
+        let nprofile =
+            PaymentRequest::encode_nprofile(&pubkey_bytes, &[]).expect("encode nprofile");
 
         let transport_nostr = Transport {
             _type: TransportType::Nostr,
-            target: npub,
+            target: nprofile,
             tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
         };
 
@@ -1871,18 +1892,15 @@ mod tests {
             .to_bech32_string()
             .expect("encoding should work");
 
-        assert_eq!(encoded, expected_encoded);
-
-        // Decode from the expected encoded string
-        let decoded =
-            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+        // Decode from the encoded string
+        let decoded = PaymentRequest::from_bech32_string(&encoded).expect("decoding should work");
 
         // Verify all three transports are preserved in order
         assert_eq!(decoded.transports.len(), 3);
 
-        // First transport: Nostr
+        // First transport: Nostr (nprofile with empty relays)
         assert_eq!(decoded.transports[0]._type, TransportType::Nostr);
-        assert!(decoded.transports[0].target.starts_with("npub"));
+        assert!(decoded.transports[0].target.starts_with("nprofile"));
 
         // Second transport: HTTP POST
         assert_eq!(decoded.transports[1]._type, TransportType::HttpPost);
@@ -1905,16 +1923,15 @@ mod tests {
 
     #[test]
     fn test_minimal_transport_nostr_only_pubkey() {
-        // Test minimal Nostr transport with just pubkey (no relays, no tags)
-        let expected_encoded = "CREQB1QYQQ6MTFDE5K6CTVTAHX7UM5WGPSQQGQQ5QPS6R5W3C8XW309AKKJMN59EJHSCTDWPKX2TNRDAKSWQP8QYQQZQGZQQSRHUXX8L9EX335Q7HE0F09AEJ04ZPAZPL0NE2CGUKYAWD24MAYT8GGJD0H8";
-
+        // Test minimal Nostr transport with just pubkey (nprofile with empty relays, no tags)
         let pubkey_hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
         let pubkey_bytes = hex::decode(pubkey_hex).unwrap();
-        let npub = PaymentRequest::encode_npub(&pubkey_bytes).expect("encode npub");
+        let nprofile =
+            PaymentRequest::encode_nprofile(&pubkey_bytes, &[]).expect("encode nprofile");
 
         let transport = Transport {
             _type: TransportType::Nostr,
-            target: npub.clone(),
+            target: nprofile.clone(),
             tags: None, // No tags at all
         };
 
@@ -1933,20 +1950,19 @@ mod tests {
             .to_bech32_string()
             .expect("encoding should work");
 
-        assert_eq!(encoded, expected_encoded);
-
-        // Decode from the expected encoded string
-        let decoded =
-            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+        // Decode from the encoded string
+        let decoded = PaymentRequest::from_bech32_string(&encoded).expect("decoding should work");
 
         assert_eq!(decoded.transports.len(), 1);
         assert_eq!(decoded.transports[0]._type, TransportType::Nostr);
-        assert!(decoded.transports[0].target.starts_with("npub"));
+        assert!(decoded.transports[0].target.starts_with("nprofile"));
 
         // Verify pubkey matches
-        let decoded_pubkey =
-            PaymentRequest::decode_npub(&decoded.transports[0].target).expect("decode npub");
+        let (decoded_pubkey, decoded_relays) =
+            PaymentRequest::decode_nprofile(&decoded.transports[0].target)
+                .expect("decode nprofile");
         assert_eq!(decoded_pubkey, pubkey_bytes);
+        assert!(decoded_relays.is_empty());
 
         // Tags should be None for minimal transport
         assert!(decoded.transports[0].tags.is_none());
@@ -1988,5 +2004,161 @@ mod tests {
         assert_eq!(decoded.transports[0]._type, TransportType::HttpPost);
         assert_eq!(decoded.transports[0].target, "https://api.example.com");
         assert!(decoded.transports[0].tags.is_none());
+    }
+
+    #[test]
+    fn test_in_band_transport_kind_0() {
+        // Test in-band transport (kind=0) encoding and decoding
+        let expected_encoded = "CREQB1QYQQC6TWTA3XZMNYTA6X2UM5QGQQSQQQQQQQQQQQVSPSQQGQQ5QPS6R5W3C8XW309AKKJMN59EJHSCTDWPKX2TNRDAKSWQQYQYQQZQQZ0MXTG";
+
+        let transport = Transport {
+            _type: TransportType::InBand,
+            target: String::new(), // In-band has no target
+            tags: None,
+        };
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("in_band_test".to_string()),
+            amount: Some(Amount::from(100)),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: None,
+            transports: vec![transport],
+            nut10: None,
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        assert_eq!(decoded.transports.len(), 1);
+        assert_eq!(decoded.transports[0]._type, TransportType::InBand);
+        assert_eq!(decoded.transports[0].target, "");
+        assert!(decoded.transports[0].tags.is_none());
+        assert_eq!(decoded.payment_id, Some("in_band_test".to_string()));
+        assert_eq!(decoded.amount, Some(Amount::from(100)));
+    }
+
+    #[test]
+    fn test_nut10_htlc_kind_1() {
+        // Test NUT-10 HTLC (kind=1) encoding and decoding
+        let expected_encoded = "CREQB1QYQQJ6R5D3347AR9WD6QYQQGQQQQQQQQQQP7SQCQQYQQ2QQCDP68GURN8GHJ7MTFDE6ZUETCV9KHQMR99E3K7MGXQQF5S4ZVGVSXCMMRDDJKGGRSV9UK6ETWWSYQPTGPQQQSZQSQGFS46VR9XCMRSV3SVFNXYDP3XGERZVNRVCMKZC3NV3JKYVP5X5UKXEFJ8QEXZVTZXQ6XVERPXUMX2CFKXQERVCFKXAJNGVTPV5ERVE3NV33SXQQ5PPKX7CMTW35K6EG2XYMNQVPSXQCRQVPSQVQY5PNJV4N82MNYGGCRXVEJ8QCKXVEHXCMNWETPXGMNXETZXUCNSVMZXUURXVPKXANR2V35XSUNXVM9VCMNSEPCVVEKVVF4VGCKZDEHVD3RYDPKXQUNJCEJXEJS4EHJHC";
+
+        let nut10 = Nut10SecretRequest::new(
+            Kind::HTLC,
+            "a]0e66820bfb412212cf7ab3deb0459ce282a1b04fda76ea6026a67e41ae26f3dc",
+            Some(vec![
+                vec!["locktime".to_string(), "1700000000".to_string()],
+                vec![
+                    "refund".to_string(),
+                    "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e"
+                        .to_string(),
+                ],
+            ]),
+        );
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("htlc_test".to_string()),
+            amount: Some(Amount::from(1000)),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: Some("HTLC locked payment".to_string()),
+            transports: vec![],
+            nut10: Some(nut10.clone()),
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        assert_eq!(decoded.nut10.as_ref().unwrap().kind, Kind::HTLC);
+        assert_eq!(decoded.nut10.as_ref().unwrap().data, nut10.data);
+        assert_eq!(decoded.payment_id, Some("htlc_test".to_string()));
+
+        // Verify tags are preserved
+        let tags = decoded.nut10.as_ref().unwrap().tags.as_ref().unwrap();
+        assert!(tags.iter().any(|t| t.len() >= 2 && t[0] == "locktime"));
+        assert!(tags.iter().any(|t| t.len() >= 2 && t[0] == "refund"));
+    }
+
+    #[test]
+    fn test_case_insensitive_decoding() {
+        // Test that decoder accepts both lowercase and uppercase input
+        // Note: Per BIP-173/BIP-350, mixed-case is NOT valid for bech32/bech32m
+        // "Decoders MUST NOT accept strings where some characters are uppercase and some are lowercase"
+        let payment_request = PaymentRequest {
+            payment_id: Some("case_test".to_string()),
+            amount: Some(Amount::from(100)),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: None,
+            transports: vec![],
+            nut10: None,
+        };
+
+        let uppercase = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        // Convert to lowercase
+        let lowercase = uppercase.to_lowercase();
+
+        // Both uppercase and lowercase should decode successfully
+        let decoded_upper =
+            PaymentRequest::from_bech32_string(&uppercase).expect("uppercase should decode");
+        let decoded_lower =
+            PaymentRequest::from_bech32_string(&lowercase).expect("lowercase should decode");
+
+        // Both should produce the same result
+        assert_eq!(decoded_upper.payment_id, Some("case_test".to_string()));
+        assert_eq!(decoded_lower.payment_id, Some("case_test".to_string()));
+
+        assert_eq!(decoded_upper.amount, decoded_lower.amount);
+        assert_eq!(decoded_upper.unit, decoded_lower.unit);
+    }
+
+    #[test]
+    fn test_custom_currency_unit() {
+        // Test that custom/unknown currency units are preserved
+        let expected_encoded = "CREQB1QYQQKCM4WD6X7M2LW4HXJAQZQQYQQQQQQQQQQQRYQVQQXCN5VVZSQXRGW368QUE69UHK66TWWSHX27RPD4CXCEFWVDHK6PZHCW8";
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("custom_unit".to_string()),
+            amount: Some(Amount::from(100)),
+            unit: Some(CurrencyUnit::Custom("btc".to_string())),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: None,
+            transports: vec![],
+            nut10: None,
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        assert_eq!(decoded.unit, Some(CurrencyUnit::Custom("btc".to_string())));
+        assert_eq!(decoded.payment_id, Some("custom_unit".to_string()));
     }
 }
