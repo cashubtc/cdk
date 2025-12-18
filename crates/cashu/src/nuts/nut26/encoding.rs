@@ -492,17 +492,8 @@ impl PaymentRequest {
                 }
             }
             TransportType::Nostr => {
-                // For nostr, extract the pubkey from npub or nprofile
-                let (pubkey, relays) = if transport.target.starts_with("npub") {
-                    // Decode npub bech32 to get 32-byte pubkey
-                    let pubkey = Self::decode_npub(&transport.target)?;
-                    (pubkey, Vec::new())
-                } else if transport.target.starts_with("nprofile") {
-                    // Decode nprofile to extract pubkey and relays
-                    Self::decode_nprofile(&transport.target)?
-                } else {
-                    return Err(Error::InvalidPrefix);
-                };
+                // For nostr, decode nprofile to extract pubkey and relays
+                let (pubkey, relays) = Self::decode_nprofile(&transport.target)?;
 
                 // Write the 32-byte pubkey
                 writer.write_tlv(0x02, &pubkey);
@@ -699,18 +690,6 @@ impl PaymentRequest {
         }
 
         Ok(bytes)
-    }
-
-    /// Decode npub bech32 string to 32-byte pubkey
-    fn decode_npub(npub: &str) -> Result<Vec<u8>, Error> {
-        let (hrp, data) = bech32::decode(npub).map_err(|_| Error::InvalidPrefix)?;
-        if hrp.as_str() != "npub" {
-            return Err(Error::InvalidPrefix);
-        }
-        if data.len() != 32 {
-            return Err(Error::InvalidPrefix);
-        }
-        Ok(data)
     }
 
     /// Decode nprofile bech32 string to (pubkey, relays)
@@ -927,11 +906,12 @@ mod tests {
         // Test with a string that's not CREQ-B
         assert!(PaymentRequest::from_bech32_string("not_a_creq").is_err());
 
-        // Test with wrong HRP (npub instead of creqb)
+        // Test with wrong HRP (nprofile instead of creqb)
         let pubkey_hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
         let pubkey_bytes = hex::decode(pubkey_hex).unwrap();
-        let npub = PaymentRequest::encode_nprofile(&pubkey_bytes, &[]).expect("should encode npub");
-        assert!(PaymentRequest::from_bech32_string(&npub).is_err());
+        let nprofile =
+            PaymentRequest::encode_nprofile(&pubkey_bytes, &[]).expect("should encode nprofile");
+        assert!(PaymentRequest::from_bech32_string(&nprofile).is_err());
     }
 
     #[test]
@@ -977,18 +957,20 @@ mod tests {
     }
 
     #[test]
-    fn test_npub_encoding_decoding() {
+    fn test_nprofile_no_relays() {
         // Test vector: a known 32-byte pubkey
         let pubkey_hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
         let pubkey_bytes = hex::decode(pubkey_hex).unwrap();
 
-        // Encode to npub
-        let npub = PaymentRequest::encode_nprofile(&pubkey_bytes, &[]).expect("should encode npub");
-        assert!(npub.starts_with("nprofile"));
+        // Encode to nprofile with empty relay list
+        let nprofile =
+            PaymentRequest::encode_nprofile(&pubkey_bytes, &[]).expect("should encode nprofile");
+        assert!(nprofile.starts_with("nprofile"));
 
         // Decode back
-        let decoded = PaymentRequest::decode_nprofile(&npub).expect("should decode npub");
+        let decoded = PaymentRequest::decode_nprofile(&nprofile).expect("should decode nprofile");
         assert_eq!(decoded.0, pubkey_bytes);
+        assert!(decoded.1.is_empty());
     }
 
     #[test]
