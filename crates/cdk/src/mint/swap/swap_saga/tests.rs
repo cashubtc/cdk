@@ -11,7 +11,9 @@ use cdk_common::{Amount, State};
 use super::SwapSaga;
 use crate::mint::swap::Mint;
 use crate::mint::Verification;
-use crate::test_helpers::mint::{create_test_blinded_messages, create_test_mint};
+use crate::test_helpers::mint::{
+    clear_fail_for, create_test_blinded_messages, create_test_mint, set_fail_for,
+};
 
 /// Helper to create a verification result for testing
 fn create_verification(amount: Amount) -> Verification {
@@ -678,7 +680,7 @@ async fn test_swap_saga_drop_after_signing() {
 /// - Verify that proof states are cleared (no longer Pending)
 ///
 /// # Implementation
-/// Uses TEST_FAIL environment variable to make blind_sign() fail
+/// Uses thread-local failure flag to make blind_sign() fail
 ///
 /// # Success Criteria
 /// - Signing fails with error
@@ -711,14 +713,14 @@ async fn test_swap_saga_compensation_on_signing_failure() {
     let states = db.get_proofs_states(&ys).await.unwrap();
     assert!(states.iter().all(|s| s == &Some(State::Pending)));
 
-    // Enable test failure mode
-    std::env::set_var("TEST_FAIL", "1");
+    // Enable test failure mode (thread-local, won't affect parallel tests)
+    set_fail_for("GENERAL");
 
-    // Attempt signing (should fail due to TEST_FAIL)
+    // Attempt signing (should fail due to failure flag)
     let result = saga.sign_outputs().await;
 
-    // Clean up environment variable immediately
-    std::env::remove_var("TEST_FAIL");
+    // Clean up failure flag immediately
+    clear_fail_for("GENERAL");
 
     assert!(result.is_err(), "Signing should fail");
 
@@ -1006,7 +1008,7 @@ async fn test_swap_saga_concurrent_swaps() {
 /// - Transaction rollback + compensation cleanup both occur
 ///
 /// # Implementation
-/// Uses TEST_FAIL_ADD_SIGNATURES environment variable to inject failure
+/// Uses thread-local failure flag to inject failure
 /// at the signature addition step within the finalize transaction.
 ///
 /// # Success Criteria
@@ -1044,14 +1046,14 @@ async fn test_swap_saga_compensation_on_finalize_add_signatures_failure() {
         output_blinded_messages.len()
     );
 
-    // Enable test failure mode for ADD_SIGNATURES
-    std::env::set_var("TEST_FAIL_ADD_SIGNATURES", "1");
+    // Enable test failure mode for ADD_SIGNATURES (thread-local, won't affect parallel tests)
+    set_fail_for("ADD_SIGNATURES");
 
-    // Attempt finalize (should fail due to TEST_FAIL_ADD_SIGNATURES)
+    // Attempt finalize (should fail due to failure flag)
     let result = saga.finalize().await;
 
-    // Clean up environment variable immediately
-    std::env::remove_var("TEST_FAIL_ADD_SIGNATURES");
+    // Clean up failure flag immediately
+    clear_fail_for("ADD_SIGNATURES");
 
     assert!(result.is_err(), "Finalize should fail");
 
@@ -1085,7 +1087,7 @@ async fn test_swap_saga_compensation_on_finalize_add_signatures_failure() {
 /// - Transaction rollback + compensation cleanup both occur
 ///
 /// # Implementation
-/// Uses TEST_FAIL_UPDATE_PROOFS environment variable to inject failure
+/// Uses thread-local failure flag to inject failure
 /// at the proof state update step within the finalize transaction.
 ///
 /// # Success Criteria
@@ -1123,14 +1125,14 @@ async fn test_swap_saga_compensation_on_finalize_update_proofs_failure() {
         output_blinded_messages.len()
     );
 
-    // Enable test failure mode for UPDATE_PROOFS
-    std::env::set_var("TEST_FAIL_UPDATE_PROOFS", "1");
+    // Enable test failure mode for UPDATE_PROOFS (thread-local, won't affect parallel tests)
+    set_fail_for("UPDATE_PROOFS");
 
-    // Attempt finalize (should fail due to TEST_FAIL_UPDATE_PROOFS)
+    // Attempt finalize (should fail due to failure flag)
     let result = saga.finalize().await;
 
-    // Clean up environment variable immediately
-    std::env::remove_var("TEST_FAIL_UPDATE_PROOFS");
+    // Clean up failure flag immediately
+    clear_fail_for("UPDATE_PROOFS");
 
     assert!(result.is_err(), "Finalize should fail");
 

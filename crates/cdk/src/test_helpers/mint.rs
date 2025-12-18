@@ -20,18 +20,41 @@ use crate::mint::{Mint, MintBuilder, MintMeltLimits};
 use crate::types::{FeeReserve, QuoteTTL};
 use crate::Error;
 
+use std::cell::RefCell;
+
+thread_local! {
+    /// Thread-local storage for test failure flags.
+    /// Using thread-local instead of env vars prevents race conditions
+    /// when tests run in parallel (each test thread has its own copy).
+    static TEST_FAILURES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Sets a failure flag for the current thread only.
+/// Use this instead of `std::env::set_var("TEST_FAIL_X", "1")`.
+#[cfg(test)]
+pub(crate) fn set_fail_for(operation: &str) {
+    TEST_FAILURES.with(|failures| {
+        failures.borrow_mut().push(operation.to_string());
+    });
+}
+
+/// Clears a failure flag for the current thread only.
+/// Use this instead of `std::env::remove_var("TEST_FAIL_X")`.
+#[cfg(test)]
+pub(crate) fn clear_fail_for(operation: &str) {
+    TEST_FAILURES.with(|failures| {
+        failures.borrow_mut().retain(|s| s != operation);
+    });
+}
+
 #[cfg(test)]
 pub(crate) fn should_fail_in_test() -> bool {
-    // Some condition that determines when to fail in tests
-    std::env::var("TEST_FAIL").is_ok()
+    TEST_FAILURES.with(|failures| failures.borrow().contains(&"GENERAL".to_string()))
 }
 
 #[cfg(test)]
 pub(crate) fn should_fail_for(operation: &str) -> bool {
-    // Check for specific failure modes using environment variables
-    // Format: TEST_FAIL_<OPERATION>
-    let var_name = format!("TEST_FAIL_{}", operation);
-    std::env::var(&var_name).is_ok()
+    TEST_FAILURES.with(|failures| failures.borrow().contains(&operation.to_string()))
 }
 
 /// Creates and starts a test mint with in-memory storage and a fake Lightning backend.
