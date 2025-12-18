@@ -136,6 +136,12 @@ impl Proof {
     }
 
     /// Verify P2PK signature on [Proof]
+    ///
+    /// Per NUT-11, there are two spending pathways after locktime:
+    /// 1. Primary path (data + pubkeys): ALWAYS available
+    /// 2. Refund path (refund keys): available AFTER locktime
+    ///
+    /// The verification tries both paths - if either succeeds, the proof is valid.
     pub fn verify_p2pk(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
         let spending_conditions: Conditions = secret
@@ -153,7 +159,7 @@ impl Proof {
             return Err(Error::IncorrectSecretKind);
         }
 
-        // Based on the current time, we must identify the relevant keys
+        // Get spending requirements (includes both primary and refund paths)
         let now = unix_time();
         let requirements = super::nut10::get_pubkeys_and_required_sigs(&secret, now)?;
 
@@ -161,32 +167,62 @@ impl Proof {
             return Err(Error::PreimageNotSupportedInP2PK);
         }
 
-        // Handle "anyone can spend" case (locktime passed with no refund keys)
-        if requirements.required_sigs == 0 {
-            return Ok(());
-        }
-
         // Extract witness signatures
         let witness_signatures = match &self.witness {
             Some(witness) => witness.signatures(),
             None => None,
         };
-        let witness_signatures = witness_signatures.ok_or(Error::SignaturesNotProvided)?;
 
-        // Count valid signatures using relevant_pubkeys
         let msg: &[u8] = self.secret.as_bytes();
-        let valid_sig_count = valid_signatures(
-            msg,
-            &requirements.pubkeys,
-            &witness_signatures
-                .iter()
-                .map(|s| Signature::from_str(s))
-                .collect::<Result<Vec<_>, _>>()?,
-        )?;
 
-        // Check if we have enough valid signatures
-        if valid_sig_count >= requirements.required_sigs {
-            Ok(())
+        // Try primary path first (data + pubkeys)
+        // Per NUT-11: "Locktime Multisig conditions continue to apply"
+        {
+            let primary_valid = witness_signatures
+                .as_ref()
+                .and_then(|sigs| {
+                    sigs.iter()
+                        .map(|s| Signature::from_str(s))
+                        .collect::<Result<Vec<_>, _>>()
+                        .ok()
+                })
+                .and_then(|sigs| valid_signatures(msg, &requirements.pubkeys, &sigs).ok())
+                .is_some_and(|count| count >= requirements.required_sigs);
+
+            if primary_valid {
+                return Ok(());
+            }
+        }
+
+        // Primary path failed or no signatures - try refund path if available
+        {
+            if let Some(refund_path) = &requirements.refund_path {
+                // Anyone can spend (locktime passed, no refund keys)
+                if refund_path.required_sigs == 0 {
+                    return Ok(());
+                }
+
+                // Need signatures for refund path
+                let refund_valid = witness_signatures
+                    .as_ref()
+                    .and_then(|sigs| {
+                        sigs.iter()
+                            .map(|s| Signature::from_str(s))
+                            .collect::<Result<Vec<_>, _>>()
+                            .ok()
+                    })
+                    .and_then(|sigs| valid_signatures(msg, &refund_path.pubkeys, &sigs).ok())
+                    .is_some_and(|count| count >= refund_path.required_sigs);
+
+                if refund_valid {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Neither path succeeded
+        if witness_signatures.is_none() {
+            Err(Error::SignaturesNotProvided)
         } else {
             Err(Error::SpendConditionsNotMet)
         }
@@ -1138,14 +1174,22 @@ mod tests {
 
         proof.sign_p2pk(signing_key_three.clone()).unwrap();
 
-        assert!(proof.verify_p2pk().is_err());
+        // Per NUT-11: primary path (pubkeys) is ALWAYS available, even after locktime
+        // Signing with a key from pubkeys should succeed
+        assert!(proof.verify_p2pk().is_ok());
 
         proof.witness = None;
 
+        // Sign with secret_key (pubkey = v_key, which is the data key and part of primary path)
+        // Per NUT-11: primary path is always available, and data key is part of primary path
         proof.sign_p2pk(secret_key).unwrap();
-        assert!(proof.verify_p2pk().is_err());
-        proof.sign_p2pk(signing_key_two).unwrap();
+        assert!(
+            proof.verify_p2pk().is_ok(),
+            "Data key signature should satisfy primary path"
+        );
 
+        // Adding more signatures still works (but wasn't needed for primary path)
+        proof.sign_p2pk(signing_key_two).unwrap();
         assert!(proof.verify_p2pk().is_ok());
     }
 
@@ -1725,7 +1769,9 @@ mod tests {
 
     #[test]
     fn test_sig_all_htlc_post_locktime() {
-        // The following is a valid SwapRequest with a multisig HTLC also locked to locktime and refund keys.
+        // The following is a valid SwapRequest with a multisig HTLC using the refund path.
+        // Per NUT-14: After locktime, the refund path is available when preimage is invalid/missing.
+        // The preimage is intentionally invalid (all zeros) to test the refund path.
         let valid_swap = r#"{
               "inputs": [
                 {
@@ -1733,7 +1779,7 @@ mod tests {
                   "id": "00bfa73302d12ffd",
                   "secret": "[\"HTLC\",{\"nonce\":\"c9b0fabb8007c0db4bef64d5d128cdcf3c79e8bb780c3294adf4c88e96c32647\",\"data\":\"ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5\",\"tags\":[[\"pubkeys\",\"039e6ec7e922abb4162235b3a42965eb11510b07b7461f6b1a17478b1c9c64d100\"],[\"locktime\",\"1\"],[\"refund\",\"02ce1bbd2c9a4be8029c9a6435ad601c45677f5cde81f8a7f0ed535e0039d0eb6c\",\"03c43c00ff57f63cfa9e732f0520c342123e21331d0121139f1b636921eeec095f\"],[\"n_sigs_refund\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
                   "C": "0344b6f1471cf18a8cbae0e624018c816be5e3a9b04dcb7689f64173c1ae90a3a5",
-                  "witness": "{\"preimage\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"signatures\":[\"98e21672d409cc782c720f203d8284f0af0c8713f18167499f9f101b7050c3e657fb0e57478ebd8bd561c31aa6c30f4cd20ec38c73f5755b7b4ddee693bca5a5\",\"693f40129dbf905ed9c8008081c694f72a36de354f9f4fa7a61b389cf781f62a0ae0586612fb2eb504faaf897fefb6742309186117f4743bcebcb8e350e975e2\"]}"
+                  "witness": "{\"preimage\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"signatures\":[\"98e21672d409cc782c720f203d8284f0af0c8713f18167499f9f101b7050c3e657fb0e57478ebd8bd561c31aa6c30f4cd20ec38c73f5755b7b4ddee693bca5a5\",\"693f40129dbf905ed9c8008081c694f72a36de354f9f4fa7a61b389cf781f62a0ae0586612fb2eb504faaf897fefb6742309186117f4743bcebcb8e350e975e2\"]}"
                 }
               ],
               "outputs": [

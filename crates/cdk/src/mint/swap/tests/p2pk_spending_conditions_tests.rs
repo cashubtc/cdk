@@ -428,7 +428,8 @@ async fn test_p2pk_locktime_after_expiry() {
     )
     .unwrap();
 
-    // Step 6: Try to spend with primary key (Alice) AFTER locktime expires (should fail)
+    // Step 6: Try to spend with primary key (Alice) AFTER locktime expires
+    // Per NUT-11: "Locktime Multisig conditions continue to apply" - primary keys STILL work
     let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
         .await
         .unwrap();
@@ -442,30 +443,11 @@ async fn test_p2pk_locktime_after_expiry() {
 
     let result = mint.process_swap_request(swap_request_primary).await;
     assert!(
-        result.is_err(),
-        "Should fail - primary key cannot spend after locktime expires"
-    );
-    println!(
-        "✓ Spending with primary key (Alice) AFTER locktime failed as expected: {:?}",
-        result.err()
-    );
-
-    // Step 7: Spend with refund key (Bob) AFTER locktime (should succeed)
-    let mut swap_request_refund =
-        cdk_common::nuts::SwapRequest::new(p2pk_proofs.clone(), new_outputs.clone());
-
-    // Sign with Bob (refund key)
-    for proof in swap_request_refund.inputs_mut() {
-        proof.sign_p2pk(bob_secret.clone()).unwrap();
-    }
-
-    let result = mint.process_swap_request(swap_request_refund).await;
-    assert!(
         result.is_ok(),
-        "Should succeed - refund key can spend after locktime: {:?}",
+        "Should succeed - primary key can STILL spend after locktime (NUT-11 compliant): {:?}",
         result.err()
     );
-    println!("✓ Spending with refund key (Bob) AFTER locktime succeeded");
+    println!("✓ Spending with primary key (Alice) AFTER locktime succeeded (NUT-11 compliant)");
 }
 
 /// Test: P2PK with locktime after expiry, no refund keys (anyone can spend)
@@ -615,14 +597,15 @@ async fn test_p2pk_multisig_locktime() {
     )
     .unwrap();
 
-    // Step 6: Try to spend with primary keys (Alice + Bob) AFTER locktime (should fail)
+    // Step 6: Try to spend with primary keys (Alice + Bob) AFTER locktime
+    // Per NUT-11: "Locktime Multisig conditions continue to apply" - primary keys STILL work
     let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
         .await
         .unwrap();
     let mut swap_request_primary =
         cdk_common::nuts::SwapRequest::new(p2pk_proofs.clone(), new_outputs.clone());
 
-    // Sign with Alice + Bob (primary multisig)
+    // Sign with Alice + Bob (primary multisig - need 2-of-3)
     for proof in swap_request_primary.inputs_mut() {
         proof.sign_p2pk(alice_secret.clone()).unwrap();
         proof.sign_p2pk(bob_secret.clone()).unwrap();
@@ -630,30 +613,13 @@ async fn test_p2pk_multisig_locktime() {
 
     let result = mint.process_swap_request(swap_request_primary).await;
     assert!(
-        result.is_err(),
-        "Should fail - locktime expired, only refund keys valid"
+        result.is_ok(),
+        "Should succeed - primary keys (2-of-3) can STILL spend after locktime (NUT-11): {:?}",
+        result.err()
     );
     println!(
-        "✓ Spending with primary keys (Alice + Bob) AFTER locktime failed as expected: {:?}",
-        result.err()
+        "✓ Spending with primary keys (Alice + Bob, 2-of-3) AFTER locktime succeeded (NUT-11)"
     );
-
-    // Step 7: Spend with refund key (Dave) AFTER locktime (should succeed - only need 1-of-2)
-    let mut swap_request_refund =
-        cdk_common::nuts::SwapRequest::new(p2pk_proofs.clone(), new_outputs.clone());
-
-    // Sign with Dave only (refund key, need 1-of-2)
-    for proof in swap_request_refund.inputs_mut() {
-        proof.sign_p2pk(dave_secret.clone()).unwrap();
-    }
-
-    let result = mint.process_swap_request(swap_request_refund).await;
-    assert!(
-        result.is_ok(),
-        "Should succeed - refund key can spend after locktime: {:?}",
-        result.err()
-    );
-    println!("✓ Spending with refund key (Dave, 1-of-2) AFTER locktime succeeded");
 }
 
 /// Test: P2PK signed by wrong person is rejected
