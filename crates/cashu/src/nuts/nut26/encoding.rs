@@ -1546,4 +1546,447 @@ mod tests {
 
         assert_eq!(expected_encoded, encoded);
     }
+
+    #[test]
+    fn test_http_post_transport_kind_2() {
+        // Test HTTP POST transport (kind=2) encoding and decoding
+        let expected_encoded = "CREQB1QYQQJ6R5W3C97AR9WD6QYQQGQQQQQQQQQQQ05QCQQYQQ2QQCDP68GURN8GHJ7MTFDE6ZUETCV9KHQMR99E3K7MG8QPQSZQQPQGPQQGNGW368QUE69UHKZURF9EJHSCTDWPKX2TNRDAKJ7A339ACXZ7TDV4H8GQCQZ5RXXATNW3HK6PNKV9K82EF3QEMXZMR4V5EQYMWA48";
+
+        let transport = Transport {
+            _type: TransportType::HttpPost,
+            target: "https://api.example.com/v1/payment".to_string(),
+            tags: Some(vec![vec![
+                "custom".to_string(),
+                "value1".to_string(),
+                "value2".to_string(),
+            ]]),
+        };
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("http_test".to_string()),
+            amount: Some(Amount::from(250)),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: None,
+            transports: vec![transport.clone()],
+            nut10: None,
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        // Verify transport type is HTTP POST
+        assert_eq!(decoded.transports.len(), 1);
+        assert_eq!(decoded.transports[0]._type, TransportType::HttpPost);
+        assert_eq!(
+            decoded.transports[0].target,
+            "https://api.example.com/v1/payment"
+        );
+
+        // Verify custom tags are preserved
+        let tags = decoded.transports[0].tags.as_ref().unwrap();
+        assert!(tags
+            .iter()
+            .any(|t| t.len() >= 3 && t[0] == "custom" && t[1] == "value1" && t[2] == "value2"));
+    }
+
+    #[test]
+    fn test_relay_tag_extraction_from_nprofile() {
+        // Test that relays are properly extracted from nprofile and converted to "relay" tags
+        let expected_encoded = "CREQB1QYQQ5UN9D3SHJHM5V4EHGQSQPQQQQQQQQQQQQEQRQQQSQPGQRP58GARSWVAZ7TMDD9H8GTN90PSK6URVV5HXXMMDQUQGZQGQQYQSYQPQ80CVV07TJDRRGPA0J7J7TMNYL2YR6YR7L8J4S3EVF6U64TH6GKWSXQQMQ9EPSAMNWVAZ7TMJV4KXZ7F39EJHSCTDWPKX2TNRDAKSXQQMQ9EPSAMNWVAZ7TMJV4KXZ7FJ9EJHSCTDWPKX2TNRDAKSXQQMQ9EPSAMNWVAZ7TMJV4KXZ7FN9EJHSCTDWPKX2TNRDAKS2AH7LM";
+
+        let pubkey_hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
+        let pubkey_bytes = hex::decode(pubkey_hex).unwrap();
+        let relays = vec![
+            "wss://relay1.example.com".to_string(),
+            "wss://relay2.example.com".to_string(),
+            "wss://relay3.example.com".to_string(),
+        ];
+        let nprofile =
+            PaymentRequest::encode_nprofile(&pubkey_bytes, &relays).expect("encode nprofile");
+
+        let transport = Transport {
+            _type: TransportType::Nostr,
+            target: nprofile,
+            tags: None, // No explicit relay tags, relays come from nprofile
+        };
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("relay_test".to_string()),
+            amount: Some(Amount::from(100)),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: None,
+            transports: vec![transport],
+            nut10: None,
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        // Verify relays were extracted and converted to "relay" tags
+        let tags = decoded.transports[0]
+            .tags
+            .as_ref()
+            .expect("should have tags");
+
+        // Check all three relays are present as "relay" tags
+        let relay_tags: Vec<&Vec<String>> = tags
+            .iter()
+            .filter(|t| !t.is_empty() && t[0] == "relay")
+            .collect();
+        assert_eq!(relay_tags.len(), 3);
+
+        let relay_values: Vec<&str> = relay_tags
+            .iter()
+            .filter(|t| t.len() >= 2)
+            .map(|t| t[1].as_str())
+            .collect();
+        assert!(relay_values.contains(&"wss://relay1.example.com"));
+        assert!(relay_values.contains(&"wss://relay2.example.com"));
+        assert!(relay_values.contains(&"wss://relay3.example.com"));
+
+        // Also verify the nprofile contains the relays
+        let (_, decoded_relays) =
+            PaymentRequest::decode_nprofile(&decoded.transports[0].target).unwrap();
+        assert_eq!(decoded_relays.len(), 3);
+    }
+
+    #[test]
+    fn test_description_field() {
+        // Test description field (tag 0x06) encoding and decoding
+        let expected_encoded = "CREQB1QYQQJER9WD347AR9WD6QYQQGQQQQQQQQQQQXGQCQQYQQ2QQCDP68GURN8GHJ7MTFDE6ZUETCV9KHQMR99E3K7MGXQQV9GETNWSS8QCTED4JKUAPQV3JHXCMJD9C8G6T0DCFLJJRX";
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("desc_test".to_string()),
+            amount: Some(Amount::from(100)),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: Some("Test payment description".to_string()),
+            transports: vec![],
+            nut10: None,
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        assert_eq!(
+            decoded.description,
+            Some("Test payment description".to_string())
+        );
+        assert_eq!(decoded.payment_id, Some("desc_test".to_string()));
+        assert_eq!(decoded.amount, Some(Amount::from(100)));
+        assert_eq!(decoded.unit, Some(CurrencyUnit::Sat));
+    }
+
+    #[test]
+    fn test_single_use_field_true() {
+        // Test single_use field (tag 0x04) with value true
+        let expected_encoded = "CREQB1QYQQ7UMFDENKCE2LW4EK2HM5WF6K2QSQPQQQQQQQQQQQQEQRQQQSQPQQQYQS2QQCDP68GURN8GHJ7MTFDE6ZUETCV9KHQMR99E3K7MGX0AYM7";
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("single_use_true".to_string()),
+            amount: Some(Amount::from(100)),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: Some(true),
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: None,
+            transports: vec![],
+            nut10: None,
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        assert_eq!(decoded.single_use, Some(true));
+        assert_eq!(decoded.payment_id, Some("single_use_true".to_string()));
+    }
+
+    #[test]
+    fn test_single_use_field_false() {
+        // Test single_use field (tag 0x04) with value false
+        let expected_encoded = "CREQB1QYQPQUMFDENKCE2LW4EK2HMXV9K8XEGZQQYQQQQQQQQQQQRYQVQQZQQYQQQSQPGQRP58GARSWVAZ7TMDD9H8GTN90PSK6URVV5HXXMMDQ40L90";
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("single_use_false".to_string()),
+            amount: Some(Amount::from(100)),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: Some(false),
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: None,
+            transports: vec![],
+            nut10: None,
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        assert_eq!(decoded.single_use, Some(false));
+        assert_eq!(decoded.payment_id, Some("single_use_false".to_string()));
+    }
+
+    #[test]
+    fn test_unit_msat() {
+        // Test msat unit encoding (should be string, not 0x00)
+        let expected_encoded = "CREQB1QYQQJATWD9697MTNV96QYQQGQQQQQQQQQQP7SQCQQ3KHXCT5Q5QPS6R5W3C8XW309AKKJMN59EJHSCTDWPKX2TNRDAKSYYMU95";
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("unit_msat".to_string()),
+            amount: Some(Amount::from(1000)),
+            unit: Some(CurrencyUnit::Msat),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: None,
+            transports: vec![],
+            nut10: None,
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        assert_eq!(decoded.unit, Some(CurrencyUnit::Msat));
+        assert_eq!(decoded.payment_id, Some("unit_msat".to_string()));
+        assert_eq!(decoded.amount, Some(Amount::from(1000)));
+    }
+
+    #[test]
+    fn test_unit_usd() {
+        // Test usd unit encoding (should be string, not 0x00)
+        let expected_encoded = "CREQB1QYQQSATWD9697ATNVSPQQZQQQQQQQQQQQ86QXQQRW4EKGPGQRP58GARSWVAZ7TMDD9H8GTN90PSK6URVV5HXXMMDEPCJYC";
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("unit_usd".to_string()),
+            amount: Some(Amount::from(500)),
+            unit: Some(CurrencyUnit::Usd),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: None,
+            transports: vec![],
+            nut10: None,
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        assert_eq!(decoded.unit, Some(CurrencyUnit::Usd));
+        assert_eq!(decoded.payment_id, Some("unit_usd".to_string()));
+        assert_eq!(decoded.amount, Some(Amount::from(500)));
+    }
+
+    #[test]
+    fn test_multiple_transports() {
+        // Test payment request with multiple transport options (priority order)
+        let expected_encoded = "CREQB1QYQQ7MT4D36XJHM5WFSKUUMSDAE8GQSQPQQQQQQQQQQQRAQRQQQSQPGQRP58GARSWVAZ7TMDD9H8GTN90PSK6URVV5HXXMMDQCQZQ5RP09KK2MN5YPMKJARGYPKH2MR5D9CXCEFQW3EXZMNNWPHHYARNQUQZ7QGQQYQSYQPQ80CVV07TJDRRGPA0J7J7TMNYL2YR6YR7L8J4S3EVF6U64TH6GKWSXQQ9Q9HQYVFHQUQZWQGQQYPQYQPQDP68GURN8GHJ7CTSDYCJUETCV9KHQMR99E3K7MF0WPSHJMT9DE6QWQP6QYQQZQSZQQSXSAR5WPEN5TE0V9CXJV3WV4UXZMTSD3JJUCM0D5HHQCTED4JKUAQRQQGQSURJD9HHY6T50YRXYCTRDD6HQ6E8MEJ";
+
+        let pubkey_hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
+        let pubkey_bytes = hex::decode(pubkey_hex).unwrap();
+        let npub = PaymentRequest::encode_npub(&pubkey_bytes).expect("encode npub");
+
+        let transport_nostr = Transport {
+            _type: TransportType::Nostr,
+            target: npub,
+            tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
+        };
+
+        let transport_http1 = Transport {
+            _type: TransportType::HttpPost,
+            target: "https://api1.example.com/payment".to_string(),
+            tags: None,
+        };
+
+        let transport_http2 = Transport {
+            _type: TransportType::HttpPost,
+            target: "https://api2.example.com/payment".to_string(),
+            tags: Some(vec![vec!["priority".to_string(), "backup".to_string()]]),
+        };
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("multi_transport".to_string()),
+            amount: Some(Amount::from(500)),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: Some("Payment with multiple transports".to_string()),
+            transports: vec![
+                transport_nostr.clone(),
+                transport_http1.clone(),
+                transport_http2.clone(),
+            ],
+            nut10: None,
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        // Verify all three transports are preserved in order
+        assert_eq!(decoded.transports.len(), 3);
+
+        // First transport: Nostr
+        assert_eq!(decoded.transports[0]._type, TransportType::Nostr);
+        assert!(decoded.transports[0].target.starts_with("npub"));
+
+        // Second transport: HTTP POST
+        assert_eq!(decoded.transports[1]._type, TransportType::HttpPost);
+        assert_eq!(
+            decoded.transports[1].target,
+            "https://api1.example.com/payment"
+        );
+
+        // Third transport: HTTP POST with tags
+        assert_eq!(decoded.transports[2]._type, TransportType::HttpPost);
+        assert_eq!(
+            decoded.transports[2].target,
+            "https://api2.example.com/payment"
+        );
+        let tags = decoded.transports[2].tags.as_ref().unwrap();
+        assert!(tags
+            .iter()
+            .any(|t| t.len() >= 2 && t[0] == "priority" && t[1] == "backup"));
+    }
+
+    #[test]
+    fn test_minimal_transport_nostr_only_pubkey() {
+        // Test minimal Nostr transport with just pubkey (no relays, no tags)
+        let expected_encoded = "CREQB1QYQQ6MTFDE5K6CTVTAHX7UM5WGPSQQGQQ5QPS6R5W3C8XW309AKKJMN59EJHSCTDWPKX2TNRDAKSWQP8QYQQZQGZQQSRHUXX8L9EX335Q7HE0F09AEJ04ZPAZPL0NE2CGUKYAWD24MAYT8GGJD0H8";
+
+        let pubkey_hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
+        let pubkey_bytes = hex::decode(pubkey_hex).unwrap();
+        let npub = PaymentRequest::encode_npub(&pubkey_bytes).expect("encode npub");
+
+        let transport = Transport {
+            _type: TransportType::Nostr,
+            target: npub.clone(),
+            tags: None, // No tags at all
+        };
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("minimal_nostr".to_string()),
+            amount: None,
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: None,
+            transports: vec![transport],
+            nut10: None,
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        assert_eq!(decoded.transports.len(), 1);
+        assert_eq!(decoded.transports[0]._type, TransportType::Nostr);
+        assert!(decoded.transports[0].target.starts_with("npub"));
+
+        // Verify pubkey matches
+        let decoded_pubkey =
+            PaymentRequest::decode_npub(&decoded.transports[0].target).expect("decode npub");
+        assert_eq!(decoded_pubkey, pubkey_bytes);
+
+        // Tags should be None for minimal transport
+        assert!(decoded.transports[0].tags.is_none());
+    }
+
+    #[test]
+    fn test_minimal_transport_http_just_url() {
+        // Test minimal HTTP POST transport with just URL (no tags)
+        let expected_encoded = "CREQB1QYQQCMTFDE5K6CTVTA58GARSQVQQZQQ9QQVXSAR5WPEN5TE0D45KUAPWV4UXZMTSD3JJUCM0D5RSQ8SPQQQSYQSQZA58GARSWVAZ7TMPWP5JUETCV9KHQMR99E3K7MG5V34PA";
+
+        let transport = Transport {
+            _type: TransportType::HttpPost,
+            target: "https://api.example.com".to_string(),
+            tags: None,
+        };
+
+        let payment_request = PaymentRequest {
+            payment_id: Some("minimal_http".to_string()),
+            amount: None,
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: None,
+            transports: vec![transport],
+            nut10: None,
+        };
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("encoding should work");
+
+        assert_eq!(encoded, expected_encoded);
+
+        // Decode from the expected encoded string
+        let decoded =
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
+
+        assert_eq!(decoded.transports.len(), 1);
+        assert_eq!(decoded.transports[0]._type, TransportType::HttpPost);
+        assert_eq!(decoded.transports[0].target, "https://api.example.com");
+        assert!(decoded.transports[0].tags.is_none());
+    }
 }
