@@ -282,11 +282,6 @@ impl PaymentRequest {
             }
         }
 
-        // Set default unit if amount is present but unit is missing
-        if amount.is_some() && unit.is_none() {
-            unit = Some(CurrencyUnit::Sat);
-        }
-
         Ok(PaymentRequest {
             payment_id: id,
             amount,
@@ -361,8 +356,6 @@ impl PaymentRequest {
 
         let mut kind: Option<u8> = None;
         let mut pubkey: Option<Vec<u8>> = None;
-        let mut nips: Vec<u16> = Vec::new();
-        let mut relays: Vec<String> = Vec::new();
         let mut tags: Vec<(String, Vec<String>)> = Vec::new();
         let mut http_target: Option<String> = None;
 
@@ -397,20 +390,6 @@ impl PaymentRequest {
                     }
                 }
                 0x03 => {
-                    // nips: sequence of u16 values (only for nostr)
-                    if value.len() % 2 != 0 {
-                        return Err(Error::InvalidPrefix);
-                    }
-                    for chunk in value.chunks_exact(2) {
-                        nips.push(u16::from_be_bytes([chunk[0], chunk[1]]));
-                    }
-                }
-                0x04 => {
-                    // relay: string (repeatable; only for nostr)
-                    let relay = String::from_utf8(value).map_err(|_| Error::InvalidPrefix)?;
-                    relays.push(relay);
-                }
-                0x05 => {
                     // tag_tuple: generic tuple (repeatable)
                     let tag_tuple = Self::decode_tag_tuple(&value)?;
                     tags.push(tag_tuple);
@@ -427,6 +406,13 @@ impl PaymentRequest {
             0 => TransportType::Nostr, // Default for in_band
             _ => return Err(Error::InvalidPrefix),
         };
+
+        // Extract relays from "r" tag tuples for Nostr transport
+        let relays: Vec<String> = tags
+            .iter()
+            .filter(|(k, _)| k == "r")
+            .flat_map(|(_, v)| v.clone())
+            .collect();
 
         // Build the target string based on transport type
         let target = match transport_type {
@@ -447,15 +433,18 @@ impl PaymentRequest {
             TransportType::HttpPost => http_target.ok_or(Error::InvalidPrefix)?,
         };
 
-        // Convert nips to tag format for compatibility with existing Transport
-        let mut final_tags = tags;
-        for nip in nips {
-            final_tags.push(("n".to_string(), vec![nip.to_string()]));
-        }
-
-        // Add relays as tags for compatibility
-        for relay in relays {
-            final_tags.push(("relay".to_string(), vec![relay]));
+        // Convert tags to the Transport format
+        // For Nostr: keep "n" tags as-is, convert "r" tags to "relay" for compatibility
+        let mut final_tags: Vec<(String, Vec<String>)> = Vec::new();
+        for (key, values) in tags {
+            if key == "r" {
+                // Convert "r" tag tuples to "relay" tags for compatibility
+                for relay in values {
+                    final_tags.push(("relay".to_string(), vec![relay]));
+                }
+            } else {
+                final_tags.push((key, values));
+            }
         }
 
         Ok(Transport {
@@ -507,63 +496,46 @@ impl PaymentRequest {
                 // Write the 32-byte pubkey
                 writer.write_tlv(0x02, &pubkey);
 
+                // Collect all relays (from nprofile and from "relay" tags)
+                let mut all_relays = relays;
+
                 // Extract NIPs and other tags from the tags field
                 if let Some(ref tags) = transport.tags {
-                    let mut nips = Vec::new();
-                    let mut relays_from_tags = Vec::new();
-                    let mut other_tags = Vec::new();
-
                     for tag in tags {
                         if tag.is_empty() {
                             continue;
                         }
                         if tag[0] == "n" && tag.len() >= 2 {
-                            if let Ok(nip) = tag[1].parse::<u16>() {
-                                nips.push(nip);
-                            }
+                            // Encode NIPs as tag tuples with key "n"
+                            let tag_bytes = Self::encode_tag_tuple(tag)?;
+                            writer.write_tlv(0x03, &tag_bytes);
                         } else if tag[0] == "relay" && tag.len() >= 2 {
-                            relays_from_tags.push(tag[1].clone());
+                            // Collect relays from tags to encode as "r" tag tuples
+                            all_relays.push(tag[1].clone());
                         } else {
-                            other_tags.push(tag.clone());
+                            // Other tags as generic tag tuples
+                            let tag_bytes = Self::encode_tag_tuple(tag)?;
+                            writer.write_tlv(0x03, &tag_bytes);
                         }
                     }
+                }
 
-                    // 0x03 nips: sequence of u16 values (only for nostr)
-                    if !nips.is_empty() {
-                        let mut nip_bytes = Vec::new();
-                        for nip in nips {
-                            nip_bytes.extend_from_slice(&nip.to_be_bytes());
-                        }
-                        writer.write_tlv(0x03, &nip_bytes);
-                    }
-
-                    // 0x04 relay: string (repeatable)
-                    // Use relays from nprofile first, then from tags
-                    for relay in relays.iter().chain(relays_from_tags.iter()) {
-                        writer.write_tlv(0x04, relay.as_bytes());
-                    }
-
-                    // 0x05 tag_tuple: generic tuple (repeatable)
-                    for tag in other_tags {
-                        let tag_bytes = Self::encode_tag_tuple(&tag)?;
-                        writer.write_tlv(0x05, &tag_bytes);
-                    }
-                } else if !relays.is_empty() {
-                    // Even if there are no tags, write relays from nprofile
-                    for relay in relays {
-                        writer.write_tlv(0x04, relay.as_bytes());
-                    }
+                // 0x03 tag_tuple: encode relays as tag tuples with key "r"
+                for relay in all_relays {
+                    let relay_tag = vec!["r".to_string(), relay];
+                    let tag_bytes = Self::encode_tag_tuple(&relay_tag)?;
+                    writer.write_tlv(0x03, &tag_bytes);
                 }
             }
             TransportType::HttpPost => {
                 writer.write_tlv(0x02, transport.target.as_bytes());
 
-                // Extract tags if any
+                // 0x03 tag_tuple: generic tuple (repeatable)
                 if let Some(ref tags) = transport.tags {
                     for tag in tags {
                         if !tag.is_empty() {
                             let tag_bytes = Self::encode_tag_tuple(tag)?;
-                            writer.write_tlv(0x05, &tag_bytes);
+                            writer.write_tlv(0x03, &tag_bytes);
                         }
                     }
                 }
@@ -1333,7 +1305,7 @@ mod tests {
             ]
         }"#;
 
-        let expected_encoded = "CREQB1QYQQSC3HVYUNQVFHXCPQQZQQQQQQQQQQQQ9QXQQPQQZSQ9MGW368QUE69UHNSVENXVH8XURPVDJN5VENXVUQWQRDQYQQZQGZQQSGM6QFA3C8DTZ2FVZHVFQEACMWM0E50PE3K5TFMVPJJMN0VJ7M2TGRQQPQQYGYQQ28WUMN8GHJ7UN9D3SHJTNYV9KH2UEWD9HSGQQHWAEHXW309AEX2MRP0YHRSVENXVH8XURPVDJJ7PQQP4MHXUE69UHKUMMN9EKX7MQ8402ZW";
+        let expected_encoded = "CREQB1QYQQSC3HVYUNQVFHXCPQQZQQQQQQQQQQQQ9QXQQPQQZSQ9MGW368QUE69UHNSVENXVH8XURPVDJN5VENXVUQWQREQYQQZQGZQQSGM6QFA3C8DTZ2FVZHVFQEACMWM0E50PE3K5TFMVPJJMN0VJ7M2TGRQQZSZMSZXYMSXQQHQ9EPGAMNWVAZ7TMJV4KXZ7FWV3SK6ATN9E5K7QCQRGQHY9MHWDEN5TE0WFJKCCTE9CURXVEN9EEHQCTRV5HSXQQSQ9EQ6AMNWVAZ7TMWDAEJUMR0DSACM0T5";
 
         // Parse the JSON into a PaymentRequest
         let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
@@ -1412,7 +1384,7 @@ mod tests {
             ]
         }"#;
 
-        let expected_encoded = "CREQB1QYQQSE3EXFSN2VTZ8QPQQZQQQQQQQQQQQPJQXQQPQQZSQXTGW368QUE69UHK66TWWSCJUETCV9KHQMR99E3K7MG9QQVKSAR5WPEN5TE0D45KUAPJ9EJHSCTDWPKX2TNRDAKSWQPWQYQQZQGZQQSQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQRQQZQQYFXQU6YHAEU";
+        let expected_encoded = "CREQB1QYQQSE3EXFSN2VTZ8QPQQZQQQQQQQQQQQPJQXQQPQQZSQXTGW368QUE69UHK66TWWSCJUETCV9KHQMR99E3K7MG9QQVKSAR5WPEN5TE0D45KUAPJ9EJHSCTDWPKX2TNRDAKSWQPEQYQQZQGZQQSQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQRQQZSZMSZXYMSXQQ8Q9HQGWFHXV6SM2EPL3";
 
         // Parse the JSON into a PaymentRequest
         let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
