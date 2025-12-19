@@ -365,14 +365,18 @@ impl Wallet {
         options: Option<MeltOptions>,
         extra: Option<String>,
     ) -> Result<MeltQuote, FfiError> {
-        // Note: The extra field is used for custom payment methods to pass
-        // method-specific data. Currently this needs to be handled at the HTTP client level.
-        let _ = extra; // TODO: Pass extra to the underlying request when full custom method support is added
+        // Parse the extra JSON string into a serde_json::Value
+        let extra_value = extra
+            .map(|s| serde_json::from_str(&s))
+            .transpose()
+            .map_err(|e| FfiError::Generic {
+                msg: format!("Invalid extra JSON: {}", e),
+            })?;
 
         let cdk_options = options.map(Into::into);
         let quote = self
             .inner
-            .melt_quote_unified(method.into(), request, cdk_options)
+            .melt_quote_unified(method.into(), request, cdk_options, extra_value)
             .await?;
         Ok(quote.into())
     }

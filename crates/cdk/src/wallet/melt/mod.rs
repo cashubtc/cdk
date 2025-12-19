@@ -157,12 +157,22 @@ impl Wallet {
         }
     }
     /// Unified melt quote method for all payment methods
-    /// Routes to the appropriate handler based on the payment method
+    ///
+    /// Routes to the appropriate handler based on the payment method.
+    /// For custom payment methods, you can pass extra JSON data that will be
+    /// forwarded to the payment processor.
+    ///
+    /// # Arguments
+    /// * `method` - Payment method to use (bolt11, bolt12, or custom)
+    /// * `request` - Payment request string (invoice, offer, or custom format)
+    /// * `options` - Optional melt options (MPP, amountless, etc.)
+    /// * `extra` - Optional extra payment-method-specific data as JSON (for custom methods)
     pub async fn melt_quote_unified(
         &self,
         method: PaymentMethod,
         request: String,
         options: Option<MeltOptions>,
+        extra: Option<serde_json::Value>,
     ) -> Result<MeltQuote, Error> {
         match method {
             PaymentMethod::Known(KnownMethod::Bolt11) => self.melt_quote(request, options).await,
@@ -170,7 +180,7 @@ impl Wallet {
                 self.melt_bolt12_quote(request, options).await
             }
             PaymentMethod::Custom(custom_method) => {
-                self.melt_quote_custom(&custom_method, request, options)
+                self.melt_quote_custom(&custom_method, request, options, extra)
                     .await
             }
         }

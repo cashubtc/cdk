@@ -7,12 +7,19 @@ use crate::{Error, Wallet};
 
 impl Wallet {
     /// Melt Quote for Custom Payment Method
-    #[instrument(skip(self, request))]
+    ///
+    /// # Arguments
+    /// * `method` - Custom payment method name
+    /// * `request` - Payment request string (method-specific format)
+    /// * `_options` - Melt options (currently unused for custom methods)
+    /// * `extra` - Optional extra payment-method-specific data as JSON
+    #[instrument(skip(self, request, extra))]
     pub(super) async fn melt_quote_custom(
         &self,
         method: &str,
         request: String,
         _options: Option<MeltOptions>,
+        extra: Option<serde_json::Value>,
     ) -> Result<MeltQuote, Error> {
         self.refresh_keysets().await?;
 
@@ -20,7 +27,7 @@ impl Wallet {
             method: method.to_string(),
             request: request.clone(),
             unit: self.unit.clone(),
-            extra: serde_json::Value::Null,
+            extra: extra.unwrap_or(serde_json::Value::Null),
         };
         let quote_res = self.client.post_melt_custom_quote(quote_request).await?;
 
