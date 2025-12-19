@@ -1,0 +1,34 @@
+services:
+  mint:
+    image: cashubtc/mintd:latest
+  #  build:
+  #   context: .
+  #   dockerfile: Dockerfile
+    container_name: mint
+    ports:
+      - "8085:8085"
+    environment:
+      - CDK_MINTD_LISTEN_HOST=0.0.0.0
+      - CDK_MINTD_LISTEN_PORT=8085
+      # - CDK_MINTD_MNEMONIC= Set your 12 words backup mnemonic here
+      - CDK_MINTD_LN_BACKEND=fakewallet
+      - CDK_MINTD_DATABASE=sqlite
+      - CDK_MINTD_CACHE_BACKEND=memory
+      - CDK_MINTD_PROMETHEUS_ENABLED=false
+    command: ["cdk-mintd"]
+    networks:
+      - cdk
+  tor:
+    build: ./tor
+    container_name: tor
+    restart: unless-stopped
+    volumes:
+      - ./tor-data:/var/lib/tor/mint
+      - ./torrc:/etc/tor/torrc
+    depends_on:
+      - mint
+    networks:
+      - cdk
+networks:
+  cdk:
+    driver: bridge

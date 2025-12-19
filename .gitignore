@@ -12,6 +12,7 @@ result
 **/postgres_data/
 .pg_data/
 **/.env
+tor-data
 
 # Mutation testing artifacts
 mutants.out/
