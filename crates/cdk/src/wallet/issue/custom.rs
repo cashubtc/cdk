@@ -213,7 +213,7 @@ impl Wallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        tx.update_proofs(proof_infos, vec![]);
+        tx.update_proofs(proof_infos, vec![]).await?;
 
         // Add transaction to store
         tx.add_transaction(Transaction {

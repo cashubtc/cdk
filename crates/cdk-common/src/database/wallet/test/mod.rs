@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cashu::nut00::KnownMethod;
 use cashu::secret::Secret;
-use cashu::{Amount, CurrencyUnit, PaymentMethod, SecretKey};
+use cashu::{Amount, CurrencyUnit, SecretKey};
 
 use super::*;
 use crate::common::ProofInfo;

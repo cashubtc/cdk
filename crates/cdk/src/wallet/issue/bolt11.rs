@@ -133,7 +133,7 @@ impl Wallet {
 
         for mint_quote in mint_quotes {
             match mint_quote.payment_method {
-                PaymentMethod::Bolt11 => {
+                PaymentMethod::Known(KnownMethod::Bolt11) => {
                     let mint_quote_response = self.mint_quote_state(&mint_quote.id).await?;
 
                     if mint_quote_response.state == MintQuoteState::Paid {
@@ -143,7 +143,7 @@ impl Wallet {
                         total_amount += proofs.total_amount()?;
                     }
                 }
-                PaymentMethod::Bolt12 => {
+                PaymentMethod::Known(KnownMethod::Bolt12) => {
                     let mint_quote_response = self.mint_bolt12_quote_state(&mint_quote.id).await?;
                     if mint_quote_response.amount_paid > mint_quote_response.amount_issued {
                         let proofs = self
