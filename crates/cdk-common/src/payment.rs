@@ -424,7 +424,6 @@ pub struct CreateIncomingPaymentResponse {
     pub extra_json: Option<serde_json::Value>,
 }
 
-
 /// Payment response
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MakePaymentResponse {

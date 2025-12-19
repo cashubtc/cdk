@@ -372,7 +372,7 @@ pub fn amount_for_offer(offer: &Offer, unit: &CurrencyUnit) -> Result<Amount, Er
             amount,
         } => (
             amount,
-            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.to_vec())?)
+            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.as_bytes().to_vec())?)
                 .map_err(|_| Error::CannotConvertUnits)?,
         ),
     };
@@ -1097,5 +1097,172 @@ mod tests {
         let amount = Amount::from(100);
         let result = amount.convert_unit(&CurrencyUnit::Sat, &CurrencyUnit::Eur);
         assert!(result.is_err());
+    }
+
+    /// Tests that Amount::to_i64() returns the correct value.
+    ///
+    /// Mutant testing: Kills mutations that replace the return value with:
+    /// - None
+    /// - Some(0)
+    /// - Some(1)
+    /// - Some(-1)
+    /// Also catches mutation that replaces <= with > in the comparison.
+    #[test]
+    fn test_amount_to_i64_returns_correct_value() {
+        // Test with value 100 (catches None, Some(0), Some(1), Some(-1) mutations)
+        let amount = Amount::from(100);
+        let result = amount.to_i64();
+        assert_eq!(result, Some(100));
+        assert!(result.is_some());
+        assert_ne!(result, Some(0));
+        assert_ne!(result, Some(1));
+        assert_ne!(result, Some(-1));
+
+        // Test with value 1000 (catches all constant mutations)
+        let amount = Amount::from(1000);
+        let result = amount.to_i64();
+        assert_eq!(result, Some(1000));
+        assert_ne!(result, None);
+        assert_ne!(result, Some(0));
+        assert_ne!(result, Some(1));
+        assert_ne!(result, Some(-1));
+
+        // Test with value 2 (specifically catches Some(1) mutation)
+        let amount = Amount::from(2);
+        let result = amount.to_i64();
+        assert_eq!(result, Some(2));
+        assert_ne!(result, Some(1));
+
+        // Test with i64::MAX (should return Some(i64::MAX))
+        // This catches the <= vs > mutation: if <= becomes >, this would return None
+        let amount = Amount::from(i64::MAX as u64);
+        let result = amount.to_i64();
+        assert_eq!(result, Some(i64::MAX));
+        assert!(result.is_some());
+
+        // Test with i64::MAX + 1 (should return None)
+        // This is the boundary case for the <= comparison
+        let amount = Amount::from(i64::MAX as u64 + 1);
+        let result = amount.to_i64();
+        assert!(result.is_none());
+
+        // Test with u64::MAX (should return None)
+        let amount = Amount::from(u64::MAX);
+        let result = amount.to_i64();
+        assert!(result.is_none());
+
+        // Edge case: 0 should return Some(0)
+        let amount = Amount::from(0);
+        let result = amount.to_i64();
+        assert_eq!(result, Some(0));
+
+        // Edge case: 1 should return Some(1)
+        let amount = Amount::from(1);
+        let result = amount.to_i64();
+        assert_eq!(result, Some(1));
+    }
+
+    /// Tests the boundary condition for Amount::to_i64() at i64::MAX.
+    ///
+    /// This specifically tests the <= vs > mutation in the condition
+    /// `if self.0 <= i64::MAX as u64`.
+    #[test]
+    fn test_amount_to_i64_boundary() {
+        // Exactly at i64::MAX - should succeed
+        let at_max = Amount::from(i64::MAX as u64);
+        assert!(at_max.to_i64().is_some());
+        assert_eq!(at_max.to_i64().unwrap(), i64::MAX);
+
+        // One above i64::MAX - should fail
+        let above_max = Amount::from(i64::MAX as u64 + 1);
+        assert!(above_max.to_i64().is_none());
+
+        // One below i64::MAX - should succeed
+        let below_max = Amount::from(i64::MAX as u64 - 1);
+        assert!(below_max.to_i64().is_some());
+        assert_eq!(below_max.to_i64().unwrap(), i64::MAX - 1);
+    }
+
+    /// Tests Amount::from_i64 returns the correct value.
+    ///
+    /// Mutant testing: Catches mutations that:
+    /// - Replace return with None
+    /// - Replace return with Some(Default::default())
+    /// - Replace >= with < in the condition
+    #[test]
+    fn test_amount_from_i64() {
+        // Positive value - should return Some with correct value
+        let result = Amount::from_i64(100);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), Amount::from(100));
+        assert_ne!(result, None);
+        assert_ne!(result, Some(Amount::ZERO));
+
+        // Zero - boundary case for >= vs <
+        // If >= becomes <, this would return None instead of Some
+        let result = Amount::from_i64(0);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), Amount::ZERO);
+
+        // Negative value - should return None
+        let result = Amount::from_i64(-1);
+        assert!(result.is_none());
+
+        let result = Amount::from_i64(-100);
+        assert!(result.is_none());
+
+        // Large positive value
+        let result = Amount::from_i64(i64::MAX);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), Amount::from(i64::MAX as u64));
+        assert_ne!(result, Some(Amount::ZERO));
+
+        // Value 1 - catches Some(Default::default()) mutation
+        let result = Amount::from_i64(1);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), Amount::ONE);
+        assert_ne!(result, Some(Amount::ZERO));
+    }
+
+    /// Tests AddAssign actually modifies the value.
+    ///
+    /// Mutant testing: Catches mutation that replaces add_assign with ().
+    #[test]
+    fn test_add_assign() {
+        let mut amount = Amount::from(100);
+        amount += Amount::from(50);
+        assert_eq!(amount, Amount::from(150));
+        assert_ne!(amount, Amount::from(100)); // Should have changed
+
+        let mut amount = Amount::from(1);
+        amount += Amount::from(1);
+        assert_eq!(amount, Amount::from(2));
+        assert_ne!(amount, Amount::ONE); // Should have changed
+
+        let mut amount = Amount::ZERO;
+        amount += Amount::from(42);
+        assert_eq!(amount, Amount::from(42));
+        assert_ne!(amount, Amount::ZERO); // Should have changed
+    }
+
+    /// Tests SubAssign actually modifies the value.
+    ///
+    /// Mutant testing: Catches mutation that replaces sub_assign with ().
+    #[test]
+    fn test_sub_assign() {
+        let mut amount = Amount::from(100);
+        amount -= Amount::from(30);
+        assert_eq!(amount, Amount::from(70));
+        assert_ne!(amount, Amount::from(100)); // Should have changed
+
+        let mut amount = Amount::from(50);
+        amount -= Amount::from(1);
+        assert_eq!(amount, Amount::from(49));
+        assert_ne!(amount, Amount::from(50)); // Should have changed
+
+        let mut amount = Amount::from(10);
+        amount -= Amount::from(10);
+        assert_eq!(amount, Amount::ZERO);
+        assert_ne!(amount, Amount::from(10)); // Should have changed
     }
 }

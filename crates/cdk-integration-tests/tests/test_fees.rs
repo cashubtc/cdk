@@ -9,9 +9,15 @@ use cdk::wallet::{ReceiveOptions, SendKind, SendOptions, Wallet};
 use cdk_integration_tests::init_regtest::get_temp_dir;
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_swap() {
+    // Set up logging
+    let default_filter = "debug";
+    let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn,rustls=warn";
+    let env_filter = EnvFilter::new(format!("{},{}", default_filter, sqlx_filter));
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
@@ -39,6 +45,8 @@ async fn test_swap() {
 
     println!("{:?}", proofs);
 
+    println!("{:?}", wallet.get_mint_keysets().await.unwrap());
+
     let send = wallet
         .prepare_send(
             4.into(),
@@ -52,7 +60,7 @@ async fn test_swap() {
 
     let proofs = send.proofs();
 
-    let fee = wallet.get_proofs_fee(&proofs).await.unwrap();
+    let fee = wallet.get_proofs_fee(&proofs).await.unwrap().total;
 
     assert_eq!(fee, 1.into());
 
@@ -107,7 +115,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let proofs_total = proofs.total_amount().unwrap();
 
-    let fee = wallet.get_proofs_fee(&proofs).await.unwrap();
+    let fee_breakdown = wallet.get_proofs_fee(&proofs).await.unwrap();
     let melt = wallet
         .melt_proofs(&melt_quote.id, proofs.clone())
         .await
@@ -116,7 +124,7 @@ async fn test_fake_melt_change_in_quote() {
     let idk = proofs.total_amount().unwrap() - Amount::from(invoice_amount) - change;
 
     println!("{}", idk);
-    println!("{}", fee);
+    println!("{}", fee_breakdown.total);
     println!("{}", proofs_total);
     println!("{}", change);
 
@@ -124,6 +132,6 @@ async fn test_fake_melt_change_in_quote() {
 
     assert_eq!(
         wallet.total_balance().await.unwrap(),
-        Amount::from(100 - invoice_amount - u64::from(fee) - ln_fee)
+        Amount::from(100 - invoice_amount - u64::from(fee_breakdown.total) - ln_fee)
     );
 }

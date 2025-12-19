@@ -94,6 +94,13 @@ impl HTLCWitness {
 
 impl Proof {
     /// Verify HTLC
+    ///
+    /// Per NUT-14, there are two spending pathways:
+    /// 1. Receiver path (preimage + pubkeys): ALWAYS available
+    /// 2. Sender/Refund path (refund keys, no preimage): available AFTER locktime
+    ///
+    /// The verification tries to determine which path is being used based on
+    /// the witness provided, then validates accordingly.
     pub fn verify_htlc(&self) -> Result<(), Error> {
         let secret: Secret = self.secret.clone().try_into()?;
         let spending_conditions: Conditions = secret
@@ -111,65 +118,86 @@ impl Proof {
             return Err(Error::IncorrectSecretKind);
         }
 
-        // Get the appropriate spending conditions based on locktime
+        // Get the spending requirements (includes both receiver and refund paths)
         let now = unix_time();
         let requirements =
             super::nut10::get_pubkeys_and_required_sigs(&secret, now).map_err(Error::NUT11)?;
 
-        // While a Witness is usually needed in a P2PK or HTLC proof, it's not
-        // always needed. If we are past the locktime, and there are no refund
-        // keys, then the proofs are anyone-can-spend:
-        //     NUT-11: "If the tag locktime is the unix time and the mint's local
-        //              clock is greater than locktime, the Proof becomes spendable
-        //              by anyone, except if [there are no refund keys]"
-        // Therefore, this function should not extract any Witness unless it
-        // is needed to get a preimage or signatures.
-
-        // If preimage is needed (before locktime), verify it
-        if requirements.preimage_needed {
-            // Extract HTLC witness
-            let htlc_witness = match &self.witness {
-                Some(Witness::HTLCWitness(witness)) => witness,
-                _ => return Err(Error::IncorrectSecretKind),
-            };
-
-            // Verify preimage using shared function
-            super::nut10::verify_htlc_preimage(htlc_witness, &secret)?;
-        }
-
-        if requirements.required_sigs == 0 {
-            return Ok(());
-        }
-
-        // if we get here, the preimage check (if it was needed) has been done
-        // and we know that at least one signature is required. So, we extract
-        // the witness.signatures and count them:
-
-        // Extract witness signatures
+        // Try to extract HTLC witness - must be correct type
         let htlc_witness = match &self.witness {
             Some(Witness::HTLCWitness(witness)) => witness,
-            _ => return Err(Error::IncorrectSecretKind),
+            _ => {
+                // Wrong witness type or no witness
+                // If refund path is available with 0 required sigs, anyone can spend
+                if let Some(refund_path) = &requirements.refund_path {
+                    if refund_path.required_sigs == 0 {
+                        return Ok(());
+                    }
+                }
+                return Err(Error::IncorrectSecretKind);
+            }
         };
-        let witness_signatures = htlc_witness
-            .signatures
-            .as_ref()
-            .ok_or(Error::SignaturesNotProvided)?;
 
-        // Convert signatures from strings
-        let signatures: Vec<Signature> = witness_signatures
-            .iter()
-            .map(|s| Signature::from_str(s))
-            .collect::<Result<Vec<_>, _>>()?;
+        // Try to verify the preimage and capture the specific error if it fails
+        let preimage_result = super::nut10::verify_htlc_preimage(htlc_witness, &secret);
 
-        // Count valid signatures using relevant_pubkeys
-        let msg: &[u8] = self.secret.as_bytes();
-        let valid_sig_count = valid_signatures(msg, &requirements.pubkeys, &signatures)?;
+        // Determine which path to use:
+        // - If preimage is valid → use receiver path (always available)
+        // - If preimage is invalid/missing → try refund path (if available)
+        if preimage_result.is_ok() {
+            // Receiver path: preimage valid, now check signatures against pubkeys
+            if requirements.required_sigs == 0 {
+                return Ok(());
+            }
 
-        // Check if we have enough valid signatures
-        if valid_sig_count >= requirements.required_sigs {
-            Ok(())
+            let witness_signatures = htlc_witness
+                .signatures
+                .as_ref()
+                .ok_or(Error::SignaturesNotProvided)?;
+
+            let signatures: Vec<Signature> = witness_signatures
+                .iter()
+                .map(|s| Signature::from_str(s))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let msg: &[u8] = self.secret.as_bytes();
+            let valid_sig_count = valid_signatures(msg, &requirements.pubkeys, &signatures)?;
+
+            if valid_sig_count >= requirements.required_sigs {
+                Ok(())
+            } else {
+                Err(Error::NUT11(super::nut11::Error::SpendConditionsNotMet))
+            }
+        } else if let Some(refund_path) = &requirements.refund_path {
+            // Refund path: preimage not valid/provided, but locktime has passed
+            // Check signatures against refund keys
+            if refund_path.required_sigs == 0 {
+                // Anyone can spend (locktime passed, no refund keys)
+                return Ok(());
+            }
+
+            let witness_signatures = htlc_witness
+                .signatures
+                .as_ref()
+                .ok_or(Error::SignaturesNotProvided)?;
+
+            let signatures: Vec<Signature> = witness_signatures
+                .iter()
+                .map(|s| Signature::from_str(s))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let msg: &[u8] = self.secret.as_bytes();
+            let valid_sig_count = valid_signatures(msg, &refund_path.pubkeys, &signatures)?;
+
+            if valid_sig_count >= refund_path.required_sigs {
+                Ok(())
+            } else {
+                Err(Error::NUT11(super::nut11::Error::SpendConditionsNotMet))
+            }
         } else {
-            Err(Error::NUT11(super::nut11::Error::SpendConditionsNotMet))
+            // No valid preimage and refund path not available (locktime not passed)
+            // Return the specific error from preimage verification
+            preimage_result
         }
     }
 
@@ -179,7 +207,7 @@ impl Proof {
         let signatures = self
             .witness
             .as_ref()
-            .map(|w| w.signatures())
+            .map(super::nut00::Witness::signatures)
             .unwrap_or_default();
 
         self.witness = Some(Witness::HTLCWitness(HTLCWitness {
@@ -411,25 +439,26 @@ mod tests {
 
     /// Tests that verify_htlc requires BOTH locktime expired AND no refund keys for "anyone can spend".
     ///
-    /// This test catches the mutation that replaces `&&` with `||` at line 83.
-    /// The logic should be: (locktime expired AND no refund keys) → anyone can spend.
-    /// If mutated to OR, it would allow spending when locktime passed even if refund keys exist.
+    /// This test verifies that when locktime has passed and refund keys are present,
+    /// a signature from the refund keys is required (not anyone-can-spend).
     ///
-    /// Mutant testing: Catches mutations that replace `&&` with `||` in the locktime check.
+    /// Per NUT-14: After locktime, the refund path requires signatures from refund keys.
+    /// The "anyone can spend" case only applies when locktime passed AND no refund keys.
     #[test]
     fn test_htlc_locktime_and_refund_keys_logic() {
         use crate::nuts::nut01::PublicKey;
         use crate::nuts::nut11::Conditions;
 
-        let preimage_bytes = [42u8; 32]; // 32-byte preimage
-        let hash = Sha256Hash::hash(&preimage_bytes);
+        let correct_preimage_bytes = [42u8; 32]; // 32-byte preimage
+        let hash = Sha256Hash::hash(&correct_preimage_bytes);
         let hash_str = hash.to_string();
 
+        // Use WRONG preimage to force using refund path (not receiver path)
+        let wrong_preimage_bytes = [99u8; 32];
+
         // Test: Locktime has passed (locktime=1) but refund keys ARE present
-        // With correct logic (&&): Since refund_keys.is_none() is false, the "anyone can spend"
-        //                          path is NOT taken, so signature is required
-        // With mutation (||): Since locktime.lt(&unix_time()) is true, it WOULD take the
-        //                     "anyone can spend" path immediately - WRONG!
+        // Since we provide wrong preimage, receiver path fails, so we try refund path.
+        // Refund path with refund keys present should require a signature.
         let refund_pubkey = PublicKey::from_hex(
             "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
         )
@@ -448,8 +477,8 @@ mod tests {
         let secret: SecretString = nut10_secret.try_into().unwrap();
 
         let htlc_witness = HTLCWitness {
-            preimage: hex::encode(&preimage_bytes),
-            signatures: None, // No signature provided
+            preimage: hex::encode(&wrong_preimage_bytes), // Wrong preimage!
+            signatures: None,                             // No signature provided
         };
 
         let proof = Proof {
@@ -464,13 +493,15 @@ mod tests {
             dleq: None,
         };
 
-        // Should FAIL because even though locktime passed, refund keys are present
-        // so the "anyone can spend" shortcut shouldn't apply. A signature is required.
-        // With && this correctly fails. With || it would incorrectly pass.
+        // Should FAIL because:
+        // 1. Wrong preimage means receiver path fails
+        // 2. Falls back to refund path (locktime passed)
+        // 3. Refund keys are present, so signature is required
+        // 4. No signature provided
         let result = proof.verify_htlc();
         assert!(
             result.is_err(),
-            "Should fail when locktime passed but refund keys present without signature"
+            "Should fail when using refund path with refund keys but no signature"
         );
     }
 }

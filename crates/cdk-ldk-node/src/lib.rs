@@ -1,8 +1,6 @@
 //! CDK lightning backend for ldk-node
 
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
-#![warn(rustdoc::bare_urls)]
 
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -20,11 +18,11 @@ use ldk_node::bitcoin::hashes::Hash;
 use ldk_node::bitcoin::Network;
 use ldk_node::lightning::ln::channelmanager::PaymentId;
 use ldk_node::lightning::ln::msgs::SocketAddress;
+use ldk_node::lightning::routing::router::RouteParametersConfig;
 use ldk_node::lightning_invoice::{Bolt11InvoiceDescription, Description};
 use ldk_node::lightning_types::payment::PaymentHash;
-use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus, SendingParameters};
+use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus};
 use ldk_node::{Builder, Event, Node};
-use tokio::runtime::Runtime;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
@@ -47,7 +45,6 @@ pub struct CdkLdkNode {
     sender: tokio::sync::broadcast::Sender<WaitPaymentResponse>,
     receiver: Arc<tokio::sync::broadcast::Receiver<WaitPaymentResponse>>,
     events_cancel_token: CancellationToken,
-    runtime: Option<Arc<Runtime>>,
     web_addr: Option<SocketAddr>,
 }
 
@@ -122,7 +119,6 @@ impl CdkLdkNode {
         storage_dir_path: String,
         fee_reserve: FeeReserve,
         listening_address: Vec<SocketAddress>,
-        runtime: Option<Arc<Runtime>>,
     ) -> Result<Self, Error> {
         let mut builder = Builder::new();
         builder.set_network(network);
@@ -180,7 +176,6 @@ impl CdkLdkNode {
             sender,
             receiver: Arc::new(receiver),
             events_cancel_token: CancellationToken::new(),
-            runtime,
             web_addr: None,
         })
     }
@@ -212,16 +207,8 @@ impl CdkLdkNode {
     /// # Errors
     /// Returns an error if the LDK node fails to start or event handling setup fails
     pub fn start_ldk_node(&self) -> Result<(), Error> {
-        match &self.runtime {
-            Some(runtime) => {
-                tracing::info!("Starting cdk-ldk node with existing runtime");
-                self.inner.start_with_runtime(Arc::clone(runtime))?
-            }
-            None => {
-                tracing::info!("Starting cdk-ldk-node with new runtime");
-                self.inner.start()?
-            }
-        };
+        tracing::info!("Starting cdk-ldk node");
+        self.inner.start()?;
         let node_config = self.inner.config();
 
         tracing::info!("Starting node with network {}", node_config.network);
@@ -669,11 +656,11 @@ impl MintPayment for CdkLdkNode {
                 let send_params = match bolt11_options
                     .max_fee_amount
                     .map(|f| {
-                        to_unit(f, unit, &CurrencyUnit::Msat).map(|amount_msat| SendingParameters {
-                            max_total_routing_fee_msat: Some(Some(amount_msat.into())),
-                            max_channel_saturation_power_of_half: None,
-                            max_total_cltv_expiry_delta: None,
-                            max_path_count: None,
+                        to_unit(f, unit, &CurrencyUnit::Msat).map(|amount_msat| {
+                            RouteParametersConfig {
+                                max_total_routing_fee_msat: Some(amount_msat.into()),
+                                ..Default::default()
+                            }
                         })
                     })
                     .transpose()
@@ -767,12 +754,12 @@ impl MintPayment for CdkLdkNode {
                     Some(MeltOptions::Amountless { amountless }) => self
                         .inner
                         .bolt12_payment()
-                        .send_using_amount(&offer, amountless.amount_msat.into(), None, None)
+                        .send_using_amount(&offer, amountless.amount_msat.into(), None, None, None)
                         .map_err(Error::LdkNode)?,
                     None => self
                         .inner
                         .bolt12_payment()
-                        .send(&offer, None, None)
+                        .send(&offer, None, None, None)
                         .map_err(Error::LdkNode)?,
                     _ => return Err(payment::Error::UnsupportedPaymentOption),
                 };

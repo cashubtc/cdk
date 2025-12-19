@@ -18,10 +18,6 @@ pub struct CatLoginSubCommand {
     username: String,
     /// Password
     password: String,
-    /// Client ID for OIDC authentication
-    #[arg(default_value = "cashu-client")]
-    #[arg(long)]
-    client_id: String,
 }
 
 pub async fn cat_login(
@@ -43,7 +39,6 @@ pub async fn cat_login(
 
     let (access_token, refresh_token) = get_access_token(
         &mint_info,
-        &sub_command_args.client_id,
         &sub_command_args.username,
         &sub_command_args.password,
     )
@@ -66,18 +61,20 @@ pub async fn cat_login(
     Ok(())
 }
 
-async fn get_access_token(
-    mint_info: &MintInfo,
-    client_id: &str,
-    user: &str,
-    password: &str,
-) -> (String, String) {
+async fn get_access_token(mint_info: &MintInfo, user: &str, password: &str) -> (String, String) {
     let openid_discovery = mint_info
         .nuts
         .nut21
         .clone()
         .expect("Nut21 defined")
         .openid_discovery;
+
+    let client_id = mint_info
+        .nuts
+        .nut21
+        .clone()
+        .expect("Nut21 defined")
+        .client_id;
 
     let oidc_client = OidcClient::new(openid_discovery, None);
 
@@ -91,7 +88,8 @@ async fn get_access_token(
     // Create the request parameters
     let params = [
         ("grant_type", "password"),
-        ("client_id", client_id),
+        ("client_id", &client_id),
+        ("scope", "openid offline_access"),
         ("username", user),
         ("password", password),
     ];

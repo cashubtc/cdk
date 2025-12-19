@@ -77,10 +77,10 @@ pub async fn wait_for_mint_ready_with_shutdown(
                     port
                 ));
             }
-
-
-
         }
+
+        // Wait before retrying to avoid overwhelming the mint during startup
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -178,6 +178,21 @@ pub fn create_fake_wallet_settings(
     signatory_config: Option<(String, String)>, // (url, certs_dir)
     fake_wallet_config: Option<cdk_mintd::config::FakeWallet>,
 ) -> cdk_mintd::config::Settings {
+    let engine = DatabaseEngine::from_str(database).expect("valid database");
+
+    // If using PostgreSQL, get the connection URL from the environment or use default
+    let postgres_config = if engine == DatabaseEngine::Postgres {
+        let url = std::env::var("CDK_MINTD_DATABASE_URL").unwrap_or_else(|_| {
+            "postgresql://cdk_user:cdk_password@localhost:5432/cdk_mint".to_string()
+        });
+        Some(cdk_mintd::config::PostgresConfig {
+            url,
+            ..Default::default()
+        })
+    } else {
+        None
+    };
+
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
             url: format!("http://127.0.0.1:{port}"),
@@ -216,8 +231,8 @@ pub fn create_fake_wallet_settings(
         fake_wallet: fake_wallet_config,
         grpc_processor: None,
         database: Database {
-            engine: DatabaseEngine::from_str(database).expect("valid database"),
-            postgres: None,
+            engine,
+            postgres: postgres_config,
         },
         auth_database: None,
         mint_management_rpc: None,

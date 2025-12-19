@@ -39,7 +39,7 @@ pub struct AuthWallet {
     /// Mint Url
     pub mint_url: MintUrl,
     /// Storage backend
-    pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+    pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     /// Mint metadata cache (lock-free cached access to keys, keysets, and mint info)
     pub metadata_cache: Arc<MintMetadataCache>,
     /// Protected methods
@@ -56,7 +56,7 @@ impl AuthWallet {
     pub fn new(
         mint_url: MintUrl,
         cat: Option<AuthToken>,
-        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         metadata_cache: Arc<MintMetadataCache>,
         protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
         oidc_client: Option<OidcClient>,
@@ -286,21 +286,27 @@ impl AuthWallet {
     /// Get Auth Token
     #[instrument(skip(self))]
     pub async fn get_blind_auth_token(&self) -> Result<Option<BlindAuthToken>, Error> {
-        let unspent = self.get_unspent_auth_proofs().await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
 
-        let auth_proof = match unspent.first() {
+        let auth_proof = match tx
+            .get_proofs(
+                Some(self.mint_url.clone()),
+                Some(CurrencyUnit::Auth),
+                Some(vec![State::Unspent]),
+                None,
+            )
+            .await?
+            .pop()
+        {
             Some(proof) => {
-                self.localstore
-                    .update_proofs(vec![], vec![proof.y()?])
-                    .await?;
-                proof
+                tx.update_proofs(vec![], vec![proof.proof.y()?]).await?;
+                tx.commit().await?;
+                proof.proof.try_into()?
             }
             None => return Ok(None),
         };
 
-        Ok(Some(BlindAuthToken {
-            auth_proof: auth_proof.clone(),
-        }))
+        Ok(Some(BlindAuthToken { auth_proof }))
     }
 
     /// Auth for request
@@ -337,15 +343,6 @@ impl AuthWallet {
     #[instrument(skip(self))]
     pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, Error> {
         tracing::debug!("Minting {} blind auth proofs", amount);
-        // Check that mint is in store of mints
-        if self
-            .localstore
-            .get_mint(self.mint_url.clone())
-            .await?
-            .is_none()
-        {
-            self.get_mint_info().await?;
-        }
 
         let auth_token = self.auth_client.get_auth_token().await?;
 
@@ -455,7 +452,9 @@ impl AuthWallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        self.localstore.update_proofs(proof_infos, vec![]).await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.update_proofs(proof_infos, vec![]).await?;
+        tx.commit().await?;
 
         Ok(proofs)
     }

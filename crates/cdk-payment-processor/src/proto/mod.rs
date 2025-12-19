@@ -136,7 +136,10 @@ impl TryFrom<CreatePaymentResponse> for CreateIncomingPaymentResponse {
             request_lookup_id: request_identifier.try_into()?,
             request: value.request,
             expiry: value.expiry,
-            extra_json: Some(serde_json::from_str(value.extra_json.unwrap_or_default().as_str()).unwrap_or_default()),
+            extra_json: Some(
+                serde_json::from_str(value.extra_json.unwrap_or_default().as_str())
+                    .unwrap_or_default(),
+            ),
         })
     }
 }

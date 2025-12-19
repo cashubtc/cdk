@@ -28,7 +28,7 @@ impl Nut10SecretRequest {
         Self {
             kind,
             data: data.into(),
-            tags: tags.map(|v| v.into()),
+            tags: tags.map(Into::into),
         }
     }
 }

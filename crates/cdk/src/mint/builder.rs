@@ -358,7 +358,7 @@ impl MintBuilder {
     ///
     /// The unit **MUST** already have been added with a ln backend
     pub fn set_unit_fee(&mut self, unit: &CurrencyUnit, input_fee_ppk: u64) -> Result<(), Error> {
-        let (input_fee, _max_order) = self
+        let (input_fee, _) = self
             .supported_units
             .get_mut(unit)
             .ok_or(Error::UnsupportedUnit)?;

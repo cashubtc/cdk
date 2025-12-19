@@ -36,4 +36,18 @@ exclude_re = [
 
     # amount.rs:331 - Sub returning Default/0 causes infinite loops
     "crates/cashu/src/amount.rs:331:.*replace.*sub.*with Default",
+
+    # Trivial getters - not worth testing
+    "FeeAndAmounts::fee",
+    "FeeAndAmounts::amounts",
+
+    # Trivial trait implementations - unrealistic mutations
+    "crates/cashu/src/amount.rs.*impl From<&u64> for Amount.*from",
+    "crates/cashu/src/amount.rs.*impl AsRef<u64> for Amount.*as_ref",
+    "crates/cashu/src/amount.rs.*impl std::ops::Mul for Amount.*mul",
+    "crates/cashu/src/amount.rs.*impl std::ops::Div for Amount.*div",
+    "crates/cashu/src/amount.rs.*impl From<Amount> for u64.*from",
+    "crates/cashu/src/amount.rs.*impl Default for Amount",
+    "crates/cashu/src/amount.rs.*impl Default for &Amount",
+    "crates/cashu/src/amount.rs.*impl.*Display for Amount.*fmt",
 ]

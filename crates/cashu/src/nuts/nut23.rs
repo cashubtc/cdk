@@ -5,8 +5,7 @@ use std::str::FromStr;
 
 use lightning_invoice::Bolt11Invoice;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{BlindSignature, CurrencyUnit, MeltQuoteState, Mpp, PublicKey};
@@ -213,10 +212,7 @@ impl MeltQuoteBolt11Request {
     /// in the request for an amountless bolt11 or in MPP option.
     pub fn amount_msat(&self) -> Result<Amount, Error> {
         let MeltQuoteBolt11Request {
-            request,
-            unit: _,
-            options,
-            ..
+            request, options, ..
         } = self;
 
         match options {
@@ -239,9 +235,9 @@ impl MeltQuoteBolt11Request {
 }
 
 /// Melt quote response [NUT-05]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-#[serde(bound = "Q: Serialize")]
+#[serde(bound = "Q: Serialize + DeserializeOwned")]
 pub struct MeltQuoteBolt11Response<Q> {
     /// Quote Id
     pub quote: Q,
@@ -249,10 +245,6 @@ pub struct MeltQuoteBolt11Response<Q> {
     pub amount: Amount,
     /// The fee reserve that is required
     pub fee_reserve: Amount,
-    /// Whether the request haas be paid
-    // TODO: To be deprecated
-    /// Deprecated
-    pub paid: Option<bool>,
     /// Quote State
     pub state: MeltQuoteState,
     /// Unix timestamp until the quote is valid
@@ -281,7 +273,6 @@ impl<Q: ToString> MeltQuoteBolt11Response<Q> {
             quote: self.quote.to_string(),
             amount: self.amount,
             fee_reserve: self.fee_reserve,
-            paid: self.paid,
             state: self.state,
             expiry: self.expiry,
             payment_preimage: self.payment_preimage,
@@ -299,7 +290,6 @@ impl From<MeltQuoteBolt11Response<QuoteId>> for MeltQuoteBolt11Response<String> 
             quote: value.quote.to_string(),
             amount: value.amount,
             fee_reserve: value.fee_reserve,
-            paid: value.paid,
             state: value.state,
             expiry: value.expiry,
             payment_preimage: value.payment_preimage,
@@ -307,99 +297,5 @@ impl From<MeltQuoteBolt11Response<QuoteId>> for MeltQuoteBolt11Response<String> 
             request: value.request,
             unit: value.unit,
         }
-    }
-}
-
-// A custom deserializer is needed until all mints
-// update some will return without the required state.
-impl<'de, Q: DeserializeOwned> Deserialize<'de> for MeltQuoteBolt11Response<Q> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-
-        let quote: Q = serde_json::from_value(
-            value
-                .get("quote")
-                .ok_or(serde::de::Error::missing_field("quote"))?
-                .clone(),
-        )
-        .map_err(|_| serde::de::Error::custom("Invalid quote if string"))?;
-
-        let amount = value
-            .get("amount")
-            .ok_or(serde::de::Error::missing_field("amount"))?
-            .as_u64()
-            .ok_or(serde::de::Error::missing_field("amount"))?;
-        let amount = Amount::from(amount);
-
-        let fee_reserve = value
-            .get("fee_reserve")
-            .ok_or(serde::de::Error::missing_field("fee_reserve"))?
-            .as_u64()
-            .ok_or(serde::de::Error::missing_field("fee_reserve"))?;
-
-        let fee_reserve = Amount::from(fee_reserve);
-
-        let paid: Option<bool> = value.get("paid").and_then(|p| p.as_bool());
-
-        let state: Option<String> = value
-            .get("state")
-            .and_then(|s| serde_json::from_value(s.clone()).ok());
-
-        let (state, paid) = match (state, paid) {
-            (None, None) => return Err(serde::de::Error::custom("State or paid must be defined")),
-            (Some(state), _) => {
-                let state: MeltQuoteState = MeltQuoteState::from_str(&state)
-                    .map_err(|_| serde::de::Error::custom("Unknown state"))?;
-                let paid = state == MeltQuoteState::Paid;
-
-                (state, paid)
-            }
-            (None, Some(paid)) => {
-                let state = if paid {
-                    MeltQuoteState::Paid
-                } else {
-                    MeltQuoteState::Unpaid
-                };
-                (state, paid)
-            }
-        };
-
-        let expiry = value
-            .get("expiry")
-            .ok_or(serde::de::Error::missing_field("expiry"))?
-            .as_u64()
-            .ok_or(serde::de::Error::missing_field("expiry"))?;
-
-        let payment_preimage: Option<String> = value
-            .get("payment_preimage")
-            .and_then(|p| serde_json::from_value(p.clone()).ok());
-
-        let change: Option<Vec<BlindSignature>> = value
-            .get("change")
-            .and_then(|b| serde_json::from_value(b.clone()).ok());
-
-        let request: Option<String> = value
-            .get("request")
-            .and_then(|r| serde_json::from_value(r.clone()).ok());
-
-        let unit: Option<CurrencyUnit> = value
-            .get("unit")
-            .and_then(|u| serde_json::from_value(u.clone()).ok());
-
-        Ok(Self {
-            quote,
-            amount,
-            fee_reserve,
-            paid: Some(paid),
-            state,
-            expiry,
-            payment_preimage,
-            change,
-            request,
-            unit,
-        })
     }
 }

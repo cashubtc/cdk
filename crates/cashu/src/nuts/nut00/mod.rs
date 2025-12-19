@@ -135,7 +135,7 @@ fn total_amount<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> Result<Amount, 
 }
 
 fn ys<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> Result<Vec<PublicKey>, Error> {
-    proofs.map(|p| p.y()).collect::<Result<Vec<PublicKey>, _>>()
+    proofs.map(Proof::y).collect::<Result<Vec<PublicKey>, _>>()
 }
 
 /// NUT00 Error
@@ -303,12 +303,12 @@ impl From<HTLCWitness> for Witness {
 
 impl Witness {
     /// Add signatures to [`Witness`]
-    pub fn add_signatures(&mut self, signatues: Vec<String>) {
+    pub fn add_signatures(&mut self, signatures: Vec<String>) {
         match self {
-            Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatues),
+            Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatures),
             Self::HTLCWitness(htlc_witness) => match &mut htlc_witness.signatures {
-                Some(sigs) => sigs.extend(signatues),
-                None => htlc_witness.signatures = Some(signatues),
+                Some(sigs) => sigs.extend(signatures),
+                None => htlc_witness.signatures = Some(signatures),
             },
         }
     }
@@ -447,11 +447,11 @@ impl From<Proof> for ProofV4 {
     fn from(proof: Proof) -> ProofV4 {
         let Proof {
             amount,
-            keyset_id: _,
             secret,
             c,
             witness,
             dleq,
+            ..
         } = proof;
         ProofV4 {
             amount,

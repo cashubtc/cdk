@@ -1,10 +1,8 @@
 //! SQLite storage backend for cdk
 
-#![warn(missing_docs)]
-#![warn(rustdoc::bare_urls)]
-
 mod common;
 pub mod database;
+mod keyvalue;
 mod macros;
 pub mod pool;
 pub mod stmt;

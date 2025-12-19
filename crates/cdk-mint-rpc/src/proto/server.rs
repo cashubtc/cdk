@@ -690,7 +690,7 @@ impl CdkMint for MintRPCServer {
                     0,
                     vec![],
                     vec![],
-                    None
+                    None,
                 );
 
                 let mint_store = self.mint.localstore();
@@ -731,20 +731,22 @@ impl CdkMint for MintRPCServer {
         let unit = CurrencyUnit::from_str(&request.unit)
             .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
 
+        let amounts = if request.amounts.is_empty() {
+            return Err(Status::invalid_argument("amounts cannot be empty"));
+        } else {
+            request.amounts
+        };
+
         let keyset_info = self
             .mint
-            .rotate_keyset(
-                unit,
-                request.max_order.map(|a| a as u8).unwrap_or(32),
-                request.input_fee_ppk.unwrap_or(0),
-            )
+            .rotate_keyset(unit, amounts, request.input_fee_ppk.unwrap_or(0))
             .await
             .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))?;
 
         Ok(Response::new(RotateNextKeysetResponse {
             id: keyset_info.id.to_string(),
             unit: keyset_info.unit.to_string(),
-            max_order: keyset_info.max_order.into(),
+            amounts: keyset_info.amounts,
             input_fee_ppk: keyset_info.input_fee_ppk,
         }))
     }

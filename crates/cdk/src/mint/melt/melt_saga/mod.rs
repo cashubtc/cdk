@@ -128,8 +128,8 @@ pub struct MeltSaga<S> {
     pubsub: Arc<PubSubManager>,
     /// Compensating actions in LIFO order (most recent first)
     compensations: Arc<Mutex<VecDeque<Box<dyn CompensatingAction>>>>,
-    /// Operation for tracking
-    operation: Operation,
+    /// Operation ID (used for saga tracking, generated upfront)
+    operation_id: uuid::Uuid,
     /// Tracks if metrics were incremented (for cleanup)
     #[cfg(feature = "prometheus")]
     metrics_incremented: bool,
@@ -142,15 +142,17 @@ impl MeltSaga<Initial> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("melt_bolt11");
 
+        let operation_id = uuid::Uuid::new_v4();
+
         Self {
             mint,
             db,
             pubsub,
             compensations: Arc::new(Mutex::new(VecDeque::new())),
-            operation: Operation::new_melt(),
+            operation_id,
             #[cfg(feature = "prometheus")]
             metrics_incremented: true,
-            state_data: Initial,
+            state_data: Initial { operation_id },
         }
     }
 
@@ -189,6 +191,7 @@ impl MeltSaga<Initial> {
         self,
         melt_request: &MeltRequest<QuoteId>,
         input_verification: Verification,
+        payment_method: cdk_common::PaymentMethod,
     ) -> Result<MeltSaga<SetupComplete>, Error> {
         tracing::info!("TX1: Setting up melt (verify + inputs + outputs)");
 
@@ -199,12 +202,28 @@ impl MeltSaga<Initial> {
 
         let mut tx = self.db.begin_transaction().await?;
 
+        // Calculate fee to create Operation with actual amounts
+        let fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
+
+        // Create Operation with actual amounts now that we know them
+        // total_redeemed = input_amount (proofs being burnt)
+        // fee_collected = fee
+        let operation = Operation::new(
+            self.state_data.operation_id,
+            cdk_common::mint::OperationKind::Melt,
+            Amount::ZERO,         // total_issued (change will be calculated later)
+            input_amount,         // total_redeemed
+            fee_breakdown.total,  // fee_collected
+            None,                 // complete_at
+            Some(payment_method), // payment_method
+        );
+
         // Add proofs to the database
         if let Err(err) = tx
             .add_proofs(
                 melt_request.inputs().clone(),
                 Some(melt_request.quote_id().to_owned()),
-                &self.operation,
+                &operation,
             )
             .await
         {
@@ -251,15 +270,22 @@ impl MeltSaga<Initial> {
             );
         }
 
+        // Update quote state to Pending
+        let (state, quote) = match tx
+            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(err.into());
+            }
+        };
+
         // Publish proof state changes
         for pk in input_ys.iter() {
             self.pubsub.proof_state((*pk, State::Pending));
         }
-
-        // Update quote state to Pending
-        let (state, quote) = tx
-            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
-            .await?;
 
         if input_unit != Some(quote.unit.clone()) {
             tx.rollback().await?;
@@ -285,22 +311,24 @@ impl MeltSaga<Initial> {
         self.pubsub
             .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
 
-        let fee = self.mint.get_proofs_fee(melt_request.inputs()).await?;
+        let inputs_fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
 
-        let required_total = quote.amount + quote.fee_reserve + fee;
+        let required_total = quote.amount + quote.fee_reserve + inputs_fee_breakdown.total;
 
         if input_amount < required_total {
             tracing::info!(
-                "Melt request unbalanced: inputs {}, amount {}, fee {}",
+                "Melt request unbalanced: inputs {}, amount {}, fee_reserve {}, input_fee {}, required {}",
                 input_amount,
                 quote.amount,
-                fee
+                quote.fee_reserve,
+                inputs_fee_breakdown.total,
+                required_total
             );
             tx.rollback().await?;
             return Err(Error::TransactionUnbalanced(
                 input_amount.into(),
                 quote.amount.into(),
-                (fee + quote.fee_reserve).into(),
+                (inputs_fee_breakdown.total + quote.fee_reserve).into(),
             ));
         }
 
@@ -322,13 +350,11 @@ impl MeltSaga<Initial> {
             }
         }
 
-        let inputs_fee = self.mint.get_proofs_fee(melt_request.inputs()).await?;
-
         // Add melt request tracking record
         tx.add_melt_request(
             melt_request.quote_id(),
             melt_request.inputs_amount()?,
-            inputs_fee,
+            inputs_fee_breakdown.total,
         )
         .await?;
 
@@ -336,7 +362,7 @@ impl MeltSaga<Initial> {
         tx.add_blinded_messages(
             Some(melt_request.quote_id()),
             melt_request.outputs().as_ref().unwrap_or(&Vec::new()),
-            &self.operation,
+            &operation,
         )
         .await?;
 
@@ -351,7 +377,7 @@ impl MeltSaga<Initial> {
 
         // Persist saga state for crash recovery (atomic with TX1)
         let saga = Saga::new_melt(
-            *self.operation.id(),
+            self.operation_id,
             MeltSagaState::SetupComplete,
             input_ys.clone(),
             blinded_secrets.clone(),
@@ -377,6 +403,7 @@ impl MeltSaga<Initial> {
                 input_ys: input_ys.clone(),
                 blinded_secrets,
                 quote_id: quote.id.clone(),
+                operation_id: self.operation_id,
             }));
 
         // Transition to SetupComplete state
@@ -385,13 +412,15 @@ impl MeltSaga<Initial> {
             db: self.db,
             pubsub: self.pubsub,
             compensations: self.compensations,
-            operation: self.operation,
+            operation_id: self.operation_id,
             #[cfg(feature = "prometheus")]
             metrics_incremented: self.metrics_incremented,
             state_data: SetupComplete {
                 quote,
                 input_ys,
                 blinded_messages: blinded_messages_vec,
+                operation,
+                fee_breakdown,
             },
         })
     }
@@ -496,7 +525,7 @@ impl MeltSaga<SetupComplete> {
         // Update saga state to PaymentAttempted BEFORE internal settlement commits
         // This ensures crash recovery knows payment may have occurred
         tx.update_saga(
-            self.operation.id(),
+            &self.operation_id,
             SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
         )
         .await?;
@@ -621,7 +650,7 @@ impl MeltSaga<SetupComplete> {
                 {
                     let mut tx = self.db.begin_transaction().await?;
                     tx.update_saga(
-                        self.operation.id(),
+                        &self.operation_id,
                         SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
                     )
                     .await?;
@@ -738,7 +767,7 @@ impl MeltSaga<SetupComplete> {
             db: self.db,
             pubsub: self.pubsub,
             compensations: self.compensations,
-            operation: self.operation,
+            operation_id: self.operation_id,
             #[cfg(feature = "prometheus")]
             metrics_incremented: self.metrics_incremented,
             state_data: PaymentConfirmed {
@@ -746,6 +775,8 @@ impl MeltSaga<SetupComplete> {
                 input_ys: self.state_data.input_ys,
                 blinded_messages: self.state_data.blinded_messages,
                 payment_result,
+                operation: self.state_data.operation,
+                fee_breakdown: self.state_data.fee_breakdown,
             },
         })
     }
@@ -896,10 +927,29 @@ impl MeltSaga<PaymentConfirmed> {
         tx.delete_melt_request(&self.state_data.quote.id).await?;
 
         // Delete saga - melt completed successfully (best-effort)
-        if let Err(e) = tx.delete_saga(self.operation.id()).await {
+        if let Err(e) = tx.delete_saga(&self.operation_id).await {
             tracing::warn!("Failed to delete saga in finalize: {}", e);
             // Don't rollback - melt succeeded
         }
+
+        let mut operation = self.state_data.operation;
+        let change_amount = change
+            .as_ref()
+            .map(|c| Amount::try_sum(c.iter().map(|a| a.amount)).expect("Change cannot overflow"))
+            .unwrap_or_default();
+
+        operation.add_change(change_amount);
+
+        // Set payment details for melt operation
+        // payment_amount = the Lightning invoice amount
+        // payment_fee = actual fee paid (total_spent - invoice_amount)
+        let payment_fee = total_spent
+            .checked_sub(self.state_data.quote.amount)
+            .unwrap_or(Amount::ZERO);
+        operation.set_payment_details(self.state_data.quote.amount, payment_fee);
+
+        tx.add_completed_operation(&operation, &self.state_data.fee_breakdown.per_keyset)
+            .await?;
 
         tx.commit().await?;
 
@@ -915,11 +965,7 @@ impl MeltSaga<PaymentConfirmed> {
             self.state_data.quote.id,
             total_spent,
             inputs_amount,
-            change
-                .as_ref()
-                .map(|c| Amount::try_sum(c.iter().map(|a| a.amount))
-                    .expect("Change cannot overflow"))
-                .unwrap_or_default()
+            change_amount
         );
 
         self.compensations.lock().await.clear();
@@ -932,7 +978,6 @@ impl MeltSaga<PaymentConfirmed> {
 
         let response = MeltQuoteBolt11Response {
             amount: self.state_data.quote.amount,
-            paid: Some(true),
             payment_preimage,
             change,
             quote: self.state_data.quote.id,

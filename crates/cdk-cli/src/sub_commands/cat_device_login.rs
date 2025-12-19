@@ -16,10 +16,6 @@ use crate::token_storage;
 pub struct CatDeviceLoginSubCommand {
     /// Mint url
     mint_url: MintUrl,
-    /// Client ID for OIDC authentication
-    #[arg(default_value = "cashu-client")]
-    #[arg(long)]
-    client_id: String,
 }
 
 pub async fn cat_device_login(
@@ -39,8 +35,7 @@ pub async fn cat_device_login(
         .await?
         .ok_or(anyhow!("Mint info not found"))?;
 
-    let (access_token, refresh_token) =
-        get_device_code_token(&mint_info, &sub_command_args.client_id).await;
+    let (access_token, refresh_token) = get_device_code_token(&mint_info).await;
 
     // Save tokens to file in work directory
     if let Err(e) =
@@ -60,13 +55,20 @@ pub async fn cat_device_login(
     Ok(())
 }
 
-async fn get_device_code_token(mint_info: &MintInfo, client_id: &str) -> (String, String) {
+async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
     let openid_discovery = mint_info
         .nuts
         .nut21
         .clone()
         .expect("Nut21 defined")
         .openid_discovery;
+
+    let client_id = mint_info
+        .nuts
+        .nut21
+        .clone()
+        .expect("Nut21 defined")
+        .client_id;
 
     let oidc_client = OidcClient::new(openid_discovery, None);
 
@@ -83,7 +85,10 @@ async fn get_device_code_token(mint_info: &MintInfo, client_id: &str) -> (String
     let client = reqwest::Client::new();
     let device_code_response = client
         .post(device_auth_url)
-        .form(&[("client_id", client_id)])
+        .form(&[
+            ("client_id", client_id.clone().as_str()),
+            ("scope", "openid offline_access"),
+        ])
         .send()
         .await
         .expect("Failed to send device code request");
@@ -129,7 +134,7 @@ async fn get_device_code_token(mint_info: &MintInfo, client_id: &str) -> (String
             .form(&[
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                 ("device_code", device_code),
-                ("client_id", client_id),
+                ("client_id", client_id.clone().as_str()),
             ])
             .send()
             .await

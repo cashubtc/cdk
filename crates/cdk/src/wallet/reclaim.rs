@@ -45,6 +45,8 @@ impl Wallet {
             .await?
             .states;
 
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
         for (state, unspent) in proofs
             .into_iter()
             .zip(statuses)
@@ -54,23 +56,24 @@ impl Wallet {
                 acc
             })
         {
-            self.localstore
-                .update_proofs_state(
-                    unspent
-                        .iter()
-                        .map(|x| x.y())
-                        .collect::<Result<Vec<_>, _>>()?,
-                    state,
-                )
-                .await?;
+            tx.update_proofs_state(
+                unspent
+                    .iter()
+                    .map(|x| x.y())
+                    .collect::<Result<Vec<_>, _>>()?,
+                state,
+            )
+            .await?;
         }
+
+        tx.commit().await?;
 
         Ok(())
     }
 
     /// Perform an async task, which is assumed to be a foreign mint call that can fail. If fails,
     /// the proofs used in the request are synchronize with the mint and update it locally
-    #[inline(always)]
+    #[inline]
     pub(crate) fn try_proof_operation_or_reclaim<'a, F, R>(
         &'a self,
         inputs: Proofs,
@@ -102,13 +105,13 @@ impl Wallet {
 
                     if swap_reverted_proofs {
                         tracing::error!(
-                            "Attempting to swap exposed {} proofs to new proofs",
+                            "Checking proofs state for proofs {} used in failed op",
                             inputs.len()
                         );
                         for proofs in inputs.chunks(BATCH_PROOF_SIZE) {
                             let _ = self.sync_proofs_state(proofs.to_owned()).await.inspect_err(
                                 |err| {
-                                    tracing::warn!("Failed to swap exposed proofs ({})", err);
+                                    tracing::warn!("Failed to check exposed proofs ({})", err);
                                 },
                             );
                         }

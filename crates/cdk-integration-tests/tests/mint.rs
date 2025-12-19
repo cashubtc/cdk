@@ -76,7 +76,13 @@ async fn test_correct_keyset() {
         .expect("There is a keyset for unit");
     let old_keyset_info = mint.get_keyset_info(active).expect("There is keyset");
 
-    mint.rotate_keyset(CurrencyUnit::Sat, 32, 0).await.unwrap();
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        0,
+    )
+    .await
+    .unwrap();
 
     let active = mint.get_active_keysets();
 
@@ -88,7 +94,13 @@ async fn test_correct_keyset() {
 
     assert_ne!(keyset_info.id, old_keyset_info.id);
 
-    mint.rotate_keyset(CurrencyUnit::Sat, 32, 0).await.unwrap();
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        0,
+    )
+    .await
+    .unwrap();
 
     let active = mint.get_active_keysets();
 

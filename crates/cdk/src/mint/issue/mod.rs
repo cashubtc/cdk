@@ -498,7 +498,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn pay_mint_quote(
         &self,
-        tx: &mut Box<dyn database::MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
         mint_quote: &MintQuote,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
@@ -700,10 +700,11 @@ impl Mint {
             }
         }
 
-        let unit = unit.ok_or(Error::UnsupportedUnit).unwrap();
+        let unit = unit.ok_or(Error::UnsupportedUnit)?;
         ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
 
-        let operation = Operation::new_mint();
+        let amount_issued = mint_request.total_amount()?;
+        let operation = Operation::new_mint(amount_issued, mint_quote.payment_method.clone());
 
         tx.add_blinded_messages(Some(&mint_request.quote), &mint_request.outputs, &operation).await?;
 
@@ -718,11 +719,15 @@ impl Mint {
         )
             .await?;
 
-        let amount_issued = mint_request.total_amount()?;
 
         let total_issued = tx
             .increment_mint_quote_amount_issued(&mint_request.quote, amount_issued)
             .await?;
+
+
+        // Mint operations have no input fees (no proofs being spent)
+        let fee_by_keyset = std::collections::HashMap::new();
+        tx.add_completed_operation(&operation, &fee_by_keyset).await?;
 
         tx.commit().await?;
 

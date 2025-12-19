@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=src/proto/lnrpc.proto");
     println!("cargo:rerun-if-changed=src/proto/routerrpc.proto");

@@ -50,7 +50,7 @@ impl DatabasePool for SqliteConnectionManager {
             // Check if parent directory exists before attempting to open database
             let path_buf = PathBuf::from(path);
             if let Some(parent) = path_buf.parent() {
-                if !parent.exists() {
+                if !parent.to_str().unwrap_or_default().is_empty() && !parent.exists() {
                     return Err(pool::Error::Resource(rusqlite::Error::InvalidPath(
                         path_buf.clone(),
                     )));

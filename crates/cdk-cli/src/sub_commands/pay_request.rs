@@ -9,6 +9,9 @@ use clap::Args;
 #[derive(Args)]
 pub struct PayRequestSubCommand {
     payment_request: PaymentRequest,
+    /// Amount to pay (required for amountless requests)
+    #[arg(short, long)]
+    amount: Option<u64>,
 }
 
 pub async fn pay_request(
@@ -19,21 +22,23 @@ pub async fn pay_request(
 
     let unit = &payment_request.unit;
 
-    // Determine amount: use from request or prompt user
     let amount: Amount = match payment_request.amount {
         Some(amount) => amount,
-        None => {
-            println!("Enter the amount you would like to pay");
+        None => match sub_command_args.amount {
+            Some(amt) => amt.into(),
+            None => {
+                println!("Enter the amount you would like to pay");
 
-            let mut user_input = String::new();
-            let stdin = io::stdin();
-            io::stdout().flush().unwrap();
-            stdin.read_line(&mut user_input)?;
+                let mut user_input = String::new();
+                let stdin = io::stdin();
+                io::stdout().flush()?;
+                stdin.read_line(&mut user_input)?;
 
-            let amount: u64 = user_input.trim().parse()?;
+                let amount: u64 = user_input.trim().parse()?;
 
-            amount.into()
-        }
+                amount.into()
+            }
+        },
     };
 
     let request_mints = &payment_request.mints;
