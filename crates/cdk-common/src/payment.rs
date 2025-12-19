@@ -184,6 +184,11 @@ pub struct CustomIncomingPaymentOptions {
     pub amount: Amount,
     /// Optional expiry time as Unix timestamp in seconds
     pub unix_expiry: Option<u64>,
+    /// Extra payment-method-specific fields as JSON string
+    ///
+    /// These fields are passed through to the payment processor for
+    /// method-specific validation (e.g., ehash share).
+    pub extra_json: Option<String>,
 }
 
 /// Options for creating an incoming payment request
@@ -236,6 +241,11 @@ pub struct CustomOutgoingPaymentOptions {
     pub timeout_secs: Option<u64>,
     /// Melt options
     pub melt_options: Option<MeltOptions>,
+    /// Extra payment-method-specific fields as JSON string
+    ///
+    /// These fields are passed through to the payment processor for
+    /// method-specific validation.
+    pub extra_json: Option<String>,
 }
 
 /// Options for creating an outgoing payment
@@ -285,6 +295,7 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                     max_fee_amount: Some(melt_quote.fee_reserve),
                     timeout_secs: None,
                     melt_options: melt_quote.options,
+                    extra_json: None,
                 }),
             )),
         }
@@ -405,7 +416,14 @@ pub struct CreateIncomingPaymentResponse {
     pub request: String,
     /// Unix Expiry of Invoice
     pub expiry: Option<u64>,
+    /// Extra payment-method-specific fields
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data without nesting.
+    #[serde(flatten, default)]
+    pub extra_json: Option<serde_json::Value>,
 }
+
 
 /// Payment response
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]

@@ -628,6 +628,7 @@ impl MintPayment for Lnd {
                     request_lookup_id: payment_identifier,
                     request: bolt11.to_string(),
                     expiry: unix_expiry,
+                    extra_json: None,
                 })
             }
             IncomingPaymentOptions::Bolt12(_) => {

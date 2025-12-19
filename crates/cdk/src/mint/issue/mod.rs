@@ -308,11 +308,19 @@ impl Mint {
                     let mint_ttl = self.quote_ttl().await?.mint_ttl;
                     let quote_expiry = unix_time() + mint_ttl;
 
+                    // Convert extra serde_json::Value to JSON string if not null
+                    let extra_json = if request.extra.is_null() {
+                        None
+                    } else {
+                        Some(request.extra.to_string())
+                    };
+
                     let custom_options = CustomIncomingPaymentOptions {
                         method,
                         description: request.description,
                         amount: request.amount,
                         unix_expiry: Some(quote_expiry),
+                        extra_json,
                     };
 
                     IncomingPaymentOptions::Custom(Box::new(custom_options))
@@ -341,6 +349,7 @@ impl Mint {
                 unix_time(),
                 vec![],
                 vec![],
+                create_invoice_response.extra_json.try_into().unwrap(),
             );
 
             tracing::debug!(

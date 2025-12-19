@@ -356,6 +356,7 @@ impl Mint {
             request,
             unit,
             method,
+            extra,
         } = melt_request;
 
         let ln = self
@@ -369,6 +370,13 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
+        // Convert extra serde_json::Value to JSON string if not null
+        let extra_json = if extra.is_null() {
+            None
+        } else {
+            Some(extra.to_string())
+        };
+
         let custom_options =
             OutgoingPaymentOptions::Custom(Box::new(CustomOutgoingPaymentOptions {
                 method: method.to_string(),
@@ -376,6 +384,7 @@ impl Mint {
                 max_fee_amount: None,
                 timeout_secs: None,
                 melt_options: None,
+                extra_json,
             }));
 
         let payment_quote = ln

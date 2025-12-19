@@ -2387,6 +2387,7 @@ fn sql_row_to_mint_quote(
         column_as_number!(created_time),
         payments,
         issueances,
+        None
     ))
 }
 

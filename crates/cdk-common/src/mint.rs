@@ -319,6 +319,12 @@ pub struct MintQuote {
     /// Payment of payment(s) that filled quote
     #[serde(default)]
     pub issuance: Vec<Issuance>,
+    /// Extra payment-method-specific fields
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data without nesting.
+    #[serde(flatten, default)]
+    pub extra_json: Option<serde_json::Value>,
 }
 
 impl MintQuote {
@@ -338,6 +344,7 @@ impl MintQuote {
         created_time: u64,
         payments: Vec<IncomingPayment>,
         issuance: Vec<Issuance>,
+        extra_json: Option<serde_json::Value>,
     ) -> Self {
         let id = id.unwrap_or_else(QuoteId::new_uuid);
 
@@ -355,6 +362,7 @@ impl MintQuote {
             payment_method,
             payments,
             issuance,
+            extra_json,
         }
     }
 
@@ -678,6 +686,7 @@ impl TryFrom<crate::mint::MintQuote> for crate::nuts::MintQuoteCustomResponse<Qu
             pubkey: mint_quote.pubkey,
             amount: mint_quote.amount,
             unit: Some(mint_quote.unit),
+            extra: mint_quote.extra_json.unwrap_or_default(),
         })
     }
 }

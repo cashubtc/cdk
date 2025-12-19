@@ -125,13 +125,13 @@ impl MintPayment for PaymentProcessorClient {
         let mut inner = self.inner.clone();
 
         let proto_options = match options {
-            // todo -- add support for custom options in payment processor
             CdkIncomingPaymentOptions::Custom(opts) => IncomingPaymentOptions {
                 options: Some(super::incoming_payment_options::Options::Custom(
                     super::CustomIncomingPaymentOptions {
                         description: opts.description,
                         amount: Some(opts.amount.into()),
                         unix_expiry: opts.unix_expiry,
+                        extra_json: opts.extra_json.clone(),
                     },
                 )),
             },
@@ -210,6 +210,7 @@ impl MintPayment for PaymentProcessorClient {
                 unit: unit.to_string(),
                 options: proto_options.map(Into::into),
                 request_type: request_type.into(),
+                extra_json: None,
             }))
             .await
             .map_err(|err| {
@@ -237,6 +238,7 @@ impl MintPayment for PaymentProcessorClient {
                             max_fee_amount: opts.max_fee_amount.map(Into::into),
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),
+                            extra_json: opts.extra_json.clone(),
                         },
                     )),
                 }

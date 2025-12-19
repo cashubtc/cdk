@@ -207,6 +207,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     description: opts.description,
                     amount: opts.amount.unwrap_or(0).into(),
                     unix_expiry: opts.unix_expiry,
+                    extra_json: opts.extra_json,
                 }),
             ),
             incoming_payment_options::Options::Bolt11(opts) => {
@@ -279,6 +280,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         max_fee_amount: None,
                         timeout_secs: None,
                         melt_options: request.options.map(Into::into),
+                        extra_json: request.extra_json.clone(),
                     },
                 ))
             }
@@ -349,6 +351,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         max_fee_amount: opts.max_fee_amount.map(Into::into),
                         timeout_secs: opts.timeout_secs,
                         melt_options: opts.melt_options.map(Into::into),
+                        extra_json: opts.extra_json,
                     }),
                 );
 

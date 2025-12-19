@@ -109,6 +109,7 @@ impl From<CdkMakePaymentResponse> for MakePaymentResponse {
             status: QuoteState::from(value.status).into(),
             total_spent: value.total_spent.into(),
             unit: value.unit.to_string(),
+            extra_json: None,
         }
     }
 }
@@ -119,6 +120,7 @@ impl From<CreateIncomingPaymentResponse> for CreatePaymentResponse {
             request_identifier: Some(value.request_lookup_id.into()),
             request: value.request,
             expiry: value.expiry,
+            extra_json: None,
         }
     }
 }
@@ -134,10 +136,10 @@ impl TryFrom<CreatePaymentResponse> for CreateIncomingPaymentResponse {
             request_lookup_id: request_identifier.try_into()?,
             request: value.request,
             expiry: value.expiry,
+            extra_json: Some(serde_json::from_str(value.extra_json.unwrap_or_default().as_str()).unwrap_or_default()),
         })
     }
 }
-
 impl From<cdk_common::payment::PaymentQuoteResponse> for PaymentQuoteResponse {
     fn from(value: cdk_common::payment::PaymentQuoteResponse) -> Self {
         Self {
@@ -146,6 +148,7 @@ impl From<cdk_common::payment::PaymentQuoteResponse> for PaymentQuoteResponse {
             fee: value.fee.into(),
             unit: value.unit.to_string(),
             state: QuoteState::from(value.state).into(),
+            extra_json: None,
         }
     }
 }

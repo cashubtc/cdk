@@ -41,6 +41,9 @@ message CustomIncomingPaymentOptions {
   optional string description = 1;
   optional uint64 amount = 2;
   optional uint64 unix_expiry = 3;
+  // Extra payment-method-specific fields as JSON string
+  // These fields are flattened into the JSON representation on the client side
+  optional string extra_json = 4;
 }
 message Bolt12IncomingPaymentOptions {
   optional string description = 1;
@@ -95,6 +98,9 @@ message CreatePaymentResponse {
   PaymentIdentifier request_identifier = 1;
   string request = 2;
   optional uint64 expiry = 3;
+  // Extra payment-method-specific fields as JSON string
+  // For custom payment methods, these fields are flattened into the response
+  optional string extra_json = 4;
 }
 
 message Mpp {
@@ -117,6 +123,9 @@ message PaymentQuoteRequest {
   string unit = 2;
   optional MeltOptions options = 3;
   OutgoingPaymentRequestType request_type = 4;
+  // Extra payment-method-specific fields as JSON string
+  // For custom payment methods, these fields are passed through for validation
+  optional string extra_json = 5;
 }
 
 enum QuoteState {
@@ -135,6 +144,9 @@ message PaymentQuoteResponse {
   uint64 fee = 3;
   QuoteState state = 4;
   string unit = 5;
+  // Extra payment-method-specific fields as JSON string
+  // For custom payment methods, these fields are flattened into the response
+  optional string extra_json = 6;
 }
 
 message Bolt11OutgoingPaymentOptions {
@@ -155,6 +167,9 @@ message CustomOutgoingPaymentOptions {
   optional uint64 max_fee_amount = 2;
   optional uint64 timeout_secs = 3;
   optional MeltOptions melt_options = 5;
+  // Extra payment-method-specific fields as JSON string
+  // These fields are flattened into the JSON representation on the client side
+  optional string extra_json = 6;
 }
 
 enum OutgoingPaymentOptionsType {
@@ -183,6 +198,9 @@ message MakePaymentResponse {
   QuoteState status = 3;
   uint64 total_spent = 4;
   string unit = 5;
+  // Extra payment-method-specific fields as JSON string
+  // For custom payment methods, these fields are flattened into the response
+  optional string extra_json = 6;
 }
 
 message CheckIncomingPaymentRequest {

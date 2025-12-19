@@ -20,6 +20,7 @@ impl Wallet {
             method: method.to_string(),
             request: request.clone(),
             unit: self.unit.clone(),
+            extra: serde_json::Value::Null,
         };
         let quote_res = self.client.post_melt_custom_quote(quote_request).await?;
 

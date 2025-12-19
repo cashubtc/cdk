@@ -52,8 +52,8 @@ pub use nut04::{
     Settings as NUT04Settings,
 };
 pub use nut05::{
-    MeltMethodSettings, MeltQuoteCustomRequest, MeltRequest, QuoteState as MeltQuoteState,
-    Settings as NUT05Settings,
+    MeltMethodSettings, MeltQuoteCustomRequest, MeltQuoteCustomResponse, MeltRequest,
+    QuoteState as MeltQuoteState, Settings as NUT05Settings,
 };
 pub use nut06::{ContactInfo, MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};

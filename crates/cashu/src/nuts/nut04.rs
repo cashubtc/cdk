@@ -312,6 +312,9 @@ impl Settings {
 ///
 /// This is a generic request type that works for any custom payment method.
 /// The method name is provided in the URL path, not in the request body.
+///
+/// The `extra` field allows payment-method-specific fields to be included
+/// without being nested. When serialized, extra fields merge into the parent JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintQuoteCustomRequest {
@@ -325,11 +328,40 @@ pub struct MintQuoteCustomRequest {
     /// NUT-19 Pubkey
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pubkey: Option<PublicKey>,
+    /// Extra payment-method-specific fields
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data (e.g., ehash share).
+    /// This enables proper validation layering: the mint verifies well-defined
+    /// fields while passing extra through to the payment processor.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
+    #[cfg_attr(feature = "swagger", schema(value_type = Object, additional_properties = true))]
+    pub extra: serde_json::Value,
 }
 
 /// Custom payment method mint quote response
 ///
 /// This is a generic response type for custom payment methods.
+///
+/// The `extra` field allows payment-method-specific fields to be included
+/// without being nested. When serialized, extra fields merge into the parent JSON:
+/// ```json
+/// {
+///   "quote": "abc123",
+///   "state": "UNPAID",
+///   "amount": 1000,
+///   "paypal_link": "https://paypal.me/merchant",
+///   "paypal_email": "merchant@example.com"
+/// }
+/// ```
+///
+/// This separation enables proper validation layering: the mint verifies
+/// well-defined fields (amount, unit, state, etc.) while passing extra through
+/// to the gRPC payment processor for method-specific validation.
+///
+/// It also provides a clean upgrade path: when a payment method becomes speced,
+/// its fields can be promoted from `extra` to well-defined struct fields without
+/// breaking existing clients (e.g., bolt12's `amount_paid` and `amount_issued`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + for<'a> Deserialize<'a>")]
@@ -349,6 +381,13 @@ pub struct MintQuoteCustomResponse<Q> {
     /// NUT-19 Pubkey
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pubkey: Option<PublicKey>,
+    /// Extra payment-method-specific fields
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data without nesting.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
+    #[cfg_attr(feature = "swagger", schema(value_type = Object, additional_properties = true))]
+    pub extra: serde_json::Value,
 }
 
 #[cfg(feature = "mint")]
@@ -363,6 +402,7 @@ impl<Q: ToString> MintQuoteCustomResponse<Q> {
             unit: self.unit.clone(),
             expiry: self.expiry,
             pubkey: self.pubkey,
+            extra: self.extra.clone(),
         }
     }
 }
@@ -378,6 +418,7 @@ impl From<MintQuoteCustomResponse<QuoteId>> for MintQuoteCustomResponse<String> 
             expiry: value.expiry,
             state: value.state,
             pubkey: value.pubkey,
+            extra: value.extra,
         }
     }
 }

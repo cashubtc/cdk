@@ -144,6 +144,54 @@ impl From<cdk::nuts::MintQuoteBolt11Response<String>> for MintQuoteBolt11Respons
     }
 }
 
+/// FFI-compatible MintQuoteCustomResponse
+///
+/// This is a unified response type for custom payment methods that includes
+/// extra fields for method-specific data (e.g., ehash share).
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct MintQuoteCustomResponse {
+    /// Quote ID
+    pub quote: String,
+    /// Request string
+    pub request: String,
+    /// State of the quote
+    pub state: QuoteState,
+    /// Expiry timestamp (optional)
+    pub expiry: Option<u64>,
+    /// Amount (optional)
+    pub amount: Option<Amount>,
+    /// Unit (optional)
+    pub unit: Option<CurrencyUnit>,
+    /// Pubkey (optional)
+    pub pubkey: Option<String>,
+    /// Extra payment-method-specific fields as JSON string
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data without nesting.
+    pub extra: Option<String>,
+}
+
+impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomResponse {
+    fn from(response: cdk::nuts::MintQuoteCustomResponse<String>) -> Self {
+        let extra = if response.extra.is_null() {
+            None
+        } else {
+            Some(response.extra.to_string())
+        };
+
+        Self {
+            quote: response.quote,
+            request: response.request,
+            state: response.state.into(),
+            expiry: response.expiry,
+            amount: response.amount.map(Into::into),
+            unit: response.unit.map(Into::into),
+            pubkey: response.pubkey.map(|p| p.to_string()),
+            extra,
+        }
+    }
+}
+
 /// FFI-compatible MeltQuoteBolt11Response
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltQuoteBolt11Response {
@@ -179,6 +227,58 @@ impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Respons
         }
     }
 }
+
+/// FFI-compatible MeltQuoteCustomResponse
+///
+/// This is a unified response type for custom payment methods that includes
+/// extra fields for method-specific data.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct MeltQuoteCustomResponse {
+    /// Quote ID
+    pub quote: String,
+    /// Amount
+    pub amount: Amount,
+    /// Fee reserve
+    pub fee_reserve: Amount,
+    /// State of the quote
+    pub state: QuoteState,
+    /// Expiry timestamp
+    pub expiry: u64,
+    /// Payment preimage (optional)
+    pub payment_preimage: Option<String>,
+    /// Request string (optional)
+    pub request: Option<String>,
+    /// Unit (optional)
+    pub unit: Option<CurrencyUnit>,
+    /// Extra payment-method-specific fields as JSON string
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data without nesting.
+    pub extra: Option<String>,
+}
+
+impl From<cdk::nuts::MeltQuoteCustomResponse<String>> for MeltQuoteCustomResponse {
+    fn from(response: cdk::nuts::MeltQuoteCustomResponse<String>) -> Self {
+        let extra = if response.extra.is_null() {
+            None
+        } else {
+            Some(response.extra.to_string())
+        };
+
+        Self {
+            quote: response.quote,
+            amount: response.amount.into(),
+            fee_reserve: response.fee_reserve.into(),
+            state: response.state.into(),
+            expiry: response.expiry,
+            payment_preimage: response.payment_preimage,
+            request: response.request,
+            unit: response.unit.map(Into::into),
+            extra,
+        }
+    }
+}
+
 /// FFI-compatible PaymentMethod
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum PaymentMethod {

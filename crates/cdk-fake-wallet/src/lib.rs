@@ -778,6 +778,7 @@ impl MintPayment for FakeWallet {
             request_lookup_id: payment_hash,
             request,
             expiry,
+            extra_json: None, 
         })
     }
 

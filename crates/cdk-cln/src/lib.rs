@@ -590,6 +590,7 @@ impl MintPayment for Cln {
                     request_lookup_id: PaymentIdentifier::PaymentHash(*payment_hash.as_ref()),
                     request: request.to_string(),
                     expiry,
+                    extra_json: None,
                 })
             }
             IncomingPaymentOptions::Bolt12(bolt12_options) => {
@@ -640,6 +641,7 @@ impl MintPayment for Cln {
                     ),
                     request: offer_response.bolt12,
                     expiry: unix_expiry,
+                    extra_json: None,
                 })
             }
         }

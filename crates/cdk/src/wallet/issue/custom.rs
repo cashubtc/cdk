@@ -59,6 +59,7 @@ impl Wallet {
             unit: self.unit.clone(),
             description,
             pubkey: Some(secret_key.public_key()),
+            extra: serde_json::Value::Null,
         };
 
         let quote_res = self
