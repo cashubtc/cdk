@@ -237,9 +237,7 @@ where
                 .wait_timeout(resources, timeout)
                 .map_err(|_| Error::Poison)
                 .and_then(|(lock, timeout_result)| {
-                    #[allow(unreachable_code)]
                     if timeout_result.timed_out() {
-                        panic!("Debug for a backtrace");
                         tracing::warn!(
                             "Timeout waiting for the resource (pool size: {}). Waited {} ms",
                             self.max_size,
