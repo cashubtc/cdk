@@ -261,20 +261,34 @@ impl Wallet {
             .await?;
         Ok(quote.into())
     }
-    /// Get a quote for a bolt12 mint
+    /// Get a mint quote using a unified interface for any payment method
+    ///
+    /// This method supports bolt11, bolt12, and custom payment methods.
+    /// For custom methods, you can pass extra JSON data that will be forwarded
+    /// to the payment processor.
+    ///
+    /// # Arguments
+    /// * `amount` - Optional amount to mint (required for bolt11)
+    /// * `method` - Payment method to use (bolt11, bolt12, or custom)
+    /// * `request` - Payment request string (method-specific)
+    /// * `description` - Optional description for the quote
+    /// * `extra` - Optional JSON string with extra payment-method-specific fields (for custom methods)
     pub async fn mint_quote_unified(
         &self,
         amount: Option<Amount>,
-        request: Option<String>,
+        method: PaymentMethod,
+        request: String,
         description: Option<String>,
+        extra: Option<String>,
     ) -> Result<MintQuote, FfiError> {
         let quote = self
             .inner
             .mint_quote_unified(
                 amount.map(Into::into),
-                cdk::nuts::PaymentMethod::Custom("stripe".to_string()),
-                request.unwrap(),
+                method.into(),
+                request,
                 description,
+                extra,
             )
             .await?;
         Ok(quote.into())
@@ -333,20 +347,32 @@ impl Wallet {
         let quote = self.inner.melt_bolt12_quote(request, cdk_options).await?;
         Ok(quote.into())
     }
-    /// Get a quote for a bolt12 melt
+    /// Get a melt quote using a unified interface for any payment method
+    ///
+    /// This method supports bolt11, bolt12, and custom payment methods.
+    /// For custom methods, you can pass extra JSON data that will be forwarded
+    /// to the payment processor.
+    ///
+    /// # Arguments
+    /// * `method` - Payment method to use (bolt11, bolt12, or custom)
+    /// * `request` - Payment request string (invoice, offer, or custom format)
+    /// * `options` - Optional melt options (MPP, amountless, etc.)
+    /// * `extra` - Optional JSON string with extra payment-method-specific fields (for custom methods)
     pub async fn melt_quote_unified(
         &self,
+        method: PaymentMethod,
         request: String,
         options: Option<MeltOptions>,
+        extra: Option<String>,
     ) -> Result<MeltQuote, FfiError> {
+        // Note: The extra field is used for custom payment methods to pass
+        // method-specific data. Currently this needs to be handled at the HTTP client level.
+        let _ = extra; // TODO: Pass extra to the underlying request when full custom method support is added
+
         let cdk_options = options.map(Into::into);
         let quote = self
             .inner
-            .melt_quote_unified(
-                cdk::nuts::PaymentMethod::Custom("stripe".to_string()),
-                request,
-                cdk_options,
-            )
+            .melt_quote_unified(method.into(), request, cdk_options)
             .await?;
         Ok(quote.into())
     }

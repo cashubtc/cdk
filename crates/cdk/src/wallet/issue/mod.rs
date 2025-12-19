@@ -19,6 +19,7 @@ impl Wallet {
         method: PaymentMethod,
         request: String,
         description: Option<String>,
+        extra: Option<String>,
     ) -> Result<MintQuote, Error> {
         match method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
@@ -31,7 +32,7 @@ impl Wallet {
                 self.mint_bolt12_quote(amount, description).await
             }
             PaymentMethod::Custom(custom_method) => {
-                self.mint_quote_custom(amount, &custom_method, request, description)
+                self.mint_quote_custom(amount, &custom_method, request, description, extra)
                     .await
             }
         }

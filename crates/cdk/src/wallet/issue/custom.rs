@@ -25,6 +25,7 @@ impl Wallet {
         method: &str,
         request: String,
         description: Option<String>,
+        extra: Option<String>,
     ) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
         let unit = &self.unit;
@@ -59,7 +60,7 @@ impl Wallet {
             unit: self.unit.clone(),
             description,
             pubkey: Some(secret_key.public_key()),
-            extra: serde_json::Value::Null,
+            extra: serde_json::from_str(&extra.unwrap_or_default())?,
         };
 
         let quote_res = self
@@ -77,9 +78,10 @@ impl Wallet {
             quote_res.expiry.unwrap_or(0),
             Some(secret_key),
         );
+        let mut tx = self.localstore.begin_db_transaction().await?;
 
-        self.localstore.add_mint_quote(quote.clone()).await?;
-
+        tx.add_mint_quote(quote.clone()).await?;
+        tx.commit().await?;
         Ok(quote)
     }
 
@@ -93,6 +95,7 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
         self.refresh_keysets().await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
 
         let quote_info = self
             .localstore
@@ -144,8 +147,7 @@ impl Wallet {
                 );
 
                 // Atomically get the counter range we need
-                let new_counter = self
-                    .localstore
+                let new_counter = tx
                     .increment_keyset_counter(&active_keyset_id, num_secrets)
                     .await?;
 
@@ -196,7 +198,7 @@ impl Wallet {
         )?;
 
         // Remove filled quote from store
-        self.localstore.remove_mint_quote(&quote_info.id).await?;
+        tx.remove_mint_quote(&quote_info.id).await?;
 
         let proof_infos = proofs
             .iter()
@@ -211,26 +213,26 @@ impl Wallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        self.localstore.update_proofs(proof_infos, vec![]).await?;
+        tx.update_proofs(proof_infos, vec![]);
 
         // Add transaction to store
-        self.localstore
-            .add_transaction(Transaction {
-                mint_url: self.mint_url.clone(),
-                direction: TransactionDirection::Incoming,
-                amount: proofs.total_amount()?,
-                fee: Amount::ZERO,
-                unit: self.unit.clone(),
-                ys: proofs.ys()?,
-                timestamp: unix_time,
-                memo: None,
-                metadata: HashMap::new(),
-                quote_id: Some(quote_id.to_string()),
-                payment_request: Some(quote_info.request),
-                payment_proof: None,
-            })
-            .await?;
-
+        tx.add_transaction(Transaction {
+            mint_url: self.mint_url.clone(),
+            direction: TransactionDirection::Incoming,
+            amount: proofs.total_amount()?,
+            fee: Amount::ZERO,
+            unit: self.unit.clone(),
+            ys: proofs.ys()?,
+            timestamp: unix_time,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: Some(quote_id.to_string()),
+            payment_request: Some(quote_info.request),
+            payment_proof: None,
+            payment_method: Some(quote_info.payment_method),
+        })
+        .await?;
+        tx.commit().await?;
         Ok(proofs)
     }
 }
