@@ -10,6 +10,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use cashu::nut00::KnownMethod;
 use cashu::secret::Secret;
 use cashu::{Amount, CurrencyUnit, PaymentMethod, SecretKey};
 
@@ -106,7 +107,7 @@ fn test_mint_quote(mint_url: MintUrl) -> MintQuote {
     MintQuote::new(
         unique_id(),
         mint_url,
-        PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         Some(Amount::from(1000)),
         CurrencyUnit::Sat,
         "lnbc1000...".to_string(),
@@ -126,7 +127,7 @@ fn test_melt_quote() -> MeltQuote {
         state: cashu::MeltQuoteState::Unpaid,
         expiry: 9999999999,
         payment_preimage: None,
-        payment_method: PaymentMethod::Bolt11,
+        payment_method: cashu::PaymentMethod::Known(KnownMethod::Bolt11),
     }
 }
 
