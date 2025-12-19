@@ -204,13 +204,18 @@ impl MintPayment for PaymentProcessorClient {
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(opts) => opts.melt_options,
         };
 
+        let extra_json = match &options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.extra_json.clone(),
+            _ => None,
+        };
+
         let response = inner
             .get_payment_quote(Request::new(PaymentQuoteRequest {
                 request: proto_request,
                 unit: unit.to_string(),
                 options: proto_options.map(Into::into),
                 request_type: request_type.into(),
-                extra_json: None,
+                extra_json,
             }))
             .await
             .map_err(|err| {
