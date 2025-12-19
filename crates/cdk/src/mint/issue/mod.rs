@@ -349,7 +349,7 @@ impl Mint {
                 unix_time(),
                 vec![],
                 vec![],
-                create_invoice_response.extra_json.try_into().unwrap(),
+                Some(create_invoice_response.extra_json.unwrap_or_default()),
             );
 
             tracing::debug!(
