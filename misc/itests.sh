@@ -51,6 +51,7 @@ cleanup() {
 trap cleanup EXIT
 
 export CDK_TEST_REGTEST=1
+export RUST_BACKTRACE=full
 
 # Create a temporary directory
 export CDK_ITESTS_DIR=$(mktemp -d)
