@@ -17,15 +17,17 @@ use web_time::{Duration, Instant};
 use super::transport::Transport;
 use super::{Error, MintConnector};
 use crate::mint_url::MintUrl;
-use crate::nuts::nut00::KnownMethod;
+#[cfg(feature = "auth")]
+use crate::nuts::nut00::{KnownMethod, PaymentMethod};
+
 #[cfg(feature = "auth")]
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteCustomRequest, MeltRequest, MintInfo,
     MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteCustomRequest,
-    MintQuoteCustomResponse, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    MintQuoteCustomResponse, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
+    SwapRequest, SwapResponse,
 };
 #[cfg(feature = "auth")]
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
