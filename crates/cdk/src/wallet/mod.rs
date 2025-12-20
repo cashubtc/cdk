@@ -458,6 +458,8 @@ impl Wallet {
             let keys = self.load_keyset_keys(keyset.id).await?;
             let mut empty_batch = 0;
             let mut start_counter = 0;
+            // Track the highest counter value that had a signature
+            let mut highest_counter: Option<u32> = None;
 
             while empty_batch.lt(&3) {
                 let premint_secrets = PreMintSecrets::restore_batch(
@@ -487,11 +489,22 @@ impl Wallet {
                     continue;
                 }
 
-                let premint_secrets: Vec<_> = premint_secrets
+                // Enumerate secrets to track their original index (which corresponds to counter value)
+                let matched_secrets: Vec<_> = premint_secrets
                     .secrets
                     .iter()
-                    .filter(|p| response.outputs.contains(&p.blinded_message))
+                    .enumerate()
+                    .filter(|(_, p)| response.outputs.contains(&p.blinded_message))
                     .collect();
+
+                // Update highest counter based on matched indices
+                if let Some(&(max_idx, _)) = matched_secrets.last() {
+                    let counter_value = start_counter + max_idx as u32;
+                    highest_counter =
+                        Some(highest_counter.map_or(counter_value, |c| c.max(counter_value)));
+                }
+
+                let premint_secrets: Vec<_> = matched_secrets.into_iter().map(|(_, p)| p).collect();
 
                 // the response outputs and premint secrets should be the same after filtering
                 // blinded messages the mint did not have signatures for
@@ -505,11 +518,6 @@ impl Wallet {
                 )?;
 
                 tracing::debug!("Restored {} proofs", proofs.len());
-
-                let mut tx = self.localstore.begin_db_transaction().await?;
-                tx.increment_keyset_counter(&keyset.id, proofs.len() as u32)
-                    .await?;
-                tx.commit().await?;
 
                 let states = self.check_proofs_spent(proofs.clone()).await?;
 
@@ -541,6 +549,19 @@ impl Wallet {
 
                 empty_batch = 0;
                 start_counter += 100;
+            }
+
+            // Set counter to highest found + 1 to avoid reusing any counter values
+            // that already have signatures at the mint
+            if let Some(highest) = highest_counter {
+                let mut tx = self.localstore.begin_db_transaction().await?;
+                tx.increment_keyset_counter(&keyset.id, highest + 1).await?;
+                tx.commit().await?;
+                tracing::debug!(
+                    "Set keyset {} counter to {} after restore",
+                    keyset.id,
+                    highest + 1
+                );
             }
         }
         Ok(restored_value)
