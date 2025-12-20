@@ -325,6 +325,7 @@
           "cdk-mint-rpc" = "-p cdk-mint-rpc";
           "cdk-prometheus" = "-p cdk-prometheus";
           "cdk-ffi" = "-p cdk-ffi";
+          "cdk-npubcash" = "-p cdk-npubcash";
 
           # Binaries: cdk-cli
           "bin-cdk-cli" = "--bin cdk-cli";
