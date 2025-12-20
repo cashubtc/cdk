@@ -255,9 +255,6 @@ macro_rules! mint_db_test {
             get_blind_signatures_in_transaction,
             reject_duplicate_payment_ids,
             remove_spent_proofs_should_fail,
-            modify_mint_quote_without_loading_fails,
-            increment_amount_issued_without_loading_fails,
-            modify_mint_quote_after_loading_succeeds
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

@@ -1,7 +1,6 @@
 //! CDK Database
 
 mod kvstore;
-pub mod locked_row;
 
 #[cfg(feature = "mint")]
 pub mod mint;
@@ -32,8 +31,6 @@ pub use wallet::{
     Database as WalletDatabase, DatabaseTransaction as WalletDatabaseTransaction,
     DynWalletDatabaseTransaction,
 };
-
-use crate::database::locked_row::RowId;
 
 /// Type alias for dynamic Wallet Database
 #[cfg(feature = "wallet")]
@@ -133,10 +130,6 @@ pub enum Error {
     /// Database Error
     #[error(transparent)]
     Database(Box<dyn std::error::Error + Send + Sync>),
-
-    /// Misusage of update
-    #[error("Attempting to update record without previously locking ita {0:?}")]
-    UpdatingUnlockedRecord(RowId),
 
     /// Duplicate entry
     #[error("Duplicate entry")]

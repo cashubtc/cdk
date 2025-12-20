@@ -7,13 +7,16 @@
 //! By requiring explicit locking before updates, this prevents race conditions and ensures
 //! data consistency when multiple operations might attempt to modify the same resources
 //! concurrently.
+//!
+//! This module is only available when the `testing` feature is enabled and is intended
+//! for use in test environments to validate proper row locking behavior.
+
+#![allow(clippy::panic)]
 
 use std::collections::HashSet;
 
-use cashu::quote_id::QuoteId;
-use cashu::PublicKey;
-
-use crate::database::Error;
+use cdk_common::nuts::PublicKey;
+use cdk_common::quote_id::QuoteId;
 
 /// Identifies a database row that can be locked.
 ///
@@ -28,18 +31,21 @@ pub enum RowId {
 }
 
 impl From<PublicKey> for RowId {
+    #[inline(always)]
     fn from(value: PublicKey) -> Self {
         RowId::Proof(value)
     }
 }
 
 impl From<&PublicKey> for RowId {
+    #[inline(always)]
     fn from(value: &PublicKey) -> Self {
         RowId::Proof(*value)
     }
 }
 
 impl From<&QuoteId> for RowId {
+    #[inline(always)]
     fn from(value: &QuoteId) -> Self {
         RowId::Quote(value.to_owned())
     }
@@ -64,6 +70,7 @@ impl LockedRows {
     ///
     /// After locking, any subsequent calls to [`is_locked`](Self::is_locked) for this
     /// row will succeed. This should be called when reading a row that will be modified.
+    #[inline(always)]
     pub fn lock<T>(&mut self, record_id: T)
     where
         T: Into<RowId>,
@@ -75,6 +82,7 @@ impl LockedRows {
     ///
     /// This is a convenience method equivalent to calling [`lock`](Self::lock)
     /// for each item in the collection.
+    #[inline(always)]
     pub fn lock_many<T>(&mut self, records_id: Vec<T>)
     where
         T: Into<RowId>,
@@ -86,39 +94,43 @@ impl LockedRows {
 
     /// Verifies that all specified rows are currently locked.
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// Returns [`Error::UpdatingUnlockedRecord`] if any of the specified rows
-    /// have not been locked. This prevents modifications to rows that weren't
-    /// properly read first.
-    pub fn is_locked_many<T>(&self, records_id: Vec<T>) -> Result<(), Error>
+    /// Panics if any of the specified rows have not been locked. This is intentional
+    /// as this module is only used in tests to validate proper row locking behavior.
+    #[inline(always)]
+    pub fn is_locked_many<T>(&self, records_id: Vec<T>)
     where
         T: Into<RowId>,
     {
-        records_id.into_iter().try_for_each(|resource_id| {
+        for resource_id in records_id {
             let id = resource_id.into();
-            self.inner
-                .contains(&id)
-                .then_some(())
-                .ok_or(Error::UpdatingUnlockedRecord(id))
-        })
+            if !self.inner.contains(&id) {
+                panic!(
+                    "Attempting to update record without previously locking it: {:?}",
+                    id
+                );
+            }
+        }
     }
 
     /// Verifies that a single row is currently locked.
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// Returns [`Error::UpdatingUnlockedRecord`] if the specified row has not
-    /// been locked. This prevents modifications to rows that weren't properly
-    /// read first.
-    pub fn is_locked<T>(&self, resource_id: T) -> Result<(), Error>
+    /// Panics if the specified row has not been locked. This is intentional
+    /// as this module is only used in tests to validate proper row locking behavior.
+    #[inline(always)]
+    pub fn is_locked<T>(&self, resource_id: T)
     where
         T: Into<RowId>,
     {
         let id = resource_id.into();
-        self.inner
-            .contains(&id)
-            .then_some(())
-            .ok_or(Error::UpdatingUnlockedRecord(id))
+        if !self.inner.contains(&id) {
+            panic!(
+                "Attempting to update record without previously locking it: {:?}",
+                id
+            );
+        }
     }
 }
