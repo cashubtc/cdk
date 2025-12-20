@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::database::locked_row::LockedRows;
 use cdk_common::database::mint::{
     CompletedOperationsDatabase, CompletedOperationsTransaction, SagaDatabase, SagaTransaction,
 };
@@ -79,7 +78,61 @@ where
     RM: DatabasePool + 'static,
 {
     inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
-    locked_records: LockedRows,
+    #[cfg(feature = "testing")]
+    locked_records: crate::LockedRows,
+}
+
+impl<RM> SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    /// Lock a record for modification (only active when testing feature is enabled)
+    #[cfg(feature = "testing")]
+    #[inline(always)]
+    fn lock_record<T: Into<crate::RowId>>(&mut self, record_id: T) {
+        self.locked_records.lock(record_id);
+    }
+
+    /// Lock a record for modification (no-op when testing feature is disabled)
+    #[cfg(not(feature = "testing"))]
+    #[inline(always)]
+    fn lock_record<T>(&mut self, _record_id: T) {}
+
+    /// Lock multiple records for modification (only active when testing feature is enabled)
+    #[cfg(feature = "testing")]
+    #[inline(always)]
+    fn lock_records<T: Into<crate::RowId>>(&mut self, records: Vec<T>) {
+        self.locked_records.lock_many(records);
+    }
+
+    /// Lock multiple records for modification (no-op when testing feature is disabled)
+    #[cfg(not(feature = "testing"))]
+    #[inline(always)]
+    fn lock_records<T>(&mut self, _records: Vec<T>) {}
+
+    /// Verify records are locked (only active when testing feature is enabled)
+    #[cfg(feature = "testing")]
+    #[inline(always)]
+    fn verify_locked<T: Into<crate::RowId>>(&self, record_id: T) {
+        self.locked_records.is_locked(record_id);
+    }
+
+    /// Verify records are locked (no-op when testing feature is disabled)
+    #[cfg(not(feature = "testing"))]
+    #[inline(always)]
+    fn verify_locked<T>(&self, _record_id: T) {}
+
+    /// Verify multiple records are locked (only active when testing feature is enabled)
+    #[cfg(feature = "testing")]
+    #[inline(always)]
+    fn verify_locked_many<T: Into<crate::RowId>>(&self, records: Vec<T>) {
+        self.locked_records.is_locked_many(records);
+    }
+
+    /// Verify multiple records are locked (no-op when testing feature is disabled)
+    #[cfg(not(feature = "testing"))]
+    #[inline(always)]
+    fn verify_locked_many<T>(&self, _records: Vec<T>) {}
 }
 
 impl<RM> SQLMintDatabase<RM>
@@ -144,7 +197,7 @@ where
 
         for proof in proofs {
             let y = proof.y()?;
-            self.locked_records.lock(y);
+            self.lock_record(y);
 
             query(
                 r#"
@@ -180,7 +233,7 @@ where
         ys: &[PublicKey],
         new_state: State,
     ) -> Result<Vec<Option<State>>, Self::Err> {
-        self.locked_records.is_locked_many(ys.to_owned())?;
+        self.verify_locked_many(ys.to_owned());
 
         let mut current_states = get_current_states(&self.inner, ys, true).await?;
 
@@ -302,7 +355,7 @@ where
         .into_iter()
         .map(|row| {
             sql_row_to_proof(row).inspect(|row| {
-                let _ = row.y().map(|c| self.locked_records.lock(c));
+                let _ = row.y().map(|c| self.lock_record(c));
             })
         })
         .collect::<Result<Vec<Proof>, _>>()?
@@ -317,8 +370,7 @@ where
             get_current_states(&self.inner, ys, true)
                 .await
                 .inspect(|public_keys| {
-                    self.locked_records
-                        .lock_many(public_keys.keys().collect::<Vec<_>>());
+                    self.lock_records(public_keys.keys().collect::<Vec<_>>());
                 })?;
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
@@ -717,6 +769,7 @@ where
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
+            #[cfg(feature = "testing")]
             locked_records: Default::default(),
         };
 
@@ -1007,7 +1060,7 @@ where
         amount_paid: Amount,
         payment_id: String,
     ) -> Result<mint::MintQuote, Self::Err> {
-        self.locked_records.is_locked(&quote.id)?;
+        self.verify_locked(&quote.id);
         if amount_paid == Amount::ZERO {
             tracing::warn!("Amount payments of zero amount should not be recorded.");
             return Err(Error::Duplicate);
@@ -1087,7 +1140,7 @@ where
         mut quote: mint::MintQuote,
         amount_issued: Amount,
     ) -> Result<mint::MintQuote, Self::Err> {
-        self.locked_records.is_locked(&quote.id)?;
+        self.verify_locked(&quote.id);
 
         let new_amount_issued = quote
             .increment_amount_issued(amount_issued)
@@ -1155,7 +1208,7 @@ VALUES (:quote_id, :amount, :timestamp);
         .execute(&self.inner)
         .await?;
 
-        self.locked_records.lock(&quote.id);
+        self.lock_record(&quote.id);
 
         Ok(quote)
     }
@@ -1204,7 +1257,7 @@ VALUES (:quote_id, :amount, :timestamp);
         .execute(&self.inner)
         .await?;
 
-        self.locked_records.lock(&quote.id);
+        self.lock_record(&quote.id);
 
         Ok(())
     }
@@ -1342,7 +1395,7 @@ VALUES (:quote_id, :amount, :timestamp);
             .await
             .inspect(|quote| {
                 quote.as_ref().inspect(|mint_quote| {
-                    self.locked_records.lock(&mint_quote.id);
+                    self.lock_record(&mint_quote.id);
                 });
             })
     }
@@ -1355,7 +1408,7 @@ VALUES (:quote_id, :amount, :timestamp);
             .await
             .inspect(|quote| {
                 quote.as_ref().inspect(|melt_quote| {
-                    self.locked_records.lock(&melt_quote.id);
+                    self.lock_record(&melt_quote.id);
                 });
             })
     }
@@ -1368,7 +1421,7 @@ VALUES (:quote_id, :amount, :timestamp);
             .await
             .inspect(|quote| {
                 quote.as_ref().inspect(|mint_quote| {
-                    self.locked_records.lock(&mint_quote.id);
+                    self.lock_record(&mint_quote.id);
                 });
             })
     }
@@ -1381,7 +1434,7 @@ VALUES (:quote_id, :amount, :timestamp);
             .await
             .inspect(|quote| {
                 quote.as_ref().inspect(|mint_quote| {
-                    self.locked_records.lock(&mint_quote.id);
+                    self.lock_record(&mint_quote.id);
                 });
             })
     }
@@ -2095,6 +2148,7 @@ where
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
+            #[cfg(feature = "testing")]
             locked_records: Default::default(),
         }))
     }
@@ -2401,6 +2455,7 @@ where
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
+            #[cfg(feature = "testing")]
             locked_records: Default::default(),
         };
 
