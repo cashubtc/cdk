@@ -10,6 +10,7 @@ use std::time::Duration;
 use bip39::Mnemonic;
 use cdk_common::amount::SplitTarget;
 use cdk_common::dhke::construct_proofs;
+use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::{BlindedMessage, CurrencyUnit, Id, PaymentMethod, PreMintSecrets, Proofs};
 use cdk_common::{
     Amount, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState, MintRequest,
@@ -93,7 +94,7 @@ pub async fn create_test_mint() -> Result<Mint, Error> {
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::from("bolt11"),
+            PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 10_000),
             Arc::new(ln_fake_backend),
         )

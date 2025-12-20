@@ -3,6 +3,7 @@ use std::str::FromStr;
 use cdk_common::amount::amount_for_offer;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
+use cdk_common::nut00::KnownMethod;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, CustomOutgoingPaymentOptions,
@@ -149,7 +150,7 @@ impl Mint {
             .payment_processors
             .get(&PaymentProcessorKey::new(
                 unit.clone(),
-                PaymentMethod::from("bolt11"),
+                PaymentMethod::Known(KnownMethod::Bolt11),
             ))
             .ok_or_else(|| {
                 tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
@@ -194,7 +195,7 @@ impl Mint {
         self.check_melt_request_acceptable(
             payment_quote.amount,
             unit.clone(),
-            PaymentMethod::from("bolt11"),
+            PaymentMethod::Known(KnownMethod::Bolt11),
             request.to_string(),
             *options,
         )
@@ -212,7 +213,7 @@ impl Mint {
             unix_time() + melt_ttl,
             payment_quote.request_lookup_id.clone(),
             *options,
-            PaymentMethod::from("bolt11"),
+            PaymentMethod::Known(KnownMethod::Bolt11),
         );
 
         tracing::debug!(
@@ -259,7 +260,7 @@ impl Mint {
             .payment_processors
             .get(&PaymentProcessorKey::new(
                 unit.clone(),
-                PaymentMethod::from("bolt12"),
+                PaymentMethod::Known(KnownMethod::Bolt12),
             ))
             .ok_or_else(|| {
                 tracing::info!("Could not get ln backend for {}, bolt12 ", unit);
@@ -300,7 +301,7 @@ impl Mint {
         self.check_melt_request_acceptable(
             payment_quote.amount,
             unit.clone(),
-            PaymentMethod::from("bolt12"),
+            PaymentMethod::Known(KnownMethod::Bolt12),
             request.clone(),
             *options,
         )
@@ -318,7 +319,7 @@ impl Mint {
             unix_time() + self.quote_ttl().await?.melt_ttl,
             payment_quote.request_lookup_id.clone(),
             *options,
-            PaymentMethod::from("bolt12"),
+            PaymentMethod::Known(KnownMethod::Bolt12),
         );
 
         tracing::debug!(

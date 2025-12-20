@@ -506,6 +506,7 @@ impl ContactInfo {
 mod tests {
 
     use super::*;
+    use crate::nut00::KnownMethod;
     use crate::nut04::MintMethodOptions;
 
     #[test]
@@ -670,7 +671,7 @@ mod tests {
             .nut04
             .get_settings(
                 &crate::CurrencyUnit::Sat,
-                &crate::PaymentMethod::from("bolt11"),
+                &crate::PaymentMethod::Known(KnownMethod::Bolt11),
             )
             .unwrap();
 
@@ -700,7 +701,7 @@ mod tests {
         let mint_info_with_nut15 = MintInfo {
             name: Some("Test Mint".to_string()),
             nuts: Nuts::default().nut15(vec![MppMethodSettings {
-                method: crate::PaymentMethod::from("bolt11"),
+                method: crate::PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: crate::CurrencyUnit::Sat,
             }]),
             ..Default::default()

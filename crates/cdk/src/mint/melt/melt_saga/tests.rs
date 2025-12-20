@@ -10,12 +10,13 @@
 
 use std::str::FromStr;
 
-use crate::mint::melt::melt_saga::MeltSaga;
-use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 use cdk_common::mint::{MeltSagaState, OperationKind, Saga};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
 use cdk_common::{Amount, PaymentMethod, ProofsMethods, State};
+
+use crate::mint::melt::melt_saga::MeltSaga;
+use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 
 // ============================================================================
 // Basic State Transition Tests

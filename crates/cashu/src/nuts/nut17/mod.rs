@@ -3,6 +3,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::PublicKey;
+use crate::nut00::KnownMethod;
 use crate::nuts::{
     CurrencyUnit, MeltQuoteBolt11Response, MintQuoteBolt11Response, PaymentMethod, ProofState,
 };
@@ -63,7 +64,7 @@ impl SupportedMethods {
         ];
 
         Self {
-            method: PaymentMethod::from("bolt11"),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
             unit,
             commands,
         }
@@ -78,7 +79,7 @@ impl SupportedMethods {
         ];
 
         Self {
-            method: PaymentMethod::from("bolt12"),
+            method: PaymentMethod::Known(KnownMethod::Bolt12),
             unit,
             commands,
         }

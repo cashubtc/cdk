@@ -277,6 +277,8 @@ mod tests {
 
     use super::super::nut21::{Method, RoutePath};
     use super::*;
+    use crate::nut00::KnownMethod;
+    use crate::PaymentMethod;
 
     #[test]
     fn test_settings_deserialize_direct_paths() {
@@ -305,7 +307,10 @@ mod tests {
             .iter()
             .map(|ep| (ep.method, ep.path.clone()))
             .collect::<Vec<_>>();
-        assert!(paths.contains(&(Method::Get, RoutePath::Mint("bolt11".to_string()))));
+        assert!(paths.contains(&(
+            Method::Get,
+            RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string())
+        )));
         assert!(paths.contains(&(Method::Post, RoutePath::Swap)));
     }
 
@@ -332,10 +337,22 @@ mod tests {
 
         let expected_protected: HashSet<ProtectedEndpoint> = HashSet::from_iter(vec![
             ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
-            ProtectedEndpoint::new(Method::Get, RoutePath::Mint("bolt11".to_string())),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote("bolt11".to_string())),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote("bolt12".to_string())),
-            ProtectedEndpoint::new(Method::Get, RoutePath::Mint("bolt12".to_string())),
+            ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+            ),
+            ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+            ),
+            ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            ),
+            ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            ),
         ]);
 
         let deserialized_protected = settings.protected_endpoints.into_iter().collect();

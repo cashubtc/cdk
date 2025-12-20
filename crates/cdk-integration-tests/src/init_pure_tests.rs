@@ -8,6 +8,7 @@ use std::{env, fs};
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use bip39::Mnemonic;
+use cashu::nut00::KnownMethod;
 use cashu::quote_id::QuoteId;
 use cashu::{
     MeltQuoteBolt12Request, MeltQuoteCustomRequest, MintQuoteBolt12Request,
@@ -294,7 +295,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::from("bolt11"),
+            PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 10_000),
             Arc::new(ln_fake_backend),
         )

@@ -542,6 +542,7 @@ mod tests {
     use serde_json::{from_str, json, to_string};
 
     use super::*;
+    use crate::nut00::KnownMethod;
 
     #[test]
     fn test_melt_method_settings_top_level_amountless() {
@@ -558,7 +559,7 @@ mod tests {
         let settings: MeltMethodSettings = from_str(json_str).unwrap();
 
         // Check that amountless was correctly moved to options
-        assert_eq!(settings.method, PaymentMethod::from("bolt11"));
+        assert_eq!(settings.method, PaymentMethod::Known(KnownMethod::Bolt11));
         assert_eq!(settings.unit, CurrencyUnit::Sat);
         assert_eq!(settings.min_amount, Some(Amount::from(0)));
         assert_eq!(settings.max_amount, Some(Amount::from(10000)));

@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bip39::Mnemonic;
+use cashu::nut00::KnownMethod;
 use cashu::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase, MintKeysDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
@@ -42,7 +43,7 @@ where
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::from("bolt11"),
+            PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 300),
             Arc::new(fake_wallet),
         )
@@ -58,12 +59,30 @@ where
     );
 
     let blind_auth_endpoints = vec![
-        ProtectedEndpoint::new(Method::Post, RoutePath::MintQuote("bolt11".to_string())),
-        ProtectedEndpoint::new(Method::Post, RoutePath::Mint("bolt11".to_string())),
-        ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote("bolt11".to_string())),
-        ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuote("bolt11".to_string())),
-        ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuote("bolt11".to_string())),
-        ProtectedEndpoint::new(Method::Post, RoutePath::Melt("bolt11".to_string())),
+        ProtectedEndpoint::new(
+            Method::Post,
+            RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+        ),
+        ProtectedEndpoint::new(
+            Method::Post,
+            RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+        ),
+        ProtectedEndpoint::new(
+            Method::Get,
+            RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+        ),
+        ProtectedEndpoint::new(
+            Method::Post,
+            RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+        ),
+        ProtectedEndpoint::new(
+            Method::Get,
+            RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+        ),
+        ProtectedEndpoint::new(
+            Method::Post,
+            RoutePath::Melt(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+        ),
         ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
         ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate),
         ProtectedEndpoint::new(Method::Post, RoutePath::Restore),

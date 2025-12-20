@@ -76,6 +76,9 @@ pub fn validate_custom_method_names(methods: &[String]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use cdk::nuts::nut00::KnownMethod;
+    use cdk::nuts::PaymentMethod;
+
     use super::*;
 
     #[test]
@@ -92,11 +95,19 @@ mod tests {
     #[test]
     fn test_validate_custom_method_names_bolt11_bolt12_allowed() {
         // bolt11 and bolt12 are now allowed as custom methods
-        assert!(validate_custom_method_names(&["bolt11".to_string()]).is_ok());
-        assert!(validate_custom_method_names(&["bolt12".to_string()]).is_ok());
-        assert!(
-            validate_custom_method_names(&["paypal".to_string(), "bolt11".to_string()]).is_ok()
-        );
+        assert!(validate_custom_method_names(&[
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        ])
+        .is_ok());
+        assert!(validate_custom_method_names(&[
+            PaymentMethod::Known(KnownMethod::Bolt12).to_string()
+        ])
+        .is_ok());
+        assert!(validate_custom_method_names(&[
+            "paypal".to_string(),
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        ])
+        .is_ok());
     }
 
     #[test]

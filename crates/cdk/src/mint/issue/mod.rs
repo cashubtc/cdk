@@ -1,4 +1,5 @@
 use cdk_common::mint::{MintQuote, Operation};
+use cdk_common::nut00::KnownMethod;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
     IncomingPaymentOptions, WaitPaymentResponse,
@@ -78,8 +79,8 @@ impl MintQuoteRequest {
     /// Get the payment method for the mint quote request
     pub fn payment_method(&self) -> PaymentMethod {
         match self {
-            MintQuoteRequest::Bolt11(_) => PaymentMethod::from("bolt11"),
-            MintQuoteRequest::Bolt12(_) => PaymentMethod::from("bolt12"),
+            MintQuoteRequest::Bolt11(_) => PaymentMethod::Known(KnownMethod::Bolt11),
+            MintQuoteRequest::Bolt12(_) => PaymentMethod::Known(KnownMethod::Bolt12),
             MintQuoteRequest::Custom { method, .. } => PaymentMethod::from(method.clone()),
         }
     }

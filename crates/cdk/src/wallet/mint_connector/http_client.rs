@@ -17,14 +17,15 @@ use web_time::{Duration, Instant};
 use super::transport::Transport;
 use super::{Error, MintConnector};
 use crate::mint_url::MintUrl;
+use crate::nuts::nut00::KnownMethod;
 #[cfg(feature = "auth")]
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteCustomRequest, MeltRequest, MintInfo,
     MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteCustomRequest,
-    MintQuoteCustomResponse, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    MintQuoteCustomResponse, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 #[cfg(feature = "auth")]
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
@@ -287,7 +288,10 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintQuote("bolt11".to_string()))
+            .get_auth_token(
+                Method::Post,
+                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+            )
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -308,7 +312,10 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MintQuote("bolt11".to_string()))
+            .get_auth_token(
+                Method::Get,
+                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+            )
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -321,7 +328,10 @@ where
     async fn post_mint(&self, request: MintRequest<String>) -> Result<MintResponse, Error> {
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::Mint("bolt11".to_string()))
+            .get_auth_token(
+                Method::Post,
+                RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+            )
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -346,7 +356,10 @@ where
             .join_paths(&["v1", "melt", "quote", "bolt11"])?;
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MeltQuote("bolt11".to_string()))
+            .get_auth_token(
+                Method::Post,
+                RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+            )
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -366,7 +379,10 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MeltQuote("bolt11".to_string()))
+            .get_auth_token(
+                Method::Get,
+                RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+            )
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -383,7 +399,10 @@ where
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::Melt("bolt11".to_string()))
+            .get_auth_token(
+                Method::Post,
+                RoutePath::Melt(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+            )
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -491,7 +510,10 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintQuote("bolt12".to_string()))
+            .get_auth_token(
+                Method::Post,
+                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            )
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -512,7 +534,10 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MintQuote("bolt12".to_string()))
+            .get_auth_token(
+                Method::Get,
+                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            )
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -531,7 +556,10 @@ where
             .join_paths(&["v1", "melt", "quote", "bolt12"])?;
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MeltQuote("bolt12".to_string()))
+            .get_auth_token(
+                Method::Post,
+                RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            )
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -551,7 +579,10 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MeltQuote("bolt12".to_string()))
+            .get_auth_token(
+                Method::Get,
+                RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            )
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -567,7 +598,10 @@ where
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::Melt("bolt12".to_string()))
+            .get_auth_token(
+                Method::Post,
+                RoutePath::Melt(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            )
             .await?;
 
         #[cfg(not(feature = "auth"))]

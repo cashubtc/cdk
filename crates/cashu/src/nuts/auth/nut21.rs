@@ -255,6 +255,8 @@ impl std::fmt::Display for RoutePath {
 mod tests {
 
     use super::*;
+    use crate::nut00::KnownMethod;
+    use crate::PaymentMethod;
 
     #[test]
     fn test_matching_route_paths_all() {
@@ -265,12 +267,24 @@ mod tests {
         assert_eq!(paths.len(), RoutePath::all_known_paths().len());
 
         // Verify all variants are included
-        assert!(paths.contains(&RoutePath::MintQuote("bolt11".to_string())));
-        assert!(paths.contains(&RoutePath::Mint("bolt11".to_string())));
-        assert!(paths.contains(&RoutePath::MeltQuote("bolt11".to_string())));
-        assert!(paths.contains(&RoutePath::Melt("bolt11".to_string())));
-        assert!(paths.contains(&RoutePath::MintQuote("bolt12".to_string())));
-        assert!(paths.contains(&RoutePath::Mint("bolt12".to_string())));
+        assert!(paths.contains(&RoutePath::MintQuote(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
+        assert!(paths.contains(&RoutePath::Mint(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
+        assert!(paths.contains(&RoutePath::MeltQuote(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
+        assert!(paths.contains(&RoutePath::Melt(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
+        assert!(paths.contains(&RoutePath::MintQuote(
+            PaymentMethod::Known(KnownMethod::Bolt12).to_string()
+        )));
+        assert!(paths.contains(&RoutePath::Mint(
+            PaymentMethod::Known(KnownMethod::Bolt12).to_string()
+        )));
         assert!(paths.contains(&RoutePath::Swap));
         assert!(paths.contains(&RoutePath::Checkstate));
         assert!(paths.contains(&RoutePath::Restore));
@@ -284,16 +298,32 @@ mod tests {
 
         // Should match only mint paths (4 paths: mint quote and mint for bolt11 and bolt12)
         assert_eq!(paths.len(), 4);
-        assert!(paths.contains(&RoutePath::MintQuote("bolt11".to_string())));
-        assert!(paths.contains(&RoutePath::Mint("bolt11".to_string())));
-        assert!(paths.contains(&RoutePath::MintQuote("bolt12".to_string())));
-        assert!(paths.contains(&RoutePath::Mint("bolt12".to_string())));
+        assert!(paths.contains(&RoutePath::MintQuote(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
+        assert!(paths.contains(&RoutePath::Mint(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
+        assert!(paths.contains(&RoutePath::MintQuote(
+            PaymentMethod::Known(KnownMethod::Bolt12).to_string()
+        )));
+        assert!(paths.contains(&RoutePath::Mint(
+            PaymentMethod::Known(KnownMethod::Bolt12).to_string()
+        )));
 
         // Should not match other paths
-        assert!(!paths.contains(&RoutePath::MeltQuote("bolt11".to_string())));
-        assert!(!paths.contains(&RoutePath::Melt("bolt11".to_string())));
-        assert!(!paths.contains(&RoutePath::MeltQuote("bolt12".to_string())));
-        assert!(!paths.contains(&RoutePath::Melt("bolt12".to_string())));
+        assert!(!paths.contains(&RoutePath::MeltQuote(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
+        assert!(!paths.contains(&RoutePath::Melt(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
+        assert!(!paths.contains(&RoutePath::MeltQuote(
+            PaymentMethod::Known(KnownMethod::Bolt12).to_string()
+        )));
+        assert!(!paths.contains(&RoutePath::Melt(
+            PaymentMethod::Known(KnownMethod::Bolt12).to_string()
+        )));
         assert!(!paths.contains(&RoutePath::Swap));
     }
 
@@ -304,14 +334,26 @@ mod tests {
 
         // Should match only quote paths (4 paths: mint quote and melt quote for bolt11 and bolt12)
         assert_eq!(paths.len(), 4);
-        assert!(paths.contains(&RoutePath::MintQuote("bolt11".to_string())));
-        assert!(paths.contains(&RoutePath::MeltQuote("bolt11".to_string())));
-        assert!(paths.contains(&RoutePath::MintQuote("bolt12".to_string())));
-        assert!(paths.contains(&RoutePath::MeltQuote("bolt12".to_string())));
+        assert!(paths.contains(&RoutePath::MintQuote(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
+        assert!(paths.contains(&RoutePath::MeltQuote(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
+        assert!(paths.contains(&RoutePath::MintQuote(
+            PaymentMethod::Known(KnownMethod::Bolt12).to_string()
+        )));
+        assert!(paths.contains(&RoutePath::MeltQuote(
+            PaymentMethod::Known(KnownMethod::Bolt12).to_string()
+        )));
 
         // Should not match non-quote paths
-        assert!(!paths.contains(&RoutePath::Mint("bolt11".to_string())));
-        assert!(!paths.contains(&RoutePath::Melt("bolt11".to_string())));
+        assert!(!paths.contains(&RoutePath::Mint(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
+        assert!(!paths.contains(&RoutePath::Melt(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
     }
 
     #[test]
@@ -330,7 +372,9 @@ mod tests {
 
         // Should match only this specific path
         assert_eq!(paths.len(), 1);
-        assert!(paths.contains(&RoutePath::MintQuote("bolt11".to_string())));
+        assert!(paths.contains(&RoutePath::MintQuote(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string()
+        )));
     }
 
     #[test]
@@ -347,19 +391,19 @@ mod tests {
     fn test_route_path_to_string() {
         // Test that to_string() returns the correct path strings
         assert_eq!(
-            RoutePath::MintQuote("bolt11".to_string()).to_string(),
+            RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()).to_string(),
             "/v1/mint/quote/bolt11"
         );
         assert_eq!(
-            RoutePath::Mint("bolt11".to_string()).to_string(),
+            RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string()).to_string(),
             "/v1/mint/bolt11"
         );
         assert_eq!(
-            RoutePath::MeltQuote("bolt11".to_string()).to_string(),
+            RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()).to_string(),
             "/v1/melt/quote/bolt11"
         );
         assert_eq!(
-            RoutePath::Melt("bolt11".to_string()).to_string(),
+            RoutePath::Melt(PaymentMethod::Known(KnownMethod::Bolt11).to_string()).to_string(),
             "/v1/melt/bolt11"
         );
         assert_eq!(
@@ -375,7 +419,10 @@ mod tests {
     #[test]
     fn test_route_path_serialization() {
         // Test serialization of payment method paths
-        let json = serde_json::to_string(&RoutePath::Mint("bolt11".to_string())).unwrap();
+        let json = serde_json::to_string(&RoutePath::Mint(
+            PaymentMethod::Known(KnownMethod::Bolt11).to_string(),
+        ))
+        .unwrap();
         assert_eq!(json, "\"/v1/mint/bolt11\"");
 
         let json = serde_json::to_string(&RoutePath::MintQuote("paypal".to_string())).unwrap();
@@ -383,13 +430,16 @@ mod tests {
 
         // Test deserialization of payment method paths
         let path: RoutePath = serde_json::from_str("\"/v1/mint/bolt11\"").unwrap();
-        assert_eq!(path, RoutePath::Mint("bolt11".to_string()));
+        assert_eq!(
+            path,
+            RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string())
+        );
 
         let path: RoutePath = serde_json::from_str("\"/v1/melt/quote/venmo\"").unwrap();
         assert_eq!(path, RoutePath::MeltQuote("venmo".to_string()));
 
         // Test round-trip serialization
-        let original = RoutePath::Melt("bolt12".to_string());
+        let original = RoutePath::Melt(PaymentMethod::Known(KnownMethod::Bolt12).to_string());
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: RoutePath = serde_json::from_str(&json).unwrap();
         assert_eq!(original, deserialized);
@@ -427,7 +477,10 @@ mod tests {
             .iter()
             .map(|ep| (ep.method, ep.path.clone()))
             .collect::<Vec<_>>();
-        assert!(paths.contains(&(Method::Get, RoutePath::Mint("bolt11".to_string()))));
+        assert!(paths.contains(&(
+            Method::Get,
+            RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string())
+        )));
         assert!(paths.contains(&(Method::Post, RoutePath::Swap)));
     }
 
@@ -459,10 +512,22 @@ mod tests {
 
         let expected_protected: HashSet<ProtectedEndpoint> = HashSet::from_iter(vec![
             ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
-            ProtectedEndpoint::new(Method::Get, RoutePath::Mint("bolt11".to_string())),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote("bolt11".to_string())),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote("bolt12".to_string())),
-            ProtectedEndpoint::new(Method::Get, RoutePath::Mint("bolt12".to_string())),
+            ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+            ),
+            ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+            ),
+            ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            ),
+            ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            ),
         ]);
 
         let deserlized_protected = settings.protected_endpoints.into_iter().collect();
@@ -505,7 +570,7 @@ mod tests {
         assert_eq!(settings.protected_endpoints[0].method, Method::Get);
         assert_eq!(
             settings.protected_endpoints[0].path,
-            RoutePath::MintQuote("bolt11".to_string())
+            RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string())
         );
     }
 

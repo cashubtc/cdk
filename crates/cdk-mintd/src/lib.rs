@@ -15,6 +15,7 @@ use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, KVStore, MintDatabase, MintKeysDatabase};
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
+use cdk::nuts::nut00::KnownMethod;
 #[cfg(any(
     feature = "cln",
     feature = "lnbits",
@@ -605,12 +606,12 @@ async fn configure_backend_for_unit(
 
     // Add bolt11 if supported by payment processor
     if payment_settings.bolt11.is_some() {
-        methods.push(PaymentMethod::from("bolt11"));
+        methods.push(PaymentMethod::Known(KnownMethod::Bolt11));
     }
 
     // Add bolt12 if supported by payment processor
     if payment_settings.bolt12.is_some() {
-        methods.push(PaymentMethod::from("bolt12"));
+        methods.push(PaymentMethod::Known(KnownMethod::Bolt12));
     }
 
     // Add custom methods from payment settings
@@ -972,19 +973,23 @@ async fn start_services_with_shutdown(
     let mut custom_methods = mint.get_custom_payment_methods().await?;
 
     // Add bolt11 if it's supported by any payment processor
-    let bolt11_method = PaymentMethod::from("bolt11");
+    let bolt11_method = PaymentMethod::Known(KnownMethod::Bolt11);
     let bolt11_supported =
         nut04_methods.contains(&&bolt11_method) || nut05_methods.contains(&&bolt11_method);
     // Add bolt12 if it's supported by any payment processor
-    let bolt12_method = PaymentMethod::from("bolt12");
+    let bolt12_method = PaymentMethod::Known(KnownMethod::Bolt12);
     let bolt12_supported =
         nut04_methods.contains(&&bolt12_method) || nut05_methods.contains(&&bolt12_method);
 
-    if bolt11_supported && !custom_methods.contains(&"bolt11".to_string()) {
-        custom_methods.push("bolt11".to_string());
+    if bolt11_supported
+        && !custom_methods.contains(&PaymentMethod::Known(KnownMethod::Bolt11).to_string())
+    {
+        custom_methods.push(PaymentMethod::Known(KnownMethod::Bolt11).to_string());
     }
-    if bolt12_supported && !custom_methods.contains(&"bolt12".to_string()) {
-        custom_methods.push("bolt12".to_string());
+    if bolt12_supported
+        && !custom_methods.contains(&PaymentMethod::Known(KnownMethod::Bolt12).to_string())
+    {
+        custom_methods.push(PaymentMethod::Known(KnownMethod::Bolt12).to_string());
     }
 
     tracing::info!("Payment methods: {:?}", custom_methods);

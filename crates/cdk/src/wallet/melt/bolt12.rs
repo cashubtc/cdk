@@ -5,6 +5,7 @@
 use std::str::FromStr;
 
 use cdk_common::amount::amount_for_offer;
+use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::MeltQuote;
 use cdk_common::PaymentMethod;
 use lightning::offers::offer::Offer;
@@ -58,7 +59,7 @@ impl Wallet {
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_preimage: quote_res.payment_preimage,
-            payment_method: PaymentMethod::from("bolt12"),
+            payment_method: PaymentMethod::Known(KnownMethod::Bolt12),
         };
 
         let mut tx = self.localstore.begin_db_transaction().await?;
