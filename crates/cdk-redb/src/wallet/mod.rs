@@ -13,6 +13,7 @@ use cdk_common::database::{
     WalletDatabase, WalletDatabaseTransaction,
 };
 use cdk_common::mint_url::MintUrl;
+use cdk_common::nut00::KnownMethod;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
 use cdk_common::{
@@ -422,7 +423,8 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             .flatten()
             .flat_map(|(_id, quote)| serde_json::from_str::<MintQuote>(quote.value()).ok())
             .filter(|quote| {
-                quote.amount_issued == Amount::ZERO || quote.payment_method == PaymentMethod::Bolt12
+                quote.amount_issued == Amount::ZERO
+                    || quote.payment_method == PaymentMethod::Known(KnownMethod::Bolt12)
             })
             .collect())
     }

@@ -19,9 +19,9 @@ use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
-    MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
-    PaymentQuoteResponse, WaitPaymentResponse,
+    self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
+    MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
+    WaitPaymentResponse,
 };
 use cdk_common::util::hex;
 use cdk_common::Bolt11Invoice;
@@ -58,7 +58,8 @@ pub struct Lnd {
     kv_store: DynKVStore,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
-    settings: Bolt11Settings,
+    settings: SettingsResponse,
+    unit: CurrencyUnit,
 }
 
 impl Lnd {
@@ -104,6 +105,7 @@ impl Lnd {
                 Error::Connection
             })?;
 
+        let unit = CurrencyUnit::Msat;
         Ok(Self {
             _address: address,
             _cert_file: cert_file,
@@ -113,13 +115,17 @@ impl Lnd {
             kv_store,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
-            settings: Bolt11Settings {
-                mpp: true,
-                unit: CurrencyUnit::Msat,
-                invoice_description: true,
-                amountless: true,
-                bolt12: false,
+            settings: SettingsResponse {
+                unit: unit.to_string(),
+                bolt11: Some(payment::Bolt11Settings {
+                    mpp: true,
+                    amountless: true,
+                    invoice_description: true,
+                }),
+                bolt12: None,
+                custom: std::collections::HashMap::new(),
             },
+            unit,
         })
     }
 
@@ -178,8 +184,8 @@ impl MintPayment for Lnd {
     type Err = payment::Error;
 
     #[instrument(skip_all)]
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
-        Ok(serde_json::to_value(&self.settings)?)
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        Ok(self.settings.clone())
     }
 
     #[instrument(skip_all)]
@@ -378,6 +384,7 @@ impl MintPayment for Lnd {
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
+            OutgoingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
 
@@ -576,6 +583,7 @@ impl MintPayment for Lnd {
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
+            OutgoingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
 
@@ -617,11 +625,13 @@ impl MintPayment for Lnd {
                     request_lookup_id: payment_identifier,
                     request: bolt11.to_string(),
                     expiry: unix_expiry,
+                    extra_json: None,
                 })
             }
             IncomingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
+            IncomingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
 
@@ -682,7 +692,7 @@ impl MintPayment for Lnd {
                         payment_proof: None,
                         status: MeltQuoteState::Unknown,
                         total_spent: Amount::ZERO,
-                        unit: self.settings.unit.clone(),
+                        unit: self.unit.clone(),
                     });
                 } else {
                     return Err(payment::Error::UnknownPaymentState);
@@ -701,7 +711,7 @@ impl MintPayment for Lnd {
                             payment_proof: Some(update.payment_preimage),
                             status: MeltQuoteState::Unknown,
                             total_spent: Amount::ZERO,
-                            unit: self.settings.unit.clone(),
+                            unit: self.unit.clone(),
                         },
                         PaymentStatus::InFlight | PaymentStatus::Initiated => {
                             // Continue waiting for the next update
@@ -725,7 +735,7 @@ impl MintPayment for Lnd {
                             payment_proof: Some(update.payment_preimage),
                             status: MeltQuoteState::Failed,
                             total_spent: Amount::ZERO,
-                            unit: self.settings.unit.clone(),
+                            unit: self.unit.clone(),
                         },
                     };
 

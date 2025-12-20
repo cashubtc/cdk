@@ -1,6 +1,7 @@
 #![cfg(test)]
 //! Test helpers for creating test mints and related utilities
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use std::time::Duration;
 use bip39::Mnemonic;
 use cdk_common::amount::SplitTarget;
 use cdk_common::dhke::construct_proofs;
+use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::{BlindedMessage, CurrencyUnit, Id, PaymentMethod, PreMintSecrets, Proofs};
 use cdk_common::{
     Amount, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState, MintRequest,
@@ -19,8 +21,6 @@ use tokio::time::sleep;
 use crate::mint::{Mint, MintBuilder, MintMeltLimits};
 use crate::types::{FeeReserve, QuoteTTL};
 use crate::Error;
-
-use std::cell::RefCell;
 
 thread_local! {
     /// Thread-local storage for test failure flags.
@@ -94,7 +94,7 @@ pub async fn create_test_mint() -> Result<Mint, Error> {
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::Bolt11,
+            PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 10_000),
             Arc::new(ln_fake_backend),
         )
