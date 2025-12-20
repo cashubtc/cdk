@@ -21,7 +21,7 @@ use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
 use crate::nuts::nut18::Nut10SecretRequest;
-use crate::nuts::{CurrencyUnit, Transport};
+use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
 #[cfg(feature = "nostr")]
 use crate::wallet::MultiMintReceiveOptions;
 use crate::wallet::{MultiMintWallet, SendOptions};
@@ -46,6 +46,20 @@ impl Wallet {
             },
         };
 
+        // Extract optional NUT-10 spending conditions from the payment request.
+        //
+        // NUT-18 encodes spending conditions in the optional `nut10` field using
+        // `Nut10SecretRequest` (kind + data + tags). To actually create locked
+        // ecash, we need full NUT-10 secrets, so we:
+        //   1. Convert `Nut10SecretRequest` -> `Nut10Secret` (adds nonce, keeps tags)
+        //   2. Convert `Nut10Secret` -> `SpendingConditions` (NUT-11 helper)
+        let conditions = if let Some(nut10_request) = &payment_request.nut10 {
+            let secret: Nut10Secret = nut10_request.clone().into();
+            Some(SpendingConditions::try_from(secret)?)
+        } else {
+            None
+        };
+
         let transports = payment_request.transports.clone();
 
         // Prefer Nostr to avoid revealing IP, fall back to HTTP POST.
@@ -62,6 +76,7 @@ impl Wallet {
             .prepare_send(
                 amount,
                 SendOptions {
+                    conditions,
                     include_fee: true,
                     ..Default::default()
                 },
