@@ -17,7 +17,6 @@ mint = ["cdk-common/mint"]
 wallet = ["cdk-common/wallet"]
 auth = ["cdk-common/auth"]
 prometheus = ["cdk-prometheus"]
-testing = []
 [dependencies]
 async-trait.workspace = true
 cdk-common = { workspace = true, features = ["test"] }

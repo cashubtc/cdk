@@ -1,3 +1,4 @@
+use cdk_common::database::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
@@ -405,11 +406,11 @@ impl Mint {
 
             let mut tx = self.localstore.begin_transaction().await?;
 
-            if let Ok(Some(mint_quote)) = tx
+            if let Ok(Some(mut mint_quote)) = tx
                 .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
                 .await
             {
-                self.pay_mint_quote(&mut tx, mint_quote, wait_payment_response)
+                self.pay_mint_quote(&mut tx, &mut mint_quote, wait_payment_response)
                     .await?;
             } else {
                 tracing::warn!(
@@ -452,7 +453,7 @@ impl Mint {
     pub async fn pay_mint_quote(
         &self,
         tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
-        mint_quote: MintQuote,
+        mint_quote: &mut Acquired<MintQuote>,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
         #[cfg(feature = "prometheus")]
@@ -564,7 +565,7 @@ impl Mint {
 
         let mut tx = self.localstore.begin_transaction().await?;
 
-        let mint_quote = tx
+        let mut mint_quote = tx
             .get_mint_quote(&mint_request.quote)
             .await?
             .ok_or(Error::UnknownQuote)?;
@@ -674,8 +675,8 @@ impl Mint {
             .await?;
 
 
-        let updated_quote = tx
-            .increment_mint_quote_amount_issued(mint_quote.clone(), amount_issued)
+            tx
+            .increment_mint_quote_amount_issued(&mut mint_quote, amount_issued)
             .await?;
 
 
@@ -686,7 +687,7 @@ impl Mint {
         tx.commit().await?;
 
         self.pubsub_manager
-            .mint_quote_issue(&mint_quote, updated_quote.amount_issued());
+            .mint_quote_issue(&mint_quote, mint_quote.amount_issued());
 
         Ok(MintResponse {
             signatures: blind_signatures,

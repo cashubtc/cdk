@@ -203,13 +203,17 @@ async fn test_concurrent_duplicate_payment_handling() {
 
         join_set.spawn(async move {
             let mut tx = MintDatabase::begin_transaction(&*db_clone).await.unwrap();
-            let quote_from_db = tx
+            let mut quote_from_db = tx
                 .get_mint_quote(&quote_id)
                 .await
                 .expect("no error")
                 .expect("some value");
             let result = tx
-                .increment_mint_quote_amount_paid(quote_from_db, Amount::from(10), payment_id_clone)
+                .increment_mint_quote_amount_paid(
+                    &mut quote_from_db,
+                    Amount::from(10),
+                    payment_id_clone,
+                )
                 .await;
 
             if result.is_ok() {

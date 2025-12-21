@@ -20,9 +20,3 @@ pub mod wallet;
 pub use mint::SQLMintDatabase;
 #[cfg(feature = "wallet")]
 pub use wallet::SQLWalletDatabase;
-
-#[cfg(feature = "testing")]
-mod locked_row;
-
-#[cfg(feature = "testing")]
-pub use locked_row::{LockedRows, RowId};

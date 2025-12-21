@@ -6,7 +6,7 @@
 //!
 //! The functions here ensure consistency between these two code paths.
 
-use cdk_common::database::{self, DynMintDatabase};
+use cdk_common::database::{self, Acquired, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, State};
 use cdk_common::state::check_state_transition;
 use cdk_common::{Amount, Error, PublicKey, QuoteId};
@@ -103,16 +103,18 @@ pub async fn rollback_melt_quote(
         tx.delete_blinded_messages(blinded_secrets).await?;
     }
 
-    // Reset quote state from Pending to Unpaid
-    let (previous_state, _quote) = tx
-        .update_melt_quote_state(quote_id, MeltQuoteState::Unpaid, None)
-        .await?;
+    // Get and lock the quote, then reset state from Pending to Unpaid
+    if let Some(mut quote) = tx.get_melt_quote(quote_id).await? {
+        let previous_state = tx
+            .update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
+            .await?;
 
-    if previous_state != MeltQuoteState::Pending {
-        tracing::warn!(
-            "Unexpected quote state during rollback: expected Pending, got {}",
-            previous_state
-        );
+        if previous_state != MeltQuoteState::Pending {
+            tracing::warn!(
+                "Unexpected quote state during rollback: expected Pending, got {}",
+                previous_state
+            );
+        }
     }
 
     // Delete melt request tracking record
@@ -284,7 +286,7 @@ pub async fn process_melt_change(
 pub async fn finalize_melt_core(
     tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     pubsub: &PubSubManager,
-    quote: &MeltQuote,
+    quote: &mut Acquired<MeltQuote>,
     input_ys: &[PublicKey],
     inputs_amount: Amount,
     inputs_fee: Amount,
@@ -310,7 +312,7 @@ pub async fn finalize_melt_core(
     }
 
     // Update quote state to Paid
-    tx.update_melt_quote_state(&quote.id, MeltQuoteState::Paid, payment_preimage.clone())
+    tx.update_melt_quote_state(quote, MeltQuoteState::Paid, payment_preimage.clone())
         .await?;
 
     // Update payment lookup ID if changed
@@ -321,7 +323,7 @@ pub async fn finalize_melt_core(
             payment_lookup_id
         );
 
-        tx.update_melt_quote_request_lookup_id(&quote.id, payment_lookup_id)
+        tx.update_melt_quote_request_lookup_id(quote, payment_lookup_id)
             .await?;
     }
 
@@ -397,6 +399,19 @@ pub async fn finalize_melt_quote(
 
     let mut tx = db.begin_transaction().await?;
 
+    // Acquire lock on the quote for safe state update
+    let mut locked_quote = match tx.get_melt_quote(&quote.id).await? {
+        Some(q) => q,
+        None => {
+            tracing::warn!(
+                "Melt quote {} not found - may have been completed already",
+                quote.id
+            );
+            tx.rollback().await?;
+            return Ok(None);
+        }
+    };
+
     // Get melt request info
     let melt_request_info = match tx.get_melt_request_and_blinded_messages(&quote.id).await? {
         Some(info) => info,
@@ -426,7 +441,7 @@ pub async fn finalize_melt_quote(
     finalize_melt_core(
         &mut tx,
         pubsub,
-        quote,
+        &mut locked_quote,
         &input_ys,
         melt_request_info.inputs_amount,
         melt_request_info.inputs_fee,
