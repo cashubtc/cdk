@@ -281,17 +281,20 @@ impl MeltSaga<Initial> {
             );
         }
 
-        // Update quote state to Pending
-        let (state, quote) = match tx
-            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
-            .await
-        {
-            Ok(result) => result,
+        // Get and lock the quote
+        let mut quote = match tx.get_melt_quote(melt_request.quote()).await {
+            Ok(Some(q)) => q,
+            Ok(None) => {
+                tx.rollback().await?;
+                return Err(Error::UnknownQuote);
+            }
             Err(err) => {
                 tx.rollback().await?;
                 return Err(err.into());
             }
         };
+
+        let previous_state = quote.state;
 
         // Publish proof state changes
         for pk in input_ys.iter() {
@@ -303,7 +306,7 @@ impl MeltSaga<Initial> {
             return Err(Error::UnitMismatch);
         }
 
-        match state {
+        match previous_state {
             MeltQuoteState::Unpaid | MeltQuoteState::Failed => {}
             MeltQuoteState::Pending => {
                 tx.rollback().await?;
@@ -319,8 +322,20 @@ impl MeltSaga<Initial> {
             }
         }
 
+        // Update quote state to Pending
+        match tx
+            .update_melt_quote_state(&mut quote, MeltQuoteState::Pending, None)
+            .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(err.into());
+            }
+        };
+
         self.pubsub
-            .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
+            .melt_quote_status(&*quote, None, None, MeltQuoteState::Pending);
 
         let inputs_fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
 
@@ -416,6 +431,8 @@ impl MeltSaga<Initial> {
             }));
 
         // Transition to SetupComplete state
+        // Extract inner MeltQuote from Acquired wrapper - the lock was only meaningful
+        // within the transaction that just committed
         Ok(MeltSaga {
             mint: self.mint,
             db: self.db,
@@ -425,7 +442,7 @@ impl MeltSaga<Initial> {
             #[cfg(feature = "prometheus")]
             metrics_incremented: self.metrics_incremented,
             state_data: SetupComplete {
-                quote,
+                quote: quote.inner(),
                 input_ys,
                 blinded_messages: blinded_messages_vec,
                 operation,
@@ -477,7 +494,7 @@ impl MeltSaga<SetupComplete> {
 
         let mut tx = self.db.begin_transaction().await?;
 
-        let mint_quote = match tx
+        let mut mint_quote = match tx
             .get_mint_quote_by_request(&self.state_data.quote.request.to_string())
             .await
         {
@@ -539,13 +556,12 @@ impl MeltSaga<SetupComplete> {
         )
         .await?;
 
-        let mint_quote = tx
-            .increment_mint_quote_amount_paid(
-                mint_quote,
-                amount,
-                self.state_data.quote.id.to_string(),
-            )
-            .await?;
+        tx.increment_mint_quote_amount_paid(
+            &mut mint_quote,
+            amount,
+            self.state_data.quote.id.to_string(),
+        )
+        .await?;
 
         self.pubsub
             .mint_quote_payment(&mint_quote, mint_quote.amount_paid());
@@ -875,7 +891,13 @@ impl MeltSaga<PaymentConfirmed> {
 
         let mut tx = self.db.begin_transaction().await?;
 
-        // Get melt request info first (needed for validation and change)
+        // Acquire lock on the quote for safe state update
+        let mut quote = tx
+            .get_melt_quote(&self.state_data.quote.id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        // Get melt request info (needed for validation and change)
         let MeltRequestInfo {
             inputs_amount,
             inputs_fee,
@@ -889,7 +911,7 @@ impl MeltSaga<PaymentConfirmed> {
         if let Err(err) = super::shared::finalize_melt_core(
             &mut tx,
             &self.pubsub,
-            &self.state_data.quote,
+            &mut quote,
             &self.state_data.input_ys,
             inputs_amount,
             inputs_fee,

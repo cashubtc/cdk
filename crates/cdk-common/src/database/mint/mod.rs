@@ -7,6 +7,7 @@ use cashu::quote_id::QuoteId;
 use cashu::Amount;
 
 use super::{DbTransactionFinalizer, Error};
+use crate::database::Acquired;
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote, Operation};
 use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
@@ -115,59 +116,69 @@ pub trait QuotesTransaction {
     async fn get_mint_quote(
         &mut self,
         quote_id: &QuoteId,
-    ) -> Result<Option<MintMintQuote>, Self::Err>;
+    ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
+
     /// Add [`MintMintQuote`]
-    async fn add_mint_quote(&mut self, quote: MintMintQuote) -> Result<MintMintQuote, Self::Err>;
+    async fn add_mint_quote(
+        &mut self,
+        quote: MintMintQuote,
+    ) -> Result<Acquired<MintMintQuote>, Self::Err>;
+
     /// Increment amount paid [`MintMintQuote`]
     async fn increment_mint_quote_amount_paid(
         &mut self,
-        quote: mint::MintQuote,
+        quote: &mut Acquired<mint::MintQuote>,
         amount_paid: Amount,
         payment_id: String,
-    ) -> Result<mint::MintQuote, Self::Err>;
+    ) -> Result<(), Self::Err>;
+
     /// Increment amount paid [`MintMintQuote`]
     async fn increment_mint_quote_amount_issued(
         &mut self,
-        quote: mint::MintQuote,
+        quote: &mut Acquired<mint::MintQuote>,
         amount_issued: Amount,
-    ) -> Result<mint::MintQuote, Self::Err>;
+    ) -> Result<(), Self::Err>;
 
     /// Get [`mint::MeltQuote`] and lock it for update in this transaction
     async fn get_melt_quote(
         &mut self,
         quote_id: &QuoteId,
-    ) -> Result<Option<mint::MeltQuote>, Self::Err>;
+    ) -> Result<Option<Acquired<mint::MeltQuote>>, Self::Err>;
+
     /// Add [`mint::MeltQuote`]
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err>;
 
-    /// Updates the request lookup id for a melt quote
+    /// Updates the request lookup id for a melt quote.
+    ///
+    /// Requires an [`Acquired`] melt quote to ensure the row is locked before modification.
     async fn update_melt_quote_request_lookup_id(
         &mut self,
-        quote_id: &QuoteId,
+        quote: &mut Acquired<mint::MeltQuote>,
         new_request_lookup_id: &PaymentIdentifier,
     ) -> Result<(), Self::Err>;
 
-    /// Update [`mint::MeltQuote`] state
+    /// Update [`mint::MeltQuote`] state.
     ///
-    /// It is expected for this function to fail if the state is already set to the new state
+    /// Requires an [`Acquired`] melt quote to ensure the row is locked before modification.
+    /// Returns the previous state.
     async fn update_melt_quote_state(
         &mut self,
-        quote_id: &QuoteId,
+        quote: &mut Acquired<mint::MeltQuote>,
         new_state: MeltQuoteState,
         payment_proof: Option<String>,
-    ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err>;
+    ) -> Result<MeltQuoteState, Self::Err>;
 
     /// Get all [`MintMintQuote`]s and lock it for update in this transaction
     async fn get_mint_quote_by_request(
         &mut self,
         request: &str,
-    ) -> Result<Option<MintMintQuote>, Self::Err>;
+    ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
 
     /// Get all [`MintMintQuote`]s
     async fn get_mint_quote_by_request_lookup_id(
         &mut self,
         request_lookup_id: &PaymentIdentifier,
-    ) -> Result<Option<MintMintQuote>, Self::Err>;
+    ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
 }
 
 /// Mint Quote Database trait

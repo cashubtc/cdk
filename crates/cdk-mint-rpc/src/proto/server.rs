@@ -666,7 +666,7 @@ impl CdkMint for MintRPCServer {
                     .map_err(|_| Status::internal("Could not start db transaction".to_string()))?;
 
                 // Re-fetch the mint quote within the transaction to lock it
-                let mint_quote = tx
+                let mut mint_quote = tx
                     .get_mint_quote(&quote_id)
                     .await
                     .map_err(|_| {
@@ -677,7 +677,7 @@ impl CdkMint for MintRPCServer {
                     ))?;
 
                 self.mint
-                    .pay_mint_quote(&mut tx, mint_quote, response)
+                    .pay_mint_quote(&mut tx, &mut mint_quote, response)
                     .await
                     .map_err(|_| Status::internal("Could not process payment".to_string()))?;
 

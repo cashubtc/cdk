@@ -7,6 +7,8 @@ pub mod mint;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
+use std::ops::{Deref, DerefMut};
+
 // Re-export shared KVStore types at the top level for both mint and wallet
 pub use kvstore::{
     validate_kvstore_params, validate_kvstore_string, KVStore, KVStoreDatabase, KVStoreTransaction,
@@ -31,6 +33,76 @@ pub use wallet::{
     Database as WalletDatabase, DatabaseTransaction as WalletDatabaseTransaction,
     DynWalletDatabaseTransaction,
 };
+
+/// A wrapper indicating that a resource has been acquired with a database lock.
+///
+/// This type is returned by database operations that lock rows for update
+/// (e.g., `SELECT ... FOR UPDATE`). It serves as a compile-time marker that
+/// the wrapped resource was properly locked before being returned, ensuring
+/// that subsequent modifications are safe from race conditions.
+///
+/// # Usage
+///
+/// When you need to modify a database record, first acquire it using a locking
+/// query method. The returned `Acquired<T>` guarantees the row is locked for
+/// the duration of the transaction.
+///
+/// ```ignore
+/// // Acquire a quote with a row lock
+/// let mut quote: Acquired<MintQuote> = tx.get_mint_quote_for_update(&quote_id).await?;
+///
+/// // Safely modify the quote (row is locked)
+/// quote.state = QuoteState::Paid;
+///
+/// // Persist the changes
+/// tx.update_mint_quote(&mut quote).await?;
+/// ```
+///
+/// # Deref Behavior
+///
+/// `Acquired<T>` implements `Deref` and `DerefMut`, allowing transparent access
+/// to the inner value's methods and fields.
+#[derive(Debug)]
+pub struct Acquired<T> {
+    inner: T,
+}
+
+impl<T> From<T> for Acquired<T> {
+    /// Wraps a value to indicate it has been acquired with a lock.
+    ///
+    /// This is typically called by database layer implementations after
+    /// executing a locking query.
+    fn from(value: T) -> Self {
+        Acquired { inner: value }
+    }
+}
+
+impl<T> Acquired<T> {
+    /// Consumes the wrapper and returns the inner resource.
+    ///
+    /// Use this when you need to take ownership of the inner value,
+    /// for example when passing it to a function that doesn't accept
+    /// `Acquired<T>`.
+    pub fn inner(self) -> T {
+        self.inner
+    }
+}
+
+impl<T> Deref for Acquired<T> {
+    type Target = T;
+
+    /// Returns a reference to the inner resource.
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T> DerefMut for Acquired<T> {
+    /// Returns a mutable reference to the inner resource.
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
 
 /// Type alias for dynamic Wallet Database
 #[cfg(feature = "wallet")]

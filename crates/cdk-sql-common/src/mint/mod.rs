@@ -19,9 +19,9 @@ use cdk_common::database::mint::{
     CompletedOperationsDatabase, CompletedOperationsTransaction, SagaDatabase, SagaTransaction,
 };
 use cdk_common::database::{
-    self, ConversionError, DbTransactionFinalizer, Error, MintDatabase, MintKeyDatabaseTransaction,
-    MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase, MintQuotesTransaction,
-    MintSignatureTransaction, MintSignaturesDatabase,
+    self, Acquired, ConversionError, DbTransactionFinalizer, Error, MintDatabase,
+    MintKeyDatabaseTransaction, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
+    MintQuotesTransaction, MintSignatureTransaction, MintSignaturesDatabase,
 };
 use cdk_common::mint::{
     self, IncomingPayment, Issuance, MeltPaymentRequest, MeltQuote, MintKeySetInfo, MintQuote,
@@ -78,61 +78,6 @@ where
     RM: DatabasePool + 'static,
 {
     inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
-    #[cfg(feature = "testing")]
-    locked_records: crate::LockedRows,
-}
-
-impl<RM> SQLTransaction<RM>
-where
-    RM: DatabasePool + 'static,
-{
-    /// Lock a record for modification (only active when testing feature is enabled)
-    #[cfg(feature = "testing")]
-    #[inline(always)]
-    fn lock_record<T: Into<crate::RowId>>(&mut self, record_id: T) {
-        self.locked_records.lock(record_id);
-    }
-
-    /// Lock a record for modification (no-op when testing feature is disabled)
-    #[cfg(not(feature = "testing"))]
-    #[inline(always)]
-    fn lock_record<T>(&mut self, _record_id: T) {}
-
-    /// Lock multiple records for modification (only active when testing feature is enabled)
-    #[cfg(feature = "testing")]
-    #[inline(always)]
-    fn lock_records<T: Into<crate::RowId>>(&mut self, records: Vec<T>) {
-        self.locked_records.lock_many(records);
-    }
-
-    /// Lock multiple records for modification (no-op when testing feature is disabled)
-    #[cfg(not(feature = "testing"))]
-    #[inline(always)]
-    fn lock_records<T>(&mut self, _records: Vec<T>) {}
-
-    /// Verify records are locked (only active when testing feature is enabled)
-    #[cfg(feature = "testing")]
-    #[inline(always)]
-    fn verify_locked<T: Into<crate::RowId>>(&self, record_id: T) {
-        self.locked_records.is_locked(record_id);
-    }
-
-    /// Verify records are locked (no-op when testing feature is disabled)
-    #[cfg(not(feature = "testing"))]
-    #[inline(always)]
-    fn verify_locked<T>(&self, _record_id: T) {}
-
-    /// Verify multiple records are locked (only active when testing feature is enabled)
-    #[cfg(feature = "testing")]
-    #[inline(always)]
-    fn verify_locked_many<T: Into<crate::RowId>>(&self, records: Vec<T>) {
-        self.locked_records.is_locked_many(records);
-    }
-
-    /// Verify multiple records are locked (no-op when testing feature is disabled)
-    #[cfg(not(feature = "testing"))]
-    #[inline(always)]
-    fn verify_locked_many<T>(&self, _records: Vec<T>) {}
 }
 
 impl<RM> SQLMintDatabase<RM>
@@ -197,7 +142,6 @@ where
 
         for proof in proofs {
             let y = proof.y()?;
-            self.lock_record(y);
 
             query(
                 r#"
@@ -233,8 +177,6 @@ where
         ys: &[PublicKey],
         new_state: State,
     ) -> Result<Vec<Option<State>>, Self::Err> {
-        self.verify_locked_many(ys.to_owned());
-
         let mut current_states = get_current_states(&self.inner, ys, true).await?;
 
         if current_states.len() != ys.len() {
@@ -353,11 +295,7 @@ where
         .fetch_all(&self.inner)
         .await?
         .into_iter()
-        .map(|row| {
-            sql_row_to_proof(row).inspect(|row| {
-                let _ = row.y().map(|c| self.lock_record(c));
-            })
-        })
+        .map(sql_row_to_proof)
         .collect::<Result<Vec<Proof>, _>>()?
         .ys()?)
     }
@@ -394,12 +332,7 @@ where
         &mut self,
         ys: &[PublicKey],
     ) -> Result<Vec<Option<State>>, Self::Err> {
-        let mut current_states =
-            get_current_states(&self.inner, ys, true)
-                .await
-                .inspect(|public_keys| {
-                    self.lock_records(public_keys.keys().collect::<Vec<_>>());
-                })?;
+        let mut current_states = get_current_states(&self.inner, ys, true).await?;
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
     }
@@ -797,8 +730,6 @@ where
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
-            #[cfg(feature = "testing")]
-            locked_records: Default::default(),
         };
 
         Ok(Box::new(tx))
@@ -1084,11 +1015,10 @@ where
     #[instrument(skip(self))]
     async fn increment_mint_quote_amount_paid(
         &mut self,
-        mut quote: mint::MintQuote,
+        quote: &mut Acquired<mint::MintQuote>,
         amount_paid: Amount,
         payment_id: String,
-    ) -> Result<mint::MintQuote, Self::Err> {
-        self.verify_locked(&quote.id);
+    ) -> Result<(), Self::Err> {
         if amount_paid == Amount::ZERO {
             tracing::warn!("Amount payments of zero amount should not be recorded.");
             return Err(Error::Duplicate);
@@ -1159,17 +1089,15 @@ where
             err
         })?;
 
-        Ok(quote)
+        Ok(())
     }
 
     #[instrument(skip_all)]
     async fn increment_mint_quote_amount_issued(
         &mut self,
-        mut quote: mint::MintQuote,
+        quote: &mut Acquired<mint::MintQuote>,
         amount_issued: Amount,
-    ) -> Result<mint::MintQuote, Self::Err> {
-        self.verify_locked(&quote.id);
-
+    ) -> Result<(), Self::Err> {
         let new_amount_issued = quote
             .increment_amount_issued(amount_issued)
             .map_err(|_| Error::AmountOverflow)?;
@@ -1205,11 +1133,11 @@ VALUES (:quote_id, :amount, :timestamp);
         .execute(&self.inner)
         .await?;
 
-        Ok(quote)
+        Ok(())
     }
 
     #[instrument(skip_all)]
-    async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<MintQuote, Self::Err> {
+    async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<Acquired<MintQuote>, Self::Err> {
         query(
             r#"
                 INSERT INTO mint_quote (
@@ -1236,9 +1164,7 @@ VALUES (:quote_id, :amount, :timestamp);
         .execute(&self.inner)
         .await?;
 
-        self.lock_record(&quote.id);
-
-        Ok(quote)
+        Ok(quote.into())
     }
 
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
@@ -1285,62 +1211,33 @@ VALUES (:quote_id, :amount, :timestamp);
         .execute(&self.inner)
         .await?;
 
-        self.lock_record(&quote.id);
-
         Ok(())
     }
 
     async fn update_melt_quote_request_lookup_id(
         &mut self,
-        quote_id: &QuoteId,
+        quote: &mut Acquired<mint::MeltQuote>,
         new_request_lookup_id: &PaymentIdentifier,
     ) -> Result<(), Self::Err> {
         query(r#"UPDATE melt_quote SET request_lookup_id = :new_req_id, request_lookup_id_kind = :new_kind WHERE id = :id"#)?
             .bind("new_req_id", new_request_lookup_id.to_string())
-            .bind("new_kind",new_request_lookup_id.kind() )
-            .bind("id", quote_id.to_string())
+            .bind("new_kind", new_request_lookup_id.kind())
+            .bind("id", quote.id.to_string())
             .execute(&self.inner)
             .await?;
+        quote.request_lookup_id = Some(new_request_lookup_id.clone());
         Ok(())
     }
 
     async fn update_melt_quote_state(
         &mut self,
-        quote_id: &QuoteId,
+        quote: &mut Acquired<mint::MeltQuote>,
         state: MeltQuoteState,
         payment_proof: Option<String>,
-    ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err> {
-        let mut quote = query(
-            r#"
-            SELECT
-                id,
-                unit,
-                amount,
-                request,
-                fee_reserve,
-                expiry,
-                state,
-                payment_preimage,
-                request_lookup_id,
-                created_time,
-                paid_time,
-                payment_method,
-                options,
-                request_lookup_id_kind
-            FROM
-                melt_quote
-            WHERE
-                id=:id
-            "#,
-        )?
-        .bind("id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .map(sql_row_to_melt_quote)
-        .transpose()?
-        .ok_or(Error::QuoteNotFound)?;
+    ) -> Result<MeltQuoteState, Self::Err> {
+        let old_state = quote.state;
 
-        check_melt_quote_state_transition(quote.state, state)?;
+        check_melt_quote_state_transition(old_state, state)?;
 
         // When transitioning to Pending, lock all quotes with the same lookup_id
         // and check if any are already pending or paid
@@ -1366,16 +1263,16 @@ VALUES (:quote_id, :amount, :timestamp);
                 .collect::<Result<Vec<_>, Error>>()?;
 
                 // Check if any other quote with the same lookup_id is pending or paid
-                let has_conflict = locked_quotes.iter().any(|(id, state)| {
-                    id != &quote_id.to_string()
-                        && (state == &MeltQuoteState::Pending.to_string()
-                            || state == &MeltQuoteState::Paid.to_string())
+                let has_conflict = locked_quotes.iter().any(|(id, s)| {
+                    id != &quote.id.to_string()
+                        && (s == &MeltQuoteState::Pending.to_string()
+                            || s == &MeltQuoteState::Paid.to_string())
                 });
 
                 if has_conflict {
                     tracing::warn!(
                         "Cannot transition quote {} to Pending: another quote with lookup_id {} is already pending or paid",
-                        quote_id,
+                        quote.id,
                         lookup_id
                     );
                     return Err(Error::Duplicate);
@@ -1385,17 +1282,19 @@ VALUES (:quote_id, :amount, :timestamp);
 
         let rec = if state == MeltQuoteState::Paid {
             let current_time = unix_time();
+            quote.paid_time = Some(current_time);
+            quote.payment_preimage = payment_proof.clone();
             query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_preimage = :payment_preimage WHERE id = :id"#)?
                 .bind("state", state.to_string())
                 .bind("paid_time", current_time as i64)
                 .bind("payment_preimage", payment_proof)
-                .bind("id", quote_id.to_string())
+                .bind("id", quote.id.to_string())
                 .execute(&self.inner)
                 .await
         } else {
             query(r#"UPDATE melt_quote SET state = :state WHERE id = :id"#)?
                 .bind("state", state.to_string())
-                .bind("id", quote_id.to_string())
+                .bind("id", quote.id.to_string())
                 .execute(&self.inner)
                 .await
         };
@@ -1408,63 +1307,49 @@ VALUES (:quote_id, :amount, :timestamp);
             }
         };
 
-        let old_state = quote.state;
         quote.state = state;
 
         if state == MeltQuoteState::Unpaid || state == MeltQuoteState::Failed {
-            self.delete_melt_request(quote_id).await?;
+            self.delete_melt_request(&quote.id).await?;
         }
 
-        Ok((old_state, quote))
+        Ok(old_state)
     }
 
-    async fn get_mint_quote(&mut self, quote_id: &QuoteId) -> Result<Option<MintQuote>, Self::Err> {
+    async fn get_mint_quote(
+        &mut self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<Acquired<MintQuote>>, Self::Err> {
         get_mint_quote_inner(&self.inner, quote_id, true)
             .await
-            .inspect(|quote| {
-                quote.as_ref().inspect(|mint_quote| {
-                    self.lock_record(&mint_quote.id);
-                });
-            })
+            .map(|quote| quote.map(|inner| inner.into()))
     }
 
     async fn get_melt_quote(
         &mut self,
         quote_id: &QuoteId,
-    ) -> Result<Option<mint::MeltQuote>, Self::Err> {
+    ) -> Result<Option<Acquired<mint::MeltQuote>>, Self::Err> {
         get_melt_quote_inner(&self.inner, quote_id, true)
             .await
-            .inspect(|quote| {
-                quote.as_ref().inspect(|melt_quote| {
-                    self.lock_record(&melt_quote.id);
-                });
-            })
+            .map(|quote| quote.map(|inner| inner.into()))
     }
 
     async fn get_mint_quote_by_request(
         &mut self,
         request: &str,
-    ) -> Result<Option<MintQuote>, Self::Err> {
+    ) -> Result<Option<Acquired<MintQuote>>, Self::Err> {
         get_mint_quote_by_request_inner(&self.inner, request, true)
             .await
-            .inspect(|quote| {
-                quote.as_ref().inspect(|mint_quote| {
-                    self.lock_record(&mint_quote.id);
-                });
-            })
+            .map(|quote| quote.map(|inner| inner.into()))
     }
 
     async fn get_mint_quote_by_request_lookup_id(
         &mut self,
         request_lookup_id: &PaymentIdentifier,
-    ) -> Result<Option<MintQuote>, Self::Err> {
+    ) -> Result<Option<Acquired<MintQuote>>, Self::Err> {
         get_mint_quote_by_request_lookup_id_inner(&self.inner, request_lookup_id, true)
             .await
-            .inspect(|quote| {
-                quote.as_ref().inspect(|mint_quote| {
-                    self.lock_record(&mint_quote.id);
-                });
-            })
+            .map(|quote| quote.map(|inner| inner.into()))
     }
 }
 
@@ -2234,8 +2119,6 @@ where
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
-            #[cfg(feature = "testing")]
-            locked_records: Default::default(),
         }))
     }
 }
@@ -2529,8 +2412,6 @@ where
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
-            #[cfg(feature = "testing")]
-            locked_records: Default::default(),
         };
 
         Ok(Box::new(tx))

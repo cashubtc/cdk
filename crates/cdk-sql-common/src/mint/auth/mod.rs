@@ -140,7 +140,6 @@ where
         {
             tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
         }
-        self.lock_record(y);
         Ok(())
     }
 
@@ -149,7 +148,6 @@ where
         y: &PublicKey,
         proofs_state: State,
     ) -> Result<Option<State>, Self::Err> {
-        self.verify_locked(y);
         let current_state = query(r#"SELECT state FROM proof WHERE y = :y FOR UPDATE"#)?
             .bind("y", y.to_bytes().to_vec())
             .pluck(&self.inner)
@@ -254,8 +252,6 @@ where
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
-            #[cfg(feature = "testing")]
-            locked_records: Default::default(),
         }))
     }
 

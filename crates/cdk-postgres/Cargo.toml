@@ -35,8 +35,5 @@ native-tls = "0.2"
 once_cell.workspace = true
 paste = "1.0.15"
 
-[dev-dependencies]
-cdk-sql-common = { workspace = true, features = ["testing"] }
-
 [lints]
 workspace = true

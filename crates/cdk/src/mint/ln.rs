@@ -56,45 +56,44 @@ impl Mint {
         let mut tx = localstore.begin_transaction().await?;
 
         // reload the quote, as it state may have changed
-        *quote = tx
+        let mut new_quote = tx
             .get_mint_quote(&quote.id)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let current_state = quote.state();
+        let current_state = new_quote.state();
 
-        if quote.payment_method == PaymentMethod::Bolt11
+        if new_quote.payment_method == PaymentMethod::Bolt11
             && (current_state == MintQuoteState::Issued || current_state == MintQuoteState::Paid)
         {
             return Ok(());
         }
 
         for payment in ln_status {
-            if !quote.payment_ids().contains(&&payment.payment_id)
+            if !new_quote.payment_ids().contains(&&payment.payment_id)
                 && payment.payment_amount > Amount::ZERO
             {
                 tracing::debug!(
                     "Found payment of {} {} for quote {} when checking.",
                     payment.payment_amount,
                     payment.unit,
-                    quote.id
+                    new_quote.id
                 );
 
-                let amount_paid = to_unit(payment.payment_amount, &payment.unit, &quote.unit)?;
+                let amount_paid = to_unit(payment.payment_amount, &payment.unit, &new_quote.unit)?;
 
                 match tx
                     .increment_mint_quote_amount_paid(
-                        quote.clone(),
+                        &mut new_quote,
                         amount_paid,
                         payment.payment_id.clone(),
                     )
                     .await
                 {
-                    Ok(updated_quote) => {
+                    Ok(()) => {
                         if let Some(pubsub_manager) = pubsub_manager.as_ref() {
-                            pubsub_manager.mint_quote_payment(quote, updated_quote.amount_paid());
+                            pubsub_manager.mint_quote_payment(&new_quote, new_quote.amount_paid());
                         }
-                        *quote = updated_quote;
                     }
                     Err(database::Error::Duplicate) => {
                         tracing::debug!(
@@ -109,6 +108,8 @@ impl Mint {
         }
 
         tx.commit().await?;
+
+        *quote = new_quote.inner();
 
         Ok(())
     }
