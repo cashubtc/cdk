@@ -556,12 +556,8 @@ impl MeltSaga<SetupComplete> {
         )
         .await?;
 
-        tx.increment_mint_quote_amount_paid(
-            &mut mint_quote,
-            amount,
-            self.state_data.quote.id.to_string(),
-        )
-        .await?;
+        mint_quote.add_payment(amount, self.state_data.quote.id.to_string(), None)?;
+        tx.update_mint_quote(&mut mint_quote).await?;
 
         self.pubsub
             .mint_quote_payment(&mint_quote, mint_quote.amount_paid());

@@ -1012,126 +1012,76 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self))]
-    async fn increment_mint_quote_amount_paid(
+    async fn update_mint_quote(
         &mut self,
         quote: &mut Acquired<mint::MintQuote>,
-        amount_paid: Amount,
-        payment_id: String,
     ) -> Result<(), Self::Err> {
-        if amount_paid == Amount::ZERO {
-            tracing::warn!("Amount payments of zero amount should not be recorded.");
-            return Err(Error::Duplicate);
+        let mut changes = if let Some(changes) = quote.take_changes() {
+            changes
+        } else {
+            return Ok(());
+        };
+
+        if changes.issuances.is_none() && changes.payments.is_none() {
+            return Ok(());
         }
 
-        // Check if payment_id already exists in mint_quote_payments
-        let exists = query(
-            r#"
-            SELECT payment_id
-            FROM mint_quote_payments
-            WHERE payment_id = :payment_id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("payment_id", payment_id.clone())
-        .fetch_one(&self.inner)
-        .await?;
-
-        if exists.is_some() {
-            tracing::error!("Payment ID already exists: {}", payment_id);
-            return Err(database::Error::Duplicate);
+        for payment in changes.payments.take().unwrap_or_default() {
+            query(
+                r#"
+                INSERT INTO mint_quote_payments
+                (quote_id, payment_id, amount, timestamp)
+                VALUES (:quote_id, :payment_id, :amount, :timestamp)
+                "#,
+            )?
+            .bind("quote_id", quote.id.to_string())
+            .bind("payment_id", payment.payment_id)
+            .bind("amount", payment.amount.to_i64())
+            .bind("timestamp", payment.time as i64)
+            .execute(&self.inner)
+            .await
+            .map_err(|err| {
+                tracing::error!("SQLite could not insert payment ID: {}", err);
+                err
+            })?;
         }
 
-        let current_amount_paid = quote.amount_paid();
-        let new_amount_paid = quote
-            .increment_amount_paid(amount_paid)
-            .map_err(|_| Error::AmountOverflow)?;
+        let current_time = unix_time();
 
-        tracing::debug!(
-            "Mint quote {} amount paid was {} is now {}.",
-            quote.id,
-            current_amount_paid,
-            new_amount_paid
-        );
+        for amount_issued in changes.issuances.take().unwrap_or_default() {
+            query(
+                r#"
+                INSERT INTO mint_quote_issued
+                (quote_id, amount, timestamp)
+                VALUES (:quote_id, :amount, :timestamp);
+                "#,
+            )?
+            .bind("quote_id", quote.id.to_string())
+            .bind("amount", amount_issued.to_i64())
+            .bind("timestamp", current_time as i64)
+            .execute(&self.inner)
+            .await?;
+        }
 
-        // Update the amount_paid
         query(
             r#"
-            UPDATE mint_quote
-            SET amount_paid = :amount_paid
-            WHERE id = :quote_id
+            UPDATE
+                mint_quote
+            SET
+                amount_issued = :amount_issued,
+                amount_paid = :amount_paid
+            WHERE
+                id = :quote_id
             "#,
         )?
-        .bind("amount_paid", new_amount_paid.to_i64())
         .bind("quote_id", quote.id.to_string())
+        .bind("amount_issued", quote.amount_issued().to_i64())
+        .bind("amount_paid", quote.amount_paid().to_i64())
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
             tracing::error!("SQLite could not update mint quote amount_paid: {}", err);
         })?;
-
-        // Add payment_id to mint_quote_payments table
-        query(
-            r#"
-            INSERT INTO mint_quote_payments
-            (quote_id, payment_id, amount, timestamp)
-            VALUES (:quote_id, :payment_id, :amount, :timestamp)
-            "#,
-        )?
-        .bind("quote_id", quote.id.to_string())
-        .bind("payment_id", payment_id)
-        .bind("amount", amount_paid.to_i64())
-        .bind("timestamp", unix_time() as i64)
-        .execute(&self.inner)
-        .await
-        .map_err(|err| {
-            tracing::error!("SQLite could not insert payment ID: {}", err);
-            err
-        })?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn increment_mint_quote_amount_issued(
-        &mut self,
-        quote: &mut Acquired<mint::MintQuote>,
-        amount_issued: Amount,
-    ) -> Result<(), Self::Err> {
-        let new_amount_issued = quote
-            .increment_amount_issued(amount_issued)
-            .map_err(|_| Error::AmountOverflow)?;
-
-        // Update the amount_issued
-        query(
-            r#"
-            UPDATE mint_quote
-            SET amount_issued = :amount_issued
-            WHERE id = :quote_id
-            "#,
-        )?
-        .bind("amount_issued", new_amount_issued.to_i64())
-        .bind("quote_id", quote.id.to_string())
-        .execute(&self.inner)
-        .await
-        .inspect_err(|err| {
-            tracing::error!("SQLite could not update mint quote amount_issued: {}", err);
-        })?;
-
-        let current_time = unix_time();
-
-        query(
-            r#"
-INSERT INTO mint_quote_issued
-(quote_id, amount, timestamp)
-VALUES (:quote_id, :amount, :timestamp);
-            "#,
-        )?
-        .bind("quote_id", quote.id.to_string())
-        .bind("amount", amount_issued.to_i64())
-        .bind("timestamp", current_time as i64)
-        .execute(&self.inner)
-        .await?;
 
         Ok(())
     }

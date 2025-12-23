@@ -124,19 +124,28 @@ pub trait QuotesTransaction {
         quote: MintMintQuote,
     ) -> Result<Acquired<MintMintQuote>, Self::Err>;
 
-    /// Increment amount paid [`MintMintQuote`]
-    async fn increment_mint_quote_amount_paid(
+    /// Persists any pending changes made to the mint quote.
+    ///
+    /// This method extracts changes accumulated in the quote (via [`mint::MintQuote::take_changes`])
+    /// and persists them to the database. Changes may include new payments received or new
+    /// issuances recorded against the quote.
+    ///
+    /// If no changes are pending, this method returns successfully without performing
+    /// any database operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote` - A mutable reference to an acquired (row-locked) mint quote. The quote
+    ///   must be locked to ensure transactional consistency when persisting changes.
+    ///
+    /// # Implementation Notes
+    ///
+    /// Implementations should call [`mint::MintQuote::take_changes`] to retrieve pending
+    /// changes, then persist each payment and issuance record, and finally update the
+    /// quote's aggregate counters (`amount_paid`, `amount_issued`) in the database.
+    async fn update_mint_quote(
         &mut self,
         quote: &mut Acquired<mint::MintQuote>,
-        amount_paid: Amount,
-        payment_id: String,
-    ) -> Result<(), Self::Err>;
-
-    /// Increment amount paid [`MintMintQuote`]
-    async fn increment_mint_quote_amount_issued(
-        &mut self,
-        quote: &mut Acquired<mint::MintQuote>,
-        amount_issued: Amount,
     ) -> Result<(), Self::Err>;
 
     /// Get [`mint::MeltQuote`] and lock it for update in this transaction

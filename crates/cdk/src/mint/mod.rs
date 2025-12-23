@@ -749,25 +749,23 @@ impl Mint {
                     payment_amount_quote_unit
                 );
 
-                match tx
-                    .increment_mint_quote_amount_paid(
-                        mint_quote,
-                        payment_amount_quote_unit,
-                        wait_payment_response.payment_id.clone(),
-                    )
-                    .await
-                {
+                match mint_quote.add_payment(
+                    payment_amount_quote_unit,
+                    wait_payment_response.payment_id.clone(),
+                    None,
+                ) {
                     Ok(()) => {
+                        tx.update_mint_quote(mint_quote).await?;
                         pubsub_manager.mint_quote_payment(mint_quote, mint_quote.amount_paid());
                     }
-                    Err(database::Error::Duplicate) => {
+                    Err(Error::DuplicatePaymentId) => {
                         tracing::info!(
                             "Payment ID {} already processed (caught race condition)",
                             wait_payment_response.payment_id
                         );
                         // This is fine - another concurrent request already processed this payment
                     }
-                    Err(e) => return Err(e.into()),
+                    Err(e) => return Err(e),
                 }
             }
         } else {

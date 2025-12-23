@@ -358,6 +358,24 @@ impl Operation {
     }
 }
 
+/// Tracks pending changes made to a [`MintQuote`] that need to be persisted.
+///
+/// This struct implements a change-tracking pattern that separates domain logic from
+/// persistence concerns. When modifications are made to a `MintQuote` via methods like
+/// [`MintQuote::add_payment`] or [`MintQuote::add_issuance`], the changes are recorded
+/// here rather than being immediately persisted. The database layer can then call
+/// [`MintQuote::take_changes`] to retrieve and persist only the modifications.
+///
+/// This approach allows business rule validation to happen in the domain model while
+/// keeping the database layer focused purely on persistence.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct MintQuoteChange {
+    /// New payments added since the quote was loaded or last persisted.
+    pub payments: Option<Vec<IncomingPayment>>,
+    /// New issuance amounts recorded since the quote was loaded or last persisted.
+    pub issuances: Option<Vec<Amount>>,
+}
+
 /// Mint Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuote {
@@ -393,6 +411,13 @@ pub struct MintQuote {
     /// Payment of payment(s) that filled quote
     #[serde(default)]
     pub issuance: Vec<Issuance>,
+    /// Accumulated changes since this quote was loaded or created.
+    ///
+    /// This field is not serialized and is used internally to track modifications
+    /// that need to be persisted. Use [`Self::take_changes`] to extract pending
+    /// changes for persistence.
+    #[serde(skip)]
+    changes: Option<MintQuoteChange>,
 }
 
 impl MintQuote {
@@ -429,20 +454,8 @@ impl MintQuote {
             payment_method,
             payments,
             issuance,
+            changes: None,
         }
-    }
-
-    /// Increment the amount paid on the mint quote by a given amount
-    #[instrument(skip(self))]
-    pub fn increment_amount_paid(
-        &mut self,
-        additional_amount: Amount,
-    ) -> Result<Amount, crate::Error> {
-        self.amount_paid = self
-            .amount_paid
-            .checked_add(additional_amount)
-            .ok_or(crate::Error::AmountOverflow)?;
-        Ok(self.amount_paid)
     }
 
     /// Amount paid
@@ -451,16 +464,30 @@ impl MintQuote {
         self.amount_paid
     }
 
-    /// Increment the amount issued on the mint quote by a given amount
+    /// Records tokens being issued against this mint quote.
+    ///
+    /// This method validates that the issuance doesn't exceed the amount paid, updates
+    /// the quote's internal state, and records the change for later persistence. The
+    /// `amount_issued` counter is incremented and the issuance is added to the change
+    /// tracker for the database layer to persist.
+    ///
+    /// # Arguments
+    ///
+    /// * `additional_amount` - The amount of tokens being issued.
+    ///
+    /// # Returns
+    ///
+    /// Returns the new total `amount_issued` after this issuance is recorded.
     ///
     /// # Errors
-    /// Returns an error if the new issued amount would exceed the paid amount
-    /// (can't issue more than what's been paid) or if the addition would overflow.
+    ///
+    /// Returns [`crate::Error::OverIssue`] if the new issued amount would exceed the
+    /// amount paid (cannot issue more tokens than have been paid for).
+    ///
+    /// Returns [`crate::Error::AmountOverflow`] if adding the issuance amount would
+    /// cause an arithmetic overflow.
     #[instrument(skip(self))]
-    pub fn increment_amount_issued(
-        &mut self,
-        additional_amount: Amount,
-    ) -> Result<Amount, crate::Error> {
+    pub fn add_issuance(&mut self, additional_amount: Amount) -> Result<Amount, crate::Error> {
         let new_amount_issued = self
             .amount_issued
             .checked_add(additional_amount)
@@ -471,7 +498,14 @@ impl MintQuote {
             return Err(crate::Error::OverIssue);
         }
 
+        self.changes
+            .get_or_insert_default()
+            .issuances
+            .get_or_insert_default()
+            .push(additional_amount);
+
         self.amount_issued = new_amount_issued;
+
         Ok(self.amount_issued)
     }
 
@@ -502,16 +536,47 @@ impl MintQuote {
         self.amount_paid - self.amount_issued
     }
 
-    /// Add a payment ID to the list of payment IDs
+    /// Extracts and returns all pending changes, leaving the internal change tracker empty.
     ///
-    /// Returns an error if the payment ID is already in the list
+    /// This method is typically called by the database layer after loading or modifying a quote. It
+    /// returns any accumulated changes (new payments, issuances) that need to be persisted, and
+    /// clears the internal change buffer so that subsequent calls return `None` until new
+    /// modifications are made.
+    ///
+    /// Returns `None` if no changes have been made since the last call to this method or since the
+    /// quote was created/loaded.
+    pub fn take_changes(&mut self) -> Option<MintQuoteChange> {
+        self.changes.take()
+    }
+
+    /// Records a new payment received for this mint quote.
+    ///
+    /// This method validates the payment, updates the quote's internal state, and records the
+    /// change for later persistence. The `amount_paid` counter is incremented and the payment is
+    /// added to the change tracker for the database layer to persist.
+    ///
+    /// # Arguments
+    ///
+    /// * `amount` - The amount of the payment in the quote's currency unit. * `payment_id` - A
+    /// unique identifier for this payment (e.g., lightning payment hash). * `time` - Optional Unix
+    /// timestamp of when the payment was received. If `None`, the current time is used.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::DuplicatePaymentId`] if a payment with the same ID has already been
+    /// recorded for this quote.
+    ///
+    /// Returns [`crate::Error::AmountOverflow`] if adding the payment amount would cause an
+    /// arithmetic overflow.
     #[instrument(skip(self))]
     pub fn add_payment(
         &mut self,
         amount: Amount,
         payment_id: String,
-        time: u64,
+        time: Option<u64>,
     ) -> Result<(), crate::Error> {
+        let time = time.unwrap_or_else(unix_time);
+
         let payment_ids = self.payment_ids();
         if payment_ids.contains(&&payment_id) {
             return Err(crate::Error::DuplicatePaymentId);
@@ -519,7 +584,19 @@ impl MintQuote {
 
         let payment = IncomingPayment::new(amount, payment_id, time);
 
-        self.payments.push(payment);
+        self.payments.push(payment.clone());
+
+        self.changes
+            .get_or_insert_default()
+            .payments
+            .get_or_insert_default()
+            .push(payment);
+
+        self.amount_paid = self
+            .amount_paid
+            .checked_add(amount)
+            .ok_or(crate::Error::AmountOverflow)?;
+
         Ok(())
     }
 
