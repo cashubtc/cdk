@@ -145,12 +145,17 @@ impl Wallet {
             }
         }
 
-        let swap_response = self
-            .try_proof_operation_or_reclaim(
-                pre_swap.swap_request.inputs().clone(),
-                self.client.post_swap(pre_swap.swap_request),
-            )
-            .await?;
+        // Note: We do NOT use try_proof_operation_or_reclaim here because these are
+        // external proofs from a received token, not our own proofs. If the swap fails,
+        // we should simply log the error and keep the pending proofs we added.
+        let swap_response = match self.client.post_swap(pre_swap.swap_request).await {
+            Ok(response) => response,
+            Err(err) => {
+                // log the error. We don't clean up the pending proofs we added.
+                tracing::error!("Failed to post swap request: {}", err);
+                return Err(err);
+            }
+        };
 
         // Proof to keep
         let recv_proofs = construct_proofs(
