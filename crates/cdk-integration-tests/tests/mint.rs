@@ -208,13 +208,16 @@ async fn test_concurrent_duplicate_payment_handling() {
                 .await
                 .expect("no error")
                 .expect("some value");
-            let result = tx
-                .increment_mint_quote_amount_paid(
-                    &mut quote_from_db,
-                    Amount::from(10),
-                    payment_id_clone,
-                )
-                .await;
+
+            let result = if let Err(err) =
+                quote_from_db.add_payment(Amount::from(10), payment_id_clone, None)
+            {
+                Err(err)
+            } else {
+                tx.update_mint_quote(&mut quote_from_db)
+                    .await
+                    .map_err(|err| cdk_common::Error::Database(err))
+            };
 
             if result.is_ok() {
                 tx.commit().await.unwrap();

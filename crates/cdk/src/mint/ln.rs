@@ -6,7 +6,7 @@ use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::DynMintPayment;
-use cdk_common::{database, Amount, MintQuoteState, PaymentMethod};
+use cdk_common::{Amount, MintQuoteState, PaymentMethod};
 use tracing::instrument;
 
 use super::subscription::PubSubManager;
@@ -82,27 +82,21 @@ impl Mint {
 
                 let amount_paid = to_unit(payment.payment_amount, &payment.unit, &new_quote.unit)?;
 
-                match tx
-                    .increment_mint_quote_amount_paid(
-                        &mut new_quote,
-                        amount_paid,
-                        payment.payment_id.clone(),
-                    )
-                    .await
-                {
+                match new_quote.add_payment(amount_paid, payment.payment_id.clone(), None) {
                     Ok(()) => {
+                        tx.update_mint_quote(&mut new_quote).await?;
                         if let Some(pubsub_manager) = pubsub_manager.as_ref() {
                             pubsub_manager.mint_quote_payment(&new_quote, new_quote.amount_paid());
                         }
                     }
-                    Err(database::Error::Duplicate) => {
+                    Err(crate::Error::DuplicatePaymentId) => {
                         tracing::debug!(
                             "Payment ID {} already processed (caught race condition in check_mint_quote_paid)",
                             payment.payment_id
                         );
                         // This is fine - another concurrent request already processed this payment
                     }
-                    Err(e) => return Err(e.into()),
+                    Err(e) => return Err(e),
                 }
             }
         }

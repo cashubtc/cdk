@@ -675,9 +675,8 @@ impl Mint {
             .await?;
 
 
-            tx
-            .increment_mint_quote_amount_issued(&mut mint_quote, amount_issued)
-            .await?;
+        mint_quote.add_issuance(amount_issued)?;
+        tx.update_mint_quote(&mut mint_quote).await?;
 
 
         // Mint operations have no input fees (no proofs being spent)
