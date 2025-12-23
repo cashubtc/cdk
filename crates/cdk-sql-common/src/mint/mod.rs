@@ -325,6 +325,34 @@ where
         .collect::<Result<Vec<Proof>, _>>()?
         .ys()?)
     }
+
+    async fn get_proof_ys_by_operation_id(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err> {
+        Ok(query(
+            r#"
+            SELECT
+                y
+            FROM
+                proof
+            WHERE
+                operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(|row| -> Result<PublicKey, Error> {
+            Ok(column_as_string!(
+                &row[0],
+                PublicKey::from_hex,
+                PublicKey::from_slice
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?)
+    }
 }
 
 #[async_trait]
@@ -1658,6 +1686,35 @@ where
         .map(sql_row_to_hashmap_amount)
         .collect()
     }
+
+    async fn get_proof_ys_by_operation_id(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                y
+            FROM
+                proof
+            WHERE
+                operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(|row| -> Result<PublicKey, Error> {
+            Ok(column_as_string!(
+                &row[0],
+                PublicKey::from_hex,
+                PublicKey::from_slice
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()
+    }
 }
 
 #[async_trait]
@@ -1992,6 +2049,35 @@ where
         .map(sql_row_to_hashmap_amount)
         .collect()
     }
+
+    async fn get_blinded_secrets_by_operation_id(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                blinded_message
+            FROM
+                blind_signature
+            WHERE
+                operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(|row| -> Result<PublicKey, Error> {
+            Ok(column_as_string!(
+                &row[0],
+                PublicKey::from_hex,
+                PublicKey::from_slice
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()
+    }
 }
 
 #[async_trait]
@@ -2115,8 +2201,6 @@ where
                 operation_id,
                 operation_kind,
                 state,
-                blinded_secrets,
-                input_ys,
                 quote_id,
                 created_at,
                 updated_at
@@ -2137,25 +2221,17 @@ where
     async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
-        let blinded_secrets_json = serde_json::to_string(&saga.blinded_secrets)
-            .map_err(|e| Error::Internal(format!("Failed to serialize blinded_secrets: {e}")))?;
-
-        let input_ys_json = serde_json::to_string(&saga.input_ys)
-            .map_err(|e| Error::Internal(format!("Failed to serialize input_ys: {e}")))?;
-
         query(
             r#"
             INSERT INTO saga_state
-            (operation_id, operation_kind, state, blinded_secrets, input_ys, quote_id, created_at, updated_at)
+            (operation_id, operation_kind, state, quote_id, created_at, updated_at)
             VALUES
-            (:operation_id, :operation_kind, :state, :blinded_secrets, :input_ys, :quote_id, :created_at, :updated_at)
+            (:operation_id, :operation_kind, :state, :quote_id, :created_at, :updated_at)
             "#,
         )?
         .bind("operation_id", saga.operation_id.to_string())
         .bind("operation_kind", saga.operation_kind.to_string())
         .bind("state", saga.state.state())
-        .bind("blinded_secrets", blinded_secrets_json)
-        .bind("input_ys", input_ys_json)
         .bind("quote_id", saga.quote_id.as_deref())
         .bind("created_at", saga.created_at as i64)
         .bind("updated_at", current_time as i64)
@@ -2221,8 +2297,6 @@ where
                 operation_id,
                 operation_kind,
                 state,
-                blinded_secrets,
-                input_ys,
                 quote_id,
                 created_at,
                 updated_at
@@ -2668,8 +2742,6 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
             operation_id,
             operation_kind,
             state,
-            blinded_secrets,
-            input_ys,
             quote_id,
             created_at,
             updated_at
@@ -2687,14 +2759,6 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
     let state_str = column_as_string!(&state);
     let state = mint::SagaStateEnum::new(operation_kind, &state_str)
         .map_err(|e| Error::Internal(format!("Invalid saga state: {e}")))?;
-
-    let blinded_secrets_str = column_as_string!(&blinded_secrets);
-    let blinded_secrets: Vec<PublicKey> = serde_json::from_str(&blinded_secrets_str)
-        .map_err(|e| Error::Internal(format!("Failed to deserialize blinded_secrets: {e}")))?;
-
-    let input_ys_str = column_as_string!(&input_ys);
-    let input_ys: Vec<PublicKey> = serde_json::from_str(&input_ys_str)
-        .map_err(|e| Error::Internal(format!("Failed to deserialize input_ys: {e}")))?;
 
     let quote_id = match &quote_id {
         Column::Text(s) => {
@@ -2715,8 +2779,6 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
         operation_id,
         operation_kind,
         state,
-        blinded_secrets,
-        input_ys,
         quote_id,
         created_at,
         updated_at,
