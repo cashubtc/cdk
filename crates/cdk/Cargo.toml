@@ -13,7 +13,7 @@ license.workspace = true
 [features]
 default = ["mint", "wallet", "auth", "nostr", "bip353"]
 wallet = ["dep:futures", "dep:reqwest", "cdk-common/wallet", "dep:rustls"]
-nostr = ["wallet", "dep:nostr-sdk"]
+nostr = ["wallet", "dep:nostr-sdk", "cdk-common/nostr"]
 mint = ["dep:futures", "dep:reqwest", "cdk-common/mint", "cdk-signatory"]
 auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]
 bip353 = ["dep:hickory-resolver"]
@@ -144,6 +144,10 @@ required-features = ["wallet", "bip353"]
 
 [[example]]
 name = "payment_request"
+required-features = ["wallet", "nostr"]
+
+[[example]]
+name = "nostr_backup"
 required-features = ["wallet", "nostr"]
 
 [[example]]

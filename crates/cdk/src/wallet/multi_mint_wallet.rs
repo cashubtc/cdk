@@ -264,6 +264,13 @@ impl MultiMintWallet {
         Ok(wallet)
     }
 
+    /// Get a reference to the wallet seed
+    ///
+    /// This is used internally for key derivation operations.
+    pub(crate) fn seed(&self) -> &[u8; 64] {
+        &self.seed
+    }
+
     /// Adds a mint to this [MultiMintWallet]
     ///
     /// Creates a wallet for the specified mint using default or global settings.
