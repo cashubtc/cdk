@@ -263,21 +263,29 @@ mod tests {
         assert_eq!(public_key.to_hex().len(), 64);
     }
 
+    /// Test vector for key derivation from BIP39 mnemonic.
+    ///
+    /// Mnemonic: "half depart obvious quality work element tank gorilla view sugar picture humble"
+    /// Expected secret key: e7ca79469a270b36617e4227ff2f068d3bcbb6b072c8584190b0203597c53c0d
+    /// Expected public key: 0767277aaed200af7a8843491745272fc1ad2c7bfe340225e6f34f3a9a273aed
     #[test]
-    fn test_known_vector() {
+    fn test_key_derivation_vector() {
+        use crate::util::hex;
+
         let keys = test_keys();
 
-        // The public key should be a valid x-only public key (32 bytes = 64 hex chars)
-        let public_key_hex = keys.public_key().to_hex();
+        // Test vector: secret key
+        let expected_secret_key =
+            "e7ca79469a270b36617e4227ff2f068d3bcbb6b072c8584190b0203597c53c0d";
+        assert_eq!(
+            hex::encode(keys.secret_key().as_secret_bytes()),
+            expected_secret_key
+        );
 
-        println!("{}", public_key_hex);
-
-        let pub_key = nostr_sdk::PublicKey::from_hex(
-            "0767277aaed200af7a8843491745272fc1ad2c7bfe340225e6f34f3a9a273aed",
-        )
-        .unwrap();
-
-        assert_eq!(keys.public_key, pub_key);
+        // Test vector: public key
+        let expected_public_key =
+            "0767277aaed200af7a8843491745272fc1ad2c7bfe340225e6f34f3a9a273aed";
+        assert_eq!(keys.public_key().to_hex(), expected_public_key);
     }
 
     #[test]
