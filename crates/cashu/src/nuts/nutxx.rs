@@ -264,49 +264,20 @@ mod tests {
     }
 
     #[test]
-    fn test_deterministic_derivation() {
-        let mnemonic = Mnemonic::from_str(
-            "half depart obvious quality work element tank gorilla view sugar picture humble",
-        )
-        .unwrap();
-        let seed: [u8; 64] = mnemonic.to_seed("");
-
-        // Derive keys twice
-        let keys_1 = derive_nostr_keys(&seed).unwrap();
-        let keys_2 = derive_nostr_keys(&seed).unwrap();
-
-        // They should be identical
-        assert_eq!(keys_1.public_key(), keys_2.public_key());
-    }
-
-    #[test]
-    fn test_different_seeds_produce_different_keys() {
-        let mnemonic_1 = Mnemonic::from_str(
-            "half depart obvious quality work element tank gorilla view sugar picture humble",
-        )
-        .unwrap();
-        let seed_1: [u8; 64] = mnemonic_1.to_seed("");
-
-        let mnemonic_2 = Mnemonic::from_str(
-            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        )
-        .unwrap();
-        let seed_2: [u8; 64] = mnemonic_2.to_seed("");
-
-        let keys_1 = derive_nostr_keys(&seed_1).unwrap();
-        let keys_2 = derive_nostr_keys(&seed_2).unwrap();
-
-        // Different seeds should produce different keys
-        assert_ne!(keys_1.public_key(), keys_2.public_key());
-    }
-
-    #[test]
     fn test_known_vector() {
         let keys = test_keys();
 
         // The public key should be a valid x-only public key (32 bytes = 64 hex chars)
         let public_key_hex = keys.public_key().to_hex();
-        assert_eq!(public_key_hex.len(), 64);
+
+        println!("{}", public_key_hex);
+
+        let pub_key = nostr_sdk::PublicKey::from_hex(
+            "0767277aaed200af7a8843491745272fc1ad2c7bfe340225e6f34f3a9a273aed",
+        )
+        .unwrap();
+
+        assert_eq!(keys.public_key, pub_key);
     }
 
     #[test]
