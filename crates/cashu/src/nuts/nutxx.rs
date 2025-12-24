@@ -110,16 +110,13 @@ impl MintBackup {
 /// let keys = derive_nostr_keys(&seed).unwrap();
 /// ```
 pub fn derive_nostr_keys(seed: &[u8; 64]) -> Result<Keys, Error> {
-    // Concatenate seed and domain separator
     let mut combined_data = Vec::with_capacity(seed.len() + DOMAIN_SEPARATOR.len());
     combined_data.extend_from_slice(seed);
     combined_data.extend_from_slice(DOMAIN_SEPARATOR);
 
-    // Hash to derive private key
     let hash = Sha256Hash::hash(&combined_data);
     let private_key_bytes = hash.to_byte_array();
 
-    // Create nostr Keys from the derived secret key bytes
     let secret_key = nostr_sdk::SecretKey::from_slice(&private_key_bytes)?;
     let keys = Keys::new(secret_key);
 
@@ -146,10 +143,9 @@ pub fn create_backup_event(
     backup: &MintBackup,
     client: Option<&str>,
 ) -> Result<Event, Error> {
-    // Serialize the backup data to JSON
     let plaintext = serde_json::to_string(backup)?;
 
-    // Encrypt using NIP-44 v2 (self-encryption: same key for sender and receiver)
+    // Self-encryption: same key for sender and receiver per NIP-44
     let encrypted_content = nip44::encrypt(
         keys.secret_key(),
         &keys.public_key(),
@@ -157,14 +153,12 @@ pub fn create_backup_event(
         Version::V2,
     )?;
 
-    // Build the event
     let mut builder = EventBuilder::new(
         Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA),
         encrypted_content,
     )
     .tag(Tag::identifier(MINT_LIST_IDENTIFIER));
 
-    // Add client tag if provided
     if let Some(client_name) = client {
         builder = builder.tag(Tag::custom(
             nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed("client")),
@@ -172,7 +166,6 @@ pub fn create_backup_event(
         ));
     }
 
-    // Sign and return the event
     let event = builder.sign_with_keys(keys)?;
 
     Ok(event)
@@ -192,7 +185,6 @@ pub fn create_backup_event(
 ///
 /// The decrypted mint backup data
 pub fn decrypt_backup_event(keys: &Keys, event: &Event) -> Result<MintBackup, Error> {
-    // Verify the event kind
     let expected_kind = Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA);
     if event.kind != expected_kind {
         return Err(Error::InvalidEventKind {
@@ -201,7 +193,6 @@ pub fn decrypt_backup_event(keys: &Keys, event: &Event) -> Result<MintBackup, Er
         });
     }
 
-    // Verify the "d" tag is present with the correct identifier
     let has_mint_list_tag = event
         .tags
         .iter()
@@ -213,10 +204,8 @@ pub fn decrypt_backup_event(keys: &Keys, event: &Event) -> Result<MintBackup, Er
         ));
     }
 
-    // Decrypt using NIP-44 (self-encryption: same key for sender and receiver)
     let decrypted = nip44::decrypt(keys.secret_key(), &keys.public_key(), &event.content)?;
 
-    // Parse the JSON
     let backup: MintBackup = serde_json::from_str(&decrypted)?;
 
     Ok(backup)

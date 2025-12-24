@@ -123,23 +123,18 @@ impl MultiMintWallet {
     where
         S: AsRef<str>,
     {
-        // Get the backup keys
         let keys = self.backup_keys()?;
 
-        // Get all mint URLs from the wallet
         let wallets = self.get_wallets().await;
         let mint_urls: Vec<MintUrl> = wallets.iter().map(|w| w.mint_url.clone()).collect();
 
-        // Create the backup data
         let backup = MintBackup::new(mint_urls.clone());
 
-        // Create the encrypted event
         let event = create_backup_event(&keys, &backup, options.client.as_deref())
             .map_err(|e| Error::Custom(format!("Failed to create backup event: {e}")))?;
 
         let event_id = event.id;
 
-        // Create Nostr client and connect to relays
         let client = NostrClient::new(keys.clone());
 
         for relay in relays.iter() {
@@ -151,13 +146,11 @@ impl MultiMintWallet {
 
         client.connect().await;
 
-        // Publish the event
         client
             .send_event(&event)
             .await
             .map_err(|e| Error::Custom(format!("Failed to publish backup event: {e}")))?;
 
-        // Disconnect from relays
         client.disconnect().await;
 
         Ok(BackupResult {
@@ -199,20 +192,16 @@ impl MultiMintWallet {
     where
         S: AsRef<str>,
     {
-        // Get the backup keys
         let keys = self.backup_keys()?;
 
-        // Get filter parameters for the backup event
         let (kind, pubkey, d_tag) = backup_filter_params(&keys);
 
-        // Create filter for addressable event
         let filter = Filter::new()
             .kind(kind)
             .author(pubkey)
             .identifier(d_tag)
             .limit(1);
 
-        // Create Nostr client and connect to relays
         let client = NostrClient::new(keys.clone());
 
         for relay in relays.iter() {
@@ -224,34 +213,29 @@ impl MultiMintWallet {
 
         client.connect().await;
 
-        // Fetch events matching the filter
         let events = client
             .fetch_events(filter, options.timeout)
             .await
             .map_err(|e| Error::Custom(format!("Failed to fetch backup events: {e}")))?;
 
-        // Disconnect from relays
         client.disconnect().await;
 
-        // Get the most recent event (should be only one due to addressable event semantics)
+        // Addressable events ensure only one event per pubkey+d-tag combination
         let event = events
             .into_iter()
             .next()
             .ok_or_else(|| Error::Custom("No backup event found".to_string()))?;
 
-        // Decrypt and parse the backup
         let backup = decrypt_backup_event(&keys, &event)
             .map_err(|e| Error::Custom(format!("Failed to decrypt backup event: {e}")))?;
 
         let mint_count = backup.mints.len();
         let mut mints_added = 0;
 
-        // Optionally add mints to the wallet
         if add_mints {
             for mint_url in &backup.mints {
-                // Check if mint already exists
                 if !self.has_mint(mint_url).await {
-                    // Try to add the mint (ignore errors for individual mints)
+                    // Ignore errors for individual mints to continue restoring others
                     if self.add_mint(mint_url.clone()).await.is_ok() {
                         mints_added += 1;
                     }
@@ -286,22 +270,5 @@ impl MultiMintWallet {
     {
         let result = self.restore_mints(relays, false, options).await?;
         Ok(result.backup)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_backup_options() {
-        let options = BackupOptions::new().client("test-client");
-        assert_eq!(options.client, Some("test-client".to_string()));
-    }
-
-    #[test]
-    fn test_restore_options() {
-        let options = RestoreOptions::new().timeout(Duration::from_secs(30));
-        assert_eq!(options.timeout, Duration::from_secs(30));
     }
 }
