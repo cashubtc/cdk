@@ -656,6 +656,52 @@ where
         .transpose()
 }
 
+#[inline]
+async fn get_melt_quotes_by_request_lookup_id_inner<T>(
+    executor: &T,
+    request_lookup_id: &PaymentIdentifier,
+    for_update: bool,
+) -> Result<Vec<mint::MeltQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            unit,
+            amount,
+            request,
+            fee_reserve,
+            expiry,
+            state,
+            payment_preimage,
+            request_lookup_id,
+            created_time,
+            paid_time,
+            payment_method,
+            options,
+            request_lookup_id_kind
+        FROM
+            melt_quote
+        WHERE
+            request_lookup_id = :request_lookup_id
+            AND request_lookup_id_kind = :request_lookup_id_kind
+        {for_update_clause}
+        "#
+    );
+
+    query(&query_str)?
+        .bind("request_lookup_id", request_lookup_id.to_string())
+        .bind("request_lookup_id_kind", request_lookup_id.kind())
+        .fetch_all(executor)
+        .await?
+        .into_iter()
+        .map(sql_row_to_melt_quote)
+        .collect::<Result<Vec<_>, _>>()
+}
+
 #[async_trait]
 impl<RM> MintKeyDatabaseTransaction<'_, Error> for SQLTransaction<RM>
 where
@@ -1189,47 +1235,6 @@ where
 
         check_melt_quote_state_transition(old_state, state)?;
 
-        // When transitioning to Pending, lock all quotes with the same lookup_id
-        // and check if any are already pending or paid
-        if state == MeltQuoteState::Pending {
-            if let Some(ref lookup_id) = quote.request_lookup_id {
-                // Lock all quotes with the same lookup_id to prevent race conditions
-                let locked_quotes: Vec<(String, String)> = query(
-                    r#"
-                    SELECT id, state
-                    FROM melt_quote
-                    WHERE request_lookup_id = :lookup_id
-                    FOR UPDATE
-                    "#,
-                )?
-                .bind("lookup_id", lookup_id.to_string())
-                .fetch_all(&self.inner)
-                .await?
-                .into_iter()
-                .map(|row| {
-                    unpack_into!(let (id, state) = row);
-                    Ok((column_as_string!(id), column_as_string!(state)))
-                })
-                .collect::<Result<Vec<_>, Error>>()?;
-
-                // Check if any other quote with the same lookup_id is pending or paid
-                let has_conflict = locked_quotes.iter().any(|(id, s)| {
-                    id != &quote.id.to_string()
-                        && (s == &MeltQuoteState::Pending.to_string()
-                            || s == &MeltQuoteState::Paid.to_string())
-                });
-
-                if has_conflict {
-                    tracing::warn!(
-                        "Cannot transition quote {} to Pending: another quote with lookup_id {} is already pending or paid",
-                        quote.id,
-                        lookup_id
-                    );
-                    return Err(Error::Duplicate);
-                }
-            }
-        }
-
         let rec = if state == MeltQuoteState::Paid {
             let current_time = unix_time();
             quote.paid_time = Some(current_time);
@@ -1282,6 +1287,15 @@ where
         get_melt_quote_inner(&self.inner, quote_id, true)
             .await
             .map(|quote| quote.map(|inner| inner.into()))
+    }
+
+    async fn get_melt_quotes_by_request_lookup_id(
+        &mut self,
+        request_lookup_id: &PaymentIdentifier,
+    ) -> Result<Vec<Acquired<mint::MeltQuote>>, Self::Err> {
+        get_melt_quotes_by_request_lookup_id_inner(&self.inner, request_lookup_id, true)
+            .await
+            .map(|quote| quote.into_iter().map(|inner| inner.into()).collect())
     }
 
     async fn get_mint_quote_by_request(

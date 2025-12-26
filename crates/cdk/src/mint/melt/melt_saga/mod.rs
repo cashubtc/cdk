@@ -16,6 +16,7 @@ use tracing::instrument;
 use self::compensation::{CompensatingAction, RemoveMeltSetup};
 use self::state::{Initial, PaymentConfirmed, SettlementDecision, SetupComplete};
 use crate::cdk_payment::MakePaymentResponse;
+use crate::mint::melt::shared;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::Verification;
 use crate::mint::{MeltQuoteBolt11Response, MeltRequest};
@@ -202,6 +203,15 @@ impl MeltSaga<Initial> {
 
         let mut tx = self.db.begin_transaction().await?;
 
+        let mut quote =
+            match shared::load_melt_quotes_exclusively(&mut tx, melt_request.quote()).await {
+                Ok(quote) => quote,
+                Err(err) => {
+                    tx.rollback().await?;
+                    return Err(err);
+                }
+            };
+
         // Calculate fee to create Operation with actual amounts
         let fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
 
@@ -280,19 +290,6 @@ impl MeltSaga<Initial> {
                 },
             );
         }
-
-        // Get and lock the quote
-        let mut quote = match tx.get_melt_quote(melt_request.quote()).await {
-            Ok(Some(q)) => q,
-            Ok(None) => {
-                tx.rollback().await?;
-                return Err(Error::UnknownQuote);
-            }
-            Err(err) => {
-                tx.rollback().await?;
-                return Err(err.into());
-            }
-        };
 
         let previous_state = quote.state;
 
@@ -888,10 +885,8 @@ impl MeltSaga<PaymentConfirmed> {
         let mut tx = self.db.begin_transaction().await?;
 
         // Acquire lock on the quote for safe state update
-        let mut quote = tx
-            .get_melt_quote(&self.state_data.quote.id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
+        let mut quote =
+            shared::load_melt_quotes_exclusively(&mut tx, &self.state_data.quote.id).await?;
 
         // Get melt request info (needed for validation and change)
         let MeltRequestInfo {
