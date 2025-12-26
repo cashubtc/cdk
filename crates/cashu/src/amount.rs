@@ -752,6 +752,24 @@ mod tests {
         let converted = to_unit(amount, &current_unit, &target_unit);
 
         assert!(converted.is_err());
+
+        // Test Sat -> Sat identity conversion
+        let amount = Amount::from(500);
+        let current_unit = CurrencyUnit::Sat;
+        let target_unit = CurrencyUnit::Sat;
+
+        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
+
+        assert_eq!(converted, 500.into());
+
+        // Test Msat -> Msat identity conversion
+        let amount = Amount::from(5000);
+        let current_unit = CurrencyUnit::Msat;
+        let target_unit = CurrencyUnit::Msat;
+
+        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
+
+        assert_eq!(converted, 5000.into());
     }
 
     /// Tests that the subtraction operator correctly computes the difference between amounts.
