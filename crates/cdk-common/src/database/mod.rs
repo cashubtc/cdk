@@ -206,6 +206,11 @@ pub enum Error {
     /// Duplicate entry
     #[error("Duplicate entry")]
     Duplicate,
+
+    /// Locked resource
+    #[error("Locked resource")]
+    Locked,
+
     /// Amount overflow
     #[error("Amount overflow")]
     AmountOverflow,

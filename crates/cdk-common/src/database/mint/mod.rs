@@ -8,7 +8,7 @@ use cashu::Amount;
 
 use super::{DbTransactionFinalizer, Error};
 use crate::database::Acquired;
-use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote, Operation};
+use crate::mint::{self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation};
 use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
     State,
@@ -156,6 +156,26 @@ pub trait QuotesTransaction {
 
     /// Add [`mint::MeltQuote`]
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err>;
+
+    /// Retrieves all melt quotes matching a payment lookup identifier and locks them for update.
+    ///
+    /// This method returns multiple quotes because certain payment methods (notably BOLT12 offers)
+    /// can generate multiple payment attempts that share the same lookup identifier. Locking all
+    /// related quotes prevents race conditions where concurrent melt operations could interfere
+    /// with each other, potentially leading to double-spending or state inconsistencies.
+    ///
+    /// The returned quotes are locked within the current transaction to ensure safe concurrent
+    /// modification. This is essential during melt saga initiation and finalization to guarantee
+    /// atomic state transitions across all related quotes.
+    ///
+    /// # Arguments
+    ///
+    /// * `request_lookup_id` - The payment identifier used by the Lightning backend to track
+    ///   payment state (e.g., payment hash, offer ID, or label).
+    async fn get_melt_quotes_by_request_lookup_id(
+        &mut self,
+        request_lookup_id: &PaymentIdentifier,
+    ) -> Result<Vec<Acquired<MeltQuote>>, Self::Err>;
 
     /// Updates the request lookup id for a melt quote.
     ///

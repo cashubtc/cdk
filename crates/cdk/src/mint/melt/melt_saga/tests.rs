@@ -2735,6 +2735,7 @@ async fn test_duplicate_lookup_id_prevents_second_pending() {
         .await
         .unwrap()
         .expect("Quote 1 should exist");
+
     let quote2 = mint
         .localstore
         .get_melt_quote(&quote_response2.quote)
@@ -2826,6 +2827,7 @@ async fn test_duplicate_lookup_id_prevents_second_pending() {
         .await
         .unwrap()
         .unwrap();
+
     assert_eq!(
         still_unpaid_quote2.state,
         MeltQuoteState::Unpaid,
