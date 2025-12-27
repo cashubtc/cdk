@@ -1308,19 +1308,36 @@ VALUES (:quote_id, :amount, :timestamp);
                 .collect::<Result<Vec<_>, Error>>()?;
 
                 // Check if any other quote with the same lookup_id is pending or paid
-                let has_conflict = locked_quotes.iter().any(|(id, state)| {
-                    id != &quote_id.to_string()
-                        && (state == &MeltQuoteState::Pending.to_string()
-                            || state == &MeltQuoteState::Paid.to_string())
+                let conflicting_state = locked_quotes.iter().find_map(|(id, state)| {
+                    if id != &quote_id.to_string() {
+                        if state == &MeltQuoteState::Pending.to_string() {
+                            Some(MeltQuoteState::Pending)
+                        } else if state == &MeltQuoteState::Paid.to_string() {
+                            Some(MeltQuoteState::Paid)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
                 });
 
-                if has_conflict {
+                if let Some(conflict) = conflicting_state {
                     tracing::warn!(
-                        "Cannot transition quote {} to Pending: another quote with lookup_id {} is already pending or paid",
+                        "Cannot transition quote {} to Pending: another quote with lookup_id {} is already {:?}",
                         quote_id,
-                        lookup_id
+                        lookup_id,
+                        conflict
                     );
-                    return Err(Error::Duplicate);
+                    return Err(match conflict {
+                        MeltQuoteState::Pending => {
+                            Error::InvalidStateTransition(cdk_common::state::Error::Pending)
+                        }
+                        MeltQuoteState::Paid => {
+                            Error::InvalidStateTransition(cdk_common::state::Error::AlreadyPaid)
+                        }
+                        _ => unreachable!(),
+                    });
                 }
             }
         }
