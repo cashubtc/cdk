@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
+use bitcoin::bip32::DerivationPath;
 use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::amount::SplitTarget;
@@ -950,6 +951,19 @@ pub trait Wallet: Send + Sync {
     /// The `Spent` state is typically excluded since spent proofs are removed
     /// from the database.
     async fn get_proofs_by_states(&self, states: Vec<State>) -> Result<Proofs, Self::Error>;
+}
+
+/// Public key generated for proof signing
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct P2PKSigningKey {
+    /// Public key
+    pub pubkey: PublicKey,
+    /// Derivation path
+    pub derivation_path: DerivationPath,
+    /// Derivation index
+    pub derivation_index: u32,
+    /// Created time
+    pub created_time: u64,
 }
 
 #[cfg(test)]

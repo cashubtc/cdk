@@ -20,6 +20,9 @@ pub enum Error {
     /// Spend conditions not met
     #[error("Spend conditions are not met")]
     SpendConditionsNotMet,
+    /// Proof does not contain enough signature for lock
+    #[error("proof does not contain enough proofs to be spendable")]
+    NotEnoughSignatures,
 
     /// From hex error
     #[error(transparent)]

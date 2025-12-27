@@ -12,9 +12,12 @@
 //!                                         └─> amount(), into_amount()
 //! ```
 
+use std::collections::HashMap;
+
+use bitcoin::XOnlyPublicKey;
 use uuid::Uuid;
 
-use crate::nuts::{Id, Proofs};
+use crate::nuts::{Id, Proofs, SecretKey};
 use crate::wallet::receive::ReceiveOptions;
 use crate::Amount;
 
@@ -44,6 +47,8 @@ pub struct Prepared {
     pub proofs_amount: Amount,
     /// Active keyset ID for the swap
     pub active_keyset_id: Id,
+    /// P2PK signing keys (from options + wallet database lookups)
+    pub p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey>,
 }
 
 /// Finalized state - receive operation completed successfully.
