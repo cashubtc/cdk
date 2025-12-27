@@ -155,4 +155,41 @@ mod tests {
 
         assert_eq!(secret_n, secret)
     }
+
+    #[test]
+    fn test_is_p2pk_true() {
+        // A valid P2PK secret in JSON format
+        let p2pk_secret_str = r#"["P2PK",{"nonce":"5d11913ee0f92fefdc82a6764fd2457a","data":"026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198"}]"#;
+        let secret = Secret::from_str(p2pk_secret_str).unwrap();
+
+        assert!(secret.is_p2pk());
+    }
+
+    #[test]
+    fn test_is_p2pk_false() {
+        // A random hex string (not a P2PK secret)
+        let secret = Secret::generate();
+
+        assert!(!secret.is_p2pk());
+
+        // Also test with a plain string that's not valid JSON
+        let plain_secret = Secret::from_str("not_a_p2pk_secret").unwrap();
+
+        assert!(!plain_secret.is_p2pk());
+    }
+
+    #[test]
+    fn test_secret_to_vec_u8() {
+        let secret = Secret::from_str("test_secret_value").unwrap();
+
+        // Test From<Secret> for Vec<u8>
+        let bytes: Vec<u8> = secret.clone().into();
+        assert_eq!(bytes, b"test_secret_value".to_vec());
+        assert!(!bytes.is_empty());
+
+        // Test From<&Secret> for Vec<u8>
+        let bytes_ref: Vec<u8> = (&secret).into();
+        assert_eq!(bytes_ref, b"test_secret_value".to_vec());
+        assert!(!bytes_ref.is_empty());
+    }
 }
