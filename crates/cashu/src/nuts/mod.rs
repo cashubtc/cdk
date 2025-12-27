@@ -25,6 +25,8 @@ pub mod nut19;
 pub mod nut20;
 pub mod nut23;
 pub mod nut25;
+#[cfg(all(feature = "wallet", feature = "nostr"))]
+pub mod nutxx;
 
 #[cfg(feature = "auth")]
 mod auth;
@@ -69,3 +71,7 @@ pub use nut23::{
     MintQuoteBolt11Response, QuoteState as MintQuoteState,
 };
 pub use nut25::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+#[cfg(all(feature = "wallet", feature = "nostr"))]
+pub use nutxx::{
+    backup_filter_params, create_backup_event, decrypt_backup_event, derive_nostr_keys, MintBackup,
+};
