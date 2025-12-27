@@ -378,8 +378,6 @@ impl MeltSaga<Initial> {
         let saga = Saga::new_melt(
             self.operation_id,
             MeltSagaState::SetupComplete,
-            input_ys.clone(),
-            blinded_secrets.clone(),
             quote.id.to_string(),
         );
 

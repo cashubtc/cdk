@@ -162,10 +162,6 @@ pub struct Saga {
     pub operation_kind: OperationKind,
     /// Current saga state (operation-specific)
     pub state: SagaStateEnum,
-    /// Blinded secrets (B values) from output blinded messages
-    pub blinded_secrets: Vec<PublicKey>,
-    /// Y values (public keys) from input proofs
-    pub input_ys: Vec<PublicKey>,
     /// Quote ID for melt operations (used for payment status lookup during recovery)
     /// None for swap operations
     pub quote_id: Option<String>,
@@ -177,19 +173,12 @@ pub struct Saga {
 
 impl Saga {
     /// Create new swap saga
-    pub fn new_swap(
-        operation_id: Uuid,
-        state: SwapSagaState,
-        blinded_secrets: Vec<PublicKey>,
-        input_ys: Vec<PublicKey>,
-    ) -> Self {
+    pub fn new_swap(operation_id: Uuid, state: SwapSagaState) -> Self {
         let now = unix_time();
         Self {
             operation_id,
             operation_kind: OperationKind::Swap,
             state: SagaStateEnum::Swap(state),
-            blinded_secrets,
-            input_ys,
             quote_id: None,
             created_at: now,
             updated_at: now,
@@ -203,20 +192,12 @@ impl Saga {
     }
 
     /// Create new melt saga
-    pub fn new_melt(
-        operation_id: Uuid,
-        state: MeltSagaState,
-        input_ys: Vec<PublicKey>,
-        blinded_secrets: Vec<PublicKey>,
-        quote_id: String,
-    ) -> Self {
+    pub fn new_melt(operation_id: Uuid, state: MeltSagaState, quote_id: String) -> Self {
         let now = unix_time();
         Self {
             operation_id,
             operation_kind: OperationKind::Melt,
             state: SagaStateEnum::Melt(state),
-            blinded_secrets,
-            input_ys,
             quote_id: Some(quote_id),
             created_at: now,
             updated_at: now,

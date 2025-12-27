@@ -1,6 +1,7 @@
 #![cfg(test)]
 //! Test helpers for creating test mints and related utilities
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -19,8 +20,6 @@ use tokio::time::sleep;
 use crate::mint::{Mint, MintBuilder, MintMeltLimits};
 use crate::types::{FeeReserve, QuoteTTL};
 use crate::Error;
-
-use std::cell::RefCell;
 
 thread_local! {
     /// Thread-local storage for test failure flags.

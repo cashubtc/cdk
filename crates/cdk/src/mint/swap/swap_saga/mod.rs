@@ -253,12 +253,7 @@ impl<'a> SwapSaga<'a, Initial> {
             .collect();
 
         // Persist saga state for crash recovery (atomic with TX1)
-        let saga = Saga::new_swap(
-            self.operation_id,
-            SwapSagaState::SetupComplete,
-            blinded_secrets.clone(),
-            ys.clone(),
-        );
+        let saga = Saga::new_swap(self.operation_id, SwapSagaState::SetupComplete);
 
         if let Err(err) = tx.add_saga(&saga).await {
             tx.rollback().await?;
