@@ -126,11 +126,21 @@ impl Mint {
                 saga.updated_at
             );
 
+            // Look up input_ys and blinded_secrets from the proof and blind_signature tables
+            let input_ys = self
+                .localstore
+                .get_proof_ys_by_operation_id(&saga.operation_id)
+                .await?;
+            let blinded_secrets = self
+                .localstore
+                .get_blinded_secrets_by_operation_id(&saga.operation_id)
+                .await?;
+
             // Use the same compensation logic as in-process failures
             // Saga deletion is included in the compensation transaction
             let compensation = RemoveSwapSetup {
-                blinded_secrets: saga.blinded_secrets.clone(),
-                input_ys: saga.input_ys.clone(),
+                blinded_secrets,
+                input_ys,
                 operation_id: saga.operation_id,
             };
 
@@ -200,6 +210,16 @@ impl Mint {
                 saga.updated_at
             );
 
+            // Look up input_ys and blinded_secrets from the proof and blind_signature tables
+            let input_ys = self
+                .localstore
+                .get_proof_ys_by_operation_id(&saga.operation_id)
+                .await?;
+            let blinded_secrets = self
+                .localstore
+                .get_blinded_secrets_by_operation_id(&saga.operation_id)
+                .await?;
+
             // Get quote_id from saga (new field added for efficient lookup)
             let quote_id = match saga.quote_id {
                 Some(ref qid) => qid.clone(),
@@ -228,9 +248,9 @@ impl Mint {
                         let proof_ys = tx.get_proof_ys_by_quote_id(&quote.id).await?;
                         tx.rollback().await?;
 
-                        if !saga.input_ys.is_empty()
+                        if !input_ys.is_empty()
                             && !proof_ys.is_empty()
-                            && saga.input_ys.iter().any(|y| proof_ys.contains(y))
+                            && input_ys.iter().any(|y| proof_ys.contains(y))
                         {
                             quote_id_found = Some(quote.id.clone());
                             break;
@@ -515,20 +535,18 @@ impl Mint {
 
             // Compensate if needed
             if should_compensate {
-                // Use saga data directly for compensation (like swap does)
                 tracing::info!(
                     "Compensating melt saga {} (removing {} proofs, {} change outputs)",
                     saga.operation_id,
-                    saga.input_ys.len(),
-                    saga.blinded_secrets.len()
+                    input_ys.len(),
+                    blinded_secrets.len()
                 );
 
-                // Compensate using saga data only - don't rely on quote state
                 let mut tx = self.localstore.begin_transaction().await?;
 
                 // Remove blinded messages (change outputs)
-                if !saga.blinded_secrets.is_empty() {
-                    if let Err(e) = tx.delete_blinded_messages(&saga.blinded_secrets).await {
+                if !blinded_secrets.is_empty() {
+                    if let Err(e) = tx.delete_blinded_messages(&blinded_secrets).await {
                         tracing::error!(
                             "Failed to delete blinded messages for saga {}: {}",
                             saga.operation_id,
@@ -539,9 +557,9 @@ impl Mint {
                     }
                 }
 
-                // Remove proofs (inputs) - use None for quote_id like swap does
-                if !saga.input_ys.is_empty() {
-                    match tx.remove_proofs(&saga.input_ys, None).await {
+                // Remove proofs (inputs)
+                if !input_ys.is_empty() {
+                    match tx.remove_proofs(&input_ys, None).await {
                         Ok(()) => {}
                         Err(DatabaseError::AttemptRemoveSpentProof) => {
                             // Proofs are already spent or missing - this is okay for compensation.

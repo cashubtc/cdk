@@ -1,7 +1,5 @@
 //! Saga database tests
 
-use cashu::SecretKey;
-
 use crate::database::mint::{Database, Error};
 use crate::mint::{MeltSagaState, OperationKind, Saga, SagaStateEnum, SwapSagaState};
 
@@ -15,14 +13,6 @@ where
         operation_id,
         operation_kind: OperationKind::Swap,
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        blinded_secrets: vec![
-            SecretKey::generate().public_key(),
-            SecretKey::generate().public_key(),
-        ],
-        input_ys: vec![
-            SecretKey::generate().public_key(),
-            SecretKey::generate().public_key(),
-        ],
         quote_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
@@ -41,8 +31,6 @@ where
     assert_eq!(retrieved.operation_id, saga.operation_id);
     assert_eq!(retrieved.operation_kind, saga.operation_kind);
     assert_eq!(retrieved.state, saga.state);
-    assert_eq!(retrieved.blinded_secrets, saga.blinded_secrets);
-    assert_eq!(retrieved.input_ys, saga.input_ys);
     assert_eq!(retrieved.quote_id, saga.quote_id);
     tx.commit().await.unwrap();
 }
@@ -57,8 +45,6 @@ where
         operation_id,
         operation_kind: OperationKind::Swap,
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        blinded_secrets: vec![SecretKey::generate().public_key()],
-        input_ys: vec![SecretKey::generate().public_key()],
         quote_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
@@ -86,8 +72,6 @@ where
         operation_id,
         operation_kind: OperationKind::Swap,
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        blinded_secrets: vec![SecretKey::generate().public_key()],
-        input_ys: vec![SecretKey::generate().public_key()],
         quote_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
@@ -125,8 +109,6 @@ where
         operation_id,
         operation_kind: OperationKind::Swap,
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        blinded_secrets: vec![SecretKey::generate().public_key()],
-        input_ys: vec![SecretKey::generate().public_key()],
         quote_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
@@ -164,8 +146,6 @@ where
         operation_id: uuid::Uuid::new_v4(),
         operation_kind: OperationKind::Swap,
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        blinded_secrets: vec![SecretKey::generate().public_key()],
-        input_ys: vec![SecretKey::generate().public_key()],
         quote_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
@@ -175,8 +155,6 @@ where
         operation_id: uuid::Uuid::new_v4(),
         operation_kind: OperationKind::Swap,
         state: SagaStateEnum::Swap(SwapSagaState::Signed),
-        blinded_secrets: vec![SecretKey::generate().public_key()],
-        input_ys: vec![SecretKey::generate().public_key()],
         quote_id: None,
         created_at: 1234567891,
         updated_at: 1234567891,
@@ -187,8 +165,6 @@ where
         operation_id: uuid::Uuid::new_v4(),
         operation_kind: OperationKind::Melt,
         state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-        blinded_secrets: vec![SecretKey::generate().public_key()],
-        input_ys: vec![SecretKey::generate().public_key()],
         quote_id: Some("test_quote_id".to_string()),
         created_at: 1234567892,
         updated_at: 1234567892,
@@ -227,8 +203,6 @@ where
         operation_id: uuid::Uuid::new_v4(),
         operation_kind: OperationKind::Melt,
         state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-        blinded_secrets: vec![SecretKey::generate().public_key()],
-        input_ys: vec![SecretKey::generate().public_key()],
         quote_id: Some("melt_quote_1".to_string()),
         created_at: 1234567890,
         updated_at: 1234567890,
@@ -238,8 +212,6 @@ where
         operation_id: uuid::Uuid::new_v4(),
         operation_kind: OperationKind::Melt,
         state: SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
-        blinded_secrets: vec![SecretKey::generate().public_key()],
-        input_ys: vec![SecretKey::generate().public_key()],
         quote_id: Some("melt_quote_2".to_string()),
         created_at: 1234567891,
         updated_at: 1234567891,
@@ -250,8 +222,6 @@ where
         operation_id: uuid::Uuid::new_v4(),
         operation_kind: OperationKind::Swap,
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        blinded_secrets: vec![SecretKey::generate().public_key()],
-        input_ys: vec![SecretKey::generate().public_key()],
         quote_id: None,
         created_at: 1234567892,
         updated_at: 1234567892,
@@ -344,8 +314,6 @@ where
         operation_id,
         operation_kind: OperationKind::Melt,
         state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-        blinded_secrets: vec![SecretKey::generate().public_key()],
-        input_ys: vec![SecretKey::generate().public_key()],
         quote_id: Some(quote_id.to_string()),
         created_at: 1234567890,
         updated_at: 1234567890,
@@ -373,8 +341,6 @@ where
         operation_id,
         operation_kind: OperationKind::Swap,
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        blinded_secrets: vec![SecretKey::generate().public_key()],
-        input_ys: vec![SecretKey::generate().public_key()],
         quote_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
@@ -402,8 +368,6 @@ where
             operation_id: uuid::Uuid::new_v4(),
             operation_kind: OperationKind::Swap,
             state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-            blinded_secrets: vec![SecretKey::generate().public_key()],
-            input_ys: vec![SecretKey::generate().public_key()],
             quote_id: None,
             created_at: 1234567890,
             updated_at: 1234567890,
@@ -412,8 +376,6 @@ where
             operation_id: uuid::Uuid::new_v4(),
             operation_kind: OperationKind::Swap,
             state: SagaStateEnum::Swap(SwapSagaState::Signed),
-            blinded_secrets: vec![SecretKey::generate().public_key()],
-            input_ys: vec![SecretKey::generate().public_key()],
             quote_id: None,
             created_at: 1234567891,
             updated_at: 1234567891,
@@ -422,8 +384,6 @@ where
             operation_id: uuid::Uuid::new_v4(),
             operation_kind: OperationKind::Melt,
             state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-            blinded_secrets: vec![SecretKey::generate().public_key()],
-            input_ys: vec![SecretKey::generate().public_key()],
             quote_id: Some("quote1".to_string()),
             created_at: 1234567892,
             updated_at: 1234567892,
@@ -432,8 +392,6 @@ where
             operation_id: uuid::Uuid::new_v4(),
             operation_kind: OperationKind::Melt,
             state: SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
-            blinded_secrets: vec![SecretKey::generate().public_key()],
-            input_ys: vec![SecretKey::generate().public_key()],
             quote_id: Some("quote2".to_string()),
             created_at: 1234567893,
             updated_at: 1234567893,

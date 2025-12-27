@@ -235,6 +235,12 @@ pub trait ProofsTransaction {
         &self,
         quote_id: &QuoteId,
     ) -> Result<Vec<PublicKey>, Self::Err>;
+
+    /// Get proof ys by operation id
+    async fn get_proof_ys_by_operation_id(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err>;
 }
 
 /// Mint Proof Database trait
@@ -261,6 +267,12 @@ pub trait ProofsDatabase {
 
     /// Get total proofs redeemed by keyset id
     async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
+
+    /// Get proof ys by operation id
+    async fn get_proof_ys_by_operation_id(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err>;
 }
 
 #[async_trait]
@@ -310,6 +322,12 @@ pub trait SignaturesDatabase {
 
     /// Get total amount issued by keyset id
     async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
+
+    /// Get blinded secrets (B values) by operation id
+    async fn get_blinded_secrets_by_operation_id(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err>;
 }
 
 #[async_trait]
