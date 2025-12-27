@@ -6,8 +6,7 @@ use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::DynMintPayment;
-use cdk_common::util::unix_time;
-use cdk_common::{database, Amount, MintQuoteState, PaymentMethod};
+use cdk_common::{Amount, MintQuoteState, PaymentMethod};
 use tracing::instrument;
 
 use super::subscription::PubSubManager;
@@ -57,60 +56,54 @@ impl Mint {
         let mut tx = localstore.begin_transaction().await?;
 
         // reload the quote, as it state may have changed
-        *quote = tx
+        let mut new_quote = tx
             .get_mint_quote(&quote.id)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let current_state = quote.state();
+        let current_state = new_quote.state();
 
-        if quote.payment_method == PaymentMethod::Bolt11
+        if new_quote.payment_method == PaymentMethod::Bolt11
             && (current_state == MintQuoteState::Issued || current_state == MintQuoteState::Paid)
         {
             return Ok(());
         }
 
         for payment in ln_status {
-            if !quote.payment_ids().contains(&&payment.payment_id)
+            if !new_quote.payment_ids().contains(&&payment.payment_id)
                 && payment.payment_amount > Amount::ZERO
             {
                 tracing::debug!(
                     "Found payment of {} {} for quote {} when checking.",
                     payment.payment_amount,
                     payment.unit,
-                    quote.id
+                    new_quote.id
                 );
 
-                let amount_paid = to_unit(payment.payment_amount, &payment.unit, &quote.unit)?;
+                let amount_paid = to_unit(payment.payment_amount, &payment.unit, &new_quote.unit)?;
 
-                match tx
-                    .increment_mint_quote_amount_paid(
-                        &quote.id,
-                        amount_paid,
-                        payment.payment_id.clone(),
-                    )
-                    .await
-                {
-                    Ok(total_paid) => {
-                        quote.increment_amount_paid(amount_paid)?;
-                        quote.add_payment(amount_paid, payment.payment_id.clone(), unix_time())?;
+                match new_quote.add_payment(amount_paid, payment.payment_id.clone(), None) {
+                    Ok(()) => {
+                        tx.update_mint_quote(&mut new_quote).await?;
                         if let Some(pubsub_manager) = pubsub_manager.as_ref() {
-                            pubsub_manager.mint_quote_payment(quote, total_paid);
+                            pubsub_manager.mint_quote_payment(&new_quote, new_quote.amount_paid());
                         }
                     }
-                    Err(database::Error::Duplicate) => {
+                    Err(crate::Error::DuplicatePaymentId) => {
                         tracing::debug!(
                             "Payment ID {} already processed (caught race condition in check_mint_quote_paid)",
                             payment.payment_id
                         );
                         // This is fine - another concurrent request already processed this payment
                     }
-                    Err(e) => return Err(e.into()),
+                    Err(e) => return Err(e),
                 }
             }
         }
 
         tx.commit().await?;
+
+        *quote = new_quote.inner();
 
         Ok(())
     }
