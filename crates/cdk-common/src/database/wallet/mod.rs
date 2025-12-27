@@ -113,6 +113,7 @@ pub trait DatabaseTransaction<Error>:
 
     /// Remove transaction from storage
     async fn remove_transaction(&mut self, transaction_id: TransactionId) -> Result<(), Error>;
+    
 }
 
 /// Wallet Database trait
@@ -191,4 +192,11 @@ where
         direction: Option<TransactionDirection>,
         unit: Option<CurrencyUnit>,
     ) -> Result<Vec<Transaction>, Err>;
+
+    // stores p2pk signing keys for the wallet
+    async fn add_p2pk_key(&self, pubkey: &PublicKey, derivation_path: String, derivation_index: u32) -> Result<(), Self::Err>;
+    /// Get a stored P2PK signing key by pubkey.
+    async fn get_p2pk_key(&self, pubkey: &PublicKey) -> Result<Option<wallet::P2PKSigningKey>, Self::Err>;
+    /// List all stored P2PK signing keys.
+    async fn list_p2pk_keys(&self) -> Result<Vec<wallet::P2PKSigningKey>, Self::Err>;
 }
