@@ -584,6 +584,7 @@ where
         )
         .await
     }
+    
 }
 
 #[async_trait]
@@ -1311,6 +1312,60 @@ where
         })
         .collect::<Vec<_>>())
     }
+
+    #[instrument(skip(self))]
+    async fn add_p2pk_key(&self, pubkey: &PublicKey, derivation_path: String, derivation_index: u32) -> Result<(), Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+    let query_str = format!(
+        r#"
+        INSERT INTO p2pk_signing_key (pubkey, derivation_index, derivation_path)
+        VALUES (:pubkey, :derivation_index, :derivation_path)
+        "#
+    );
+
+    query(&query_str)?.bind("pubkey", pubkey.to_bytes().to_vec())
+    .bind("derivation_index", derivation_index)
+    .bind("derivation_path", derivation_path)
+    .execute(&*conn)
+    .await?;
+
+    Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_p2pk_key(&self, pubkey: &PublicKey) -> Result<Option<wallet::P2PKSigningKey>, Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+    let query_str = format!(
+        r#"SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key WHERE pubkey = :pubkey"#
+    );
+
+    query(&query_str)?
+        .bind("pubkey", pubkey.to_bytes().to_vec())
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_p2pk_signing_key)
+        .transpose()
+    }
+    
+    #[instrument(skip(self))]
+    async fn list_p2pk_keys(& self) -> Result<Vec<wallet::P2PKSigningKey>, Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+    let query_str = format!(
+        r#"
+        SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key
+        "#);
+    
+    Ok(query(&query_str)?
+            .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .filter_map(|row| {
+            let row = sql_row_to_p2pk_signing_key(row).ok()?;
+
+            Some(row)
+        })
+        .collect::<Vec<wallet::P2PKSigningKey>>())
+    }
 }
 
 fn sql_row_to_mint_info(row: Vec<Column>) -> Result<MintInfo, Error> {
@@ -1553,6 +1608,25 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             .map_err(Error::from)?,
     })
 }
+
+fn sql_row_to_p2pk_signing_key(row: Vec<Column>) -> Result<wallet::P2PKSigningKey, Error> {
+    unpack_into!(
+        let (
+            pubkey,
+            derivation_index,
+            derivation_path,
+            created_time
+        ) = row
+    );
+
+    Ok(wallet::P2PKSigningKey {
+        pubkey: column_as_string!(pubkey, PublicKey::from_str, PublicKey::from_slice),
+        derivation_index: column_as_number!(derivation_index),
+        derivation_path: column_as_string!(derivation_path),
+        created_time: column_as_number!(created_time),
+    })
+}
+
 
 // KVStore implementations for wallet
 
