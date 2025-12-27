@@ -9,6 +9,7 @@ use super::amount::{Amount, SplitTarget};
 use super::proof::{Proofs, SpendingConditions};
 use crate::error::FfiError;
 use crate::token::Token;
+use crate::types::keys::PublicKey;
 
 /// FFI-compatible SendMemo
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -465,4 +466,13 @@ impl From<cdk::nuts::MeltOptions> for MeltOptions {
             },
         }
     }
+}
+
+/// FFI-compatible P2PKSigningKey
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct P2PKSigningKey {
+    pub pubkey: PublicKey,
+    pub derivation_path: String,
+    pub derivation_index: u32,
+    pub created_time: u64,
 }

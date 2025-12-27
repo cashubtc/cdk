@@ -376,6 +376,14 @@ impl TryFrom<Proofs> for TransactionId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct P2PKSigningKey {
+    pub pubkey: PublicKey,
+    pub derivation_path: String,
+    pub derivation_index: u32,
+    pub created_time: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
