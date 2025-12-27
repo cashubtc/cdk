@@ -267,6 +267,8 @@ impl MultiMintWallet {
     /// Get a reference to the wallet seed
     ///
     /// This is used internally for key derivation operations.
+    #[inline(always)]
+    #[cfg(all(feature = "wallet", feature = "nostr"))]
     pub(crate) fn seed(&self) -> &[u8; 64] {
         &self.seed
     }
