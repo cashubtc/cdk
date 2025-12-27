@@ -232,13 +232,13 @@ pub trait ProofsTransaction {
 
     /// Get ys by quote id
     async fn get_proof_ys_by_quote_id(
-        &self,
+        &mut self,
         quote_id: &QuoteId,
     ) -> Result<Vec<PublicKey>, Self::Err>;
 
     /// Get proof ys by operation id
     async fn get_proof_ys_by_operation_id(
-        &self,
+        &mut self,
         operation_id: &uuid::Uuid,
     ) -> Result<Vec<PublicKey>, Self::Err>;
 }
