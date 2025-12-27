@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
+use bitcoin::bip32::DerivationPath;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::util::hex;
 use cashu::{nut00, PaymentMethod, Proof, Proofs, PublicKey};
@@ -558,6 +559,18 @@ impl FromStr for OperationKind {
             _ => Err(Error::InvalidOperationKind),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct P2PKSigningKey {
+    /// Public key
+    pub pubkey: PublicKey,
+    /// Derivation path
+    pub derivation_path: DerivationPath,
+    /// Derivation index
+    pub derivation_index: u32,
+    /// Created time
+    pub created_time: u64,
 }
 
 #[cfg(test)]

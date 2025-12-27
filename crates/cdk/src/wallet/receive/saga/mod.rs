@@ -123,10 +123,10 @@ impl<'a> ReceiveSaga<'a, Initial> {
             })
             .collect::<Result<HashMap<String, &String>, _>>()?;
 
-        let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = opts
+        let mut p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey> = opts
             .p2pk_signing_keys
             .iter()
-            .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
+            .map(|s| (s.x_only_public_key(&SECP256K1).0, s.clone()))
             .collect();
 
         // Process each proof: verify DLEQ, handle P2PK/HTLC
@@ -166,9 +166,25 @@ impl<'a> ReceiveSaga<'a, Initial> {
                         }
                     }
                     for pubkey in pubkeys {
-                        if let Some(signing) = p2pk_signing_keys.get(&pubkey.x_only_public_key()) {
-                            proof.sign_p2pk(signing.to_owned().clone())?;
+                        match p2pk_signing_keys.get(&pubkey.x_only_public_key()) {
+                            Some(signing) => {
+                                proof.sign_p2pk(signing.to_owned().clone())?;
+                            }
+                            None => {
+                                let secret_key_option = self.wallet.get_signing_key(&pubkey).await?;
+                                if let Some(secret_key) = secret_key_option {
+                                    // cache secret key so it only has to be looked up once for the duration of the receive operation
+                                    p2pk_signing_keys
+                                        .insert(pubkey.x_only_public_key(), secret_key.clone());
+                                    proof.sign_p2pk(secret_key.to_owned().clone())?;
+                                }
+                            }
                         }
+                    }
+
+                    match secret.kind() {
+                        Kind::P2PK => proof.verify_p2pk()?,
+                        Kind::HTLC => proof.verify_htlc()?,
                     }
 
                     if conditions.sig_flag.eq(&SigFlag::SigAll) {
@@ -189,6 +205,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                 proofs,
                 proofs_amount,
                 active_keyset_id,
+                p2pk_signing_keys,
             },
         })
     }
@@ -287,16 +304,8 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         // Determine if SigAll signing is needed
         let sig_flag = self.determine_sig_flag()?;
         if sig_flag == SigFlag::SigAll {
-            let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = self
-                .state_data
-                .options
-                .p2pk_signing_keys
-                .iter()
-                .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
-                .collect();
-
             for blinded_message in pre_swap.swap_request.outputs_mut() {
-                for signing_key in p2pk_signing_keys.values() {
+                for signing_key in self.state_data.p2pk_signing_keys.values() {
                     blinded_message.sign_p2pk(signing_key.to_owned().clone())?
                 }
             }

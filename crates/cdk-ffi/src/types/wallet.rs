@@ -8,6 +8,7 @@ use super::amount::{Amount, SplitTarget};
 use super::proof::{Proofs, SpendingConditions};
 use crate::error::FfiError;
 use crate::token::Token;
+use crate::types::keys::PublicKey;
 
 /// FFI-compatible SendMemo
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -659,27 +660,5 @@ impl From<cdk::wallet::Restored> for Restored {
         }
     }
 }
-
-/// FFI-compatible options for confirming a melt operation
-#[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
-pub struct MeltConfirmOptions {
-    /// Skip the pre-melt swap and send proofs directly to melt.
-    /// When true, saves swap input fees but gets change from melt instead.
-    pub skip_swap: bool,
-}
-
-impl From<MeltConfirmOptions> for cdk::wallet::MeltConfirmOptions {
-    fn from(opts: MeltConfirmOptions) -> Self {
-        cdk::wallet::MeltConfirmOptions {
-            skip_swap: opts.skip_swap,
-        }
-    }
-}
-
-impl From<cdk::wallet::MeltConfirmOptions> for MeltConfirmOptions {
-    fn from(opts: cdk::wallet::MeltConfirmOptions) -> Self {
-        Self {
-            skip_swap: opts.skip_swap,
-        }
-    }
-}
+pub use cdk_common::wallet::{
+    MeltConfirmOptions, MeltQuote, MintQuote, P2PKSigningKey, SendKind, WalletSaga, WalletSagaState,

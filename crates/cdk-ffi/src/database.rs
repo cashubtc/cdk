@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use cdk_common::bitcoin::bip32::DerivationPath;
 use cdk_common::database::WalletDatabase as CdkWalletDatabase;
 use cdk_common::wallet::WalletSaga;
 use cdk_sql_common::pool::DatabasePool;
@@ -103,6 +104,23 @@ pub trait WalletDatabase: Send + Sync {
         primary_namespace: String,
         secondary_namespace: String,
     ) -> Result<Vec<String>, FfiError>;
+
+    /// Add P2PK signing key to storage
+    async fn add_p2pk_key(
+        &self,
+        pubkey: PublicKey,
+        derivation_path: String,
+        derivation_index: u32,
+    ) -> Result<(), FfiError>;
+
+    /// Get P2PK signing key from storage
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<P2PKSigningKey>, FfiError>;
+
+    /// List all P2PK signing keys from storage
+    async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError>;
+
+    /// Get the latest P2PK signing key (most recently created)
+    async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, FfiError>;
 
     /// Write a value to the KV store
     async fn kv_write(
@@ -636,6 +654,73 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
             .map(|tx| tx.try_into())
             .collect::<Result<Vec<_>, FfiError>>()
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    // P2PK methods
+
+    async fn add_p2pk_key(
+        &self,
+        pubkey: &cdk::nuts::PublicKey,
+        derivation_path: DerivationPath,
+        derivation_index: u32,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_pubkey: PublicKey = (*pubkey).into();
+        let ffi_derivation_path = derivation_path.to_string();
+        self.ffi_db
+            .add_p2pk_key(ffi_pubkey, ffi_derivation_path, derivation_index)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn list_p2pk_keys(
+        &self,
+    ) -> Result<Vec<cdk_common::wallet::P2PKSigningKey>, cdk::cdk_database::Error> {
+        let result = self
+            .ffi_db
+            .list_p2pk_keys()
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        Ok(result
+            .into_iter()
+            .map(|k| {
+                k.try_into()
+                    .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+            })
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn latest_p2pk(
+        &self,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, cdk::cdk_database::Error> {
+        let result = self
+            .ffi_db
+            .latest_p2pk()
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        Ok(result
+            .map(|k| {
+                k.try_into()
+                    .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+            })
+            .transpose()?)
+    }
+
+    async fn get_p2pk_key(
+        &self,
+        pubkey: &cdk::nuts::PublicKey,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, cdk::cdk_database::Error> {
+        let ffi_pubkey: PublicKey = (*pubkey).into();
+        let result = self
+            .ffi_db
+            .get_p2pk_key(ffi_pubkey)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        Ok(result
+            .map(|k| {
+                k.try_into()
+                    .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+            })
+            .transpose()?)
     }
 
     // Write methods (non-transactional)
@@ -1244,6 +1329,50 @@ where
             .map_err(FfiError::internal)
     }
 
+    async fn add_p2pk_key(
+        &self,
+        pubkey: PublicKey,
+        derivation_path: String,
+        derivation_index: u32,
+    ) -> Result<(), FfiError> {
+        use std::str::FromStr;
+
+        use cdk_common::bitcoin::bip32::DerivationPath;
+
+        let cdk_pubkey: cdk::nuts::PublicKey = pubkey.try_into()?;
+        let cdk_derivation_path =
+            DerivationPath::from_str(&derivation_path).map_err(FfiError::internal)?;
+
+        self.inner
+            .add_p2pk_key(&cdk_pubkey, cdk_derivation_path, derivation_index)
+            .await
+            .map_err(FfiError::database)
+    }
+
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<P2PKSigningKey>, FfiError> {
+        let cdk_pubkey: cdk::nuts::PublicKey = pubkey.try_into()?;
+        let result = self
+            .inner
+            .get_p2pk_key(&cdk_pubkey)
+            .await
+            .map_err(FfiError::database)?;
+        Ok(result.map(Into::into))
+    }
+
+    async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError> {
+        let result = self
+            .inner
+            .list_p2pk_keys()
+            .await
+            .map_err(FfiError::database)?;
+        Ok(result.into_iter().map(Into::into).collect())
+    }
+
+    async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, FfiError> {
+        let result = self.inner.latest_p2pk().await.map_err(FfiError::database)?;
+        Ok(result.map(Into::into))
+    }
+
     async fn kv_write(
         &self,
         primary_namespace: String,
@@ -1823,80 +1952,9 @@ macro_rules! impl_ffi_wallet_database {
             async fn remove_keys(&self, id: Id) -> Result<(), FfiError> {
                 self.inner.remove_keys(id).await
             }
+            // 
+=== Saga management methods
 
-            // ========== Saga management methods ==========
-
-            async fn add_saga(&self, saga_json: String) -> Result<(), FfiError> {
-                self.inner.add_saga(saga_json).await
-            }
-
-            async fn get_saga(&self, id: String) -> Result<Option<String>, FfiError> {
-                self.inner.get_saga(id).await
-            }
-
-            async fn update_saga(&self, saga_json: String) -> Result<bool, FfiError> {
-                self.inner.update_saga(saga_json).await
-            }
-
-            async fn delete_saga(&self, id: String) -> Result<(), FfiError> {
-                self.inner.delete_saga(id).await
-            }
-
-            async fn get_incomplete_sagas(&self) -> Result<Vec<String>, FfiError> {
-                self.inner.get_incomplete_sagas().await
-            }
-
-            // ========== Proof reservation methods ==========
-
-            async fn reserve_proofs(
-                &self,
-                ys: Vec<PublicKey>,
-                operation_id: String,
-            ) -> Result<(), FfiError> {
-                self.inner.reserve_proofs(ys, operation_id).await
-            }
-
-            async fn release_proofs(&self, operation_id: String) -> Result<(), FfiError> {
-                self.inner.release_proofs(operation_id).await
-            }
-
-            async fn get_reserved_proofs(
-                &self,
-                operation_id: String,
-            ) -> Result<Vec<ProofInfo>, FfiError> {
-                self.inner.get_reserved_proofs(operation_id).await
-            }
-
-            // ========== Quote reservation methods ==========
-
-            async fn reserve_melt_quote(
-                &self,
-                quote_id: String,
-                operation_id: String,
-            ) -> Result<(), FfiError> {
-                self.inner.reserve_melt_quote(quote_id, operation_id).await
-            }
-
-            async fn release_melt_quote(&self, operation_id: String) -> Result<(), FfiError> {
-                self.inner.release_melt_quote(operation_id).await
-            }
-
-            async fn reserve_mint_quote(
-                &self,
-                quote_id: String,
-                operation_id: String,
-            ) -> Result<(), FfiError> {
-                self.inner.reserve_mint_quote(quote_id, operation_id).await
-            }
-
-            async fn release_mint_quote(&self, operation_id: String) -> Result<(), FfiError> {
-                self.inner.release_mint_quote(operation_id).await
-            }
-        }
-    };
-}
-
-/// FFI-safe database type enum
 #[derive(uniffi::Enum, Clone)]
 pub enum WalletDbBackend {
     Sqlite {

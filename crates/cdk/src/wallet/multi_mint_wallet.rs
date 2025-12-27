@@ -11,8 +11,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use cdk_common::database::WalletDatabase;
 use cdk_common::task::spawn;
-use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection, TransactionId};
-use cdk_common::{database, KeySetInfo};
+use cdk_common::wallet::{
+    MeltQuote, P2PKSigningKey, Transaction, TransactionDirection, TransactionId,
+};
+use cdk_common::{database, KeySetInfo, PublicKey};
 use tokio::sync::RwLock;
 use tracing::instrument;
 use uuid::Uuid;
@@ -33,6 +35,7 @@ use crate::nuts::{
 use crate::types::FinalizedMelt;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
+use crate::wallet::p2pk;
 use crate::wallet::types::MintQuote;
 use crate::{Amount, Wallet};
 
@@ -2779,6 +2782,29 @@ impl MultiMintWallet {
 
         wallet.melt_human_readable_quote(address, amount_msat).await
     }
+
+    /// generates and stores public key in database
+    pub async fn generate_public_key(&self) -> Result<PublicKey, Error> {
+        p2pk::generate_public_key(&self.localstore, &self.seed).await
+    }
+
+    /// gets public key by it's hex value
+    pub async fn get_public_key(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Option<P2PKSigningKey>, database::Error> {
+        p2pk::get_public_key(&self.localstore, pubkey).await
+    }
+
+    /// gets list of stored public keys in database
+    pub async fn get_public_keys(&self) -> Result<Vec<P2PKSigningKey>, database::Error> {
+        p2pk::get_public_keys(&self.localstore).await
+    }
+
+    /// Gets the latest generated P2PK signing key (most recently created)
+    pub async fn get_latest_public_key(&self) -> Result<Option<P2PKSigningKey>, database::Error> {
+        p2pk::get_latest_public_key(&self.localstore).await
+    }
 }
 
 impl Drop for MultiMintWallet {
@@ -3069,5 +3095,125 @@ mod tests {
         let ttl = std::time::Duration::from_secs(12345);
         let config = WalletConfig::new().with_metadata_cache_ttl(Some(ttl));
         assert_eq!(config.metadata_cache_ttl, Some(ttl));
+    }
+    // P2PK function tests
+
+    #[tokio::test]
+    async fn test_generate_public_key() {
+        let multi_wallet = create_test_multi_wallet().await;
+
+        let pubkey = multi_wallet.generate_public_key().await.unwrap();
+
+        // Verify the public key is valid (33 bytes compressed public key)
+        let pubkey_bytes = pubkey.to_bytes();
+        assert_eq!(pubkey_bytes.len(), 33);
+    }
+
+    #[tokio::test]
+    async fn test_generate_multiple_public_keys() {
+        let multi_wallet = create_test_multi_wallet().await;
+
+        let pubkey1 = multi_wallet.generate_public_key().await.unwrap();
+        let pubkey2 = multi_wallet.generate_public_key().await.unwrap();
+        let pubkey3 = multi_wallet.generate_public_key().await.unwrap();
+
+        // Verify each key is unique
+        assert_ne!(pubkey1, pubkey2);
+        assert_ne!(pubkey2, pubkey3);
+        assert_ne!(pubkey1, pubkey3);
+    }
+
+    #[tokio::test]
+    async fn test_get_public_key_not_found() {
+        let multi_wallet = create_test_multi_wallet().await;
+
+        // Create a random public key that doesn't exist in the database
+        // Using a hardcoded valid compressed public key bytes
+        let fake_pubkey_hex = "02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc";
+        let fake_pubkey = PublicKey::from_hex(fake_pubkey_hex).unwrap();
+
+        let result = multi_wallet.get_public_key(&fake_pubkey).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_public_key_found() {
+        let multi_wallet = create_test_multi_wallet().await;
+
+        // Generate a public key first
+        let generated_pubkey = multi_wallet.generate_public_key().await.unwrap();
+
+        // Retrieve it using get_public_key
+        let result = multi_wallet
+            .get_public_key(&generated_pubkey)
+            .await
+            .unwrap();
+
+        assert!(result.is_some());
+        let signing_key = result.unwrap();
+        assert_eq!(signing_key.pubkey, generated_pubkey);
+    }
+
+    #[tokio::test]
+    async fn test_get_public_keys_empty() {
+        let multi_wallet = create_test_multi_wallet().await;
+
+        let keys = multi_wallet.get_public_keys().await.unwrap();
+        assert!(keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_public_keys_multiple() {
+        let multi_wallet = create_test_multi_wallet().await;
+
+        // Generate 3 public keys
+        let pubkey1 = multi_wallet.generate_public_key().await.unwrap();
+        let pubkey2 = multi_wallet.generate_public_key().await.unwrap();
+        let pubkey3 = multi_wallet.generate_public_key().await.unwrap();
+
+        let keys = multi_wallet.get_public_keys().await.unwrap();
+
+        assert_eq!(keys.len(), 3);
+
+        // Verify all generated keys are in the list
+        let pubkeys: Vec<PublicKey> = keys.iter().map(|k| k.pubkey.clone()).collect();
+        assert!(pubkeys.contains(&pubkey1));
+        assert!(pubkeys.contains(&pubkey2));
+        assert!(pubkeys.contains(&pubkey3));
+    }
+
+    #[tokio::test]
+    async fn test_get_latest_public_key_none() {
+        let multi_wallet = create_test_multi_wallet().await;
+
+        let result = multi_wallet.get_latest_public_key().await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_latest_public_key_returns_most_recent() {
+        let multi_wallet = create_test_multi_wallet().await;
+
+        // Generate 3 public keys with delays to ensure distinct created_time timestamps
+        let _pubkey1 = multi_wallet.generate_public_key().await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        let _pubkey2 = multi_wallet.generate_public_key().await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        let pubkey3 = multi_wallet.generate_public_key().await.unwrap();
+
+        // Get the latest key
+        let result = multi_wallet.get_latest_public_key().await.unwrap();
+
+        assert!(result.is_some());
+        let latest_key = result.unwrap();
+
+        // The latest key should be pubkey3 (last generated, most recent created_time)
+        assert_eq!(
+            latest_key.pubkey, pubkey3,
+            "Latest key should be the last generated key (pubkey3)"
+        );
+
+        // The derivation index should be 3 (the highest)
+        assert_eq!(latest_key.derivation_index, 3);
     }
 }

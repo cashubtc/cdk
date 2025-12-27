@@ -10,6 +10,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use bitcoin::bip32::DerivationPath;
 use cashu::nut00::KnownMethod;
 use cashu::secret::Secret;
 use cashu::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
@@ -1122,6 +1123,123 @@ where
     let value3 = db.kv_read("ns1", "sub2", "key").await.unwrap();
     assert_eq!(value3, Some(b"value_sub2".to_vec()));
 }
+/// Test adding and retrieving a P2PK signing key
+pub async fn add_and_get_p2pk_key<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let pubkey = SecretKey::generate().public_key();
+    let derivation_path = DerivationPath::from_str("m/0'/0'/0'").unwrap();
+    let derivation_index = 0u32;
+
+    // Add P2PK key
+    db.add_p2pk_key(&pubkey, derivation_path.clone(), derivation_index)
+        .await
+        .unwrap();
+
+    // Retrieve the key
+    let retrieved = db.get_p2pk_key(&pubkey).await.unwrap();
+    assert!(retrieved.is_some());
+    let retrieved_key = retrieved.unwrap();
+    assert_eq!(retrieved_key.pubkey, pubkey);
+    assert_eq!(retrieved_key.derivation_path, derivation_path);
+    assert_eq!(retrieved_key.derivation_index, derivation_index);
+
+    // Test getting a non-existent key
+    let non_existent_pubkey = SecretKey::generate().public_key();
+    let result = db.get_p2pk_key(&non_existent_pubkey).await.unwrap();
+    assert!(result.is_none());
+}
+
+/// Test that list_p2pk_keys returns empty vector on fresh database
+pub async fn list_p2pk_keys_empty<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let keys = db.list_p2pk_keys().await.unwrap();
+    assert!(keys.is_empty());
+}
+
+/// Test listing multiple P2PK signing keys
+pub async fn list_p2pk_keys_multiple<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    // Add multiple keys with different derivation indices
+    let pubkey1 = SecretKey::generate().public_key();
+    let pubkey2 = SecretKey::generate().public_key();
+    let pubkey3 = SecretKey::generate().public_key();
+
+    db.add_p2pk_key(&pubkey1, DerivationPath::from_str("m/0'/0'/0'").unwrap(), 0)
+        .await
+        .unwrap();
+
+    db.add_p2pk_key(&pubkey2, DerivationPath::from_str("m/0'/0'/1'").unwrap(), 1)
+        .await
+        .unwrap();
+
+    db.add_p2pk_key(&pubkey3, DerivationPath::from_str("m/0'/0'/2'").unwrap(), 2)
+        .await
+        .unwrap();
+
+    // List all keys
+    let keys = db.list_p2pk_keys().await.unwrap();
+    assert_eq!(keys.len(), 3);
+
+    // Verify all keys are present
+    let pubkeys: Vec<_> = keys.iter().map(|k| k.pubkey).collect();
+    assert!(pubkeys.contains(&pubkey1));
+    assert!(pubkeys.contains(&pubkey2));
+    assert!(pubkeys.contains(&pubkey3));
+
+    // Verify derivation indices are correct
+    let derivation_indices: Vec<_> = keys.iter().map(|k| k.derivation_index).collect();
+    assert!(derivation_indices.contains(&0));
+    assert!(derivation_indices.contains(&1));
+    assert!(derivation_indices.contains(&2));
+}
+
+/// Test that latest_p2pk returns None on fresh database
+pub async fn latest_p2pk_empty<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let latest = db.latest_p2pk().await.unwrap();
+    assert!(latest.is_none());
+}
+
+/// Test getting the latest P2PK signing key
+pub async fn latest_p2pk_with_keys<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    // Add multiple keys with delays to ensure different timestamps
+    let pubkey1 = SecretKey::generate().public_key();
+    let pubkey2 = SecretKey::generate().public_key();
+    let pubkey3 = SecretKey::generate().public_key();
+
+    db.add_p2pk_key(&pubkey1, DerivationPath::from_str("m/0'/0'/0'").unwrap(), 0)
+        .await
+        .unwrap();
+
+    db.add_p2pk_key(&pubkey2, DerivationPath::from_str("m/0'/0'/1'").unwrap(), 1)
+        .await
+        .unwrap();
+
+    // Wait 1 second to ensure the last key has a different (newer) timestamp
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    db.add_p2pk_key(&pubkey3, DerivationPath::from_str("m/0'/0'/2'").unwrap(), 2)
+        .await
+        .unwrap();
+
+    // Get latest key - should be the most recently created (pubkey3)
+    let latest = db.latest_p2pk().await.unwrap();
+    assert!(latest.is_some());
+    let latest_key = latest.unwrap();
+    assert_eq!(latest_key.pubkey, pubkey3);
+    assert_eq!(latest_key.derivation_index, 2);
+}
 
 // =============================================================================
 // Wallet Saga Tests
@@ -1455,14 +1573,8 @@ macro_rules! wallet_db_test {
             kvstore_update,
             kvstore_remove,
             kvstore_namespace_isolation,
-            add_and_get_saga,
-            update_saga_optimistic_locking,
-            delete_saga,
-            get_incomplete_sagas,
-            reserve_proofs,
-            release_proofs,
-            get_reserved_proofs,
-            reserve_proofs_already_reserved
+mod transactions;
+mod p2pk;
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {
