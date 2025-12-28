@@ -244,7 +244,7 @@ impl Mint {
 
                     let mut quote_id_found = None;
                     for quote in melt_quotes {
-                        let tx = self.localstore.begin_transaction().await?;
+                        let mut tx = self.localstore.begin_transaction().await?;
                         let proof_ys = tx.get_proof_ys_by_quote_id(&quote.id).await?;
                         tx.rollback().await?;
 
