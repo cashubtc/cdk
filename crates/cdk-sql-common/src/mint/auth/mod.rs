@@ -121,6 +121,7 @@ where
     }
 
     async fn add_proof(&mut self, proof: AuthProof) -> Result<(), database::Error> {
+        let y = proof.y()?;
         if let Err(err) = query(
             r#"
                 INSERT INTO proof
@@ -129,7 +130,7 @@ where
                 (:y, :keyset_id, :secret, :c, :state)
                 "#,
         )?
-        .bind("y", proof.y()?.to_bytes().to_vec())
+        .bind("y", y.to_bytes().to_vec())
         .bind("keyset_id", proof.keyset_id.to_string())
         .bind("secret", proof.secret.to_string())
         .bind("c", proof.c.to_bytes().to_vec())
@@ -154,12 +155,8 @@ where
             .map(|state| Ok::<_, Error>(column_as_string!(state, State::from_str)))
             .transpose()?;
 
-        query(r#"UPDATE proof SET state = :new_state WHERE state = :state AND y = :y"#)?
+        query(r#"UPDATE proof SET state = :new_state WHERE  y = :y"#)?
             .bind("y", y.to_bytes().to_vec())
-            .bind(
-                "state",
-                current_state.as_ref().map(|state| state.to_string()),
-            )
             .bind("new_state", proofs_state.to_string())
             .execute(&self.inner)
             .await?;

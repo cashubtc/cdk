@@ -9,7 +9,7 @@ use cdk_common::amount::to_unit;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::DynMintAuthDatabase;
-use cdk_common::database::{self, DynMintDatabase};
+use cdk_common::database::{self, Acquired, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
@@ -684,13 +684,13 @@ impl Mint {
 
         let mut tx = localstore.begin_transaction().await?;
 
-        if let Ok(Some(mint_quote)) = tx
+        if let Ok(Some(mut mint_quote)) = tx
             .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
             .await
         {
             Self::handle_mint_quote_payment(
                 &mut tx,
-                &mint_quote,
+                &mut mint_quote,
                 wait_payment_response,
                 pubsub_manager,
             )
@@ -710,7 +710,7 @@ impl Mint {
     #[instrument(skip_all)]
     async fn handle_mint_quote_payment(
         tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
-        mint_quote: &MintQuote,
+        mint_quote: &mut Acquired<MintQuote>,
         wait_payment_response: WaitPaymentResponse,
         pubsub_manager: &Arc<PubSubManager>,
     ) -> Result<(), Error> {
@@ -749,25 +749,23 @@ impl Mint {
                     payment_amount_quote_unit
                 );
 
-                match tx
-                    .increment_mint_quote_amount_paid(
-                        &mint_quote.id,
-                        payment_amount_quote_unit,
-                        wait_payment_response.payment_id.clone(),
-                    )
-                    .await
-                {
-                    Ok(total_paid) => {
-                        pubsub_manager.mint_quote_payment(mint_quote, total_paid);
+                match mint_quote.add_payment(
+                    payment_amount_quote_unit,
+                    wait_payment_response.payment_id.clone(),
+                    None,
+                ) {
+                    Ok(()) => {
+                        tx.update_mint_quote(mint_quote).await?;
+                        pubsub_manager.mint_quote_payment(mint_quote, mint_quote.amount_paid());
                     }
-                    Err(database::Error::Duplicate) => {
+                    Err(Error::DuplicatePaymentId) => {
                         tracing::info!(
                             "Payment ID {} already processed (caught race condition)",
                             wait_payment_response.payment_id
                         );
                         // This is fine - another concurrent request already processed this payment
                     }
-                    Err(e) => return Err(e.into()),
+                    Err(e) => return Err(e),
                 }
             }
         } else {

@@ -583,8 +583,37 @@ impl Mint {
                 }
 
                 // Reset quote state to Unpaid (melt-specific, unlike swap)
+                // Acquire lock on the quote first
+                let mut locked_quote = match tx.get_melt_quote(&quote_id_parsed).await {
+                    Ok(Some(q)) => q,
+                    Ok(None) => {
+                        tracing::warn!(
+                            "Melt quote {} not found for saga {} - may have been cleaned up",
+                            quote_id_parsed,
+                            saga.operation_id
+                        );
+                        // Continue with saga deletion even if quote is gone
+                        if let Err(e) = tx.delete_saga(&saga.operation_id).await {
+                            tracing::error!("Failed to delete saga {}: {}", saga.operation_id, e);
+                            tx.rollback().await?;
+                            continue;
+                        }
+                        tx.commit().await?;
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to get quote for saga {}: {}",
+                            saga.operation_id,
+                            e
+                        );
+                        tx.rollback().await?;
+                        continue;
+                    }
+                };
+
                 if let Err(e) = tx
-                    .update_melt_quote_state(&quote_id_parsed, MeltQuoteState::Unpaid, None)
+                    .update_melt_quote_state(&mut locked_quote, MeltQuoteState::Unpaid, None)
                     .await
                 {
                     tracing::error!(

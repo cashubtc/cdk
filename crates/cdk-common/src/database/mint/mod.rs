@@ -7,7 +7,8 @@ use cashu::quote_id::QuoteId;
 use cashu::Amount;
 
 use super::{DbTransactionFinalizer, Error};
-use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote, Operation};
+use crate::database::Acquired;
+use crate::mint::{self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation};
 use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
     State,
@@ -115,59 +116,98 @@ pub trait QuotesTransaction {
     async fn get_mint_quote(
         &mut self,
         quote_id: &QuoteId,
-    ) -> Result<Option<MintMintQuote>, Self::Err>;
+    ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
+
     /// Add [`MintMintQuote`]
-    async fn add_mint_quote(&mut self, quote: MintMintQuote) -> Result<(), Self::Err>;
-    /// Increment amount paid [`MintMintQuote`]
-    async fn increment_mint_quote_amount_paid(
+    async fn add_mint_quote(
         &mut self,
-        quote_id: &QuoteId,
-        amount_paid: Amount,
-        payment_id: String,
-    ) -> Result<Amount, Self::Err>;
-    /// Increment amount paid [`MintMintQuote`]
-    async fn increment_mint_quote_amount_issued(
+        quote: MintMintQuote,
+    ) -> Result<Acquired<MintMintQuote>, Self::Err>;
+
+    /// Persists any pending changes made to the mint quote.
+    ///
+    /// This method extracts changes accumulated in the quote (via [`mint::MintQuote::take_changes`])
+    /// and persists them to the database. Changes may include new payments received or new
+    /// issuances recorded against the quote.
+    ///
+    /// If no changes are pending, this method returns successfully without performing
+    /// any database operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote` - A mutable reference to an acquired (row-locked) mint quote. The quote
+    ///   must be locked to ensure transactional consistency when persisting changes.
+    ///
+    /// # Implementation Notes
+    ///
+    /// Implementations should call [`mint::MintQuote::take_changes`] to retrieve pending
+    /// changes, then persist each payment and issuance record, and finally update the
+    /// quote's aggregate counters (`amount_paid`, `amount_issued`) in the database.
+    async fn update_mint_quote(
         &mut self,
-        quote_id: &QuoteId,
-        amount_issued: Amount,
-    ) -> Result<Amount, Self::Err>;
+        quote: &mut Acquired<mint::MintQuote>,
+    ) -> Result<(), Self::Err>;
 
     /// Get [`mint::MeltQuote`] and lock it for update in this transaction
     async fn get_melt_quote(
         &mut self,
         quote_id: &QuoteId,
-    ) -> Result<Option<mint::MeltQuote>, Self::Err>;
+    ) -> Result<Option<Acquired<mint::MeltQuote>>, Self::Err>;
+
     /// Add [`mint::MeltQuote`]
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err>;
 
-    /// Updates the request lookup id for a melt quote
+    /// Retrieves all melt quotes matching a payment lookup identifier and locks them for update.
+    ///
+    /// This method returns multiple quotes because certain payment methods (notably BOLT12 offers)
+    /// can generate multiple payment attempts that share the same lookup identifier. Locking all
+    /// related quotes prevents race conditions where concurrent melt operations could interfere
+    /// with each other, potentially leading to double-spending or state inconsistencies.
+    ///
+    /// The returned quotes are locked within the current transaction to ensure safe concurrent
+    /// modification. This is essential during melt saga initiation and finalization to guarantee
+    /// atomic state transitions across all related quotes.
+    ///
+    /// # Arguments
+    ///
+    /// * `request_lookup_id` - The payment identifier used by the Lightning backend to track
+    ///   payment state (e.g., payment hash, offer ID, or label).
+    async fn get_melt_quotes_by_request_lookup_id(
+        &mut self,
+        request_lookup_id: &PaymentIdentifier,
+    ) -> Result<Vec<Acquired<MeltQuote>>, Self::Err>;
+
+    /// Updates the request lookup id for a melt quote.
+    ///
+    /// Requires an [`Acquired`] melt quote to ensure the row is locked before modification.
     async fn update_melt_quote_request_lookup_id(
         &mut self,
-        quote_id: &QuoteId,
+        quote: &mut Acquired<mint::MeltQuote>,
         new_request_lookup_id: &PaymentIdentifier,
     ) -> Result<(), Self::Err>;
 
-    /// Update [`mint::MeltQuote`] state
+    /// Update [`mint::MeltQuote`] state.
     ///
-    /// It is expected for this function to fail if the state is already set to the new state
+    /// Requires an [`Acquired`] melt quote to ensure the row is locked before modification.
+    /// Returns the previous state.
     async fn update_melt_quote_state(
         &mut self,
-        quote_id: &QuoteId,
+        quote: &mut Acquired<mint::MeltQuote>,
         new_state: MeltQuoteState,
         payment_proof: Option<String>,
-    ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err>;
+    ) -> Result<MeltQuoteState, Self::Err>;
 
     /// Get all [`MintMintQuote`]s and lock it for update in this transaction
     async fn get_mint_quote_by_request(
         &mut self,
         request: &str,
-    ) -> Result<Option<MintMintQuote>, Self::Err>;
+    ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
 
     /// Get all [`MintMintQuote`]s
     async fn get_mint_quote_by_request_lookup_id(
         &mut self,
         request_lookup_id: &PaymentIdentifier,
-    ) -> Result<Option<MintMintQuote>, Self::Err>;
+    ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
 }
 
 /// Mint Quote Database trait
@@ -221,6 +261,12 @@ pub trait ProofsTransaction {
         &mut self,
         ys: &[PublicKey],
         proofs_state: State,
+    ) -> Result<Vec<Option<State>>, Self::Err>;
+
+    /// get proofs states
+    async fn get_proofs_states(
+        &mut self,
+        ys: &[PublicKey],
     ) -> Result<Vec<Option<State>>, Self::Err>;
 
     /// Remove [`Proofs`]

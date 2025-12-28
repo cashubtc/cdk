@@ -4,6 +4,7 @@ use std::sync::Arc;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
+use cdk_common::state::check_state_transition;
 use cdk_common::{database, Amount, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tokio::sync::Mutex;
 use tracing::instrument;
@@ -426,6 +427,17 @@ impl SwapSaga<'_, Signed> {
                     "Test failure: UPDATE_PROOFS".into(),
                 )));
             }
+        }
+
+        for current_state in tx
+            .get_proofs_states(&self.state_data.ys)
+            .await?
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(Error::UnexpectedProofState)?
+        {
+            check_state_transition(current_state, State::Spent)
+                .map_err(|_| Error::UnexpectedProofState)?;
         }
 
         match tx

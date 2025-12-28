@@ -6,8 +6,9 @@
 //!
 //! The functions here ensure consistency between these two code paths.
 
-use cdk_common::database::{self, DynMintDatabase};
+use cdk_common::database::{self, Acquired, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, State};
+use cdk_common::state::check_state_transition;
 use cdk_common::{Amount, Error, PublicKey, QuoteId};
 use cdk_signatory::signatory::SignatoryKeySet;
 
@@ -102,16 +103,18 @@ pub async fn rollback_melt_quote(
         tx.delete_blinded_messages(blinded_secrets).await?;
     }
 
-    // Reset quote state from Pending to Unpaid
-    let (previous_state, _quote) = tx
-        .update_melt_quote_state(quote_id, MeltQuoteState::Unpaid, None)
-        .await?;
+    // Get and lock the quote, then reset state from Pending to Unpaid
+    if let Some(mut quote) = tx.get_melt_quote(quote_id).await? {
+        let previous_state = tx
+            .update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
+            .await?;
 
-    if previous_state != MeltQuoteState::Pending {
-        tracing::warn!(
-            "Unexpected quote state during rollback: expected Pending, got {}",
-            previous_state
-        );
+        if previous_state != MeltQuoteState::Pending {
+            tracing::warn!(
+                "Unexpected quote state during rollback: expected Pending, got {}",
+                previous_state
+            );
+        }
     }
 
     // Delete melt request tracking record
@@ -241,6 +244,79 @@ pub async fn process_melt_change(
     Ok((Some(change_sigs), tx))
 }
 
+/// Loads a melt quote and acquires exclusive locks on all related quotes.
+///
+/// This function combines quote loading with defensive locking to prevent race conditions in BOLT12
+/// scenarios where multiple melt quotes can share the same `request_lookup_id`. It performs three
+/// operations atomically:
+///
+/// 1. Loads the melt quote by ID 2. Acquires row-level locks on all sibling quotes sharing the same
+///    lookup identifier 3. Validates that no sibling quote is already in `Pending` or `Paid` state
+///
+/// This ensures that when a melt operation begins, no other concurrent melt can proceed on a
+/// related quote, preventing double-spending and state inconsistencies.
+///
+/// # Arguments
+///
+/// * `tx` - The active database transaction used to load and acquire locks. * `quote_id` - The ID
+///   of the melt quote to load and process.
+///
+/// # Returns
+///
+/// The loaded and locked melt quote, ready for state transitions.
+///
+/// # Errors
+///
+/// * [`Error::UnknownQuote`] if no quote exists with the given ID. * [`Error::Database(Duplicate)`]
+///   if another quote with the same lookup ID is already pending or paid, indicating a conflicting
+///   concurrent melt operation.
+pub async fn load_melt_quotes_exclusively(
+    tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
+    quote_id: &QuoteId,
+) -> Result<Acquired<MeltQuote>, Error> {
+    let quote = tx
+        .get_melt_quote(quote_id)
+        .await
+        .map_err(|e| match e {
+            database::Error::Locked => {
+                tracing::warn!("Quote {quote_id} is locked by another process");
+                database::Error::Duplicate
+            }
+            e => e,
+        })?
+        .ok_or(Error::UnknownQuote)?;
+
+    // Lock any other quotes so they cannot be modified
+    let locked_quotes = if let Some(request_lookup_id) = quote.request_lookup_id.as_ref() {
+        tx.get_melt_quotes_by_request_lookup_id(request_lookup_id)
+            .await
+            .map_err(|e| match e {
+                database::Error::Locked => {
+                    tracing::warn!("Quotes with request_lookyup_id {request_lookup_id} is locked by another process");
+                    database::Error::Duplicate
+                }
+                e => e,
+            })?
+    } else {
+        vec![]
+    };
+
+    if locked_quotes.iter().any(|locked_quote| {
+        locked_quote.id != quote.id
+            && (locked_quote.state == MeltQuoteState::Pending
+                || locked_quote.state == MeltQuoteState::Paid)
+    }) {
+        tracing::warn!(
+            "Cannot transition quote {} to Pending: another quote with lookup_id {:?} is already pending or paid",
+            quote.id,
+            quote.request_lookup_id,
+        );
+        return Err(Error::Database(crate::cdk_database::Error::Duplicate));
+    }
+
+    Ok(quote)
+}
+
 /// Finalizes a melt quote by updating proofs, quote state, and publishing changes.
 ///
 /// This function performs the core finalization operations that are common to both
@@ -283,7 +359,7 @@ pub async fn process_melt_change(
 pub async fn finalize_melt_core(
     tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     pubsub: &PubSubManager,
-    quote: &MeltQuote,
+    quote: &mut Acquired<MeltQuote>,
     input_ys: &[PublicKey],
     inputs_amount: Amount,
     inputs_fee: Amount,
@@ -309,7 +385,7 @@ pub async fn finalize_melt_core(
     }
 
     // Update quote state to Paid
-    tx.update_melt_quote_state(&quote.id, MeltQuoteState::Paid, payment_preimage.clone())
+    tx.update_melt_quote_state(quote, MeltQuoteState::Paid, payment_preimage.clone())
         .await?;
 
     // Update payment lookup ID if changed
@@ -320,8 +396,19 @@ pub async fn finalize_melt_core(
             payment_lookup_id
         );
 
-        tx.update_melt_quote_request_lookup_id(&quote.id, payment_lookup_id)
+        tx.update_melt_quote_request_lookup_id(quote, payment_lookup_id)
             .await?;
+    }
+
+    for current_state in tx
+        .get_proofs_states(input_ys)
+        .await?
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or(Error::UnexpectedProofState)?
+    {
+        check_state_transition(current_state, State::Spent)
+            .map_err(|_| Error::UnexpectedProofState)?;
     }
 
     // Mark input proofs as spent
@@ -385,6 +472,10 @@ pub async fn finalize_melt_quote(
 
     let mut tx = db.begin_transaction().await?;
 
+    // Acquire lock on the quote for safe state update
+
+    let mut locked_quote = load_melt_quotes_exclusively(&mut tx, &quote.id).await?;
+
     // Get melt request info
     let melt_request_info = match tx.get_melt_request_and_blinded_messages(&quote.id).await? {
         Some(info) => info,
@@ -414,7 +505,7 @@ pub async fn finalize_melt_quote(
     finalize_melt_core(
         &mut tx,
         pubsub,
-        quote,
+        &mut locked_quote,
         &input_ys,
         melt_request_info.inputs_amount,
         melt_request_info.inputs_fee,

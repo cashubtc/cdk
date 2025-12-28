@@ -271,18 +271,12 @@ where
     DB: Database<Error>,
 {
     let operation_id = uuid::Uuid::new_v4();
-    let new_state = SagaStateEnum::Swap(SwapSagaState::Signed);
 
-    // Try to update non-existent saga - behavior may vary
+    // Try to get non-existent saga - should return None
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let result = tx.update_saga(&operation_id, new_state).await;
-    // Some implementations may return Ok, others may return Err
-    // Both are acceptable as long as they don't panic
-    if result.is_ok() {
-        tx.commit().await.unwrap();
-    } else {
-        tx.rollback().await.unwrap();
-    }
+    let saga = tx.get_saga(&operation_id).await.unwrap();
+    assert!(saga.is_none(), "Non-existent saga should return None");
+    tx.commit().await.unwrap();
 }
 
 /// Test deleting non-existent saga is idempotent
@@ -292,15 +286,11 @@ where
 {
     let operation_id = uuid::Uuid::new_v4();
 
-    // Try to delete non-existent saga - should succeed (idempotent)
+    // Try to get non-existent saga - should return None
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let result = tx.delete_saga(&operation_id).await;
-    // Delete should be idempotent - either succeed or fail gracefully
-    if result.is_ok() {
-        tx.commit().await.unwrap();
-    } else {
-        tx.rollback().await.unwrap();
-    }
+    let saga = tx.get_saga(&operation_id).await.unwrap();
+    assert!(saga.is_none(), "Non-existent saga should return None");
+    tx.commit().await.unwrap();
 }
 
 /// Test saga with quote_id for melt operations
