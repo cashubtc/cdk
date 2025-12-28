@@ -408,7 +408,7 @@ where
 async fn get_mint_quote_payments<C>(
     conn: &C,
     quote_id: &QuoteId,
-) -> Result<Vec<IncomingPayment>, Error>
+) -> Result<Vec<(Amount, String, u64)>, Error>
 where
     C: DatabaseExecutor + Send + Sync,
 {
@@ -432,17 +432,16 @@ where
     .map(|row| {
         let amount: u64 = column_as_number!(row[2].clone());
         let time: u64 = column_as_number!(row[1].clone());
-        Ok(IncomingPayment::new(
-            amount.into(),
-            column_as_string!(&row[0]),
-            time,
-        ))
+        Ok((Amount::from(amount), column_as_string!(&row[0]), time))
     })
     .collect()
 }
 
 #[inline(always)]
-async fn get_mint_quote_issuance<C>(conn: &C, quote_id: &QuoteId) -> Result<Vec<Issuance>, Error>
+async fn get_mint_quote_issuance<C>(
+    conn: &C,
+    quote_id: &QuoteId,
+) -> Result<Vec<(Amount, u64)>, Error>
 where
     C: DatabaseExecutor + Send + Sync,
 {
@@ -460,7 +459,7 @@ WHERE quote_id=:quote_id
     .into_iter()
     .map(|row| {
         let time: u64 = column_as_number!(row[1].clone());
-        Ok(Issuance::new(
+        Ok((
             Amount::from_i64(column_as_number!(row[0].clone()))
                 .expect("Is amount when put into db"),
             time,
@@ -553,10 +552,18 @@ where
         .transpose()?;
 
     if let Some(quote) = mint_quote.as_mut() {
-        let payments = get_mint_quote_payments(executor, &quote.id).await?;
-        let issuance = get_mint_quote_issuance(executor, &quote.id).await?;
-        quote.issuance = issuance;
-        quote.payments = payments;
+        let raw_payments = get_mint_quote_payments(executor, &quote.id).await?;
+        let raw_issuances = get_mint_quote_issuance(executor, &quote.id).await?;
+        quote.issuance = raw_issuances
+            .into_iter()
+            .map(|(amt, time)| Issuance::new(amt.with_unit(quote.unit.clone()), time))
+            .collect();
+        quote.payments = raw_payments
+            .into_iter()
+            .map(|(amt, payment_id, time)| {
+                IncomingPayment::new(amt.with_unit(quote.unit.clone()), payment_id, time)
+            })
+            .collect();
     }
 
     Ok(mint_quote)
@@ -604,10 +611,18 @@ where
         .transpose()?;
 
     if let Some(quote) = mint_quote.as_mut() {
-        let payments = get_mint_quote_payments(executor, &quote.id).await?;
-        let issuance = get_mint_quote_issuance(executor, &quote.id).await?;
-        quote.issuance = issuance;
-        quote.payments = payments;
+        let raw_payments = get_mint_quote_payments(executor, &quote.id).await?;
+        let raw_issuances = get_mint_quote_issuance(executor, &quote.id).await?;
+        quote.issuance = raw_issuances
+            .into_iter()
+            .map(|(amt, time)| Issuance::new(amt.with_unit(quote.unit.clone()), time))
+            .collect();
+        quote.payments = raw_payments
+            .into_iter()
+            .map(|(amt, payment_id, time)| {
+                IncomingPayment::new(amt.with_unit(quote.unit.clone()), payment_id, time)
+            })
+            .collect();
     }
 
     Ok(mint_quote)
@@ -875,8 +890,8 @@ where
     async fn add_melt_request(
         &mut self,
         quote_id: &QuoteId,
-        inputs_amount: Amount,
-        inputs_fee: Amount,
+        inputs_amount: Amount<CurrencyUnit>,
+        inputs_fee: Amount<CurrencyUnit>,
     ) -> Result<(), Self::Err> {
         // Insert melt_request
         query(
@@ -888,8 +903,8 @@ where
             "#,
         )?
         .bind("quote_id", quote_id.to_string())
-        .bind("inputs_amount", inputs_amount.to_i64())
-        .bind("inputs_fee", inputs_fee.to_i64())
+        .bind("inputs_amount", inputs_amount.value() as i64)
+        .bind("inputs_fee", inputs_fee.value() as i64)
         .execute(&self.inner)
         .await?;
 
@@ -976,6 +991,27 @@ where
         &mut self,
         quote_id: &QuoteId,
     ) -> Result<Option<database::mint::MeltRequestInfo>, Self::Err> {
+        // Get unit from melt quote
+        let unit_row = query(
+            r#"
+            SELECT unit
+            FROM melt_quote
+            WHERE id = :quote_id
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .fetch_one(&self.inner)
+        .await?;
+
+        let unit = match unit_row {
+            Some(row) => {
+                let unit_str: String = column_as_string!(&row[0]);
+                CurrencyUnit::from_str(&unit_str)
+                    .map_err(|_| Error::Internal("Invalid unit in melt quote".to_string()))?
+            }
+            None => return Ok(None),
+        };
+
         let melt_request_row = query(
             r#"
             SELECT inputs_amount, inputs_fee
@@ -1023,8 +1059,8 @@ where
             let blinded_messages = blinded_messages?;
 
             Ok(Some(database::mint::MeltRequestInfo {
-                inputs_amount: Amount::from(inputs_amount),
-                inputs_fee: Amount::from(inputs_fee),
+                inputs_amount: Amount::new(inputs_amount, unit.clone()),
+                inputs_fee: Amount::new(inputs_fee, unit),
                 change_outputs: blinded_messages,
             }))
         } else {
@@ -1145,7 +1181,7 @@ where
             "#,
         )?
         .bind("id", quote.id.to_string())
-        .bind("amount", quote.amount.map(|a| a.to_i64()))
+        .bind("amount", quote.amount.clone().map(|a| a.to_i64()))
         .bind("unit", quote.unit.to_string())
         .bind("request", quote.request.clone())
         .bind("expiry", quote.expiry as i64)
@@ -1183,9 +1219,9 @@ where
         )?
         .bind("id", quote.id.to_string())
         .bind("unit", quote.unit.to_string())
-        .bind("amount", quote.amount.to_i64())
+        .bind("amount", quote.amount().value() as i64)
         .bind("request", serde_json::to_string(&quote.request)?)
-        .bind("fee_reserve", quote.fee_reserve.to_i64())
+        .bind("fee_reserve", quote.fee_reserve().to_i64())
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
         .bind("payment_preimage", quote.payment_preimage)
@@ -1394,10 +1430,18 @@ where
         .collect::<Result<Vec<_>, _>>()?;
 
         for quote in mint_quotes.as_mut_slice() {
-            let payments = get_mint_quote_payments(&*conn, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&*conn, &quote.id).await?;
-            quote.issuance = issuance;
-            quote.payments = payments;
+            let raw_payments = get_mint_quote_payments(&*conn, &quote.id).await?;
+            let raw_issuances = get_mint_quote_issuance(&*conn, &quote.id).await?;
+            quote.issuance = raw_issuances
+                .into_iter()
+                .map(|(amt, time)| Issuance::new(amt.with_unit(quote.unit.clone()), time))
+                .collect();
+            quote.payments = raw_payments
+                .into_iter()
+                .map(|(amt, payment_id, time)| {
+                    IncomingPayment::new(amt.with_unit(quote.unit.clone()), payment_id, time)
+                })
+                .collect();
         }
 
         Ok(mint_quotes)
@@ -2417,8 +2461,8 @@ fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo, Error> {
 #[instrument(skip_all)]
 fn sql_row_to_mint_quote(
     row: Vec<Column>,
-    payments: Vec<IncomingPayment>,
-    issueances: Vec<Issuance>,
+    raw_payments: Vec<(Amount, String, u64)>,
+    raw_issuances: Vec<(Amount, u64)>,
 ) -> Result<MintQuote, Error> {
     unpack_into!(
         let (
@@ -2444,22 +2488,37 @@ fn sql_row_to_mint_quote(
     let amount_paid: u64 = column_as_number!(amount_paid);
     let amount_issued: u64 = column_as_number!(amount_issued);
     let payment_method = column_as_string!(payment_method, PaymentMethod::from_str);
+    let unit = column_as_string!(unit, CurrencyUnit::from_str);
+
+    // Convert raw payments to IncomingPayment with unit
+    let payments: Vec<IncomingPayment> = raw_payments
+        .into_iter()
+        .map(|(amt, payment_id, time)| {
+            IncomingPayment::new(amt.with_unit(unit.clone()), payment_id, time)
+        })
+        .collect();
+
+    // Convert raw issuances to Issuance with unit
+    let issuances: Vec<Issuance> = raw_issuances
+        .into_iter()
+        .map(|(amt, time)| Issuance::new(amt.with_unit(unit.clone()), time))
+        .collect();
 
     Ok(MintQuote::new(
         Some(QuoteId::from_str(&id)?),
         request_str,
-        column_as_string!(unit, CurrencyUnit::from_str),
-        amount.map(Amount::from),
+        unit.clone(),
+        amount.map(|a| Amount::new(a, unit.clone())),
         column_as_number!(expiry),
         PaymentIdentifier::new(&request_lookup_id_kind, &request_lookup_id)
             .map_err(|_| ConversionError::MissingParameter("Payment id".to_string()))?,
         pubkey,
-        amount_paid.into(),
-        amount_issued.into(),
+        Amount::from(amount_paid).with_unit(unit.clone()),
+        Amount::from(amount_issued).with_unit(unit),
         payment_method,
         column_as_number!(created_time),
         payments,
-        issueances,
+        issuances,
     ))
 }
 
@@ -2534,21 +2593,21 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
         }
     };
 
-    Ok(MeltQuote {
-        id: QuoteId::from_str(&id)?,
-        unit: CurrencyUnit::from_str(&unit)?,
-        amount: Amount::from(amount),
+    Ok(MeltQuote::from_db(
+        QuoteId::from_str(&id)?,
+        CurrencyUnit::from_str(&unit)?,
         request,
-        fee_reserve: Amount::from(fee_reserve),
+        amount,
+        fee_reserve,
         state,
         expiry,
         payment_preimage,
         request_lookup_id,
         options,
-        created_time: created_time as u64,
+        created_time as u64,
         paid_time,
         payment_method,
-    })
+    ))
 }
 
 fn sql_row_to_proof(row: Vec<Column>) -> Result<Proof, Error> {

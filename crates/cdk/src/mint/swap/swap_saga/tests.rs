@@ -18,8 +18,7 @@ use crate::test_helpers::mint::{
 /// Helper to create a verification result for testing
 fn create_verification(amount: Amount) -> Verification {
     Verification {
-        amount,
-        unit: Some(cdk_common::nuts::CurrencyUnit::Sat),
+        amount: amount.with_unit(cdk_common::nuts::CurrencyUnit::Sat),
     }
 }
 

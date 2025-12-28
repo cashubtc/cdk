@@ -1,5 +1,5 @@
 use cdk_common::mint::Operation;
-use cdk_common::nuts::BlindedMessage;
+use cdk_common::nuts::{BlindedMessage, CurrencyUnit};
 use cdk_common::{Amount, PublicKey};
 use uuid::Uuid;
 
@@ -49,7 +49,7 @@ pub struct PaymentConfirmed {
 pub enum SettlementDecision {
     /// Payment was settled internally (melt-to-mint on the same mint).
     /// Contains the amount that was settled.
-    Internal { amount: Amount },
+    Internal { amount: Amount<CurrencyUnit> },
     /// Payment requires external Lightning Network settlement.
     RequiresExternalPayment,
 }

@@ -294,12 +294,12 @@ impl Mint {
                 None,
                 create_invoice_response.request.to_string(),
                 unit.clone(),
-                amount,
+                amount.map(|a| a.with_unit(unit.clone())),
                 create_invoice_response.expiry.unwrap_or(0),
                 create_invoice_response.request_lookup_id.clone(),
                 pubkey,
-                Amount::ZERO,
-                Amount::ZERO,
+                Amount::new(0, unit.clone()),
+                Amount::new(0, unit.clone()),
                 payment_method.clone(),
                 unix_time(),
                 vec![],
@@ -396,7 +396,7 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("pay_mint_quote_for_request_id");
         let result = async {
-            if wait_payment_response.payment_amount == Amount::ZERO {
+            if wait_payment_response.payment_amount.value() == 0 {
                 tracing::warn!(
                     "Received payment response with 0 amount with payment id {}.",
                     wait_payment_response.payment_id.to_string()
@@ -593,7 +593,7 @@ impl Mint {
 
         let mint_amount = match mint_quote.payment_method {
             PaymentMethod::Bolt11 => {
-                let quote_amount = mint_quote.amount.ok_or(Error::AmountUndefined)?;
+                let quote_amount = mint_quote.amount.clone().ok_or(Error::AmountUndefined)?;
 
                 if quote_amount != mint_quote.amount_mintable() {
                     tracing::error!("The quote amount {} does not equal the amount paid {}.", quote_amount, mint_quote.amount_mintable());
@@ -601,9 +601,10 @@ impl Mint {
                 }
 
                 quote_amount
-            },
+            }
             PaymentMethod::Bolt12 => {
-                if mint_quote.amount_mintable() == Amount::ZERO{
+                let zero = Amount::new(0, mint_quote.unit.clone());
+                if mint_quote.amount_mintable() == zero {
                     tracing::error!(
                             "Quote state should not be issued if issued {} is => paid {}.",
                             mint_quote.amount_issued(),
@@ -625,7 +626,6 @@ impl Mint {
 
         let Verification {
             amount: outputs_amount,
-            unit,
         } = match self.verify_outputs(&mut tx, &mint_request.outputs).await {
             Ok(verification) => verification,
             Err(err) => {
@@ -635,11 +635,15 @@ impl Mint {
             }
         };
 
+        // Get unit from the typed outputs amount
+        let unit = outputs_amount.unit().clone();
+        ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
+
         if mint_quote.payment_method == PaymentMethod::Bolt11 {
             // For bolt11 we enforce that mint amount == quote amount
             if outputs_amount != mint_amount {
                 return Err(Error::TransactionUnbalanced(
-                    mint_amount.into(),
+                    mint_amount.value(),
                     mint_request.total_amount()?.into(),
                     0,
                 ));
@@ -648,18 +652,15 @@ impl Mint {
             // For other payments we just make sure outputs is not more then mint amount
             if outputs_amount > mint_amount {
                 return Err(Error::TransactionUnbalanced(
-                    mint_amount.into(),
+                    mint_amount.value(),
                     mint_request.total_amount()?.into(),
                     0,
                 ));
             }
         }
 
-        let unit = unit.ok_or(Error::UnsupportedUnit)?;
-        ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
-
-        let amount_issued = mint_request.total_amount()?;
-        let operation = Operation::new_mint(amount_issued, mint_quote.payment_method.clone());
+        let amount_issued = mint_request.total_amount()?.with_unit(unit.clone());
+        let operation = Operation::new_mint(amount_issued.clone().into(), mint_quote.payment_method.clone());
 
         tx.add_blinded_messages(Some(&mint_request.quote), &mint_request.outputs, &operation).await?;
 
