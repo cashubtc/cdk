@@ -278,7 +278,10 @@ pub async fn load_melt_quotes_exclusively(
         .get_melt_quote(quote_id)
         .await
         .map_err(|e| match e {
-            database::Error::Locked => database::Error::Duplicate,
+            database::Error::Locked => {
+                tracing::warn!("Quote {quote_id} is locked by another process");
+                database::Error::Duplicate
+            }
             e => e,
         })?
         .ok_or(Error::UnknownQuote)?;
@@ -288,7 +291,10 @@ pub async fn load_melt_quotes_exclusively(
         tx.get_melt_quotes_by_request_lookup_id(request_lookup_id)
             .await
             .map_err(|e| match e {
-                database::Error::Locked => database::Error::Duplicate,
+                database::Error::Locked => {
+                    tracing::warn!("Quotes with request_lookyup_id {request_lookup_id} is locked by another process");
+                    database::Error::Duplicate
+                }
                 e => e,
             })?
     } else {
