@@ -81,3 +81,224 @@ pub fn check_melt_quote_state_transition(
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod proof_state_transitions {
+        use super::*;
+
+        #[test]
+        fn unspent_to_pending_is_valid() {
+            assert!(check_state_transition(State::Unspent, State::Pending).is_ok());
+        }
+
+        #[test]
+        fn unspent_to_spent_is_valid() {
+            assert!(check_state_transition(State::Unspent, State::Spent).is_ok());
+        }
+
+        #[test]
+        fn pending_to_unspent_is_valid() {
+            assert!(check_state_transition(State::Pending, State::Unspent).is_ok());
+        }
+
+        #[test]
+        fn pending_to_spent_is_valid() {
+            assert!(check_state_transition(State::Pending, State::Spent).is_ok());
+        }
+
+        #[test]
+        fn unspent_to_unspent_is_invalid() {
+            let result = check_state_transition(State::Unspent, State::Unspent);
+            assert!(matches!(result, Err(Error::InvalidTransition(_, _))));
+        }
+
+        #[test]
+        fn pending_to_pending_returns_pending_error() {
+            let result = check_state_transition(State::Pending, State::Pending);
+            assert!(matches!(result, Err(Error::Pending)));
+        }
+
+        #[test]
+        fn spent_to_any_returns_already_spent() {
+            assert!(matches!(
+                check_state_transition(State::Spent, State::Unspent),
+                Err(Error::AlreadySpent)
+            ));
+            assert!(matches!(
+                check_state_transition(State::Spent, State::Pending),
+                Err(Error::AlreadySpent)
+            ));
+            assert!(matches!(
+                check_state_transition(State::Spent, State::Spent),
+                Err(Error::AlreadySpent)
+            ));
+        }
+
+        #[test]
+        fn reserved_state_is_invalid_source() {
+            let result = check_state_transition(State::Reserved, State::Unspent);
+            assert!(matches!(result, Err(Error::InvalidTransition(_, _))));
+        }
+    }
+
+    mod melt_quote_state_transitions {
+        use super::*;
+
+        #[test]
+        fn unpaid_to_pending_is_valid() {
+            assert!(check_melt_quote_state_transition(
+                MeltQuoteState::Unpaid,
+                MeltQuoteState::Pending
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn unpaid_to_failed_is_valid() {
+            assert!(check_melt_quote_state_transition(
+                MeltQuoteState::Unpaid,
+                MeltQuoteState::Failed
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn pending_to_unpaid_is_valid() {
+            assert!(check_melt_quote_state_transition(
+                MeltQuoteState::Pending,
+                MeltQuoteState::Unpaid
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn pending_to_paid_is_valid() {
+            assert!(check_melt_quote_state_transition(
+                MeltQuoteState::Pending,
+                MeltQuoteState::Paid
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn pending_to_failed_is_valid() {
+            assert!(check_melt_quote_state_transition(
+                MeltQuoteState::Pending,
+                MeltQuoteState::Failed
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn failed_to_pending_is_valid() {
+            assert!(check_melt_quote_state_transition(
+                MeltQuoteState::Failed,
+                MeltQuoteState::Pending
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn failed_to_unpaid_is_valid() {
+            assert!(check_melt_quote_state_transition(
+                MeltQuoteState::Failed,
+                MeltQuoteState::Unpaid
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn unknown_to_any_is_valid() {
+            assert!(check_melt_quote_state_transition(
+                MeltQuoteState::Unknown,
+                MeltQuoteState::Unpaid
+            )
+            .is_ok());
+            assert!(check_melt_quote_state_transition(
+                MeltQuoteState::Unknown,
+                MeltQuoteState::Pending
+            )
+            .is_ok());
+            assert!(check_melt_quote_state_transition(
+                MeltQuoteState::Unknown,
+                MeltQuoteState::Paid
+            )
+            .is_ok());
+            assert!(check_melt_quote_state_transition(
+                MeltQuoteState::Unknown,
+                MeltQuoteState::Failed
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn unpaid_to_paid_is_invalid() {
+            let result =
+                check_melt_quote_state_transition(MeltQuoteState::Unpaid, MeltQuoteState::Paid);
+            assert!(matches!(
+                result,
+                Err(Error::InvalidMeltQuoteTransition(_, _))
+            ));
+        }
+
+        #[test]
+        fn unpaid_to_unpaid_is_invalid() {
+            let result =
+                check_melt_quote_state_transition(MeltQuoteState::Unpaid, MeltQuoteState::Unpaid);
+            assert!(matches!(
+                result,
+                Err(Error::InvalidMeltQuoteTransition(_, _))
+            ));
+        }
+
+        #[test]
+        fn pending_to_pending_returns_pending_error() {
+            let result =
+                check_melt_quote_state_transition(MeltQuoteState::Pending, MeltQuoteState::Pending);
+            assert!(matches!(result, Err(Error::Pending)));
+        }
+
+        #[test]
+        fn paid_to_any_returns_already_paid() {
+            assert!(matches!(
+                check_melt_quote_state_transition(MeltQuoteState::Paid, MeltQuoteState::Unpaid),
+                Err(Error::AlreadyPaid)
+            ));
+            assert!(matches!(
+                check_melt_quote_state_transition(MeltQuoteState::Paid, MeltQuoteState::Pending),
+                Err(Error::AlreadyPaid)
+            ));
+            assert!(matches!(
+                check_melt_quote_state_transition(MeltQuoteState::Paid, MeltQuoteState::Paid),
+                Err(Error::AlreadyPaid)
+            ));
+            assert!(matches!(
+                check_melt_quote_state_transition(MeltQuoteState::Paid, MeltQuoteState::Failed),
+                Err(Error::AlreadyPaid)
+            ));
+        }
+
+        #[test]
+        fn failed_to_paid_is_invalid() {
+            let result =
+                check_melt_quote_state_transition(MeltQuoteState::Failed, MeltQuoteState::Paid);
+            assert!(matches!(
+                result,
+                Err(Error::InvalidMeltQuoteTransition(_, _))
+            ));
+        }
+
+        #[test]
+        fn failed_to_failed_is_invalid() {
+            let result =
+                check_melt_quote_state_transition(MeltQuoteState::Failed, MeltQuoteState::Failed);
+            assert!(matches!(
+                result,
+                Err(Error::InvalidMeltQuoteTransition(_, _))
+            ));
+        }
+    }
+}
