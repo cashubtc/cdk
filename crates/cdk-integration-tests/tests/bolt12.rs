@@ -250,13 +250,19 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
         )
         .await?;
 
-    let melted = wallet_one.melt(&wallet_one_melt_quote.id).await?;
+    let prepared_one = wallet_one
+        .prepare_melt(&wallet_one_melt_quote.id, std::collections::HashMap::new())
+        .await?;
+    let melted = prepared_one.confirm().await?;
 
-    assert!(melted.preimage.is_some());
+    assert!(melted.payment_proof().is_some());
 
-    let melted_two = wallet_two.melt(&wallet_two_melt_quote.id).await?;
+    let prepared_two = wallet_two
+        .prepare_melt(&wallet_two_melt_quote.id, std::collections::HashMap::new())
+        .await?;
+    let melted_two = prepared_two.confirm().await?;
 
-    assert!(melted_two.preimage.is_some());
+    assert!(melted_two.payment_proof().is_some());
 
     Ok(())
 }
@@ -305,9 +311,12 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
 
     let quote = wallet.melt_bolt12_quote(offer.to_string(), None).await?;
 
-    let melt = wallet.melt(&quote.id).await?;
+    let prepared = wallet
+        .prepare_melt(&quote.id, std::collections::HashMap::new())
+        .await?;
+    let melt = prepared.confirm().await?;
 
-    assert_eq!(melt.amount, 10.into());
+    assert_eq!(melt.amount(), 10.into());
 
     Ok(())
 }

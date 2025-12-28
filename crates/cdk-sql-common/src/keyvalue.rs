@@ -214,21 +214,21 @@ where
     .collect::<Result<Vec<_>, Error>>()
 }
 
-/// Generic implementation of kv_write for database (non-transactional, standalone)
-#[cfg(feature = "wallet")]
-pub(crate) async fn kv_write_standalone<C>(
-    conn: &C,
+/// Generic implementation of kv_write for database (non-transactional)
+pub(crate) async fn kv_write<RM>(
+    pool: &Arc<Pool<RM>>,
     primary_namespace: &str,
     secondary_namespace: &str,
     key: &str,
     value: &[u8],
 ) -> Result<(), Error>
 where
-    C: crate::database::DatabaseExecutor,
+    RM: DatabasePool + 'static,
 {
     // Validate parameters according to KV store requirements
     validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
+    let conn = pool.get().map_err(|e| Error::Database(Box::new(e)))?;
     let current_time = unix_time();
 
     query(
@@ -248,25 +248,26 @@ where
     .bind("value", value.to_vec())
     .bind("created_time", current_time as i64)
     .bind("updated_time", current_time as i64)
-    .execute(conn)
+    .execute(&*conn)
     .await?;
 
     Ok(())
 }
 
-/// Generic implementation of kv_remove for database (non-transactional, standalone)
-#[cfg(feature = "wallet")]
-pub(crate) async fn kv_remove_standalone<C>(
-    conn: &C,
+/// Generic implementation of kv_remove for database (non-transactional)
+pub(crate) async fn kv_remove<RM>(
+    pool: &Arc<Pool<RM>>,
     primary_namespace: &str,
     secondary_namespace: &str,
     key: &str,
 ) -> Result<(), Error>
 where
-    C: crate::database::DatabaseExecutor,
+    RM: DatabasePool + 'static,
 {
     // Validate parameters according to KV store requirements
     validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
+
+    let conn = pool.get().map_err(|e| Error::Database(Box::new(e)))?;
     query(
         r#"
         DELETE FROM kv_store
@@ -278,7 +279,7 @@ where
     .bind("primary_namespace", primary_namespace.to_owned())
     .bind("secondary_namespace", secondary_namespace.to_owned())
     .bind("key", key.to_owned())
-    .execute(conn)
+    .execute(&*conn)
     .await?;
 
     Ok(())

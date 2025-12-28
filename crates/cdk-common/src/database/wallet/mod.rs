@@ -92,27 +92,27 @@ where
     ) -> Result<Vec<Transaction>, Err>;
 
     /// Update the proofs in storage by adding new proofs or removing proofs by
-    /// their Y value (without transaction)
+    /// their Y value
     async fn update_proofs(
         &self,
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), Err>;
 
-    /// Update proofs state in storage (without transaction)
+    /// Update proofs state in storage
     async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Err>;
 
-    /// Add transaction to storage (without transaction)
+    /// Add transaction to storage
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Err>;
 
-    /// Update mint url (without transaction)
+    /// Update mint url
     async fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
         new_mint_url: MintUrl,
     ) -> Result<(), Err>;
 
-    /// Atomically increment Keyset counter and return new value (without transaction)
+    /// Atomically increment Keyset counter and return new value
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<u32, Err>;
 
     /// Add Mint to storage
@@ -149,7 +149,125 @@ where
     /// Remove transaction from storage
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Err>;
 
-    // KV Store write methods (non-transactional)
+    /// Add a wallet saga to storage.
+    ///
+    /// The saga should be created with `WalletSaga::new()` which initializes
+    /// `version = 0`. This is the starting point for optimistic locking.
+    async fn add_saga(&self, saga: wallet::WalletSaga) -> Result<(), Err>;
+
+    /// Get a wallet saga by ID.
+    async fn get_saga(&self, id: &uuid::Uuid) -> Result<Option<wallet::WalletSaga>, Err>;
+
+    /// Update a wallet saga with optimistic locking.
+    ///
+    /// This method implements optimistic locking to handle concurrent access
+    /// from multiple wallet instances. The update only succeeds if the saga's
+    /// version in the database matches `saga.version - 1` (the version before
+    /// the caller incremented it).
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(true)` - Update succeeded, this instance "won" the race
+    /// - `Ok(false)` - Version mismatch, another instance modified the saga first
+    /// - `Err(_)` - Database error (not a version conflict)
+    ///
+    /// # Usage
+    ///
+    /// ```ignore
+    /// let mut saga = db.get_saga(&id).await?.unwrap();
+    /// saga.update_state(NewState); // This increments version
+    ///
+    /// match db.update_saga(saga).await? {
+    ///     true => println!("Update succeeded"),
+    ///     false => println!("Another instance modified this saga, skipping"),
+    /// }
+    /// ```
+    ///
+    /// # Implementation Notes
+    ///
+    /// Implementations should use a conditional update like:
+    /// ```sql
+    /// UPDATE wallet_sagas SET ..., version = ?
+    /// WHERE id = ? AND version = ? -- previous version
+    /// ```
+    /// Return `Ok(true)` if rows_affected > 0, `Ok(false)` otherwise.
+    async fn update_saga(&self, saga: wallet::WalletSaga) -> Result<bool, Err>;
+
+    /// Delete a wallet saga.
+    ///
+    /// This is typically called after a saga completes successfully.
+    /// Deletion is best-effort - if it fails, the orphaned saga is harmless
+    /// and will be cleaned up on next recovery.
+    async fn delete_saga(&self, id: &uuid::Uuid) -> Result<(), Err>;
+
+    /// Get all incomplete sagas (sagas that haven't been deleted yet).
+    ///
+    /// Used during recovery to find sagas that were interrupted by a crash.
+    /// The caller should process each saga and handle version conflicts
+    /// gracefully (another instance may be processing the same saga).
+    async fn get_incomplete_sagas(&self) -> Result<Vec<wallet::WalletSaga>, Err>;
+
+    /// Reserve proofs for an operation
+    /// Sets proofs to Reserved state and marks them as used by the operation
+    /// Returns an error if any proofs are already reserved or not in Unspent state
+    async fn reserve_proofs(
+        &self,
+        ys: Vec<PublicKey>,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), Err>;
+
+    /// Release proofs reserved by an operation
+    /// Sets proofs back to Unspent state and clears the used_by_operation field
+    async fn release_proofs(&self, operation_id: &uuid::Uuid) -> Result<(), Err>;
+
+    /// Get proofs reserved by an operation
+    async fn get_reserved_proofs(&self, operation_id: &uuid::Uuid) -> Result<Vec<ProofInfo>, Err>;
+
+    /// Reserve a melt quote for an operation.
+    ///
+    /// Atomically marks the quote as used by the operation. This prevents
+    /// concurrent operations from using the same quote.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::QuoteAlreadyInUse` if the quote is already reserved
+    /// by another operation.
+    /// Returns `Error::UnknownQuote` if the quote doesn't exist.
+    async fn reserve_melt_quote(
+        &self,
+        quote_id: &str,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), Err>;
+
+    /// Release a melt quote reserved by an operation.
+    ///
+    /// Clears the `used_by_operation` field for the quote, allowing it to be
+    /// used by another operation. This is called during saga compensation
+    /// or after successful completion.
+    async fn release_melt_quote(&self, operation_id: &uuid::Uuid) -> Result<(), Err>;
+
+    /// Reserve a mint quote for an operation.
+    ///
+    /// Atomically marks the quote as used by the operation. This prevents
+    /// concurrent operations from using the same quote.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::QuoteAlreadyInUse` if the quote is already reserved
+    /// by another operation.
+    /// Returns `Error::UnknownQuote` if the quote doesn't exist.
+    async fn reserve_mint_quote(
+        &self,
+        quote_id: &str,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), Err>;
+
+    /// Release a mint quote reserved by an operation.
+    ///
+    /// Clears the `used_by_operation` field for the quote, allowing it to be
+    /// used by another operation. This is called during saga compensation
+    /// or after successful completion.
+    async fn release_mint_quote(&self, operation_id: &uuid::Uuid) -> Result<(), Err>;
 
     /// Read a value from the key-value store
     async fn kv_read(

@@ -313,6 +313,15 @@ pub enum Error {
     /// Transaction not found
     #[error("Transaction not found")]
     TransactionNotFound,
+    /// Invalid operation kind
+    #[error("Invalid operation kind")]
+    InvalidOperationKind,
+    /// Invalid operation state
+    #[error("Invalid operation state")]
+    InvalidOperationState,
+    /// Operation not found
+    #[error("Operation not found")]
+    OperationNotFound,
     /// KV Store invalid key or namespace
     #[error("Invalid KV store key or namespace: {0}")]
     KVStoreInvalidKey(String),

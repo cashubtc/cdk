@@ -82,7 +82,11 @@ async fn test_internal_payment() {
 
     assert_eq!(melt.amount, 10.into());
 
-    let _melted = wallet.melt(&melt.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let _melted = prepared.confirm().await.unwrap();
 
     let _proofs = wallet_2
         .wait_and_mint_quote(
@@ -277,18 +281,26 @@ async fn test_multimint_melt() {
         .await
         .expect("Could not get melt quote");
 
-    // Multimint pay invoice
-    let result1 = wallet1.melt(&quote_1.id);
-    let result2 = wallet2.melt(&quote_2.id);
-    let result = join!(result1, result2);
+    // Multimint pay invoice - prepare both melts
+    let prepared1 = wallet1
+        .prepare_melt(&quote_1.id, std::collections::HashMap::new())
+        .await
+        .expect("Could not prepare melt 1");
+    let prepared2 = wallet2
+        .prepare_melt(&quote_2.id, std::collections::HashMap::new())
+        .await
+        .expect("Could not prepare melt 2");
+
+    // Confirm both in parallel
+    let result = join!(prepared1.confirm(), prepared2.confirm());
 
     // Unpack results
     let result1 = result.0.unwrap();
     let result2 = result.1.unwrap();
 
     // Check
-    assert!(result1.state == result2.state);
-    assert!(result1.state == MeltQuoteState::Paid);
+    assert!(result1.state() == result2.state());
+    assert!(result1.state() == MeltQuoteState::Paid);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -397,9 +409,13 @@ async fn test_regtest_melt_amountless() {
         .await
         .unwrap();
 
-    let melt = wallet.melt(&melt_quote.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melt = prepared.confirm().await.unwrap();
 
-    assert!(melt.amount == 5.into());
+    assert!(melt.amount() == 5.into());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

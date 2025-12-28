@@ -1,0 +1,646 @@
+//! Mint (Issue) Saga - Type State Pattern Implementation
+//!
+//! This module implements the saga pattern for mint operations using the typestate
+//! pattern to enforce valid state transitions at compile-time.
+//!
+//! # Type State Flow
+//!
+//! ```text
+//! MintSaga<Initial>
+//!   └─> prepare() -> MintSaga<Prepared>
+//!         └─> execute() -> MintSaga<Finalized>
+//! ```
+
+use std::collections::HashMap;
+
+use cdk_common::nut00::KnownMethod;
+use cdk_common::wallet::{
+    IssueSagaState, MintOperationData, OperationData, Transaction, TransactionDirection,
+    WalletSaga, WalletSagaState,
+};
+use cdk_common::PaymentMethod;
+use tracing::instrument;
+
+use self::compensation::{MintCompensation, ReleaseMintQuote};
+use self::state::{Finalized, Initial, Prepared};
+use crate::amount::SplitTarget;
+use crate::dhke::construct_proofs;
+use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::{nut12, MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
+use crate::types::ProofInfo;
+use crate::util::unix_time;
+use crate::wallet::saga::{
+    add_compensation, clear_compensations, new_compensations, Compensations,
+};
+use crate::{Amount, Error, Wallet};
+
+pub mod compensation;
+pub mod resume;
+pub mod state;
+
+/// Saga pattern implementation for mint (issue) operations.
+///
+/// Uses the typestate pattern to enforce valid state transitions at compile-time.
+/// Each state (Initial, Prepared, Finalized) is a distinct type, and operations
+/// are only available on the appropriate type.
+pub struct MintSaga<'a, S> {
+    /// Wallet reference
+    wallet: &'a Wallet,
+    /// Compensating actions in LIFO order (most recent first)
+    compensations: Compensations,
+    /// State-specific data
+    state_data: S,
+}
+
+impl<'a> MintSaga<'a, Initial> {
+    /// Create a new mint saga in the Initial state.
+    pub fn new(wallet: &'a Wallet) -> Self {
+        let operation_id = uuid::Uuid::new_v4();
+
+        Self {
+            wallet,
+            compensations: new_compensations(),
+            state_data: Initial { operation_id },
+        }
+    }
+
+    /// Prepare the mint operation for Bolt11.
+    ///
+    /// This is the first step in the saga. It:
+    /// 1. Validates the quote
+    /// 2. Creates premint secrets (increments counter if needed)
+    /// 3. Prepares the mint request
+    #[instrument(skip_all)]
+    pub async fn prepare_bolt11(
+        self,
+        quote_id: &str,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> Result<MintSaga<'a, Prepared>, Error> {
+        tracing::info!(
+            "Preparing bolt11 mint for quote {} with operation {}",
+            quote_id,
+            self.state_data.operation_id
+        );
+
+        let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .wallet
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
+
+        let quote_info = self
+            .wallet
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        if quote_info.payment_method != PaymentMethod::Known(KnownMethod::Bolt11) {
+            return Err(Error::UnsupportedPaymentMethod);
+        }
+
+        // Reserve the quote to prevent concurrent operations from using it
+        self.wallet
+            .localstore
+            .reserve_mint_quote(quote_id, &self.state_data.operation_id)
+            .await?;
+
+        // Register compensation to release quote on failure
+        add_compensation(
+            &self.compensations,
+            Box::new(ReleaseMintQuote {
+                localstore: self.wallet.localstore.clone(),
+                operation_id: self.state_data.operation_id,
+            }),
+        )
+        .await;
+
+        let amount_mintable = quote_info.amount_mintable();
+
+        if amount_mintable == Amount::ZERO {
+            tracing::debug!("Amount mintable 0.");
+            return Err(Error::AmountUndefined);
+        }
+
+        let unix_time = unix_time();
+        if quote_info.expiry < unix_time {
+            tracing::warn!("Attempting to mint with expired quote.");
+        }
+
+        let split_target = match amount_split_target {
+            SplitTarget::None => {
+                self.wallet
+                    .determine_split_target_values(amount_mintable, &fee_and_amounts)
+                    .await?
+            }
+            s => s,
+        };
+
+        let premint_secrets = match &spending_conditions {
+            Some(spending_conditions) => PreMintSecrets::with_conditions(
+                active_keyset_id,
+                amount_mintable,
+                &split_target,
+                spending_conditions,
+                &fee_and_amounts,
+            )?,
+            None => {
+                let amount_split =
+                    amount_mintable.split_targeted(&split_target, &fee_and_amounts)?;
+                let num_secrets = amount_split.len() as u32;
+
+                tracing::debug!(
+                    "Incrementing keyset {} counter by {}",
+                    active_keyset_id,
+                    num_secrets
+                );
+
+                let new_counter = self
+                    .wallet
+                    .localstore
+                    .increment_keyset_counter(&active_keyset_id, num_secrets)
+                    .await?;
+
+                let count = new_counter - num_secrets;
+
+                PreMintSecrets::from_seed(
+                    active_keyset_id,
+                    count,
+                    &self.wallet.seed,
+                    amount_mintable,
+                    &split_target,
+                    &fee_and_amounts,
+                )?
+            }
+        };
+
+        let mut request = MintRequest {
+            quote: quote_id.to_string(),
+            outputs: premint_secrets.blinded_messages(),
+            signature: None,
+        };
+
+        if let Some(secret_key) = &quote_info.secret_key {
+            request.sign(secret_key.clone())?;
+        }
+
+        let operation_id = self.state_data.operation_id;
+
+        // Get counter range for recovery
+        let counter_end = self
+            .wallet
+            .localstore
+            .increment_keyset_counter(&active_keyset_id, 0)
+            .await?;
+        let counter_start = counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
+
+        // Persist saga state for crash recovery
+        let saga = WalletSaga::new(
+            operation_id,
+            WalletSagaState::Issue(IssueSagaState::SecretsPrepared),
+            amount_mintable,
+            self.wallet.mint_url.clone(),
+            self.wallet.unit.clone(),
+            OperationData::Mint(MintOperationData {
+                quote_id: quote_id.to_string(),
+                amount: amount_mintable,
+                counter_start: Some(counter_start),
+                counter_end: Some(counter_end),
+                blinded_messages: Some(request.outputs.clone()),
+            }),
+        );
+
+        self.wallet.localstore.add_saga(saga).await?;
+
+        // Register compensation (deletes saga on failure)
+        add_compensation(
+            &self.compensations,
+            Box::new(MintCompensation {
+                localstore: self.wallet.localstore.clone(),
+                quote_id: quote_id.to_string(),
+                saga_id: operation_id,
+            }),
+        )
+        .await;
+
+        // Transition to Prepared state
+        Ok(MintSaga {
+            wallet: self.wallet,
+            compensations: self.compensations,
+            state_data: Prepared {
+                operation_id: self.state_data.operation_id,
+                quote_id: quote_id.to_string(),
+                quote_info,
+                amount: amount_mintable,
+                active_keyset_id,
+                premint_secrets,
+                mint_request: request,
+                payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
+            },
+        })
+    }
+
+    /// Prepare the mint operation for Bolt12.
+    ///
+    /// This is the first step in the saga. It:
+    /// 1. Validates the quote
+    /// 2. Creates premint secrets (increments counter if needed)
+    /// 3. Prepares the mint request
+    #[instrument(skip_all)]
+    pub async fn prepare_bolt12(
+        self,
+        quote_id: &str,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> Result<MintSaga<'a, Prepared>, Error> {
+        tracing::info!(
+            "Preparing bolt12 mint for quote {} with operation {}",
+            quote_id,
+            self.state_data.operation_id
+        );
+
+        let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .wallet
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
+
+        let quote_info = self
+            .wallet
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        if quote_info.expiry.le(&unix_time()) && quote_info.expiry.ne(&0) {
+            tracing::info!("Attempting to mint expired quote.");
+        }
+
+        // Reserve the quote to prevent concurrent operations from using it
+        self.wallet
+            .localstore
+            .reserve_mint_quote(quote_id, &self.state_data.operation_id)
+            .await?;
+
+        // Register compensation to release quote on failure
+        add_compensation(
+            &self.compensations,
+            Box::new(ReleaseMintQuote {
+                localstore: self.wallet.localstore.clone(),
+                operation_id: self.state_data.operation_id,
+            }),
+        )
+        .await;
+
+        let (quote_info, amount) = match amount {
+            Some(amount) => (quote_info, amount),
+            None => {
+                // If amount is not supplied, check the status of the quote
+                let state = self.wallet.mint_bolt12_quote_state(quote_id).await?;
+
+                let quote_info = self
+                    .wallet
+                    .localstore
+                    .get_mint_quote(quote_id)
+                    .await?
+                    .ok_or(Error::UnknownQuote)?;
+
+                (quote_info, state.amount_paid - state.amount_issued)
+            }
+        };
+
+        if amount == Amount::ZERO {
+            tracing::error!("Cannot mint zero amount.");
+            return Err(Error::UnpaidQuote);
+        }
+
+        let split_target = match amount_split_target {
+            SplitTarget::None => {
+                self.wallet
+                    .determine_split_target_values(amount, &fee_and_amounts)
+                    .await?
+            }
+            s => s,
+        };
+
+        let premint_secrets = match &spending_conditions {
+            Some(spending_conditions) => PreMintSecrets::with_conditions(
+                active_keyset_id,
+                amount,
+                &split_target,
+                spending_conditions,
+                &fee_and_amounts,
+            )?,
+            None => {
+                let amount_split = amount.split_targeted(&split_target, &fee_and_amounts)?;
+                let num_secrets = amount_split.len() as u32;
+
+                tracing::debug!(
+                    "Incrementing keyset {} counter by {}",
+                    active_keyset_id,
+                    num_secrets
+                );
+
+                let new_counter = self
+                    .wallet
+                    .localstore
+                    .increment_keyset_counter(&active_keyset_id, num_secrets)
+                    .await?;
+
+                let count = new_counter - num_secrets;
+
+                PreMintSecrets::from_seed(
+                    active_keyset_id,
+                    count,
+                    &self.wallet.seed,
+                    amount,
+                    &split_target,
+                    &fee_and_amounts,
+                )?
+            }
+        };
+
+        let mut request = MintRequest {
+            quote: quote_id.to_string(),
+            outputs: premint_secrets.blinded_messages(),
+            signature: None,
+        };
+
+        if let Some(secret_key) = quote_info.secret_key.clone() {
+            request.sign(secret_key)?;
+        } else {
+            tracing::error!("Signature is required for bolt12.");
+            return Err(Error::SignatureMissingOrInvalid);
+        }
+
+        let operation_id = self.state_data.operation_id;
+
+        // Get counter range for recovery
+        let counter_end = self
+            .wallet
+            .localstore
+            .increment_keyset_counter(&active_keyset_id, 0)
+            .await?;
+        let counter_start = counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
+
+        // Persist saga state for crash recovery
+        let saga = WalletSaga::new(
+            operation_id,
+            WalletSagaState::Issue(IssueSagaState::SecretsPrepared),
+            amount,
+            self.wallet.mint_url.clone(),
+            self.wallet.unit.clone(),
+            OperationData::Mint(MintOperationData {
+                quote_id: quote_id.to_string(),
+                amount,
+                counter_start: Some(counter_start),
+                counter_end: Some(counter_end),
+                blinded_messages: Some(request.outputs.clone()),
+            }),
+        );
+
+        self.wallet.localstore.add_saga(saga).await?;
+
+        // Register compensation (deletes saga on failure)
+        add_compensation(
+            &self.compensations,
+            Box::new(MintCompensation {
+                localstore: self.wallet.localstore.clone(),
+                quote_id: quote_id.to_string(),
+                saga_id: operation_id,
+            }),
+        )
+        .await;
+
+        // Transition to Prepared state
+        Ok(MintSaga {
+            wallet: self.wallet,
+            compensations: self.compensations,
+            state_data: Prepared {
+                operation_id: self.state_data.operation_id,
+                quote_id: quote_id.to_string(),
+                quote_info,
+                amount,
+                active_keyset_id,
+                premint_secrets,
+                mint_request: request,
+                payment_method: PaymentMethod::Known(KnownMethod::Bolt12),
+            },
+        })
+    }
+}
+
+impl<'a> MintSaga<'a, Prepared> {
+    /// Execute the mint operation.
+    ///
+    /// This completes the mint by:
+    /// 1. Posting the mint request to the mint
+    /// 2. Verifying DLEQ proofs
+    /// 3. Constructing proofs
+    /// 4. Updating quote state
+    /// 5. Storing proofs
+    /// 6. Recording transaction
+    ///
+    /// On success, compensations are cleared.
+    #[instrument(skip_all)]
+    pub async fn execute(self) -> Result<MintSaga<'a, Finalized>, Error> {
+        tracing::info!(
+            "Executing mint for quote {} with operation {}",
+            self.state_data.quote_id,
+            self.state_data.operation_id
+        );
+
+        let operation_id = self.state_data.operation_id;
+
+        // Get counter range for recovery
+        let counter_end = self
+            .wallet
+            .localstore
+            .increment_keyset_counter(&self.state_data.active_keyset_id, 0)
+            .await?;
+        let counter_start =
+            counter_end.saturating_sub(self.state_data.premint_secrets.secrets.len() as u32);
+
+        // Update saga state to MintRequested BEFORE making the mint call
+        // This is write-ahead logging - if we crash after this, recovery knows
+        // the mint request may have been sent
+        let updated_saga = WalletSaga::new(
+            operation_id,
+            WalletSagaState::Issue(IssueSagaState::MintRequested),
+            self.state_data.amount,
+            self.wallet.mint_url.clone(),
+            self.wallet.unit.clone(),
+            OperationData::Mint(MintOperationData {
+                quote_id: self.state_data.quote_id.clone(),
+                amount: self.state_data.amount,
+                counter_start: Some(counter_start),
+                counter_end: Some(counter_end),
+                blinded_messages: Some(self.state_data.mint_request.outputs.clone()),
+            }),
+        );
+
+        // Update saga state - if this fails due to version conflict, another instance
+        // is processing this saga, which should not happen during normal operation
+        if !self.wallet.localstore.update_saga(updated_saga).await? {
+            return Err(Error::Custom(
+                "Saga version conflict during update - another instance may be processing this saga".to_string(),
+            ));
+        }
+
+        // Post mint request
+        let mint_res = self
+            .wallet
+            .client
+            .post_mint(
+                &self.state_data.payment_method,
+                self.state_data.mint_request.clone(),
+            )
+            .await?;
+
+        let keys = self
+            .wallet
+            .load_keyset_keys(self.state_data.active_keyset_id)
+            .await?;
+
+        // Verify DLEQ proofs
+        for (sig, premint) in mint_res
+            .signatures
+            .iter()
+            .zip(&self.state_data.premint_secrets.secrets)
+        {
+            let keys = self.wallet.load_keyset_keys(sig.keyset_id).await?;
+            let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
+            match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
+                Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
+                Err(_) => return Err(Error::CouldNotVerifyDleq),
+            }
+        }
+
+        // Construct proofs
+        let proofs = construct_proofs(
+            mint_res.signatures,
+            self.state_data.premint_secrets.rs(),
+            self.state_data.premint_secrets.secrets(),
+            &keys,
+        )?;
+
+        let minted_amount = proofs.total_amount()?;
+
+        // Update quote based on payment method
+        match self.state_data.payment_method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                // Remove filled quote from store
+                self.wallet
+                    .localstore
+                    .remove_mint_quote(&self.state_data.quote_id)
+                    .await?;
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                // Update quote with issued amount
+                let mut quote_info = self
+                    .wallet
+                    .localstore
+                    .get_mint_quote(&self.state_data.quote_id)
+                    .await?
+                    .ok_or(Error::UnpaidQuote)?;
+                quote_info.amount_issued += minted_amount;
+                self.wallet.localstore.add_mint_quote(quote_info).await?;
+            }
+            PaymentMethod::Custom(_) => {
+                tracing::warn!("Custom payment method, not updating quote");
+            }
+        }
+
+        // Store proofs
+        let proof_infos = proofs
+            .iter()
+            .map(|proof| {
+                ProofInfo::new(
+                    proof.clone(),
+                    self.wallet.mint_url.clone(),
+                    State::Unspent,
+                    self.state_data.quote_info.unit.clone(),
+                )
+            })
+            .collect::<Result<Vec<ProofInfo>, _>>()?;
+
+        self.wallet
+            .localstore
+            .update_proofs(proof_infos, vec![])
+            .await?;
+
+        // Add transaction record
+        self.wallet
+            .localstore
+            .add_transaction(Transaction {
+                mint_url: self.wallet.mint_url.clone(),
+                direction: TransactionDirection::Incoming,
+                amount: minted_amount,
+                fee: Amount::ZERO,
+                unit: self.wallet.unit.clone(),
+                ys: proofs.ys()?,
+                timestamp: unix_time(),
+                memo: None,
+                metadata: HashMap::new(),
+                quote_id: Some(self.state_data.quote_id.clone()),
+                payment_request: Some(self.state_data.quote_info.request.clone()),
+                payment_proof: None,
+                payment_method: Some(self.state_data.payment_method.clone()),
+            })
+            .await?;
+
+        // Release the mint quote reservation - operation completed successfully
+        // This is important for Bolt12 partial minting where the same quote
+        // may be used for multiple mint operations.
+        if let Err(e) = self
+            .wallet
+            .localstore
+            .release_mint_quote(&operation_id)
+            .await
+        {
+            tracing::warn!(
+                "Failed to release mint quote for operation {}: {}. Quote may remain marked as reserved.",
+                operation_id,
+                e
+            );
+            // Don't fail the mint - proofs are already stored
+        }
+
+        // Clear compensations - operation completed successfully
+        clear_compensations(&self.compensations).await;
+
+        // Delete saga record - mint completed successfully (best-effort)
+        if let Err(e) = self.wallet.localstore.delete_saga(&operation_id).await {
+            tracing::warn!(
+                "Failed to delete mint saga {}: {}. Will be cleaned up on recovery.",
+                operation_id,
+                e
+            );
+            // Don't fail the mint if saga deletion fails - orphaned saga is harmless
+        }
+
+        // Transition to Finalized state
+        Ok(MintSaga {
+            wallet: self.wallet,
+            compensations: self.compensations,
+            state_data: Finalized { proofs },
+        })
+    }
+}
+
+impl<'a> MintSaga<'a, Finalized> {
+    /// Consume the saga and return the minted proofs
+    pub fn into_proofs(self) -> Proofs {
+        self.state_data.proofs
+    }
+}
+
+impl<S: std::fmt::Debug> std::fmt::Debug for MintSaga<'_, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MintSaga")
+            .field("state_data", &self.state_data)
+            .finish_non_exhaustive()
+    }
+}

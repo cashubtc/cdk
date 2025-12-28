@@ -871,10 +871,14 @@ async fn test_melt_with_fees_swap_before_melt() {
     );
 
     // Perform melt
-    let melted = wallet.melt(&melt_quote.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melted = prepared.confirm().await.unwrap();
 
-    let melt_amount: u64 = melted.amount.into();
-    let ln_fee_paid: u64 = melted.fee_paid.into();
+    let melt_amount: u64 = melted.amount().into();
+    let ln_fee_paid: u64 = melted.fee_paid().into();
 
     tracing::info!(
         "Melt completed: amount={}, ln_fee_paid={}",
@@ -993,10 +997,14 @@ async fn test_melt_exact_match_no_swap() {
     );
 
     // Perform melt
-    let melted = wallet.melt(&melt_quote.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melted = prepared.confirm().await.unwrap();
 
-    let melt_amount: u64 = melted.amount.into();
-    let ln_fee_paid: u64 = melted.fee_paid.into();
+    let melt_amount: u64 = melted.amount().into();
+    let ln_fee_paid: u64 = melted.fee_paid().into();
 
     tracing::info!(
         "Melt completed: amount={}, ln_fee_paid={}",
@@ -1097,19 +1105,23 @@ async fn test_melt_small_amount_tight_margin() {
     );
 
     // This should succeed even with tight margins
-    let melted = wallet
-        .melt(&melt_quote.id)
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .expect("Prepare melt should succeed");
+    let melted = prepared
+        .confirm()
         .await
         .expect("Melt should succeed even with tight swap margin");
 
-    let melt_amount: u64 = melted.amount.into();
+    let melt_amount: u64 = melted.amount().into();
     assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
 
     let final_balance: u64 = wallet.total_balance().await.unwrap().into();
     tracing::info!(
         "Melt completed: amount={}, fee_paid={}, final_balance={}",
-        melted.amount,
-        melted.fee_paid,
+        melted.amount(),
+        melted.fee_paid(),
         final_balance
     );
 
@@ -1200,19 +1212,23 @@ async fn test_melt_swap_tight_margin_regression() {
     // This is the key test: melt should succeed even when swap is needed
     // Before the fix, include_fees=true in swap caused InsufficientFunds
     // After the fix, include_fees=false allows the swap to succeed
-    let melted = wallet
-        .melt(&melt_quote.id)
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .expect("Prepare melt should succeed");
+    let melted = prepared
+        .confirm()
         .await
         .expect("Melt should succeed with swap-before-melt (regression test)");
 
-    let melt_amount: u64 = melted.amount.into();
+    let melt_amount: u64 = melted.amount().into();
     assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
 
     let final_balance: u64 = wallet.total_balance().await.unwrap().into();
     tracing::info!(
         "Melt completed: amount={}, fee_paid={}, final_balance={}",
-        melted.amount,
-        melted.fee_paid,
+        melted.amount(),
+        melted.fee_paid(),
         final_balance
     );
 
