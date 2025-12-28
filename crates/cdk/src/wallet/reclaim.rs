@@ -45,8 +45,6 @@ impl Wallet {
             .await?
             .states;
 
-        let mut tx = self.localstore.begin_db_transaction().await?;
-
         for (state, unspent) in proofs
             .into_iter()
             .zip(statuses)
@@ -56,17 +54,16 @@ impl Wallet {
                 acc
             })
         {
-            tx.update_proofs_state(
-                unspent
-                    .iter()
-                    .map(|x| x.y())
-                    .collect::<Result<Vec<_>, _>>()?,
-                state,
-            )
-            .await?;
+            self.localstore
+                .update_proofs_state(
+                    unspent
+                        .iter()
+                        .map(|x| x.y())
+                        .collect::<Result<Vec<_>, _>>()?,
+                    state,
+                )
+                .await?;
         }
-
-        tx.commit().await?;
 
         Ok(())
     }

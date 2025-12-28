@@ -406,13 +406,11 @@ async fn test_restore_with_counter_gap() {
     // This simulates failed operations or multi-device usage where counter values
     // were consumed but no signatures were obtained
     let gap_size = 50u32;
-    {
-        let mut tx = wallet.localstore.begin_db_transaction().await.unwrap();
-        tx.increment_keyset_counter(&keyset_id, gap_size)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-    }
+    wallet
+        .localstore
+        .increment_keyset_counter(&keyset_id, gap_size)
+        .await
+        .unwrap();
 
     // Mint second batch of proofs (uses counters after the gap)
     let mint_quote2 = wallet.mint_quote(100.into(), None).await.unwrap();
