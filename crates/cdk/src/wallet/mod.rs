@@ -56,6 +56,8 @@ pub mod payment_request;
 mod proofs;
 mod receive;
 mod reclaim;
+mod recovery;
+pub(crate) mod saga;
 mod send;
 #[cfg(not(target_arch = "wasm32"))]
 mod streams;
@@ -68,6 +70,7 @@ pub mod util;
 pub use auth::{AuthMintConnector, AuthWallet};
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
+pub use melt::{MeltConfirmOptions, PreparedMelt};
 #[cfg(feature = "auth")]
 pub use mint_connector::http_client::AuthHttpClient as BaseAuthHttpClient;
 pub use mint_connector::http_client::HttpClient as BaseHttpClient;
@@ -82,6 +85,7 @@ pub use payment_request::CreateRequestParams;
 #[cfg(feature = "nostr")]
 pub use payment_request::NostrWaitInfo;
 pub use receive::ReceiveOptions;
+pub use recovery::RecoveryReport;
 pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
 
@@ -298,12 +302,10 @@ impl Wallet {
     /// its URL
     #[instrument(skip(self))]
     pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
-        // Update the mint URL in the wallet DB
         self.localstore
             .update_mint_url(self.mint_url.clone(), new_mint_url.clone())
             .await?;
 
-        // Update the mint URL in the wallet struct field
         self.mint_url = new_mint_url;
 
         Ok(())
@@ -615,8 +617,6 @@ impl Wallet {
                 start_counter += 100;
             }
 
-            // Set counter to highest found + 1 to avoid reusing any counter values
-            // that already have signatures at the mint
             if let Some(highest) = highest_counter {
                 self.localstore
                     .increment_keyset_counter(&keyset.id, highest + 1)

@@ -70,8 +70,24 @@ async fn main() -> Result<(), Error> {
         melt_quote.amount, melt_quote.state, melt_quote,
     );
 
-    let melted = wallet.melt(&melt_quote.id).await?;
-    println!("Melted: {:?}", melted);
+    // Prepare the melt - this shows fees before confirming
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await?;
+    println!(
+        "Prepared melt - Amount: {}, Total Fee: {}",
+        prepared.amount(),
+        prepared.total_fee()
+    );
+
+    // Confirm the melt to execute the payment
+    let confirmed = prepared.confirm().await?;
+    println!(
+        "Melted: state={:?}, amount={}, fee={}",
+        confirmed.state(),
+        confirmed.amount(),
+        confirmed.fee_paid()
+    );
 
     Ok(())
 }

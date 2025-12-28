@@ -112,20 +112,35 @@ async fn main() -> anyhow::Result<()> {
             println!("  Fee Reserve: {} sats", melt_quote.fee_reserve);
             println!("  State: {}", melt_quote.state);
 
-            // Execute the payment
-            match wallet.melt(&melt_quote.id).await {
-                Ok(melt_result) => {
-                    println!("BIP-353 payment successful!");
-                    println!("  State: {}", melt_result.state);
-                    println!("  Amount paid: {} sats", melt_result.amount);
-                    println!("  Fee paid: {} sats", melt_result.fee_paid);
+            // Prepare the payment - shows fees before confirming
+            match wallet
+                .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+                .await
+            {
+                Ok(prepared) => {
+                    println!("Prepared melt:");
+                    println!("  Amount: {} sats", prepared.amount());
+                    println!("  Total Fee: {} sats", prepared.total_fee());
 
-                    if let Some(preimage) = melt_result.preimage {
-                        println!("  Payment preimage: {}", preimage);
+                    // Execute the payment
+                    match prepared.confirm().await {
+                        Ok(confirmed) => {
+                            println!("BIP-353 payment successful!");
+                            println!("  State: {:?}", confirmed.state());
+                            println!("  Amount paid: {} sats", confirmed.amount());
+                            println!("  Fee paid: {} sats", confirmed.fee_paid());
+
+                            if let Some(preimage) = confirmed.payment_proof() {
+                                println!("  Payment preimage: {}", preimage);
+                            }
+                        }
+                        Err(e) => {
+                            println!("BIP-353 payment failed: {}", e);
+                        }
                     }
                 }
                 Err(e) => {
-                    println!("BIP-353 payment failed: {}", e);
+                    println!("Failed to prepare melt: {}", e);
                 }
             }
         }

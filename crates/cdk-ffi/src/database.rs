@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdk_common::database::WalletDatabase as CdkWalletDatabase;
+use cdk_common::wallet::WalletSaga;
 use cdk_sql_common::pool::DatabasePool;
 use cdk_sql_common::SQLWalletDatabase;
 
@@ -186,6 +187,64 @@ pub trait WalletDatabase: Send + Sync {
 
     /// Remove Keys from storage
     async fn remove_keys(&self, id: Id) -> Result<(), FfiError>;
+
+    // ========== Saga management methods ==========
+    // WalletSaga is serialized as JSON for FFI compatibility
+
+    /// Add a wallet saga to storage (JSON serialized)
+    async fn add_saga(&self, saga_json: String) -> Result<(), FfiError>;
+
+    /// Get a wallet saga by ID (returns JSON serialized)
+    async fn get_saga(&self, id: String) -> Result<Option<String>, FfiError>;
+
+    /// Update a wallet saga (JSON serialized) with optimistic locking.
+    ///
+    /// Returns `true` if the update succeeded (version matched),
+    /// `false` if another instance modified the saga first.
+    async fn update_saga(&self, saga_json: String) -> Result<bool, FfiError>;
+
+    /// Delete a wallet saga
+    async fn delete_saga(&self, id: String) -> Result<(), FfiError>;
+
+    /// Get all incomplete sagas (returns JSON serialized sagas)
+    async fn get_incomplete_sagas(&self) -> Result<Vec<String>, FfiError>;
+
+    // ========== Proof reservation methods ==========
+
+    /// Reserve proofs for an operation
+    async fn reserve_proofs(
+        &self,
+        ys: Vec<PublicKey>,
+        operation_id: String,
+    ) -> Result<(), FfiError>;
+
+    /// Release proofs reserved by an operation
+    async fn release_proofs(&self, operation_id: String) -> Result<(), FfiError>;
+
+    /// Get proofs reserved by an operation
+    async fn get_reserved_proofs(&self, operation_id: String) -> Result<Vec<ProofInfo>, FfiError>;
+
+    // ========== Quote reservation methods ==========
+
+    /// Reserve a melt quote for an operation
+    async fn reserve_melt_quote(
+        &self,
+        quote_id: String,
+        operation_id: String,
+    ) -> Result<(), FfiError>;
+
+    /// Release a melt quote reserved by an operation
+    async fn release_melt_quote(&self, operation_id: String) -> Result<(), FfiError>;
+
+    /// Reserve a mint quote for an operation
+    async fn reserve_mint_quote(
+        &self,
+        quote_id: String,
+        operation_id: String,
+    ) -> Result<(), FfiError>;
+
+    /// Release a mint quote reserved by an operation
+    async fn release_mint_quote(&self, operation_id: String) -> Result<(), FfiError>;
 }
 
 /// Internal bridge trait to convert from the FFI trait to the CDK database trait
@@ -453,6 +512,8 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
                             cdk::cdk_database::Error::Database(e.to_string().into())
                         })?,
                     unit: info.unit.into(),
+                    used_by_operation: info.used_by_operation,
+                    created_by_operation: info.created_by_operation,
                 })
             })
             .collect();
@@ -495,6 +556,8 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
                             cdk::cdk_database::Error::Database(e.to_string().into())
                         })?,
                     unit: info.unit.into(),
+                    used_by_operation: info.used_by_operation,
+                    created_by_operation: info.created_by_operation,
                 })
             })
             .collect();
@@ -723,7 +786,169 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
-    // KV Store write methods
+    async fn add_saga(&self, saga: WalletSaga) -> Result<(), cdk::cdk_database::Error> {
+        let json = serde_json::to_string(&saga)
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        self.ffi_db
+            .add_saga(json)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn get_saga(
+        &self,
+        id: &uuid::Uuid,
+    ) -> Result<Option<WalletSaga>, cdk::cdk_database::Error> {
+        let json_opt = self
+            .ffi_db
+            .get_saga(id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
+        match json_opt {
+            Some(json) => {
+                let saga: WalletSaga = serde_json::from_str(&json)
+                    .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+                Ok(Some(saga))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn update_saga(&self, saga: WalletSaga) -> Result<bool, cdk::cdk_database::Error> {
+        let json = serde_json::to_string(&saga)
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        self.ffi_db
+            .update_saga(json)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn delete_saga(&self, id: &uuid::Uuid) -> Result<(), cdk::cdk_database::Error> {
+        self.ffi_db
+            .delete_saga(id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn get_incomplete_sagas(&self) -> Result<Vec<WalletSaga>, cdk::cdk_database::Error> {
+        let json_vec = self
+            .ffi_db
+            .get_incomplete_sagas()
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
+        json_vec
+            .into_iter()
+            .map(|json| {
+                serde_json::from_str(&json)
+                    .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+            })
+            .collect()
+    }
+
+    async fn reserve_proofs(
+        &self,
+        ys: Vec<cdk::nuts::PublicKey>,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_ys: Vec<PublicKey> = ys.into_iter().map(Into::into).collect();
+        self.ffi_db
+            .reserve_proofs(ffi_ys, operation_id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn release_proofs(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        self.ffi_db
+            .release_proofs(operation_id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn get_reserved_proofs(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<cdk::types::ProofInfo>, cdk::cdk_database::Error> {
+        let result = self
+            .ffi_db
+            .get_reserved_proofs(operation_id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
+        result
+            .into_iter()
+            .map(|info| {
+                Ok(cdk::types::ProofInfo {
+                    proof: info.proof.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
+                    y: info.y.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
+                    mint_url: info.mint_url.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
+                    state: info.state.into(),
+                    spending_condition: info
+                        .spending_condition
+                        .map(|sc| sc.try_into())
+                        .transpose()
+                        .map_err(|e: FfiError| {
+                            cdk::cdk_database::Error::Database(e.to_string().into())
+                        })?,
+                    unit: info.unit.into(),
+                    used_by_operation: info.used_by_operation,
+                    created_by_operation: info.created_by_operation,
+                })
+            })
+            .collect()
+    }
+
+    async fn reserve_melt_quote(
+        &self,
+        quote_id: &str,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        self.ffi_db
+            .reserve_melt_quote(quote_id.to_string(), operation_id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn release_melt_quote(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        self.ffi_db
+            .release_melt_quote(operation_id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn reserve_mint_quote(
+        &self,
+        quote_id: &str,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        self.ffi_db
+            .reserve_mint_quote(quote_id.to_string(), operation_id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn release_mint_quote(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        self.ffi_db
+            .release_mint_quote(operation_id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
 
     async fn kv_write(
         &self,
@@ -795,7 +1020,7 @@ where
             .inner
             .get_proofs_by_ys(cdk_ys)
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
 
         Ok(result.into_iter().map(Into::into).collect())
     }
@@ -806,12 +1031,12 @@ where
             .inner
             .get_mint(cdk_mint_url)
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
         Ok(result.map(Into::into))
     }
 
     async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, FfiError> {
-        let result = self.inner.get_mints().await.map_err(FfiError::database)?;
+        let result = self.inner.get_mints().await.map_err(FfiError::internal)?;
         Ok(result
             .into_iter()
             .map(|(k, v)| (k.into(), v.map(Into::into)))
@@ -827,7 +1052,7 @@ where
             .inner
             .get_mint_keysets(cdk_mint_url)
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
         Ok(result.map(|keysets| keysets.into_iter().map(Into::into).collect()))
     }
 
@@ -837,7 +1062,7 @@ where
             .inner
             .get_keyset_by_id(&cdk_id)
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
         Ok(result.map(Into::into))
     }
 
@@ -846,7 +1071,7 @@ where
             .inner
             .get_mint_quote(&quote_id)
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
         Ok(result.map(|q| q.into()))
     }
 
@@ -855,7 +1080,7 @@ where
             .inner
             .get_mint_quotes()
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
         Ok(result.into_iter().map(|q| q.into()).collect())
     }
 
@@ -864,7 +1089,7 @@ where
             .inner
             .get_unissued_mint_quotes()
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
         Ok(result.into_iter().map(|q| q.into()).collect())
     }
 
@@ -873,7 +1098,7 @@ where
             .inner
             .get_melt_quote(&quote_id)
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
         Ok(result.map(|q| q.into()))
     }
 
@@ -882,7 +1107,7 @@ where
             .inner
             .get_melt_quotes()
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
         Ok(result.into_iter().map(|q| q.into()).collect())
     }
 
@@ -892,7 +1117,7 @@ where
             .inner
             .get_keys(&cdk_id)
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
         Ok(result.map(Into::into))
     }
 
@@ -919,7 +1144,7 @@ where
             .inner
             .get_proofs(cdk_mint_url, cdk_unit, cdk_state, cdk_spending_conditions)
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
 
         Ok(result.into_iter().map(Into::into).collect())
     }
@@ -937,7 +1162,7 @@ where
         self.inner
             .get_balance(cdk_mint_url, cdk_unit, cdk_state)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn get_transaction(
@@ -949,7 +1174,7 @@ where
             .inner
             .get_transaction(cdk_id)
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
         Ok(result.map(Into::into))
     }
 
@@ -967,7 +1192,7 @@ where
             .inner
             .list_transactions(cdk_mint_url, cdk_direction, cdk_unit)
             .await
-            .map_err(FfiError::database)?;
+            .map_err(FfiError::internal)?;
 
         Ok(result.into_iter().map(Into::into).collect())
     }
@@ -981,7 +1206,7 @@ where
         self.inner
             .kv_read(&primary_namespace, &secondary_namespace, &key)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn kv_list(
@@ -992,7 +1217,7 @@ where
         self.inner
             .kv_list(&primary_namespace, &secondary_namespace)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn kv_write(
@@ -1005,7 +1230,7 @@ where
         self.inner
             .kv_write(&primary_namespace, &secondary_namespace, &key, &value)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn kv_remove(
@@ -1017,7 +1242,7 @@ where
         self.inner
             .kv_remove(&primary_namespace, &secondary_namespace, &key)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     // ========== Write methods ==========
@@ -1040,6 +1265,8 @@ where
                         .map(|sc| sc.try_into())
                         .transpose()?,
                     unit: info.unit.into(),
+                    used_by_operation: info.used_by_operation,
+                    created_by_operation: info.created_by_operation,
                 })
             })
             .collect();
@@ -1052,7 +1279,7 @@ where
         self.inner
             .update_proofs(cdk_added, cdk_removed_ys)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn update_proofs_state(
@@ -1068,7 +1295,7 @@ where
         self.inner
             .update_proofs_state(cdk_ys, cdk_state)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), FfiError> {
@@ -1076,7 +1303,7 @@ where
         self.inner
             .add_transaction(cdk_transaction)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError> {
@@ -1084,7 +1311,7 @@ where
         self.inner
             .remove_transaction(cdk_id)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn update_mint_url(
@@ -1097,7 +1324,7 @@ where
         self.inner
             .update_mint_url(cdk_old, cdk_new)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError> {
@@ -1105,7 +1332,7 @@ where
         self.inner
             .increment_keyset_counter(&cdk_id, count)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn add_mint(
@@ -1118,7 +1345,7 @@ where
         self.inner
             .add_mint(cdk_mint_url, cdk_mint_info)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), FfiError> {
@@ -1126,7 +1353,7 @@ where
         self.inner
             .remove_mint(cdk_mint_url)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn add_mint_keysets(
@@ -1139,7 +1366,7 @@ where
         self.inner
             .add_mint_keysets(cdk_mint_url, cdk_keysets)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError> {
@@ -1147,14 +1374,14 @@ where
         self.inner
             .add_mint_quote(cdk_quote)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError> {
         self.inner
             .remove_mint_quote(&quote_id)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError> {
@@ -1162,14 +1389,14 @@ where
         self.inner
             .add_melt_quote(cdk_quote)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn remove_melt_quote(&self, quote_id: String) -> Result<(), FfiError> {
         self.inner
             .remove_melt_quote(&quote_id)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn add_keys(&self, keyset: KeySet) -> Result<(), FfiError> {
@@ -1177,7 +1404,7 @@ where
         self.inner
             .add_keys(cdk_keyset)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
     }
 
     async fn remove_keys(&self, id: Id) -> Result<(), FfiError> {
@@ -1185,7 +1412,134 @@ where
         self.inner
             .remove_keys(&cdk_id)
             .await
-            .map_err(FfiError::database)
+            .map_err(FfiError::internal)
+    }
+
+    // ========== Saga management methods ==========
+
+    async fn add_saga(&self, saga_json: String) -> Result<(), FfiError> {
+        let saga: WalletSaga = serde_json::from_str(&saga_json).map_err(FfiError::internal)?;
+        self.inner.add_saga(saga).await.map_err(FfiError::internal)
+    }
+
+    async fn get_saga(&self, id: String) -> Result<Option<String>, FfiError> {
+        let id = uuid::Uuid::parse_str(&id).map_err(FfiError::internal)?;
+        let result = self.inner.get_saga(&id).await.map_err(FfiError::internal)?;
+
+        match result {
+            Some(saga) => {
+                let json = serde_json::to_string(&saga).map_err(FfiError::internal)?;
+                Ok(Some(json))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn update_saga(&self, saga_json: String) -> Result<bool, FfiError> {
+        let saga: WalletSaga = serde_json::from_str(&saga_json).map_err(FfiError::internal)?;
+        self.inner
+            .update_saga(saga)
+            .await
+            .map_err(FfiError::internal)
+    }
+
+    async fn delete_saga(&self, id: String) -> Result<(), FfiError> {
+        let id = uuid::Uuid::parse_str(&id).map_err(FfiError::internal)?;
+        self.inner
+            .delete_saga(&id)
+            .await
+            .map_err(FfiError::internal)
+    }
+
+    async fn get_incomplete_sagas(&self) -> Result<Vec<String>, FfiError> {
+        let result = self
+            .inner
+            .get_incomplete_sagas()
+            .await
+            .map_err(FfiError::internal)?;
+
+        result
+            .into_iter()
+            .map(|saga| serde_json::to_string(&saga).map_err(FfiError::internal))
+            .collect()
+    }
+
+    // ========== Proof reservation methods ==========
+
+    async fn reserve_proofs(
+        &self,
+        ys: Vec<PublicKey>,
+        operation_id: String,
+    ) -> Result<(), FfiError> {
+        let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
+        let cdk_ys: Result<Vec<cdk::nuts::PublicKey>, FfiError> =
+            ys.into_iter().map(|pk| pk.try_into()).collect();
+        let cdk_ys = cdk_ys?;
+        self.inner
+            .reserve_proofs(cdk_ys, &operation_id)
+            .await
+            .map_err(FfiError::internal)
+    }
+
+    async fn release_proofs(&self, operation_id: String) -> Result<(), FfiError> {
+        let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
+        self.inner
+            .release_proofs(&operation_id)
+            .await
+            .map_err(FfiError::internal)
+    }
+
+    async fn get_reserved_proofs(&self, operation_id: String) -> Result<Vec<ProofInfo>, FfiError> {
+        let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
+        let result = self
+            .inner
+            .get_reserved_proofs(&operation_id)
+            .await
+            .map_err(FfiError::internal)?;
+
+        Ok(result.into_iter().map(Into::into).collect())
+    }
+
+    // ========== Quote reservation methods ==========
+
+    async fn reserve_melt_quote(
+        &self,
+        quote_id: String,
+        operation_id: String,
+    ) -> Result<(), FfiError> {
+        let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
+        self.inner
+            .reserve_melt_quote(&quote_id, &operation_id)
+            .await
+            .map_err(FfiError::internal)
+    }
+
+    async fn release_melt_quote(&self, operation_id: String) -> Result<(), FfiError> {
+        let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
+        self.inner
+            .release_melt_quote(&operation_id)
+            .await
+            .map_err(FfiError::internal)
+    }
+
+    async fn reserve_mint_quote(
+        &self,
+        quote_id: String,
+        operation_id: String,
+    ) -> Result<(), FfiError> {
+        let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
+        self.inner
+            .reserve_mint_quote(&quote_id, &operation_id)
+            .await
+            .map_err(FfiError::internal)
+    }
+
+    async fn release_mint_quote(&self, operation_id: String) -> Result<(), FfiError> {
+        let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
+        self.inner
+            .release_mint_quote(&operation_id)
+            .await
+            .map_err(FfiError::internal)
     }
 }
 
@@ -1436,6 +1790,75 @@ macro_rules! impl_ffi_wallet_database {
 
             async fn remove_keys(&self, id: Id) -> Result<(), FfiError> {
                 self.inner.remove_keys(id).await
+            }
+
+            // ========== Saga management methods ==========
+
+            async fn add_saga(&self, saga_json: String) -> Result<(), FfiError> {
+                self.inner.add_saga(saga_json).await
+            }
+
+            async fn get_saga(&self, id: String) -> Result<Option<String>, FfiError> {
+                self.inner.get_saga(id).await
+            }
+
+            async fn update_saga(&self, saga_json: String) -> Result<bool, FfiError> {
+                self.inner.update_saga(saga_json).await
+            }
+
+            async fn delete_saga(&self, id: String) -> Result<(), FfiError> {
+                self.inner.delete_saga(id).await
+            }
+
+            async fn get_incomplete_sagas(&self) -> Result<Vec<String>, FfiError> {
+                self.inner.get_incomplete_sagas().await
+            }
+
+            // ========== Proof reservation methods ==========
+
+            async fn reserve_proofs(
+                &self,
+                ys: Vec<PublicKey>,
+                operation_id: String,
+            ) -> Result<(), FfiError> {
+                self.inner.reserve_proofs(ys, operation_id).await
+            }
+
+            async fn release_proofs(&self, operation_id: String) -> Result<(), FfiError> {
+                self.inner.release_proofs(operation_id).await
+            }
+
+            async fn get_reserved_proofs(
+                &self,
+                operation_id: String,
+            ) -> Result<Vec<ProofInfo>, FfiError> {
+                self.inner.get_reserved_proofs(operation_id).await
+            }
+
+            // ========== Quote reservation methods ==========
+
+            async fn reserve_melt_quote(
+                &self,
+                quote_id: String,
+                operation_id: String,
+            ) -> Result<(), FfiError> {
+                self.inner.reserve_melt_quote(quote_id, operation_id).await
+            }
+
+            async fn release_melt_quote(&self, operation_id: String) -> Result<(), FfiError> {
+                self.inner.release_melt_quote(operation_id).await
+            }
+
+            async fn reserve_mint_quote(
+                &self,
+                quote_id: String,
+                operation_id: String,
+            ) -> Result<(), FfiError> {
+                self.inner.reserve_mint_quote(quote_id, operation_id).await
+            }
+
+            async fn release_mint_quote(&self, operation_id: String) -> Result<(), FfiError> {
+                self.inner.release_mint_quote(operation_id).await
             }
         }
     };

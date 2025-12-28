@@ -116,11 +116,16 @@ async fn test_fake_melt_change_in_quote() {
     let proofs_total = proofs.total_amount().unwrap();
 
     let fee_breakdown = wallet.get_proofs_fee(&proofs).await.unwrap();
-    let melt = wallet
-        .melt_proofs(&melt_quote.id, proofs.clone())
+    let prepared = wallet
+        .prepare_melt_proofs(
+            &melt_quote.id,
+            proofs.clone(),
+            std::collections::HashMap::new(),
+        )
         .await
         .unwrap();
-    let change = melt.change.unwrap().total_amount().unwrap();
+    let melt = prepared.confirm().await.unwrap();
+    let change = melt.change().unwrap().total_amount().unwrap();
     let idk = proofs.total_amount().unwrap() - Amount::from(invoice_amount) - change;
 
     println!("{}", idk);

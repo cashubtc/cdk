@@ -67,8 +67,11 @@ async fn test_async_melt_returns_pending() {
     let start_time = std::time::Instant::now();
 
     // This should complete and return the final state
-    // TODO: Add Prefer: respond-async header support to wallet.melt()
-    let melt_response = wallet.melt(&melt_quote.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let confirmed = prepared.confirm().await.unwrap();
 
     let elapsed = start_time.elapsed();
 
@@ -77,7 +80,7 @@ async fn test_async_melt_returns_pending() {
 
     // Step 4: Verify the melt completed successfully
     assert_eq!(
-        melt_response.state,
+        confirmed.state(),
         MeltQuoteState::Paid,
         "Melt should complete with PAID state"
     );
@@ -126,14 +129,18 @@ async fn test_sync_melt_completes_fully() {
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
-    // Step 3: Call synchronous melt
-    let melt_response = wallet.melt(&melt_quote.id).await.unwrap();
+    // Step 3: Call melt with prepare/confirm pattern
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let confirmed = prepared.confirm().await.unwrap();
 
     // Step 5: Verify response shows payment completed
     assert_eq!(
-        melt_response.state,
+        confirmed.state(),
         MeltQuoteState::Paid,
-        "Synchronous melt should return PAID state"
+        "Melt should return PAID state"
     );
 
     // Step 6: Verify the quote is PAID in the mint

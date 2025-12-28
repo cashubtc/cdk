@@ -66,7 +66,13 @@ async fn test_fake_tokens_pending() {
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
-    let melt = wallet.melt(&melt_quote.id).await;
+    let melt = async {
+        let prepared = wallet
+            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
+    }
+    .await;
 
     assert!(melt.is_err());
 
@@ -114,7 +120,13 @@ async fn test_fake_melt_payment_fail() {
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
-    let melt = wallet.melt(&melt_quote.id).await;
+    let melt = async {
+        let prepared = wallet
+            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
+    }
+    .await;
     assert!(melt.is_err());
 
     let fake_description = FakeInvoiceDescription {
@@ -129,7 +141,13 @@ async fn test_fake_melt_payment_fail() {
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
-    let melt = wallet.melt(&melt_quote.id).await;
+    let melt = async {
+        let prepared = wallet
+            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
+    }
+    .await;
     assert!(melt.is_err());
 
     let wallet_bal = wallet.total_balance().await.unwrap();
@@ -171,7 +189,13 @@ async fn test_fake_melt_payment_fail_and_check() {
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
-    let melt = wallet.melt(&melt_quote.id).await;
+    let melt = async {
+        let prepared = wallet
+            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
+    }
+    .await;
     assert!(melt.is_err());
 
     assert!(!wallet
@@ -217,7 +241,13 @@ async fn test_fake_melt_payment_return_fail_status() {
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
-    let melt = wallet.melt(&melt_quote.id).await;
+    let melt = async {
+        let prepared = wallet
+            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
+    }
+    .await;
     assert!(melt.is_err());
 
     wallet.check_all_pending_proofs().await.unwrap();
@@ -242,7 +272,13 @@ async fn test_fake_melt_payment_return_fail_status() {
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
-    let melt = wallet.melt(&melt_quote.id).await;
+    let melt = async {
+        let prepared = wallet
+            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
+    }
+    .await;
     assert!(melt.is_err());
 
     wallet.check_all_pending_proofs().await.unwrap();
@@ -290,7 +326,13 @@ async fn test_fake_melt_payment_error_unknown() {
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
-    let melt = wallet.melt(&melt_quote.id).await;
+    let melt = async {
+        let prepared = wallet
+            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
+    }
+    .await;
     assert!(melt.is_err());
 
     let fake_description = FakeInvoiceDescription {
@@ -305,7 +347,13 @@ async fn test_fake_melt_payment_error_unknown() {
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
-    let melt = wallet.melt(&melt_quote.id).await;
+    let melt = async {
+        let prepared = wallet
+            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
+    }
+    .await;
     assert!(melt.is_err());
 
     assert!(wallet
@@ -352,15 +400,19 @@ async fn test_fake_melt_payment_err_paid() {
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
-    // The melt should error at the payment invoice command
-    let melt = wallet.melt(&melt_quote.id).await.unwrap();
+    // The melt should complete successfully
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melt = prepared.confirm().await.unwrap();
 
-    assert!(melt.fee_paid == Amount::ZERO);
-    assert!(melt.amount == Amount::from(7));
+    assert!(melt.fee_paid() == Amount::ZERO);
+    assert!(melt.amount() == Amount::from(7));
 
     // melt failed, but there is new code to reclaim unspent proofs
     assert_eq!(
-        old_balance - melt.amount,
+        old_balance - melt.amount(),
         wallet.total_balance().await.expect("new balance")
     );
 
@@ -1475,7 +1527,13 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // Attempt to melt - this should fail but trigger proof recovery
-    let melt_result = wallet.melt(&melt_quote.id).await;
+    let melt_result = async {
+        let prepared = wallet
+            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
+    }
+    .await;
     assert!(melt_result.is_err(), "Melt should have failed");
 
     // Verify wallet still has balance (proofs recovered)
@@ -1492,7 +1550,13 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
         .await
         .unwrap();
 
-    let successful_melt = wallet.melt(&valid_melt_quote.id).await;
+    let successful_melt = async {
+        let prepared = wallet
+            .prepare_melt(&valid_melt_quote.id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
+    }
+    .await;
     assert!(
         successful_melt.is_ok(),
         "Should be able to spend recovered proofs"
@@ -1560,9 +1624,12 @@ async fn test_concurrent_melt_same_invoice() {
     for (wallet, quote) in wallets.iter().zip(melt_quotes.iter()) {
         let wallet_clone = Arc::clone(wallet);
         let quote_id = quote.id.clone();
-        handles.push(tokio::spawn(
-            async move { wallet_clone.melt(&quote_id).await },
-        ));
+        handles.push(tokio::spawn(async move {
+            let prepared = wallet_clone
+                .prepare_melt(&quote_id, std::collections::HashMap::new())
+                .await?;
+            prepared.confirm().await
+        }));
     }
 
     // Collect results
@@ -1595,8 +1662,9 @@ async fn test_concurrent_melt_same_invoice() {
             assert!(
                 err_str.contains("duplicate")
                     || err_str.contains("already paid")
-                    || err_str.contains("pending"),
-                "Expected duplicate/already paid/pending error, got: {}",
+                    || err_str.contains("pending")
+                    || err_str.contains("payment failed"),
+                "Expected duplicate/already paid/pending/payment failed error, got: {}",
                 err
             );
         }
@@ -1745,18 +1813,23 @@ async fn test_melt_proofs_external() {
 
     // Wallet B calls melt_proofs with external proofs (from Wallet A)
     // These proofs are NOT in wallet_melter's database
-    let melted = wallet_melter
-        .melt_proofs(&melt_quote.id, proofs.clone())
+    let prepared = wallet_melter
+        .prepare_melt_proofs(
+            &melt_quote.id,
+            proofs.clone(),
+            std::collections::HashMap::new(),
+        )
         .await
         .unwrap();
+    let melted = prepared.confirm().await.unwrap();
 
     // Verify the melt succeeded
-    assert_eq!(melted.amount, Amount::from(9));
-    assert_eq!(melted.fee_paid, 1.into());
+    assert_eq!(melted.amount(), Amount::from(9));
+    assert_eq!(melted.fee_paid(), 1.into());
 
     // Verify change was returned (100 input - 9 melt amount = 91 change, minus fee reserve)
-    assert!(melted.change.is_some());
-    let change_amount = melted.change.unwrap().total_amount().unwrap();
+    assert!(melted.change().is_some());
+    let change_amount = melted.change().unwrap().total_amount().unwrap();
     assert!(change_amount > Amount::ZERO, "Should have received change");
 
     // Verify the melter wallet now has the change proofs
@@ -1823,15 +1896,19 @@ async fn test_melt_with_swap_for_exact_amount() {
     );
 
     // Call melt() - this should trigger swap-before-melt if proofs don't match exactly
-    let melted = wallet.melt(&melt_quote.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melted = prepared.confirm().await.unwrap();
 
     // Verify the melt succeeded
-    assert_eq!(melted.amount, Amount::from(7));
+    assert_eq!(melted.amount(), Amount::from(7));
 
     tracing::info!(
         "Melt completed: amount={}, fee_paid={}",
-        melted.amount,
-        melted.fee_paid
+        melted.amount(),
+        melted.fee_paid()
     );
 
     // Verify final balance is correct (initial - melt_amount - fees)
@@ -1840,7 +1917,7 @@ async fn test_melt_with_swap_for_exact_amount() {
         "Balance: initial={}, final={}, paid={}",
         initial_balance,
         final_balance,
-        melted.amount + melted.fee_paid
+        melted.amount() + melted.fee_paid()
     );
 
     assert!(
@@ -1849,7 +1926,7 @@ async fn test_melt_with_swap_for_exact_amount() {
     );
     assert_eq!(
         final_balance,
-        initial_balance - melted.amount - melted.fee_paid,
+        initial_balance - melted.amount() - melted.fee_paid(),
         "Final balance should be initial - amount - fees"
     );
 }
@@ -1888,14 +1965,18 @@ async fn test_melt_exact_proofs_no_swap_needed() {
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // Melt should succeed
-    let melted = wallet.melt(&melt_quote.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melted = prepared.confirm().await.unwrap();
 
-    assert_eq!(melted.amount, Amount::from(64));
+    assert_eq!(melted.amount(), Amount::from(64));
 
     let final_balance = wallet.total_balance().await.unwrap();
     assert_eq!(
         final_balance,
-        initial_balance - melted.amount - melted.fee_paid
+        initial_balance - melted.amount() - melted.fee_paid()
     );
 }
 

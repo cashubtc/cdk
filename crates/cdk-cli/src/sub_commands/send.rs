@@ -273,7 +273,7 @@ pub async fn send(
         .collect();
     let excluded_mints = excluded_mints?;
 
-    // Prepare and confirm the send based on mint selection
+    // Send based on mint selection
     let token = if let Some(specific_mint) = selected_mint {
         // User selected a specific mint
         let multi_mint_options = cdk::wallet::multi_mint_wallet::MultiMintSendOptions {
@@ -284,12 +284,9 @@ pub async fn send(
             send_options: send_options.clone(),
         };
 
-        let prepared = multi_mint_wallet
-            .prepare_send(specific_mint, token_amount, multi_mint_options)
-            .await?;
-
-        let memo = send_options.memo.clone();
-        prepared.confirm(memo).await?
+        multi_mint_wallet
+            .send(specific_mint, token_amount, multi_mint_options)
+            .await?
     } else {
         // User selected "Any" - find the first mint with sufficient balance
         let balances = multi_mint_wallet.get_balances().await?;
@@ -307,12 +304,9 @@ pub async fn send(
             send_options: send_options.clone(),
         };
 
-        let prepared = multi_mint_wallet
-            .prepare_send(best_mint, token_amount, multi_mint_options)
-            .await?;
-
-        let memo = send_options.memo.clone();
-        prepared.confirm(memo).await?
+        multi_mint_wallet
+            .send(best_mint, token_amount, multi_mint_options)
+            .await?
     };
 
     match sub_command_args.v3 {

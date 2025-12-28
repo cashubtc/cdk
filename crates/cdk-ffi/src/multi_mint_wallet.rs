@@ -292,19 +292,22 @@ impl MultiMintWallet {
         Ok(restored.into())
     }
 
-    /// Prepare a send operation from a specific mint
-    pub async fn prepare_send(
+    /// Send tokens from a specific mint
+    ///
+    /// This method prepares and confirms the send in one step.
+    /// For more control over the send process, use the single-mint Wallet.
+    pub async fn send(
         &self,
         mint_url: MintUrl,
         amount: Amount,
         options: MultiMintSendOptions,
-    ) -> Result<Arc<PreparedSend>, FfiError> {
+    ) -> Result<Token, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
-        let prepared = self
+        let token = self
             .inner
-            .prepare_send(cdk_mint_url, amount.into(), options.into())
+            .send(cdk_mint_url, amount.into(), options.into())
             .await?;
-        Ok(Arc::new(prepared.into()))
+        Ok(token.into())
     }
 
     /// Get a mint quote from a specific mint
@@ -488,10 +491,10 @@ impl MultiMintWallet {
         &self,
         mint_url: MintUrl,
         quote_id: String,
-    ) -> Result<Melted, FfiError> {
+    ) -> Result<FinalizedMelt, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
-        let melted = self.inner.melt_with_mint(&cdk_mint_url, &quote_id).await?;
-        Ok(melted.into())
+        let finalized = self.inner.melt_with_mint(&cdk_mint_url, &quote_id).await?;
+        Ok(finalized.into())
     }
 
     /// Melt specific proofs from a specific mint
@@ -508,23 +511,23 @@ impl MultiMintWallet {
     ///
     /// # Returns
     ///
-    /// A `Melted` result containing the payment details and any change proofs
+    /// A `FinalizedMelt` result containing the payment details and any change proofs
     pub async fn melt_proofs(
         &self,
         mint_url: MintUrl,
         quote_id: String,
         proofs: Proofs,
-    ) -> Result<Melted, FfiError> {
+    ) -> Result<FinalizedMelt, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
         let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
             proofs.into_iter().map(|p| p.try_into()).collect();
         let cdk_proofs = cdk_proofs?;
 
-        let melted = self
+        let finalized = self
             .inner
             .melt_proofs(&cdk_mint_url, &quote_id, cdk_proofs)
             .await?;
-        Ok(melted.into())
+        Ok(finalized.into())
     }
 
     /// Check melt quote status
@@ -534,11 +537,11 @@ impl MultiMintWallet {
         quote_id: String,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
-        let melted = self
+        let quote = self
             .inner
             .check_melt_quote(&cdk_mint_url, &quote_id)
             .await?;
-        Ok(melted.into())
+        Ok(quote.into())
     }
 
     /// Melt tokens (pay a bolt11 invoice)
@@ -547,11 +550,11 @@ impl MultiMintWallet {
         bolt11: String,
         options: Option<MeltOptions>,
         max_fee: Option<Amount>,
-    ) -> Result<Melted, FfiError> {
+    ) -> Result<FinalizedMelt, FfiError> {
         let cdk_options = options.map(Into::into);
         let cdk_max_fee = max_fee.map(Into::into);
-        let melted = self.inner.melt(&bolt11, cdk_options, cdk_max_fee).await?;
-        Ok(melted.into())
+        let finalized = self.inner.melt(&bolt11, cdk_options, cdk_max_fee).await?;
+        Ok(finalized.into())
     }
 
     /// Transfer funds between mints
@@ -644,7 +647,7 @@ impl MultiMintWallet {
         let wallets = self.inner.get_wallets().await;
         wallets
             .into_iter()
-            .map(|w| Arc::new(crate::wallet::Wallet::from_inner(Arc::new(w))))
+            .map(|w| Arc::new(crate::wallet::Wallet::from_inner(w)))
             .collect()
     }
 
@@ -652,9 +655,7 @@ impl MultiMintWallet {
     pub async fn get_wallet(&self, mint_url: MintUrl) -> Option<Arc<crate::wallet::Wallet>> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into().ok()?;
         let wallet = self.inner.get_wallet(&cdk_mint_url).await?;
-        Some(Arc::new(crate::wallet::Wallet::from_inner(Arc::new(
-            wallet,
-        ))))
+        Some(Arc::new(crate::wallet::Wallet::from_inner(wallet)))
     }
 
     /// Verify token DLEQ proofs

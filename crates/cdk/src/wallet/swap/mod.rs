@@ -1,20 +1,26 @@
+//! Swap module for the wallet.
+//!
+//! This module provides functionality for swapping proofs.
+
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::nut02::KeySetInfosMethods;
 use cdk_common::Id;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
-use crate::dhke::construct_proofs;
 use crate::fees::ProofsFeeBreakdown;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
-    nut10, PreMintSecrets, PreSwap, Proofs, PublicKey, SpendingConditions, State, SwapRequest,
+    PreMintSecrets, PreSwap, Proofs, PublicKey, SpendingConditions, State, SwapRequest,
 };
-use crate::types::ProofInfo;
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
+pub(crate) mod saga;
+
+use saga::SwapSaga;
+
 impl Wallet {
-    /// Swap
+    /// Swap proofs using the saga pattern
     #[instrument(skip(self, input_proofs))]
     pub async fn swap(
         &self,
@@ -25,118 +31,20 @@ impl Wallet {
         include_fees: bool,
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
-        let mint_url = &self.mint_url;
-        let unit = &self.unit;
-        let active_keyset_id = self.fetch_active_keyset().await?.id;
-        let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
 
-        let fee_breakdown = self.get_proofs_fee(&input_proofs).await?;
-
-        let pre_swap = self
-            .create_swap(
-                active_keyset_id,
-                &fee_and_amounts,
+        let saga = SwapSaga::new(self);
+        let saga = saga
+            .prepare(
                 amount,
-                amount_split_target.clone(),
-                input_proofs.clone(),
-                spending_conditions.clone(),
+                amount_split_target,
+                input_proofs,
+                spending_conditions,
                 include_fees,
-                &fee_breakdown,
             )
             .await?;
+        let saga = saga.execute().await?;
 
-        let swap_response = self
-            .try_proof_operation_or_reclaim(
-                pre_swap.swap_request.inputs().clone(),
-                self.client.post_swap(pre_swap.swap_request),
-            )
-            .await?;
-
-        let active_keyset_id = pre_swap.pre_mint_secrets.keyset_id;
-
-        let active_keys = self.load_keyset_keys(active_keyset_id).await?;
-
-        let post_swap_proofs = construct_proofs(
-            swap_response.signatures,
-            pre_swap.pre_mint_secrets.rs(),
-            pre_swap.pre_mint_secrets.secrets(),
-            &active_keys,
-        )?;
-
-        let mut added_proofs = Vec::new();
-        let change_proofs;
-        let send_proofs;
-        match amount {
-            Some(amount) => {
-                let (proofs_with_condition, proofs_without_condition): (Proofs, Proofs) =
-                    post_swap_proofs.into_iter().partition(|p| {
-                        let nut10_secret: Result<nut10::Secret, _> = p.secret.clone().try_into();
-
-                        nut10_secret.is_ok()
-                    });
-
-                let (proofs_to_send, proofs_to_keep) = match spending_conditions {
-                    Some(_) => (proofs_with_condition, proofs_without_condition),
-                    None => {
-                        let mut all_proofs = proofs_without_condition;
-                        all_proofs.reverse();
-
-                        let mut proofs_to_send = Proofs::new();
-                        let mut proofs_to_keep = Proofs::new();
-                        let mut amount_split =
-                            amount.split_targeted(&amount_split_target, &fee_and_amounts)?;
-
-                        for proof in all_proofs {
-                            if let Some(idx) = amount_split.iter().position(|&a| a == proof.amount)
-                            {
-                                proofs_to_send.push(proof);
-                                amount_split.remove(idx);
-                            } else {
-                                proofs_to_keep.push(proof);
-                            }
-                        }
-
-                        (proofs_to_send, proofs_to_keep)
-                    }
-                };
-
-                let send_proofs_info = proofs_to_send
-                    .clone()
-                    .into_iter()
-                    .map(|proof| {
-                        ProofInfo::new(proof, mint_url.clone(), State::Reserved, unit.clone())
-                    })
-                    .collect::<Result<Vec<ProofInfo>, _>>()?;
-                added_proofs = send_proofs_info;
-
-                change_proofs = proofs_to_keep;
-                send_proofs = Some(proofs_to_send);
-            }
-            None => {
-                change_proofs = post_swap_proofs;
-                send_proofs = None;
-            }
-        }
-
-        let keep_proofs = change_proofs
-            .into_iter()
-            .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, unit.clone()))
-            .collect::<Result<Vec<ProofInfo>, _>>()?;
-        added_proofs.extend(keep_proofs);
-
-        // Remove spent proofs used as inputs
-        let deleted_ys = input_proofs
-            .into_iter()
-            .map(|proof| proof.y())
-            .collect::<Result<Vec<PublicKey>, _>>()?;
-
-        self.localstore
-            .update_proofs(added_proofs, deleted_ys)
-            .await?;
-
-        Ok(send_proofs)
+        Ok(saga.into_send_proofs())
     }
 
     /// Swap from unspent proofs in db
@@ -299,7 +207,7 @@ impl Wallet {
 
             new_counter - total_secrets_needed
         } else {
-            0 // No secrets needed, don't increment the counter
+            0
         };
 
         let mut count = starting_counter;

@@ -1,8 +1,14 @@
+//! Issue (Mint) module for the wallet.
+//!
+//! This module provides functionality for minting new proofs via Bolt11 and Bolt12 quotes.
+
 mod bolt11;
 mod bolt12;
 mod custom;
+pub(crate) mod saga;
 
 use cdk_common::PaymentMethod;
+pub(crate) use saga::MintSaga;
 
 use crate::amount::SplitTarget;
 use crate::nuts::nut00::KnownMethod;

@@ -164,6 +164,12 @@ pub enum Error {
     /// Proof not found
     #[error("Proof not found")]
     ProofNotFound,
+    /// Proof not in unspent state (may be reserved, pending, or spent)
+    #[error("Proof not in unspent state")]
+    ProofNotUnspent,
+    /// Quote is already in use by another operation
+    #[error("Quote already in use by another operation")]
+    QuoteAlreadyInUse,
     /// Invalid keyset
     #[error("Unknown or invalid keyset")]
     InvalidKeysetId,

@@ -184,12 +184,13 @@ async fn test_happy_mint_melt_round_trip() {
     let mut metadata = HashMap::new();
     metadata.insert("test".to_string(), "value".to_string());
 
-    let melt_response = wallet
-        .melt_with_metadata(&melt.id, metadata.clone())
+    let prepared = wallet
+        .prepare_melt(&melt.id, metadata.clone())
         .await
         .unwrap();
-    assert!(melt_response.preimage.is_some());
-    assert_eq!(melt_response.state, MeltQuoteState::Paid);
+    let melt_response = prepared.confirm().await.unwrap();
+    assert!(melt_response.payment_proof().is_some());
+    assert_eq!(melt_response.state(), MeltQuoteState::Paid);
 
     let txs = wallet.list_transactions(None).await.unwrap();
     let tx = txs
@@ -646,8 +647,12 @@ async fn test_melt_quote_status_after_melt() {
 
     let melt_quote = wallet.melt_quote(invoice, None).await.unwrap();
 
-    let melt_response = wallet.melt(&melt_quote.id).await.unwrap();
-    assert_eq!(melt_response.state, MeltQuoteState::Paid);
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melt_response = prepared.confirm().await.unwrap();
+    assert_eq!(melt_response.state(), MeltQuoteState::Paid);
 
     let quote_status = wallet.melt_quote_status(&melt_quote.id).await.unwrap();
     assert_eq!(
@@ -729,7 +734,7 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .melt_with_mint(&mint_url, &melt_quote.id)
         .await
         .unwrap();
-    assert_eq!(melt_response.state, MeltQuoteState::Paid);
+    assert_eq!(melt_response.state(), MeltQuoteState::Paid);
 
     let quote_status = multi_mint_wallet
         .check_melt_quote(&mint_url, &melt_quote.id)
@@ -880,14 +885,24 @@ async fn test_pay_invoice_twice() {
 
     let melt_quote = wallet.melt_quote(invoice.clone(), None).await.unwrap();
 
-    let melt = wallet.melt(&melt_quote.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melt = prepared.confirm().await.unwrap();
 
     // Creating a second quote for the same invoice is allowed
     let melt_quote_two = wallet.melt_quote(invoice, None).await.unwrap();
 
     // But attempting to melt (pay) the second quote should fail
     // since the first quote with the same lookup_id is already paid
-    let melt_two = wallet.melt(&melt_quote_two.id).await;
+    let melt_two = async {
+        let prepared = wallet
+            .prepare_melt(&melt_quote_two.id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
+    }
+    .await;
 
     match melt_two {
         Err(err) => {
@@ -909,5 +924,8 @@ async fn test_pay_invoice_twice() {
 
     let balance = wallet.total_balance().await.unwrap();
 
-    assert_eq!(balance, (Amount::from(100) - melt.fee_paid - melt.amount));
+    assert_eq!(
+        balance,
+        (Amount::from(100) - melt.fee_paid() - melt.amount())
+    );
 }

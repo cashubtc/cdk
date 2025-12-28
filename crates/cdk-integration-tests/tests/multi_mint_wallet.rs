@@ -18,7 +18,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, Token};
-use cdk::wallet::{MultiMintReceiveOptions, MultiMintSendOptions, MultiMintWallet};
+use cdk::wallet::{MultiMintReceiveOptions, MultiMintWallet, SendOptions};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
 use lightning_invoice::Bolt11Invoice;
@@ -162,11 +162,11 @@ async fn test_multi_mint_wallet_melt_auto_select() {
     let melt_result = multi_mint_wallet.melt(&invoice, None, None).await.unwrap();
 
     assert_eq!(
-        melt_result.state,
+        melt_result.state(),
         MeltQuoteState::Paid,
         "Melt should be paid"
     );
-    assert_eq!(melt_result.amount, 50.into(), "Should melt 50 sats");
+    assert_eq!(melt_result.amount(), 50.into(), "Should melt 50 sats");
 
     // Verify balance decreased
     let balance = multi_mint_wallet.total_balance().await.unwrap();
@@ -196,7 +196,7 @@ async fn test_multi_mint_wallet_receive() {
     assert_eq!(funded_amount, 100.into());
 
     // Create a token to send
-    let send_options = MultiMintSendOptions::default();
+    let send_options = SendOptions::default();
     let prepared_send = sender_wallet
         .prepare_send(mint_url.clone(), 50.into(), send_options)
         .await
@@ -262,7 +262,7 @@ async fn test_multi_mint_wallet_receive_untrusted() {
     assert_eq!(funded_amount, 100.into());
 
     // Create a token to send
-    let send_options = MultiMintSendOptions::default();
+    let send_options = SendOptions::default();
     let prepared_send = sender_wallet
         .prepare_send(mint_url.clone(), 50.into(), send_options)
         .await
@@ -319,7 +319,7 @@ async fn test_multi_mint_wallet_prepare_send_happy_path() {
     assert_eq!(funded_amount, 100.into());
 
     // Prepare send
-    let send_options = MultiMintSendOptions::default();
+    let send_options = SendOptions::default();
     let prepared_send = multi_mint_wallet
         .prepare_send(mint_url.clone(), 50.into(), send_options)
         .await
@@ -615,7 +615,7 @@ async fn test_multi_mint_wallet_melt_with_mint() {
         .unwrap();
 
     assert_eq!(
-        melt_result.state,
+        melt_result.state(),
         MeltQuoteState::Paid,
         "Melt should be paid"
     );
