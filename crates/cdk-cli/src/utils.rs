@@ -29,17 +29,16 @@ where
 pub async fn get_or_create_wallet(
     multi_mint_wallet: &MultiMintWallet,
     mint_url: &MintUrl,
-) -> Result<cdk::wallet::Wallet> {
+) -> Result<std::sync::Arc<cdk::wallet::Wallet>> {
     match multi_mint_wallet.get_wallet(mint_url).await {
-        Some(wallet) => Ok(wallet.clone()),
+        Some(wallet) => Ok(wallet),
         None => {
             tracing::debug!("Wallet does not exist creating..");
             multi_mint_wallet.add_mint(mint_url.clone()).await?;
             Ok(multi_mint_wallet
                 .get_wallet(mint_url)
                 .await
-                .expect("Wallet should exist after adding mint")
-                .clone())
+                .expect("Wallet should exist after adding mint"))
         }
     }
 }
