@@ -654,8 +654,10 @@ impl CdkMint for MintRPCServer {
                 // Create a dummy payment response
                 let response = WaitPaymentResponse {
                     payment_id: mint_quote.request_lookup_id.to_string(),
-                    payment_amount: mint_quote.amount.unwrap_or(mint_quote.amount_paid()),
-                    unit: mint_quote.unit.clone(),
+                    payment_amount: mint_quote.clone().amount.unwrap_or(cdk::Amount::new(
+                        mint_quote.amount_paid().value(),
+                        mint_quote.unit.clone(),
+                    )),
                     payment_identifier: mint_quote.request_lookup_id.clone(),
                 };
 
@@ -688,20 +690,20 @@ impl CdkMint for MintRPCServer {
             _ => {
                 // Create a new quote with the same values
                 let quote = MintQuote::new(
-                    Some(mint_quote.id.clone()),
-                    mint_quote.request.clone(),
-                    mint_quote.unit.clone(),
-                    mint_quote.amount,
-                    mint_quote.expiry,
-                    mint_quote.request_lookup_id.clone(),
-                    mint_quote.pubkey,
-                    mint_quote.amount_issued(),
-                    mint_quote.amount_paid(),
-                    mint_quote.payment_method.clone(),
-                    0,
-                    vec![],
-                    vec![],
-                    None,
+                    Some(mint_quote.id.clone()),          // id
+                    mint_quote.request.clone(),           // request
+                    mint_quote.unit.clone(),              // unit
+                    mint_quote.amount.clone(),            // amount
+                    mint_quote.expiry,                    // expiry
+                    mint_quote.request_lookup_id.clone(), // request_lookup_id
+                    mint_quote.pubkey,                    // pubkey
+                    mint_quote.amount_issued(),           // amount_issued
+                    mint_quote.amount_paid(),             // amount_paid
+                    mint_quote.payment_method.clone(),    // method
+                    0,                                    // created_at
+                    vec![],                               // blinded_messages
+                    vec![],                               // payment_ids
+                    None,                                 // extra_json
                 );
 
                 let mint_store = self.mint.localstore();

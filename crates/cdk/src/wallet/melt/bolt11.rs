@@ -8,7 +8,6 @@ use cdk_common::PaymentMethod;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
-use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
@@ -68,7 +67,9 @@ impl Wallet {
                 .or_else(|| invoice.amount_milli_satoshis())
                 .ok_or(Error::InvoiceAmountUndefined)?;
 
-            let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit)?;
+            let amount_quote_unit = Amount::new(amount_msat, CurrencyUnit::Msat)
+                .convert_to(&self.unit)?
+                .into();
 
             if quote_res.amount != amount_quote_unit {
                 tracing::warn!(

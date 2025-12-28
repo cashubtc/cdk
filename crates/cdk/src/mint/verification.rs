@@ -6,13 +6,11 @@ use tracing::instrument;
 use super::{Error, Mint};
 use crate::cdk_database;
 
-/// Verification result
+/// Verification result with typed amount
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Verification {
-    /// Value in request
-    pub amount: Amount,
-    /// Unit of request
-    pub unit: Option<CurrencyUnit>,
+    /// Verified amount with unit
+    pub amount: Amount<CurrencyUnit>,
 }
 
 impl Mint {
@@ -169,7 +167,10 @@ impl Mint {
     }
 
     /// Verifies outputs
-    /// Checks outputs are unique, of the same unit and not signed before
+    ///
+    /// Checks outputs are unique, of the same unit and not signed before.
+    /// Returns an error if outputs are empty - callers should guard against
+    /// empty outputs before calling this function.
     #[instrument(skip_all)]
     pub async fn verify_outputs(
         &self,
@@ -177,10 +178,8 @@ impl Mint {
         outputs: &[BlindedMessage],
     ) -> Result<Verification, Error> {
         if outputs.is_empty() {
-            return Ok(Verification {
-                amount: Amount::ZERO,
-                unit: None,
-            });
+            tracing::debug!("verify_outputs called with empty outputs");
+            return Err(Error::TransactionUnbalanced(0, 0, 0));
         }
 
         Mint::check_outputs_unique(outputs)?;
@@ -188,81 +187,56 @@ impl Mint {
 
         let unit = self.verify_outputs_keyset(outputs)?;
 
-        let amount = Amount::try_sum(outputs.iter().map(|o| o.amount).collect::<Vec<Amount>>())?;
+        let amount = Amount::try_sum(outputs.iter().map(|o| o.amount))?.with_unit(unit);
 
-        Ok(Verification {
-            amount,
-            unit: Some(unit),
-        })
+        Ok(Verification { amount })
     }
 
     /// Verifies inputs
-    /// Checks that inputs are unique and of the same unit
+    ///
+    /// Checks that inputs are unique and of the same unit.
     /// **NOTE: This does not check if inputs have been spent
     #[instrument(skip_all)]
     pub async fn verify_inputs(&self, inputs: &Proofs) -> Result<Verification, Error> {
         Mint::check_inputs_unique(inputs)?;
         let unit = self.verify_inputs_keyset(inputs).await?;
-        let amount = inputs.total_amount()?;
+        let amount = inputs.total_amount()?.with_unit(unit);
 
         self.verify_proofs(inputs.clone()).await?;
 
-        Ok(Verification {
-            amount,
-            unit: Some(unit),
-        })
+        Ok(Verification { amount })
     }
 
     /// Verify that inputs and outputs are valid and balanced
     #[instrument(skip_all)]
     pub async fn verify_transaction_balanced(
         &self,
-        tx: &mut Box<dyn cdk_database::MintTransaction<cdk_database::Error> + Send + Sync>,
         input_verification: Verification,
+        output_verification: Verification,
         inputs: &Proofs,
-        outputs: &[BlindedMessage],
     ) -> Result<(), Error> {
-        let output_verification = self.verify_outputs(tx, outputs).await.map_err(|err| {
-            tracing::debug!("Output verification failed: {:?}", err);
-            err
-        })?;
-
         let fee_breakdown = self.get_proofs_fee(inputs).await?;
 
-        if output_verification
-            .unit
-            .as_ref()
-            .ok_or(Error::TransactionUnbalanced(
-                input_verification.amount.into(),
-                output_verification.amount.into(),
-                fee_breakdown.total.into(),
-            ))?
-            != input_verification
-                .unit
-                .as_ref()
-                .ok_or(Error::TransactionUnbalanced(
-                    input_verification.amount.to_u64(),
-                    output_verification.amount.to_u64(),
-                    0,
-                ))?
-        {
+        // Units are now embedded in the typed amounts - check they match
+        if output_verification.amount.unit() != input_verification.amount.unit() {
             tracing::debug!(
                 "Output unit {:?} does not match input unit {:?}",
-                output_verification.unit,
-                input_verification.unit
+                output_verification.amount.unit(),
+                input_verification.amount.unit()
             );
             return Err(Error::UnitMismatch);
         }
 
-        if output_verification.amount
-            != input_verification
-                .amount
-                .checked_sub(fee_breakdown.total)
-                .ok_or(Error::AmountOverflow)?
-        {
+        // Check amounts are balanced (inputs = outputs + fee)
+        let fee_typed = fee_breakdown
+            .total
+            .with_unit(input_verification.amount.unit().clone());
+        let expected_output = input_verification.amount.checked_sub(&fee_typed)?;
+
+        if output_verification.amount != expected_output {
             return Err(Error::TransactionUnbalanced(
-                input_verification.amount.into(),
-                output_verification.amount.into(),
+                input_verification.amount.value(),
+                output_verification.amount.value(),
                 fee_breakdown.total.into(),
             ));
         }
