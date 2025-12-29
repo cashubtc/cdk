@@ -1487,10 +1487,11 @@ where
         None,
         1000.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
         vec![],
         vec![],
+        None,
     );
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
