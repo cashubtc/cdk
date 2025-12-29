@@ -9,10 +9,15 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Result;
+use bitcoin::bip32::{DerivationPath, Xpriv};
+use bitcoin::Network;
 use cdk_common::database::WalletDatabase;
 use cdk_common::task::spawn;
-use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection, TransactionId};
-use cdk_common::{database, KeySetInfo};
+use cdk_common::util::unix_time;
+use cdk_common::wallet::{
+    MeltQuote, P2PKSigningKey, Transaction, TransactionDirection, TransactionId,
+};
+use cdk_common::{database, KeySetInfo, PublicKey, SECP256K1};
 use tokio::sync::RwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
@@ -1983,6 +1988,35 @@ impl MultiMintWallet {
         })?;
 
         wallet.melt_human_readable_quote(address, amount_msat).await
+    }
+    pub async fn genereate_public_key(&self) -> Result<PublicKey, Error> {
+        let public_keys = self.localstore.list_p2pk_keys().await?;
+
+        let mut last_derivation_index = 0;
+
+        for public_key in public_keys {
+            if public_key.derivation_index > last_derivation_index {
+                last_derivation_index = public_key.derivation_index;
+            }
+        }
+        last_derivation_index += 1;
+
+        let derivation_path = DerivationPath::from_str(&format!("m/0/{}", last_derivation_index))?;
+        let xpriv = Xpriv::new_master(Network::Bitcoin, &self.seed)?;
+
+        let p2pkPUblickey = P2PKSigningKey {
+            pubkey: xpriv.derive_priv(&SECP256K1, &derivation_path)?.public_key,
+            derivation_path: derivation_path,
+            derivation_index: last_derivation_index,
+            created_time: unix_time(),
+        };
+        // let public_keys = self.add_mint(mint_url)
+        // let wallets = self.wallets.read().await;
+        // let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+        //     mint_url: mint_url.to_string(),
+        // })?;
+
+        // wallet.generate_public_key().await
     }
 }
 
