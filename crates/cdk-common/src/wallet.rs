@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
+use bitcoin::bip32::DerivationPath;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::util::hex;
 use cashu::{nut00, PaymentMethod, Proofs, PublicKey};
@@ -377,7 +378,7 @@ impl TryFrom<Proofs> for TransactionId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct P2PKSigningKey {
     pub pubkey: PublicKey,
-    pub derivation_path: String,
+    pub derivation_path: DerivationPath,
     pub derivation_index: u32,
     pub created_time: u64,
 }

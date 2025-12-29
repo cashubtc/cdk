@@ -7,6 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cdk_common::bitcoin::bip32::DerivationPath;
 use cdk_common::common::ProofInfo;
 use cdk_common::database::{
     validate_kvstore_params, DbTransactionFinalizer, KVStore, KVStoreDatabase, KVStoreTransaction,
@@ -612,7 +613,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     async fn add_p2pk_key(
         &self,
         pubkey: &PublicKey,
-        derivation_path: String,
+        derivation_path: DerivationPath,
         derivation_index: u32,
     ) -> Result<(), database::Error> {
         // let txn = self.txn()?;

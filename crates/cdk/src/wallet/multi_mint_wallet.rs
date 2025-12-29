@@ -1989,7 +1989,7 @@ impl MultiMintWallet {
 
         wallet.melt_human_readable_quote(address, amount_msat).await
     }
-    pub async fn genereate_public_key(&self) -> Result<PublicKey, Error> {
+    pub async fn generate_public_key(&self) -> Result<PublicKey, Error> {
         let public_keys = self.localstore.list_p2pk_keys().await?;
 
         let mut last_derivation_index = 0;
@@ -2004,19 +2004,24 @@ impl MultiMintWallet {
         let derivation_path = DerivationPath::from_str(&format!("m/0/{}", last_derivation_index))?;
         let xpriv = Xpriv::new_master(Network::Bitcoin, &self.seed)?;
 
-        let p2pkPUblickey = P2PKSigningKey {
-            pubkey: xpriv.derive_priv(&SECP256K1, &derivation_path)?.public_key,
-            derivation_path: derivation_path,
-            derivation_index: last_derivation_index,
-            created_time: unix_time(),
-        };
-        // let public_keys = self.add_mint(mint_url)
-        // let wallets = self.wallets.read().await;
-        // let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
-        //     mint_url: mint_url.to_string(),
-        // })?;
+        let derived_key = xpriv.derive_priv(&SECP256K1, &derivation_path)?.private_key;
+        let pubkey = PublicKey::from(derived_key.public_key(&SECP256K1));
 
-        // wallet.generate_public_key().await
+        self.localstore
+            .add_p2pk_key(&pubkey, derivation_path, last_derivation_index)
+            .await?;
+        return Ok(pubkey);
+    }
+
+    pub async fn p2pk_public_key(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Option<P2PKSigningKey>, database::Error> {
+        return self.localstore.get_p2pk_key(pubkey).await;
+    }
+    //
+    pub async fn p2pk_list(&self) -> Result<Vec<P2PKSigningKey>, database::Error> {
+        return self.localstore.list_p2pk_keys().await;
     }
 }
 
