@@ -13,7 +13,6 @@ use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::Network;
 use cdk_common::database::WalletDatabase;
 use cdk_common::task::spawn;
-use cdk_common::util::unix_time;
 use cdk_common::wallet::{
     MeltQuote, P2PKSigningKey, Transaction, TransactionDirection, TransactionId,
 };
@@ -2010,7 +2009,7 @@ impl MultiMintWallet {
         self.localstore
             .add_p2pk_key(&pubkey, derivation_path, last_derivation_index)
             .await?;
-        return Ok(pubkey);
+        Ok(pubkey)
     }
 
     pub async fn p2pk_public_key(

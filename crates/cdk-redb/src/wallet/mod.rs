@@ -630,7 +630,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             .insert(
                 pubkey.to_bytes().as_slice(),
                 serde_json::to_string(&wallet::P2PKSigningKey {
-                    pubkey: pubkey.clone(),
+                    pubkey: *pubkey,
                     derivation_path,
                     derivation_index,
                     created_time: 0,
