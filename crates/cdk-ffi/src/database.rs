@@ -111,6 +111,20 @@ pub trait WalletDatabase: Send + Sync {
         primary_namespace: String,
         secondary_namespace: String,
     ) -> Result<Vec<String>, FfiError>;
+
+    /// Add P2PK signing key to storage
+    async fn add_p2pk_key(
+        &self,
+        pubkey: PublicKey,
+        derivation_path: String,
+        derivation_index: u32,
+    ) -> Result<(), FfiError>;
+
+    /// Get P2PK signing key from storage
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<P2PKSigningKey>, FfiError>;
+
+    /// List all P2PK signing keys from storage
+    async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError>;
 }
 
 /// FFI-compatible transaction trait for wallet database write operations
@@ -853,35 +867,47 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
         derivation_path: DerivationPath,
         derivation_index: u32,
     ) -> Result<(), cdk::cdk_database::Error> {
-        todo!("Implement add_p2pk_key");
-        Ok(())
-        // let ffi_pubkey = pubkey.into();
-        // let result = self.ffi_tx.add_p2pk_key(ffi_pubkey, derivation_path, derivation_index).await.map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
-        // Ok(result)
+        let ffi_pubkey: PublicKey = (*pubkey).into();
+        let ffi_derivation_path = derivation_path.to_string();
+        self.ffi_db
+            .add_p2pk_key(ffi_pubkey, ffi_derivation_path, derivation_index)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
     async fn list_p2pk_keys(
         &self,
     ) -> Result<Vec<cdk_common::wallet::P2PKSigningKey>, cdk::cdk_database::Error> {
-        todo!("Implement list_p2pk_keys");
-        Ok(vec![])
-        // let result = self.ffi_tx.list_p2pk_keys().await.map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
-        // Ok(result.into_iter().map(Into::into).collect())
+        let result = self
+            .ffi_db
+            .list_p2pk_keys()
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        Ok(result
+            .into_iter()
+            .map(|k| {
+                k.try_into()
+                    .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+            })
+            .collect::<Result<Vec<_>, _>>()?)
     }
 
     async fn get_p2pk_key(
         &self,
         pubkey: &cdk::nuts::PublicKey,
     ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, cdk::cdk_database::Error> {
-        todo!("Implement get_p2pk_key");
-        Ok(None)
-        // let ffi_pubkey = pubkey.into();
-        // let result = self.ffi_tx.get_p2pk_key(ffi_pubkey).await.map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
-        // Ok(result.map(|q| {
-        //         q.try_into()
-        //             .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
-        //     })
-        //     .transpose()?)
+        let ffi_pubkey: PublicKey = (*pubkey).into();
+        let result = self
+            .ffi_db
+            .get_p2pk_key(ffi_pubkey)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        Ok(result
+            .map(|k| {
+                k.try_into()
+                    .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+            })
+            .transpose()?)
     }
 }
 
@@ -1552,6 +1578,47 @@ where
             .kv_list(&primary_namespace, &secondary_namespace)
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn add_p2pk_key(
+        &self,
+        pubkey: PublicKey,
+        derivation_path: String,
+        derivation_index: u32,
+    ) -> Result<(), FfiError> {
+        use std::str::FromStr;
+
+        use cdk_common::bitcoin::bip32::DerivationPath;
+
+        let cdk_pubkey: cdk::nuts::PublicKey = pubkey.try_into()?;
+        let cdk_derivation_path =
+            DerivationPath::from_str(&derivation_path).map_err(|e| FfiError::Generic {
+                msg: format!("Invalid derivation path: {}", e),
+            })?;
+
+        self.inner
+            .add_p2pk_key(&cdk_pubkey, cdk_derivation_path, derivation_index)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<P2PKSigningKey>, FfiError> {
+        let cdk_pubkey: cdk::nuts::PublicKey = pubkey.try_into()?;
+        let result = self
+            .inner
+            .get_p2pk_key(&cdk_pubkey)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        Ok(result.map(Into::into))
+    }
+
+    async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError> {
+        let result = self
+            .inner
+            .list_p2pk_keys()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        Ok(result.into_iter().map(Into::into).collect())
     }
 }
 

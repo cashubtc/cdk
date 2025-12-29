@@ -6,8 +6,8 @@ use cdk_sqlite::SqliteConnectionManager;
 
 use crate::{
     CurrencyUnit, FfiError, FfiWalletSQLDatabase, Id, KeySetInfo, Keys, MeltQuote, MintInfo,
-    MintQuote, MintUrl, ProofInfo, ProofState, PublicKey, SpendingConditions, Transaction,
-    TransactionDirection, TransactionId, WalletDatabase,
+    MintQuote, MintUrl, P2PKSigningKey, ProofInfo, ProofState, PublicKey, SpendingConditions,
+    Transaction, TransactionDirection, TransactionId, WalletDatabase,
 };
 
 /// FFI-compatible WalletSqliteDatabase implementation that implements the WalletDatabaseFfi trait
@@ -178,5 +178,24 @@ impl WalletDatabase for WalletSqliteDatabase {
         self.inner
             .kv_list(primary_namespace, secondary_namespace)
             .await
+    }
+
+    async fn add_p2pk_key(
+        &self,
+        pubkey: PublicKey,
+        derivation_path: String,
+        derivation_index: u32,
+    ) -> Result<(), FfiError> {
+        self.inner
+            .add_p2pk_key(pubkey, derivation_path, derivation_index)
+            .await
+    }
+
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<P2PKSigningKey>, FfiError> {
+        self.inner.get_p2pk_key(pubkey).await
+    }
+
+    async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError> {
+        self.inner.list_p2pk_keys().await
     }
 }
