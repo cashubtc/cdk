@@ -98,7 +98,9 @@ impl KvTable<'_> {
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
-use crate::wallet::migrations::{migrate_01_to_02, migrate_02_to_03, migrate_03_to_04, migrate_04_to_05};
+use crate::wallet::migrations::{
+    migrate_01_to_02, migrate_02_to_03, migrate_03_to_04, migrate_04_to_05,
+};
 
 mod migrations;
 

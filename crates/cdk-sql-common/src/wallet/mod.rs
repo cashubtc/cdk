@@ -1361,7 +1361,7 @@ where
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let query_str = format!(
             r#"
-        SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key
+        SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key ORDER BY created_time DESC
         "#
         );
 

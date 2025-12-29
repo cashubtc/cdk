@@ -112,7 +112,7 @@ enum Commands {
     /// Generate a public key
     GeneratePublicKey(sub_commands::generate_public_key::GeneratePublicKeySubCommand),
     /// Get public keys
-    GetPublicKey(sub_commands::get_public_key::GetPublicKeySubCommand),
+    GetPublicKeys(sub_commands::get_public_keys::GetPublicKeysSubCommand),
 }
 
 #[tokio::main]
@@ -311,8 +311,8 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::GetPublicKey(sub_command_args) => {
-            sub_commands::get_public_key::get_public_keys(&multi_mint_wallet, sub_command_args)
+        Commands::GetPublicKeys(sub_command_args) => {
+            sub_commands::get_public_keys::get_public_keys(&multi_mint_wallet, sub_command_args)
                 .await
         }
     }

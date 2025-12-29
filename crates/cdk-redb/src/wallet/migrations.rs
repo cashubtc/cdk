@@ -209,7 +209,9 @@ pub(crate) fn migrate_04_to_05(db: Arc<Database>) -> Result<u32, Error> {
 
     {
         // Open the table to initialize it (redb creates tables on first open)
-        let _ = write_txn.open_table(P2PK_SIGNING_KEYS_TABLE).map_err(Error::from)?;
+        let _ = write_txn
+            .open_table(P2PK_SIGNING_KEYS_TABLE)
+            .map_err(Error::from)?;
     }
 
     write_txn.commit()?;
