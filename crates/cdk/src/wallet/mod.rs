@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bitcoin::bip32::{DerivationPath, Xpriv};
+use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, DynWalletDatabaseTransaction, WalletDatabase};
@@ -763,7 +763,7 @@ impl Wallet {
 
     // try to get secret key from p2pk signing key in localstore
     async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Error> {
-        let signing = self.localstore.get_p2pk_key(&pubkey).await?;
+        let signing = self.localstore.get_p2pk_key(pubkey).await?;
         if let Some(signing) = signing {
             // make xpriv from seed
             let xpriv = Xpriv::new_master(Network::Bitcoin, &self.seed)?;

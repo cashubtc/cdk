@@ -1321,12 +1321,10 @@ where
         derivation_index: u32,
     ) -> Result<(), Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let query_str = format!(
-            r#"
+        let query_str = r#"
         INSERT INTO p2pk_signing_key (pubkey, derivation_index, derivation_path)
         VALUES (:pubkey, :derivation_index, :derivation_path)
-        "#
-        );
+        "#.to_string();
 
         query(&query_str)?
             .bind("pubkey", pubkey.to_bytes().to_vec())
@@ -1344,9 +1342,7 @@ where
         pubkey: &PublicKey,
     ) -> Result<Option<wallet::P2PKSigningKey>, Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let query_str = format!(
-            r#"SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key WHERE pubkey = :pubkey"#
-        );
+        let query_str = r#"SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key WHERE pubkey = :pubkey"#.to_string();
 
         query(&query_str)?
             .bind("pubkey", pubkey.to_bytes().to_vec())
@@ -1359,11 +1355,9 @@ where
     #[instrument(skip(self))]
     async fn list_p2pk_keys(&self) -> Result<Vec<wallet::P2PKSigningKey>, Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let query_str = format!(
-            r#"
+        let query_str = r#"
         SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key ORDER BY created_time DESC
-        "#
-        );
+        "#.to_string();
 
         Ok(query(&query_str)?
             .fetch_all(&*conn)
