@@ -305,10 +305,15 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::GeneratePublicKey(sub_command_args) => {
-            sub_commands::generate_public_key::generate_public_key(sub_command_args).await
+            sub_commands::generate_public_key::generate_public_key(
+                &multi_mint_wallet,
+                sub_command_args,
+            )
+            .await
         }
         Commands::GetPublicKey(sub_command_args) => {
-            sub_commands::get_public_key::get_public_key(&multi_mint_wallet, sub_command_args).await
+            sub_commands::get_public_key::get_public_keys(&multi_mint_wallet, sub_command_args)
+                .await
         }
     }
 }

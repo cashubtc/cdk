@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 
 use async_trait::async_trait;
+use bitcoin::bip32::DerivationPath;
 use cashu::KeySet;
 
 use super::{DbTransactionFinalizer, Error};
@@ -196,7 +197,7 @@ where
     async fn add_p2pk_key(
         &self,
         pubkey: &PublicKey,
-        derivation_path: String,
+        derivation_path: DerivationPath,
         derivation_index: u32,
     ) -> Result<(), Self::Err>;
     /// Get a stored P2PK signing key by pubkey.

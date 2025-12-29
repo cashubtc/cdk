@@ -768,9 +768,11 @@ impl Wallet {
             // make xpriv from seed
             let xpriv = Xpriv::new_master(Network::Bitcoin, &self.seed)?;
             // use seed to derive the secret key
-            let key_path = DerivationPath::from_str(&signing.derivation_path)?;
+            // let key_path = DerivationPath::from_str(&signing.derivation_path)?;
             return Ok(Some(SecretKey::from(
-                xpriv.derive_priv(&SECP256K1, &key_path)?.private_key,
+                xpriv
+                    .derive_priv(&SECP256K1, &signing.derivation_path)?
+                    .private_key,
             )));
         }
 

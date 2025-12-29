@@ -6,6 +6,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bitcoin::bip32::DerivationPath;
 use cdk_common::common::ProofInfo;
 use cdk_common::database::{
     ConversionError, DbTransactionFinalizer, Error, WalletDatabase, WalletDatabaseTransaction,
@@ -1316,7 +1317,7 @@ where
     async fn add_p2pk_key(
         &self,
         pubkey: &PublicKey,
-        derivation_path: String,
+        derivation_path: DerivationPath,
         derivation_index: u32,
     ) -> Result<(), Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
@@ -1330,7 +1331,7 @@ where
         query(&query_str)?
             .bind("pubkey", pubkey.to_bytes().to_vec())
             .bind("derivation_index", derivation_index)
-            .bind("derivation_path", derivation_path)
+            .bind("derivation_path", derivation_path.to_string())
             .execute(&*conn)
             .await?;
 
@@ -1631,7 +1632,7 @@ fn sql_row_to_p2pk_signing_key(row: Vec<Column>) -> Result<wallet::P2PKSigningKe
     Ok(wallet::P2PKSigningKey {
         pubkey: column_as_string!(pubkey, PublicKey::from_str, PublicKey::from_slice),
         derivation_index: column_as_number!(derivation_index),
-        derivation_path: column_as_string!(derivation_path),
+        derivation_path: column_as_string!(derivation_path, DerivationPath::from_str),
         created_time: column_as_number!(created_time),
     })
 }

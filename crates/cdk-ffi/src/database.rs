@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use cdk_common::bitcoin::bip32::DerivationPath;
 use cdk_common::database::{
     DbTransactionFinalizer, DynWalletDatabaseTransaction, KVStoreDatabase as CdkKVStoreDatabase,
     WalletDatabase as CdkWalletDatabase, WalletDatabaseTransaction as CdkWalletDatabaseTransaction,
@@ -849,7 +850,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     async fn add_p2pk_key(
         &self,
         pubkey: &cdk::nuts::PublicKey,
-        derivation_path: String,
+        derivation_path: DerivationPath,
         derivation_index: u32,
     ) -> Result<(), cdk::cdk_database::Error> {
         todo!("Implement add_p2pk_key");
