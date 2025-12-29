@@ -182,11 +182,11 @@ impl MintPayment for Cln {
                             // We only want to yield invoices that have been paid
                             match wait_any_response.status {
                                 WaitanyinvoiceStatus::PAID => {
-                                    tracing::info!("CLN: Invoice with payment index {} is PAID", 
+                                    tracing::info!("CLN: Invoice with payment index {} is PAID",
                                                  wait_any_response.pay_index.unwrap_or_default());
                                 }
                                 WaitanyinvoiceStatus::EXPIRED => {
-                                    tracing::debug!("CLN: Invoice with payment index {} is EXPIRED, skipping", 
+                                    tracing::debug!("CLN: Invoice with payment index {} is EXPIRED, skipping",
                                                   wait_any_response.pay_index.unwrap_or_default());
                                     continue;
                                 }
@@ -217,7 +217,7 @@ impl MintPayment for Cln {
 
                             let amount_msats = match wait_any_response.amount_received_msat {
                                 Some(amt) => {
-                                    tracing::info!("CLN: Received payment of {} msats for {}", 
+                                    tracing::info!("CLN: Received payment of {} msats for {}",
                                                  amt.msat(), payment_hash);
                                     amt
                                 }
@@ -243,7 +243,7 @@ impl MintPayment for Cln {
                                     {
                                         Ok(Some(invoice)) => {
                                             if let Some(local_offer_id) = invoice.local_offer_id {
-                                                tracing::info!("CLN: Received bolt12 payment of {} msats for offer {}", 
+                                                tracing::info!("CLN: Received bolt12 payment of {} msats for offer {}",
                                                              amount_msats.msat(), local_offer_id);
                                                 PaymentIdentifier::OfferId(local_offer_id.to_string())
                                             } else {

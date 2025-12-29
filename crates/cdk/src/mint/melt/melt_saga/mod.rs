@@ -7,6 +7,7 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
+use cdk_common::state::check_state_transition;
 use cdk_common::{Amount, Error, ProofsMethods, PublicKey, QuoteId, State};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -16,6 +17,7 @@ use tracing::instrument;
 use self::compensation::{CompensatingAction, RemoveMeltSetup};
 use self::state::{Initial, PaymentConfirmed, SettlementDecision, SetupComplete};
 use crate::cdk_payment::MakePaymentResponse;
+use crate::mint::melt::shared;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::Verification;
 use crate::mint::{MeltQuoteBolt11Response, MeltRequest};
@@ -202,6 +204,15 @@ impl MeltSaga<Initial> {
 
         let mut tx = self.db.begin_transaction().await?;
 
+        let mut quote =
+            match shared::load_melt_quotes_exclusively(&mut tx, melt_request.quote()).await {
+                Ok(quote) => quote,
+                Err(err) => {
+                    tx.rollback().await?;
+                    return Err(err);
+                }
+            };
+
         // Calculate fee to create Operation with actual amounts
         let fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
 
@@ -237,6 +248,17 @@ impl MeltSaga<Initial> {
 
         let input_ys = melt_request.inputs().ys()?;
 
+        for current_state in tx
+            .get_proofs_states(&input_ys)
+            .await?
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(Error::UnexpectedProofState)?
+        {
+            check_state_transition(current_state, State::Pending)
+                .map_err(|_| Error::UnexpectedProofState)?;
+        }
+
         // Update proof states to Pending
         let original_states = match tx.update_proofs_states(&input_ys, State::Pending).await {
             Ok(states) => states,
@@ -270,17 +292,7 @@ impl MeltSaga<Initial> {
             );
         }
 
-        // Update quote state to Pending
-        let (state, quote) = match tx
-            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
-            .await
-        {
-            Ok(result) => result,
-            Err(err) => {
-                tx.rollback().await?;
-                return Err(err.into());
-            }
-        };
+        let previous_state = quote.state;
 
         // Publish proof state changes
         for pk in input_ys.iter() {
@@ -292,7 +304,7 @@ impl MeltSaga<Initial> {
             return Err(Error::UnitMismatch);
         }
 
-        match state {
+        match previous_state {
             MeltQuoteState::Unpaid | MeltQuoteState::Failed => {}
             MeltQuoteState::Pending => {
                 tx.rollback().await?;
@@ -308,8 +320,20 @@ impl MeltSaga<Initial> {
             }
         }
 
+        // Update quote state to Pending
+        match tx
+            .update_melt_quote_state(&mut quote, MeltQuoteState::Pending, None)
+            .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(err.into());
+            }
+        };
+
         self.pubsub
-            .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
+            .melt_quote_status(&*quote, None, None, MeltQuoteState::Pending);
 
         let inputs_fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
 
@@ -379,8 +403,6 @@ impl MeltSaga<Initial> {
         let saga = Saga::new_melt(
             self.operation_id,
             MeltSagaState::SetupComplete,
-            input_ys.clone(),
-            blinded_secrets.clone(),
             quote.id.to_string(),
         );
 
@@ -407,6 +429,8 @@ impl MeltSaga<Initial> {
             }));
 
         // Transition to SetupComplete state
+        // Extract inner MeltQuote from Acquired wrapper - the lock was only meaningful
+        // within the transaction that just committed
         Ok(MeltSaga {
             mint: self.mint,
             db: self.db,
@@ -416,7 +440,7 @@ impl MeltSaga<Initial> {
             #[cfg(feature = "prometheus")]
             metrics_incremented: self.metrics_incremented,
             state_data: SetupComplete {
-                quote,
+                quote: quote.inner(),
                 input_ys,
                 blinded_messages: blinded_messages_vec,
                 operation,
@@ -468,7 +492,7 @@ impl MeltSaga<SetupComplete> {
 
         let mut tx = self.db.begin_transaction().await?;
 
-        let mint_quote = match tx
+        let mut mint_quote = match tx
             .get_mint_quote_by_request(&self.state_data.quote.request.to_string())
             .await
         {
@@ -530,15 +554,11 @@ impl MeltSaga<SetupComplete> {
         )
         .await?;
 
-        let total_paid = tx
-            .increment_mint_quote_amount_paid(
-                &mint_quote.id,
-                amount,
-                self.state_data.quote.id.to_string(),
-            )
-            .await?;
+        mint_quote.add_payment(amount, self.state_data.quote.id.to_string(), None)?;
+        tx.update_mint_quote(&mut mint_quote).await?;
 
-        self.pubsub.mint_quote_payment(&mint_quote, total_paid);
+        self.pubsub
+            .mint_quote_payment(&mint_quote, mint_quote.amount_paid());
 
         tracing::info!(
             "Melt quote {} paid Mint quote {}",
@@ -865,7 +885,11 @@ impl MeltSaga<PaymentConfirmed> {
 
         let mut tx = self.db.begin_transaction().await?;
 
-        // Get melt request info first (needed for validation and change)
+        // Acquire lock on the quote for safe state update
+        let mut quote =
+            shared::load_melt_quotes_exclusively(&mut tx, &self.state_data.quote.id).await?;
+
+        // Get melt request info (needed for validation and change)
         let MeltRequestInfo {
             inputs_amount,
             inputs_fee,
@@ -879,7 +903,7 @@ impl MeltSaga<PaymentConfirmed> {
         if let Err(err) = super::shared::finalize_melt_core(
             &mut tx,
             &self.pubsub,
-            &self.state_data.quote,
+            &mut quote,
             &self.state_data.input_ys,
             inputs_amount,
             inputs_fee,

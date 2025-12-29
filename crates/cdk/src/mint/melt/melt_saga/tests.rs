@@ -100,16 +100,21 @@ async fn test_saga_state_persistence_after_setup() {
         _ => panic!("Expected Melt saga state"),
     }
 
-    // STEP 6: Verify input_ys are stored
+    // STEP 6: Verify input_ys can be looked up by operation_id
     let input_ys = proofs.ys().unwrap();
+    let stored_input_ys = mint
+        .localstore
+        .get_proof_ys_by_operation_id(&persisted_saga.operation_id)
+        .await
+        .unwrap();
     assert_eq!(
-        persisted_saga.input_ys.len(),
+        stored_input_ys.len(),
         input_ys.len(),
         "Should store all input Ys"
     );
     for y in &input_ys {
         assert!(
-            persisted_saga.input_ys.contains(y),
+            stored_input_ys.contains(y),
             "Input Y should be stored: {:?}",
             y
         );
@@ -129,10 +134,15 @@ async fn test_saga_state_persistence_after_setup() {
         "Timestamps should match for new saga"
     );
 
-    // STEP 8: Verify blinded_secrets is empty (not used for melt)
+    // STEP 8: Verify blinded_secrets lookup returns empty (not used for melt without change)
+    let stored_blinded_secrets = mint
+        .localstore
+        .get_blinded_secrets_by_operation_id(&persisted_saga.operation_id)
+        .await
+        .unwrap();
     assert!(
-        persisted_saga.blinded_secrets.is_empty(),
-        "Melt saga should not store blinded_secrets"
+        stored_blinded_secrets.is_empty(),
+        "Melt saga without change should have no blinded_secrets"
     );
 
     // SUCCESS: Saga persisted correctly!
@@ -1278,17 +1288,22 @@ async fn test_saga_content_validation() {
         _ => panic!("Expected Melt saga state, got {:?}", persisted_saga.state),
     }
 
-    // STEP 7: Verify input_ys are stored correctly
+    // STEP 7: Verify input_ys can be looked up by operation_id
+    let stored_input_ys = mint
+        .localstore
+        .get_proof_ys_by_operation_id(&persisted_saga.operation_id)
+        .await
+        .unwrap();
     assert_eq!(
-        persisted_saga.input_ys.len(),
+        stored_input_ys.len(),
         input_ys.len(),
         "Should store all input Ys"
     );
 
-    // Verify each Y is present and in correct order
+    // Verify each Y is present
     for (i, expected_y) in input_ys.iter().enumerate() {
         assert!(
-            persisted_saga.input_ys.contains(expected_y),
+            stored_input_ys.contains(expected_y),
             "Input Y at index {} should be stored: {:?}",
             i,
             expected_y
@@ -1326,10 +1341,15 @@ async fn test_saga_content_validation() {
         "Timestamps should match for newly created saga"
     );
 
-    // STEP 9: Verify blinded_secrets is empty (not used for melt)
+    // STEP 9: Verify blinded_secrets lookup returns empty (not used for melt without change)
+    let stored_blinded_secrets = mint
+        .localstore
+        .get_blinded_secrets_by_operation_id(&persisted_saga.operation_id)
+        .await
+        .unwrap();
     assert!(
-        persisted_saga.blinded_secrets.is_empty(),
-        "Melt saga should not use blinded_secrets field"
+        stored_blinded_secrets.is_empty(),
+        "Melt saga without change should have no blinded_secrets"
     );
 
     // SUCCESS: All saga content validated!
@@ -2888,6 +2908,7 @@ async fn test_duplicate_lookup_id_prevents_second_pending() {
         .await
         .unwrap()
         .expect("Quote 1 should exist");
+
     let quote2 = mint
         .localstore
         .get_melt_quote(&quote_response2.quote)
@@ -2987,6 +3008,7 @@ async fn test_duplicate_lookup_id_prevents_second_pending() {
         .await
         .unwrap()
         .unwrap();
+
     assert_eq!(
         still_unpaid_quote2.state,
         MeltQuoteState::Unpaid,
