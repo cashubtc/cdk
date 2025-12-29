@@ -284,7 +284,7 @@ pub enum Error {
     TransferTimeout {
         /// Source mint URL
         source_mint: String,
-        /// Target mint URL  
+        /// Target mint URL
         target_mint: String,
         /// Amount that failed to transfer
         amount: Amount,
