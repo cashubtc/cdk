@@ -18,15 +18,18 @@ pub async fn get_public_keys(
         // keys are ordered by creation time, so the first one is the latest
         let latest_public_key = list_public_keys.first().cloned();
 
-        if latest_public_key.is_some() {
-            println!("\npublic key found! 🎉\n");
+        match latest_public_key {
+            Some(key) => {
+                println!("\npublic key found! 🎉\n");
 
-            let public_key = latest_public_key.unwrap();
-            println!("public key: {}", public_key.pubkey.to_hex());
-            println!("derivation path: {}", public_key.derivation_path);
-        } else {
-            println!("\npublic key not found! 🤔\n");
+                println!("public key: {}", key.pubkey.to_hex());
+                println!("derivation path: {}", key.derivation_path);
+            }
+            None => {
+                println!("\npublic key not found! 🤔\n");
+            }
         }
+
         return Ok(());
     }
 

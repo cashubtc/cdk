@@ -1324,7 +1324,8 @@ where
         let query_str = r#"
         INSERT INTO p2pk_signing_key (pubkey, derivation_index, derivation_path)
         VALUES (:pubkey, :derivation_index, :derivation_path)
-        "#.to_string();
+        "#
+        .to_string();
 
         query(&query_str)?
             .bind("pubkey", pubkey.to_bytes().to_vec())
