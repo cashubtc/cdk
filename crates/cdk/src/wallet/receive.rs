@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -62,7 +62,6 @@ impl Wallet {
             .map(|s| (s.x_only_public_key(&SECP256K1).0, s.clone()))
             .collect();
 
-
         for proof in &mut proofs {
             // Verify that proof DLEQ is valid
             if proof.dleq.is_some() {
@@ -84,7 +83,6 @@ impl Wallet {
                     .try_into();
                 if let Ok(conditions) = conditions {
                     let mut pubkeys = conditions.pubkeys.unwrap_or_default();
-                    
 
                     match secret.kind() {
                         Kind::P2PK => {
@@ -109,7 +107,8 @@ impl Wallet {
                                 let secret_key_option = self.get_signing_key(&pubkey).await?;
                                 if let Some(secret_key) = secret_key_option {
                                     // cache secret key so it only has to be locked up one for the duration of the receive operation
-                                    p2pk_signing_keys.insert(pubkey.x_only_public_key(), secret_key.clone());
+                                    p2pk_signing_keys
+                                        .insert(pubkey.x_only_public_key(), secret_key.clone());
 
                                     proof.sign_p2pk(secret_key.to_owned().clone())?;
                                 }

@@ -122,7 +122,8 @@ const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_
 const TRANSACTIONS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("transactions");
 
 // <Pubkey, P2PKSigningKey>
-const P2PK_SIGNING_KEYS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("p2pk_signing_keys");
+const P2PK_SIGNING_KEYS_TABLE: TableDefinition<&[u8], &str> =
+    TableDefinition::new("p2pk_signing_keys");
 
 const KEYSET_U32_MAPPING: TableDefinition<u32, &str> = TableDefinition::new("keyset_u32_mapping");
 // <(primary_namespace, secondary_namespace, key), value>
@@ -608,33 +609,62 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
-    async fn add_p2pk_key(&self, pubkey: &PublicKey, derivation_path: String, derivation_index: u32) -> Result<(), database::Error> {
+    async fn add_p2pk_key(
+        &self,
+        pubkey: &PublicKey,
+        derivation_path: String,
+        derivation_index: u32,
+    ) -> Result<(), database::Error> {
         // let txn = self.txn()?;
         let write_txn = self.db.begin_write().map_err(Error::from)?;
-        let mut table = write_txn.open_table(P2PK_SIGNING_KEYS_TABLE).map_err(Error::from)?;
+        let mut table = write_txn
+            .open_table(P2PK_SIGNING_KEYS_TABLE)
+            .map_err(Error::from)?;
         table
-            .insert(pubkey.to_bytes().as_slice(), serde_json::to_string(&wallet::P2PKSigningKey { pubkey: pubkey.clone(), derivation_path, derivation_index, created_time: 0 }).map_err(Error::from)?.as_str())
+            .insert(
+                pubkey.to_bytes().as_slice(),
+                serde_json::to_string(&wallet::P2PKSigningKey {
+                    pubkey: pubkey.clone(),
+                    derivation_path,
+                    derivation_index,
+                    created_time: 0,
+                })
+                .map_err(Error::from)?
+                .as_str(),
+            )
             .map_err(Error::from)?;
         Ok(())
     }
 
     #[instrument(skip(self))]
-    async fn get_p2pk_key(&self, pubkey: &PublicKey) -> Result<Option<wallet::P2PKSigningKey>, database::Error> {
-            let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn.open_table(P2PK_SIGNING_KEYS_TABLE).map_err(Error::from)?;
-        
-        if let Some(key) = table.get(pubkey.to_bytes().as_slice()).map_err(Error::from)? {
-            return Ok(Some(serde_json::from_str(key.value()).map_err(Error::from)?));
+    async fn get_p2pk_key(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Option<wallet::P2PKSigningKey>, database::Error> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(P2PK_SIGNING_KEYS_TABLE)
+            .map_err(Error::from)?;
+
+        if let Some(key) = table
+            .get(pubkey.to_bytes().as_slice())
+            .map_err(Error::from)?
+        {
+            return Ok(Some(
+                serde_json::from_str(key.value()).map_err(Error::from)?,
+            ));
         }
-        
+
         Ok(None)
     }
 
     #[instrument(skip(self))]
     async fn list_p2pk_keys(&self) -> Result<Vec<wallet::P2PKSigningKey>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn.open_table(P2PK_SIGNING_KEYS_TABLE).map_err(Error::from)?;
-        
+        let table = read_txn
+            .open_table(P2PK_SIGNING_KEYS_TABLE)
+            .map_err(Error::from)?;
+
         let keys: Vec<wallet::P2PKSigningKey> = table
             .iter()
             .map_err(Error::from)?
@@ -1187,7 +1217,6 @@ impl WalletDatabaseTransaction<database::Error> for RedbWalletTransaction {
             .map_err(Error::from)?;
         Ok(())
     }
-    
 }
 
 #[async_trait]

@@ -249,7 +249,7 @@ pub trait WalletDatabaseTransaction: Send + Sync {
         primary_namespace: String,
         secondary_namespace: String,
     ) -> Result<Vec<String>, FfiError>;
-    
+
     // async fn add_p2pk_key(&self, pubkey: PublicKey, derivation_path: String, derivation_index: u32) -> Result<(), FfiError>;
     // async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<P2PKSigningKey>, FfiError>;
     // async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError>;
@@ -859,7 +859,9 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
         // Ok(result)
     }
 
-    async fn list_p2pk_keys(&self) -> Result<Vec<cdk_common::wallet::P2PKSigningKey>, cdk::cdk_database::Error> {
+    async fn list_p2pk_keys(
+        &self,
+    ) -> Result<Vec<cdk_common::wallet::P2PKSigningKey>, cdk::cdk_database::Error> {
         todo!("Implement list_p2pk_keys");
         Ok(vec![])
         // let result = self.ffi_tx.list_p2pk_keys().await.map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
@@ -867,7 +869,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     }
 
     async fn get_p2pk_key(
-        & self,
+        &self,
         pubkey: &cdk::nuts::PublicKey,
     ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, cdk::cdk_database::Error> {
         todo!("Implement get_p2pk_key");
@@ -879,7 +881,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
         //             .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
         //     })
         //     .transpose()?)
-    }  
+    }
 }
 
 /// Transaction bridge for FFI wallet database
@@ -1169,7 +1171,6 @@ impl CdkWalletDatabaseTransaction<cdk::cdk_database::Error> for WalletDatabaseTr
 
         cdk_result
     }
-    
 }
 
 #[async_trait::async_trait]
@@ -1942,7 +1943,7 @@ impl WalletDatabaseTransaction for FfiWalletTransaction {
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
-    
+
     // async fn add_p2pk_key(&self, pubkey: PublicKey, derivation_path: String, derivation_index: u32) -> Result<(), FfiError> {
     //     todo!("Implement add_p2pk_key");
     //     Ok(())
