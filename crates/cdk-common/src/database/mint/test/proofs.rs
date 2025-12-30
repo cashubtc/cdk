@@ -1,6 +1,4 @@
 //! Proofs tests
-
-use std::default;
 use std::str::FromStr;
 
 use cashu::secret::Secret;
@@ -561,7 +559,7 @@ where
         c: SecretKey::generate().public_key(),
         witness: None,
         dleq: None,
-        ..Default::default()
+        p2pk_e: None,
     };
 
     let y = proof.c;
@@ -603,7 +601,9 @@ where
         keyset_id,
         secret: Secret::generate(),
         c: SecretKey::generate().public_key(),
-        ..Default::default()
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
     };
 
     let y = proof.c;
@@ -638,7 +638,9 @@ where
             keyset_id,
             secret: Secret::generate(),
             c: SecretKey::generate().public_key(),
-            ..Default::default()
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
         })
         .collect();
 
@@ -683,14 +685,18 @@ where
             keyset_id,
             secret: Secret::generate(),
             c: SecretKey::generate().public_key(),
-            ..Default::default()
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
         },
         Proof {
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
             c: SecretKey::generate().public_key(),
-            ..Default::default()
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
         },
     ];
 
