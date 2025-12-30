@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-use cdk_common::amount::amount_for_offer;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nut05::MeltMethodOptions;
@@ -18,7 +17,6 @@ use super::{
     CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, Mint,
     PaymentMethod,
 };
-use crate::amount::to_unit;
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
@@ -36,12 +34,12 @@ impl Mint {
     #[instrument(skip_all)]
     async fn check_melt_request_acceptable(
         &self,
-        amount: Amount,
-        unit: CurrencyUnit,
+        amount: Amount<CurrencyUnit>,
         method: PaymentMethod,
         request: String,
         options: Option<MeltOptions>,
     ) -> Result<(), Error> {
+        let unit = amount.unit().clone();
         let mint_info = self.mint_info().await?;
         let nut05 = mint_info.nuts.nut05;
 
@@ -51,7 +49,7 @@ impl Mint {
             .get_settings(&unit, &method)
             .ok_or(Error::UnsupportedUnit)?;
 
-        let amount = match options {
+        match options {
             Some(MeltOptions::Mpp { mpp: _ }) => {
                 let nut15 = mint_info.nuts.nut15;
                 // Verify there is no corresponding mint quote.
@@ -68,9 +66,6 @@ impl Mint {
                 {
                     return Err(Error::MppUnitMethodNotSupported(unit, method));
                 }
-                // Assign `amount`
-                // because should have already been converted to the partial amount
-                amount
             }
             Some(MeltOptions::Amountless { amountless: _ }) => {
                 if method == PaymentMethod::Bolt11
@@ -81,14 +76,14 @@ impl Mint {
                 {
                     return Err(Error::AmountlessInvoiceNotSupported(unit, method));
                 }
-
-                amount
             }
-            None => amount,
+            None => {}
         };
 
-        let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
-        let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
+        // Compare using raw values since settings use Amount without unit
+        let amount_value = amount.value();
+        let is_above_max = matches!(settings.max_amount, Some(max) if amount_value > max.into());
+        let is_below_min = matches!(settings.min_amount, Some(min) if amount_value < min.into());
         match is_above_max || is_below_min {
             true => {
                 tracing::error!(
@@ -100,7 +95,7 @@ impl Mint {
                 Err(Error::AmountOutofLimitRange(
                     settings.min_amount.unwrap_or_default(),
                     settings.max_amount.unwrap_or_default(),
-                    amount,
+                    amount.into(),
                 ))
             }
             false => Ok(()),
@@ -182,19 +177,22 @@ impl Mint {
                 err
             })?;
 
-        if &payment_quote.unit != unit {
+        if payment_quote.unit() != unit {
             return Err(Error::UnitMismatch);
         }
 
         // Validate using processor quote amount for currency conversion
         self.check_melt_request_acceptable(
-            payment_quote.amount,
-            unit.clone(),
+            payment_quote.amount.clone(),
             PaymentMethod::Bolt11,
             request.to_string(),
             *options,
         )
         .await?;
+
+        // Extract values for quote creation
+        let quote_amount = payment_quote.amount;
+        let quote_fee = payment_quote.fee;
 
         let melt_ttl = self.quote_ttl().await?.melt_ttl;
 
@@ -203,8 +201,8 @@ impl Mint {
                 bolt11: request.clone(),
             },
             unit.clone(),
-            payment_quote.amount,
-            payment_quote.fee,
+            quote_amount.clone(),
+            quote_fee,
             unix_time() + melt_ttl,
             payment_quote.request_lookup_id.clone(),
             *options,
@@ -215,7 +213,7 @@ impl Mint {
             "New {} melt quote {} for {} {} with request id {:?}",
             quote.payment_method,
             quote.id,
-            payment_quote.amount,
+            quote_amount,
             unit,
             payment_quote.request_lookup_id
         );
@@ -238,18 +236,6 @@ impl Mint {
             unit,
             options,
         } = melt_request;
-
-        let offer = Offer::from_str(request).map_err(|_| Error::InvalidPaymentRequest)?;
-
-        let amount = match options {
-            Some(options) => match options {
-                MeltOptions::Amountless { amountless } => {
-                    to_unit(amountless.amount_msat, &CurrencyUnit::Msat, unit)?
-                }
-                _ => return Err(Error::UnsupportedUnit),
-            },
-            None => amount_for_offer(&offer, unit).map_err(|_| Error::UnsupportedUnit)?,
-        };
 
         let ln = self
             .payment_processors
@@ -288,19 +274,22 @@ impl Mint {
                 err
             })?;
 
-        if &payment_quote.unit != unit {
+        if payment_quote.unit() != unit {
             return Err(Error::UnitMismatch);
         }
 
         // Validate using processor quote amount for currency conversion
         self.check_melt_request_acceptable(
-            payment_quote.amount,
-            unit.clone(),
+            payment_quote.amount.clone(),
             PaymentMethod::Bolt12,
             request.clone(),
             *options,
         )
         .await?;
+
+        // Extract values for quote creation
+        let quote_amount = payment_quote.amount;
+        let quote_fee = payment_quote.fee;
 
         let payment_request = MeltPaymentRequest::Bolt12 {
             offer: Box::new(offer),
@@ -309,8 +298,8 @@ impl Mint {
         let quote = MeltQuote::new(
             payment_request,
             unit.clone(),
-            payment_quote.amount,
-            payment_quote.fee,
+            quote_amount.clone(),
+            quote_fee,
             unix_time() + self.quote_ttl().await?.melt_ttl,
             payment_quote.request_lookup_id.clone(),
             *options,
@@ -321,7 +310,7 @@ impl Mint {
             "New {} melt quote {} for {} {} with request id {:?}",
             quote.payment_method,
             quote.id,
-            amount,
+            quote_amount,
             unit,
             payment_quote.request_lookup_id
         );
@@ -389,11 +378,11 @@ impl Mint {
         let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
 
         let response = MeltQuoteBolt11Response {
-            quote: quote.id,
+            quote: quote.id.clone(),
             state: quote.state,
             expiry: quote.expiry,
-            amount: quote.amount,
-            fee_reserve: quote.fee_reserve,
+            amount: quote.amount().into(),
+            fee_reserve: quote.fee_reserve().into(),
             payment_preimage: quote.payment_preimage,
             change,
             request: Some(quote.request.to_string()),
@@ -550,8 +539,8 @@ impl Mint {
         // Return immediately with the quote in PENDING state
         Ok(MeltQuoteBolt11Response {
             quote: quote_id,
-            amount: quote.amount,
-            fee_reserve: quote.fee_reserve,
+            amount: quote.amount().into(),
+            fee_reserve: quote.fee_reserve().into(),
             state: quote.state,
             expiry: quote.expiry,
             payment_preimage: None,

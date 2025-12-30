@@ -173,12 +173,12 @@ async fn test_concurrent_duplicate_payment_handling() {
         None,
         "concurrent_test_invoice".to_string(),
         CurrencyUnit::Sat,
-        Some(Amount::from(1000)),
+        Some(Amount::from(1000).with_unit(CurrencyUnit::Sat)),
         current_time + 3600, // expires in 1 hour
         PaymentIdentifier::CustomId("test_lookup_id".to_string()),
         None,
-        Amount::ZERO,
-        Amount::ZERO,
+        Amount::ZERO.with_unit(CurrencyUnit::Sat),
+        Amount::ZERO.with_unit(CurrencyUnit::Sat),
         PaymentMethod::Bolt11,
         current_time,
         vec![],
@@ -209,9 +209,11 @@ async fn test_concurrent_duplicate_payment_handling() {
                 .expect("no error")
                 .expect("some value");
 
-            let result = if let Err(err) =
-                quote_from_db.add_payment(Amount::from(10), payment_id_clone, None)
-            {
+            let result = if let Err(err) = quote_from_db.add_payment(
+                Amount::from(10).with_unit(CurrencyUnit::Sat),
+                payment_id_clone,
+                None,
+            ) {
                 Err(err)
             } else {
                 tx.update_mint_quote(&mut quote_from_db)
@@ -272,7 +274,7 @@ async fn test_concurrent_duplicate_payment_handling() {
 
     assert_eq!(
         final_quote.amount_paid(),
-        Amount::from(10),
+        Amount::from(10).with_unit(CurrencyUnit::Sat),
         "Quote amount should be incremented exactly once"
     );
     assert_eq!(

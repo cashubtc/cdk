@@ -654,8 +654,10 @@ impl CdkMint for MintRPCServer {
                 // Create a dummy payment response
                 let response = WaitPaymentResponse {
                     payment_id: mint_quote.request_lookup_id.to_string(),
-                    payment_amount: mint_quote.amount.unwrap_or(mint_quote.amount_paid()),
-                    unit: mint_quote.unit.clone(),
+                    payment_amount: mint_quote.clone().amount.unwrap_or(cdk::Amount::new(
+                        mint_quote.amount_paid().value(),
+                        mint_quote.unit.clone(),
+                    )),
                     payment_identifier: mint_quote.request_lookup_id.clone(),
                 };
 
@@ -691,7 +693,7 @@ impl CdkMint for MintRPCServer {
                     Some(mint_quote.id.clone()),          // id
                     mint_quote.request.clone(),           // request
                     mint_quote.unit.clone(),              // unit
-                    mint_quote.amount,                    // amount
+                    mint_quote.amount.clone(),            // amount
                     mint_quote.expiry,                    // expiry
                     mint_quote.request_lookup_id.clone(), // request_lookup_id
                     mint_quote.pubkey,                    // pubkey

@@ -12,8 +12,9 @@ use cdk_common::payment::DynMintPayment;
 use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
 use cdk_common::subscription::SubId;
 use cdk_common::{
-    Amount, BlindSignature, MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response,
-    MintQuoteBolt12Response, MintQuoteState, PaymentMethod, ProofState, PublicKey, QuoteId,
+    Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteState, PaymentMethod, ProofState,
+    PublicKey, QuoteId,
 };
 
 use super::Mint;
@@ -191,7 +192,7 @@ impl PubSubManager {
     }
 
     /// Helper function to publish even of a mint quote being paid
-    pub fn mint_quote_issue(&self, mint_quote: &MintQuote, total_issued: Amount) {
+    pub fn mint_quote_issue(&self, mint_quote: &MintQuote, total_issued: Amount<CurrencyUnit>) {
         match mint_quote.payment_method {
             PaymentMethod::Bolt11 => {
                 self.mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Issued);
@@ -199,8 +200,8 @@ impl PubSubManager {
             PaymentMethod::Bolt12 => {
                 self.mint_quote_bolt12_status(
                     mint_quote.clone(),
-                    mint_quote.amount_paid(),
-                    total_issued,
+                    mint_quote.amount_paid().into(),
+                    total_issued.into(),
                 );
             }
             _ => {
@@ -210,7 +211,7 @@ impl PubSubManager {
     }
 
     /// Helper function to publish even of a mint quote being paid
-    pub fn mint_quote_payment(&self, mint_quote: &MintQuote, total_paid: Amount) {
+    pub fn mint_quote_payment(&self, mint_quote: &MintQuote, total_paid: Amount<CurrencyUnit>) {
         match mint_quote.payment_method {
             PaymentMethod::Bolt11 => {
                 self.mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
@@ -218,8 +219,8 @@ impl PubSubManager {
             PaymentMethod::Bolt12 => {
                 self.mint_quote_bolt12_status(
                     mint_quote.clone(),
-                    total_paid,
-                    mint_quote.amount_issued(),
+                    total_paid.into(),
+                    mint_quote.amount_issued().into(),
                 );
             }
             _ => {
