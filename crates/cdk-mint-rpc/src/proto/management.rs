@@ -224,6 +224,7 @@ impl CdkMintManagement for MintRPCServer {
             .map_err(|err| Status::internal(err.to_string()))?;
         Ok(Response::new(UpdateResponse {}))
     }
+
     /// Removes a contact method from the mint's contact information
     async fn remove_contact(
         &self,
@@ -460,8 +461,8 @@ impl CdkMintManagement for MintRPCServer {
             MintQuoteState::Paid => {
                 // Create a dummy payment response
                 let response = WaitPaymentResponse {
-                    payment_id: String::new(),
-                    payment_amount: mint_quote.amount_paid(),
+                    payment_id: mint_quote.request_lookup_id.to_string(),
+                    payment_amount: mint_quote.amount.unwrap_or(mint_quote.amount_paid()),
                     unit: mint_quote.unit.clone(),
                     payment_identifier: mint_quote.request_lookup_id.clone(),
                 };
@@ -472,8 +473,19 @@ impl CdkMintManagement for MintRPCServer {
                     .await
                     .map_err(|_| Status::internal("Could not start db transaction".to_string()))?;
 
+                // Re-fetch the mint quote within the transaction to lock it
+                let mut mint_quote = tx
+                    .get_mint_quote(&quote_id)
+                    .await
+                    .map_err(|_| {
+                        Status::internal("Could not get quote in transaction".to_string())
+                    })?
+                    .ok_or(Status::invalid_argument(
+                        "Quote not found in transaction".to_string(),
+                    ))?;
+
                 self.mint()
-                    .pay_mint_quote(&mut tx, &mint_quote, response)
+                    .pay_mint_quote(&mut tx, &mut mint_quote, response)
                     .await
                     .map_err(|_| Status::internal("Could not process payment".to_string()))?;
 

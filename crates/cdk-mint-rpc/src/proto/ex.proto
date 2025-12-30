@@ -1,0 +1,323 @@
+syntax = "proto3";
+
+package cdk_mint_rpc;
+
+service CdkMintData {
+    // Balance Operations
+    rpc GetBalances(GetBalancesRequest) returns (GetBalancesResponse) {}
+    rpc GetBalancesIssued(GetBalancesIssuedRequest) returns (GetBalancesResponse) {}
+    rpc GetBalancesRedeemed(GetBalancesRedeemedRequest) returns (GetBalancesResponse) {}
+    
+    // Keyset Operations
+    rpc GetKeysets(GetKeysetsRequest) returns (GetKeysetsResponse) {}
+    
+    // Mint Quote Operations
+    rpc ListMintQuotes(ListMintQuotesRequest) returns (ListMintQuotesResponse) {}
+    rpc GetMintQuotesCount(CountMintQuotesRequest) returns (CountResponse) {}
+    rpc LookupMintQuote(LookupMintQuoteRequest) returns (LookupMintQuoteResponse) {}
+    
+    // Melt Quote Operations
+    rpc ListMeltQuotes(ListMeltQuotesRequest) returns (ListMeltQuotesResponse) {}
+    rpc GetMeltQuotesCount(CountMeltQuotesRequest) returns (CountResponse) {}
+    rpc LookupMeltQuote(LookupMeltQuoteRequest) returns (LookupMeltQuoteResponse) {}
+    
+    // Proof Operations
+    rpc ListProofs(ListProofsRequest) returns (ListProofsResponse) {}
+    rpc GetProofsCount(CountProofsRequest) returns (CountResponse) {}
+    
+    // Blind Signature Operations
+    rpc ListBlindSignatures(ListBlindSignaturesRequest) returns (ListBlindSignaturesResponse) {}
+    rpc GetBlindSignaturesCount(CountBlindSignaturesRequest) returns (CountResponse) {}
+
+    // Fee Operations
+    rpc GetFees(GetFeesRequest) returns (GetFeesResponse) {}
+    
+    // Database Backup Operations
+    rpc ExportDatabaseBackup(ExportDatabaseBackupRequest) returns (DatabaseBackupSnapshot) {}
+    rpc RestoreDatabaseBackup(RestoreDatabaseBackupRequest) returns (RestoreDatabaseBackupResponse) {}
+}
+
+message Balance {
+    string unit = 1;
+    int64 balance = 2;
+}
+
+message Keyset {
+    string id = 1;
+    string unit = 2;
+    bool active = 3;
+    int64 valid_from = 4;
+    optional int64 valid_to = 5;
+    optional string derivation_path = 6;
+    optional int32 derivation_path_index = 7;
+    optional int64 input_fee_ppk = 8;
+    optional int64 fees_paid = 9;
+    optional int64 balance = 10;
+    // Optionally included if include_proof_counts=true in request
+    // Used to signal to operator the weight of any given keyset
+    // I use proof counts to indicate 'weight' but there could be a better way (bytes etc)
+    optional int64 proof_count = 11;
+}
+
+message MintQuote {
+    string id = 1;
+    optional int64 amount = 2;
+    string unit = 3;
+    string request = 4;
+    string state = 5; 
+    optional string request_lookup_id = 6;
+    optional string pubkey = 7;
+    int64 created_time = 8;
+    optional int64 issued_time = 9;
+    optional int64 paid_time = 10;
+    int64 amount_paid = 11;
+    int64 amount_issued = 12;
+    string payment_method = 13;
+}
+
+message MeltQuote {
+    string id = 1;
+    string unit = 2;
+    int64 amount = 3;
+    string request = 4;
+    int64 fee_reserve = 5;
+    string state = 6;
+    optional string payment_preimage = 7;
+    optional string request_lookup_id = 8;
+    int64 created_time = 9;
+    optional int64 paid_time = 10;
+    string payment_method = 11;
+}
+
+message Proof {
+    string secret = 1;
+    string y = 2;
+    int64 amount = 3;
+    string keyset_id = 4;
+    string c = 5;
+    optional string witness = 6;
+    string state = 7;  // UNSPENT, SPENT, PENDING
+    int64 created_time = 8;
+    optional string quote_id = 9;  // melt_quote reference if melted
+}
+
+message BlindSignature {
+    string b = 1;  // blinded message
+    string c = 2;  // signature
+    string keyset_id = 3;
+    int64 amount = 4;
+    int64 created_time = 5;
+    optional string quote_id = 6;  // mint_quote reference
+    optional string dleq_e = 7;
+    optional string dleq_s = 8;
+}
+
+message Fee {
+    string unit = 1;
+    int64 fees_paid = 2;
+}
+
+// Request Messages
+
+// Balance Requests - no pagination
+message GetBalancesRequest {
+    optional string unit = 1; 
+}
+
+message GetBalancesIssuedRequest {
+    optional string unit = 1; 
+}
+
+message GetBalancesRedeemedRequest {
+    optional string unit = 1; 
+}
+
+// Keyset Requests - no pagination
+message GetKeysetsRequest {
+    // Filter by units (e.g., ["sat", "usd"])
+    repeated string units = 1;
+    // Only return active keysets
+    optional bool active_only = 2;
+    // Include auth keysets (by default they are excluded)
+    optional bool include_auth = 4;
+    // Include proof counts for each keyset (adds proof_count field)
+    optional bool include_proof_counts = 5;
+}
+
+// Mint Quote Requests - with pagination
+message ListMintQuotesRequest {
+    // Pagination
+    int64 index_offset = 1;
+    int64 num_max_quotes = 2;
+    bool reversed = 3;
+    
+    // Filtering
+    optional int64 creation_date_start = 4;
+    optional int64 creation_date_end = 5;
+    repeated string states = 6;
+    repeated string units = 7;
+}
+
+// Counting Entities is useful for building paginated UIs 
+message CountMintQuotesRequest {
+    optional int64 creation_date_start = 1;
+    optional int64 creation_date_end = 2;
+    repeated string states = 3;
+    repeated string units = 4;
+}
+
+message LookupMintQuoteRequest {
+    string quote_id = 1;
+}
+
+// Melt Quote Requests - with pagination
+message ListMeltQuotesRequest {
+    // Pagination
+    int64 index_offset = 1;
+    int64 num_max_quotes = 2;
+    bool reversed = 3;
+    
+    // Filtering
+    optional int64 creation_date_start = 4;
+    optional int64 creation_date_end = 5;
+    repeated string states = 6; 
+    repeated string units = 7;
+}
+
+message CountMeltQuotesRequest {
+    optional int64 creation_date_start = 1;
+    optional int64 creation_date_end = 2;
+    repeated string states = 3;
+    repeated string units = 4;
+}
+
+message LookupMeltQuoteRequest {
+    string quote_id = 1;
+}
+
+// Proof Requests - with pagination
+message ListProofsRequest {
+    // Pagination
+    int64 index_offset = 1;
+    int64 num_max_proofs = 2;
+    bool reversed = 3;
+    
+    // Filtering
+    optional int64 creation_date_start = 4;
+    optional int64 creation_date_end = 5;
+    repeated string states = 6;
+    repeated string units = 7;
+    repeated string keyset_ids = 8;
+    optional bool melted_only = 9;  // Only proofs with quote_id
+}
+
+message CountProofsRequest {
+    optional int64 creation_date_start = 1;
+    optional int64 creation_date_end = 2;
+    repeated string states = 3;
+    repeated string units = 4;
+    repeated string keyset_ids = 5;
+    optional bool melted_only = 6;
+}
+
+// Blind Signature Requests - with pagination
+message ListBlindSignaturesRequest {
+    // Pagination
+    int64 index_offset = 1;
+    int64 num_max_signatures = 2;
+    bool reversed = 3;
+    
+    // Filtering
+    optional int64 creation_date_start = 4;
+    optional int64 creation_date_end = 5;
+    repeated string units = 6;
+    repeated string keyset_ids = 7;
+}
+
+message CountBlindSignaturesRequest {
+    optional int64 creation_date_start = 1;
+    optional int64 creation_date_end = 2;
+    repeated string units = 3;
+    repeated string keyset_ids = 4;
+}
+
+message GetFeesRequest {
+    repeated string units = 1;          // Filter by units
+    optional int64 date_start = 2;      // Time range
+    optional int64 date_end = 3;
+}
+
+// Response Messages
+
+message GetBalancesResponse {
+    repeated Balance balances = 1;
+}
+
+message GetKeysetsResponse {
+    repeated Keyset keysets = 1;
+}
+
+// Paginated Responses
+message ListMintQuotesResponse {
+    repeated MintQuote quotes = 1;
+    int64 last_index_offset = 2;
+    int64 first_index_offset = 3;
+}
+
+message LookupMintQuoteResponse {
+    MintQuote quote = 1;
+}
+
+message ListMeltQuotesResponse {
+    repeated MeltQuote quotes = 1;
+    int64 last_index_offset = 2;
+    int64 first_index_offset = 3;
+}
+
+message LookupMeltQuoteResponse {
+    MeltQuote quote = 1;
+}
+
+message ListProofsResponse {
+    repeated Proof proofs = 1;
+    int64 last_index_offset = 2;
+    int64 first_index_offset = 3;
+}
+
+message ListBlindSignaturesResponse {
+    repeated BlindSignature signatures = 1;
+    int64 last_index_offset = 2;
+    int64 first_index_offset = 3;
+}
+
+message CountResponse {
+    int64 count = 1;
+}
+
+message GetFeesResponse {
+    repeated Fee fees = 1;
+}
+
+// Database Backup Requests
+
+message ExportDatabaseBackupRequest {
+    // No parameters needed
+}
+
+message RestoreDatabaseBackupRequest {
+    bytes backup_data = 1;          // Backup blob to restore
+}
+
+// Database Backup Responses
+
+message DatabaseBackupSnapshot {
+    bytes backup_data = 1;           // Encrypted/compressed backup blob
+    int64 timestamp = 2;             // When backup was created
+    string database_version = 3;     // For compatibility checks
+    int64 backup_size = 4;          // Size in bytes
+}
+
+message RestoreDatabaseBackupResponse {
+    bool success = 1;
+    string message = 2;             // Success/error message
+}
