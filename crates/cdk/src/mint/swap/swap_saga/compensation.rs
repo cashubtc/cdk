@@ -67,11 +67,6 @@ impl CompensatingAction for RemoveSwapSetup {
 
         tx.commit().await?;
 
-        tracing::info!(
-            "Successfully compensated swap and deleted saga {}",
-            self.operation_id
-        );
-
         Ok(())
     }
 
