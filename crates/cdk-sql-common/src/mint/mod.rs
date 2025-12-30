@@ -16,7 +16,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::mint::{
-    CompletedOperationsDatabase, CompletedOperationsTransaction, SagaDatabase, SagaTransaction,
+    CompletedOperationsDatabase, CompletedOperationsTransaction, LockedMeltQuotes, SagaDatabase,
+    SagaTransaction,
 };
 use cdk_common::database::{
     self, Acquired, ConversionError, DbTransactionFinalizer, Error, MintDatabase,
@@ -702,6 +703,75 @@ where
         .collect::<Result<Vec<_>, _>>()
 }
 
+/// Locks a melt quote and all related quotes atomically to prevent deadlocks.
+///
+/// This function acquires all locks in a single query with consistent ordering (by ID),
+/// preventing the circular wait condition that can occur when locks are acquired in
+/// separate queries.
+#[inline]
+async fn lock_melt_quote_and_related_inner<T>(
+    executor: &T,
+    quote_id: &QuoteId,
+) -> Result<LockedMeltQuotes, Error>
+where
+    T: DatabaseExecutor,
+{
+    // Use a single query with subquery to atomically lock:
+    // 1. All quotes with the same request_lookup_id as the target quote, OR
+    // 2. Just the target quote if it has no request_lookup_id
+    //
+    // The ORDER BY ensures consistent lock acquisition order across transactions,
+    // preventing deadlocks.
+    let query_str = r#"
+        SELECT
+            id,
+            unit,
+            amount,
+            request,
+            fee_reserve,
+            expiry,
+            state,
+            payment_preimage,
+            request_lookup_id,
+            created_time,
+            paid_time,
+            payment_method,
+            options,
+            request_lookup_id_kind
+        FROM
+            melt_quote
+        WHERE
+            (
+                request_lookup_id IS NOT NULL
+                AND request_lookup_id = (SELECT request_lookup_id FROM melt_quote WHERE id = :quote_id)
+                AND request_lookup_id_kind = (SELECT request_lookup_id_kind FROM melt_quote WHERE id = :quote_id)
+            )
+            OR
+            (
+                id = :quote_id
+                AND (SELECT request_lookup_id FROM melt_quote WHERE id = :quote_id) IS NULL
+            )
+        ORDER BY id
+        FOR UPDATE
+        "#;
+
+    let all_quotes: Vec<mint::MeltQuote> = query(query_str)?
+        .bind("quote_id", quote_id.to_string())
+        .fetch_all(executor)
+        .await?
+        .into_iter()
+        .map(sql_row_to_melt_quote)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Find the target quote from the locked set
+    let target_quote = all_quotes.iter().find(|q| &q.id == quote_id).cloned();
+
+    Ok(LockedMeltQuotes {
+        target: target_quote.map(|q| q.into()),
+        all_related: all_quotes.into_iter().map(|q| q.into()).collect(),
+    })
+}
+
 #[async_trait]
 impl<RM> MintKeyDatabaseTransaction<'_, Error> for SQLTransaction<RM>
 where
@@ -1296,6 +1366,13 @@ where
         get_melt_quotes_by_request_lookup_id_inner(&self.inner, request_lookup_id, true)
             .await
             .map(|quote| quote.into_iter().map(|inner| inner.into()).collect())
+    }
+
+    async fn lock_melt_quote_and_related(
+        &mut self,
+        quote_id: &QuoteId,
+    ) -> Result<LockedMeltQuotes, Self::Err> {
+        lock_melt_quote_and_related_inner(&self.inner, quote_id).await
     }
 
     async fn get_mint_quote_by_request(

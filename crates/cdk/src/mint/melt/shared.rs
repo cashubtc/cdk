@@ -247,19 +247,23 @@ pub async fn process_melt_change(
 /// Loads a melt quote and acquires exclusive locks on all related quotes.
 ///
 /// This function combines quote loading with defensive locking to prevent race conditions in BOLT12
-/// scenarios where multiple melt quotes can share the same `request_lookup_id`. It performs three
-/// operations atomically:
+/// scenarios where multiple melt quotes can share the same `request_lookup_id`. It performs the
+/// following operations atomically in a single query:
 ///
-/// 1. Loads the melt quote by ID 2. Acquires row-level locks on all sibling quotes sharing the same
-///    lookup identifier 3. Validates that no sibling quote is already in `Pending` or `Paid` state
+/// 1. Acquires row-level locks on ALL quotes sharing the same lookup identifier (including target)
+/// 2. Returns the target quote and validates no sibling is already `Pending` or `Paid`
 ///
-/// This ensures that when a melt operation begins, no other concurrent melt can proceed on a
-/// related quote, preventing double-spending and state inconsistencies.
+/// # Deadlock Prevention
+///
+/// This function uses a single atomic query to lock all related quotes at once, ordered by ID.
+/// This prevents deadlocks that would occur if we locked the target quote first, then tried to
+/// lock related quotes separately - concurrent transactions would each hold one lock and wait
+/// for the other, creating a circular wait condition.
 ///
 /// # Arguments
 ///
-/// * `tx` - The active database transaction used to load and acquire locks. * `quote_id` - The ID
-///   of the melt quote to load and process.
+/// * `tx` - The active database transaction used to load and acquire locks.
+/// * `quote_id` - The ID of the melt quote to load and process.
 ///
 /// # Returns
 ///
@@ -267,41 +271,30 @@ pub async fn process_melt_change(
 ///
 /// # Errors
 ///
-/// * [`Error::UnknownQuote`] if no quote exists with the given ID. * [`Error::Database(Duplicate)`]
-///   if another quote with the same lookup ID is already pending or paid, indicating a conflicting
-///   concurrent melt operation.
+/// * [`Error::UnknownQuote`] if no quote exists with the given ID.
+/// * [`Error::Database(Duplicate)`] if another quote with the same lookup ID is already pending
+///   or paid, indicating a conflicting concurrent melt operation.
 pub async fn load_melt_quotes_exclusively(
     tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     quote_id: &QuoteId,
 ) -> Result<Acquired<MeltQuote>, Error> {
-    let quote = tx
-        .get_melt_quote(quote_id)
+    // Lock ALL related quotes in a single atomic query to prevent deadlocks.
+    // The query locks quotes ordered by ID, ensuring consistent lock acquisition order
+    // across concurrent transactions.
+    let locked = tx
+        .lock_melt_quote_and_related(quote_id)
         .await
         .map_err(|e| match e {
             database::Error::Locked => {
-                tracing::warn!("Quote {quote_id} is locked by another process");
+                tracing::warn!("Quote {quote_id} or related quotes are locked by another process");
                 database::Error::Duplicate
             }
             e => e,
-        })?
-        .ok_or(Error::UnknownQuote)?;
+        })?;
 
-    // Lock any other quotes so they cannot be modified
-    let locked_quotes = if let Some(request_lookup_id) = quote.request_lookup_id.as_ref() {
-        tx.get_melt_quotes_by_request_lookup_id(request_lookup_id)
-            .await
-            .map_err(|e| match e {
-                database::Error::Locked => {
-                    tracing::warn!("Quotes with request_lookyup_id {request_lookup_id} is locked by another process");
-                    database::Error::Duplicate
-                }
-                e => e,
-            })?
-    } else {
-        vec![]
-    };
+    let quote = locked.target.ok_or(Error::UnknownQuote)?;
 
-    if locked_quotes.iter().any(|locked_quote| {
+    if locked.all_related.iter().any(|locked_quote| {
         locked_quote.id != quote.id
             && (locked_quote.state == MeltQuoteState::Pending
                 || locked_quote.state == MeltQuoteState::Paid)
