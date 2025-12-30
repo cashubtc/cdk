@@ -215,6 +215,7 @@ impl From<QuoteState> for cdk_common::nuts::MeltQuoteState {
             QuoteState::Unknown => Self::Unknown,
             QuoteState::Failed => Self::Failed,
             QuoteState::Issued => Self::Unknown,
+            QuoteState::Unspecified => Self::Unknown,
         }
     }
 }

@@ -285,6 +285,9 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     },
                 ))
             }
+            OutgoingPaymentRequestType::Unspecified => {
+                return Err(Status::invalid_argument("Unspecified payment request type"));
+            }
         };
 
         let payment_quote = self
