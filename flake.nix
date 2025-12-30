@@ -635,8 +635,26 @@
                       pkgs.zlib
                     ]
                   }:$LD_LIBRARY_PATH
+
+                  # PostgreSQL environment variables
+                  export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
+
+                  echo ""
+                  echo "PostgreSQL commands available:"
+                  echo "  start-postgres  - Initialize and start PostgreSQL"
+                  echo "  stop-postgres   - Stop PostgreSQL (run before exiting)"
+                  echo "  pg-status       - Check PostgreSQL status"
+                  echo "  pg-connect      - Connect to PostgreSQL with psql"
+                  echo ""
                 '';
-                buildInputs = buildInputs ++ [ nightly_toolchain ];
+                buildInputs = buildInputs ++ [
+                  nightly_toolchain
+                  pkgs.postgresql_16
+                  startPostgres
+                  stopPostgres
+                  pgStatus
+                  pgConnect
+                ];
                 inherit nativeBuildInputs;
               }
               // envVars
