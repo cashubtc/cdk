@@ -10,8 +10,8 @@ use super::{DbTransactionFinalizer, Error};
 use crate::database::Acquired;
 use crate::mint::{self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation};
 use crate::nuts::{
-    BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
-    State,
+    BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof,
+    Proofs, PublicKey, State,
 };
 use crate::payment::PaymentIdentifier;
 
@@ -29,6 +29,32 @@ pub use super::kvstore::{
     validate_kvstore_params, validate_kvstore_string, KVStore, KVStoreDatabase, KVStoreTransaction,
     KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
 };
+
+/// Filter parameters for listing mint quotes
+#[derive(Debug, Clone, Default)]
+pub struct MintQuoteFilter {
+    /// Filter quotes created on or after this Unix timestamp
+    pub creation_date_start: Option<u64>,
+    /// Filter quotes created on or before this Unix timestamp
+    pub creation_date_end: Option<u64>,
+    /// Filter by quote states (computed from amount_paid/amount_issued)
+    pub states: Vec<MintQuoteState>,
+    /// Filter by currency units
+    pub units: Vec<CurrencyUnit>,
+    /// Maximum number of quotes to return
+    pub limit: Option<u64>,
+    /// Number of quotes to skip (for pagination)
+    pub offset: u64,
+    /// If true, sort by created_time DESC; otherwise ASC
+    pub reversed: bool,
+}
+
+/// Result of a paginated mint quotes query
+#[derive(Debug, Clone)]
+pub struct MintQuoteListResult {
+    /// The filtered and paginated quotes
+    pub quotes: Vec<MintMintQuote>,
+}
 
 /// Information about a melt request stored in the database
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,6 +299,14 @@ pub trait QuotesDatabase {
     ) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Get Mint Quotes
     async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;
+    /// List mint quotes with filtering and pagination at the database level
+    ///
+    /// This method performs filtering, sorting, and pagination in SQL for efficiency.
+    /// The state filter is computed from amount_paid and amount_issued columns.
+    async fn list_mint_quotes_filtered(
+        &self,
+        filter: MintQuoteFilter,
+    ) -> Result<MintQuoteListResult, Self::Err>;
     /// Get [`mint::MeltQuote`]
     async fn get_melt_quote(
         &self,

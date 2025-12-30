@@ -38,7 +38,7 @@ message Keyset {
     optional uint64 total_fees_collected = 13;
 }
 
-message MintQuote {
+message MintQuoteSummary {
     string id = 1;
     optional uint64 amount = 2;
     string unit = 3;
@@ -47,8 +47,34 @@ message MintQuote {
     optional string request_lookup_id = 6;
     optional string pubkey = 7;
     uint64 created_time = 8;
-    optional uint64 issued_time = 9;
-    optional uint64 paid_time = 10;
+    uint64 amount_paid = 9;
+    uint64 amount_issued = 10;
+    string payment_method = 11;
+    string request_lookup_id_kind = 12;
+}
+
+message MintQuotePayment {
+    uint64 amount = 1;
+    uint64 time = 2;
+    string payment_id = 3;
+}
+
+message MintQuoteIssuance {
+    uint64 amount = 1;
+    uint64 time = 2;
+}
+
+message MintQuoteDetail {
+    string id = 1;
+    optional uint64 amount = 2;
+    string unit = 3;
+    string request = 4;
+    string state = 5; 
+    optional string request_lookup_id = 6;
+    optional string pubkey = 7;
+    uint64 created_time = 8;
+    repeated MintQuotePayment payments = 9;
+    repeated MintQuoteIssuance issuances = 10;
     uint64 amount_paid = 11;
     uint64 amount_issued = 12;
     string payment_method = 13;
@@ -100,7 +126,7 @@ message ListMintQuotesRequest {
 }
 
 message ListMintQuotesResponse {
-    repeated MintQuote quotes = 1;
+    repeated MintQuoteSummary quotes = 1;
     int64 last_index_offset = 2;
     int64 first_index_offset = 3;
 }
@@ -110,5 +136,5 @@ message LookupMintQuoteRequest {
 }
 
 message LookupMintQuoteResponse {
-    MintQuote quote = 1;
+    MintQuoteDetail quote = 1;
 }
