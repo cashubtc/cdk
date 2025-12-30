@@ -10,6 +10,7 @@ service CdkMintReporting {
     rpc LookupMintQuote(LookupQuoteRequest) returns (LookupMintQuoteResponse) {}
     rpc ListMeltQuotes(ListQuotesRequest) returns (ListMeltQuotesResponse) {}
     rpc LookupMeltQuote(LookupQuoteRequest) returns (LookupMeltQuoteResponse) {}
+    rpc ListProofs(ListProofsRequest) returns (ListProofsResponse) {}
 }
 
 message ContactInfo {
@@ -113,6 +114,16 @@ message MeltQuote {
     optional MeltOptions options = 12;
 }
 
+message Proof {
+    uint64 amount = 1;
+    string keyset_id = 2;
+    string state = 3;
+    optional string quote_id = 4;
+    uint64 created_time = 5;
+    string operation_kind = 6;
+    string operation_id = 7;
+}
+
 message GetBalancesRequest {
     optional string unit = 1;
 }
@@ -179,4 +190,22 @@ message ListMeltQuotesResponse {
 
 message LookupMeltQuoteResponse {
     MeltQuote quote = 1;
+}
+
+message ListProofsRequest {
+    int64 index_offset = 1;
+    int64 num_max_proofs = 2;
+    bool reversed = 3;
+    optional int64 creation_date_start = 4;
+    optional int64 creation_date_end = 5;
+    repeated string states = 6;
+    repeated string units = 7;
+    repeated string keyset_ids = 8;
+    repeated string operations = 9;
+}
+
+message ListProofsResponse {
+    repeated Proof proofs = 1;
+    int64 last_index_offset = 2;
+    int64 first_index_offset = 3;
 }

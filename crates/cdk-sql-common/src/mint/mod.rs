@@ -17,7 +17,8 @@ use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::mint::{
     CompletedOperationsDatabase, CompletedOperationsTransaction, LockedMeltQuotes, MeltQuoteFilter,
-    MeltQuoteListResult, MintQuoteFilter, MintQuoteListResult, SagaDatabase, SagaTransaction,
+    MeltQuoteListResult, MintQuoteFilter, MintQuoteListResult, ProofFilter, ProofListResult,
+    ProofRecord, SagaDatabase, SagaTransaction,
 };
 use cdk_common::database::{
     self, Acquired, ConversionError, DbTransactionFinalizer, Error, MintDatabase,
@@ -1926,6 +1927,140 @@ where
         })
         .collect::<Result<Vec<_>, _>>()
     }
+
+    async fn list_proofs_filtered(
+        &self,
+        filter: ProofFilter,
+    ) -> Result<ProofListResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        // Build dynamic WHERE clauses
+        let mut where_clauses: Vec<String> = Vec::new();
+        let needs_keyset_join = !filter.units.is_empty();
+
+        // Date range filters
+        if filter.creation_date_start.is_some() {
+            where_clauses.push("p.created_time >= :creation_date_start".to_string());
+        }
+        if filter.creation_date_end.is_some() {
+            where_clauses.push("p.created_time <= :creation_date_end".to_string());
+        }
+
+        // State filter
+        if !filter.states.is_empty() {
+            where_clauses.push("p.state IN (:states)".to_string());
+        }
+
+        // Keyset ID filter
+        if !filter.keyset_ids.is_empty() {
+            where_clauses.push("p.keyset_id IN (:keyset_ids)".to_string());
+        }
+
+        // Unit filter (requires JOIN to keyset table)
+        if !filter.units.is_empty() {
+            where_clauses.push("k.unit IN (:units)".to_string());
+        }
+
+        // Operation kind filter
+        if !filter.operations.is_empty() {
+            where_clauses.push("p.operation_kind IN (:operations)".to_string());
+        }
+
+        // Build WHERE clause
+        let where_clause = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+
+        // Build JOIN clause
+        let join_clause = if needs_keyset_join {
+            "JOIN keyset k ON p.keyset_id = k.id"
+        } else {
+            ""
+        };
+
+        // Build ORDER BY clause
+        let order_direction = if filter.reversed { "DESC" } else { "ASC" };
+
+        // Build LIMIT/OFFSET clause
+        let limit_clause = match filter.limit {
+            Some(limit) => format!("LIMIT {} OFFSET {}", limit, filter.offset),
+            None if filter.offset > 0 => format!("OFFSET {}", filter.offset),
+            None => String::new(),
+        };
+
+        let query_str = format!(
+            r#"
+            SELECT
+                p.amount,
+                p.keyset_id,
+                p.state,
+                p.quote_id,
+                p.created_time,
+                p.operation_kind,
+                p.operation_id
+            FROM
+                proof p
+            {join_clause}
+            {where_clause}
+            ORDER BY p.created_time {order_direction}
+            {limit_clause}
+            "#,
+            join_clause = join_clause,
+            where_clause = where_clause,
+            order_direction = order_direction,
+            limit_clause = limit_clause,
+        );
+
+        let mut q = query(&query_str)?;
+
+        // Bind parameters
+        if let Some(start) = filter.creation_date_start {
+            q = q.bind("creation_date_start", start as i64);
+        }
+        if let Some(end) = filter.creation_date_end {
+            q = q.bind("creation_date_end", end as i64);
+        }
+        if !filter.states.is_empty() {
+            q = q.bind_vec(
+                "states",
+                filter.states.iter().map(|s| s.to_string()).collect(),
+            );
+        }
+        if !filter.keyset_ids.is_empty() {
+            q = q.bind_vec(
+                "keyset_ids",
+                filter.keyset_ids.iter().map(|id| id.to_string()).collect(),
+            );
+        }
+        if !filter.units.is_empty() {
+            q = q.bind_vec(
+                "units",
+                filter.units.iter().map(|u| u.to_string()).collect(),
+            );
+        }
+        if !filter.operations.is_empty() {
+            q = q.bind_vec("operations", filter.operations.clone());
+        }
+
+        let rows = q.fetch_all(&*conn).await?;
+
+        let proofs = rows
+            .into_iter()
+            .map(sql_row_to_proof_record)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let count = proofs.len() as i64;
+        let first_index_offset = filter.offset as i64;
+        let last_index_offset = first_index_offset + count.saturating_sub(1);
+
+        Ok(ProofListResult {
+            proofs,
+            first_index_offset,
+            last_index_offset,
+        })
+    }
 }
 
 #[async_trait]
@@ -2917,6 +3052,27 @@ fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, Option<State>
         },
         state,
     ))
+}
+
+fn sql_row_to_proof_record(row: Vec<Column>) -> Result<ProofRecord, Error> {
+    unpack_into!(
+        let (
+            amount, keyset_id, state, quote_id, created_time, operation_kind, operation_id
+        ) = row
+    );
+
+    let amount: u64 = column_as_number!(amount);
+    let created_time: u64 = column_as_number!(created_time);
+
+    Ok(ProofRecord {
+        amount: Amount::from(amount),
+        keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
+        state: column_as_string!(state, State::from_str),
+        quote_id: column_as_nullable_string!(quote_id),
+        created_time,
+        operation_kind: column_as_nullable_string!(operation_kind),
+        operation_id: column_as_nullable_string!(operation_id),
+    })
 }
 
 fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error> {

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use cdk::cdk_database::ProofRecord;
 use cdk::mint::MeltQuote as MintMeltQuote;
 use cdk::mint::Mint;
 use cdk::mint::MintQuote as MintMintQuote;
@@ -224,5 +225,18 @@ pub fn melt_quote_to_proto(quote: &MintMeltQuote) -> crate::MeltQuote {
         paid_time: quote.paid_time,
         payment_method: quote.payment_method.to_string(),
         options,
+    }
+}
+
+/// Convert a ProofRecord to proto Proof
+pub fn proof_record_to_proto(proof: &ProofRecord) -> crate::Proof {
+    crate::Proof {
+        amount: proof.amount.into(),
+        keyset_id: proof.keyset_id.to_string(),
+        state: proof.state.to_string(),
+        quote_id: proof.quote_id.clone(),
+        created_time: proof.created_time,
+        operation_kind: proof.operation_kind.clone().unwrap_or_default(),
+        operation_id: proof.operation_id.clone().unwrap_or_default(),
     }
 }

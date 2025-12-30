@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 
-use cdk::cdk_database::{MeltQuoteFilter, MintQuoteFilter};
-use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState};
+use cdk::cdk_database::{MeltQuoteFilter, MintQuoteFilter, ProofFilter};
+use cdk::nuts::{CurrencyUnit, Id, MeltQuoteState, MintQuoteState, State};
 use cdk::Amount;
 use tonic::{Request, Response, Status};
 
@@ -10,7 +10,8 @@ use crate::cdk_mint_reporting_server::CdkMintReporting;
 use crate::{
     Balance, ContactInfo, GetBalancesRequest, GetBalancesResponse, GetInfoRequest, GetInfoResponse,
     GetKeysetsRequest, GetKeysetsResponse, Keyset, ListMeltQuotesResponse, ListMintQuotesResponse,
-    ListQuotesRequest, LookupMeltQuoteResponse, LookupMintQuoteResponse, LookupQuoteRequest,
+    ListProofsRequest, ListProofsResponse, ListQuotesRequest, LookupMeltQuoteResponse,
+    LookupMintQuoteResponse, LookupQuoteRequest,
 };
 
 use super::helpers::get_balances_by_unit;
@@ -367,6 +368,76 @@ impl CdkMintReporting for MintRPCServer {
 
         Ok(Response::new(LookupMeltQuoteResponse {
             quote: Some(proto_quote),
+        }))
+    }
+
+    /// Lists proofs with optional filtering and pagination
+    ///
+    /// Filtering is performed at the SQL level for efficiency.
+    async fn list_proofs(
+        &self,
+        request: Request<ListProofsRequest>,
+    ) -> Result<Response<ListProofsResponse>, Status> {
+        let request = request.into_inner();
+        let mint = self.mint();
+
+        // Parse state strings to State enum
+        let states: Vec<State> = request
+            .states
+            .iter()
+            .filter_map(|s| State::from_str(s).ok())
+            .collect();
+
+        // Parse unit strings to CurrencyUnit enum
+        let units: Vec<CurrencyUnit> = request
+            .units
+            .iter()
+            .filter_map(|u| CurrencyUnit::from_str(u).ok())
+            .collect();
+
+        // Parse keyset IDs
+        let keyset_ids: Vec<Id> = request
+            .keyset_ids
+            .iter()
+            .filter_map(|id| Id::from_str(id).ok())
+            .collect();
+
+        // Build filter for SQL-level filtering
+        let start_index = request.index_offset.max(0) as u64;
+        let filter = ProofFilter {
+            creation_date_start: request.creation_date_start.map(|t| t as u64),
+            creation_date_end: request.creation_date_end.map(|t| t as u64),
+            states,
+            units,
+            keyset_ids,
+            operations: request.operations,
+            limit: if request.num_max_proofs > 0 {
+                Some(request.num_max_proofs as u64)
+            } else {
+                None
+            },
+            offset: start_index,
+            reversed: request.reversed,
+        };
+
+        // Execute filtered query at the database level
+        let result = mint
+            .localstore()
+            .list_proofs_filtered(filter)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        // Convert to proto
+        let proofs = result
+            .proofs
+            .iter()
+            .map(super::helpers::proof_record_to_proto)
+            .collect();
+
+        Ok(Response::new(ListProofsResponse {
+            proofs,
+            first_index_offset: result.first_index_offset,
+            last_index_offset: result.last_index_offset,
         }))
     }
 }
