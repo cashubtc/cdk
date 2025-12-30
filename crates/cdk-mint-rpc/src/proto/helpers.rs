@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use cdk::mint::Mint;
+use cdk::mint::MintQuote as MintMintQuote;
 use cdk::nuts::{CurrencyUnit, Id};
 use cdk::Amount;
 use tonic::Status;
@@ -123,4 +124,24 @@ impl KeysetStats {
 pub async fn get_balances_by_unit(mint: &Mint) -> Result<UnitBalances, Status> {
     let balances = MintBalances::fetch(mint).await?;
     balances.aggregate_by_unit()
+}
+
+/// Convert a mint MintQuote to proto MintQuote
+pub fn mint_quote_to_proto(quote: &MintMintQuote) -> crate::MintQuote {
+    crate::MintQuote {
+        id: quote.id.to_string(),
+        amount: quote.amount.map(|a| a.into()),
+        unit: quote.unit.to_string(),
+        request: quote.request.clone(),
+        state: quote.state().to_string(),
+        request_lookup_id: Some(quote.request_lookup_id.to_string()),
+        request_lookup_id_kind: quote.request_lookup_id.kind().to_string(),
+        pubkey: quote.pubkey.map(|pk| pk.to_string()),
+        created_time: quote.created_time,
+        paid_time: quote.payments.first().map(|p| p.time),
+        issued_time: quote.issuance.first().map(|i| i.time),
+        amount_paid: quote.amount_paid().into(),
+        amount_issued: quote.amount_issued().into(),
+        payment_method: quote.payment_method.to_string(),
+    }
 }

@@ -8,7 +8,8 @@ use tonic::{Request, Response, Status};
 use crate::cdk_mint_reporting_server::CdkMintReporting;
 use crate::{
     Balance, ContactInfo, GetBalancesRequest, GetBalancesResponse, GetInfoRequest, GetInfoResponse,
-    GetKeysetsRequest, GetKeysetsResponse, Keyset,
+    GetKeysetsRequest, GetKeysetsResponse, Keyset, ListMintQuotesRequest, ListMintQuotesResponse,
+    LookupMintQuoteRequest, LookupMintQuoteResponse,
 };
 
 use super::helpers::get_balances_by_unit;
@@ -178,5 +179,117 @@ impl CdkMintReporting for MintRPCServer {
             .collect();
 
         Ok(Response::new(GetKeysetsResponse { keysets }))
+    }
+
+    /// Lists mint quotes with optional filtering and pagination
+    async fn list_mint_quotes(
+        &self,
+        request: Request<ListMintQuotesRequest>,
+    ) -> Result<Response<ListMintQuotesResponse>, Status> {
+        let request = request.into_inner();
+        let mint = self.mint();
+
+        // Get all mint quotes from database
+        let all_quotes = mint
+            .mint_quotes()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        // Apply filters
+        let mut filtered_quotes: Vec<_> = all_quotes
+            .into_iter()
+            .filter(|quote| {
+                // Filter by creation date range
+                if let Some(start) = request.creation_date_start {
+                    if (quote.created_time as i64) < start {
+                        return false;
+                    }
+                }
+                if let Some(end) = request.creation_date_end {
+                    if (quote.created_time as i64) > end {
+                        return false;
+                    }
+                }
+                // Filter by states
+                if !request.states.is_empty() {
+                    let quote_state = quote.state().to_string();
+                    if !request.states.contains(&quote_state) {
+                        return false;
+                    }
+                }
+                // Filter by units
+                if !request.units.is_empty() && !request.units.contains(&quote.unit.to_string()) {
+                    return false;
+                }
+                true
+            })
+            .collect();
+
+        // Sort by created_time (for pagination)
+        if request.reversed {
+            filtered_quotes.sort_by(|a, b| b.created_time.cmp(&a.created_time));
+        } else {
+            filtered_quotes.sort_by(|a, b| a.created_time.cmp(&b.created_time));
+        }
+
+        // Apply pagination
+        let total_count = filtered_quotes.len();
+        let start_index = request.index_offset.max(0) as usize;
+        let max_quotes = if request.num_max_quotes > 0 {
+            request.num_max_quotes as usize
+        } else {
+            usize::MAX
+        };
+
+        let paginated_quotes: Vec<_> = filtered_quotes
+            .into_iter()
+            .skip(start_index)
+            .take(max_quotes)
+            .collect();
+
+        // Calculate response offsets
+        let first_index_offset = start_index as i64;
+        let last_index_offset = (start_index + paginated_quotes.len()) as i64;
+
+        // Convert to proto
+        let quotes = paginated_quotes
+            .iter()
+            .map(super::helpers::mint_quote_to_proto)
+            .collect();
+
+        Ok(Response::new(ListMintQuotesResponse {
+            quotes,
+            first_index_offset,
+            last_index_offset,
+        }))
+    }
+
+    /// Looks up a specific mint quote by ID
+    async fn lookup_mint_quote(
+        &self,
+        request: Request<LookupMintQuoteRequest>,
+    ) -> Result<Response<LookupMintQuoteResponse>, Status> {
+        let quote_id = request.into_inner().quote_id;
+        let mint = self.mint();
+
+        // Parse the quote ID
+        let quote_id = quote_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("Invalid quote ID format"))?;
+
+        // Get the quote from database
+        let quote = mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("Quote not found"))?;
+
+        // Convert to proto
+        let proto_quote = super::helpers::mint_quote_to_proto(&quote);
+
+        Ok(Response::new(LookupMintQuoteResponse {
+            quote: Some(proto_quote),
+        }))
     }
 }

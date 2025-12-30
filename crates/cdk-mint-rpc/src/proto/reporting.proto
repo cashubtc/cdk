@@ -3,9 +3,16 @@ syntax = "proto3";
 package cdk_mint_reporting_rpc;
 
 service CdkMintReporting {
-    rpc GetBalances(GetBalancesRequest) returns (GetBalancesResponse) {}
     rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {}
+    rpc GetBalances(GetBalancesRequest) returns (GetBalancesResponse) {}
     rpc GetKeysets(GetKeysetsRequest) returns (GetKeysetsResponse) {}
+    rpc ListMintQuotes(ListMintQuotesRequest) returns (ListMintQuotesResponse) {}
+    rpc LookupMintQuote(LookupMintQuoteRequest) returns (LookupMintQuoteResponse) {}
+}
+
+message ContactInfo {
+    string method = 1;
+    string info = 2;
 }
 
 message Balance {
@@ -14,6 +21,38 @@ message Balance {
     uint64 total_issued = 3;
     uint64 total_redeemed = 4;
     uint64 total_fees_collected = 5;
+}
+
+message Keyset {
+    string id = 1;
+    string unit = 2;
+    bool active = 3;
+    uint64 valid_from = 4;
+    uint64 valid_to = 5;
+    uint64 input_fee_ppk = 6;
+    string derivation_path_index = 8;
+    repeated uint64 amounts = 9;
+    optional uint64 total_balance = 10;
+    optional uint64 total_issued = 11;
+    optional uint64 total_redeemed = 12;
+    optional uint64 total_fees_collected = 13;
+}
+
+message MintQuote {
+    string id = 1;
+    optional uint64 amount = 2;
+    string unit = 3;
+    string request = 4;
+    string state = 5; 
+    optional string request_lookup_id = 6;
+    optional string pubkey = 7;
+    uint64 created_time = 8;
+    optional uint64 issued_time = 9;
+    optional uint64 paid_time = 10;
+    uint64 amount_paid = 11;
+    uint64 amount_issued = 12;
+    string payment_method = 13;
+    string request_lookup_id_kind = 14;
 }
 
 message GetBalancesRequest {
@@ -25,11 +64,6 @@ message GetBalancesResponse {
 }
 
 message GetInfoRequest {
-}
-
-message ContactInfo {
-    string method = 1;
-    string info = 2;
 }
 
 message GetInfoResponse {
@@ -51,22 +85,30 @@ message GetKeysetsRequest {
     optional bool include_balances = 4;
 }
 
-message Keyset {
-    string id = 1;
-    string unit = 2;
-    bool active = 3;
-    uint64 valid_from = 4;
-    uint64 valid_to = 5;
-    uint64 input_fee_ppk = 6;
-    string derivation_path_index = 8;
-    repeated uint64 amounts = 9;
-    optional uint64 total_balance = 10;
-    optional uint64 total_issued = 11;
-    optional uint64 total_redeemed = 12;
-    optional uint64 total_fees_collected = 13;
-}
-
 message GetKeysetsResponse {
     repeated Keyset keysets = 1;
 }
 
+message ListMintQuotesRequest {
+    int64 index_offset = 1;
+    int64 num_max_quotes = 2;
+    bool reversed = 3;
+    optional int64 creation_date_start = 4;
+    optional int64 creation_date_end = 5;
+    repeated string states = 6;
+    repeated string units = 7;
+}
+
+message ListMintQuotesResponse {
+    repeated MintQuote quotes = 1;
+    int64 last_index_offset = 2;
+    int64 first_index_offset = 3;
+}
+
+message LookupMintQuoteRequest {
+    string quote_id = 1;
+}
+
+message LookupMintQuoteResponse {
+    MintQuote quote = 1;
+}
