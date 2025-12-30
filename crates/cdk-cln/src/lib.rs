@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
 use cdk_common::amount::{to_unit, Amount};
 use cdk_common::common::FeeReserve;
-use cdk_common::database::mint::DynMintKVStore;
+use cdk_common::database::DynKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
     self, Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
@@ -54,7 +54,7 @@ pub struct Cln {
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
-    kv_store: DynMintKVStore,
+    kv_store: DynKVStore,
 }
 
 impl Cln {
@@ -62,7 +62,7 @@ impl Cln {
     pub async fn new(
         rpc_socket: PathBuf,
         fee_reserve: FeeReserve,
-        kv_store: DynMintKVStore,
+        kv_store: DynKVStore,
     ) -> Result<Self, Error> {
         Ok(Self {
             rpc_socket,
@@ -178,11 +178,11 @@ impl MintPayment for Cln {
                             // We only want to yield invoices that have been paid
                             match wait_any_response.status {
                                 WaitanyinvoiceStatus::PAID => {
-                                    tracing::info!("CLN: Invoice with payment index {} is PAID", 
+                                    tracing::info!("CLN: Invoice with payment index {} is PAID",
                                                  wait_any_response.pay_index.unwrap_or_default());
                                 }
                                 WaitanyinvoiceStatus::EXPIRED => {
-                                    tracing::debug!("CLN: Invoice with payment index {} is EXPIRED, skipping", 
+                                    tracing::debug!("CLN: Invoice with payment index {} is EXPIRED, skipping",
                                                   wait_any_response.pay_index.unwrap_or_default());
                                     continue;
                                 }
@@ -213,7 +213,7 @@ impl MintPayment for Cln {
 
                             let amount_msats = match wait_any_response.amount_received_msat {
                                 Some(amt) => {
-                                    tracing::info!("CLN: Received payment of {} msats for {}", 
+                                    tracing::info!("CLN: Received payment of {} msats for {}",
                                                  amt.msat(), payment_hash);
                                     amt
                                 }
@@ -239,7 +239,7 @@ impl MintPayment for Cln {
                                     {
                                         Ok(Some(invoice)) => {
                                             if let Some(local_offer_id) = invoice.local_offer_id {
-                                                tracing::info!("CLN: Received bolt12 payment of {} msats for offer {}", 
+                                                tracing::info!("CLN: Received bolt12 payment of {} msats for offer {}",
                                                              amount_msats.msat(), local_offer_id);
                                                 PaymentIdentifier::OfferId(local_offer_id.to_string())
                                             } else {

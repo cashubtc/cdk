@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
-use cdk::cdk_database::{self, MintDatabase, MintKVStore, MintKeysDatabase};
+use cdk::cdk_database::{self, KVStore, MintDatabase, MintKeysDatabase};
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 #[cfg(any(
     feature = "cln",
@@ -100,7 +100,7 @@ async fn initial_setup(
 ) -> Result<(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
-    Arc<dyn MintKVStore<Err = cdk_database::Error> + Send + Sync>,
+    Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
 )> {
     let (localstore, keystore, kv) = setup_database(settings, work_dir, db_password).await?;
     Ok((localstore, keystore, kv))
@@ -116,11 +116,13 @@ pub fn setup_tracing(
     let default_filter = "debug";
     let hyper_filter = "hyper=warn,rustls=warn,reqwest=warn";
     let h2_filter = "h2=warn";
+    let tower_filter = "tower=warn";
     let tower_http = "tower_http=warn";
     let rustls = "rustls=warn";
+    let tungstenite = "tungstenite=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{default_filter},{hyper_filter},{h2_filter},{tower_http},{rustls}"
+        "{default_filter},{hyper_filter},{h2_filter},{tower_filter},{tower_http},{rustls},{tungstenite}"
     ));
 
     use config::LoggingOutput;
@@ -260,14 +262,14 @@ async fn setup_database(
 ) -> Result<(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
-    Arc<dyn MintKVStore<Err = cdk_database::Error> + Send + Sync>,
+    Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
 )> {
     match settings.database.engine {
         #[cfg(feature = "sqlite")]
         DatabaseEngine::Sqlite => {
             let db = setup_sqlite_database(_work_dir, _db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
-            let kv: Arc<dyn MintKVStore<Err = cdk_database::Error> + Send + Sync> = db.clone();
+            let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
             Ok((localstore, keystore, kv))
         }
@@ -288,7 +290,7 @@ async fn setup_database(
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
                 pg_db.clone();
             #[cfg(feature = "postgres")]
-            let kv: Arc<dyn MintKVStore<Err = cdk_database::Error> + Send + Sync> = pg_db.clone();
+            let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = pg_db.clone();
             #[cfg(feature = "postgres")]
             let keystore: Arc<
                 dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync,
@@ -339,7 +341,7 @@ async fn configure_mint_builder(
     mint_builder: MintBuilder,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     work_dir: &Path,
-    kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+    kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
 ) -> Result<MintBuilder> {
     // Configure basic mint information
     let mint_builder = configure_basic_info(settings, mint_builder);
@@ -410,7 +412,7 @@ async fn configure_lightning_backend(
     mut mint_builder: MintBuilder,
     _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     work_dir: &Path,
-    _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+    _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
         mint_min: settings.ln.min_mint,
@@ -1022,9 +1024,6 @@ async fn start_services_with_shutdown(
             None
         }
     };
-
-    #[cfg(not(feature = "prometheus"))]
-    let prometheus_handle: Option<tokio::task::JoinHandle<()>> = None;
 
     mint.start().await?;
 

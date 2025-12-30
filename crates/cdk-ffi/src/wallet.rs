@@ -111,8 +111,8 @@ impl Wallet {
         Ok(balance.into())
     }
 
-    /// Get mint info
-    pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
+    /// Get mint info from mint
+    pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
         let info = self.inner.fetch_mint_info().await?;
         Ok(info.map(Into::into))
     }

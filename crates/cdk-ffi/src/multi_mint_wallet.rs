@@ -663,11 +663,65 @@ impl MultiMintWallet {
         let mint_info = self.inner.fetch_mint_info(&cdk_mint_url).await?;
         Ok(mint_info.map(Into::into))
     }
+
+    /// Get mint info for all wallets
+    ///
+    /// This method loads the mint info for each wallet in the MultiMintWallet
+    /// and returns a map of mint URLs to their corresponding mint info.
+    ///
+    /// Uses cached mint info when available, only fetching from the mint if the cache
+    /// has expired.
+    pub async fn get_all_mint_info(&self) -> Result<MintInfoMap, FfiError> {
+        let mint_infos = self.inner.get_all_mint_info().await?;
+        let mut result = HashMap::new();
+        for (mint_url, mint_info) in mint_infos {
+            result.insert(mint_url.to_string(), mint_info.into());
+        }
+        Ok(result)
+    }
 }
 
 /// Payment request methods for MultiMintWallet
 #[uniffi::export(async_runtime = "tokio")]
 impl MultiMintWallet {
+    /// Pay a NUT-18 PaymentRequest
+    ///
+    /// This method handles paying a payment request by selecting an appropriate mint:
+    /// - If `mint_url` is provided, it verifies the payment request accepts that mint
+    ///   and uses it to pay.
+    /// - If `mint_url` is None, it automatically selects the mint that:
+    ///   1. Is accepted by the payment request (matches one of the request's mints, or request accepts any mint)
+    ///   2. Has the highest balance among matching mints
+    ///
+    /// # Arguments
+    ///
+    /// * `payment_request` - The NUT-18 payment request to pay
+    /// * `mint_url` - Optional specific mint to use. If None, automatically selects the best matching mint.
+    /// * `custom_amount` - Custom amount to pay (required if payment request has no amount)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The payment request has no amount and no custom amount is provided
+    /// - The specified mint is not accepted by the payment request
+    /// - No matching mint has sufficient balance
+    /// - No transport is available in the payment request
+    pub async fn pay_request(
+        &self,
+        payment_request: Arc<PaymentRequest>,
+        mint_url: Option<MintUrl>,
+        custom_amount: Option<Amount>,
+    ) -> Result<(), FfiError> {
+        let cdk_mint_url = mint_url.map(|url| url.try_into()).transpose()?;
+        let cdk_amount = custom_amount.map(Into::into);
+
+        self.inner
+            .pay_request(payment_request.inner().clone(), cdk_mint_url, cdk_amount)
+            .await?;
+
+        Ok(())
+    }
+
     /// Create a NUT-18 payment request
     ///
     /// Creates a payment request that can be shared to receive Cashu tokens.
@@ -865,6 +919,16 @@ pub struct TokenData {
     pub proofs: Proofs,
     /// The memo from the token, if present
     pub memo: Option<String>,
+    /// Value of token
+    pub value: Amount,
+    /// Unit of token
+    pub unit: CurrencyUnit,
+    /// Fee to redeem
+    ///
+    /// If the token is for a proof that we do not know, we cannot get the fee.
+    /// To avoid just erroring and still allow decoding, this is an option.
+    /// None does not mean there is no fee, it means we do not know the fee.
+    pub redeem_fee: Option<Amount>,
 }
 
 impl From<CdkTokenData> for TokenData {
@@ -873,6 +937,9 @@ impl From<CdkTokenData> for TokenData {
             mint_url: data.mint_url.into(),
             proofs: data.proofs.into_iter().map(|p| p.into()).collect(),
             memo: data.memo,
+            value: data.value.into(),
+            unit: data.unit.into(),
+            redeem_fee: data.redeem_fee.map(|a| a.into()),
         }
     }
 }
@@ -938,3 +1005,6 @@ pub type BalanceMap = HashMap<String, Amount>;
 
 /// Type alias for proofs by mint URL
 pub type ProofsByMint = HashMap<String, Vec<Proof>>;
+
+/// Type alias for mint info by mint URL
+pub type MintInfoMap = HashMap<String, MintInfo>;

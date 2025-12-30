@@ -168,6 +168,19 @@ async fn test_happy_mint_melt_round_trip() {
 
     assert_eq!(response_json, expected_json);
 
+    // Read the initial state notification before starting the melt to ensure we capture Unpaid
+    let initial_notification =
+        get_notifications(&mut reader, Duration::from_millis(15000), 1).await;
+    let (sub_id, payload) = &initial_notification[0];
+    assert_eq!("test-sub", sub_id);
+    let initial_melt = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(m) => m,
+        _ => panic!("Wrong payload"),
+    };
+    assert_eq!(initial_melt.state, MeltQuoteState::Unpaid);
+    assert_eq!(initial_melt.quote.to_string(), melt.id);
+
+    // Now start the melt
     let mut metadata = HashMap::new();
     metadata.insert("test".to_string(), "value".to_string());
 
@@ -186,42 +199,27 @@ async fn test_happy_mint_melt_round_trip() {
     assert_eq!(tx.amount, melt.amount);
     assert_eq!(tx.metadata, metadata);
 
-    let mut notifications = get_notifications(&mut reader, Duration::from_millis(15000), 3).await;
-    notifications.reverse();
+    // Read remaining notifications (Pending -> Paid)
+    let notifications = get_notifications(&mut reader, Duration::from_millis(15000), 2).await;
 
-    let (sub_id, payload) = notifications.pop().unwrap();
-
-    // first message is the current state
+    let (sub_id, payload) = &notifications[0];
     assert_eq!("test-sub", sub_id);
-    let payload = match payload {
-        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
+    let pending_melt = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(m) => m,
         _ => panic!("Wrong payload"),
     };
+    assert_eq!(pending_melt.state, MeltQuoteState::Pending);
+    assert_eq!(pending_melt.quote.to_string(), melt.id);
 
-    // assert_eq!(payload.amount + payload.fee_reserve, 50.into());
-    assert_eq!(payload.quote.to_string(), melt.id);
-    assert_eq!(payload.state, MeltQuoteState::Unpaid);
-
-    // get current state
-    let (sub_id, payload) = notifications.pop().unwrap();
+    let (sub_id, payload) = &notifications[1];
     assert_eq!("test-sub", sub_id);
-    let payload = match payload {
-        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
+    let final_melt = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(m) => m,
         _ => panic!("Wrong payload"),
     };
-    assert_eq!(payload.quote.to_string(), melt.id);
-    assert_eq!(payload.state, MeltQuoteState::Pending);
-
-    // get current state
-    let (sub_id, payload) = notifications.pop().unwrap();
-    assert_eq!("test-sub", sub_id);
-    let payload = match payload {
-        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
-        _ => panic!("Wrong payload"),
-    };
-    assert_eq!(payload.amount, 50.into());
-    assert_eq!(payload.quote.to_string(), melt.id);
-    assert_eq!(payload.state, MeltQuoteState::Paid);
+    assert_eq!(final_melt.state, MeltQuoteState::Paid);
+    assert_eq!(final_melt.amount, 50.into());
+    assert_eq!(final_melt.quote.to_string(), melt.id);
 }
 
 /// Tests basic minting functionality with payment verification
@@ -353,6 +351,149 @@ async fn test_restore() {
     for state in states {
         if state.state != State::Spent {
             panic!("All proofs should be spent");
+        }
+    }
+}
+
+/// Tests that wallet restore correctly handles non-sequential counter values
+///
+/// This test verifies that after restoring a wallet where there were gaps in the
+/// counter sequence (e.g., due to failed operations or multi-device usage), the
+/// wallet can continue to operate without errors.
+///
+/// Test scenario:
+/// 1. Wallet mints proofs using counters 0-N
+/// 2. Counter is incremented to simulate failed operations that consumed counter values
+/// 3. Wallet mints more proofs using counters at higher values
+/// 4. New wallet restores from seed and finds proofs at non-sequential counter positions
+/// 5. Wallet should be able to continue normal operations (swaps) after restore
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_restore_with_counter_gap() {
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        seed,
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    // Mint first batch of proofs (uses counters starting at 0)
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
+    pay_if_regtest(&get_test_temp_dir(), &invoice)
+        .await
+        .unwrap();
+
+    let _proofs1 = wallet
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("first mint failed");
+
+    assert_eq!(wallet.total_balance().await.unwrap(), 100.into());
+
+    // Get the active keyset ID to increment counter
+    let active_keyset = wallet.fetch_active_keyset().await.unwrap();
+    let keyset_id = active_keyset.id;
+
+    // Create a gap in the counter sequence
+    // This simulates failed operations or multi-device usage where counter values
+    // were consumed but no signatures were obtained
+    let gap_size = 50u32;
+    {
+        let mut tx = wallet.localstore.begin_db_transaction().await.unwrap();
+        tx.increment_keyset_counter(&keyset_id, gap_size)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Mint second batch of proofs (uses counters after the gap)
+    let mint_quote2 = wallet.mint_quote(100.into(), None).await.unwrap();
+    let invoice2 = Bolt11Invoice::from_str(&mint_quote2.request).unwrap();
+    pay_if_regtest(&get_test_temp_dir(), &invoice2)
+        .await
+        .unwrap();
+
+    let _proofs2 = wallet
+        .wait_and_mint_quote(
+            mint_quote2.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("second mint failed");
+
+    assert_eq!(wallet.total_balance().await.unwrap(), 200.into());
+
+    // Create a new wallet with the same seed (simulating wallet restore scenario)
+    let wallet_restored = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        seed,
+        None,
+    )
+    .expect("failed to create restored wallet");
+
+    assert_eq!(wallet_restored.total_balance().await.unwrap(), 0.into());
+
+    // Restore the wallet - this should find proofs at non-sequential counter positions
+    let restored = wallet_restored.restore().await.unwrap();
+    assert_eq!(restored, 200.into());
+
+    let proofs = wallet_restored.get_unspent_proofs().await.unwrap();
+    assert!(!proofs.is_empty());
+
+    // Swap the restored proofs to verify they are valid
+    let expected_fee = wallet_restored.get_proofs_fee(&proofs).await.unwrap().total;
+    wallet_restored
+        .swap(None, SplitTarget::default(), proofs, None, false)
+        .await
+        .expect("first swap after restore failed");
+
+    let balance_after_first_swap = Amount::from(200) - expected_fee;
+    assert_eq!(
+        wallet_restored.total_balance().await.unwrap(),
+        balance_after_first_swap
+    );
+
+    // Perform multiple swaps to verify the wallet can continue operating
+    // after restore with non-sequential counter values
+    for i in 0..gap_size {
+        let proofs = wallet_restored.get_unspent_proofs().await.unwrap();
+        if proofs.is_empty() {
+            break;
+        }
+
+        let swap_result = wallet_restored
+            .swap(None, SplitTarget::default(), proofs.clone(), None, false)
+            .await;
+
+        match swap_result {
+            Ok(_) => {
+                // Swap succeeded, continue
+            }
+            Err(e) => {
+                let error_str = format!("{:?}", e);
+                if error_str.contains("BlindedMessageAlreadySigned") {
+                    panic!(
+                        "Got 'blinded message already signed' error on swap {} after restore. \
+                         Counter was not correctly set after restoring with non-sequential values.",
+                        i + 1
+                    );
+                } else {
+                    // Some other error - might be expected (e.g., insufficient funds due to fees)
+                    break;
+                }
+            }
         }
     }
 }

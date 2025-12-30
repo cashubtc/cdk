@@ -18,9 +18,10 @@ use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32}
 use reqwest::Client;
 
 use crate::error::Error;
+use crate::mint_url::MintUrl;
 use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
 use crate::nuts::nut18::Nut10SecretRequest;
-use crate::nuts::{CurrencyUnit, Transport};
+use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
 #[cfg(feature = "nostr")]
 use crate::wallet::MultiMintReceiveOptions;
 use crate::wallet::{MultiMintWallet, SendOptions};
@@ -45,6 +46,20 @@ impl Wallet {
             },
         };
 
+        // Extract optional NUT-10 spending conditions from the payment request.
+        //
+        // NUT-18 encodes spending conditions in the optional `nut10` field using
+        // `Nut10SecretRequest` (kind + data + tags). To actually create locked
+        // ecash, we need full NUT-10 secrets, so we:
+        //   1. Convert `Nut10SecretRequest` -> `Nut10Secret` (adds nonce, keeps tags)
+        //   2. Convert `Nut10Secret` -> `SpendingConditions` (NUT-11 helper)
+        let conditions = if let Some(nut10_request) = &payment_request.nut10 {
+            let secret: Nut10Secret = nut10_request.clone().into();
+            Some(SpendingConditions::try_from(secret)?)
+        } else {
+            None
+        };
+
         let transports = payment_request.transports.clone();
 
         // Prefer Nostr to avoid revealing IP, fall back to HTTP POST.
@@ -61,6 +76,7 @@ impl Wallet {
             .prepare_send(
                 amount,
                 SendOptions {
+                    conditions,
                     include_fee: true,
                     ..Default::default()
                 },
@@ -222,6 +238,98 @@ pub struct NostrWaitInfo {
 }
 
 impl MultiMintWallet {
+    /// Pay a NUT-18 PaymentRequest using the MultiMintWallet.
+    ///
+    /// This method handles paying a payment request by selecting an appropriate mint:
+    /// - If `mint_url` is provided, it verifies the payment request accepts that mint
+    ///   and uses it to pay.
+    /// - If `mint_url` is None, it automatically selects the mint that:
+    ///   1. Is accepted by the payment request (matches one of the request's mints, or request accepts any mint)
+    ///   2. Has the highest balance among matching mints
+    ///
+    /// # Arguments
+    ///
+    /// * `payment_request` - The NUT-18 payment request to pay
+    /// * `mint_url` - Optional specific mint to use. If None, automatically selects the best matching mint.
+    /// * `custom_amount` - Custom amount to pay (required if payment request has no amount)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The payment request has no amount and no custom amount is provided
+    /// - The specified mint is not accepted by the payment request
+    /// - No matching mint has sufficient balance
+    /// - No transport is available in the payment request
+    pub async fn pay_request(
+        &self,
+        payment_request: PaymentRequest,
+        mint_url: Option<MintUrl>,
+        custom_amount: Option<Amount>,
+    ) -> Result<(), Error> {
+        let amount = match payment_request.amount {
+            Some(amount) => amount,
+            None => match custom_amount {
+                Some(a) => a,
+                None => return Err(Error::AmountUndefined),
+            },
+        };
+
+        // Get the list of mints accepted by the payment request (None means any mint is accepted)
+        let accepted_mints = payment_request.mints.as_ref();
+
+        // Select the wallet to use for payment
+        let selected_wallet = if let Some(specified_mint) = &mint_url {
+            // User specified a mint - verify it's accepted by the payment request
+            if let Some(accepted) = accepted_mints {
+                if !accepted.contains(specified_mint) {
+                    return Err(Error::Custom(format!(
+                        "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
+                        specified_mint, accepted
+                    )));
+                }
+            }
+
+            // Get the wallet for the specified mint
+            self.get_wallet(specified_mint)
+                .await
+                .ok_or_else(|| Error::UnknownMint {
+                    mint_url: specified_mint.to_string(),
+                })?
+        } else {
+            // No mint specified - find the best matching mint with highest balance
+            let balances = self.get_balances().await?;
+            let mut best_wallet: Option<Wallet> = None;
+            let mut best_balance = Amount::ZERO;
+
+            for (mint_url, balance) in balances.iter() {
+                // Check if this mint is accepted by the payment request
+                let is_accepted = match accepted_mints {
+                    Some(accepted) => accepted.contains(mint_url),
+                    None => true, // No mints specified means any mint is accepted
+                };
+
+                if !is_accepted {
+                    continue;
+                }
+
+                // Check balance meets requirements and is best so far
+                if *balance >= amount && *balance > best_balance {
+                    if let Some(wallet) = self.get_wallet(mint_url).await {
+                        best_balance = *balance;
+                        best_wallet = Some(wallet);
+                    }
+                }
+            }
+
+            best_wallet.ok_or(Error::InsufficientFunds)?
+        };
+
+        // Use the selected wallet to pay the request
+        selected_wallet
+            .pay_request(payment_request, custom_amount)
+            .await
+    }
+
     /// Derive enforceable NUT-10 spending conditions from high-level request params.
     ///
     /// Why:

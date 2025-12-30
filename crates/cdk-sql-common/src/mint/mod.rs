@@ -16,13 +16,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::mint::{
-    validate_kvstore_params, CompletedOperationsDatabase, CompletedOperationsTransaction,
-    SagaDatabase, SagaTransaction,
+    CompletedOperationsDatabase, CompletedOperationsTransaction, LockedMeltQuotes, SagaDatabase,
+    SagaTransaction,
 };
 use cdk_common::database::{
-    self, ConversionError, DbTransactionFinalizer, Error, MintDatabase, MintKeyDatabaseTransaction,
-    MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase, MintQuotesTransaction,
-    MintSignatureTransaction, MintSignaturesDatabase,
+    self, Acquired, ConversionError, DbTransactionFinalizer, Error, MintDatabase,
+    MintKeyDatabaseTransaction, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
+    MintQuotesTransaction, MintSignatureTransaction, MintSignaturesDatabase,
 };
 use cdk_common::mint::{
     self, IncomingPayment, Issuance, MeltPaymentRequest, MeltQuote, MintKeySetInfo, MintQuote,
@@ -32,7 +32,7 @@ use cdk_common::nut00::ProofsMethods;
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
-use cdk_common::state::{check_melt_quote_state_transition, check_state_transition};
+use cdk_common::state::check_melt_quote_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, MeltQuoteState,
@@ -81,31 +81,6 @@ where
     inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
 }
 
-#[inline(always)]
-async fn get_current_states<C>(
-    conn: &C,
-    ys: &[PublicKey],
-) -> Result<HashMap<PublicKey, State>, Error>
-where
-    C: DatabaseExecutor + Send + Sync,
-{
-    if ys.is_empty() {
-        return Ok(Default::default());
-    }
-    query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)?
-        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-        .fetch_all(conn)
-        .await?
-        .into_iter()
-        .map(|row| {
-            Ok((
-                column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice),
-                column_as_string!(&row[1], State::from_str),
-            ))
-        })
-        .collect::<Result<HashMap<_, _>, _>>()
-}
-
 impl<RM> SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
@@ -132,7 +107,7 @@ where
 }
 
 #[async_trait]
-impl<RM> database::MintProofsTransaction<'_> for SQLTransaction<RM>
+impl<RM> database::MintProofsTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -167,6 +142,8 @@ where
         }?;
 
         for proof in proofs {
+            let y = proof.y()?;
+
             query(
                 r#"
                   INSERT INTO proof
@@ -175,7 +152,7 @@ where
                   (:y, :amount, :keyset_id, :secret, :c, :witness, :state, :quote_id, :created_time, :operation_kind, :operation_id)
                   "#,
             )?
-            .bind("y", proof.y()?.to_bytes().to_vec())
+            .bind("y", y.to_bytes().to_vec())
             .bind("amount", proof.amount.to_i64())
             .bind("keyset_id", proof.keyset_id.to_string())
             .bind("secret", proof.secret.to_string())
@@ -201,7 +178,7 @@ where
         ys: &[PublicKey],
         new_state: State,
     ) -> Result<Vec<Option<State>>, Self::Err> {
-        let mut current_states = get_current_states(&self.inner, ys).await?;
+        let mut current_states = get_current_states(&self.inner, ys, true).await?;
 
         if current_states.len() != ys.len() {
             tracing::warn!(
@@ -210,10 +187,6 @@ where
                 ys.len()
             );
             return Err(database::Error::ProofNotFound);
-        }
-
-        for state in current_states.values() {
-            check_state_transition(*state, new_state)?;
         }
 
         query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)?
@@ -262,7 +235,7 @@ where
 
         if total_deleted != ys.len() {
             // Query current states to provide detailed logging
-            let current_states = get_current_states(&self.inner, ys).await?;
+            let current_states = get_current_states(&self.inner, ys, true).await?;
 
             let missing_count = ys.len() - current_states.len();
             let spent_count = current_states
@@ -301,7 +274,7 @@ where
     }
 
     async fn get_proof_ys_by_quote_id(
-        &self,
+        &mut self,
         quote_id: &QuoteId,
     ) -> Result<Vec<PublicKey>, Self::Err> {
         Ok(query(
@@ -316,6 +289,7 @@ where
                 proof
             WHERE
                 quote_id = :quote_id
+            FOR UPDATE
             "#,
         )?
         .bind("quote_id", quote_id.to_string())
@@ -326,11 +300,47 @@ where
         .collect::<Result<Vec<Proof>, _>>()?
         .ys()?)
     }
+
+    async fn get_proof_ys_by_operation_id(
+        &mut self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err> {
+        Ok(query(
+            r#"
+            SELECT
+                y
+            FROM
+                proof
+            WHERE
+                operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(|row| -> Result<PublicKey, Error> {
+            Ok(column_as_string!(
+                &row[0],
+                PublicKey::from_hex,
+                PublicKey::from_slice
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn get_proofs_states(
+        &mut self,
+        ys: &[PublicKey],
+    ) -> Result<Vec<Option<State>>, Self::Err> {
+        let mut current_states = get_current_states(&self.inner, ys, true).await?;
+
+        Ok(ys.iter().map(|y| current_states.remove(y)).collect())
+    }
 }
 
 #[async_trait]
-impl<RM> database::MintTransaction<'_, Error> for SQLTransaction<RM> where RM: DatabasePool + 'static
-{}
+impl<RM> database::MintTransaction<Error> for SQLTransaction<RM> where RM: DatabasePool + 'static {}
 
 #[async_trait]
 impl<RM> DbTransactionFinalizer for SQLTransaction<RM>
@@ -362,6 +372,37 @@ where
         }
         Ok(result?)
     }
+}
+
+#[inline(always)]
+async fn get_current_states<C>(
+    conn: &C,
+    ys: &[PublicKey],
+    for_update: bool,
+) -> Result<HashMap<PublicKey, State>, Error>
+where
+    C: DatabaseExecutor + Send + Sync,
+{
+    if ys.is_empty() {
+        return Ok(Default::default());
+    }
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+
+    query(&format!(
+        r#"SELECT y, state FROM proof WHERE y IN (:ys) {}"#,
+        for_update_clause
+    ))?
+    .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+    .fetch_all(conn)
+    .await?
+    .into_iter()
+    .map(|row| {
+        Ok((
+            column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice),
+            column_as_string!(&row[1], State::from_str),
+        ))
+    })
+    .collect::<Result<HashMap<_, _>, _>>()
 }
 
 #[inline(always)]
@@ -616,6 +657,121 @@ where
         .transpose()
 }
 
+#[inline]
+async fn get_melt_quotes_by_request_lookup_id_inner<T>(
+    executor: &T,
+    request_lookup_id: &PaymentIdentifier,
+    for_update: bool,
+) -> Result<Vec<mint::MeltQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            unit,
+            amount,
+            request,
+            fee_reserve,
+            expiry,
+            state,
+            payment_preimage,
+            request_lookup_id,
+            created_time,
+            paid_time,
+            payment_method,
+            options,
+            request_lookup_id_kind
+        FROM
+            melt_quote
+        WHERE
+            request_lookup_id = :request_lookup_id
+            AND request_lookup_id_kind = :request_lookup_id_kind
+        {for_update_clause}
+        "#
+    );
+
+    query(&query_str)?
+        .bind("request_lookup_id", request_lookup_id.to_string())
+        .bind("request_lookup_id_kind", request_lookup_id.kind())
+        .fetch_all(executor)
+        .await?
+        .into_iter()
+        .map(sql_row_to_melt_quote)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+/// Locks a melt quote and all related quotes atomically to prevent deadlocks.
+///
+/// This function acquires all locks in a single query with consistent ordering (by ID),
+/// preventing the circular wait condition that can occur when locks are acquired in
+/// separate queries.
+#[inline]
+async fn lock_melt_quote_and_related_inner<T>(
+    executor: &T,
+    quote_id: &QuoteId,
+) -> Result<LockedMeltQuotes, Error>
+where
+    T: DatabaseExecutor,
+{
+    // Use a single query with subquery to atomically lock:
+    // 1. All quotes with the same request_lookup_id as the target quote, OR
+    // 2. Just the target quote if it has no request_lookup_id
+    //
+    // The ORDER BY ensures consistent lock acquisition order across transactions,
+    // preventing deadlocks.
+    let query_str = r#"
+        SELECT
+            id,
+            unit,
+            amount,
+            request,
+            fee_reserve,
+            expiry,
+            state,
+            payment_preimage,
+            request_lookup_id,
+            created_time,
+            paid_time,
+            payment_method,
+            options,
+            request_lookup_id_kind
+        FROM
+            melt_quote
+        WHERE
+            (
+                request_lookup_id IS NOT NULL
+                AND request_lookup_id = (SELECT request_lookup_id FROM melt_quote WHERE id = :quote_id)
+                AND request_lookup_id_kind = (SELECT request_lookup_id_kind FROM melt_quote WHERE id = :quote_id)
+            )
+            OR
+            (
+                id = :quote_id
+                AND (SELECT request_lookup_id FROM melt_quote WHERE id = :quote_id) IS NULL
+            )
+        ORDER BY id
+        FOR UPDATE
+        "#;
+
+    let all_quotes: Vec<mint::MeltQuote> = query(query_str)?
+        .bind("quote_id", quote_id.to_string())
+        .fetch_all(executor)
+        .await?
+        .into_iter()
+        .map(sql_row_to_melt_quote)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Find the target quote from the locked set
+    let target_quote = all_quotes.iter().find(|q| &q.id == quote_id).cloned();
+
+    Ok(LockedMeltQuotes {
+        target: target_quote.map(|q| q.into()),
+        all_related: all_quotes.into_iter().map(|q| q.into()).collect(),
+    })
+}
+
 #[async_trait]
 impl<RM> MintKeyDatabaseTransaction<'_, Error> for SQLTransaction<RM>
 where
@@ -780,7 +936,7 @@ where
 }
 
 #[async_trait]
-impl<RM> MintQuotesTransaction<'_> for SQLTransaction<RM>
+impl<RM> MintQuotesTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -972,192 +1128,82 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self))]
-    async fn increment_mint_quote_amount_paid(
+    async fn update_mint_quote(
         &mut self,
-        quote_id: &QuoteId,
-        amount_paid: Amount,
-        payment_id: String,
-    ) -> Result<Amount, Self::Err> {
-        if amount_paid == Amount::ZERO {
-            tracing::warn!("Amount payments of zero amount should not be recorded.");
-            return Err(Error::Duplicate);
-        }
-
-        // Check if payment_id already exists in mint_quote_payments
-        let exists = query(
-            r#"
-            SELECT payment_id
-            FROM mint_quote_payments
-            WHERE payment_id = :payment_id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("payment_id", payment_id.clone())
-        .fetch_one(&self.inner)
-        .await?;
-
-        if exists.is_some() {
-            tracing::error!("Payment ID already exists: {}", payment_id);
-            return Err(database::Error::Duplicate);
-        }
-
-        // Get current amount_paid from quote
-        let current_amount = query(
-            r#"
-            SELECT amount_paid
-            FROM mint_quote
-            WHERE id = :quote_id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("quote_id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await
-        .inspect_err(|err| {
-            tracing::error!("SQLite could not get mint quote amount_paid: {}", err);
-        })?;
-
-        let current_amount_paid = if let Some(current_amount) = current_amount {
-            let amount: u64 = column_as_number!(current_amount[0].clone());
-            Amount::from(amount)
+        quote: &mut Acquired<mint::MintQuote>,
+    ) -> Result<(), Self::Err> {
+        let mut changes = if let Some(changes) = quote.take_changes() {
+            changes
         } else {
-            Amount::ZERO
+            return Ok(());
         };
 
-        // Calculate new amount_paid with overflow check
-        let new_amount_paid = current_amount_paid
-            .checked_add(amount_paid)
-            .ok_or_else(|| database::Error::AmountOverflow)?;
+        if changes.issuances.is_none() && changes.payments.is_none() {
+            return Ok(());
+        }
 
-        tracing::debug!(
-            "Mint quote {} amount paid was {} is now {}.",
-            quote_id,
-            current_amount_paid,
-            new_amount_paid
-        );
+        for payment in changes.payments.take().unwrap_or_default() {
+            query(
+                r#"
+                INSERT INTO mint_quote_payments
+                (quote_id, payment_id, amount, timestamp)
+                VALUES (:quote_id, :payment_id, :amount, :timestamp)
+                "#,
+            )?
+            .bind("quote_id", quote.id.to_string())
+            .bind("payment_id", payment.payment_id)
+            .bind("amount", payment.amount.to_i64())
+            .bind("timestamp", payment.time as i64)
+            .execute(&self.inner)
+            .await
+            .map_err(|err| {
+                tracing::error!("SQLite could not insert payment ID: {}", err);
+                err
+            })?;
+        }
 
-        // Update the amount_paid
+        let current_time = unix_time();
+
+        for amount_issued in changes.issuances.take().unwrap_or_default() {
+            query(
+                r#"
+                INSERT INTO mint_quote_issued
+                (quote_id, amount, timestamp)
+                VALUES (:quote_id, :amount, :timestamp);
+                "#,
+            )?
+            .bind("quote_id", quote.id.to_string())
+            .bind("amount", amount_issued.to_i64())
+            .bind("timestamp", current_time as i64)
+            .execute(&self.inner)
+            .await?;
+        }
+
         query(
             r#"
-            UPDATE mint_quote
-            SET amount_paid = :amount_paid
-            WHERE id = :quote_id
+            UPDATE
+                mint_quote
+            SET
+                amount_issued = :amount_issued,
+                amount_paid = :amount_paid
+            WHERE
+                id = :quote_id
             "#,
         )?
-        .bind("amount_paid", new_amount_paid.to_i64())
-        .bind("quote_id", quote_id.to_string())
+        .bind("quote_id", quote.id.to_string())
+        .bind("amount_issued", quote.amount_issued().to_i64())
+        .bind("amount_paid", quote.amount_paid().to_i64())
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
             tracing::error!("SQLite could not update mint quote amount_paid: {}", err);
         })?;
 
-        // Add payment_id to mint_quote_payments table
-        query(
-            r#"
-            INSERT INTO mint_quote_payments
-            (quote_id, payment_id, amount, timestamp)
-            VALUES (:quote_id, :payment_id, :amount, :timestamp)
-            "#,
-        )?
-        .bind("quote_id", quote_id.to_string())
-        .bind("payment_id", payment_id)
-        .bind("amount", amount_paid.to_i64())
-        .bind("timestamp", unix_time() as i64)
-        .execute(&self.inner)
-        .await
-        .map_err(|err| {
-            tracing::error!("SQLite could not insert payment ID: {}", err);
-            err
-        })?;
-
-        Ok(new_amount_paid)
+        Ok(())
     }
 
     #[instrument(skip_all)]
-    async fn increment_mint_quote_amount_issued(
-        &mut self,
-        quote_id: &QuoteId,
-        amount_issued: Amount,
-    ) -> Result<Amount, Self::Err> {
-        // Get current amount_issued from quote
-        let current_amounts = query(
-            r#"
-            SELECT amount_issued, amount_paid
-            FROM mint_quote
-            WHERE id = :quote_id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("quote_id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await
-        .inspect_err(|err| {
-            tracing::error!("SQLite could not get mint quote amount_issued: {}", err);
-        })?
-        .ok_or(Error::QuoteNotFound)?;
-
-        let new_amount_issued = {
-            // Make sure the db protects issuing not paid quotes
-            unpack_into!(
-                let (current_amount_issued, current_amount_paid) = current_amounts
-            );
-
-            let current_amount_issued: u64 = column_as_number!(current_amount_issued);
-            let current_amount_paid: u64 = column_as_number!(current_amount_paid);
-
-            let current_amount_issued = Amount::from(current_amount_issued);
-            let current_amount_paid = Amount::from(current_amount_paid);
-
-            // Calculate new amount_issued with overflow check
-            let new_amount_issued = current_amount_issued
-                .checked_add(amount_issued)
-                .ok_or_else(|| database::Error::AmountOverflow)?;
-
-            current_amount_paid
-                .checked_sub(new_amount_issued)
-                .ok_or(Error::Internal("Over-issued not allowed".to_owned()))?;
-
-            new_amount_issued
-        };
-
-        // Update the amount_issued
-        query(
-            r#"
-            UPDATE mint_quote
-            SET amount_issued = :amount_issued
-            WHERE id = :quote_id
-            "#,
-        )?
-        .bind("amount_issued", new_amount_issued.to_i64())
-        .bind("quote_id", quote_id.to_string())
-        .execute(&self.inner)
-        .await
-        .inspect_err(|err| {
-            tracing::error!("SQLite could not update mint quote amount_issued: {}", err);
-        })?;
-
-        let current_time = unix_time();
-
-        query(
-            r#"
-INSERT INTO mint_quote_issued
-(quote_id, amount, timestamp)
-VALUES (:quote_id, :amount, :timestamp);
-            "#,
-        )?
-        .bind("quote_id", quote_id.to_string())
-        .bind("amount", amount_issued.to_i64())
-        .bind("timestamp", current_time as i64)
-        .execute(&self.inner)
-        .await?;
-
-        Ok(new_amount_issued)
-    }
-
-    #[instrument(skip_all)]
-    async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<(), Self::Err> {
+    async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<Acquired<MintQuote>, Self::Err> {
         query(
             r#"
                 INSERT INTO mint_quote (
@@ -1171,7 +1217,7 @@ VALUES (:quote_id, :amount, :timestamp);
         .bind("id", quote.id.to_string())
         .bind("amount", quote.amount.map(|a| a.to_i64()))
         .bind("unit", quote.unit.to_string())
-        .bind("request", quote.request)
+        .bind("request", quote.request.clone())
         .bind("expiry", quote.expiry as i64)
         .bind(
             "request_lookup_id",
@@ -1184,7 +1230,7 @@ VALUES (:quote_id, :amount, :timestamp);
         .execute(&self.inner)
         .await?;
 
-        Ok(())
+        Ok(quote.into())
     }
 
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
@@ -1236,110 +1282,44 @@ VALUES (:quote_id, :amount, :timestamp);
 
     async fn update_melt_quote_request_lookup_id(
         &mut self,
-        quote_id: &QuoteId,
+        quote: &mut Acquired<mint::MeltQuote>,
         new_request_lookup_id: &PaymentIdentifier,
     ) -> Result<(), Self::Err> {
         query(r#"UPDATE melt_quote SET request_lookup_id = :new_req_id, request_lookup_id_kind = :new_kind WHERE id = :id"#)?
             .bind("new_req_id", new_request_lookup_id.to_string())
-            .bind("new_kind",new_request_lookup_id.kind() )
-            .bind("id", quote_id.to_string())
+            .bind("new_kind", new_request_lookup_id.kind())
+            .bind("id", quote.id.to_string())
             .execute(&self.inner)
             .await?;
+        quote.request_lookup_id = Some(new_request_lookup_id.clone());
         Ok(())
     }
 
     async fn update_melt_quote_state(
         &mut self,
-        quote_id: &QuoteId,
+        quote: &mut Acquired<mint::MeltQuote>,
         state: MeltQuoteState,
         payment_proof: Option<String>,
-    ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err> {
-        let mut quote = query(
-            r#"
-            SELECT
-                id,
-                unit,
-                amount,
-                request,
-                fee_reserve,
-                expiry,
-                state,
-                payment_preimage,
-                request_lookup_id,
-                created_time,
-                paid_time,
-                payment_method,
-                options,
-                request_lookup_id_kind
-            FROM
-                melt_quote
-            WHERE
-                id=:id
-            "#,
-        )?
-        .bind("id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .map(sql_row_to_melt_quote)
-        .transpose()?
-        .ok_or(Error::QuoteNotFound)?;
+    ) -> Result<MeltQuoteState, Self::Err> {
+        let old_state = quote.state;
 
-        check_melt_quote_state_transition(quote.state, state)?;
-
-        // When transitioning to Pending, lock all quotes with the same lookup_id
-        // and check if any are already pending or paid
-        if state == MeltQuoteState::Pending {
-            if let Some(ref lookup_id) = quote.request_lookup_id {
-                // Lock all quotes with the same lookup_id to prevent race conditions
-                let locked_quotes: Vec<(String, String)> = query(
-                    r#"
-                    SELECT id, state
-                    FROM melt_quote
-                    WHERE request_lookup_id = :lookup_id
-                    FOR UPDATE
-                    "#,
-                )?
-                .bind("lookup_id", lookup_id.to_string())
-                .fetch_all(&self.inner)
-                .await?
-                .into_iter()
-                .map(|row| {
-                    unpack_into!(let (id, state) = row);
-                    Ok((column_as_string!(id), column_as_string!(state)))
-                })
-                .collect::<Result<Vec<_>, Error>>()?;
-
-                // Check if any other quote with the same lookup_id is pending or paid
-                let has_conflict = locked_quotes.iter().any(|(id, state)| {
-                    id != &quote_id.to_string()
-                        && (state == &MeltQuoteState::Pending.to_string()
-                            || state == &MeltQuoteState::Paid.to_string())
-                });
-
-                if has_conflict {
-                    tracing::warn!(
-                        "Cannot transition quote {} to Pending: another quote with lookup_id {} is already pending or paid",
-                        quote_id,
-                        lookup_id
-                    );
-                    return Err(Error::Duplicate);
-                }
-            }
-        }
+        check_melt_quote_state_transition(old_state, state)?;
 
         let rec = if state == MeltQuoteState::Paid {
             let current_time = unix_time();
+            quote.paid_time = Some(current_time);
+            quote.payment_preimage = payment_proof.clone();
             query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_preimage = :payment_preimage WHERE id = :id"#)?
                 .bind("state", state.to_string())
                 .bind("paid_time", current_time as i64)
                 .bind("payment_preimage", payment_proof)
-                .bind("id", quote_id.to_string())
+                .bind("id", quote.id.to_string())
                 .execute(&self.inner)
                 .await
         } else {
             query(r#"UPDATE melt_quote SET state = :state WHERE id = :id"#)?
                 .bind("state", state.to_string())
-                .bind("id", quote_id.to_string())
+                .bind("id", quote.id.to_string())
                 .execute(&self.inner)
                 .await
         };
@@ -1352,39 +1332,65 @@ VALUES (:quote_id, :amount, :timestamp);
             }
         };
 
-        let old_state = quote.state;
         quote.state = state;
 
         if state == MeltQuoteState::Unpaid || state == MeltQuoteState::Failed {
-            self.delete_melt_request(quote_id).await?;
+            self.delete_melt_request(&quote.id).await?;
         }
 
-        Ok((old_state, quote))
+        Ok(old_state)
     }
 
-    async fn get_mint_quote(&mut self, quote_id: &QuoteId) -> Result<Option<MintQuote>, Self::Err> {
-        get_mint_quote_inner(&self.inner, quote_id, true).await
+    async fn get_mint_quote(
+        &mut self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<Acquired<MintQuote>>, Self::Err> {
+        get_mint_quote_inner(&self.inner, quote_id, true)
+            .await
+            .map(|quote| quote.map(|inner| inner.into()))
     }
 
     async fn get_melt_quote(
         &mut self,
         quote_id: &QuoteId,
-    ) -> Result<Option<mint::MeltQuote>, Self::Err> {
-        get_melt_quote_inner(&self.inner, quote_id, true).await
+    ) -> Result<Option<Acquired<mint::MeltQuote>>, Self::Err> {
+        get_melt_quote_inner(&self.inner, quote_id, true)
+            .await
+            .map(|quote| quote.map(|inner| inner.into()))
+    }
+
+    async fn get_melt_quotes_by_request_lookup_id(
+        &mut self,
+        request_lookup_id: &PaymentIdentifier,
+    ) -> Result<Vec<Acquired<mint::MeltQuote>>, Self::Err> {
+        get_melt_quotes_by_request_lookup_id_inner(&self.inner, request_lookup_id, true)
+            .await
+            .map(|quote| quote.into_iter().map(|inner| inner.into()).collect())
+    }
+
+    async fn lock_melt_quote_and_related(
+        &mut self,
+        quote_id: &QuoteId,
+    ) -> Result<LockedMeltQuotes, Self::Err> {
+        lock_melt_quote_and_related_inner(&self.inner, quote_id).await
     }
 
     async fn get_mint_quote_by_request(
         &mut self,
         request: &str,
-    ) -> Result<Option<MintQuote>, Self::Err> {
-        get_mint_quote_by_request_inner(&self.inner, request, true).await
+    ) -> Result<Option<Acquired<MintQuote>>, Self::Err> {
+        get_mint_quote_by_request_inner(&self.inner, request, true)
+            .await
+            .map(|quote| quote.map(|inner| inner.into()))
     }
 
     async fn get_mint_quote_by_request_lookup_id(
         &mut self,
         request_lookup_id: &PaymentIdentifier,
-    ) -> Result<Option<MintQuote>, Self::Err> {
-        get_mint_quote_by_request_lookup_id_inner(&self.inner, request_lookup_id, true).await
+    ) -> Result<Option<Acquired<MintQuote>>, Self::Err> {
+        get_mint_quote_by_request_lookup_id_inner(&self.inner, request_lookup_id, true)
+            .await
+            .map(|quote| quote.map(|inner| inner.into()))
     }
 }
 
@@ -1607,7 +1613,7 @@ where
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let mut current_states = get_current_states(&*conn, ys).await?;
+        let mut current_states = get_current_states(&*conn, ys, false).await?;
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
     }
@@ -1679,10 +1685,39 @@ where
         .map(sql_row_to_hashmap_amount)
         .collect()
     }
+
+    async fn get_proof_ys_by_operation_id(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                y
+            FROM
+                proof
+            WHERE
+                operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(|row| -> Result<PublicKey, Error> {
+            Ok(column_as_string!(
+                &row[0],
+                PublicKey::from_hex,
+                PublicKey::from_slice
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()
+    }
 }
 
 #[async_trait]
-impl<RM> MintSignatureTransaction<'_> for SQLTransaction<RM>
+impl<RM> MintSignatureTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2013,10 +2048,39 @@ where
         .map(sql_row_to_hashmap_amount)
         .collect()
     }
+
+    async fn get_blinded_secrets_by_operation_id(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                blinded_message
+            FROM
+                blind_signature
+            WHERE
+                operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(|row| -> Result<PublicKey, Error> {
+            Ok(column_as_string!(
+                &row[0],
+                PublicKey::from_hex,
+                PublicKey::from_slice
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()
+    }
 }
 
 #[async_trait]
-impl<RM> database::MintKVStoreTransaction<'_, Error> for SQLTransaction<RM>
+impl<RM> database::KVStoreTransaction<Error> for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2026,26 +2090,13 @@ where
         secondary_namespace: &str,
         key: &str,
     ) -> Result<Option<Vec<u8>>, Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
-        Ok(query(
-            r#"
-            SELECT value
-            FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            AND key = :key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .bind("key", key.to_owned())
-        .pluck(&self.inner)
-        .await?
-        .and_then(|col| match col {
-            Column::Blob(data) => Some(data),
-            _ => None,
-        }))
+        crate::keyvalue::kv_read_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+        )
+        .await
     }
 
     async fn kv_write(
@@ -2055,32 +2106,14 @@ where
         key: &str,
         value: &[u8],
     ) -> Result<(), Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
-
-        let current_time = unix_time();
-
-        query(
-            r#"
-            INSERT INTO kv_store
-            (primary_namespace, secondary_namespace, key, value, created_time, updated_time)
-            VALUES (:primary_namespace, :secondary_namespace, :key, :value, :created_time, :updated_time)
-            ON CONFLICT(primary_namespace, secondary_namespace, key)
-            DO UPDATE SET
-                value = excluded.value,
-                updated_time = excluded.updated_time
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .bind("key", key.to_owned())
-        .bind("value", value.to_vec())
-        .bind("created_time", current_time as i64)
-        .bind("updated_time", current_time as i64)
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
+        crate::keyvalue::kv_write_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+            value,
+        )
+        .await
     }
 
     async fn kv_remove(
@@ -2089,23 +2122,13 @@ where
         secondary_namespace: &str,
         key: &str,
     ) -> Result<(), Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
-        query(
-            r#"
-            DELETE FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            AND key = :key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .bind("key", key.to_owned())
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
+        crate::keyvalue::kv_remove_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+        )
+        .await
     }
 
     async fn kv_list(
@@ -2113,37 +2136,13 @@ where
         primary_namespace: &str,
         secondary_namespace: &str,
     ) -> Result<Vec<String>, Error> {
-        // Validate namespace parameters according to KV store requirements
-        cdk_common::database::mint::validate_kvstore_string(primary_namespace)?;
-        cdk_common::database::mint::validate_kvstore_string(secondary_namespace)?;
-
-        // Check empty namespace rules
-        if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
-            return Err(Error::KVStoreInvalidKey(
-                "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
-            ));
-        }
-        Ok(query(
-            r#"
-            SELECT key
-            FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            ORDER BY key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .fetch_all(&self.inner)
-        .await?
-        .into_iter()
-        .map(|row| Ok(column_as_string!(&row[0])))
-        .collect::<Result<Vec<_>, Error>>()?)
+        crate::keyvalue::kv_list_in_transaction(&self.inner, primary_namespace, secondary_namespace)
+            .await
     }
 }
 
 #[async_trait]
-impl<RM> database::MintKVStoreDatabase for SQLMintDatabase<RM>
+impl<RM> database::KVStoreDatabase for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2155,28 +2154,7 @@ where
         secondary_namespace: &str,
         key: &str,
     ) -> Result<Option<Vec<u8>>, Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
-
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT value
-            FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            AND key = :key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .bind("key", key.to_owned())
-        .pluck(&*conn)
-        .await?
-        .and_then(|col| match col {
-            Column::Blob(data) => Some(data),
-            _ => None,
-        }))
+        crate::keyvalue::kv_read(&self.pool, primary_namespace, secondary_namespace, key).await
     }
 
     async fn kv_list(
@@ -2184,46 +2162,18 @@ where
         primary_namespace: &str,
         secondary_namespace: &str,
     ) -> Result<Vec<String>, Error> {
-        // Validate namespace parameters according to KV store requirements
-        cdk_common::database::mint::validate_kvstore_string(primary_namespace)?;
-        cdk_common::database::mint::validate_kvstore_string(secondary_namespace)?;
-
-        // Check empty namespace rules
-        if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
-            return Err(Error::KVStoreInvalidKey(
-                "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
-            ));
-        }
-
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT key
-            FROM kv_store
-            WHERE primary_namespace = :primary_namespace
-            AND secondary_namespace = :secondary_namespace
-            ORDER BY key
-            "#,
-        )?
-        .bind("primary_namespace", primary_namespace.to_owned())
-        .bind("secondary_namespace", secondary_namespace.to_owned())
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(|row| Ok(column_as_string!(&row[0])))
-        .collect::<Result<Vec<_>, Error>>()?)
+        crate::keyvalue::kv_list(&self.pool, primary_namespace, secondary_namespace).await
     }
 }
 
 #[async_trait]
-impl<RM> database::MintKVStore for SQLMintDatabase<RM>
+impl<RM> database::KVStore for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
-    async fn begin_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn database::MintKVStoreTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>
-    {
+    async fn begin_transaction(
+        &self,
+    ) -> Result<Box<dyn database::KVStoreTransaction<Self::Err> + Send + Sync>, Error> {
         Ok(Box::new(SQLTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
@@ -2234,7 +2184,7 @@ where
 }
 
 #[async_trait]
-impl<RM> SagaTransaction<'_> for SQLTransaction<RM>
+impl<RM> SagaTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2250,8 +2200,6 @@ where
                 operation_id,
                 operation_kind,
                 state,
-                blinded_secrets,
-                input_ys,
                 quote_id,
                 created_at,
                 updated_at
@@ -2272,25 +2220,17 @@ where
     async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
-        let blinded_secrets_json = serde_json::to_string(&saga.blinded_secrets)
-            .map_err(|e| Error::Internal(format!("Failed to serialize blinded_secrets: {e}")))?;
-
-        let input_ys_json = serde_json::to_string(&saga.input_ys)
-            .map_err(|e| Error::Internal(format!("Failed to serialize input_ys: {e}")))?;
-
         query(
             r#"
             INSERT INTO saga_state
-            (operation_id, operation_kind, state, blinded_secrets, input_ys, quote_id, created_at, updated_at)
+            (operation_id, operation_kind, state, quote_id, created_at, updated_at)
             VALUES
-            (:operation_id, :operation_kind, :state, :blinded_secrets, :input_ys, :quote_id, :created_at, :updated_at)
+            (:operation_id, :operation_kind, :state, :quote_id, :created_at, :updated_at)
             "#,
         )?
         .bind("operation_id", saga.operation_id.to_string())
         .bind("operation_kind", saga.operation_kind.to_string())
         .bind("state", saga.state.state())
-        .bind("blinded_secrets", blinded_secrets_json)
-        .bind("input_ys", input_ys_json)
         .bind("quote_id", saga.quote_id.as_deref())
         .bind("created_at", saga.created_at as i64)
         .bind("updated_at", current_time as i64)
@@ -2356,8 +2296,6 @@ where
                 operation_id,
                 operation_kind,
                 state,
-                blinded_secrets,
-                input_ys,
                 quote_id,
                 created_at,
                 updated_at
@@ -2378,7 +2316,7 @@ where
 }
 
 #[async_trait]
-impl<RM> CompletedOperationsTransaction<'_> for SQLTransaction<RM>
+impl<RM> CompletedOperationsTransaction for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -2526,9 +2464,9 @@ impl<RM> MintDatabase<Error> for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
-    async fn begin_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn database::MintTransaction<'a, Error> + Send + Sync + 'a>, Error> {
+    async fn begin_transaction(
+        &self,
+    ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
         let tx = SQLTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
@@ -2803,8 +2741,6 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
             operation_id,
             operation_kind,
             state,
-            blinded_secrets,
-            input_ys,
             quote_id,
             created_at,
             updated_at
@@ -2822,14 +2758,6 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
     let state_str = column_as_string!(&state);
     let state = mint::SagaStateEnum::new(operation_kind, &state_str)
         .map_err(|e| Error::Internal(format!("Invalid saga state: {e}")))?;
-
-    let blinded_secrets_str = column_as_string!(&blinded_secrets);
-    let blinded_secrets: Vec<PublicKey> = serde_json::from_str(&blinded_secrets_str)
-        .map_err(|e| Error::Internal(format!("Failed to deserialize blinded_secrets: {e}")))?;
-
-    let input_ys_str = column_as_string!(&input_ys);
-    let input_ys: Vec<PublicKey> = serde_json::from_str(&input_ys_str)
-        .map_err(|e| Error::Internal(format!("Failed to deserialize input_ys: {e}")))?;
 
     let quote_id = match &quote_id {
         Column::Text(s) => {
@@ -2850,8 +2778,6 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
         operation_id,
         operation_kind,
         state,
-        blinded_secrets,
-        input_ys,
         quote_id,
         created_at,
         updated_at,

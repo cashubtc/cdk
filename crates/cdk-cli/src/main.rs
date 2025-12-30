@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
         fs::create_dir_all(&work_dir)?;
     }
 
-    let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
+    let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> =
         match args.engine.as_str() {
             "sqlite" => {
                 let sql_path = work_dir.join("cdk-cli.sqlite");

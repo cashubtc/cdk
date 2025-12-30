@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 use cdk::types::FeeReserve;
 use cdk_cln::Cln as CdkCln;
-use cdk_common::database::mint::DynMintKVStore;
+use cdk_common::database::DynKVStore;
 use cdk_lnd::Lnd as CdkLnd;
 use cdk_sqlite::mint::memory;
 use ldk_node::lightning::ln::msgs::SocketAddress;
@@ -167,7 +167,7 @@ pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
         percent_fee_reserve: 1.0,
     };
 
-    let kv_store: DynMintKVStore = Arc::new(memory::empty().await?);
+    let kv_store: DynKVStore = Arc::new(memory::empty().await?);
     Ok(CdkCln::new(rpc_path, fee_reserve, kv_store).await?)
 }
 
@@ -177,7 +177,7 @@ pub async fn create_lnd_backend(lnd_client: &LndClient) -> Result<CdkLnd> {
         percent_fee_reserve: 1.0,
     };
 
-    let kv_store: DynMintKVStore = Arc::new(memory::empty().await?);
+    let kv_store: DynKVStore = Arc::new(memory::empty().await?);
 
     Ok(CdkLnd::new(
         lnd_client.address.clone(),
@@ -402,6 +402,10 @@ pub async fn start_regtest_end(
         generate_block(&bitcoin_client)?;
 
         if let Some(node) = ldk_node {
+            // Sync LDK wallet so it sees its confirmed on-chain balance
+            // This is needed for anchor channel reserves
+            node.sync_wallets()?;
+
             let pubkey = node.node_id();
             let listen_addr = node.listening_addresses();
             let listen_addr = listen_addr.as_ref().unwrap().first().unwrap();

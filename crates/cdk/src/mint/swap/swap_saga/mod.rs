@@ -4,6 +4,7 @@ use std::sync::Arc;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
+use cdk_common::state::check_state_transition;
 use cdk_common::{database, Amount, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tokio::sync::Mutex;
 use tracing::instrument;
@@ -147,8 +148,6 @@ impl<'a> SwapSaga<'a, Initial> {
         quote_id: Option<QuoteId>,
         input_verification: crate::mint::Verification,
     ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
-        tracing::info!("TX1: Setting up swap (verify + inputs + outputs)");
-
         let mut tx = self.db.begin_transaction().await?;
 
         // Verify balance within the transaction
@@ -253,12 +252,7 @@ impl<'a> SwapSaga<'a, Initial> {
             .collect();
 
         // Persist saga state for crash recovery (atomic with TX1)
-        let saga = Saga::new_swap(
-            self.operation_id,
-            SwapSagaState::SetupComplete,
-            blinded_secrets.clone(),
-            ys.clone(),
-        );
+        let saga = Saga::new_swap(self.operation_id, SwapSagaState::SetupComplete);
 
         if let Err(err) = tx.add_saga(&saga).await {
             tx.rollback().await?;
@@ -317,8 +311,6 @@ impl<'a> SwapSaga<'a, SetupComplete> {
     /// - Propagates any errors from the blind signing operation
     #[instrument(skip_all)]
     pub async fn sign_outputs(self) -> Result<SwapSaga<'a, Signed>, Error> {
-        tracing::info!("Signing outputs (no DB)");
-
         match self
             .mint
             .blind_sign(self.state_data.blinded_messages.clone())
@@ -385,8 +377,6 @@ impl SwapSaga<'_, Signed> {
     /// - Propagates any database errors
     #[instrument(skip_all)]
     pub async fn finalize(self) -> Result<cdk_common::nuts::SwapResponse, Error> {
-        tracing::info!("TX2: Finalizing swap (signatures + mark spent)");
-
         let blinded_secrets: Vec<PublicKey> = self
             .state_data
             .blinded_messages
@@ -431,6 +421,17 @@ impl SwapSaga<'_, Signed> {
                     "Test failure: UPDATE_PROOFS".into(),
                 )));
             }
+        }
+
+        for current_state in tx
+            .get_proofs_states(&self.state_data.ys)
+            .await?
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(Error::UnexpectedProofState)?
+        {
+            check_state_transition(current_state, State::Spent)
+                .map_err(|_| Error::UnexpectedProofState)?;
         }
 
         match tx

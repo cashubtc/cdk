@@ -145,12 +145,20 @@ impl Wallet {
             }
         }
 
-        let swap_response = self
-            .try_proof_operation_or_reclaim(
-                pre_swap.swap_request.inputs().clone(),
-                self.client.post_swap(pre_swap.swap_request),
-            )
-            .await?;
+        let swap_response = match self.client.post_swap(pre_swap.swap_request).await {
+            Ok(response) => response,
+            Err(err) => {
+                tracing::error!("Failed to post swap request: {}", err);
+
+                // Remove the pending proofs we added since the swap failed
+                let mut tx = self.localstore.begin_db_transaction().await?;
+                tx.update_proofs(vec![], proofs_info.into_iter().map(|p| p.y).collect())
+                    .await?;
+                tx.commit().await?;
+
+                return Err(err);
+            }
+        };
 
         // Proof to keep
         let recv_proofs = construct_proofs(
@@ -191,6 +199,7 @@ impl Wallet {
             quote_id: None,
             payment_request: None,
             payment_proof: None,
+            payment_method: None,
         })
         .await?;
 

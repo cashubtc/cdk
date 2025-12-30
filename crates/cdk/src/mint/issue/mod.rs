@@ -1,3 +1,4 @@
+use cdk_common::database::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
@@ -405,11 +406,11 @@ impl Mint {
 
             let mut tx = self.localstore.begin_transaction().await?;
 
-            if let Ok(Some(mint_quote)) = tx
+            if let Ok(Some(mut mint_quote)) = tx
                 .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
                 .await
             {
-                self.pay_mint_quote(&mut tx, &mint_quote, wait_payment_response)
+                self.pay_mint_quote(&mut tx, &mut mint_quote, wait_payment_response)
                     .await?;
             } else {
                 tracing::warn!(
@@ -451,8 +452,8 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn pay_mint_quote(
         &self,
-        tx: &mut Box<dyn database::MintTransaction<'_, database::Error> + Send + Sync + '_>,
-        mint_quote: &MintQuote,
+        tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
+        mint_quote: &mut Acquired<MintQuote>,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
         #[cfg(feature = "prometheus")]
@@ -564,7 +565,7 @@ impl Mint {
 
         let mut tx = self.localstore.begin_transaction().await?;
 
-        let mint_quote = tx
+        let mut mint_quote = tx
             .get_mint_quote(&mint_request.quote)
             .await?
             .ok_or(Error::UnknownQuote)?;
@@ -674,9 +675,8 @@ impl Mint {
             .await?;
 
 
-        let total_issued = tx
-            .increment_mint_quote_amount_issued(&mint_request.quote, amount_issued)
-            .await?;
+        mint_quote.add_issuance(amount_issued)?;
+        tx.update_mint_quote(&mut mint_quote).await?;
 
 
         // Mint operations have no input fees (no proofs being spent)
@@ -686,7 +686,7 @@ impl Mint {
         tx.commit().await?;
 
         self.pubsub_manager
-            .mint_quote_issue(&mint_quote, total_issued);
+            .mint_quote_issue(&mint_quote, mint_quote.amount_issued());
 
         Ok(MintResponse {
             signatures: blind_signatures,

@@ -80,7 +80,7 @@ where
         }
     }
 
-    /// Try receive an event or return Noen right away
+    /// Try receive an event or return None right away
     pub fn try_recv(&mut self) -> Option<<T::Spec as Spec>::Event> {
         if let Some(event) = self.previous_messages.pop_front() {
             Some(event)

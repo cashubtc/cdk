@@ -47,6 +47,9 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount Overflow")]
     AmountOverflow,
+    /// Over issue - tried to issue more than paid
+    #[error("Cannot issue more than amount paid")]
+    OverIssue,
     /// Witness missing or invalid
     #[error("Signature missing or invalid")]
     SignatureMissingOrInvalid,
@@ -281,7 +284,7 @@ pub enum Error {
     TransferTimeout {
         /// Source mint URL
         source_mint: String,
-        /// Target mint URL  
+        /// Target mint URL
         target_mint: String,
         /// Amount that failed to transfer
         amount: Amount,

@@ -770,6 +770,10 @@ where
 
     // Transition proofs to Pending state
     let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let _records = tx
+        .get_proof_ys_by_quote_id(&quote_id)
+        .await
+        .expect("valid records");
     tx.update_proofs_states(&ys, State::Pending).await.unwrap();
     tx.commit().await.unwrap();
 
@@ -781,6 +785,10 @@ where
 
     // Now transition proofs to Spent state
     let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let _records = tx
+        .get_proof_ys_by_quote_id(&quote_id)
+        .await
+        .expect("valid records");
     tx.update_proofs_states(&ys, State::Spent).await.unwrap();
     tx.commit().await.unwrap();
 
