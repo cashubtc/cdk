@@ -260,6 +260,7 @@ mod tests {
             .unwrap(),
             witness: Some(Witness::HTLCWitness(htlc_witness)),
             dleq: None,
+            p2pk_e: None,
         };
 
         // Valid HTLC should verify successfully
@@ -301,6 +302,7 @@ mod tests {
             .unwrap(),
             witness: Some(Witness::HTLCWitness(htlc_witness)),
             dleq: None,
+            p2pk_e: None,
         };
 
         // Verification should fail with wrong preimage
@@ -344,6 +346,7 @@ mod tests {
             .unwrap(),
             witness: Some(Witness::HTLCWitness(htlc_witness)),
             dleq: None,
+            p2pk_e: None,
         };
 
         // Verification should fail with invalid hash
@@ -382,6 +385,7 @@ mod tests {
                 signatures: vec![],
             })),
             dleq: None,
+            p2pk_e: None,
         };
 
         // Verification should fail with wrong witness type
@@ -416,6 +420,7 @@ mod tests {
             .unwrap(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         };
 
         // Initially, witness should be None
@@ -491,6 +496,7 @@ mod tests {
             .unwrap(),
             witness: Some(Witness::HTLCWitness(htlc_witness)),
             dleq: None,
+            p2pk_e: None,
         };
 
         // Should FAIL because:

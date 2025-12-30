@@ -461,6 +461,7 @@ pub async fn test_p2pk_swap() {
         &SplitTarget::default(),
         &spending_conditions,
         &fee_and_amounts,
+        false,
     )
     .unwrap();
 

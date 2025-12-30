@@ -80,6 +80,7 @@ For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVE
 | [22][22] | Blind Authentication  | :heavy_check_mark: |
 | [23][23] | Payment Method: BOLT11 | :heavy_check_mark: |
 | [25][25] | Payment Method: BOLT12 | :heavy_check_mark: |
+| [26][26] | Pay-to-Blinded-Key (P2BK) | :heavy_check_mark: |
 
 
 ## License
@@ -120,3 +121,4 @@ Please see the [development guide](DEVELOPMENT.md).
 [22]: https://github.com/cashubtc/nuts/blob/main/22.md
 [23]: https://github.com/cashubtc/nuts/blob/main/23.md
 [25]: https://github.com/cashubtc/nuts/blob/main/25.md
+[26]: https://github.com/cashubtc/nuts/blob/main/26.md

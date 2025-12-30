@@ -4,6 +4,7 @@ use std::str::FromStr;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::XOnlyPublicKey;
+use cdk_common::nut26::{derive_signing_key_bip340, ecdh_kdf};
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use tracing::instrument;
@@ -82,7 +83,7 @@ impl Wallet {
                     .unwrap_or_default()
                     .try_into();
                 if let Ok(conditions) = conditions {
-                    let mut pubkeys = conditions.pubkeys.unwrap_or_default();
+                    let mut pubkeys = vec![];
 
                     match secret.kind() {
                         Kind::P2PK => {
@@ -98,9 +99,43 @@ impl Wallet {
                             proof.add_preimage(preimage.to_string());
                         }
                     }
-                    for pubkey in pubkeys {
-                        if let Some(signing) = p2pk_signing_keys.get(&pubkey.x_only_public_key()) {
-                            proof.sign_p2pk(signing.to_owned().clone())?;
+                    pubkeys.extend_from_slice(&conditions.pubkeys.unwrap_or_default());
+
+                    if let Some(p2pk_e) = proof.p2pk_e {
+                        for seckey in opts.p2pk_signing_keys.iter() {
+                            for (canonical_slot, pubkey) in pubkeys.iter().enumerate() {
+                                let r = ecdh_kdf(
+                                    seckey,
+                                    &p2pk_e,
+                                    proof.keyset_id,
+                                    canonical_slot as u8,
+                                )?;
+
+                                if let Ok(combined_seckey) =
+                                    derive_signing_key_bip340(seckey, &r, pubkey)
+                                {
+                                    tracing::debug!(
+                                        "Seckey {:?} matching for pubkey {:?}\n",
+                                        seckey,
+                                        pubkey
+                                    );
+                                    proof.sign_p2pk(combined_seckey)?;
+                                } else {
+                                    tracing::debug!(
+                                        "Seckey {:?} NOT matching for pubkey {:?}\n",
+                                        seckey,
+                                        pubkey
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        for pubkey in pubkeys {
+                            if let Some(signing) =
+                                p2pk_signing_keys.get(&pubkey.x_only_public_key())
+                            {
+                                proof.sign_p2pk(signing.to_owned().clone())?;
+                            }
                         }
                     }
 
@@ -133,13 +168,16 @@ impl Wallet {
                 proofs,
                 None,
                 false,
+                false,
                 &fee_breakdown,
             )
             .await?;
 
+        // SIG_ALL provides we sign inputs and outputs, and that all inputs have the same
+        // spending conditions
         if sig_flag.eq(&SigFlag::SigAll) {
             for blinded_message in pre_swap.swap_request.outputs_mut() {
-                for signing_key in p2pk_signing_keys.values() {
+                for (_, signing_key) in p2pk_signing_keys.iter() {
                     blinded_message.sign_p2pk(signing_key.to_owned().clone())?
                 }
             }

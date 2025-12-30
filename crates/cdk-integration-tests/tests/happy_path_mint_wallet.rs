@@ -332,7 +332,7 @@ async fn test_restore() {
 
     let expected_fee = wallet.get_proofs_fee(&proofs).await.unwrap().total;
     wallet_2
-        .swap(None, SplitTarget::default(), proofs, None, false)
+        .swap(None, SplitTarget::default(), proofs, None, false, false)
         .await
         .unwrap();
 
@@ -455,7 +455,7 @@ async fn test_restore_with_counter_gap() {
     // Swap the restored proofs to verify they are valid
     let expected_fee = wallet_restored.get_proofs_fee(&proofs).await.unwrap().total;
     wallet_restored
-        .swap(None, SplitTarget::default(), proofs, None, false)
+        .swap(None, SplitTarget::default(), proofs, None, false, false)
         .await
         .expect("first swap after restore failed");
 
@@ -474,7 +474,7 @@ async fn test_restore_with_counter_gap() {
         }
 
         let swap_result = wallet_restored
-            .swap(None, SplitTarget::default(), proofs.clone(), None, false)
+            .swap(None, SplitTarget::default(), proofs.clone(), None, false, false)
             .await;
 
         match swap_result {

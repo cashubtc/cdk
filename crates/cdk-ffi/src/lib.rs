@@ -185,6 +185,7 @@ mod tests {
             include_fee: true,
             max_proofs: Some(10),
             metadata,
+            use_p2bk: false,
         };
 
         assert!(options.memo.is_some());
