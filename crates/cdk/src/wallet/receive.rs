@@ -167,7 +167,8 @@ impl Wallet {
                 opts.amount_split_target,
                 proofs,
                 None,
-                false, false,
+                false,
+                false,
                 &fee_breakdown,
             )
             .await?;
