@@ -95,6 +95,13 @@ impl Token {
         self.to_string()
     }
 
+    /// Decode token from raw bytes
+    #[uniffi::constructor]
+    pub fn from_raw_bytes(bytes: Vec<u8>) -> Result<Token, FfiError> {
+        let token = cdk::nuts::Token::try_from(&bytes)?;
+        Ok(Token { inner: token })
+    }
+
     /// Decode token from string representation
     #[uniffi::constructor]
     pub fn decode(encoded_token: String) -> Result<Token, FfiError> {
