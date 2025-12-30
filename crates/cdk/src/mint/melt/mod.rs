@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use cdk_common::amount::amount_for_offer;
+use cdk_common::database::mint::{MeltQuoteFilter, MeltQuoteListResult};
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nut05::MeltMethodOptions;
@@ -414,6 +415,43 @@ impl Mint {
     pub async fn melt_quotes(&self) -> Result<Vec<MeltQuote>, Error> {
         let quotes = self.localstore.get_melt_quotes().await?;
         Ok(quotes)
+    }
+
+    /// Lists melt quotes with filtering and pagination
+    ///
+    /// This method performs filtering at the database level for efficiency.
+    /// Use this instead of `melt_quotes` when you need filtered/paginated results.
+    ///
+    /// # Arguments
+    /// * `filter` - Filter parameters including date range, states, units, and pagination
+    ///
+    /// # Returns
+    /// * `MeltQuoteListResult` - Filtered quotes
+    /// * `Error` if database access fails
+    #[instrument(skip_all)]
+    pub async fn list_melt_quotes_filtered(
+        &self,
+        filter: MeltQuoteFilter,
+    ) -> Result<MeltQuoteListResult, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("list_melt_quotes_filtered");
+
+        let result = async {
+            let result = self.localstore.list_melt_quotes_filtered(filter).await?;
+            Ok(result)
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("list_melt_quotes_filtered");
+            METRICS.record_mint_operation("list_melt_quotes_filtered", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
+            }
+        }
+
+        result
     }
 
     /// Melt

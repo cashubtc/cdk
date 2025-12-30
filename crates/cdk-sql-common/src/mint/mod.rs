@@ -16,8 +16,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::mint::{
-    CompletedOperationsDatabase, CompletedOperationsTransaction, LockedMeltQuotes, MintQuoteFilter,
-    MintQuoteListResult, SagaDatabase, SagaTransaction,
+    CompletedOperationsDatabase, CompletedOperationsTransaction, LockedMeltQuotes, MeltQuoteFilter,
+    MeltQuoteListResult, MintQuoteFilter, MintQuoteListResult, SagaDatabase, SagaTransaction,
 };
 use cdk_common::database::{
     self, Acquired, ConversionError, DbTransactionFinalizer, Error, MintDatabase,
@@ -1645,6 +1645,110 @@ where
         .into_iter()
         .map(sql_row_to_melt_quote)
         .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn list_melt_quotes_filtered(
+        &self,
+        filter: MeltQuoteFilter,
+    ) -> Result<MeltQuoteListResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        // Build dynamic WHERE clauses
+        let mut where_clauses: Vec<String> = Vec::new();
+
+        // Date range filters
+        if filter.creation_date_start.is_some() {
+            where_clauses.push("created_time >= :creation_date_start".to_string());
+        }
+        if filter.creation_date_end.is_some() {
+            where_clauses.push("created_time <= :creation_date_end".to_string());
+        }
+
+        // Unit filter
+        if !filter.units.is_empty() {
+            where_clauses.push("unit IN (:units)".to_string());
+        }
+
+        // State filter - direct column comparison (state is stored in DB)
+        if !filter.states.is_empty() {
+            where_clauses.push("state IN (:states)".to_string());
+        }
+
+        // Build WHERE clause
+        let where_clause = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+
+        // Build ORDER BY clause
+        let order_direction = if filter.reversed { "DESC" } else { "ASC" };
+
+        // Build LIMIT/OFFSET clause
+        let limit_clause = match filter.limit {
+            Some(limit) => format!("LIMIT {} OFFSET {}", limit, filter.offset),
+            None if filter.offset > 0 => format!("OFFSET {}", filter.offset),
+            None => String::new(),
+        };
+
+        let query_str = format!(
+            r#"
+            SELECT
+                id,
+                unit,
+                amount,
+                request,
+                fee_reserve,
+                expiry,
+                state,
+                payment_preimage,
+                request_lookup_id,
+                created_time,
+                paid_time,
+                payment_method,
+                options,
+                request_lookup_id_kind
+            FROM
+                melt_quote
+            {where_clause}
+            ORDER BY created_time {order_direction}
+            {limit_clause}
+            "#,
+            where_clause = where_clause,
+            order_direction = order_direction,
+            limit_clause = limit_clause,
+        );
+
+        let mut q = query(&query_str)?;
+
+        // Bind parameters
+        if let Some(start) = filter.creation_date_start {
+            q = q.bind("creation_date_start", start as i64);
+        }
+        if let Some(end) = filter.creation_date_end {
+            q = q.bind("creation_date_end", end as i64);
+        }
+        if !filter.units.is_empty() {
+            q = q.bind_vec(
+                "units",
+                filter.units.iter().map(|u| u.to_string()).collect(),
+            );
+        }
+        if !filter.states.is_empty() {
+            q = q.bind_vec(
+                "states",
+                filter.states.iter().map(|s| s.to_string()).collect(),
+            );
+        }
+
+        let quotes = q
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(sql_row_to_melt_quote)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(MeltQuoteListResult { quotes })
     }
 }
 

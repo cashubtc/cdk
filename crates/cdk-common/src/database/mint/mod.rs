@@ -56,6 +56,32 @@ pub struct MintQuoteListResult {
     pub quotes: Vec<MintMintQuote>,
 }
 
+/// Filter parameters for listing melt quotes
+#[derive(Debug, Clone, Default)]
+pub struct MeltQuoteFilter {
+    /// Filter quotes created on or after this Unix timestamp
+    pub creation_date_start: Option<u64>,
+    /// Filter quotes created on or before this Unix timestamp
+    pub creation_date_end: Option<u64>,
+    /// Filter by quote states (stored directly in DB)
+    pub states: Vec<MeltQuoteState>,
+    /// Filter by currency units
+    pub units: Vec<CurrencyUnit>,
+    /// Maximum number of quotes to return
+    pub limit: Option<u64>,
+    /// Number of quotes to skip (for pagination)
+    pub offset: u64,
+    /// If true, sort by created_time DESC; otherwise ASC
+    pub reversed: bool,
+}
+
+/// Result of a paginated melt quotes query
+#[derive(Debug, Clone)]
+pub struct MeltQuoteListResult {
+    /// The filtered and paginated quotes
+    pub quotes: Vec<MeltQuote>,
+}
+
 /// Information about a melt request stored in the database
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeltRequestInfo {
@@ -314,6 +340,13 @@ pub trait QuotesDatabase {
     ) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Get all [`mint::MeltQuote`]s
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
+    /// List melt quotes with filtering and pagination at the database level
+    ///
+    /// This method performs filtering, sorting, and pagination in SQL for efficiency.
+    async fn list_melt_quotes_filtered(
+        &self,
+        filter: MeltQuoteFilter,
+    ) -> Result<MeltQuoteListResult, Self::Err>;
 }
 
 /// Mint Proof Transaction trait

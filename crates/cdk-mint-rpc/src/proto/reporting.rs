@@ -1,16 +1,16 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 
-use cdk::cdk_database::MintQuoteFilter;
-use cdk::nuts::{CurrencyUnit, MintQuoteState};
+use cdk::cdk_database::{MeltQuoteFilter, MintQuoteFilter};
+use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState};
 use cdk::Amount;
 use tonic::{Request, Response, Status};
 
 use crate::cdk_mint_reporting_server::CdkMintReporting;
 use crate::{
     Balance, ContactInfo, GetBalancesRequest, GetBalancesResponse, GetInfoRequest, GetInfoResponse,
-    GetKeysetsRequest, GetKeysetsResponse, Keyset, ListMintQuotesRequest, ListMintQuotesResponse,
-    LookupMintQuoteRequest, LookupMintQuoteResponse,
+    GetKeysetsRequest, GetKeysetsResponse, Keyset, ListMeltQuotesResponse, ListMintQuotesResponse,
+    ListQuotesRequest, LookupMeltQuoteResponse, LookupMintQuoteResponse, LookupQuoteRequest,
 };
 
 use super::helpers::get_balances_by_unit;
@@ -187,7 +187,7 @@ impl CdkMintReporting for MintRPCServer {
     /// Filtering is performed at the SQL level for efficiency.
     async fn list_mint_quotes(
         &self,
-        request: Request<ListMintQuotesRequest>,
+        request: Request<ListQuotesRequest>,
     ) -> Result<Response<ListMintQuotesResponse>, Status> {
         let request = request.into_inner();
         let mint = self.mint();
@@ -251,7 +251,7 @@ impl CdkMintReporting for MintRPCServer {
     /// Returns the detailed version with paid_time and issued_time.
     async fn lookup_mint_quote(
         &self,
-        request: Request<LookupMintQuoteRequest>,
+        request: Request<LookupQuoteRequest>,
     ) -> Result<Response<LookupMintQuoteResponse>, Status> {
         let quote_id = request.into_inner().quote_id;
         let mint = self.mint();
@@ -273,6 +273,99 @@ impl CdkMintReporting for MintRPCServer {
         let proto_quote = super::helpers::mint_quote_to_detail(&quote);
 
         Ok(Response::new(LookupMintQuoteResponse {
+            quote: Some(proto_quote),
+        }))
+    }
+
+    /// Lists melt quotes with optional filtering and pagination
+    ///
+    /// Filtering is performed at the SQL level for efficiency.
+    async fn list_melt_quotes(
+        &self,
+        request: Request<ListQuotesRequest>,
+    ) -> Result<Response<ListMeltQuotesResponse>, Status> {
+        let request = request.into_inner();
+        let mint = self.mint();
+
+        // Parse state strings to MeltQuoteState enum
+        let states: Vec<MeltQuoteState> = request
+            .states
+            .iter()
+            .filter_map(|s| MeltQuoteState::from_str(s).ok())
+            .collect();
+
+        // Parse unit strings to CurrencyUnit enum
+        let units: Vec<CurrencyUnit> = request
+            .units
+            .iter()
+            .filter_map(|u| CurrencyUnit::from_str(u).ok())
+            .collect();
+
+        // Build filter for SQL-level filtering
+        let start_index = request.index_offset.max(0) as u64;
+        let filter = MeltQuoteFilter {
+            creation_date_start: request.creation_date_start.map(|t| t as u64),
+            creation_date_end: request.creation_date_end.map(|t| t as u64),
+            states,
+            units,
+            limit: if request.num_max_quotes > 0 {
+                Some(request.num_max_quotes as u64)
+            } else {
+                None
+            },
+            offset: start_index,
+            reversed: request.reversed,
+        };
+
+        // Execute filtered query at the database level
+        let result = mint
+            .list_melt_quotes_filtered(filter)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        // Calculate response offsets
+        let first_index_offset = start_index as i64;
+        let last_index_offset = (start_index as usize + result.quotes.len()) as i64;
+
+        // Convert to proto
+        let quotes = result
+            .quotes
+            .iter()
+            .map(super::helpers::melt_quote_to_proto)
+            .collect();
+
+        Ok(Response::new(ListMeltQuotesResponse {
+            quotes,
+            first_index_offset,
+            last_index_offset,
+        }))
+    }
+
+    /// Looks up a specific melt quote by ID
+    async fn lookup_melt_quote(
+        &self,
+        request: Request<LookupQuoteRequest>,
+    ) -> Result<Response<LookupMeltQuoteResponse>, Status> {
+        let quote_id = request.into_inner().quote_id;
+        let mint = self.mint();
+
+        // Parse the quote ID
+        let quote_id = quote_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("Invalid quote ID format"))?;
+
+        // Get the quote from database
+        let quote = mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found("Quote not found"))?;
+
+        // Convert to proto
+        let proto_quote = super::helpers::melt_quote_to_proto(&quote);
+
+        Ok(Response::new(LookupMeltQuoteResponse {
             quote: Some(proto_quote),
         }))
     }

@@ -6,8 +6,10 @@ service CdkMintReporting {
     rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {}
     rpc GetBalances(GetBalancesRequest) returns (GetBalancesResponse) {}
     rpc GetKeysets(GetKeysetsRequest) returns (GetKeysetsResponse) {}
-    rpc ListMintQuotes(ListMintQuotesRequest) returns (ListMintQuotesResponse) {}
-    rpc LookupMintQuote(LookupMintQuoteRequest) returns (LookupMintQuoteResponse) {}
+    rpc ListMintQuotes(ListQuotesRequest) returns (ListMintQuotesResponse) {}
+    rpc LookupMintQuote(LookupQuoteRequest) returns (LookupMintQuoteResponse) {}
+    rpc ListMeltQuotes(ListQuotesRequest) returns (ListMeltQuotesResponse) {}
+    rpc LookupMeltQuote(LookupQuoteRequest) returns (LookupMeltQuoteResponse) {}
 }
 
 message ContactInfo {
@@ -81,6 +83,21 @@ message MintQuoteDetail {
     string request_lookup_id_kind = 14;
 }
 
+
+message MeltQuote {
+    string id = 1;
+    string unit = 2;
+    uint64 amount = 3;
+    string request = 4;
+    uint64 fee_reserve = 5;
+    string state = 6;
+    optional string payment_preimage = 7;
+    optional string request_lookup_id = 8;
+    uint64 created_time = 9;
+    optional uint64 paid_time = 10;
+    string payment_method = 11;
+}
+
 message GetBalancesRequest {
     optional string unit = 1;
 }
@@ -115,7 +132,7 @@ message GetKeysetsResponse {
     repeated Keyset keysets = 1;
 }
 
-message ListMintQuotesRequest {
+message ListQuotesRequest {
     int64 index_offset = 1;
     int64 num_max_quotes = 2;
     bool reversed = 3;
@@ -131,10 +148,20 @@ message ListMintQuotesResponse {
     int64 first_index_offset = 3;
 }
 
-message LookupMintQuoteRequest {
+message LookupQuoteRequest {
     string quote_id = 1;
 }
 
 message LookupMintQuoteResponse {
     MintQuoteDetail quote = 1;
+}
+
+message ListMeltQuotesResponse {
+    repeated MeltQuote quotes = 1;
+    int64 last_index_offset = 2;
+    int64 first_index_offset = 3;
+}
+
+message LookupMeltQuoteResponse {
+    MeltQuote quote = 1;
 }

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use cdk::mint::MeltQuote as MintMeltQuote;
 use cdk::mint::Mint;
 use cdk::mint::MintQuote as MintMintQuote;
 use cdk::nuts::{CurrencyUnit, Id};
@@ -187,6 +188,23 @@ pub fn mint_quote_to_detail(quote: &MintMintQuote) -> crate::MintQuoteDetail {
         issuances,
         amount_paid: quote.amount_paid().into(),
         amount_issued: quote.amount_issued().into(),
+        payment_method: quote.payment_method.to_string(),
+    }
+}
+
+/// Convert a mint MeltQuote to proto MeltQuote
+pub fn melt_quote_to_proto(quote: &MintMeltQuote) -> crate::MeltQuote {
+    crate::MeltQuote {
+        id: quote.id.to_string(),
+        unit: quote.unit.to_string(),
+        amount: quote.amount.into(),
+        request: quote.request.to_string(),
+        fee_reserve: quote.fee_reserve.into(),
+        state: quote.state.to_string(),
+        payment_preimage: quote.payment_preimage.clone(),
+        request_lookup_id: quote.request_lookup_id.as_ref().map(|r| r.to_string()),
+        created_time: quote.created_time,
+        paid_time: quote.paid_time,
         payment_method: quote.payment_method.to_string(),
     }
 }
