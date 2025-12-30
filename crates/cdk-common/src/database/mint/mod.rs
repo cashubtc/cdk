@@ -135,6 +135,57 @@ pub struct ProofListResult {
     pub last_index_offset: i64,
 }
 
+/// Filter parameters for listing blind signatures
+#[derive(Debug, Clone, Default)]
+pub struct BlindSignatureFilter {
+    /// Filter signatures created on or after this Unix timestamp
+    pub creation_date_start: Option<u64>,
+    /// Filter signatures created on or before this Unix timestamp
+    pub creation_date_end: Option<u64>,
+    /// Filter by currency units (requires JOIN to keyset table)
+    pub units: Vec<CurrencyUnit>,
+    /// Filter by specific keyset IDs
+    pub keyset_ids: Vec<Id>,
+    /// Filter by operation kinds (e.g., "mint", "melt", "swap")
+    pub operations: Vec<String>,
+    /// Maximum number of signatures to return
+    pub limit: Option<u64>,
+    /// Number of signatures to skip (for pagination)
+    pub offset: u64,
+    /// If true, sort by created_time DESC; otherwise ASC
+    pub reversed: bool,
+}
+
+/// Blind signature record returned from filtered query (excludes cryptographic data)
+#[derive(Debug, Clone)]
+pub struct BlindSignatureRecord {
+    /// Signature amount
+    pub amount: Amount,
+    /// Keyset ID
+    pub keyset_id: Id,
+    /// Associated quote ID (if any)
+    pub quote_id: Option<String>,
+    /// Creation timestamp (when blinded message was received)
+    pub created_time: u64,
+    /// Signed timestamp (when signature was issued, None if pending)
+    pub signed_time: Option<u64>,
+    /// Operation kind (mint, melt, swap)
+    pub operation_kind: Option<String>,
+    /// Operation ID (UUID)
+    pub operation_id: Option<String>,
+}
+
+/// Result of a paginated blind signatures query
+#[derive(Debug, Clone)]
+pub struct BlindSignatureListResult {
+    /// The filtered and paginated signatures
+    pub signatures: Vec<BlindSignatureRecord>,
+    /// Index of the first item in this result set (for pagination)
+    pub first_index_offset: i64,
+    /// Index of the last item in this result set (for pagination)
+    pub last_index_offset: i64,
+}
+
 /// Information about a melt request stored in the database
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeltRequestInfo {
@@ -545,6 +596,15 @@ pub trait SignaturesDatabase {
         &self,
         operation_id: &uuid::Uuid,
     ) -> Result<Vec<PublicKey>, Self::Err>;
+
+    /// List blind signatures with filtering and pagination at the database level
+    ///
+    /// This method performs filtering, sorting, and pagination in SQL for efficiency.
+    /// When filtering by units, a JOIN to the keyset table is performed.
+    async fn list_blind_signatures_filtered(
+        &self,
+        filter: BlindSignatureFilter,
+    ) -> Result<BlindSignatureListResult, Self::Err>;
 }
 
 #[async_trait]

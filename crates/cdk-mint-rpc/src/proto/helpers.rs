@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use cdk::cdk_database::ProofRecord;
+use cdk::cdk_database::{BlindSignatureRecord, ProofRecord};
 use cdk::mint::MeltQuote as MintMeltQuote;
 use cdk::mint::Mint;
 use cdk::mint::MintQuote as MintMintQuote;
@@ -238,5 +238,18 @@ pub fn proof_record_to_proto(proof: &ProofRecord) -> crate::Proof {
         created_time: proof.created_time,
         operation_kind: proof.operation_kind.clone().unwrap_or_default(),
         operation_id: proof.operation_id.clone().unwrap_or_default(),
+    }
+}
+
+/// Convert a BlindSignatureRecord to proto BlindSignature
+pub fn blind_signature_record_to_proto(sig: &BlindSignatureRecord) -> crate::BlindSignature {
+    crate::BlindSignature {
+        amount: sig.amount.into(),
+        keyset_id: sig.keyset_id.to_string(),
+        quote_id: sig.quote_id.clone(),
+        created_time: sig.created_time,
+        signed_time: sig.signed_time,
+        operation_kind: sig.operation_kind.clone().unwrap_or_default(),
+        operation_id: sig.operation_id.clone().unwrap_or_default(),
     }
 }

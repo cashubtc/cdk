@@ -9,8 +9,9 @@ pub mod cdk_database {
     //! CDK Database
     #[cfg(feature = "mint")]
     pub use cdk_common::database::mint::{
-        MeltQuoteFilter, MeltQuoteListResult, MintQuoteFilter, MintQuoteListResult, ProofFilter,
-        ProofListResult, ProofRecord,
+        BlindSignatureFilter, BlindSignatureListResult, BlindSignatureRecord, MeltQuoteFilter,
+        MeltQuoteListResult, MintQuoteFilter, MintQuoteListResult, ProofFilter, ProofListResult,
+        ProofRecord,
     };
     pub use cdk_common::database::Error;
     #[cfg(all(feature = "mint", feature = "auth"))]
