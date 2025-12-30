@@ -194,6 +194,23 @@ pub fn mint_quote_to_detail(quote: &MintMintQuote) -> crate::MintQuoteDetail {
 
 /// Convert a mint MeltQuote to proto MeltQuote
 pub fn melt_quote_to_proto(quote: &MintMeltQuote) -> crate::MeltQuote {
+    let options = quote.options.map(|opt| {
+        use cdk::nuts::MeltOptions as RustMeltOptions;
+        let options = match opt {
+            RustMeltOptions::Mpp { mpp } => crate::melt_options::Options::Mpp(crate::MppOptions {
+                amount: mpp.amount.into(),
+            }),
+            RustMeltOptions::Amountless { amountless } => {
+                crate::melt_options::Options::Amountless(crate::AmountlessOptions {
+                    amount_msat: amountless.amount_msat.into(),
+                })
+            }
+        };
+        crate::MeltOptions {
+            options: Some(options),
+        }
+    });
+
     crate::MeltQuote {
         id: quote.id.to_string(),
         unit: quote.unit.to_string(),
@@ -206,5 +223,6 @@ pub fn melt_quote_to_proto(quote: &MintMeltQuote) -> crate::MeltQuote {
         created_time: quote.created_time,
         paid_time: quote.paid_time,
         payment_method: quote.payment_method.to_string(),
+        options,
     }
 }
