@@ -148,8 +148,6 @@ impl<'a> SwapSaga<'a, Initial> {
         quote_id: Option<QuoteId>,
         input_verification: crate::mint::Verification,
     ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
-        tracing::info!("TX1: Setting up swap (verify + inputs + outputs)");
-
         let mut tx = self.db.begin_transaction().await?;
 
         // Verify balance within the transaction
@@ -313,8 +311,6 @@ impl<'a> SwapSaga<'a, SetupComplete> {
     /// - Propagates any errors from the blind signing operation
     #[instrument(skip_all)]
     pub async fn sign_outputs(self) -> Result<SwapSaga<'a, Signed>, Error> {
-        tracing::info!("Signing outputs (no DB)");
-
         match self
             .mint
             .blind_sign(self.state_data.blinded_messages.clone())
@@ -381,8 +377,6 @@ impl SwapSaga<'_, Signed> {
     /// - Propagates any database errors
     #[instrument(skip_all)]
     pub async fn finalize(self) -> Result<cdk_common::nuts::SwapResponse, Error> {
-        tracing::info!("TX2: Finalizing swap (signatures + mark spent)");
-
         let blinded_secrets: Vec<PublicKey> = self
             .state_data
             .blinded_messages

@@ -194,8 +194,6 @@ impl MeltSaga<Initial> {
         input_verification: Verification,
         payment_method: cdk_common::PaymentMethod,
     ) -> Result<MeltSaga<SetupComplete>, Error> {
-        tracing::info!("TX1: Setting up melt (verify + inputs + outputs)");
-
         let Verification {
             amount: input_amount,
             unit: input_unit,
@@ -487,8 +485,6 @@ impl MeltSaga<SetupComplete> {
         self,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<(Self, SettlementDecision), Error> {
-        tracing::info!("Checking for internal settlement opportunity");
-
         let mut tx = self.db.begin_transaction().await?;
 
         let mut mint_quote = match tx
@@ -620,8 +616,6 @@ impl MeltSaga<SetupComplete> {
         self,
         settlement: SettlementDecision,
     ) -> Result<MeltSaga<PaymentConfirmed>, Error> {
-        tracing::info!("Making payment (external LN operation or internal settlement)");
-
         let payment_result = match settlement {
             SettlementDecision::Internal { amount } => {
                 tracing::info!(
@@ -867,8 +861,6 @@ impl MeltSaga<PaymentConfirmed> {
     /// - `UnitMismatch`: Failed to convert payment amount to quote unit
     #[instrument(skip_all)]
     pub async fn finalize(self) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
-        tracing::info!("TX2: Finalizing melt (mark spent + change)");
-
         let total_spent = to_unit(
             self.state_data.payment_result.total_spent,
             &self.state_data.payment_result.unit,
