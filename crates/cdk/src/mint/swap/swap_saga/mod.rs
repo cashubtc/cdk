@@ -4,7 +4,6 @@ use std::sync::Arc;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
-use cdk_common::state::check_state_transition;
 use cdk_common::{database, Amount, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tokio::sync::Mutex;
 use tracing::instrument;
@@ -177,17 +176,30 @@ impl<'a> SwapSaga<'a, Initial> {
         );
 
         // Add input proofs to DB
-        if let Err(err) = tx
+        let mut new_proofs = match tx
             .add_proofs(input_proofs.clone(), quote_id.clone(), &operation)
             .await
         {
-            tx.rollback().await?;
-            return Err(match err {
-                database::Error::Duplicate => Error::TokenPending,
-                database::Error::AttemptUpdateSpentProof => Error::TokenAlreadySpent,
-                _ => Error::Database(err),
-            });
-        }
+            Ok(proofs) => proofs,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(match err {
+                    database::Error::Duplicate => Error::TokenPending,
+                    database::Error::AttemptUpdateSpentProof => Error::TokenAlreadySpent,
+                    _ => Error::Database(err),
+                });
+            }
+        };
+
+        let original_state = new_proofs.get_state();
+
+        new_proofs.set_new_state(State::Pending).map_err(|_| {
+            if original_state == State::Pending {
+                Error::TokenPending
+            } else {
+                Error::TokenAlreadySpent
+            }
+        })?;
 
         let ys = match input_proofs.ys() {
             Ok(ys) => ys,
@@ -195,7 +207,7 @@ impl<'a> SwapSaga<'a, Initial> {
         };
 
         // Update input proof states to Pending
-        let original_proof_states = match tx.update_proofs_states(&ys, State::Pending).await {
+        match tx.update_proofs(&mut new_proofs).await {
             Ok(states) => states,
             Err(database::Error::AttemptUpdateSpentProof)
             | Err(database::Error::AttemptRemoveSpentProof) => {
@@ -209,22 +221,10 @@ impl<'a> SwapSaga<'a, Initial> {
         };
 
         // Verify proofs weren't already pending or spent
-        if ys.len() != original_proof_states.len() {
+        if ys.len() != new_proofs.len() {
             tracing::error!("Mismatched proof states");
             tx.rollback().await?;
             return Err(Error::Internal);
-        }
-
-        let forbidden_states = [State::Pending, State::Spent];
-        for original_state in original_proof_states.iter().flatten() {
-            if forbidden_states.contains(original_state) {
-                tx.rollback().await?;
-                return Err(if *original_state == State::Pending {
-                    Error::TokenPending
-                } else {
-                    Error::TokenAlreadySpent
-                });
-            }
         }
 
         // Add output blinded messages
@@ -423,21 +423,10 @@ impl SwapSaga<'_, Signed> {
             }
         }
 
-        for current_state in tx
-            .get_proofs_states(&self.state_data.ys)
-            .await?
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .ok_or(Error::UnexpectedProofState)?
-        {
-            check_state_transition(current_state, State::Spent)
-                .map_err(|_| Error::UnexpectedProofState)?;
-        }
+        let mut proofs = tx.get_proofs(&self.state_data.ys).await?;
+        proofs.set_new_state(State::Spent)?;
 
-        match tx
-            .update_proofs_states(&self.state_data.ys, State::Spent)
-            .await
-        {
+        match tx.update_proofs(&mut proofs).await {
             Ok(_) => {}
             Err(database::Error::AttemptUpdateSpentProof)
             | Err(database::Error::AttemptRemoveSpentProof) => {
