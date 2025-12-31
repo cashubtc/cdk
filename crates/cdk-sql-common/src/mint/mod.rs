@@ -16,11 +16,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::mint::{
-    BlindSignatureFilter, BlindSignatureListResult, BlindSignatureRecord,
-    CompletedOperationsDatabase, CompletedOperationsTransaction, LockedMeltQuotes, MeltQuoteFilter,
-    MeltQuoteListResult, MintQuoteFilter, MintQuoteListResult, OperationFilter,
-    OperationListResult, OperationRecord, ProofFilter, ProofListResult, ProofRecord, SagaDatabase,
-    SagaTransaction,
+    BackupDatabase, BackupFormat, BackupResult, BlindSignatureFilter, BlindSignatureListResult,
+    BlindSignatureRecord, CompletedOperationsDatabase, CompletedOperationsTransaction,
+    LockedMeltQuotes, MeltQuoteFilter, MeltQuoteListResult, MintQuoteFilter, MintQuoteListResult,
+    OperationFilter, OperationListResult, OperationRecord, ProofFilter, ProofListResult,
+    ProofRecord, SagaDatabase, SagaTransaction,
 };
 use cdk_common::database::{
     self, Acquired, ConversionError, DbTransactionFinalizer, Error, MintDatabase,
@@ -3576,6 +3576,157 @@ fn sql_row_to_operation_record(row: Vec<Column>) -> Result<OperationRecord, Erro
         payment_method: column_as_nullable_string!(payment_method),
         unit: column_as_nullable_string!(unit),
     })
+}
+
+// ============================================================================
+// Backup Database Implementation
+// ============================================================================
+
+#[async_trait]
+impl<RM> BackupDatabase for SQLMintDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    #[instrument(skip(self), err)]
+    async fn create_backup(&self, format: BackupFormat) -> Result<BackupResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let engine = RM::Connection::name().to_string();
+
+        let data = match format {
+            BackupFormat::Sqlite => {
+                // Use VACUUM INTO to create a consistent snapshot
+                // Create temp file path
+                let temp_path = std::env::temp_dir().join(format!("cdk_backup_{}.db", unix_time()));
+                let temp_path_str = temp_path.to_string_lossy().to_string();
+
+                // Execute VACUUM INTO
+                query(&format!("VACUUM INTO '{}'", temp_path_str))?
+                    .execute(&*conn)
+                    .await?;
+
+                // Read the backup file
+                let backup_data = std::fs::read(&temp_path).map_err(|e| {
+                    Error::Database(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Failed to read backup file: {}", e),
+                    )))
+                })?;
+
+                // Clean up temp file
+                let _ = std::fs::remove_file(&temp_path);
+
+                backup_data
+            }
+            BackupFormat::Sql => {
+                // Generate SQL dump
+                let mut sql_dump = String::new();
+
+                // Add header
+                sql_dump.push_str("-- CDK Mint Database Backup\n");
+                sql_dump.push_str(&format!("-- Created: {}\n", unix_time()));
+                sql_dump.push_str(&format!("-- Engine: {}\n\n", engine));
+
+                // Get list of tables
+                let tables_query = if engine == "sqlite" {
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                } else {
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
+                };
+
+                let table_rows = query(tables_query)?.fetch_all(&*conn).await?;
+
+                for row in table_rows {
+                    if let Some(Column::Text(table_name)) = row.first() {
+                        // Skip internal migration table
+                        if table_name == "_sqlx_migrations" || table_name == "migrations" {
+                            continue;
+                        }
+
+                        sql_dump.push_str(&format!("\n-- Table: {}\n", table_name));
+
+                        // Get table schema (SQLite specific)
+                        if engine == "sqlite" {
+                            let schema_rows = query(&format!(
+                                "SELECT sql FROM sqlite_master WHERE type='table' AND name='{}'",
+                                table_name
+                            ))?
+                            .fetch_all(&*conn)
+                            .await?;
+
+                            if let Some(schema_row) = schema_rows.first() {
+                                if let Some(Column::Text(schema)) = schema_row.first() {
+                                    sql_dump.push_str(schema);
+                                    sql_dump.push_str(";\n\n");
+                                }
+                            }
+                        }
+
+                        // Get table data
+                        let data_rows = query(&format!("SELECT * FROM \"{}\"", table_name))?
+                            .fetch_all(&*conn)
+                            .await?;
+
+                        for data_row in data_rows {
+                            if data_row.is_empty() {
+                                continue;
+                            }
+
+                            let values: Vec<String> = data_row
+                                .iter()
+                                .map(|col| match col {
+                                    Column::Null => "NULL".to_string(),
+                                    Column::Integer(i) => i.to_string(),
+                                    Column::Real(r) => r.to_string(),
+                                    Column::Text(t) => format!("'{}'", t.replace('\'', "''")),
+                                    Column::Blob(b) => format!("X'{}'", bytes_to_hex(b)),
+                                })
+                                .collect();
+
+                            sql_dump.push_str(&format!(
+                                "INSERT INTO \"{}\" VALUES ({});\n",
+                                table_name,
+                                values.join(", ")
+                            ));
+                        }
+                    }
+                }
+
+                sql_dump.into_bytes()
+            }
+        };
+
+        // Calculate checksum for integrity verification
+        let checksum = checksum_hex(&data);
+
+        Ok(BackupResult {
+            data,
+            format,
+            checksum,
+            created_at: unix_time(),
+            database_engine: engine,
+        })
+    }
+}
+
+/// Calculate a checksum and return as hex string
+///
+/// Uses std DefaultHasher - not cryptographically secure but sufficient for integrity checks.
+/// Returns a 16-character hex string.
+fn checksum_hex(data: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    format!("{:016x}", hash)
+}
+
+/// Convert bytes to hex string
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 #[cfg(test)]

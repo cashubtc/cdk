@@ -764,6 +764,7 @@ pub trait Database<Error>:
     + SignaturesDatabase<Err = Error>
     + SagaDatabase<Err = Error>
     + CompletedOperationsDatabase<Err = Error>
+    + BackupDatabase<Err = Error>
 {
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;
@@ -771,3 +772,44 @@ pub trait Database<Error>:
 
 /// Type alias for Mint Database
 pub type DynMintDatabase = std::sync::Arc<dyn Database<Error> + Send + Sync>;
+
+// ============================================================================
+// Backup Database
+// ============================================================================
+
+/// Database backup format
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackupFormat {
+    /// SQLite binary format (using VACUUM INTO)
+    Sqlite,
+    /// SQL text dump format
+    Sql,
+}
+
+/// Result of a database backup operation
+#[derive(Debug, Clone)]
+pub struct BackupResult {
+    /// The backup data bytes
+    pub data: Vec<u8>,
+    /// Format of the backup
+    pub format: BackupFormat,
+    /// SHA256 checksum of the data (hex encoded)
+    pub checksum: String,
+    /// Unix timestamp when backup was created
+    pub created_at: u64,
+    /// Database engine identifier (e.g., "sqlite", "postgres")
+    pub database_engine: String,
+}
+
+/// Database backup trait
+#[async_trait]
+pub trait BackupDatabase {
+    /// Backup Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Create a backup of the database
+    ///
+    /// Returns the backup data along with metadata.
+    /// For SQLite, this uses VACUUM INTO for binary format or schema+data dump for SQL format.
+    async fn create_backup(&self, format: BackupFormat) -> Result<BackupResult, Self::Err>;
+}

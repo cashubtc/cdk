@@ -19,6 +19,12 @@ service CdkMintManagement {
     rpc GetQuoteTtl(GetQuoteTtlRequest) returns (GetQuoteTtlResponse) {}
     rpc UpdateNut04Quote(UpdateNut04QuoteRequest) returns (UpdateNut04QuoteRequest) {}
     rpc RotateNextKeyset(RotateNextKeysetRequest) returns (RotateNextKeysetResponse) {}
+    rpc CreateBackup(CreateBackupRequest) returns (stream BackupChunk) {}
+}
+
+enum BackupFormat {
+    BACKUP_FORMAT_SQLITE = 0;
+    BACKUP_FORMAT_SQL = 1;
 }
 
 message UpdateResponse{
@@ -115,4 +121,22 @@ message RotateNextKeysetResponse {
     string unit = 2;
     repeated uint64 amounts = 3;
     uint64 input_fee_ppk = 4;
+}
+
+message CreateBackupRequest {
+    BackupFormat format = 1;
+}
+
+message BackupChunk {
+    uint64 sequence = 1;
+    bytes data = 2;
+    optional BackupMetadata metadata = 3;
+}
+
+message BackupMetadata {
+    string database_engine = 1;
+    uint64 total_size_bytes = 2;
+    string checksum = 3;
+    uint64 created_at = 4;
+    string format = 5;
 }

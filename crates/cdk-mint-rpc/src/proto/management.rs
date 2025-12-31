@@ -1,5 +1,7 @@
+use std::pin::Pin;
 use std::str::FromStr;
 
+use cdk::cdk_database::BackupFormat;
 use cdk::mint::MintQuote;
 use cdk::nuts::nut04::MintMethodSettings;
 use cdk::nuts::nut05::MeltMethodSettings;
@@ -7,17 +9,22 @@ use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk::Amount;
 use cdk_common::payment::WaitPaymentResponse;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use crate::cdk_mint_management_server::CdkMintManagement;
 use crate::{
-    GetQuoteTtlRequest, GetQuoteTtlResponse, RotateNextKeysetRequest, RotateNextKeysetResponse,
-    UpdateContactRequest, UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest,
-    UpdateNameRequest, UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request,
-    UpdateQuoteTtlRequest, UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest,
+    BackupChunk, BackupMetadata, CreateBackupRequest, GetQuoteTtlRequest, GetQuoteTtlResponse,
+    RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
+    UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest, UpdateNameRequest,
+    UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request, UpdateQuoteTtlRequest,
+    UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest,
 };
 
 use super::server::MintRPCServer;
+
+/// Chunk size for streaming backup data (64KB)
+const BACKUP_CHUNK_SIZE: usize = 64 * 1024;
 
 #[tonic::async_trait]
 impl CdkMintManagement for MintRPCServer {
@@ -567,5 +574,80 @@ impl CdkMintManagement for MintRPCServer {
             amounts: keyset_info.amounts,
             input_fee_ppk: keyset_info.input_fee_ppk,
         }))
+    }
+
+    /// Stream type for backup chunks
+    type CreateBackupStream =
+        Pin<Box<dyn tokio_stream::Stream<Item = Result<BackupChunk, Status>> + Send>>;
+
+    /// Creates a database backup and streams it in chunks
+    ///
+    /// The backup is streamed in chunks of 64KB. The first chunk includes
+    /// metadata about the backup (format, size, checksum, etc.).
+    async fn create_backup(
+        &self,
+        request: Request<CreateBackupRequest>,
+    ) -> Result<Response<Self::CreateBackupStream>, Status> {
+        let request = request.into_inner();
+
+        // Convert proto format to internal format
+        let format = match request.format {
+            0 => BackupFormat::Sqlite, // BACKUP_FORMAT_SQLITE
+            1 => BackupFormat::Sql,    // BACKUP_FORMAT_SQL
+            _ => return Err(Status::invalid_argument("Invalid backup format")),
+        };
+
+        // Create the backup
+        let backup_result = self
+            .mint()
+            .localstore()
+            .create_backup(format)
+            .await
+            .map_err(|e| Status::internal(format!("Backup failed: {}", e)))?;
+
+        // Build metadata
+        let format_str = match backup_result.format {
+            BackupFormat::Sqlite => "sqlite",
+            BackupFormat::Sql => "sql",
+        };
+
+        let metadata = BackupMetadata {
+            database_engine: backup_result.database_engine,
+            total_size_bytes: backup_result.data.len() as u64,
+            checksum: backup_result.checksum,
+            created_at: backup_result.created_at,
+            format: format_str.to_string(),
+        };
+
+        // Create channel for streaming
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+
+        // Spawn task to send chunks
+        let data = backup_result.data;
+        tokio::spawn(async move {
+            let total_chunks = (data.len() + BACKUP_CHUNK_SIZE - 1) / BACKUP_CHUNK_SIZE;
+
+            for (i, chunk_data) in data.chunks(BACKUP_CHUNK_SIZE).enumerate() {
+                let chunk = BackupChunk {
+                    sequence: i as u64,
+                    data: chunk_data.to_vec(),
+                    // Include metadata only in first chunk
+                    metadata: if i == 0 { Some(metadata.clone()) } else { None },
+                };
+
+                if tx.send(Ok(chunk)).await.is_err() {
+                    // Receiver dropped, stop sending
+                    tracing::warn!(
+                        "Backup stream receiver dropped at chunk {}/{}",
+                        i + 1,
+                        total_chunks
+                    );
+                    break;
+                }
+            }
+        });
+
+        let stream = ReceiverStream::new(rx);
+        Ok(Response::new(Box::pin(stream)))
     }
 }
