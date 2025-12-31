@@ -4,6 +4,8 @@ mod get_balances;
 mod get_info;
 /// Module for getting the mint's keysets
 mod get_keysets;
+/// Module for listing blind signatures
+mod list_blind_signatures;
 /// Module for listing melt quotes
 mod list_melt_quotes;
 /// Module for listing mint quotes
@@ -44,6 +46,7 @@ mod update_urls;
 pub use get_balances::{get_balances, GetBalancesCommand};
 pub use get_info::get_info;
 pub use get_keysets::{get_keysets, GetKeysetsCommand};
+pub use list_blind_signatures::{list_blind_signatures, ListBlindSignaturesCommand};
 pub use list_melt_quotes::{list_melt_quotes, ListMeltQuotesCommand};
 pub use list_mint_quotes::{list_mint_quotes, ListMintQuotesCommand};
 pub use list_proofs::{list_proofs, ListProofsCommand};

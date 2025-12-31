@@ -113,6 +113,8 @@ enum Commands {
     LookupMeltQuote(subcommands::LookupMeltQuoteCommand),
     /// List proofs
     ListProofs(subcommands::ListProofsCommand),
+    /// List blind signatures
+    ListBlindSignatures(subcommands::ListBlindSignaturesCommand),
 }
 
 #[tokio::main]
@@ -239,6 +241,9 @@ async fn main() -> Result<()> {
         }
         Commands::ListProofs(sub_command_args) => {
             subcommands::list_proofs(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::ListBlindSignatures(sub_command_args) => {
+            subcommands::list_blind_signatures(&mut reporting_client, &sub_command_args).await?;
         }
     }
 
