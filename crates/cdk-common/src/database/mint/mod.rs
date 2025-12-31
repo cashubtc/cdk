@@ -8,7 +8,9 @@ use cashu::Amount;
 
 use super::{DbTransactionFinalizer, Error};
 use crate::database::Acquired;
-use crate::mint::{self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation};
+use crate::mint::{
+    self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
+};
 use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
     State,
@@ -297,19 +299,19 @@ pub trait ProofsTransaction {
         proof: Proofs,
         quote_id: Option<QuoteId>,
         operation: &Operation,
-    ) -> Result<(), Self::Err>;
+    ) -> Result<Acquired<ProofsWithState>, Self::Err>;
+
     /// Updates the proofs to a given states and return the previous states
-    async fn update_proofs_states(
+    async fn update_proofs(
         &mut self,
-        ys: &[PublicKey],
-        proofs_state: State,
-    ) -> Result<Vec<Option<State>>, Self::Err>;
+        proofs: &mut Acquired<ProofsWithState>,
+    ) -> Result<(), Self::Err>;
 
     /// get proofs states
-    async fn get_proofs_states(
+    async fn get_proofs(
         &mut self,
         ys: &[PublicKey],
-    ) -> Result<Vec<Option<State>>, Self::Err>;
+    ) -> Result<Acquired<ProofsWithState>, Self::Err>;
 
     /// Remove [`Proofs`]
     async fn remove_proofs(
