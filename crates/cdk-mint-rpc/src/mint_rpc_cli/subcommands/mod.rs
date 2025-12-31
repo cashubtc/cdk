@@ -8,6 +8,8 @@ mod get_keysets;
 mod list_melt_quotes;
 /// Module for listing mint quotes
 mod list_mint_quotes;
+/// Module for listing proofs
+mod list_proofs;
 /// Module for looking up a melt quote
 mod lookup_melt_quote;
 /// Module for looking up a mint quote
@@ -44,6 +46,7 @@ pub use get_info::get_info;
 pub use get_keysets::{get_keysets, GetKeysetsCommand};
 pub use list_melt_quotes::{list_melt_quotes, ListMeltQuotesCommand};
 pub use list_mint_quotes::{list_mint_quotes, ListMintQuotesCommand};
+pub use list_proofs::{list_proofs, ListProofsCommand};
 pub use lookup_melt_quote::{lookup_melt_quote, LookupMeltQuoteCommand};
 pub use lookup_mint_quote::{lookup_mint_quote, LookupMintQuoteCommand};
 pub use rotate_next_keyset::{rotate_next_keyset, RotateNextKeysetCommand};

@@ -111,6 +111,8 @@ enum Commands {
     ListMeltQuotes(subcommands::ListMeltQuotesCommand),
     /// Lookup a melt quote by ID
     LookupMeltQuote(subcommands::LookupMeltQuoteCommand),
+    /// List proofs
+    ListProofs(subcommands::ListProofsCommand),
 }
 
 #[tokio::main]
@@ -234,6 +236,9 @@ async fn main() -> Result<()> {
         }
         Commands::LookupMeltQuote(sub_command_args) => {
             subcommands::lookup_melt_quote(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::ListProofs(sub_command_args) => {
+            subcommands::list_proofs(&mut reporting_client, &sub_command_args).await?;
         }
     }
 
