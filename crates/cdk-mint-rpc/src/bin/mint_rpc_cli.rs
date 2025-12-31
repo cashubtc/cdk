@@ -103,6 +103,8 @@ enum Commands {
     GetBalances(subcommands::GetBalancesCommand),
     /// Get keysets
     GetKeysets(subcommands::GetKeysetsCommand),
+    /// List mint quotes
+    ListMintQuotes(subcommands::ListMintQuotesCommand),
 }
 
 #[tokio::main]
@@ -214,6 +216,9 @@ async fn main() -> Result<()> {
         }
         Commands::GetKeysets(sub_command_args) => {
             subcommands::get_keysets(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::ListMintQuotes(sub_command_args) => {
+            subcommands::list_mint_quotes(&mut reporting_client, &sub_command_args).await?;
         }
     }
 
