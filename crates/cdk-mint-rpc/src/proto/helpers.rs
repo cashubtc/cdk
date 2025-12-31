@@ -443,3 +443,15 @@ pub fn validate_pagination(
     }
     Ok(())
 }
+
+/// Default maximum number of results for list operations when no limit is specified
+pub const DEFAULT_MAX_LIMIT: u64 = 100;
+
+/// Returns the effective limit, defaulting to DEFAULT_MAX_LIMIT if not specified
+pub fn effective_limit(num_max: i64) -> u64 {
+    if num_max > 0 {
+        num_max as u64
+    } else {
+        DEFAULT_MAX_LIMIT
+    }
+}

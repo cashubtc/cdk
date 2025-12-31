@@ -216,11 +216,7 @@ impl CdkMintReporting for MintRPCServer {
             creation_date_end: request.creation_date_end.map(|t| t as u64),
             states,
             units,
-            limit: if request.num_max_quotes > 0 {
-                Some(request.num_max_quotes as u64)
-            } else {
-                None
-            },
+            limit: Some(super::helpers::effective_limit(request.num_max_quotes)),
             offset: start_index,
             reversed: request.reversed,
         };
@@ -305,11 +301,7 @@ impl CdkMintReporting for MintRPCServer {
             creation_date_end: request.creation_date_end.map(|t| t as u64),
             states,
             units,
-            limit: if request.num_max_quotes > 0 {
-                Some(request.num_max_quotes as u64)
-            } else {
-                None
-            },
+            limit: Some(super::helpers::effective_limit(request.num_max_quotes)),
             offset: start_index,
             reversed: request.reversed,
         };
@@ -400,11 +392,7 @@ impl CdkMintReporting for MintRPCServer {
             units,
             keyset_ids,
             operations,
-            limit: if request.num_max_proofs > 0 {
-                Some(request.num_max_proofs as u64)
-            } else {
-                None
-            },
+            limit: Some(super::helpers::effective_limit(request.num_max_proofs)),
             offset: start_index,
             reversed: request.reversed,
         };
@@ -463,11 +451,7 @@ impl CdkMintReporting for MintRPCServer {
             units,
             keyset_ids,
             operations,
-            limit: if request.num_max_signatures > 0 {
-                Some(request.num_max_signatures as u64)
-            } else {
-                None
-            },
+            limit: Some(super::helpers::effective_limit(request.num_max_signatures)),
             offset: start_index,
             reversed: request.reversed,
         };
@@ -522,11 +506,7 @@ impl CdkMintReporting for MintRPCServer {
             creation_date_end: request.creation_date_end.map(|t| t as u64),
             units,
             operations,
-            limit: if request.num_max_operations > 0 {
-                Some(request.num_max_operations as u64)
-            } else {
-                None
-            },
+            limit: Some(super::helpers::effective_limit(request.num_max_operations)),
             offset: start_index,
             reversed: request.reversed,
         };
