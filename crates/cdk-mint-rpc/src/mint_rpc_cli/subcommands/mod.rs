@@ -4,6 +4,8 @@ mod get_balances;
 mod get_info;
 /// Module for getting the mint's keysets
 mod get_keysets;
+/// Module for listing melt quotes
+mod list_melt_quotes;
 /// Module for listing mint quotes
 mod list_mint_quotes;
 /// Module for looking up a mint quote
@@ -38,6 +40,7 @@ mod update_urls;
 pub use get_balances::{get_balances, GetBalancesCommand};
 pub use get_info::get_info;
 pub use get_keysets::{get_keysets, GetKeysetsCommand};
+pub use list_melt_quotes::{list_melt_quotes, ListMeltQuotesCommand};
 pub use list_mint_quotes::{list_mint_quotes, ListMintQuotesCommand};
 pub use lookup_mint_quote::{lookup_mint_quote, LookupMintQuoteCommand};
 pub use rotate_next_keyset::{rotate_next_keyset, RotateNextKeysetCommand};
