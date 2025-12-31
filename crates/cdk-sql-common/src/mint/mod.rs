@@ -1532,11 +1532,15 @@ where
         // Build ORDER BY clause
         let order_direction = if filter.reversed { "DESC" } else { "ASC" };
 
-        // Build LIMIT/OFFSET clause
-        let limit_clause = match filter.limit {
-            Some(limit) => format!("LIMIT {} OFFSET {}", limit, filter.offset),
-            None if filter.offset > 0 => format!("OFFSET {}", filter.offset),
-            None => String::new(),
+        // Build LIMIT/OFFSET clause with peek-ahead for has_more detection
+        // Query for limit + 1 to determine if there are more results
+        let (limit_clause, requested_limit) = match filter.limit {
+            Some(limit) => (
+                format!("LIMIT {} OFFSET {}", limit + 1, filter.offset),
+                Some(limit as usize),
+            ),
+            None if filter.offset > 0 => (format!("OFFSET {}", filter.offset), None),
+            None => (String::new(), None),
         };
 
         let query_str = format!(
@@ -1581,14 +1585,23 @@ where
             );
         }
 
-        let quotes = q
+        let mut quotes = q
             .fetch_all(&*conn)
             .await?
             .into_iter()
             .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(MintQuoteListResult { quotes })
+        // Determine has_more using peek-ahead result
+        let has_more = match requested_limit {
+            Some(limit) if quotes.len() > limit => {
+                quotes.truncate(limit);
+                true
+            }
+            _ => false,
+        };
+
+        Ok(MintQuoteListResult { quotes, has_more })
     }
 
     async fn get_melt_quote(
@@ -1687,11 +1700,14 @@ where
         // Build ORDER BY clause
         let order_direction = if filter.reversed { "DESC" } else { "ASC" };
 
-        // Build LIMIT/OFFSET clause
-        let limit_clause = match filter.limit {
-            Some(limit) => format!("LIMIT {} OFFSET {}", limit, filter.offset),
-            None if filter.offset > 0 => format!("OFFSET {}", filter.offset),
-            None => String::new(),
+        // Build LIMIT/OFFSET clause with peek-ahead for has_more detection
+        let (limit_clause, requested_limit) = match filter.limit {
+            Some(limit) => (
+                format!("LIMIT {} OFFSET {}", limit + 1, filter.offset),
+                Some(limit as usize),
+            ),
+            None if filter.offset > 0 => (format!("OFFSET {}", filter.offset), None),
+            None => (String::new(), None),
         };
 
         let query_str = format!(
@@ -1744,14 +1760,23 @@ where
             );
         }
 
-        let quotes = q
+        let mut quotes = q
             .fetch_all(&*conn)
             .await?
             .into_iter()
             .map(sql_row_to_melt_quote)
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(MeltQuoteListResult { quotes })
+        // Determine has_more using peek-ahead result
+        let has_more = match requested_limit {
+            Some(limit) if quotes.len() > limit => {
+                quotes.truncate(limit);
+                true
+            }
+            _ => false,
+        };
+
+        Ok(MeltQuoteListResult { quotes, has_more })
     }
 }
 
@@ -1985,11 +2010,14 @@ where
         // Build ORDER BY clause
         let order_direction = if filter.reversed { "DESC" } else { "ASC" };
 
-        // Build LIMIT/OFFSET clause
-        let limit_clause = match filter.limit {
-            Some(limit) => format!("LIMIT {} OFFSET {}", limit, filter.offset),
-            None if filter.offset > 0 => format!("OFFSET {}", filter.offset),
-            None => String::new(),
+        // Build LIMIT/OFFSET clause with peek-ahead for has_more detection
+        let (limit_clause, requested_limit) = match filter.limit {
+            Some(limit) => (
+                format!("LIMIT {} OFFSET {}", limit + 1, filter.offset),
+                Some(limit as usize),
+            ),
+            None if filter.offset > 0 => (format!("OFFSET {}", filter.offset), None),
+            None => (String::new(), None),
         };
 
         let query_str = format!(
@@ -2048,20 +2076,21 @@ where
 
         let rows = q.fetch_all(&*conn).await?;
 
-        let proofs = rows
+        let mut proofs = rows
             .into_iter()
             .map(sql_row_to_proof_record)
             .collect::<Result<Vec<_>, _>>()?;
 
-        let count = proofs.len() as i64;
-        let first_index_offset = filter.offset as i64;
-        let last_index_offset = first_index_offset + count.saturating_sub(1);
+        // Determine has_more using peek-ahead result
+        let has_more = match requested_limit {
+            Some(limit) if proofs.len() > limit => {
+                proofs.truncate(limit);
+                true
+            }
+            _ => false,
+        };
 
-        Ok(ProofListResult {
-            proofs,
-            first_index_offset,
-            last_index_offset,
-        })
+        Ok(ProofListResult { proofs, has_more })
     }
 }
 
@@ -2477,11 +2506,14 @@ where
         // Build ORDER BY clause
         let order_direction = if filter.reversed { "DESC" } else { "ASC" };
 
-        // Build LIMIT/OFFSET clause
-        let limit_clause = match filter.limit {
-            Some(limit) => format!("LIMIT {} OFFSET {}", limit, filter.offset),
-            None if filter.offset > 0 => format!("OFFSET {}", filter.offset),
-            None => String::new(),
+        // Build LIMIT/OFFSET clause with peek-ahead for has_more detection
+        let (limit_clause, requested_limit) = match filter.limit {
+            Some(limit) => (
+                format!("LIMIT {} OFFSET {}", limit + 1, filter.offset),
+                Some(limit as usize),
+            ),
+            None if filter.offset > 0 => (format!("OFFSET {}", filter.offset), None),
+            None => (String::new(), None),
         };
 
         let query_str = format!(
@@ -2534,19 +2566,23 @@ where
 
         let rows = q.fetch_all(&*conn).await?;
 
-        let signatures = rows
+        let mut signatures = rows
             .into_iter()
             .map(sql_row_to_blind_signature_record)
             .collect::<Result<Vec<_>, _>>()?;
 
-        let count = signatures.len() as i64;
-        let first_index_offset = filter.offset as i64;
-        let last_index_offset = first_index_offset + count.saturating_sub(1);
+        // Determine has_more using peek-ahead result
+        let has_more = match requested_limit {
+            Some(limit) if signatures.len() > limit => {
+                signatures.truncate(limit);
+                true
+            }
+            _ => false,
+        };
 
         Ok(BlindSignatureListResult {
             signatures,
-            first_index_offset,
-            last_index_offset,
+            has_more,
         })
     }
 }
@@ -2968,11 +3004,14 @@ where
         // Build ORDER BY clause
         let order_direction = if filter.reversed { "DESC" } else { "ASC" };
 
-        // Build LIMIT/OFFSET clause
-        let limit_clause = match filter.limit {
-            Some(limit) => format!("LIMIT {} OFFSET {}", limit, filter.offset),
-            None if filter.offset > 0 => format!("OFFSET {}", filter.offset),
-            None => String::new(),
+        // Build LIMIT/OFFSET clause with peek-ahead for has_more detection
+        let (limit_clause, requested_limit) = match filter.limit {
+            Some(limit) => (
+                format!("LIMIT {} OFFSET {}", limit + 1, filter.offset),
+                Some(limit as usize),
+            ),
+            None if filter.offset > 0 => (format!("OFFSET {}", filter.offset), None),
+            None => (String::new(), None),
         };
 
         // Different query strategies based on whether we need unit filtering
@@ -3075,19 +3114,23 @@ where
 
         let rows = q.fetch_all(&*conn).await?;
 
-        let operations = rows
+        let mut operations = rows
             .into_iter()
             .map(sql_row_to_operation_record)
             .collect::<Result<Vec<_>, _>>()?;
 
-        let count = operations.len() as i64;
-        let first_index_offset = filter.offset as i64;
-        let last_index_offset = first_index_offset + count.saturating_sub(1);
+        // Determine has_more using peek-ahead result
+        let has_more = match requested_limit {
+            Some(limit) if operations.len() > limit => {
+                operations.truncate(limit);
+                true
+            }
+            _ => false,
+        };
 
         Ok(OperationListResult {
             operations,
-            first_index_offset,
-            last_index_offset,
+            has_more,
         })
     }
 }

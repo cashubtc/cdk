@@ -4,7 +4,7 @@ use std::str::FromStr;
 use cdk::cdk_database::{
     BlindSignatureFilter, MeltQuoteFilter, MintQuoteFilter, OperationFilter, ProofFilter,
 };
-use cdk::nuts::{CurrencyUnit, Id, MeltQuoteState, MintQuoteState, State};
+use cdk::nuts::CurrencyUnit;
 use cdk::Amount;
 use tonic::{Request, Response, Status};
 
@@ -196,19 +196,18 @@ impl CdkMintReporting for MintRPCServer {
         let request = request.into_inner();
         let mint = self.mint();
 
-        // Parse state strings to MintQuoteState enum
-        let states: Vec<MintQuoteState> = request
-            .states
-            .iter()
-            .filter_map(|s| MintQuoteState::from_str(s).ok())
-            .collect();
+        // Validate and parse state strings to MintQuoteState enum
+        let states = super::helpers::parse_mint_quote_states(&request.states)?;
 
-        // Parse unit strings to CurrencyUnit enum
-        let units: Vec<CurrencyUnit> = request
-            .units
-            .iter()
-            .filter_map(|u| CurrencyUnit::from_str(u).ok())
-            .collect();
+        // Validate unit strings against mint's configured units
+        let units = super::helpers::validate_units_against_mint(&request.units, &mint)?;
+
+        // Validate pagination parameters
+        super::helpers::validate_pagination(
+            request.index_offset,
+            request.num_max_quotes,
+            "num_max_quotes",
+        )?;
 
         // Build filter for SQL-level filtering
         let start_index = request.index_offset.max(0) as u64;
@@ -232,10 +231,6 @@ impl CdkMintReporting for MintRPCServer {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Calculate response offsets
-        let first_index_offset = start_index as i64;
-        let last_index_offset = (start_index as usize + result.quotes.len()) as i64;
-
         // Convert to proto using the summary helper (no JOINs needed)
         let quotes = result
             .quotes
@@ -245,8 +240,7 @@ impl CdkMintReporting for MintRPCServer {
 
         Ok(Response::new(ListMintQuotesResponse {
             quotes,
-            first_index_offset,
-            last_index_offset,
+            has_more: result.has_more,
         }))
     }
 
@@ -291,19 +285,18 @@ impl CdkMintReporting for MintRPCServer {
         let request = request.into_inner();
         let mint = self.mint();
 
-        // Parse state strings to MeltQuoteState enum
-        let states: Vec<MeltQuoteState> = request
-            .states
-            .iter()
-            .filter_map(|s| MeltQuoteState::from_str(s).ok())
-            .collect();
+        // Validate and parse state strings to MeltQuoteState enum
+        let states = super::helpers::parse_melt_quote_states(&request.states)?;
 
-        // Parse unit strings to CurrencyUnit enum
-        let units: Vec<CurrencyUnit> = request
-            .units
-            .iter()
-            .filter_map(|u| CurrencyUnit::from_str(u).ok())
-            .collect();
+        // Validate unit strings against mint's configured units
+        let units = super::helpers::validate_units_against_mint(&request.units, &mint)?;
+
+        // Validate pagination parameters
+        super::helpers::validate_pagination(
+            request.index_offset,
+            request.num_max_quotes,
+            "num_max_quotes",
+        )?;
 
         // Build filter for SQL-level filtering
         let start_index = request.index_offset.max(0) as u64;
@@ -327,10 +320,6 @@ impl CdkMintReporting for MintRPCServer {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Calculate response offsets
-        let first_index_offset = start_index as i64;
-        let last_index_offset = (start_index as usize + result.quotes.len()) as i64;
-
         // Convert to proto
         let quotes = result
             .quotes
@@ -340,8 +329,7 @@ impl CdkMintReporting for MintRPCServer {
 
         Ok(Response::new(ListMeltQuotesResponse {
             quotes,
-            first_index_offset,
-            last_index_offset,
+            has_more: result.has_more,
         }))
     }
 
@@ -384,26 +372,24 @@ impl CdkMintReporting for MintRPCServer {
         let request = request.into_inner();
         let mint = self.mint();
 
-        // Parse state strings to State enum
-        let states: Vec<State> = request
-            .states
-            .iter()
-            .filter_map(|s| State::from_str(s).ok())
-            .collect();
+        // Validate and parse state strings to State enum
+        let states = super::helpers::parse_proof_states(&request.states)?;
 
-        // Parse unit strings to CurrencyUnit enum
-        let units: Vec<CurrencyUnit> = request
-            .units
-            .iter()
-            .filter_map(|u| CurrencyUnit::from_str(u).ok())
-            .collect();
+        // Validate unit strings against mint's configured units
+        let units = super::helpers::validate_units_against_mint(&request.units, &mint)?;
 
-        // Parse keyset IDs
-        let keyset_ids: Vec<Id> = request
-            .keyset_ids
-            .iter()
-            .filter_map(|id| Id::from_str(id).ok())
-            .collect();
+        // Validate and parse keyset IDs
+        let keyset_ids = super::helpers::parse_keyset_ids(&request.keyset_ids)?;
+
+        // Validate operation kinds
+        let operations = super::helpers::parse_operations(&request.operations)?;
+
+        // Validate pagination parameters
+        super::helpers::validate_pagination(
+            request.index_offset,
+            request.num_max_proofs,
+            "num_max_proofs",
+        )?;
 
         // Build filter for SQL-level filtering
         let start_index = request.index_offset.max(0) as u64;
@@ -413,7 +399,7 @@ impl CdkMintReporting for MintRPCServer {
             states,
             units,
             keyset_ids,
-            operations: request.operations,
+            operations,
             limit: if request.num_max_proofs > 0 {
                 Some(request.num_max_proofs as u64)
             } else {
@@ -439,8 +425,7 @@ impl CdkMintReporting for MintRPCServer {
 
         Ok(Response::new(ListProofsResponse {
             proofs,
-            first_index_offset: result.first_index_offset,
-            last_index_offset: result.last_index_offset,
+            has_more: result.has_more,
         }))
     }
 
@@ -454,19 +439,21 @@ impl CdkMintReporting for MintRPCServer {
         let request = request.into_inner();
         let mint = self.mint();
 
-        // Parse unit strings to CurrencyUnit enum
-        let units: Vec<CurrencyUnit> = request
-            .units
-            .iter()
-            .filter_map(|u| CurrencyUnit::from_str(u).ok())
-            .collect();
+        // Validate unit strings against mint's configured units
+        let units = super::helpers::validate_units_against_mint(&request.units, &mint)?;
 
-        // Parse keyset IDs
-        let keyset_ids: Vec<Id> = request
-            .keyset_ids
-            .iter()
-            .filter_map(|id| Id::from_str(id).ok())
-            .collect();
+        // Validate and parse keyset IDs
+        let keyset_ids = super::helpers::parse_keyset_ids(&request.keyset_ids)?;
+
+        // Validate operation kinds
+        let operations = super::helpers::parse_operations(&request.operations)?;
+
+        // Validate pagination parameters
+        super::helpers::validate_pagination(
+            request.index_offset,
+            request.num_max_signatures,
+            "num_max_signatures",
+        )?;
 
         // Build filter for SQL-level filtering
         let start_index = request.index_offset.max(0) as u64;
@@ -475,7 +462,7 @@ impl CdkMintReporting for MintRPCServer {
             creation_date_end: request.creation_date_end.map(|t| t as u64),
             units,
             keyset_ids,
-            operations: request.operations,
+            operations,
             limit: if request.num_max_signatures > 0 {
                 Some(request.num_max_signatures as u64)
             } else {
@@ -501,8 +488,7 @@ impl CdkMintReporting for MintRPCServer {
 
         Ok(Response::new(ListBlindSignaturesResponse {
             signatures,
-            first_index_offset: result.first_index_offset,
-            last_index_offset: result.last_index_offset,
+            has_more: result.has_more,
         }))
     }
 
@@ -516,12 +502,18 @@ impl CdkMintReporting for MintRPCServer {
         let request = request.into_inner();
         let mint = self.mint();
 
-        // Parse unit strings to CurrencyUnit enum
-        let units: Vec<CurrencyUnit> = request
-            .units
-            .iter()
-            .filter_map(|u| CurrencyUnit::from_str(u).ok())
-            .collect();
+        // Validate unit strings against mint's configured units
+        let units = super::helpers::validate_units_against_mint(&request.units, &mint)?;
+
+        // Validate operation kinds
+        let operations = super::helpers::parse_operations(&request.operations)?;
+
+        // Validate pagination parameters
+        super::helpers::validate_pagination(
+            request.index_offset,
+            request.num_max_operations,
+            "num_max_operations",
+        )?;
 
         // Build filter for SQL-level filtering
         let start_index = request.index_offset.max(0) as u64;
@@ -529,7 +521,7 @@ impl CdkMintReporting for MintRPCServer {
             creation_date_start: request.creation_date_start.map(|t| t as u64),
             creation_date_end: request.creation_date_end.map(|t| t as u64),
             units,
-            operations: request.operations,
+            operations,
             limit: if request.num_max_operations > 0 {
                 Some(request.num_max_operations as u64)
             } else {
@@ -555,8 +547,7 @@ impl CdkMintReporting for MintRPCServer {
 
         Ok(Response::new(ListOperationsResponse {
             operations,
-            first_index_offset: result.first_index_offset,
-            last_index_offset: result.last_index_offset,
+            has_more: result.has_more,
         }))
     }
 }

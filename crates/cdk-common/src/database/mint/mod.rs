@@ -54,6 +54,8 @@ pub struct MintQuoteFilter {
 pub struct MintQuoteListResult {
     /// The filtered and paginated quotes
     pub quotes: Vec<MintMintQuote>,
+    /// Whether there are more results after this page
+    pub has_more: bool,
 }
 
 /// Filter parameters for listing melt quotes
@@ -80,6 +82,8 @@ pub struct MeltQuoteFilter {
 pub struct MeltQuoteListResult {
     /// The filtered and paginated quotes
     pub quotes: Vec<MeltQuote>,
+    /// Whether there are more results after this page
+    pub has_more: bool,
 }
 
 /// Filter parameters for listing proofs
@@ -129,10 +133,8 @@ pub struct ProofRecord {
 pub struct ProofListResult {
     /// The filtered and paginated proofs
     pub proofs: Vec<ProofRecord>,
-    /// Index of the first item in this result set (for pagination)
-    pub first_index_offset: i64,
-    /// Index of the last item in this result set (for pagination)
-    pub last_index_offset: i64,
+    /// Whether there are more results after this page
+    pub has_more: bool,
 }
 
 /// Filter parameters for listing blind signatures
@@ -180,10 +182,8 @@ pub struct BlindSignatureRecord {
 pub struct BlindSignatureListResult {
     /// The filtered and paginated signatures
     pub signatures: Vec<BlindSignatureRecord>,
-    /// Index of the first item in this result set (for pagination)
-    pub first_index_offset: i64,
-    /// Index of the last item in this result set (for pagination)
-    pub last_index_offset: i64,
+    /// Whether there are more results after this page
+    pub has_more: bool,
 }
 
 /// Filter parameters for listing completed operations
@@ -235,10 +235,8 @@ pub struct OperationRecord {
 pub struct OperationListResult {
     /// The filtered and paginated operations
     pub operations: Vec<OperationRecord>,
-    /// Index of the first item in this result set
-    pub first_index_offset: i64,
-    /// Index of the last item in this result set
-    pub last_index_offset: i64,
+    /// Whether there are more results after this page
+    pub has_more: bool,
 }
 
 /// Information about a melt request stored in the database

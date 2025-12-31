@@ -195,8 +195,7 @@ message ListQuotesRequest {
 
 message ListMintQuotesResponse {
     repeated MintQuoteSummary quotes = 1;
-    int64 last_index_offset = 2;
-    int64 first_index_offset = 3;
+    bool has_more = 2;
 }
 
 message LookupQuoteRequest {
@@ -209,8 +208,7 @@ message LookupMintQuoteResponse {
 
 message ListMeltQuotesResponse {
     repeated MeltQuote quotes = 1;
-    int64 last_index_offset = 2;
-    int64 first_index_offset = 3;
+    bool has_more = 2;
 }
 
 message LookupMeltQuoteResponse {
@@ -231,8 +229,7 @@ message ListProofsRequest {
 
 message ListProofsResponse {
     repeated Proof proofs = 1;
-    int64 last_index_offset = 2;
-    int64 first_index_offset = 3;
+    bool has_more = 2;
 }
 
 message ListBlindSignaturesRequest {
@@ -248,8 +245,7 @@ message ListBlindSignaturesRequest {
 
 message ListBlindSignaturesResponse {
     repeated BlindSignature signatures = 1;
-    int64 last_index_offset = 2;
-    int64 first_index_offset = 3;
+    bool has_more = 2;
 }
 
 message ListOperationsRequest {
@@ -264,6 +260,5 @@ message ListOperationsRequest {
 
 message ListOperationsResponse {
     repeated Operations operations = 1;
-    int64 last_index_offset = 2;
-    int64 first_index_offset = 3;
+    bool has_more = 2;
 }
