@@ -186,6 +186,61 @@ pub struct BlindSignatureListResult {
     pub last_index_offset: i64,
 }
 
+/// Filter parameters for listing completed operations
+#[derive(Debug, Clone, Default)]
+pub struct OperationFilter {
+    /// Filter operations completed on or after this Unix timestamp
+    pub creation_date_start: Option<u64>,
+    /// Filter operations completed on or before this Unix timestamp
+    pub creation_date_end: Option<u64>,
+    /// Filter by currency units (derived via JOIN to proof → keyset)
+    pub units: Vec<CurrencyUnit>,
+    /// Filter by operation kinds (e.g., "mint", "melt", "swap")
+    pub operations: Vec<String>,
+    /// Maximum number of operations to return
+    pub limit: Option<u64>,
+    /// Number of operations to skip (for pagination)
+    pub offset: u64,
+    /// If true, sort by completed_at DESC; otherwise ASC
+    pub reversed: bool,
+}
+
+/// Operation record returned from filtered query
+#[derive(Debug, Clone)]
+pub struct OperationRecord {
+    /// Operation ID (UUID)
+    pub operation_id: String,
+    /// Operation kind (mint, melt, swap)
+    pub operation_kind: String,
+    /// Completion timestamp
+    pub completed_time: u64,
+    /// Total amount issued
+    pub total_issued: Amount,
+    /// Total amount redeemed
+    pub total_redeemed: Amount,
+    /// Fee collected
+    pub fee_collected: Amount,
+    /// Payment amount (for melt operations)
+    pub payment_amount: Option<Amount>,
+    /// Payment fee (for melt operations)
+    pub payment_fee: Option<Amount>,
+    /// Payment method
+    pub payment_method: Option<String>,
+    /// Currency unit (derived from keyset via proof)
+    pub unit: Option<String>,
+}
+
+/// Result of a paginated operations query
+#[derive(Debug, Clone)]
+pub struct OperationListResult {
+    /// The filtered and paginated operations
+    pub operations: Vec<OperationRecord>,
+    /// Index of the first item in this result set
+    pub first_index_offset: i64,
+    /// Index of the last item in this result set
+    pub last_index_offset: i64,
+}
+
 /// Information about a melt request stored in the database
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeltRequestInfo {
@@ -680,6 +735,14 @@ pub trait CompletedOperationsDatabase {
 
     /// Get all completed operations
     async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err>;
+
+    /// List completed operations with filtering and pagination at the database level
+    ///
+    /// Unit is derived via JOIN through proof → keyset tables.
+    async fn list_operations_filtered(
+        &self,
+        filter: OperationFilter,
+    ) -> Result<OperationListResult, Self::Err>;
 }
 
 /// Base database writer

@@ -18,8 +18,9 @@ use bitcoin::bip32::DerivationPath;
 use cdk_common::database::mint::{
     BlindSignatureFilter, BlindSignatureListResult, BlindSignatureRecord,
     CompletedOperationsDatabase, CompletedOperationsTransaction, LockedMeltQuotes, MeltQuoteFilter,
-    MeltQuoteListResult, MintQuoteFilter, MintQuoteListResult, ProofFilter, ProofListResult,
-    ProofRecord, SagaDatabase, SagaTransaction,
+    MeltQuoteListResult, MintQuoteFilter, MintQuoteListResult, OperationFilter,
+    OperationListResult, OperationRecord, ProofFilter, ProofListResult, ProofRecord, SagaDatabase,
+    SagaTransaction,
 };
 use cdk_common::database::{
     self, Acquired, ConversionError, DbTransactionFinalizer, Error, MintDatabase,
@@ -2928,6 +2929,167 @@ where
         .map(sql_row_to_completed_operation)
         .collect::<Result<Vec<_>, _>>()?)
     }
+
+    async fn list_operations_filtered(
+        &self,
+        filter: OperationFilter,
+    ) -> Result<OperationListResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        // Build dynamic WHERE clauses
+        let mut where_clauses: Vec<String> = Vec::new();
+        let needs_unit_join = !filter.units.is_empty();
+
+        // Date range filters (on completed_at)
+        if filter.creation_date_start.is_some() {
+            where_clauses.push("co.completed_at >= :creation_date_start".to_string());
+        }
+        if filter.creation_date_end.is_some() {
+            where_clauses.push("co.completed_at <= :creation_date_end".to_string());
+        }
+
+        // Operation kind filter
+        if !filter.operations.is_empty() {
+            where_clauses.push("co.operation_kind IN (:operations)".to_string());
+        }
+
+        // Unit filter (requires JOIN via CTE)
+        if needs_unit_join {
+            where_clauses.push("ou.unit IN (:units)".to_string());
+        }
+
+        // Build WHERE clause
+        let where_clause = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+
+        // Build ORDER BY clause
+        let order_direction = if filter.reversed { "DESC" } else { "ASC" };
+
+        // Build LIMIT/OFFSET clause
+        let limit_clause = match filter.limit {
+            Some(limit) => format!("LIMIT {} OFFSET {}", limit, filter.offset),
+            None if filter.offset > 0 => format!("OFFSET {}", filter.offset),
+            None => String::new(),
+        };
+
+        // Different query strategies based on whether we need unit filtering
+        let query_str = if needs_unit_join {
+            // JOIN approach with CTE when filtering by unit
+            // Uses UNION to find unit from either proof or blind_signature table
+            format!(
+                r#"
+                WITH operation_units AS (
+                    SELECT p.operation_id, k.unit
+                    FROM proof p
+                    JOIN keyset k ON p.keyset_id = k.id
+                    WHERE p.operation_id IS NOT NULL
+                    UNION
+                    SELECT bs.operation_id, k.unit
+                    FROM blind_signature bs
+                    JOIN keyset k ON bs.keyset_id = k.id
+                    WHERE bs.operation_id IS NOT NULL
+                )
+                SELECT
+                    co.operation_id,
+                    co.operation_kind,
+                    co.completed_at,
+                    co.total_issued,
+                    co.total_redeemed,
+                    co.fee_collected,
+                    co.payment_amount,
+                    co.payment_fee,
+                    co.payment_method,
+                    MIN(ou.unit) as unit
+                FROM
+                    completed_operations co
+                JOIN operation_units ou ON co.operation_id = ou.operation_id
+                {where_clause}
+                GROUP BY co.operation_id, co.operation_kind, co.completed_at,
+                         co.total_issued, co.total_redeemed, co.fee_collected,
+                         co.payment_amount, co.payment_fee, co.payment_method
+                ORDER BY co.completed_at {order_direction}
+                {limit_clause}
+                "#,
+                where_clause = where_clause,
+                order_direction = order_direction,
+                limit_clause = limit_clause,
+            )
+        } else {
+            // Subquery approach when not filtering by unit (more efficient)
+            // Uses COALESCE to try proof first, then blind_signature
+            format!(
+                r#"
+                SELECT
+                    co.operation_id,
+                    co.operation_kind,
+                    co.completed_at,
+                    co.total_issued,
+                    co.total_redeemed,
+                    co.fee_collected,
+                    co.payment_amount,
+                    co.payment_fee,
+                    co.payment_method,
+                    COALESCE(
+                        (SELECT k.unit FROM proof p
+                         JOIN keyset k ON p.keyset_id = k.id
+                         WHERE p.operation_id = co.operation_id
+                         LIMIT 1),
+                        (SELECT k.unit FROM blind_signature bs
+                         JOIN keyset k ON bs.keyset_id = k.id
+                         WHERE bs.operation_id = co.operation_id
+                         LIMIT 1)
+                    ) as unit
+                FROM
+                    completed_operations co
+                {where_clause}
+                ORDER BY co.completed_at {order_direction}
+                {limit_clause}
+                "#,
+                where_clause = where_clause,
+                order_direction = order_direction,
+                limit_clause = limit_clause,
+            )
+        };
+
+        let mut q = query(&query_str)?;
+
+        // Bind parameters
+        if let Some(start) = filter.creation_date_start {
+            q = q.bind("creation_date_start", start as i64);
+        }
+        if let Some(end) = filter.creation_date_end {
+            q = q.bind("creation_date_end", end as i64);
+        }
+        if !filter.operations.is_empty() {
+            q = q.bind_vec("operations", filter.operations.clone());
+        }
+        if !filter.units.is_empty() {
+            q = q.bind_vec(
+                "units",
+                filter.units.iter().map(|u| u.to_string()).collect(),
+            );
+        }
+
+        let rows = q.fetch_all(&*conn).await?;
+
+        let operations = rows
+            .into_iter()
+            .map(sql_row_to_operation_record)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let count = operations.len() as i64;
+        let first_index_offset = filter.offset as i64;
+        let last_index_offset = first_index_offset + count.saturating_sub(1);
+
+        Ok(OperationListResult {
+            operations,
+            first_index_offset,
+            last_index_offset,
+        })
+    }
 }
 
 #[async_trait]
@@ -3342,6 +3504,35 @@ fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, E
         Some(completed_at),
         payment_method,
     ))
+}
+
+fn sql_row_to_operation_record(row: Vec<Column>) -> Result<OperationRecord, Error> {
+    unpack_into!(
+        let (
+            operation_id, operation_kind, completed_at, total_issued, total_redeemed,
+            fee_collected, payment_amount, payment_fee, payment_method, unit
+        ) = row
+    );
+
+    let total_issued: u64 = column_as_number!(total_issued);
+    let total_redeemed: u64 = column_as_number!(total_redeemed);
+    let fee_collected: u64 = column_as_number!(fee_collected);
+    let completed_time: u64 = column_as_number!(completed_at);
+    let payment_amount_val: Option<u64> = column_as_nullable_number!(payment_amount);
+    let payment_fee_val: Option<u64> = column_as_nullable_number!(payment_fee);
+
+    Ok(OperationRecord {
+        operation_id: column_as_string!(operation_id),
+        operation_kind: column_as_string!(operation_kind),
+        completed_time,
+        total_issued: Amount::from(total_issued),
+        total_redeemed: Amount::from(total_redeemed),
+        fee_collected: Amount::from(fee_collected),
+        payment_amount: payment_amount_val.map(Amount::from),
+        payment_fee: payment_fee_val.map(Amount::from),
+        payment_method: column_as_nullable_string!(payment_method),
+        unit: column_as_nullable_string!(unit),
+    })
 }
 
 #[cfg(test)]

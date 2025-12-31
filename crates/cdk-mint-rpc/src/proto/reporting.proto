@@ -12,6 +12,7 @@ service CdkMintReporting {
     rpc LookupMeltQuote(LookupQuoteRequest) returns (LookupMeltQuoteResponse) {}
     rpc ListProofs(ListProofsRequest) returns (ListProofsResponse) {}
     rpc ListBlindSignatures(ListBlindSignaturesRequest) returns (ListBlindSignaturesResponse) {}
+    rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse) {}
 }
 
 message ContactInfo {
@@ -135,6 +136,19 @@ message BlindSignature {
     string operation_id = 7;
 }
 
+message Operations {
+    string operation_id = 1;
+    string operation_kind = 2;
+    uint64 completed_time = 3;
+    uint64 total_issued = 4;
+    uint64 total_redeemed = 5;
+    uint64 fee_collected = 6;
+    optional uint64 payment_amount = 7;
+    optional uint64 payment_fee = 8;
+    optional string payment_method = 9;
+    string unit = 10;
+}
+
 message GetBalancesRequest {
     optional string unit = 1;
 }
@@ -234,6 +248,22 @@ message ListBlindSignaturesRequest {
 
 message ListBlindSignaturesResponse {
     repeated BlindSignature signatures = 1;
+    int64 last_index_offset = 2;
+    int64 first_index_offset = 3;
+}
+
+message ListOperationsRequest {
+    int64 index_offset = 1;
+    int64 num_max_operations = 2;
+    bool reversed = 3;
+    optional int64 creation_date_start = 4;
+    optional int64 creation_date_end = 5;
+    repeated string units = 6;
+    repeated string operations = 7;
+}
+
+message ListOperationsResponse {
+    repeated Operations operations = 1;
     int64 last_index_offset = 2;
     int64 first_index_offset = 3;
 }
