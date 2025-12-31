@@ -10,6 +10,8 @@ mod list_blind_signatures;
 mod list_melt_quotes;
 /// Module for listing mint quotes
 mod list_mint_quotes;
+/// Module for listing operations
+mod list_operations;
 /// Module for listing proofs
 mod list_proofs;
 /// Module for looking up a melt quote
@@ -49,6 +51,7 @@ pub use get_keysets::{get_keysets, GetKeysetsCommand};
 pub use list_blind_signatures::{list_blind_signatures, ListBlindSignaturesCommand};
 pub use list_melt_quotes::{list_melt_quotes, ListMeltQuotesCommand};
 pub use list_mint_quotes::{list_mint_quotes, ListMintQuotesCommand};
+pub use list_operations::{list_operations, ListOperationsCommand};
 pub use list_proofs::{list_proofs, ListProofsCommand};
 pub use lookup_melt_quote::{lookup_melt_quote, LookupMeltQuoteCommand};
 pub use lookup_mint_quote::{lookup_mint_quote, LookupMintQuoteCommand};

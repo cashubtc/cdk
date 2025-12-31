@@ -115,6 +115,8 @@ enum Commands {
     ListProofs(subcommands::ListProofsCommand),
     /// List blind signatures
     ListBlindSignatures(subcommands::ListBlindSignaturesCommand),
+    /// List operations
+    ListOperations(subcommands::ListOperationsCommand),
 }
 
 #[tokio::main]
@@ -244,6 +246,9 @@ async fn main() -> Result<()> {
         }
         Commands::ListBlindSignatures(sub_command_args) => {
             subcommands::list_blind_signatures(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::ListOperations(sub_command_args) => {
+            subcommands::list_operations(&mut reporting_client, &sub_command_args).await?;
         }
     }
 
