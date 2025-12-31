@@ -1,3 +1,5 @@
+/// Module for getting the mint's balances
+mod get_balances;
 /// Module for getting the mint's info
 mod get_info;
 /// Module for getting the mint's keysets
@@ -29,6 +31,7 @@ mod update_ttl;
 /// Module for managing mint URLs
 mod update_urls;
 
+pub use get_balances::{get_balances, GetBalancesCommand};
 pub use get_info::get_info;
 pub use get_keysets::{get_keysets, GetKeysetsCommand};
 pub use rotate_next_keyset::{rotate_next_keyset, RotateNextKeysetCommand};

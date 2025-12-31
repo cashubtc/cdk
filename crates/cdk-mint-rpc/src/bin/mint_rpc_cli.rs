@@ -99,6 +99,8 @@ enum Commands {
     RotateNextKeyset(subcommands::RotateNextKeysetCommand),
     /// Get info
     GetInfo,
+    /// Get balances
+    GetBalances(subcommands::GetBalancesCommand),
     /// Get keysets
     GetKeysets(subcommands::GetKeysetsCommand),
 }
@@ -206,6 +208,9 @@ async fn main() -> Result<()> {
         }
         Commands::GetInfo => {
             subcommands::get_info(&mut reporting_client).await?;
+        }
+        Commands::GetBalances(sub_command_args) => {
+            subcommands::get_balances(&mut reporting_client, &sub_command_args).await?;
         }
         Commands::GetKeysets(sub_command_args) => {
             subcommands::get_keysets(&mut reporting_client, &sub_command_args).await?;
