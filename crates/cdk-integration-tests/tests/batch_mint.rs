@@ -34,6 +34,7 @@
 //! - Protocol compliance: JSON parsing and serialization
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
@@ -42,10 +43,10 @@ use cdk::amount::SplitTarget;
 use cdk::cdk_payment::PaymentIdentifier;
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::BlindedMessage;
-use cdk::nuts::{CurrencyUnit, PaymentMethod, PreMintSecrets, SecretKey};
+use cdk::nuts::{CurrencyUnit, PaymentMethod, PreMintSecrets, PublicKey, SecretKey};
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::Amount;
-use cdk_common::mint::{BatchMintRequest, IncomingPayment, MintQuote};
+use cdk_common::mint::{BatchMintRequest, MintQuote};
 use cdk_common::Error;
 use cdk_fake_wallet::FakeWallet;
 use cdk_integration_tests::init_pure_tests::create_and_start_test_mint;
@@ -102,7 +103,7 @@ async fn create_and_store_mint_quote_with_unit(
     unit: CurrencyUnit,
 ) -> Result<QuoteId, Box<dyn std::error::Error>> {
     let quote_id = QuoteId::new_uuid();
-    let quote = MintQuote::new(
+    let mut quote = MintQuote::new(
         Some(quote_id.clone()),
         "lnbc1000n...".to_string(),
         unit,
@@ -110,32 +111,104 @@ async fn create_and_store_mint_quote_with_unit(
         9999999999, // Far future expiry
         PaymentIdentifier::Label(format!("quote_{}", quote_id)),
         pubkey,
-        amount_paid,
+        Amount::ZERO,
         Amount::ZERO, // amount_issued
         payment_method,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs(),
-        if amount_paid > Amount::ZERO {
-            vec![IncomingPayment::new(
-                amount_paid,
-                "test_payment".to_string(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_secs(),
-            )]
-        } else {
-            Vec::new()
-        },
+        Vec::new(), // payments
         Vec::new(), // issuance
     );
 
     let localstore = mint.localstore();
     let mut tx = localstore.begin_transaction().await?;
     tx.add_mint_quote(quote).await?;
+    if amount_paid > Amount::ZERO {
+        let payment_id = format!("test_payment_{}", quote_id);
+        tx.increment_mint_quote_amount_paid(&quote_id.clone().into(), amount_paid, payment_id)
+            .await?;
+    }
     tx.commit().await?;
 
     Ok(quote_id)
+}
+
+/// Helper to build blinded outputs for a specific amount/unit
+async fn create_outputs_for_amount(
+    mint: &Arc<cdk::Mint>,
+    amount: u64,
+    unit: CurrencyUnit,
+) -> Vec<BlindedMessage> {
+    let keyset_id = *mint
+        .get_active_keysets()
+        .get(&unit)
+        .expect("keyset for unit");
+    let split_target = SplitTarget::default();
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
+    let pre_mint = PreMintSecrets::random(
+        keyset_id,
+        Amount::from(amount),
+        &split_target,
+        &fee_and_amounts,
+    )
+    .expect("premint secrets");
+
+    pre_mint.blinded_messages().iter().cloned().collect()
+}
+
+/// Create a mint with Bolt11 and Bolt12 support for SAT unit.
+async fn create_bolt12_capable_mint() -> Arc<cdk::Mint> {
+    let mnemonic = bip39::Mnemonic::generate(12).expect("mnemonic");
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 1.into(),
+        percent_fee_reserve: 0.02,
+    };
+
+    let localstore = Arc::new(memory::empty().await.expect("mint db"));
+    let mut mint_builder = cdk::mint::MintBuilder::new(localstore.clone());
+
+    let wallet_sat_bolt11 = FakeWallet::new(
+        fee_reserve.clone(),
+        HashMap::default(),
+        HashSet::default(),
+        2,
+        CurrencyUnit::Sat,
+    );
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Bolt11,
+            MintMeltLimits::new(1, 10_000),
+            Arc::new(wallet_sat_bolt11),
+        )
+        .await
+        .expect("bolt11 processor");
+
+    let wallet_sat_bolt12 = FakeWallet::new(
+        fee_reserve,
+        HashMap::default(),
+        HashSet::default(),
+        2,
+        CurrencyUnit::Sat,
+    );
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Bolt12,
+            MintMeltLimits::new(1, 10_000),
+            Arc::new(wallet_sat_bolt12),
+        )
+        .await
+        .expect("bolt12 processor");
+
+    let mint = mint_builder
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await
+        .expect("mint build");
+    mint.start().await.expect("mint start");
+    Arc::new(mint)
 }
 
 // ============================================================================
@@ -461,6 +534,240 @@ async fn test_batch_mint_rejects_signature_without_pubkey() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_rejects_reordered_outputs_signature_scope() {
+    // Use concrete values that match the NUT-20 spec vector
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    // Locked quote with known pubkey (sk = 1)
+    let mut sk_bytes = [0u8; 32];
+    sk_bytes[31] = 1;
+    let secret_key = SecretKey::from_slice(&sk_bytes).unwrap();
+
+    let quote_id = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(2)),
+        PaymentMethod::Bolt11,
+        Amount::from(2),
+        Some(secret_key.public_key()),
+    )
+    .await
+    .expect("quote");
+
+    let keyset_id = mint
+        .get_active_keysets()
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .expect("keyset");
+    let outputs = vec![
+        BlindedMessage {
+            amount: Amount::from(1),
+            keyset_id,
+            blinded_secret: PublicKey::from_str(
+                "036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2",
+            )
+            .unwrap(),
+            witness: None,
+        },
+        BlindedMessage {
+            amount: Amount::from(1),
+            keyset_id,
+            blinded_secret: PublicKey::from_str(
+                "021f8a566c205633d029094747d2e18f44e05993dda7a5f88f496078205f656e59",
+            )
+            .unwrap(),
+            witness: None,
+        },
+    ];
+
+    let mut mint_req = cdk_common::nuts::MintRequest {
+        quote: quote_id.to_string(),
+        outputs: outputs.clone(),
+        signature: None,
+    };
+    mint_req.sign(secret_key.clone()).unwrap();
+
+    let mut reordered_outputs = outputs.clone();
+    reordered_outputs.swap(0, 1); // reorder outputs after signing
+
+    let request = BatchMintRequest {
+        quotes: vec![quote_id.to_string()],
+        quote_amounts: Some(vec![Amount::from(2)]),
+        outputs: reordered_outputs,
+        signatures: Some(vec![mint_req.signature.clone()]),
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+    assert!(matches!(result, Err(Error::SignatureMissingOrInvalid)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_rejects_signature_missing_blinded_message() {
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    let secret_key = SecretKey::generate();
+    let quote_id = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(2)),
+        PaymentMethod::Bolt11,
+        Amount::from(2),
+        Some(secret_key.public_key()),
+    )
+    .await
+    .expect("quote");
+
+    let outputs = create_test_outputs(&mint, 2).await;
+    assert!(
+        outputs.len() >= 2,
+        "expected at least two outputs for missing-blinded-message test"
+    );
+
+    // Sign only over the first blinded message, omit the second
+    let mut mint_req = cdk_common::nuts::MintRequest {
+        quote: quote_id.to_string(),
+        outputs: vec![outputs[0].clone()],
+        signature: None,
+    };
+    mint_req.sign(secret_key.clone()).unwrap();
+
+    let total: Amount = outputs
+        .iter()
+        .map(|o| o.amount)
+        .try_fold(Amount::ZERO, |acc, a| acc.checked_add(a))
+        .expect("sum");
+
+    let request = BatchMintRequest {
+        quotes: vec![quote_id.to_string()],
+        quote_amounts: Some(vec![total]),
+        outputs,
+        signatures: Some(vec![mint_req.signature.clone()]),
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+    assert!(matches!(result, Err(Error::SignatureMissingOrInvalid)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_bolt11_amount_mismatch() {
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    let quote1 = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(50)),
+        PaymentMethod::Bolt11,
+        Amount::from(50),
+        None,
+    )
+    .await
+    .expect("quote1");
+    let quote2 = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(50)),
+        PaymentMethod::Bolt11,
+        Amount::from(50),
+        None,
+    )
+    .await
+    .expect("quote2");
+
+    // Outputs total 120 while quotes expect 100
+    let outputs = create_outputs_for_amount(&mint, 120, CurrencyUnit::Sat).await;
+
+    let request = BatchMintRequest {
+        quotes: vec![quote1.to_string(), quote2.to_string()],
+        quote_amounts: Some(vec![Amount::from(50), Amount::from(50)]),
+        outputs,
+        signatures: None,
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+    let err = result.expect_err("expected TransactionUnbalanced");
+    assert!(
+        matches!(err, Error::TransactionUnbalanced(_, _, _)),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_bolt11_quote_amounts_length_mismatch() {
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    let quote1 = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(100)),
+        PaymentMethod::Bolt11,
+        Amount::from(100),
+        None,
+    )
+    .await
+    .expect("quote1");
+    let quote2 = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(100)),
+        PaymentMethod::Bolt11,
+        Amount::from(100),
+        None,
+    )
+    .await
+    .expect("quote2");
+
+    // Outputs total 200, but quote_amounts list length is wrong
+    let outputs = create_outputs_for_amount(&mint, 200, CurrencyUnit::Sat).await;
+
+    let request = BatchMintRequest {
+        quotes: vec![quote1.to_string(), quote2.to_string()],
+        quote_amounts: Some(vec![Amount::from(200)]), // length mismatch
+        outputs,
+        signatures: None,
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+    let err = result.expect_err("expected TransactionUnbalanced");
+    assert!(
+        matches!(err, Error::TransactionUnbalanced(_, _, _)),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_rejects_missing_signature_for_locked_quote() {
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    let secret_key = SecretKey::generate();
+    let quote_id = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(50)),
+        PaymentMethod::Bolt11,
+        Amount::from(50),
+        Some(secret_key.public_key()),
+    )
+    .await
+    .expect("quote");
+
+    let outputs = create_outputs_for_amount(&mint, 50, CurrencyUnit::Sat).await;
+
+    // Locked quote but signatures array has a null entry
+    let request = BatchMintRequest {
+        quotes: vec![quote_id.to_string()],
+        quote_amounts: Some(vec![Amount::from(50)]),
+        outputs,
+        signatures: Some(vec![None]),
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+    assert!(matches!(result, Err(Error::SignatureMissingOrInvalid)));
+}
+
 // ============================================================================
 // Quote Validation Tests
 // ============================================================================
@@ -669,6 +976,97 @@ async fn test_batch_mint_enforces_single_currency_unit() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_rejects_output_unit_mismatch() {
+    // Build a mint that supports Sat and Msat so we can create outputs in the wrong unit
+    let mnemonic = bip39::Mnemonic::generate(12).unwrap();
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 1.into(),
+        percent_fee_reserve: 1.0,
+    };
+
+    let database = cdk_sqlite::mint::memory::empty()
+        .await
+        .expect("valid db instance");
+
+    let localstore = Arc::new(database);
+    let mut mint_builder = cdk::mint::MintBuilder::new(localstore.clone());
+
+    mint_builder = mint_builder
+        .with_name("unit mismatch mint".to_string())
+        .with_description("unit mismatch mint".to_string());
+
+    // Sat processor
+    let fake_wallet_sat = cdk_fake_wallet::FakeWallet::new(
+        fee_reserve.clone(),
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Bolt11,
+            MintMeltLimits::new(1, 5_000),
+            Arc::new(fake_wallet_sat),
+        )
+        .await
+        .unwrap();
+
+    // Msat processor
+    let fake_wallet_msat = cdk_fake_wallet::FakeWallet::new(
+        fee_reserve,
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Msat,
+    );
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Msat,
+            PaymentMethod::Bolt11,
+            MintMeltLimits::new(1, 5_000),
+            Arc::new(fake_wallet_msat),
+        )
+        .await
+        .unwrap();
+
+    let mint = mint_builder
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await
+        .unwrap();
+    let mint = Arc::new(mint);
+    mint.start().await.unwrap();
+
+    // create_and_store_mint_quote uses Sat currency
+    let quote_id = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(10)),
+        PaymentMethod::Bolt11,
+        Amount::from(10),
+        None,
+    )
+    .await
+    .expect("quote");
+
+    // Outputs built using the Msat keyset, while quote is Sat
+    let outputs = create_outputs_for_amount(&mint, 10, CurrencyUnit::Msat).await;
+
+    let request = BatchMintRequest {
+        quotes: vec![quote_id.to_string()],
+        quote_amounts: Some(vec![Amount::from(10)]),
+        outputs,
+        signatures: None,
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+    let err = result.expect_err("expected UnsupportedUnit");
+    assert!(matches!(err, Error::UnsupportedUnit), "got {err:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_validates_url_path_payment_method() {
     let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
@@ -706,6 +1104,111 @@ async fn test_batch_mint_validates_url_path_payment_method() {
         Err(e) => panic!("Expected BatchPaymentMethodEndpointMismatch, got: {:?}", e),
         Ok(_) => panic!("Should have returned error"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_bolt12_requires_quote_amounts() {
+    let mint = create_bolt12_capable_mint().await;
+
+    let quote_id =
+        create_and_store_mint_quote(&mint, None, PaymentMethod::Bolt12, Amount::from(50), None)
+            .await
+            .expect("quote");
+
+    let outputs = create_outputs_for_amount(&mint, 50, CurrencyUnit::Sat).await;
+
+    let request = BatchMintRequest {
+        quotes: vec![quote_id.to_string()],
+        quote_amounts: None, // required for bolt12
+        outputs,
+        signatures: None,
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt12)
+        .await;
+    let err = result.expect_err("expected TransactionUnbalanced");
+    assert!(
+        matches!(err, Error::TransactionUnbalanced(_, _, _)),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_bolt12_rejects_over_requested_amount() {
+    let mint = create_bolt12_capable_mint().await;
+
+    let quote_id =
+        create_and_store_mint_quote(&mint, None, PaymentMethod::Bolt12, Amount::from(100), None)
+            .await
+            .expect("quote");
+
+    // Request 150 even though only 100 is mintable
+    let outputs = create_outputs_for_amount(&mint, 150, CurrencyUnit::Sat).await;
+
+    let request = BatchMintRequest {
+        quotes: vec![quote_id.to_string()],
+        quote_amounts: Some(vec![Amount::from(150)]),
+        outputs,
+        signatures: None,
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt12)
+        .await;
+    let err = result.expect_err("expected TransactionUnbalanced");
+    assert!(
+        matches!(err, Error::TransactionUnbalanced(_, _, _)),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_bolt12_total_mismatch() {
+    let mint = create_bolt12_capable_mint().await;
+
+    let quote_id =
+        create_and_store_mint_quote(&mint, None, PaymentMethod::Bolt12, Amount::from(150), None)
+            .await
+            .expect("quote");
+
+    // Outputs total 140 but requested 150
+    let outputs = create_outputs_for_amount(&mint, 140, CurrencyUnit::Sat).await;
+
+    let request = BatchMintRequest {
+        quotes: vec![quote_id.to_string()],
+        quote_amounts: Some(vec![Amount::from(150)]),
+        outputs,
+        signatures: None,
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt12)
+        .await;
+    let err = result.expect_err("expected TransactionUnbalanced");
+    assert!(
+        matches!(err, Error::TransactionUnbalanced(_, _, _)),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_rejects_unparsable_quote_id() {
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    let outputs = create_outputs_for_amount(&mint, 1, CurrencyUnit::Sat).await;
+
+    let request = BatchMintRequest {
+        quotes: vec!["not-a-valid-quote-id".to_string()],
+        quote_amounts: None,
+        outputs,
+        signatures: None,
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+    assert!(matches!(result, Err(Error::UnknownQuote)));
 }
 
 // ============================================================================
@@ -799,9 +1302,9 @@ async fn test_batch_mint_with_p2pk_spending_conditions() {
     // Create a quote that is paid (no NUT-20 lock)
     let quote_id = create_and_store_mint_quote(
         &mint,
-        Some(10.into()),
+        Some(1.into()),
         PaymentMethod::Bolt11,
-        Amount::from(10),
+        Amount::from(1),
         None, // No NUT-20 lock on the quote
     )
     .await
@@ -895,9 +1398,9 @@ async fn test_batch_mint_with_htlc_spending_conditions() {
     // Create a quote that is paid
     let quote_id = create_and_store_mint_quote(
         &mint,
-        Some(10.into()),
+        Some(1.into()),
         PaymentMethod::Bolt11,
-        Amount::from(10),
+        Amount::from(1),
         None,
     )
     .await
@@ -994,9 +1497,9 @@ async fn test_batch_mint_with_mixed_spending_conditions() {
     // Create two quotes
     let quote_id_1 = create_and_store_mint_quote(
         &mint,
-        Some(5.into()),
+        Some(1.into()),
         PaymentMethod::Bolt11,
-        Amount::from(5),
+        Amount::from(1),
         None,
     )
     .await
@@ -1004,9 +1507,9 @@ async fn test_batch_mint_with_mixed_spending_conditions() {
 
     let quote_id_2 = create_and_store_mint_quote(
         &mint,
-        Some(5.into()),
+        Some(1.into()),
         PaymentMethod::Bolt11,
-        Amount::from(5),
+        Amount::from(1),
         None,
     )
     .await

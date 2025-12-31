@@ -228,7 +228,10 @@ impl MintConnector for DirectMintConnection {
     ) -> Result<cdk_common::mint::BatchQuoteStatusResponse, Error> {
         let mut responses = Vec::new();
         for quote_id_str in request.quotes {
-            let quote_id = QuoteId::from_str(&quote_id_str)?;
+            let quote_id = match QuoteId::from_str(&quote_id_str) {
+                Ok(id) => id,
+                Err(_) => continue, // Skip invalid quote IDs as per spec
+            };
             match self.mint.check_mint_quote(&quote_id).await {
                 Ok(quote_response) => {
                     let item = match (&payment_method, quote_response) {

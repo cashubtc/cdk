@@ -1332,12 +1332,17 @@ async fn test_batch_quote_status_handles_bolt11_and_bolt12() {
     let bolt11_response = connector
         .post_mint_batch_quote_status(
             BatchQuoteStatusRequest {
-                quotes: bolt11_quotes.clone(),
+                quotes: {
+                    let mut ids = bolt11_quotes.clone();
+                    ids.extend(["unknown-id".to_string(), "bogus".to_string()]);
+                    ids
+                },
             },
             PaymentMethod::Bolt11,
         )
         .await
         .expect("Bolt11 status response");
+    // Unknown/invalid IDs are omitted from the response
     assert_eq!(bolt11_response.0.len(), bolt11_quotes.len());
     assert!(bolt11_response
         .0
