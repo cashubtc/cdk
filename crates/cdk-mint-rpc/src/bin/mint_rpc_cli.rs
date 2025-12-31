@@ -105,6 +105,8 @@ enum Commands {
     GetKeysets(subcommands::GetKeysetsCommand),
     /// List mint quotes
     ListMintQuotes(subcommands::ListMintQuotesCommand),
+    /// Lookup a mint quote by ID
+    LookupMintQuote(subcommands::LookupMintQuoteCommand),
 }
 
 #[tokio::main]
@@ -219,6 +221,9 @@ async fn main() -> Result<()> {
         }
         Commands::ListMintQuotes(sub_command_args) => {
             subcommands::list_mint_quotes(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::LookupMintQuote(sub_command_args) => {
+            subcommands::lookup_mint_quote(&mut reporting_client, &sub_command_args).await?;
         }
     }
 
