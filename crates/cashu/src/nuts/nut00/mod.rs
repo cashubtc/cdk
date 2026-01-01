@@ -381,7 +381,8 @@ impl Proof {
     }
 
     /// checks if the signature spend conditions are met
-    pub fn enough_signatures(&self) -> Result<bool, Error> {
+    #[cfg(feature = "wallet")]
+    pub fn enough_signatures(&self) -> Result<(), Error> {
         if let Ok(secret) = <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
             self.clone().secret,
         ) {
@@ -408,15 +409,14 @@ impl Proof {
 
             if let Some(witness) = self.witness.clone() {
                 if let Some(sigs) = witness.signatures() {
-                    if sigs.len() >= needed_sigs {
-                        return Ok(true);
+                    if sigs.len() < needed_sigs {
+                        return Err(Error::NUT10(nut10::Error::NotEnoughSignatures));
                     }
                 }
             }
-            return Ok(false);
         }
 
-        return Ok(true);
+        return Ok(());
     }
 }
 
