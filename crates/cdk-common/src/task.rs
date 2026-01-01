@@ -9,6 +9,10 @@ use tokio::task::JoinHandle;
 static GLOBAL_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 /// Spawns a new asynchronous task returning nothing
+///
+/// # Panics
+///
+/// Panics if the global Tokio runtime cannot be created when no runtime exists on the current thread.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
 where

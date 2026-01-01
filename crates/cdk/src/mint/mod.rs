@@ -912,6 +912,11 @@ impl Mint {
     }
 
     /// Restore
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number of blinded signatures returned from the database does not match
+    /// the number of outputs in the request.
     #[instrument(skip_all)]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         #[cfg(feature = "prometheus")]

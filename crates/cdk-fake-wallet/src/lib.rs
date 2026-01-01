@@ -822,6 +822,10 @@ impl MintPayment for FakeWallet {
 }
 
 /// Create fake invoice
+///
+/// # Panics
+///
+/// Panics if the hardcoded secret key or payment hash bytes are invalid.
 #[instrument]
 pub fn create_fake_invoice(amount_msat: u64, description: String) -> Bolt11Invoice {
     let private_key = SecretKey::from_slice(

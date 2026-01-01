@@ -34,6 +34,10 @@ pub struct DbSignatory {
 
 impl DbSignatory {
     /// Creates a new MemorySignatory instance
+    ///
+    /// # Panics
+    ///
+    /// Panics if the seed is invalid and cannot be used to create a master key.
     pub async fn new(
         localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
         seed: &[u8],

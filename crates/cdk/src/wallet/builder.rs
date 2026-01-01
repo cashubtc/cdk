@@ -153,6 +153,10 @@ impl WalletBuilder {
     }
 
     /// Set auth CAT (Clear Auth Token)
+    ///
+    /// # Panics
+    ///
+    /// Panics if `mint_url` or `localstore` have not been set on the builder.
     #[cfg(feature = "auth")]
     pub fn set_auth_cat(mut self, cat: String) -> Self {
         let mint_url = self.mint_url.clone().expect("Mint URL required");
