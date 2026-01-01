@@ -354,7 +354,10 @@ impl LnBackendSetup for config::LdkNode {
             Some(cdk_ldk_node::CdkLdkNode::default_web_addr())
         };
 
-        println!("webserver: {:?}", webserver_addr);
+        println!(
+            "webserver: {}",
+            webserver_addr.map_or("none".to_string(), |a| a.to_string())
+        );
 
         ldk_node.set_web_addr(webserver_addr);
 

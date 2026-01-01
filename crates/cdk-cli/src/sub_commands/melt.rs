@@ -269,7 +269,10 @@ pub async fn pay(
                     multi_mint_wallet.melt(&bolt11_str, options, None).await?
                 };
 
-                println!("Payment successful: {:?}", melted);
+                println!(
+                    "Payment successful: state={}, amount={}, fee_paid={}",
+                    melted.state, melted.amount, melted.fee_paid
+                );
                 if let Some(preimage) = melted.preimage {
                     println!("Payment preimage: {}", preimage);
                 }

@@ -56,8 +56,11 @@ pub async fn rotate_next_keyset(
     let response = response.into_inner();
 
     println!(
-        "Rotated to new keyset {} for unit {} with amounts {:?} and fee of {}",
-        response.id, response.unit, response.amounts, response.input_fee_ppk
+        "Rotated to new keyset {} for unit {} with amounts {} and fee of {}",
+        response.id,
+        response.unit,
+        serde_json::to_string(&response.amounts)?,
+        response.input_fee_ppk
     );
 
     Ok(())
