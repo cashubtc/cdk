@@ -49,7 +49,7 @@ pub enum Error {
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
 
-    /// Proof does not contain enought signature for lock
+    /// Proof does not contain enough signature for lock
     #[error("proof does not contain enough proofs to be spendable")]
     NotEnoughSignatures,
 }
