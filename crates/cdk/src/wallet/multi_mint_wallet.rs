@@ -2015,7 +2015,7 @@ impl MultiMintWallet {
     }
 
     /// gets public key by it's hex value
-    pub async fn p2pk_public_key(
+    pub async fn get_public_key(
         &self,
         pubkey: &PublicKey,
     ) -> Result<Option<P2PKSigningKey>, database::Error> {
@@ -2023,12 +2023,12 @@ impl MultiMintWallet {
     }
 
     /// gets list of stored public keys in database
-    pub async fn p2pk_list(&self) -> Result<Vec<P2PKSigningKey>, database::Error> {
+    pub async fn get_public_keys(&self) -> Result<Vec<P2PKSigningKey>, database::Error> {
         return self.localstore.list_p2pk_keys().await;
     }
 
     /// Gets the latest generated P2PK signing key (most recently created)
-    pub async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, database::Error> {
+    pub async fn get_latest_public_key(&self) -> Result<Option<P2PKSigningKey>, database::Error> {
         self.localstore.latest_p2pk().await
     }
 }
