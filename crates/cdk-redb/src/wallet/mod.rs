@@ -633,7 +633,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                     pubkey: *pubkey,
                     derivation_path,
                     derivation_index,
-                    created_time: 0,
+                    created_time: unix_time(),
                 })
                 .map_err(Error::from)?
                 .as_str(),
