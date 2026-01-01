@@ -207,4 +207,7 @@ where
     ) -> Result<Option<wallet::P2PKSigningKey>, Self::Err>;
     /// List all stored P2PK signing keys.
     async fn list_p2pk_keys(&self) -> Result<Vec<wallet::P2PKSigningKey>, Self::Err>;
+
+    /// Tries to get the latest p2pk key generated
+    async fn latest_p2pk(&self) -> Result<Option<wallet::P2PKSigningKey>, Self::Err>;
 }
