@@ -13,15 +13,6 @@ use crate::ListOperationsRequest;
 /// by units and operation kinds. Supports pagination through offset and limit parameters,
 /// and can display results in reverse chronological order. Operations represent various
 /// activities performed by the mint such as minting, melting, and swapping tokens.
-///
-/// # Arguments
-/// * `offset` - Offset for pagination (default: 0)
-/// * `limit` - Maximum number of operations to return (default: 50)
-/// * `reversed` - Reverse order (newest first)
-/// * `units` - Optional filter by units (comma-separated: sat,usd)
-/// * `operations` - Optional filter by operation kinds (comma-separated: mint,melt,swap)
-/// * `from` - Optional filter by creation date start (Unix timestamp)
-/// * `to` - Optional filter by creation date end (Unix timestamp)
 #[derive(Args)]
 pub struct ListOperationsCommand {
     /// Offset for pagination

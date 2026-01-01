@@ -48,7 +48,7 @@ use tracing::instrument;
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::{DatabasePool, Pool, PooledResource};
-use crate::stmt::{query, Column};
+use crate::stmt::{query, Column, Statement};
 use crate::{
     column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
     unpack_into,
@@ -1489,24 +1489,20 @@ where
     ) -> Result<MintQuoteListResult, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        // Build dynamic WHERE clauses (using owned strings to avoid lifetime issues)
+        // Build dynamic WHERE clauses
         let mut where_clauses: Vec<String> = Vec::new();
 
-        // Date range filters
         if filter.creation_date_start.is_some() {
-            where_clauses.push("created_time >= :creation_date_start".to_string());
+            where_clauses.push("created_time >= :creation_date_start".into());
         }
         if filter.creation_date_end.is_some() {
-            where_clauses.push("created_time <= :creation_date_end".to_string());
+            where_clauses.push("created_time <= :creation_date_end".into());
         }
-
-        // Unit filter
         if !filter.units.is_empty() {
-            where_clauses.push("unit IN (:units)".to_string());
+            where_clauses.push("unit IN (:units)".into());
         }
 
-        // State filter - computed from amount_paid and amount_issued
-        // States: UNPAID (paid=0 AND issued=0), PAID (paid > issued), ISSUED (paid <= issued AND NOT unpaid)
+        // State filter - computed from amount_paid and amount_issued (mint-quote specific)
         if !filter.states.is_empty() {
             let state_conditions: Vec<&str> = filter
                 .states
@@ -1522,84 +1518,36 @@ where
             where_clauses.push(format!("({})", state_conditions.join(" OR ")));
         }
 
-        // Build WHERE clause
-        let where_clause = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-
-        // Build ORDER BY clause
-        let order_direction = if filter.reversed { "DESC" } else { "ASC" };
-
-        // Build LIMIT/OFFSET clause with peek-ahead for has_more detection
-        // Query for limit + 1 to determine if there are more results
-        let (limit_clause, requested_limit) = match filter.limit {
-            Some(limit) => (
-                format!("LIMIT {} OFFSET {}", limit + 1, filter.offset),
-                Some(limit as usize),
-            ),
-            None if filter.offset > 0 => (format!("OFFSET {}", filter.offset), None),
-            None => (String::new(), None),
-        };
+        let where_clause = build_where_clause(&where_clauses);
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
 
         let query_str = format!(
             r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                amount_paid,
-                amount_issued,
-                payment_method,
-                request_lookup_id_kind
-            FROM
-                mint_quote
+            SELECT id, amount, unit, request, expiry, request_lookup_id,
+                   pubkey, created_time, amount_paid, amount_issued,
+                   payment_method, request_lookup_id_kind
+            FROM mint_quote
             {where_clause}
-            ORDER BY created_time {order_direction}
+            ORDER BY created_time {order}
             {limit_clause}
             "#,
             where_clause = where_clause,
-            order_direction = order_direction,
+            order = order_direction(filter.reversed),
             limit_clause = limit_clause,
         );
 
-        let mut q = query(&query_str)?;
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_units(stmt, &filter.units);
 
-        // Bind parameters
-        if let Some(start) = filter.creation_date_start {
-            q = q.bind("creation_date_start", start as i64);
-        }
-        if let Some(end) = filter.creation_date_end {
-            q = q.bind("creation_date_end", end as i64);
-        }
-        if !filter.units.is_empty() {
-            q = q.bind_vec(
-                "units",
-                filter.units.iter().map(|u| u.to_string()).collect(),
-            );
-        }
-
-        let mut quotes = q
+        let mut quotes = stmt
             .fetch_all(&*conn)
             .await?
             .into_iter()
             .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Determine has_more using peek-ahead result
-        let has_more = match requested_limit {
-            Some(limit) if quotes.len() > limit => {
-                quotes.truncate(limit);
-                true
-            }
-            _ => false,
-        };
+        let has_more = apply_pagination_peek_ahead(&mut quotes, requested_limit);
 
         Ok(MintQuoteListResult { quotes, has_more })
     }
@@ -1672,109 +1620,57 @@ where
         // Build dynamic WHERE clauses
         let mut where_clauses: Vec<String> = Vec::new();
 
-        // Date range filters
         if filter.creation_date_start.is_some() {
-            where_clauses.push("created_time >= :creation_date_start".to_string());
+            where_clauses.push("created_time >= :creation_date_start".into());
         }
         if filter.creation_date_end.is_some() {
-            where_clauses.push("created_time <= :creation_date_end".to_string());
+            where_clauses.push("created_time <= :creation_date_end".into());
         }
-
-        // Unit filter
         if !filter.units.is_empty() {
-            where_clauses.push("unit IN (:units)".to_string());
+            where_clauses.push("unit IN (:units)".into());
         }
-
-        // State filter - direct column comparison (state is stored in DB)
         if !filter.states.is_empty() {
-            where_clauses.push("state IN (:states)".to_string());
+            where_clauses.push("state IN (:states)".into());
         }
 
-        // Build WHERE clause
-        let where_clause = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-
-        // Build ORDER BY clause
-        let order_direction = if filter.reversed { "DESC" } else { "ASC" };
-
-        // Build LIMIT/OFFSET clause with peek-ahead for has_more detection
-        let (limit_clause, requested_limit) = match filter.limit {
-            Some(limit) => (
-                format!("LIMIT {} OFFSET {}", limit + 1, filter.offset),
-                Some(limit as usize),
-            ),
-            None if filter.offset > 0 => (format!("OFFSET {}", filter.offset), None),
-            None => (String::new(), None),
-        };
+        let where_clause = build_where_clause(&where_clauses);
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
 
         let query_str = format!(
             r#"
-            SELECT
-                id,
-                unit,
-                amount,
-                request,
-                fee_reserve,
-                expiry,
-                state,
-                payment_preimage,
-                request_lookup_id,
-                created_time,
-                paid_time,
-                payment_method,
-                options,
-                request_lookup_id_kind
-            FROM
-                melt_quote
+            SELECT id, unit, amount, request, fee_reserve, expiry, state,
+                   payment_preimage, request_lookup_id, created_time, paid_time,
+                   payment_method, options, request_lookup_id_kind
+            FROM melt_quote
             {where_clause}
-            ORDER BY created_time {order_direction}
+            ORDER BY created_time {order}
             {limit_clause}
             "#,
             where_clause = where_clause,
-            order_direction = order_direction,
+            order = order_direction(filter.reversed),
             limit_clause = limit_clause,
         );
 
-        let mut q = query(&query_str)?;
-
-        // Bind parameters
-        if let Some(start) = filter.creation_date_start {
-            q = q.bind("creation_date_start", start as i64);
-        }
-        if let Some(end) = filter.creation_date_end {
-            q = q.bind("creation_date_end", end as i64);
-        }
-        if !filter.units.is_empty() {
-            q = q.bind_vec(
-                "units",
-                filter.units.iter().map(|u| u.to_string()).collect(),
-            );
-        }
-        if !filter.states.is_empty() {
-            q = q.bind_vec(
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_units(stmt, &filter.units);
+        let stmt = if !filter.states.is_empty() {
+            stmt.bind_vec(
                 "states",
                 filter.states.iter().map(|s| s.to_string()).collect(),
-            );
-        }
+            )
+        } else {
+            stmt
+        };
 
-        let mut quotes = q
+        let mut quotes = stmt
             .fetch_all(&*conn)
             .await?
             .into_iter()
             .map(sql_row_to_melt_quote)
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Determine has_more using peek-ahead result
-        let has_more = match requested_limit {
-            Some(limit) if quotes.len() > limit => {
-                quotes.truncate(limit);
-                true
-            }
-            _ => false,
-        };
+        let has_more = apply_pagination_peek_ahead(&mut quotes, requested_limit);
 
         Ok(MeltQuoteListResult { quotes, has_more })
     }
@@ -1965,130 +1861,71 @@ where
         let mut where_clauses: Vec<String> = Vec::new();
         let needs_keyset_join = !filter.units.is_empty();
 
-        // Date range filters
         if filter.creation_date_start.is_some() {
-            where_clauses.push("p.created_time >= :creation_date_start".to_string());
+            where_clauses.push("p.created_time >= :creation_date_start".into());
         }
         if filter.creation_date_end.is_some() {
-            where_clauses.push("p.created_time <= :creation_date_end".to_string());
+            where_clauses.push("p.created_time <= :creation_date_end".into());
         }
-
-        // State filter
         if !filter.states.is_empty() {
-            where_clauses.push("p.state IN (:states)".to_string());
+            where_clauses.push("p.state IN (:states)".into());
         }
-
-        // Keyset ID filter
         if !filter.keyset_ids.is_empty() {
-            where_clauses.push("p.keyset_id IN (:keyset_ids)".to_string());
+            where_clauses.push("p.keyset_id IN (:keyset_ids)".into());
         }
-
-        // Unit filter (requires JOIN to keyset table)
         if !filter.units.is_empty() {
-            where_clauses.push("k.unit IN (:units)".to_string());
+            where_clauses.push("k.unit IN (:units)".into());
         }
-
-        // Operation kind filter
         if !filter.operations.is_empty() {
-            where_clauses.push("p.operation_kind IN (:operations)".to_string());
+            where_clauses.push("p.operation_kind IN (:operations)".into());
         }
 
-        // Build WHERE clause
-        let where_clause = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-
-        // Build JOIN clause
+        let where_clause = build_where_clause(&where_clauses);
         let join_clause = if needs_keyset_join {
             "JOIN keyset k ON p.keyset_id = k.id"
         } else {
             ""
         };
-
-        // Build ORDER BY clause
-        let order_direction = if filter.reversed { "DESC" } else { "ASC" };
-
-        // Build LIMIT/OFFSET clause with peek-ahead for has_more detection
-        let (limit_clause, requested_limit) = match filter.limit {
-            Some(limit) => (
-                format!("LIMIT {} OFFSET {}", limit + 1, filter.offset),
-                Some(limit as usize),
-            ),
-            None if filter.offset > 0 => (format!("OFFSET {}", filter.offset), None),
-            None => (String::new(), None),
-        };
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
 
         let query_str = format!(
             r#"
-            SELECT
-                p.amount,
-                p.keyset_id,
-                p.state,
-                p.quote_id,
-                p.created_time,
-                p.operation_kind,
-                p.operation_id
-            FROM
-                proof p
+            SELECT p.amount, p.keyset_id, p.state, p.quote_id, p.created_time,
+                   p.operation_kind, p.operation_id
+            FROM proof p
             {join_clause}
             {where_clause}
-            ORDER BY p.created_time {order_direction}
+            ORDER BY p.created_time {order}
             {limit_clause}
             "#,
             join_clause = join_clause,
             where_clause = where_clause,
-            order_direction = order_direction,
+            order = order_direction(filter.reversed),
             limit_clause = limit_clause,
         );
 
-        let mut q = query(&query_str)?;
-
-        // Bind parameters
-        if let Some(start) = filter.creation_date_start {
-            q = q.bind("creation_date_start", start as i64);
-        }
-        if let Some(end) = filter.creation_date_end {
-            q = q.bind("creation_date_end", end as i64);
-        }
-        if !filter.states.is_empty() {
-            q = q.bind_vec(
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_units(stmt, &filter.units);
+        let stmt = bind_keyset_ids(stmt, &filter.keyset_ids);
+        let stmt = bind_operations(stmt, &filter.operations);
+        let stmt = if !filter.states.is_empty() {
+            stmt.bind_vec(
                 "states",
                 filter.states.iter().map(|s| s.to_string()).collect(),
-            );
-        }
-        if !filter.keyset_ids.is_empty() {
-            q = q.bind_vec(
-                "keyset_ids",
-                filter.keyset_ids.iter().map(|id| id.to_string()).collect(),
-            );
-        }
-        if !filter.units.is_empty() {
-            q = q.bind_vec(
-                "units",
-                filter.units.iter().map(|u| u.to_string()).collect(),
-            );
-        }
-        if !filter.operations.is_empty() {
-            q = q.bind_vec("operations", filter.operations.clone());
-        }
+            )
+        } else {
+            stmt
+        };
 
-        let rows = q.fetch_all(&*conn).await?;
-
-        let mut proofs = rows
+        let mut proofs = stmt
+            .fetch_all(&*conn)
+            .await?
             .into_iter()
             .map(sql_row_to_proof_record)
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Determine has_more using peek-ahead result
-        let has_more = match requested_limit {
-            Some(limit) if proofs.len() > limit => {
-                proofs.truncate(limit);
-                true
-            }
-            _ => false,
-        };
+        let has_more = apply_pagination_peek_ahead(&mut proofs, requested_limit);
 
         Ok(ProofListResult { proofs, has_more })
     }
@@ -2466,119 +2303,60 @@ where
         let mut where_clauses: Vec<String> = Vec::new();
         let needs_keyset_join = !filter.units.is_empty();
 
-        // Date range filters
         if filter.creation_date_start.is_some() {
-            where_clauses.push("bs.created_time >= :creation_date_start".to_string());
+            where_clauses.push("bs.created_time >= :creation_date_start".into());
         }
         if filter.creation_date_end.is_some() {
-            where_clauses.push("bs.created_time <= :creation_date_end".to_string());
+            where_clauses.push("bs.created_time <= :creation_date_end".into());
         }
-
-        // Keyset ID filter
         if !filter.keyset_ids.is_empty() {
-            where_clauses.push("bs.keyset_id IN (:keyset_ids)".to_string());
+            where_clauses.push("bs.keyset_id IN (:keyset_ids)".into());
         }
-
-        // Unit filter (requires JOIN to keyset table)
         if !filter.units.is_empty() {
-            where_clauses.push("k.unit IN (:units)".to_string());
+            where_clauses.push("k.unit IN (:units)".into());
         }
-
-        // Operation kind filter
         if !filter.operations.is_empty() {
-            where_clauses.push("bs.operation_kind IN (:operations)".to_string());
+            where_clauses.push("bs.operation_kind IN (:operations)".into());
         }
 
-        // Build WHERE clause
-        let where_clause = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-
-        // Build JOIN clause
+        let where_clause = build_where_clause(&where_clauses);
         let join_clause = if needs_keyset_join {
             "JOIN keyset k ON bs.keyset_id = k.id"
         } else {
             ""
         };
-
-        // Build ORDER BY clause
-        let order_direction = if filter.reversed { "DESC" } else { "ASC" };
-
-        // Build LIMIT/OFFSET clause with peek-ahead for has_more detection
-        let (limit_clause, requested_limit) = match filter.limit {
-            Some(limit) => (
-                format!("LIMIT {} OFFSET {}", limit + 1, filter.offset),
-                Some(limit as usize),
-            ),
-            None if filter.offset > 0 => (format!("OFFSET {}", filter.offset), None),
-            None => (String::new(), None),
-        };
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
 
         let query_str = format!(
             r#"
-            SELECT
-                bs.amount,
-                bs.keyset_id,
-                bs.quote_id,
-                bs.created_time,
-                bs.signed_time,
-                bs.operation_kind,
-                bs.operation_id
-            FROM
-                blind_signature bs
+            SELECT bs.amount, bs.keyset_id, bs.quote_id, bs.created_time,
+                   bs.signed_time, bs.operation_kind, bs.operation_id
+            FROM blind_signature bs
             {join_clause}
             {where_clause}
-            ORDER BY bs.created_time {order_direction}
+            ORDER BY bs.created_time {order}
             {limit_clause}
             "#,
             join_clause = join_clause,
             where_clause = where_clause,
-            order_direction = order_direction,
+            order = order_direction(filter.reversed),
             limit_clause = limit_clause,
         );
 
-        let mut q = query(&query_str)?;
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_keyset_ids(stmt, &filter.keyset_ids);
+        let stmt = bind_units(stmt, &filter.units);
+        let stmt = bind_operations(stmt, &filter.operations);
 
-        // Bind parameters
-        if let Some(start) = filter.creation_date_start {
-            q = q.bind("creation_date_start", start as i64);
-        }
-        if let Some(end) = filter.creation_date_end {
-            q = q.bind("creation_date_end", end as i64);
-        }
-        if !filter.keyset_ids.is_empty() {
-            q = q.bind_vec(
-                "keyset_ids",
-                filter.keyset_ids.iter().map(|id| id.to_string()).collect(),
-            );
-        }
-        if !filter.units.is_empty() {
-            q = q.bind_vec(
-                "units",
-                filter.units.iter().map(|u| u.to_string()).collect(),
-            );
-        }
-        if !filter.operations.is_empty() {
-            q = q.bind_vec("operations", filter.operations.clone());
-        }
-
-        let rows = q.fetch_all(&*conn).await?;
-
-        let mut signatures = rows
+        let mut signatures = stmt
+            .fetch_all(&*conn)
+            .await?
             .into_iter()
             .map(sql_row_to_blind_signature_record)
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Determine has_more using peek-ahead result
-        let has_more = match requested_limit {
-            Some(limit) if signatures.len() > limit => {
-                signatures.truncate(limit);
-                true
-            }
-            _ => false,
-        };
+        let has_more = apply_pagination_peek_ahead(&mut signatures, requested_limit);
 
         Ok(BlindSignatureListResult {
             signatures,
@@ -2976,48 +2754,26 @@ where
         let mut where_clauses: Vec<String> = Vec::new();
         let needs_unit_join = !filter.units.is_empty();
 
-        // Date range filters (on completed_at)
         if filter.creation_date_start.is_some() {
-            where_clauses.push("co.completed_at >= :creation_date_start".to_string());
+            where_clauses.push("co.completed_at >= :creation_date_start".into());
         }
         if filter.creation_date_end.is_some() {
-            where_clauses.push("co.completed_at <= :creation_date_end".to_string());
+            where_clauses.push("co.completed_at <= :creation_date_end".into());
         }
-
-        // Operation kind filter
         if !filter.operations.is_empty() {
-            where_clauses.push("co.operation_kind IN (:operations)".to_string());
+            where_clauses.push("co.operation_kind IN (:operations)".into());
         }
-
-        // Unit filter (requires JOIN via CTE)
         if needs_unit_join {
-            where_clauses.push("ou.unit IN (:units)".to_string());
+            where_clauses.push("ou.unit IN (:units)".into());
         }
 
-        // Build WHERE clause
-        let where_clause = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-
-        // Build ORDER BY clause
-        let order_direction = if filter.reversed { "DESC" } else { "ASC" };
-
-        // Build LIMIT/OFFSET clause with peek-ahead for has_more detection
-        let (limit_clause, requested_limit) = match filter.limit {
-            Some(limit) => (
-                format!("LIMIT {} OFFSET {}", limit + 1, filter.offset),
-                Some(limit as usize),
-            ),
-            None if filter.offset > 0 => (format!("OFFSET {}", filter.offset), None),
-            None => (String::new(), None),
-        };
+        let where_clause = build_where_clause(&where_clauses);
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
+        let order = order_direction(filter.reversed);
 
         // Different query strategies based on whether we need unit filtering
         let query_str = if needs_unit_join {
             // JOIN approach with CTE when filtering by unit
-            // Uses UNION to find unit from either proof or blind_signature table
             format!(
                 r#"
                 WITH operation_units AS (
@@ -3031,102 +2787,62 @@ where
                     JOIN keyset k ON bs.keyset_id = k.id
                     WHERE bs.operation_id IS NOT NULL
                 )
-                SELECT
-                    co.operation_id,
-                    co.operation_kind,
-                    co.completed_at,
-                    co.total_issued,
-                    co.total_redeemed,
-                    co.fee_collected,
-                    co.payment_amount,
-                    co.payment_fee,
-                    co.payment_method,
-                    MIN(ou.unit) as unit
-                FROM
-                    completed_operations co
+                SELECT co.operation_id, co.operation_kind, co.completed_at,
+                       co.total_issued, co.total_redeemed, co.fee_collected,
+                       co.payment_amount, co.payment_fee, co.payment_method,
+                       MIN(ou.unit) as unit
+                FROM completed_operations co
                 JOIN operation_units ou ON co.operation_id = ou.operation_id
                 {where_clause}
                 GROUP BY co.operation_id, co.operation_kind, co.completed_at,
                          co.total_issued, co.total_redeemed, co.fee_collected,
                          co.payment_amount, co.payment_fee, co.payment_method
-                ORDER BY co.completed_at {order_direction}
+                ORDER BY co.completed_at {order}
                 {limit_clause}
                 "#,
                 where_clause = where_clause,
-                order_direction = order_direction,
+                order = order,
                 limit_clause = limit_clause,
             )
         } else {
             // Subquery approach when not filtering by unit (more efficient)
-            // Uses COALESCE to try proof first, then blind_signature
             format!(
                 r#"
-                SELECT
-                    co.operation_id,
-                    co.operation_kind,
-                    co.completed_at,
-                    co.total_issued,
-                    co.total_redeemed,
-                    co.fee_collected,
-                    co.payment_amount,
-                    co.payment_fee,
-                    co.payment_method,
-                    COALESCE(
-                        (SELECT k.unit FROM proof p
-                         JOIN keyset k ON p.keyset_id = k.id
-                         WHERE p.operation_id = co.operation_id
-                         LIMIT 1),
-                        (SELECT k.unit FROM blind_signature bs
-                         JOIN keyset k ON bs.keyset_id = k.id
-                         WHERE bs.operation_id = co.operation_id
-                         LIMIT 1)
-                    ) as unit
-                FROM
-                    completed_operations co
+                SELECT co.operation_id, co.operation_kind, co.completed_at,
+                       co.total_issued, co.total_redeemed, co.fee_collected,
+                       co.payment_amount, co.payment_fee, co.payment_method,
+                       COALESCE(
+                           (SELECT k.unit FROM proof p
+                            JOIN keyset k ON p.keyset_id = k.id
+                            WHERE p.operation_id = co.operation_id LIMIT 1),
+                           (SELECT k.unit FROM blind_signature bs
+                            JOIN keyset k ON bs.keyset_id = k.id
+                            WHERE bs.operation_id = co.operation_id LIMIT 1)
+                       ) as unit
+                FROM completed_operations co
                 {where_clause}
-                ORDER BY co.completed_at {order_direction}
+                ORDER BY co.completed_at {order}
                 {limit_clause}
                 "#,
                 where_clause = where_clause,
-                order_direction = order_direction,
+                order = order,
                 limit_clause = limit_clause,
             )
         };
 
-        let mut q = query(&query_str)?;
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_operations(stmt, &filter.operations);
+        let stmt = bind_units(stmt, &filter.units);
 
-        // Bind parameters
-        if let Some(start) = filter.creation_date_start {
-            q = q.bind("creation_date_start", start as i64);
-        }
-        if let Some(end) = filter.creation_date_end {
-            q = q.bind("creation_date_end", end as i64);
-        }
-        if !filter.operations.is_empty() {
-            q = q.bind_vec("operations", filter.operations.clone());
-        }
-        if !filter.units.is_empty() {
-            q = q.bind_vec(
-                "units",
-                filter.units.iter().map(|u| u.to_string()).collect(),
-            );
-        }
-
-        let rows = q.fetch_all(&*conn).await?;
-
-        let mut operations = rows
+        let mut operations = stmt
+            .fetch_all(&*conn)
+            .await?
             .into_iter()
             .map(sql_row_to_operation_record)
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Determine has_more using peek-ahead result
-        let has_more = match requested_limit {
-            Some(limit) if operations.len() > limit => {
-                operations.truncate(limit);
-                true
-            }
-            _ => false,
-        };
+        let has_more = apply_pagination_peek_ahead(&mut operations, requested_limit);
 
         Ok(OperationListResult {
             operations,
@@ -3153,6 +2869,138 @@ where
         Ok(Box::new(tx))
     }
 }
+
+// ============================================================================
+// Query builder helpers for filtered list methods
+// ============================================================================
+
+/**
+ * Build pagination clause with peek-ahead for has_more detection.
+ * Queries for limit+1 rows to determine if more results exist.
+ * @param {Option<u64>} limit - maximum number of items to return
+ * @param {u64} offset - number of items to skip
+ * @returns {(String, Option<usize>)} tuple of SQL clause and requested limit for truncation
+ */
+fn build_pagination_clause(limit: Option<u64>, offset: u64) -> (String, Option<usize>) {
+    match limit {
+        Some(limit) => (
+            format!("LIMIT {} OFFSET {}", limit + 1, offset),
+            Some(limit as usize),
+        ),
+        None if offset > 0 => (format!("OFFSET {}", offset), None),
+        None => (String::new(), None),
+    }
+}
+
+/**
+ * Get ORDER BY direction string based on reversed flag.
+ * @param {bool} reversed - if true, sort descending; otherwise ascending
+ * @returns {&'static str} "DESC" or "ASC"
+ */
+fn order_direction(reversed: bool) -> &'static str {
+    if reversed {
+        "DESC"
+    } else {
+        "ASC"
+    }
+}
+
+/**
+ * Apply peek-ahead truncation and return has_more flag.
+ * If items exceed requested_limit, truncate and return true.
+ * @param {&mut Vec<T>} items - mutable reference to items vector
+ * @param {Option<usize>} requested_limit - the original limit before peek-ahead
+ * @returns {bool} true if there are more items beyond the limit
+ */
+fn apply_pagination_peek_ahead<T>(items: &mut Vec<T>, requested_limit: Option<usize>) -> bool {
+    match requested_limit {
+        Some(limit) if items.len() > limit => {
+            items.truncate(limit);
+            true
+        }
+        _ => false,
+    }
+}
+
+/**
+ * Join WHERE clauses with AND, returning empty string if no clauses.
+ * @param {&[String]} clauses - slice of WHERE clause strings
+ * @returns {String} complete WHERE clause or empty string
+ */
+fn build_where_clause(clauses: &[String]) -> String {
+    if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
+    }
+}
+
+/**
+ * Bind date range parameters to statement if present.
+ * @param {Statement} stmt - the SQL statement
+ * @param {Option<u64>} start - optional start timestamp
+ * @param {Option<u64>} end - optional end timestamp
+ * @returns {Statement} statement with bound parameters
+ */
+fn bind_date_range(stmt: Statement, start: Option<u64>, end: Option<u64>) -> Statement {
+    let stmt = match start {
+        Some(s) => stmt.bind("creation_date_start", s as i64),
+        None => stmt,
+    };
+    match end {
+        Some(e) => stmt.bind("creation_date_end", e as i64),
+        None => stmt,
+    }
+}
+
+/**
+ * Bind unit filter parameters to statement if present.
+ * @param {Statement} stmt - the SQL statement
+ * @param {&[CurrencyUnit]} units - slice of currency units to filter by
+ * @returns {Statement} statement with bound parameters
+ */
+fn bind_units(stmt: Statement, units: &[CurrencyUnit]) -> Statement {
+    if units.is_empty() {
+        stmt
+    } else {
+        stmt.bind_vec("units", units.iter().map(|u| u.to_string()).collect())
+    }
+}
+
+/**
+ * Bind keyset ID filter parameters to statement if present.
+ * @param {Statement} stmt - the SQL statement
+ * @param {&[Id]} keyset_ids - slice of keyset IDs to filter by
+ * @returns {Statement} statement with bound parameters
+ */
+fn bind_keyset_ids(stmt: Statement, keyset_ids: &[Id]) -> Statement {
+    if keyset_ids.is_empty() {
+        stmt
+    } else {
+        stmt.bind_vec(
+            "keyset_ids",
+            keyset_ids.iter().map(|id| id.to_string()).collect(),
+        )
+    }
+}
+
+/**
+ * Bind operation filter parameters to statement if present.
+ * @param {Statement} stmt - the SQL statement
+ * @param {&[String]} operations - slice of operation kinds to filter by
+ * @returns {Statement} statement with bound parameters
+ */
+fn bind_operations(stmt: Statement, operations: &[String]) -> Statement {
+    if operations.is_empty() {
+        stmt
+    } else {
+        stmt.bind_vec("operations", operations.to_vec())
+    }
+}
+
+// ============================================================================
+// Row conversion helpers
+// ============================================================================
 
 fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo, Error> {
     unpack_into!(
@@ -3594,110 +3442,18 @@ where
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let engine = RM::Connection::name().to_string();
 
+        // Validate format is compatible with engine
+        if format == BackupFormat::Sqlite && engine != "sqlite" {
+            return Err(Error::Internal(
+                "SQLite backup format is only supported for SQLite databases".to_string(),
+            ));
+        }
+
         let data = match format {
-            BackupFormat::Sqlite => {
-                // Use VACUUM INTO to create a consistent snapshot
-                // Create temp file path
-                let temp_path = std::env::temp_dir().join(format!("cdk_backup_{}.db", unix_time()));
-                let temp_path_str = temp_path.to_string_lossy().to_string();
-
-                // Execute VACUUM INTO
-                query(&format!("VACUUM INTO '{}'", temp_path_str))?
-                    .execute(&*conn)
-                    .await?;
-
-                // Read the backup file
-                let backup_data = std::fs::read(&temp_path).map_err(|e| {
-                    Error::Database(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Failed to read backup file: {}", e),
-                    )))
-                })?;
-
-                // Clean up temp file
-                let _ = std::fs::remove_file(&temp_path);
-
-                backup_data
-            }
-            BackupFormat::Sql => {
-                // Generate SQL dump
-                let mut sql_dump = String::new();
-
-                // Add header
-                sql_dump.push_str("-- CDK Mint Database Backup\n");
-                sql_dump.push_str(&format!("-- Created: {}\n", unix_time()));
-                sql_dump.push_str(&format!("-- Engine: {}\n\n", engine));
-
-                // Get list of tables
-                let tables_query = if engine == "sqlite" {
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-                } else {
-                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
-                };
-
-                let table_rows = query(tables_query)?.fetch_all(&*conn).await?;
-
-                for row in table_rows {
-                    if let Some(Column::Text(table_name)) = row.first() {
-                        // Skip internal migration table
-                        if table_name == "_sqlx_migrations" || table_name == "migrations" {
-                            continue;
-                        }
-
-                        sql_dump.push_str(&format!("\n-- Table: {}\n", table_name));
-
-                        // Get table schema (SQLite specific)
-                        if engine == "sqlite" {
-                            let schema_rows = query(&format!(
-                                "SELECT sql FROM sqlite_master WHERE type='table' AND name='{}'",
-                                table_name
-                            ))?
-                            .fetch_all(&*conn)
-                            .await?;
-
-                            if let Some(schema_row) = schema_rows.first() {
-                                if let Some(Column::Text(schema)) = schema_row.first() {
-                                    sql_dump.push_str(schema);
-                                    sql_dump.push_str(";\n\n");
-                                }
-                            }
-                        }
-
-                        // Get table data
-                        let data_rows = query(&format!("SELECT * FROM \"{}\"", table_name))?
-                            .fetch_all(&*conn)
-                            .await?;
-
-                        for data_row in data_rows {
-                            if data_row.is_empty() {
-                                continue;
-                            }
-
-                            let values: Vec<String> = data_row
-                                .iter()
-                                .map(|col| match col {
-                                    Column::Null => "NULL".to_string(),
-                                    Column::Integer(i) => i.to_string(),
-                                    Column::Real(r) => r.to_string(),
-                                    Column::Text(t) => format!("'{}'", t.replace('\'', "''")),
-                                    Column::Blob(b) => format!("X'{}'", bytes_to_hex(b)),
-                                })
-                                .collect();
-
-                            sql_dump.push_str(&format!(
-                                "INSERT INTO \"{}\" VALUES ({});\n",
-                                table_name,
-                                values.join(", ")
-                            ));
-                        }
-                    }
-                }
-
-                sql_dump.into_bytes()
-            }
+            BackupFormat::Sqlite => create_sqlite_backup(&*conn).await?,
+            BackupFormat::Sql => create_sql_dump(&*conn, &engine).await?,
         };
 
-        // Calculate checksum for integrity verification
         let checksum = checksum_hex(&data);
 
         Ok(BackupResult {
@@ -3710,10 +3466,362 @@ where
     }
 }
 
-/// Calculate a checksum and return as hex string
-///
-/// Uses std DefaultHasher - not cryptographically secure but sufficient for integrity checks.
-/// Returns a 16-character hex string.
+// ============================================================================
+// Backup helper functions
+// ============================================================================
+
+/**
+ * Create a SQLite backup using VACUUM INTO for a consistent snapshot.
+ * @param {C} conn - database connection
+ * @returns {Vec<u8>} backup file contents
+ */
+async fn create_sqlite_backup<C: DatabaseExecutor>(conn: &C) -> Result<Vec<u8>, Error> {
+    let temp_path = std::env::temp_dir().join(format!("cdk_backup_{}.db", unix_time()));
+    let temp_path_str = temp_path.to_string_lossy();
+
+    query(&format!("VACUUM INTO '{}'", temp_path_str))?
+        .execute(conn)
+        .await?;
+
+    let backup_data = std::fs::read(&temp_path).map_err(|e| {
+        Error::Database(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Failed to read backup file: {}", e),
+        )))
+    })?;
+
+    // Best-effort cleanup
+    let _ = std::fs::remove_file(&temp_path);
+
+    Ok(backup_data)
+}
+
+/**
+ * Create a SQL dump of all tables.
+ * @param {C} conn - database connection
+ * @param {&str} engine - database engine name ("sqlite" or "postgres")
+ * @returns {Vec<u8>} SQL dump as bytes
+ */
+async fn create_sql_dump<C: DatabaseExecutor>(conn: &C, engine: &str) -> Result<Vec<u8>, Error> {
+    let mut sql_dump = String::new();
+
+    write_sql_header(&mut sql_dump, engine);
+
+    let table_names = fetch_table_names(conn, engine).await?;
+    for table_name in table_names {
+        dump_table(conn, engine, &table_name, &mut sql_dump).await?;
+    }
+
+    Ok(sql_dump.into_bytes())
+}
+
+/// Write SQL dump header with metadata
+fn write_sql_header(sql_dump: &mut String, engine: &str) {
+    sql_dump.push_str("-- CDK Mint Database Backup\n");
+    sql_dump.push_str(&format!("-- Created: {}\n", unix_time()));
+    sql_dump.push_str(&format!("-- Engine: {}\n\n", engine));
+}
+
+/**
+ * Fetch list of user tables (excluding system/migration tables).
+ * @param {C} conn - database connection
+ * @param {&str} engine - database engine name
+ * @returns {Vec<String>} list of table names
+ */
+async fn fetch_table_names<C: DatabaseExecutor>(
+    conn: &C,
+    engine: &str,
+) -> Result<Vec<String>, Error> {
+    let tables_query = if engine == "sqlite" {
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    } else {
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
+    };
+
+    let rows = query(tables_query)?.fetch_all(conn).await?;
+
+    let tables = rows
+        .into_iter()
+        .filter_map(|row| match row.first() {
+            Some(Column::Text(name)) if !is_migration_table(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+
+    Ok(tables)
+}
+
+/// Check if table name is a migration table that should be skipped
+fn is_migration_table(name: &str) -> bool {
+    name == "_sqlx_migrations" || name == "migrations"
+}
+
+/**
+ * Dump a single table's schema and data to SQL.
+ * @param {C} conn - database connection
+ * @param {&str} engine - database engine name
+ * @param {&str} table_name - name of table to dump
+ * @param {&mut String} sql_dump - output buffer
+ */
+async fn dump_table<C: DatabaseExecutor>(
+    conn: &C,
+    engine: &str,
+    table_name: &str,
+    sql_dump: &mut String,
+) -> Result<(), Error> {
+    sql_dump.push_str(&format!("\n-- Table: {}\n", table_name));
+
+    // Schema extraction (engine-specific)
+    let schema = if engine == "sqlite" {
+        fetch_sqlite_table_schema(conn, table_name).await?
+    } else {
+        fetch_postgres_table_schema(conn, table_name).await?
+    };
+
+    if let Some(schema) = schema {
+        sql_dump.push_str(&schema);
+        sql_dump.push_str(";\n\n");
+    }
+
+    // Data rows
+    let rows = query(&format!("SELECT * FROM \"{}\"", table_name))?
+        .fetch_all(conn)
+        .await?;
+
+    for row in rows {
+        if !row.is_empty() {
+            sql_dump.push_str(&format_insert_statement(table_name, &row));
+        }
+    }
+
+    Ok(())
+}
+
+/**
+ * Fetch table schema SQL for SQLite.
+ * @param {C} conn - database connection
+ * @param {&str} table_name - name of table
+ * @returns {Option<String>} CREATE TABLE statement if found
+ */
+async fn fetch_sqlite_table_schema<C: DatabaseExecutor>(
+    conn: &C,
+    table_name: &str,
+) -> Result<Option<String>, Error> {
+    let rows = query(&format!(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='{}'",
+        table_name
+    ))?
+    .fetch_all(conn)
+    .await?;
+
+    Ok(rows.first().and_then(|row| match row.first() {
+        Some(Column::Text(schema)) => Some(schema.clone()),
+        _ => None,
+    }))
+}
+
+/**
+ * Fetch table schema SQL for PostgreSQL.
+ * Builds CREATE TABLE from information_schema.
+ * @param {C} conn - database connection
+ * @param {&str} table_name - name of table
+ * @returns {Option<String>} CREATE TABLE statement if found
+ */
+async fn fetch_postgres_table_schema<C: DatabaseExecutor>(
+    conn: &C,
+    table_name: &str,
+) -> Result<Option<String>, Error> {
+    // Query column definitions from information_schema
+    let rows = query(&format!(
+        r#"
+        SELECT column_name, data_type, is_nullable, column_default, character_maximum_length
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' AND table_name = '{}'
+        ORDER BY ordinal_position
+        "#,
+        table_name
+    ))?
+    .fetch_all(conn)
+    .await?;
+
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    let columns: Vec<String> = rows
+        .iter()
+        .filter_map(|row| {
+            let column_name = match row.first() {
+                Some(Column::Text(name)) => name.clone(),
+                _ => return None,
+            };
+
+            let data_type = match row.get(1) {
+                Some(Column::Text(t)) => t.clone(),
+                _ => return None,
+            };
+
+            let is_nullable = match row.get(2) {
+                Some(Column::Text(n)) => n == "YES",
+                _ => true,
+            };
+
+            let column_default = match row.get(3) {
+                Some(Column::Text(d)) => Some(d.clone()),
+                _ => None,
+            };
+
+            let char_max_len: Option<i64> = match row.get(4) {
+                Some(Column::Integer(len)) => Some(*len),
+                _ => None,
+            };
+
+            // Build column type with length if applicable
+            let type_with_len = if let Some(len) = char_max_len {
+                if data_type == "character varying" {
+                    format!("VARCHAR({})", len)
+                } else if data_type == "character" {
+                    format!("CHAR({})", len)
+                } else {
+                    data_type.to_uppercase()
+                }
+            } else {
+                postgres_type_to_sql(&data_type)
+            };
+
+            // Build column definition
+            let mut col_def = format!("\"{}\" {}", column_name, type_with_len);
+
+            if !is_nullable {
+                col_def.push_str(" NOT NULL");
+            }
+
+            if let Some(default) = column_default {
+                // Skip nextval defaults (auto-increment) as they're usually part of SERIAL
+                if !default.starts_with("nextval(") {
+                    col_def.push_str(&format!(" DEFAULT {}", default));
+                }
+            }
+
+            Some(col_def)
+        })
+        .collect();
+
+    if columns.is_empty() {
+        return Ok(None);
+    }
+
+    // Try to get primary key constraint
+    let pk_columns = fetch_postgres_primary_key(conn, table_name).await?;
+
+    let mut create_stmt = format!(
+        "CREATE TABLE \"{}\" (\n    {}",
+        table_name,
+        columns.join(",\n    ")
+    );
+
+    if !pk_columns.is_empty() {
+        create_stmt.push_str(&format!(
+            ",\n    PRIMARY KEY ({})",
+            pk_columns
+                .iter()
+                .map(|c| format!("\"{}\"", c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    create_stmt.push_str("\n)");
+
+    Ok(Some(create_stmt))
+}
+
+/// Convert PostgreSQL data type to standard SQL type
+fn postgres_type_to_sql(pg_type: &str) -> String {
+    match pg_type {
+        "integer" => "INTEGER".to_string(),
+        "bigint" => "BIGINT".to_string(),
+        "smallint" => "SMALLINT".to_string(),
+        "boolean" => "BOOLEAN".to_string(),
+        "text" => "TEXT".to_string(),
+        "bytea" => "BYTEA".to_string(),
+        "timestamp without time zone" => "TIMESTAMP".to_string(),
+        "timestamp with time zone" => "TIMESTAMPTZ".to_string(),
+        "double precision" => "DOUBLE PRECISION".to_string(),
+        "real" => "REAL".to_string(),
+        "numeric" => "NUMERIC".to_string(),
+        "uuid" => "UUID".to_string(),
+        "jsonb" => "JSONB".to_string(),
+        "json" => "JSON".to_string(),
+        other => other.to_uppercase(),
+    }
+}
+
+/**
+ * Fetch primary key columns for a PostgreSQL table.
+ * @param {C} conn - database connection
+ * @param {&str} table_name - name of table
+ * @returns {Vec<String>} list of primary key column names
+ */
+async fn fetch_postgres_primary_key<C: DatabaseExecutor>(
+    conn: &C,
+    table_name: &str,
+) -> Result<Vec<String>, Error> {
+    let rows = query(&format!(
+        r#"
+        SELECT a.attname
+        FROM pg_index i
+        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        JOIN pg_class c ON c.oid = i.indrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE i.indisprimary
+          AND c.relname = '{}'
+          AND n.nspname = 'public'
+        ORDER BY array_position(i.indkey, a.attnum)
+        "#,
+        table_name
+    ))?
+    .fetch_all(conn)
+    .await?;
+
+    let pk_columns = rows
+        .into_iter()
+        .filter_map(|row| match row.first() {
+            Some(Column::Text(name)) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+
+    Ok(pk_columns)
+}
+
+/// Format a row as an INSERT statement
+fn format_insert_statement(table_name: &str, row: &[Column]) -> String {
+    let values: Vec<String> = row.iter().map(column_to_sql_literal).collect();
+    format!(
+        "INSERT INTO \"{}\" VALUES ({});\n",
+        table_name,
+        values.join(", ")
+    )
+}
+
+/// Convert a Column value to its SQL literal representation
+fn column_to_sql_literal(col: &Column) -> String {
+    match col {
+        Column::Null => "NULL".to_string(),
+        Column::Integer(i) => i.to_string(),
+        Column::Real(r) => r.to_string(),
+        Column::Text(t) => format!("'{}'", t.replace('\'', "''")),
+        Column::Blob(b) => format!("X'{}'", bytes_to_hex(b)),
+    }
+}
+
+/**
+ * Calculate a checksum and return as hex string.
+ * Uses std DefaultHasher - not cryptographically secure but sufficient for integrity checks.
+ * @param {&[u8]} data - data to checksum
+ * @returns {String} 16-character hex string
+ */
 fn checksum_hex(data: &[u8]) -> String {
     use std::hash::{Hash, Hasher};
 

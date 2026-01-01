@@ -13,17 +13,6 @@ use crate::ListProofsRequest;
 /// units, keyset IDs, and operation kinds. Supports pagination through offset and limit
 /// parameters, and can display results in reverse chronological order. Proofs represent
 /// individual tokens or token fragments that have been minted and can be spent.
-///
-/// # Arguments
-/// * `offset` - Offset for pagination (default: 0)
-/// * `limit` - Maximum number of proofs to return (default: 50)
-/// * `reversed` - Reverse order (newest first)
-/// * `states` - Optional filter by states (comma-separated: unspent,pending,spent)
-/// * `units` - Optional filter by units (comma-separated: sat,usd)
-/// * `keyset_ids` - Optional filter by keyset IDs (comma-separated)
-/// * `operations` - Optional filter by operation kinds (comma-separated: mint,swap_in,swap_out,melt)
-/// * `from` - Optional filter by creation date start (Unix timestamp)
-/// * `to` - Optional filter by creation date end (Unix timestamp)
 #[derive(Args)]
 pub struct ListProofsCommand {
     /// Offset for pagination

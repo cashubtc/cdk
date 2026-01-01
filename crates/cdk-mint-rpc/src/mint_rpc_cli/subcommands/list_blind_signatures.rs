@@ -12,16 +12,6 @@ use crate::ListBlindSignaturesRequest;
 /// This command retrieves blind signature information from the mint with optional filtering
 /// by units, keyset IDs, and operation kinds. Supports pagination through offset and limit
 /// parameters, and can display results in reverse chronological order.
-///
-/// # Arguments
-/// * `offset` - Offset for pagination (default: 0)
-/// * `limit` - Maximum number of signatures to return (default: 50)
-/// * `reversed` - Reverse order (newest first)
-/// * `units` - Optional filter by units (comma-separated: sat,usd)
-/// * `keyset_ids` - Optional filter by keyset IDs (comma-separated)
-/// * `operations` - Optional filter by operation kinds (comma-separated: mint,swap)
-/// * `from` - Optional filter by creation date start (Unix timestamp)
-/// * `to` - Optional filter by creation date end (Unix timestamp)
 #[derive(Args)]
 pub struct ListBlindSignaturesCommand {
     /// Offset for pagination

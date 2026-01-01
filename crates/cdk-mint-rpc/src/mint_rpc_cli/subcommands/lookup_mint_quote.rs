@@ -12,9 +12,6 @@ use crate::LookupQuoteRequest;
 /// Mint quotes represent requests to mint tokens in exchange for external payments.
 /// The command displays comprehensive quote details including state, amounts, payment
 /// information, payment history, and token issuance records.
-///
-/// # Arguments
-/// * `quote_id` - The quote ID to look up
 #[derive(Args)]
 pub struct LookupMintQuoteCommand {
     /// The quote ID to look up

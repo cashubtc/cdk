@@ -12,9 +12,6 @@ use crate::LookupQuoteRequest;
 /// Melt quotes represent requests to redeem tokens in exchange for external payments.
 /// The command displays comprehensive quote details including state, amounts, payment
 /// information, and optional melt configuration options.
-///
-/// # Arguments
-/// * `quote_id` - The quote ID to look up
 #[derive(Args)]
 pub struct LookupMeltQuoteCommand {
     /// The quote ID to look up
