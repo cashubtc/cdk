@@ -209,6 +209,10 @@ impl Wallet {
     }
 
     /// Subscribe to events
+    ///
+    /// # Panics
+    ///
+    /// Panics if the subscription manager fails to create a subscription.
     pub async fn subscribe<T: Into<WalletParams>>(&self, query: T) -> ActiveSubscription {
         self.subscription
             .subscribe(self.mint_url.clone(), query.into())
@@ -438,6 +442,11 @@ impl Wallet {
     }
 
     /// Restore
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number of outputs in the restore response does not match
+    /// the number of premint secrets.
     #[instrument(skip(self))]
     pub async fn restore(&self) -> Result<Amount, Error> {
         // Check that mint is in store of mints

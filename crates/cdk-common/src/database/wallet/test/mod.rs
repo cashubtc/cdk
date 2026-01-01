@@ -3,7 +3,7 @@
 //! This module contains generic tests for wallet database implementations.
 //! These tests can be used to verify any wallet database implementation
 //! by using the `wallet_db_test!` macro.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::missing_panics_doc)]
 
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;

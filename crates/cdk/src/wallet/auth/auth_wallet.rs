@@ -340,6 +340,11 @@ impl AuthWallet {
     }
 
     /// Mint blind auth
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number of signatures returned by the mint does not match
+    /// the number of secrets sent in the request.
     #[instrument(skip(self))]
     pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, Error> {
         tracing::debug!("Minting {} blind auth proofs", amount);
