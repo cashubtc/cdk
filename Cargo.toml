@@ -23,7 +23,7 @@ missing_safety_doc = "warn"
 # redundant_else = "warn"
 # redundant_closure_for_method_calls = "warn"
 # unneeded_field_pattern = "warn"
-# use_debug = "warn"
+use_debug = "warn"
 large_enum_variant = "warn"
 
 [workspace.lints.rustdoc]
