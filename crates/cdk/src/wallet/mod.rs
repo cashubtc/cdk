@@ -761,14 +761,11 @@ impl Wallet {
         self.target_proof_count = count;
     }
 
-    // try to get secret key from p2pk signing key in localstore
+    /// try to get secret key from p2pk signing key in localstore
     async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Error> {
         let signing = self.localstore.get_p2pk_key(pubkey).await?;
         if let Some(signing) = signing {
-            // make xpriv from seed
             let xpriv = Xpriv::new_master(Network::Bitcoin, &self.seed)?;
-            // use seed to derive the secret key
-            // let key_path = DerivationPath::from_str(&signing.derivation_path)?;
             return Ok(Some(SecretKey::from(
                 xpriv
                     .derive_priv(&SECP256K1, &signing.derivation_path)?
