@@ -13,7 +13,7 @@ pub async fn get_public_keys(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &GetPublicKeysSubCommand,
 ) -> Result<()> {
-    let list_public_keys = multi_mint_wallet.p2pk_list().await?;
+    let list_public_keys = multi_mint_wallet.get_public_keys().await?;
     if sub_command_args.latest {
         // keys are ordered by creation time, so the first one is the latest
         let latest_public_key = list_public_keys.first().cloned();
