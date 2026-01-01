@@ -2027,9 +2027,9 @@ impl MultiMintWallet {
         return self.localstore.list_p2pk_keys().await;
     }
 
-    /// gets the last generate public key
-    pub async fn latest_p2pk(&self) -> Result<Vec<P2PKSigningKey>, database::Error> {
-        return self.localstore.list_p2pk_keys().await;
+    /// Gets the latest generated P2PK signing key (most recently created)
+    pub async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, database::Error> {
+        self.localstore.latest_p2pk().await
     }
 }
 
