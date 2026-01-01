@@ -420,14 +420,7 @@ impl Mint {
     /// Lists melt quotes with filtering and pagination
     ///
     /// This method performs filtering at the database level for efficiency.
-    /// Use this instead of `melt_quotes` when you need filtered/paginated results.
-    ///
-    /// # Arguments
-    /// * `filter` - Filter parameters including date range, states, units, and pagination
-    ///
-    /// # Returns
-    /// * `MeltQuoteListResult` - Filtered quotes
-    /// * `Error` if database access fails
+    /// Used to fascilitate rpc endpoints.
     #[instrument(skip_all)]
     pub async fn list_melt_quotes_filtered(
         &self,

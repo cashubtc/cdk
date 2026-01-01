@@ -6,6 +6,14 @@ use crate::cdk_mint_reporting_client::CdkMintReportingClient;
 use crate::GetInfoRequest;
 
 /// Executes the get_info command against the mint server
+///
+/// This function sends an RPC request to retrieve public information about the mint,
+/// including its name, version, descriptions, message of the day, icon URL, terms of
+/// service URL, mint URLs, and contact information. The information is displayed in
+/// a formatted output.
+///
+/// # Arguments
+/// * `client` - The RPC client used to communicate with the mint
 pub async fn get_info(client: &mut CdkMintReportingClient<Channel>) -> Result<()> {
     let response = client.get_info(Request::new(GetInfoRequest {})).await?;
     let info = response.into_inner();

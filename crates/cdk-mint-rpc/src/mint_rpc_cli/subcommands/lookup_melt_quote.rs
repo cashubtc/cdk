@@ -7,6 +7,14 @@ use crate::cdk_mint_reporting_client::CdkMintReportingClient;
 use crate::LookupQuoteRequest;
 
 /// Command to look up a specific melt quote
+///
+/// This command retrieves detailed information about a specific melt quote by its ID.
+/// Melt quotes represent requests to redeem tokens in exchange for external payments.
+/// The command displays comprehensive quote details including state, amounts, payment
+/// information, and optional melt configuration options.
+///
+/// # Arguments
+/// * `quote_id` - The quote ID to look up
 #[derive(Args)]
 pub struct LookupMeltQuoteCommand {
     /// The quote ID to look up
@@ -14,6 +22,17 @@ pub struct LookupMeltQuoteCommand {
 }
 
 /// Executes the lookup_melt_quote command against the mint server
+///
+/// This function sends an RPC request to retrieve detailed melt quote information from
+/// the mint and displays it in a formatted output. If the quote is not found, it returns
+/// an error. The output includes all quote details such as ID, state, unit, amount, fee
+/// reserve, payment method, timestamps, and optional fields like lookup ID, paid time, and
+/// payment preimage. If melt options are present, they are displayed with their specific
+/// configuration details.
+///
+/// # Arguments
+/// * `client` - The RPC client used to communicate with the mint
+/// * `args` - The command arguments containing the quote ID to look up
 pub async fn lookup_melt_quote(
     client: &mut CdkMintReportingClient<Channel>,
     args: &LookupMeltQuoteCommand,

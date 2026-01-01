@@ -262,6 +262,30 @@ pub struct LockedMeltQuotes {
     pub all_related: Vec<Acquired<MeltQuote>>,
 }
 
+/// Database backup format
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackupFormat {
+    /// SQLite binary format (using VACUUM INTO)
+    Sqlite,
+    /// SQL text dump format
+    Sql,
+}
+
+/// Result of a database backup operation
+#[derive(Debug, Clone)]
+pub struct BackupResult {
+    /// The backup data bytes
+    pub data: Vec<u8>,
+    /// Format of the backup
+    pub format: BackupFormat,
+    /// SHA256 checksum of the data (hex encoded)
+    pub checksum: String,
+    /// Unix timestamp when backup was created
+    pub created_at: u64,
+    /// Database engine identifier (e.g., "sqlite", "postgres")
+    pub database_engine: String,
+}
+
 /// KeysDatabaseWriter
 #[async_trait]
 pub trait KeysDatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
@@ -482,10 +506,8 @@ pub trait QuotesDatabase {
     ) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Get Mint Quotes
     async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;
+
     /// List mint quotes with filtering and pagination at the database level
-    ///
-    /// This method performs filtering, sorting, and pagination in SQL for efficiency.
-    /// The state filter is computed from amount_paid and amount_issued columns.
     async fn list_mint_quotes_filtered(
         &self,
         filter: MintQuoteFilter,
@@ -498,8 +520,6 @@ pub trait QuotesDatabase {
     /// Get all [`mint::MeltQuote`]s
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
     /// List melt quotes with filtering and pagination at the database level
-    ///
-    /// This method performs filtering, sorting, and pagination in SQL for efficiency.
     async fn list_melt_quotes_filtered(
         &self,
         filter: MeltQuoteFilter,
@@ -582,6 +602,7 @@ pub trait ProofsDatabase {
 
     /// Get total fees collected by keyset id
     async fn get_total_fees_collected(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
+
     /// Get proof ys by operation id
     async fn get_proof_ys_by_operation_id(
         &self,
@@ -651,9 +672,6 @@ pub trait SignaturesDatabase {
     ) -> Result<Vec<PublicKey>, Self::Err>;
 
     /// List blind signatures with filtering and pagination at the database level
-    ///
-    /// This method performs filtering, sorting, and pagination in SQL for efficiency.
-    /// When filtering by units, a JOIN to the keyset table is performed.
     async fn list_blind_signatures_filtered(
         &self,
         filter: BlindSignatureFilter,
@@ -735,12 +753,20 @@ pub trait CompletedOperationsDatabase {
     async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err>;
 
     /// List completed operations with filtering and pagination at the database level
-    ///
-    /// Unit is derived via JOIN through proof → keyset tables.
     async fn list_operations_filtered(
         &self,
         filter: OperationFilter,
     ) -> Result<OperationListResult, Self::Err>;
+}
+
+#[async_trait]
+/// Database backup trait
+pub trait BackupDatabase {
+    /// Backup Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Create a backup of the database
+    async fn create_backup(&self, format: BackupFormat) -> Result<BackupResult, Self::Err>;
 }
 
 /// Base database writer
@@ -772,44 +798,3 @@ pub trait Database<Error>:
 
 /// Type alias for Mint Database
 pub type DynMintDatabase = std::sync::Arc<dyn Database<Error> + Send + Sync>;
-
-// ============================================================================
-// Backup Database
-// ============================================================================
-
-/// Database backup format
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackupFormat {
-    /// SQLite binary format (using VACUUM INTO)
-    Sqlite,
-    /// SQL text dump format
-    Sql,
-}
-
-/// Result of a database backup operation
-#[derive(Debug, Clone)]
-pub struct BackupResult {
-    /// The backup data bytes
-    pub data: Vec<u8>,
-    /// Format of the backup
-    pub format: BackupFormat,
-    /// SHA256 checksum of the data (hex encoded)
-    pub checksum: String,
-    /// Unix timestamp when backup was created
-    pub created_at: u64,
-    /// Database engine identifier (e.g., "sqlite", "postgres")
-    pub database_engine: String,
-}
-
-/// Database backup trait
-#[async_trait]
-pub trait BackupDatabase {
-    /// Backup Database Error
-    type Err: Into<Error> + From<Error>;
-
-    /// Create a backup of the database
-    ///
-    /// Returns the backup data along with metadata.
-    /// For SQLite, this uses VACUUM INTO for binary format or schema+data dump for SQL format.
-    async fn create_backup(&self, format: BackupFormat) -> Result<BackupResult, Self::Err>;
-}

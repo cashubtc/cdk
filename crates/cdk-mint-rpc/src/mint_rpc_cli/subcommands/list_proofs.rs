@@ -4,9 +4,26 @@ use tonic::transport::Channel;
 use tonic::Request;
 
 use crate::cdk_mint_reporting_client::CdkMintReportingClient;
+use crate::mint_rpc_cli::utils::parse_csv;
 use crate::ListProofsRequest;
 
 /// Command to list proofs from the mint
+///
+/// This command retrieves proof information from the mint with optional filtering by states,
+/// units, keyset IDs, and operation kinds. Supports pagination through offset and limit
+/// parameters, and can display results in reverse chronological order. Proofs represent
+/// individual tokens or token fragments that have been minted and can be spent.
+///
+/// # Arguments
+/// * `offset` - Offset for pagination (default: 0)
+/// * `limit` - Maximum number of proofs to return (default: 50)
+/// * `reversed` - Reverse order (newest first)
+/// * `states` - Optional filter by states (comma-separated: unspent,pending,spent)
+/// * `units` - Optional filter by units (comma-separated: sat,usd)
+/// * `keyset_ids` - Optional filter by keyset IDs (comma-separated)
+/// * `operations` - Optional filter by operation kinds (comma-separated: mint,swap_in,swap_out,melt)
+/// * `from` - Optional filter by creation date start (Unix timestamp)
+/// * `to` - Optional filter by creation date end (Unix timestamp)
 #[derive(Args)]
 pub struct ListProofsCommand {
     /// Offset for pagination
@@ -38,14 +55,17 @@ pub struct ListProofsCommand {
     to: Option<i64>,
 }
 
-/// Parses a comma-separated string into a vector of trimmed strings
-fn parse_csv(s: &Option<String>) -> Vec<String> {
-    s.as_ref()
-        .map(|v| v.split(',').map(|x| x.trim().to_string()).collect())
-        .unwrap_or_default()
-}
-
 /// Executes the list_proofs command against the mint server
+///
+/// This function sends an RPC request to retrieve proof information from the mint and displays
+/// the results in a formatted table. Comma-separated filter values for states, units, keyset IDs,
+/// and operations are parsed into vectors using the shared parse_csv utility. Long keyset IDs are
+/// truncated for display purposes. If no proofs are found, it displays an appropriate message.
+/// If there are more results available, it indicates pagination is possible.
+///
+/// # Arguments
+/// * `client` - The RPC client used to communicate with the mint
+/// * `args` - The command arguments, including pagination and filtering options
 pub async fn list_proofs(
     client: &mut CdkMintReportingClient<Channel>,
     args: &ListProofsCommand,

@@ -1,24 +1,27 @@
-use std::collections::HashSet;
 use std::str::FromStr;
 
 use cdk::cdk_database::{
     BlindSignatureFilter, MeltQuoteFilter, MintQuoteFilter, OperationFilter, ProofFilter,
 };
 use cdk::nuts::CurrencyUnit;
-use cdk::Amount;
 use tonic::{Request, Response, Status};
 
 use crate::cdk_mint_reporting_server::CdkMintReporting;
 use crate::{
-    Balance, ContactInfo, GetBalancesRequest, GetBalancesResponse, GetInfoRequest, GetInfoResponse,
-    GetKeysetsRequest, GetKeysetsResponse, Keyset, ListBlindSignaturesRequest,
+    BlindSignature, ContactInfo, GetBalancesRequest, GetBalancesResponse, GetInfoRequest,
+    GetInfoResponse, GetKeysetsRequest, GetKeysetsResponse, Keyset, ListBlindSignaturesRequest,
     ListBlindSignaturesResponse, ListMeltQuotesResponse, ListMintQuotesResponse,
     ListOperationsRequest, ListOperationsResponse, ListProofsRequest, ListProofsResponse,
     ListQuotesRequest, LookupMeltQuoteResponse, LookupMintQuoteResponse, LookupQuoteRequest,
+    MintQuoteDetail, MintQuoteIssuance, MintQuotePayment, MintQuoteSummary, Operations, Proof,
 };
 
-use super::helpers::get_balances_by_unit;
 use super::server::MintRPCServer;
+use super::utils::{
+    effective_limit, melt_quote_to_proto, parse_keyset_ids, parse_melt_quote_states,
+    parse_mint_quote_states, parse_proof_states, validate_operations, validate_pagination,
+    validate_units_against_mint, MintBalances,
+};
 
 #[tonic::async_trait]
 impl CdkMintReporting for MintRPCServer {
@@ -34,46 +37,10 @@ impl CdkMintReporting for MintRPCServer {
             .transpose()
             .map_err(|_| Status::invalid_argument("Invalid unit"))?;
 
-        let balances_data = get_balances_by_unit(&self.mint()).await?;
-
-        // Collect all units
-        let all_units: HashSet<_> = balances_data
-            .issued
-            .keys()
-            .chain(balances_data.redeemed.keys())
-            .chain(balances_data.fees.keys())
-            .cloned()
-            .collect();
-
-        let balances = all_units
-            .into_iter()
-            .filter(|unit| unit_filter.as_ref().is_none_or(|f| f == unit))
-            .map(|unit| {
-                let issued = balances_data
-                    .issued
-                    .get(&unit)
-                    .copied()
-                    .unwrap_or(Amount::ZERO);
-                let redeemed = balances_data
-                    .redeemed
-                    .get(&unit)
-                    .copied()
-                    .unwrap_or(Amount::ZERO);
-                let fees = balances_data
-                    .fees
-                    .get(&unit)
-                    .copied()
-                    .unwrap_or(Amount::ZERO);
-
-                Balance {
-                    unit: unit.to_string(),
-                    total_balance: issued.checked_sub(redeemed).unwrap_or(Amount::ZERO).into(),
-                    total_issued: issued.into(),
-                    total_redeemed: redeemed.into(),
-                    total_fees_collected: fees.into(),
-                }
-            })
-            .collect();
+        let balances = MintBalances::fetch(&self.mint())
+            .await?
+            .aggregate_by_unit()?
+            .to_balances(unit_filter.as_ref());
 
         Ok(Response::new(GetBalancesResponse { balances }))
     }
@@ -113,43 +80,38 @@ impl CdkMintReporting for MintRPCServer {
     }
 
     /// Returns keysets from the mint
+    ///
+    /// Only fetch balance data if requested (avoids unnecessary DB calls)
+    /// Filter and map keysets to proto response
     async fn get_keysets(
         &self,
         request: Request<GetKeysetsRequest>,
     ) -> Result<Response<GetKeysetsResponse>, Status> {
         let request = request.into_inner();
         let mint = self.mint();
-
-        // Get all keyset infos from in-memory cache
         let all_keyset_infos = mint.keyset_infos();
 
-        // Only fetch balance data if requested (avoids unnecessary DB calls)
         let balances = if request.include_balances.unwrap_or(false) {
-            Some(super::helpers::MintBalances::fetch(&mint).await?)
+            Some(MintBalances::fetch(&mint).await?)
         } else {
             None
         };
 
-        // Filter and map keysets to proto response
         let keysets: Vec<Keyset> = all_keyset_infos
             .into_iter()
             .filter(|info| {
-                // Filter auth keysets based on include_auth flag
                 if info.unit == cdk::nuts::CurrencyUnit::Auth {
                     return request.include_auth.unwrap_or(false);
                 }
-                // Filter by units if specified
                 if !request.units.is_empty() && !request.units.contains(&info.unit.to_string()) {
                     return false;
                 }
-                // Filter inactive if exclude_inactive is true
                 if request.exclude_inactive.unwrap_or(false) && !info.active {
                     return false;
                 }
                 true
             })
             .map(|info| {
-                // Get stats for this keyset only if balances were requested
                 let (total_balance, total_issued, total_redeemed, total_fees_collected) =
                     if let Some(ref b) = balances {
                         let stats = b.get_keyset_stats(&info.id);
@@ -195,43 +157,48 @@ impl CdkMintReporting for MintRPCServer {
     ) -> Result<Response<ListMintQuotesResponse>, Status> {
         let request = request.into_inner();
         let mint = self.mint();
+        let states = parse_mint_quote_states(&request.states)?;
+        let units = validate_units_against_mint(&request.units, &mint)?;
 
-        // Validate and parse state strings to MintQuoteState enum
-        let states = super::helpers::parse_mint_quote_states(&request.states)?;
-
-        // Validate unit strings against mint's configured units
-        let units = super::helpers::validate_units_against_mint(&request.units, &mint)?;
-
-        // Validate pagination parameters
-        super::helpers::validate_pagination(
+        validate_pagination(
             request.index_offset,
             request.num_max_quotes,
             "num_max_quotes",
         )?;
 
-        // Build filter for SQL-level filtering
         let start_index = request.index_offset.max(0) as u64;
         let filter = MintQuoteFilter {
             creation_date_start: request.creation_date_start.map(|t| t as u64),
             creation_date_end: request.creation_date_end.map(|t| t as u64),
             states,
             units,
-            limit: Some(super::helpers::effective_limit(request.num_max_quotes)),
+            limit: Some(effective_limit(request.num_max_quotes)),
             offset: start_index,
             reversed: request.reversed,
         };
 
-        // Execute filtered query at the database level
         let result = mint
             .list_mint_quotes_filtered(filter)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Convert to proto using the summary helper (no JOINs needed)
         let quotes = result
             .quotes
             .iter()
-            .map(super::helpers::mint_quote_to_summary)
+            .map(|quote| MintQuoteSummary {
+                id: quote.id.to_string(),
+                amount: quote.amount.map(|a| a.into()),
+                unit: quote.unit.to_string(),
+                request: quote.request.clone(),
+                state: quote.state().to_string(),
+                request_lookup_id: Some(quote.request_lookup_id.to_string()),
+                request_lookup_id_kind: quote.request_lookup_id.kind().to_string(),
+                pubkey: quote.pubkey.map(|pk| pk.to_string()),
+                created_time: quote.created_time,
+                amount_paid: quote.amount_paid().into(),
+                amount_issued: quote.amount_issued().into(),
+                payment_method: quote.payment_method.to_string(),
+            })
             .collect();
 
         Ok(Response::new(ListMintQuotesResponse {
@@ -250,12 +217,10 @@ impl CdkMintReporting for MintRPCServer {
         let quote_id = request.into_inner().quote_id;
         let mint = self.mint();
 
-        // Parse the quote ID
         let quote_id = quote_id
             .parse()
             .map_err(|_| Status::invalid_argument("Invalid quote ID format"))?;
 
-        // Get the quote from database (includes payments/issuance for detail view)
         let quote = mint
             .localstore()
             .get_mint_quote(&quote_id)
@@ -263,8 +228,41 @@ impl CdkMintReporting for MintRPCServer {
             .map_err(|e| Status::internal(e.to_string()))?
             .ok_or_else(|| Status::not_found("Quote not found"))?;
 
-        // Convert to proto using the detail helper (includes paid_time/issued_time)
-        let proto_quote = super::helpers::mint_quote_to_detail(&quote);
+        let payments: Vec<MintQuotePayment> = quote
+            .payments
+            .iter()
+            .map(|p| MintQuotePayment {
+                amount: p.amount.into(),
+                time: p.time,
+                payment_id: p.payment_id.clone(),
+            })
+            .collect();
+
+        let issuances: Vec<MintQuoteIssuance> = quote
+            .issuance
+            .iter()
+            .map(|i| MintQuoteIssuance {
+                amount: i.amount.into(),
+                time: i.time,
+            })
+            .collect();
+
+        let proto_quote = MintQuoteDetail {
+            id: quote.id.to_string(),
+            amount: quote.amount.map(|a| a.into()),
+            unit: quote.unit.to_string(),
+            request: quote.request.clone(),
+            state: quote.state().to_string(),
+            request_lookup_id: Some(quote.request_lookup_id.to_string()),
+            request_lookup_id_kind: quote.request_lookup_id.kind().to_string(),
+            pubkey: quote.pubkey.map(|pk| pk.to_string()),
+            created_time: quote.created_time,
+            payments,
+            issuances,
+            amount_paid: quote.amount_paid().into(),
+            amount_issued: quote.amount_issued().into(),
+            payment_method: quote.payment_method.to_string(),
+        };
 
         Ok(Response::new(LookupMintQuoteResponse {
             quote: Some(proto_quote),
@@ -280,44 +278,32 @@ impl CdkMintReporting for MintRPCServer {
     ) -> Result<Response<ListMeltQuotesResponse>, Status> {
         let request = request.into_inner();
         let mint = self.mint();
+        let states = parse_melt_quote_states(&request.states)?;
+        let units = validate_units_against_mint(&request.units, &mint)?;
 
-        // Validate and parse state strings to MeltQuoteState enum
-        let states = super::helpers::parse_melt_quote_states(&request.states)?;
-
-        // Validate unit strings against mint's configured units
-        let units = super::helpers::validate_units_against_mint(&request.units, &mint)?;
-
-        // Validate pagination parameters
-        super::helpers::validate_pagination(
+        validate_pagination(
             request.index_offset,
             request.num_max_quotes,
             "num_max_quotes",
         )?;
 
-        // Build filter for SQL-level filtering
         let start_index = request.index_offset.max(0) as u64;
         let filter = MeltQuoteFilter {
             creation_date_start: request.creation_date_start.map(|t| t as u64),
             creation_date_end: request.creation_date_end.map(|t| t as u64),
             states,
             units,
-            limit: Some(super::helpers::effective_limit(request.num_max_quotes)),
+            limit: Some(effective_limit(request.num_max_quotes)),
             offset: start_index,
             reversed: request.reversed,
         };
 
-        // Execute filtered query at the database level
         let result = mint
             .list_melt_quotes_filtered(filter)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Convert to proto
-        let quotes = result
-            .quotes
-            .iter()
-            .map(super::helpers::melt_quote_to_proto)
-            .collect();
+        let quotes = result.quotes.iter().map(melt_quote_to_proto).collect();
 
         Ok(Response::new(ListMeltQuotesResponse {
             quotes,
@@ -333,12 +319,10 @@ impl CdkMintReporting for MintRPCServer {
         let quote_id = request.into_inner().quote_id;
         let mint = self.mint();
 
-        // Parse the quote ID
         let quote_id = quote_id
             .parse()
             .map_err(|_| Status::invalid_argument("Invalid quote ID format"))?;
 
-        // Get the quote from database
         let quote = mint
             .localstore()
             .get_melt_quote(&quote_id)
@@ -346,8 +330,7 @@ impl CdkMintReporting for MintRPCServer {
             .map_err(|e| Status::internal(e.to_string()))?
             .ok_or_else(|| Status::not_found("Quote not found"))?;
 
-        // Convert to proto
-        let proto_quote = super::helpers::melt_quote_to_proto(&quote);
+        let proto_quote = melt_quote_to_proto(&quote);
 
         Ok(Response::new(LookupMeltQuoteResponse {
             quote: Some(proto_quote),
@@ -363,27 +346,17 @@ impl CdkMintReporting for MintRPCServer {
     ) -> Result<Response<ListProofsResponse>, Status> {
         let request = request.into_inner();
         let mint = self.mint();
+        let states = parse_proof_states(&request.states)?;
+        let units = validate_units_against_mint(&request.units, &mint)?;
+        let keyset_ids = parse_keyset_ids(&request.keyset_ids)?;
+        let operations = validate_operations(&request.operations)?;
 
-        // Validate and parse state strings to State enum
-        let states = super::helpers::parse_proof_states(&request.states)?;
-
-        // Validate unit strings against mint's configured units
-        let units = super::helpers::validate_units_against_mint(&request.units, &mint)?;
-
-        // Validate and parse keyset IDs
-        let keyset_ids = super::helpers::parse_keyset_ids(&request.keyset_ids)?;
-
-        // Validate operation kinds
-        let operations = super::helpers::parse_operations(&request.operations)?;
-
-        // Validate pagination parameters
-        super::helpers::validate_pagination(
+        validate_pagination(
             request.index_offset,
             request.num_max_proofs,
             "num_max_proofs",
         )?;
 
-        // Build filter for SQL-level filtering
         let start_index = request.index_offset.max(0) as u64;
         let filter = ProofFilter {
             creation_date_start: request.creation_date_start.map(|t| t as u64),
@@ -392,23 +365,29 @@ impl CdkMintReporting for MintRPCServer {
             units,
             keyset_ids,
             operations,
-            limit: Some(super::helpers::effective_limit(request.num_max_proofs)),
+            limit: Some(effective_limit(request.num_max_proofs)),
             offset: start_index,
             reversed: request.reversed,
         };
 
-        // Execute filtered query at the database level
         let result = mint
             .localstore()
             .list_proofs_filtered(filter)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Convert to proto
         let proofs = result
             .proofs
             .iter()
-            .map(super::helpers::proof_record_to_proto)
+            .map(|proof| Proof {
+                amount: proof.amount.into(),
+                keyset_id: proof.keyset_id.to_string(),
+                state: proof.state.to_string(),
+                quote_id: proof.quote_id.clone(),
+                created_time: proof.created_time,
+                operation_kind: proof.operation_kind.clone().unwrap_or_default(),
+                operation_id: proof.operation_id.clone().unwrap_or_default(),
+            })
             .collect();
 
         Ok(Response::new(ListProofsResponse {
@@ -426,24 +405,16 @@ impl CdkMintReporting for MintRPCServer {
     ) -> Result<Response<ListBlindSignaturesResponse>, Status> {
         let request = request.into_inner();
         let mint = self.mint();
+        let units = validate_units_against_mint(&request.units, &mint)?;
+        let keyset_ids = parse_keyset_ids(&request.keyset_ids)?;
+        let operations = validate_operations(&request.operations)?;
 
-        // Validate unit strings against mint's configured units
-        let units = super::helpers::validate_units_against_mint(&request.units, &mint)?;
-
-        // Validate and parse keyset IDs
-        let keyset_ids = super::helpers::parse_keyset_ids(&request.keyset_ids)?;
-
-        // Validate operation kinds
-        let operations = super::helpers::parse_operations(&request.operations)?;
-
-        // Validate pagination parameters
-        super::helpers::validate_pagination(
+        validate_pagination(
             request.index_offset,
             request.num_max_signatures,
             "num_max_signatures",
         )?;
 
-        // Build filter for SQL-level filtering
         let start_index = request.index_offset.max(0) as u64;
         let filter = BlindSignatureFilter {
             creation_date_start: request.creation_date_start.map(|t| t as u64),
@@ -451,23 +422,29 @@ impl CdkMintReporting for MintRPCServer {
             units,
             keyset_ids,
             operations,
-            limit: Some(super::helpers::effective_limit(request.num_max_signatures)),
+            limit: Some(effective_limit(request.num_max_signatures)),
             offset: start_index,
             reversed: request.reversed,
         };
 
-        // Execute filtered query at the database level
         let result = mint
             .localstore()
             .list_blind_signatures_filtered(filter)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Convert to proto
         let signatures = result
             .signatures
             .iter()
-            .map(super::helpers::blind_signature_record_to_proto)
+            .map(|sig| BlindSignature {
+                amount: sig.amount.into(),
+                keyset_id: sig.keyset_id.to_string(),
+                quote_id: sig.quote_id.clone(),
+                created_time: sig.created_time,
+                signed_time: sig.signed_time,
+                operation_kind: sig.operation_kind.clone().unwrap_or_default(),
+                operation_id: sig.operation_id.clone().unwrap_or_default(),
+            })
             .collect();
 
         Ok(Response::new(ListBlindSignaturesResponse {
@@ -485,44 +462,47 @@ impl CdkMintReporting for MintRPCServer {
     ) -> Result<Response<ListOperationsResponse>, Status> {
         let request = request.into_inner();
         let mint = self.mint();
+        let units = validate_units_against_mint(&request.units, &mint)?;
+        let operations = validate_operations(&request.operations)?;
 
-        // Validate unit strings against mint's configured units
-        let units = super::helpers::validate_units_against_mint(&request.units, &mint)?;
-
-        // Validate operation kinds
-        let operations = super::helpers::parse_operations(&request.operations)?;
-
-        // Validate pagination parameters
-        super::helpers::validate_pagination(
+        validate_pagination(
             request.index_offset,
             request.num_max_operations,
             "num_max_operations",
         )?;
 
-        // Build filter for SQL-level filtering
         let start_index = request.index_offset.max(0) as u64;
         let filter = OperationFilter {
             creation_date_start: request.creation_date_start.map(|t| t as u64),
             creation_date_end: request.creation_date_end.map(|t| t as u64),
             units,
             operations,
-            limit: Some(super::helpers::effective_limit(request.num_max_operations)),
+            limit: Some(effective_limit(request.num_max_operations)),
             offset: start_index,
             reversed: request.reversed,
         };
 
-        // Execute filtered query at the database level
         let result = mint
             .localstore()
             .list_operations_filtered(filter)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Convert to proto
         let operations = result
             .operations
             .iter()
-            .map(super::helpers::operation_record_to_proto)
+            .map(|op| Operations {
+                operation_id: op.operation_id.clone(),
+                operation_kind: op.operation_kind.clone(),
+                completed_time: op.completed_time,
+                total_issued: op.total_issued.into(),
+                total_redeemed: op.total_redeemed.into(),
+                fee_collected: op.fee_collected.into(),
+                payment_amount: op.payment_amount.map(|a| a.into()),
+                payment_fee: op.payment_fee.map(|a| a.into()),
+                payment_method: op.payment_method.clone(),
+                unit: op.unit.clone().unwrap_or_default(),
+            })
             .collect();
 
         Ok(Response::new(ListOperationsResponse {

@@ -4,9 +4,24 @@ use tonic::transport::Channel;
 use tonic::Request;
 
 use crate::cdk_mint_reporting_client::CdkMintReportingClient;
+use crate::mint_rpc_cli::utils::parse_csv;
 use crate::ListOperationsRequest;
 
 /// Command to list operations from the mint
+///
+/// This command retrieves operation information from the mint with optional filtering
+/// by units and operation kinds. Supports pagination through offset and limit parameters,
+/// and can display results in reverse chronological order. Operations represent various
+/// activities performed by the mint such as minting, melting, and swapping tokens.
+///
+/// # Arguments
+/// * `offset` - Offset for pagination (default: 0)
+/// * `limit` - Maximum number of operations to return (default: 50)
+/// * `reversed` - Reverse order (newest first)
+/// * `units` - Optional filter by units (comma-separated: sat,usd)
+/// * `operations` - Optional filter by operation kinds (comma-separated: mint,melt,swap)
+/// * `from` - Optional filter by creation date start (Unix timestamp)
+/// * `to` - Optional filter by creation date end (Unix timestamp)
 #[derive(Args)]
 pub struct ListOperationsCommand {
     /// Offset for pagination
@@ -32,14 +47,17 @@ pub struct ListOperationsCommand {
     to: Option<i64>,
 }
 
-/// Parses a comma-separated string into a vector of trimmed strings
-fn parse_csv(s: &Option<String>) -> Vec<String> {
-    s.as_ref()
-        .map(|v| v.split(',').map(|x| x.trim().to_string()).collect())
-        .unwrap_or_default()
-}
-
 /// Executes the list_operations command against the mint server
+///
+/// This function sends an RPC request to retrieve operation information from the mint
+/// and displays the results in a formatted table. Comma-separated filter values for units
+/// and operations are parsed into vectors using the shared parse_csv utility. If no operations
+/// are found, it displays an appropriate message. If there are more results available, it
+/// indicates pagination is possible.
+///
+/// # Arguments
+/// * `client` - The RPC client used to communicate with the mint
+/// * `args` - The command arguments, including pagination and filtering options
 pub async fn list_operations(
     client: &mut CdkMintReportingClient<Channel>,
     args: &ListOperationsCommand,

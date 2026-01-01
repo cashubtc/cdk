@@ -4,9 +4,24 @@ use tonic::transport::Channel;
 use tonic::Request;
 
 use crate::cdk_mint_reporting_client::CdkMintReportingClient;
+use crate::mint_rpc_cli::utils::parse_csv;
 use crate::ListBlindSignaturesRequest;
 
 /// Command to list blind signatures from the mint
+///
+/// This command retrieves blind signature information from the mint with optional filtering
+/// by units, keyset IDs, and operation kinds. Supports pagination through offset and limit
+/// parameters, and can display results in reverse chronological order.
+///
+/// # Arguments
+/// * `offset` - Offset for pagination (default: 0)
+/// * `limit` - Maximum number of signatures to return (default: 50)
+/// * `reversed` - Reverse order (newest first)
+/// * `units` - Optional filter by units (comma-separated: sat,usd)
+/// * `keyset_ids` - Optional filter by keyset IDs (comma-separated)
+/// * `operations` - Optional filter by operation kinds (comma-separated: mint,swap)
+/// * `from` - Optional filter by creation date start (Unix timestamp)
+/// * `to` - Optional filter by creation date end (Unix timestamp)
 #[derive(Args)]
 pub struct ListBlindSignaturesCommand {
     /// Offset for pagination
@@ -35,14 +50,16 @@ pub struct ListBlindSignaturesCommand {
     to: Option<i64>,
 }
 
-/// Parses a comma-separated string into a vector of trimmed strings
-fn parse_csv(s: &Option<String>) -> Vec<String> {
-    s.as_ref()
-        .map(|v| v.split(',').map(|x| x.trim().to_string()).collect())
-        .unwrap_or_default()
-}
-
 /// Executes the list_blind_signatures command against the mint server
+///
+/// This function sends an RPC request to retrieve blind signature information from the mint
+/// and displays the results in a formatted table. Comma-separated filter values are parsed
+/// into vectors. If no signatures are found, it displays an appropriate message. If there
+/// are more results available, it indicates pagination is possible.
+///
+/// # Arguments
+/// * `client` - The RPC client used to communicate with the mint
+/// * `args` - The command arguments, including pagination and filtering options
 pub async fn list_blind_signatures(
     client: &mut CdkMintReportingClient<Channel>,
     args: &ListBlindSignaturesCommand,

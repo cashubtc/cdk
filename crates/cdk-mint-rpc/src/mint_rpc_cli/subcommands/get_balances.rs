@@ -7,6 +7,12 @@ use crate::cdk_mint_reporting_client::CdkMintReportingClient;
 use crate::GetBalancesRequest;
 
 /// Command to get balances from the mint
+///
+/// This command retrieves balance information from the mint by unit,
+/// issued amounts, redeemed amounts, and fees collected.
+///
+/// # Arguments
+/// * `unit` - Optional filter by unit (e.g., "sat", "usd")
 #[derive(Args)]
 pub struct GetBalancesCommand {
     /// Filter by unit (e.g., "sat", "usd")
@@ -15,6 +21,14 @@ pub struct GetBalancesCommand {
 }
 
 /// Executes the get_balances command against the mint server
+///
+/// This function sends an RPC request to retrieve balance information from the mint
+/// and displays the results in a formatted table. If no balances are found, it displays
+/// an appropriate message.
+///
+/// # Arguments
+/// * `client` - The RPC client used to communicate with the mint
+/// * `sub_command_args` - The command arguments
 pub async fn get_balances(
     client: &mut CdkMintReportingClient<Channel>,
     sub_command_args: &GetBalancesCommand,

@@ -1,14 +1,17 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-use cdk::cdk_database::{BlindSignatureRecord, OperationRecord, ProofRecord};
+use crate::melt_options::Options::{Amountless, Mpp};
 use cdk::mint::MeltQuote as MintMeltQuote;
 use cdk::mint::Mint;
-use cdk::mint::MintQuote as MintMintQuote;
-use cdk::nuts::{CurrencyUnit, Id, MeltQuoteState, MintQuoteState, State};
+use cdk::nuts::{
+    CurrencyUnit, Id, MeltOptions as NutMeltOptions, MeltQuoteState, MintQuoteState, State,
+};
 use cdk::Amount;
 use cdk_common::mint::OperationKind;
 use tonic::Status;
+
+use crate::{AmountlessOptions, Balance, MeltOptions, MeltQuote, MppOptions};
 
 /// Raw balance data fetched from the mint database
 ///
@@ -28,7 +31,6 @@ pub struct MintBalances {
 impl MintBalances {
     /// Fetch all balance data from the mint (3 DB calls)
     pub async fn fetch(mint: &Mint) -> Result<Self, Status> {
-        // Build keyset ID -> unit mapping
         let keyset_units: HashMap<_, _> = mint
             .keyset_infos()
             .into_iter()
@@ -105,8 +107,29 @@ pub struct UnitBalances {
     pub fees: HashMap<CurrencyUnit, Amount>,
 }
 
+impl UnitBalances {
+    /// Convert to proto Balance objects with optional unit filter
+    pub fn to_balances(&self, unit_filter: Option<&CurrencyUnit>) -> Vec<Balance> {
+        self.issued
+            .iter()
+            .filter(|(unit, _)| unit_filter.is_none_or(|f| f == *unit))
+            .map(|(unit, &issued)| {
+                let redeemed = self.redeemed.get(unit).copied().unwrap_or(Amount::ZERO);
+                let fees = self.fees.get(unit).copied().unwrap_or(Amount::ZERO);
+
+                Balance {
+                    unit: unit.to_string(),
+                    total_balance: issued.checked_sub(redeemed).unwrap_or(Amount::ZERO).into(),
+                    total_issued: issued.into(),
+                    total_redeemed: redeemed.into(),
+                    total_fees_collected: fees.into(),
+                }
+            })
+            .collect()
+    }
+}
+
 /// Statistics for a single keyset
-#[derive(Default, Clone)]
 pub struct KeysetStats {
     pub total_issued: Amount,
     pub total_redeemed: Amount,
@@ -122,99 +145,23 @@ impl KeysetStats {
     }
 }
 
-// Legacy function wrappers for backwards compatibility
-
-/// Fetches issued, redeemed, and fees aggregated by currency unit
-pub async fn get_balances_by_unit(mint: &Mint) -> Result<UnitBalances, Status> {
-    let balances = MintBalances::fetch(mint).await?;
-    balances.aggregate_by_unit()
-}
-
-/// Convert a mint MintQuote to proto MintQuoteSummary (for list responses)
-///
-/// This version does not include paid_time/issued_time which require JOINs.
-/// Use this for efficient list operations.
-pub fn mint_quote_to_summary(quote: &MintMintQuote) -> crate::MintQuoteSummary {
-    crate::MintQuoteSummary {
-        id: quote.id.to_string(),
-        amount: quote.amount.map(|a| a.into()),
-        unit: quote.unit.to_string(),
-        request: quote.request.clone(),
-        state: quote.state().to_string(),
-        request_lookup_id: Some(quote.request_lookup_id.to_string()),
-        request_lookup_id_kind: quote.request_lookup_id.kind().to_string(),
-        pubkey: quote.pubkey.map(|pk| pk.to_string()),
-        created_time: quote.created_time,
-        amount_paid: quote.amount_paid().into(),
-        amount_issued: quote.amount_issued().into(),
-        payment_method: quote.payment_method.to_string(),
-    }
-}
-
-/// Convert a mint MintQuote to proto MintQuoteDetail (for single quote lookup)
-///
-/// This version includes full payment/issuance history.
-/// Use this for detailed single-quote queries.
-pub fn mint_quote_to_detail(quote: &MintMintQuote) -> crate::MintQuoteDetail {
-    // Convert payments to proto
-    let payments: Vec<crate::MintQuotePayment> = quote
-        .payments
-        .iter()
-        .map(|p| crate::MintQuotePayment {
-            amount: p.amount.into(),
-            time: p.time,
-            payment_id: p.payment_id.clone(),
-        })
-        .collect();
-
-    // Convert issuances to proto
-    let issuances: Vec<crate::MintQuoteIssuance> = quote
-        .issuance
-        .iter()
-        .map(|i| crate::MintQuoteIssuance {
-            amount: i.amount.into(),
-            time: i.time,
-        })
-        .collect();
-
-    crate::MintQuoteDetail {
-        id: quote.id.to_string(),
-        amount: quote.amount.map(|a| a.into()),
-        unit: quote.unit.to_string(),
-        request: quote.request.clone(),
-        state: quote.state().to_string(),
-        request_lookup_id: Some(quote.request_lookup_id.to_string()),
-        request_lookup_id_kind: quote.request_lookup_id.kind().to_string(),
-        pubkey: quote.pubkey.map(|pk| pk.to_string()),
-        created_time: quote.created_time,
-        payments,
-        issuances,
-        amount_paid: quote.amount_paid().into(),
-        amount_issued: quote.amount_issued().into(),
-        payment_method: quote.payment_method.to_string(),
-    }
-}
-
 /// Convert a mint MeltQuote to proto MeltQuote
-pub fn melt_quote_to_proto(quote: &MintMeltQuote) -> crate::MeltQuote {
+pub fn melt_quote_to_proto(quote: &MintMeltQuote) -> MeltQuote {
     let options = quote.options.map(|opt| {
-        use cdk::nuts::MeltOptions as RustMeltOptions;
         let options = match opt {
-            RustMeltOptions::Mpp { mpp } => crate::melt_options::Options::Mpp(crate::MppOptions {
+            NutMeltOptions::Mpp { mpp } => Mpp(MppOptions {
                 amount: mpp.amount.into(),
             }),
-            RustMeltOptions::Amountless { amountless } => {
-                crate::melt_options::Options::Amountless(crate::AmountlessOptions {
-                    amount_msat: amountless.amount_msat.into(),
-                })
-            }
+            NutMeltOptions::Amountless { amountless } => Amountless(AmountlessOptions {
+                amount_msat: amountless.amount_msat.into(),
+            }),
         };
-        crate::MeltOptions {
+        MeltOptions {
             options: Some(options),
         }
     });
 
-    crate::MeltQuote {
+    MeltQuote {
         id: quote.id.to_string(),
         unit: quote.unit.to_string(),
         amount: quote.amount.into(),
@@ -230,52 +177,6 @@ pub fn melt_quote_to_proto(quote: &MintMeltQuote) -> crate::MeltQuote {
     }
 }
 
-/// Convert a ProofRecord to proto Proof
-pub fn proof_record_to_proto(proof: &ProofRecord) -> crate::Proof {
-    crate::Proof {
-        amount: proof.amount.into(),
-        keyset_id: proof.keyset_id.to_string(),
-        state: proof.state.to_string(),
-        quote_id: proof.quote_id.clone(),
-        created_time: proof.created_time,
-        operation_kind: proof.operation_kind.clone().unwrap_or_default(),
-        operation_id: proof.operation_id.clone().unwrap_or_default(),
-    }
-}
-
-/// Convert a BlindSignatureRecord to proto BlindSignature
-pub fn blind_signature_record_to_proto(sig: &BlindSignatureRecord) -> crate::BlindSignature {
-    crate::BlindSignature {
-        amount: sig.amount.into(),
-        keyset_id: sig.keyset_id.to_string(),
-        quote_id: sig.quote_id.clone(),
-        created_time: sig.created_time,
-        signed_time: sig.signed_time,
-        operation_kind: sig.operation_kind.clone().unwrap_or_default(),
-        operation_id: sig.operation_id.clone().unwrap_or_default(),
-    }
-}
-
-/// Convert an OperationRecord to proto Operations
-pub fn operation_record_to_proto(op: &OperationRecord) -> crate::Operations {
-    crate::Operations {
-        operation_id: op.operation_id.clone(),
-        operation_kind: op.operation_kind.clone(),
-        completed_time: op.completed_time,
-        total_issued: op.total_issued.into(),
-        total_redeemed: op.total_redeemed.into(),
-        fee_collected: op.fee_collected.into(),
-        payment_amount: op.payment_amount.map(|a| a.into()),
-        payment_fee: op.payment_fee.map(|a| a.into()),
-        payment_method: op.payment_method.clone(),
-        unit: op.unit.clone().unwrap_or_default(),
-    }
-}
-
-// ============================================================================
-// Request Validation Helpers
-// ============================================================================
-
 /// Validates unit strings against the mint's actual configured units
 ///
 /// Returns an error if any unit is not configured in the mint's keysets.
@@ -287,7 +188,6 @@ pub fn validate_units_against_mint(
         return Ok(Vec::new());
     }
 
-    // Get valid units from mint's keysets (excluding auth keysets)
     let valid_units: HashSet<String> = mint
         .keyset_infos()
         .into_iter()
@@ -300,23 +200,26 @@ pub fn validate_units_against_mint(
 
     for u in units {
         if valid_units.contains(&u.to_lowercase()) {
-            // Safe to unwrap - CurrencyUnit::from_str never fails
-            parsed.push(CurrencyUnit::from_str(u).unwrap());
+            parsed.push(
+                CurrencyUnit::from_str(u).map_err(|_| {
+                    Status::internal(format!("Failed to parse validated unit: {}", u))
+                })?,
+            );
         } else {
             invalid.push(u.as_str());
         }
     }
 
-    if invalid.is_empty() {
-        Ok(parsed)
-    } else {
+    if !invalid.is_empty() {
         let valid_list: Vec<_> = valid_units.into_iter().collect();
-        Err(Status::invalid_argument(format!(
+        return Err(Status::invalid_argument(format!(
             "Invalid unit(s): {}. Valid units for this mint: {}",
             invalid.join(", "),
             valid_list.join(", ")
-        )))
+        )));
     }
+
+    Ok(parsed)
 }
 
 /// Validates and parses mint quote state strings
@@ -331,14 +234,14 @@ pub fn parse_mint_quote_states(states: &[String]) -> Result<Vec<MintQuoteState>,
         }
     }
 
-    if invalid.is_empty() {
-        Ok(parsed)
-    } else {
-        Err(Status::invalid_argument(format!(
+    if !invalid.is_empty() {
+        return Err(Status::invalid_argument(format!(
             "Invalid mint quote state(s): {}. Valid states: unpaid, paid, issued, pending",
             invalid.join(", ")
-        )))
+        )));
     }
+
+    Ok(parsed)
 }
 
 /// Validates and parses melt quote state strings
@@ -353,14 +256,14 @@ pub fn parse_melt_quote_states(states: &[String]) -> Result<Vec<MeltQuoteState>,
         }
     }
 
-    if invalid.is_empty() {
-        Ok(parsed)
-    } else {
-        Err(Status::invalid_argument(format!(
+    if !invalid.is_empty() {
+        return Err(Status::invalid_argument(format!(
             "Invalid melt quote state(s): {}. Valid states: unpaid, pending, paid, unknown",
             invalid.join(", ")
-        )))
+        )));
     }
+
+    Ok(parsed)
 }
 
 /// Validates and parses proof state strings
@@ -375,39 +278,19 @@ pub fn parse_proof_states(states: &[String]) -> Result<Vec<State>, Status> {
         }
     }
 
-    if invalid.is_empty() {
-        Ok(parsed)
-    } else {
-        Err(Status::invalid_argument(format!(
+    if !invalid.is_empty() {
+        return Err(Status::invalid_argument(format!(
             "Invalid proof state(s): {}. Valid states: unspent, spent, pending, reserved",
             invalid.join(", ")
-        )))
-    }
-}
-
-/// Validates and parses operation kind strings
-pub fn parse_operations(operations: &[String]) -> Result<Vec<String>, Status> {
-    let mut invalid = Vec::new();
-
-    for op in operations {
-        if OperationKind::from_str(op).is_err() {
-            invalid.push(op.as_str());
-        }
+        )));
     }
 
-    if invalid.is_empty() {
-        Ok(operations.to_vec())
-    } else {
-        Err(Status::invalid_argument(format!(
-            "Invalid operation(s): {}. Valid operations: mint, melt, swap",
-            invalid.join(", ")
-        )))
-    }
+    Ok(parsed)
 }
 
 /// Validates and parses keyset ID strings
 pub fn parse_keyset_ids(ids: &[String]) -> Result<Vec<Id>, Status> {
-    let mut parsed = Vec::new();
+    let mut parsed = Vec::with_capacity(ids.len());
     let mut invalid = Vec::new();
 
     for id in ids {
@@ -417,14 +300,34 @@ pub fn parse_keyset_ids(ids: &[String]) -> Result<Vec<Id>, Status> {
         }
     }
 
-    if invalid.is_empty() {
-        Ok(parsed)
-    } else {
-        Err(Status::invalid_argument(format!(
+    if !invalid.is_empty() {
+        return Err(Status::invalid_argument(format!(
             "Invalid keyset ID(s): {}",
             invalid.join(", ")
-        )))
+        )));
     }
+
+    Ok(parsed)
+}
+
+/// Validates and parses operation kind strings
+pub fn validate_operations(operations: &[String]) -> Result<Vec<String>, Status> {
+    let mut invalid = Vec::new();
+
+    for op in operations {
+        if OperationKind::from_str(op).is_err() {
+            invalid.push(op.as_str());
+        }
+    }
+
+    if !invalid.is_empty() {
+        return Err(Status::invalid_argument(format!(
+            "Invalid operation(s): {}. Valid operations: mint, melt, swap",
+            invalid.join(", ")
+        )));
+    }
+
+    Ok(operations.to_vec())
 }
 
 /// Validates pagination parameters
@@ -444,14 +347,11 @@ pub fn validate_pagination(
     Ok(())
 }
 
-/// Default maximum number of results for list operations when no limit is specified
-pub const DEFAULT_MAX_LIMIT: u64 = 100;
-
-/// Returns the effective limit, defaulting to DEFAULT_MAX_LIMIT if not specified
+/// Returns the effective limit, defaulting to 100 if not specified
 pub fn effective_limit(num_max: i64) -> u64 {
     if num_max > 0 {
         num_max as u64
     } else {
-        DEFAULT_MAX_LIMIT
+        100
     }
 }
