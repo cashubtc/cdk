@@ -11,7 +11,7 @@ pub async fn generate_public_key(
 ) -> Result<()> {
     let public_key = multi_mint_wallet.generate_public_key().await?;
 
-    println!("\npublic key generated! 🎉\n");
+    println!("\npublic key generated!\n");
     println!("public key: {}", public_key.to_hex());
 
     Ok(())

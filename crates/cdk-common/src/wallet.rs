@@ -379,9 +379,13 @@ impl TryFrom<Proofs> for TransactionId {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct P2PKSigningKey {
+    /// Public key
     pub pubkey: PublicKey,
+    /// Derivation path
     pub derivation_path: DerivationPath,
+    /// Derivation index
     pub derivation_index: u32,
+    /// Created time
     pub created_time: u64,
 }
 
