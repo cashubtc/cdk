@@ -125,6 +125,9 @@ pub trait WalletDatabase: Send + Sync {
 
     /// List all P2PK signing keys from storage
     async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError>;
+
+    /// Get the latest P2PK signing key (most recently created)
+    async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, FfiError>;
 }
 
 /// FFI-compatible transaction trait for wallet database write operations
@@ -888,6 +891,22 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
+    async fn latest_p2pk(
+        &self,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, cdk::cdk_database::Error> {
+        let result = self
+            .ffi_db
+            .latest_p2pk()
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        Ok(result
+            .map(|k| {
+                k.try_into()
+                    .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+            })
+            .transpose()?)
+    }
+
     async fn get_p2pk_key(
         &self,
         pubkey: &cdk::nuts::PublicKey,
@@ -1615,6 +1634,15 @@ where
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })?;
         Ok(result.into_iter().map(Into::into).collect())
+    }
+
+    async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, FfiError> {
+        let result = self
+            .inner
+            .latest_p2pk()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        Ok(result.map(Into::into))
     }
 }
 

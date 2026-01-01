@@ -686,6 +686,23 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
         Ok(keys)
     }
+
+    #[instrument(skip(self))]
+    async fn latest_p2pk(&self) -> Result<Option<wallet::P2PKSigningKey>, database::Error> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(P2PK_SIGNING_KEYS_TABLE)
+            .map_err(Error::from)?;
+
+        let latest_key = table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .filter_map(|(_k, v)| serde_json::from_str::<wallet::P2PKSigningKey>(v.value()).ok())
+            .max_by_key(|key| key.created_time);
+
+        Ok(latest_key)
+    }
 }
 
 #[async_trait]

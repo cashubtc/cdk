@@ -1371,6 +1371,20 @@ where
             })
             .collect::<Vec<wallet::P2PKSigningKey>>())
     }
+
+    #[instrument(skip(self))]
+    async fn latest_p2pk(&self) -> Result<Option<wallet::P2PKSigningKey>, Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let query_str = r#"
+        SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key ORDER BY created_time DESC LIMIT 1
+        "#.to_string();
+
+        query(&query_str)?
+            .fetch_one(&*conn)
+            .await?
+            .map(sql_row_to_p2pk_signing_key)
+            .transpose()
+    }
 }
 
 fn sql_row_to_mint_info(row: Vec<Column>) -> Result<MintInfo, Error> {

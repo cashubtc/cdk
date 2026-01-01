@@ -194,4 +194,8 @@ impl WalletDatabase for WalletPostgresDatabase {
     async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError> {
         self.inner.list_p2pk_keys().await
     }
+
+    async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, FfiError> {
+        self.inner.latest_p2pk().await
+    }
 }
