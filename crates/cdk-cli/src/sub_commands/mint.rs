@@ -58,7 +58,13 @@ pub async fn mint(
                     .ok_or(anyhow!("Amount must be defined"))?;
                 let quote = wallet.mint_quote(Amount::from(amount), description).await?;
 
-                println!("Quote: {quote:#?}");
+                println!(
+                    "Quote: id={}, state={}, amount={}, expiry={}",
+                    quote.id,
+                    quote.state,
+                    quote.amount.map_or("none".to_string(), |a| a.to_string()),
+                    quote.expiry
+                );
 
                 println!("Please pay: {}", quote.request);
 
@@ -66,12 +72,21 @@ pub async fn mint(
             }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
                 let amount = sub_command_args.amount;
-                println!("{:?}", sub_command_args.single_use);
+                println!(
+                    "Single use: {}",
+                    sub_command_args.single_use.map_or("none".to_string(), |b| b.to_string())
+                );
                 let quote = wallet
                     .mint_bolt12_quote(amount.map(|a| a.into()), description)
                     .await?;
 
-                println!("Quote: {quote:#?}");
+                println!(
+                    "Quote: id={}, state={}, amount={}, expiry={}",
+                    quote.id,
+                    quote.state,
+                    quote.amount.map_or("none".to_string(), |a| a.to_string()),
+                    quote.expiry
+                );
 
                 println!("Please pay: {}", quote.request);
 
