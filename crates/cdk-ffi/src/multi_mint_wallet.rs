@@ -679,6 +679,16 @@ impl MultiMintWallet {
         }
         Ok(result)
     }
+
+    /// Get the latest generated P2PK signing key (most recently created)
+    pub async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, FfiError> {
+        let result = self
+            .inner
+            .latest_p2pk()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        Ok(result.map(Into::into))
+    }
 }
 
 /// Payment request methods for MultiMintWallet
