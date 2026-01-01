@@ -689,17 +689,20 @@ impl MultiMintWallet {
             .map_err(|e| FfiError::Database { msg: e.to_string() })?;
         Ok(result.map(Into::into))
     }
-    
+
     pub async fn generate_public_key(&self) -> Result<PublicKey, FfiError> {
         let result = self.inner.generate_public_key().await?;
         Ok(result.into())
     }
 
     pub async fn get_public_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError> {
-        let result = self.inner.get_public_keys().await.map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        let result = self
+            .inner
+            .get_public_keys()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
         Ok(result.into_iter().map(Into::into).collect())
     }
-
 }
 
 /// Payment request methods for MultiMintWallet
