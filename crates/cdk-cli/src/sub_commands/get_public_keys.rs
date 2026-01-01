@@ -20,13 +20,13 @@ pub async fn get_public_keys(
 
         match latest_public_key {
             Some(key) => {
-                println!("\npublic key found! 🎉\n");
+                println!("\npublic key found!\n");
 
                 println!("public key: {}", key.pubkey.to_hex());
                 println!("derivation path: {}", key.derivation_path);
             }
             None => {
-                println!("\npublic key not found! 🤔\n");
+                println!("\npublic key not found!\n");
             }
         }
 

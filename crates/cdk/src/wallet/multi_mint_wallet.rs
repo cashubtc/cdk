@@ -1988,6 +1988,8 @@ impl MultiMintWallet {
 
         wallet.melt_human_readable_quote(address, amount_msat).await
     }
+
+    /// generates and stores public key in database
     pub async fn generate_public_key(&self) -> Result<PublicKey, Error> {
         let public_keys = self.localstore.list_p2pk_keys().await?;
 
@@ -2012,14 +2014,21 @@ impl MultiMintWallet {
         Ok(pubkey)
     }
 
+    /// gets public key by it's hex value
     pub async fn p2pk_public_key(
         &self,
         pubkey: &PublicKey,
     ) -> Result<Option<P2PKSigningKey>, database::Error> {
         return self.localstore.get_p2pk_key(pubkey).await;
     }
-    //
+
+    /// gets list of stored public keys in database
     pub async fn p2pk_list(&self) -> Result<Vec<P2PKSigningKey>, database::Error> {
+        return self.localstore.list_p2pk_keys().await;
+    }
+    
+    /// gets the last generate public key
+    pub async fn latest_p2pk(&self) -> Result<Vec<P2PKSigningKey>, database::Error> {
         return self.localstore.list_p2pk_keys().await;
     }
 }

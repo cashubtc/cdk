@@ -264,10 +264,6 @@ pub trait WalletDatabaseTransaction: Send + Sync {
         primary_namespace: String,
         secondary_namespace: String,
     ) -> Result<Vec<String>, FfiError>;
-
-    // async fn add_p2pk_key(&self, pubkey: PublicKey, derivation_path: String, derivation_index: u32) -> Result<(), FfiError>;
-    // async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<P2PKSigningKey>, FfiError>;
-    // async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError>;
 }
 
 /// Wallet database transaction wrapper
@@ -2011,19 +2007,6 @@ impl WalletDatabaseTransaction for FfiWalletTransaction {
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
-
-    // async fn add_p2pk_key(&self, pubkey: PublicKey, derivation_path: String, derivation_index: u32) -> Result<(), FfiError> {
-    //     todo!("Implement add_p2pk_key");
-    //     Ok(())
-    // }
-    // async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<P2PKSigningKey>, FfiError> {
-    //     todo!("Implement get_p2pk_key");
-    //     Ok(None)
-    // }
-    // async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError> {
-    //     todo!("Implement list_p2pk_keys");
-    //     Ok(vec![])
-    // }
 }
 
 /// FFI-safe database type enum
