@@ -32,7 +32,7 @@ use crate::nuts::nut12::BlindSignatureDleq;
 use crate::nuts::nut14::{serde_htlc_witness, HTLCWitness};
 use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
-use crate::Amount;
+use crate::{Amount, Conditions, Kind};
 
 pub mod token;
 pub use token::{Token, TokenV3, TokenV4};
@@ -378,6 +378,45 @@ impl Proof {
     /// Where y is `hash_to_curve(secret)`
     pub fn y(&self) -> Result<PublicKey, Error> {
         Ok(hash_to_curve(self.secret.as_bytes())?)
+    }
+
+    /// checks if the signature spend conditions are met
+    pub fn enough_signatures(&self) -> Result<bool, Error> {
+        if let Ok(secret) = <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
+            self.clone().secret,
+        ) {
+            let mut needed_sigs: usize = 0;
+            let conditions: Result<Conditions, _> = secret
+                .secret_data()
+                .tags()
+                .cloned()
+                .unwrap_or_default()
+                .try_into();
+
+            match secret.kind() {
+                Kind::P2PK => {
+                    needed_sigs += 1;
+                }
+                _ => {}
+            }
+
+            if let Ok(conditions) = conditions {
+                if let Some(num_sigs) = conditions.num_sigs {
+                    needed_sigs += num_sigs as usize
+                }
+            }
+
+            if let Some(witness) = self.witness.clone() {
+                if let Some(sigs) = witness.signatures() {
+                    if sigs.len() >= needed_sigs {
+                        return Ok(true);
+                    }
+                }
+            }
+            return Ok(false);
+        }
+
+        return Ok(true);
     }
 }
 

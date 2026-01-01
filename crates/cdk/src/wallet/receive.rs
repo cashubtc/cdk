@@ -116,6 +116,8 @@ impl Wallet {
                         }
                     }
 
+                    proof.enough_signatures()?;
+
                     if conditions.sig_flag.eq(&SigFlag::SigAll) {
                         sig_flag = SigFlag::SigAll;
                     }
