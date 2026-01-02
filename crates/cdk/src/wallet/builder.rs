@@ -164,13 +164,19 @@ impl WalletBuilder {
 
     /// Set auth CAT (Clear Auth Token)
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `mint_url` or `localstore` have not been set on the builder.
+    /// Returns an error if `mint_url` or `localstore` have not been set on the builder.
     #[cfg(feature = "auth")]
-    pub fn set_auth_cat(mut self, cat: String) -> Self {
-        let mint_url = self.mint_url.clone().expect("Mint URL required");
-        let localstore = self.localstore.clone().expect("Localstore required");
+    pub fn set_auth_cat(mut self, cat: String) -> Result<Self, Error> {
+        let mint_url = self
+            .mint_url
+            .clone()
+            .ok_or_else(|| Error::Custom("Mint URL required".to_string()))?;
+        let localstore = self
+            .localstore
+            .clone()
+            .ok_or_else(|| Error::Custom("Localstore required".to_string()))?;
 
         let metadata_cache = self.metadata_cache.clone().unwrap_or_else(|| {
             // Check if we already have a cache for this mint in the HashMap
@@ -190,7 +196,7 @@ impl WalletBuilder {
             HashMap::new(),
             None,
         ));
-        self
+        Ok(self)
     }
 
     /// Build the wallet

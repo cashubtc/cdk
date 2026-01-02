@@ -316,6 +316,12 @@ pub enum Error {
     /// KV Store invalid key or namespace
     #[error("Invalid KV store key or namespace: {0}")]
     KVStoreInvalidKey(String),
+    /// Invalid response from mint
+    #[error("Invalid mint response: {0}")]
+    InvalidMintResponse(String),
+    /// Subscription error
+    #[error("Subscription error: {0}")]
+    SubscriptionError(String),
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),

@@ -55,11 +55,6 @@ impl Mint {
     /// Verify output keyset
     ///
     /// Checks that the outputs are all of the same unit and the keyset is active
-    ///
-    /// # Panics
-    ///
-    /// This function will not panic as the iterator is guaranteed to have exactly one element
-    /// when it reaches the expect call (length is checked above).
     #[instrument(skip_all)]
     pub fn verify_outputs_keyset(&self, outputs: &[BlindedMessage]) -> Result<CurrencyUnit, Error> {
         let mut keyset_units = HashSet::new();
@@ -108,11 +103,6 @@ impl Mint {
     /// Verify input keyset
     ///
     /// Checks that the inputs are all of the same unit
-    ///
-    /// # Panics
-    ///
-    /// This function will not panic as the iterator is guaranteed to have exactly one element
-    /// when it reaches the expect call (length is checked above).
     #[instrument(skip_all)]
     pub async fn verify_inputs_keyset(&self, inputs: &Proofs) -> Result<CurrencyUnit, Error> {
         let mut keyset_units = HashSet::new();
