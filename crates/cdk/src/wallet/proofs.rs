@@ -106,7 +106,7 @@ impl Wallet {
             .filter_map(|(p, s)| (s.state == State::Unspent).then_some(p))
             .collect();
 
-        self.swap(None, SplitTarget::default(), unspent, None, false)
+        self.swap(None, SplitTarget::default(), unspent, None, false, false)
             .await?;
         let mut tx = self.localstore.begin_db_transaction().await?;
         let _ = tx

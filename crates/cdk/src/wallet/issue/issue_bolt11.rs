@@ -267,6 +267,7 @@ impl Wallet {
                 &split_target,
                 spending_conditions,
                 &fee_and_amounts,
+                false,
             )?,
             None => {
                 let amount_split =

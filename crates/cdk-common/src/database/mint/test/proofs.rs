@@ -1,5 +1,4 @@
 //! Proofs tests
-
 use std::str::FromStr;
 
 use cashu::secret::Secret;
@@ -24,6 +23,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -32,6 +32,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
     ];
 
@@ -82,6 +83,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -90,6 +92,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
     ];
 
@@ -130,6 +133,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -138,6 +142,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
     ];
 
@@ -185,6 +190,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -193,6 +199,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
     ];
 
@@ -253,6 +260,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -261,6 +269,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
     ];
 
@@ -312,6 +321,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -320,6 +330,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
         Proof {
             amount: Amount::from(300),
@@ -328,6 +339,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
     ];
 
@@ -383,6 +395,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -391,6 +404,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
     ];
 
@@ -401,6 +415,7 @@ where
         c: SecretKey::generate().public_key(),
         witness: None,
         dleq: None,
+        p2pk_e: None,
     }];
 
     let expected_ys1: Vec<_> = proofs1.iter().map(|p| p.c).collect();
@@ -454,6 +469,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -462,6 +478,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
     ];
 
@@ -542,6 +559,7 @@ where
         c: SecretKey::generate().public_key(),
         witness: None,
         dleq: None,
+        p2pk_e: None,
     };
 
     let y = proof.c;
@@ -585,6 +603,7 @@ where
         c: SecretKey::generate().public_key(),
         witness: None,
         dleq: None,
+        p2pk_e: None,
     };
 
     let y = proof.c;
@@ -621,6 +640,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         })
         .collect();
 
@@ -667,6 +687,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -675,6 +696,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
     ];
 

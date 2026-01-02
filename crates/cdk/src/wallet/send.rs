@@ -324,6 +324,7 @@ impl PreparedSend {
                     self.proofs_to_swap,
                     self.options.conditions.clone(),
                     false, // already included in swap_amount
+                    self.options.use_p2bk,
                 )
                 .await?
             {
@@ -479,6 +480,11 @@ pub struct SendOptions {
     /// Maximum number of proofs to include in the token
     /// Default is `None`, which means all selected proofs will be included.
     pub max_proofs: Option<usize>,
+    /// Enable P2BK (Pay-to-Blinded-Key)
+    ///
+    /// When this is true, P2PK transactions will use blinded keys via NUT-26 protocol.
+    /// This enhances privacy by preventing the mint from learning the true pubkeys.
+    pub use_p2bk: bool,
     /// Metadata
     pub metadata: HashMap<String, String>,
 }

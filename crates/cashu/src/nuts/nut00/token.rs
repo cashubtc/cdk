@@ -412,6 +412,7 @@ impl From<TokenV4> for TokenV3 {
                     c: p.c,
                     witness: p.witness,
                     dleq: p.dleq,
+                    p2pk_e: p.p2pk_e,
                 })
             })
             .collect();
@@ -786,6 +787,7 @@ mod tests {
                 .unwrap(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         };
 
         let proof2 = proof1.clone(); // Duplicate proof
@@ -808,6 +810,7 @@ mod tests {
                 .unwrap(), // Different C value
             witness: None,
             dleq: None,
+            p2pk_e: None,
         };
 
         let proofs = vec![proof1, proof3].into_iter().collect();

@@ -494,7 +494,8 @@ where
         witness = excluded.witness,
         dleq_e = excluded.dleq_e,
         dleq_s = excluded.dleq_s,
-        dleq_r = excluded.dleq_r
+        dleq_r = excluded.dleq_r,
+        p2pk_e = excluded.p2pk_e
     ;
             "#,
             )?
@@ -530,6 +531,10 @@ where
             .bind(
                 "dleq_r",
                 proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
+            )
+            .bind(
+                "p2pk_e",
+                proof.proof.p2pk_e.as_ref().map(|p2pk_e| p2pk_e.to_bytes().to_vec())
             )
             .execute(&self.inner).await?;
         }
@@ -765,7 +770,8 @@ where
             y,
             mint_url,
             state,
-            spending_condition
+            spending_condition,
+            p2pk_e
         FROM proof
         {for_update_clause}
         "#
@@ -1461,7 +1467,8 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
             y,
             mint_url,
             state,
-            spending_condition
+            spending_condition,
+            p2pk_e
         ) = row
     );
 
@@ -1490,6 +1497,9 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         }),
         c: column_as_string!(c, PublicKey::from_str, PublicKey::from_slice),
         dleq,
+        p2pk_e: column_as_nullable_binary!(p2pk_e)
+            .map(|bytes| PublicKey::from_slice(&bytes))
+            .transpose()?,
     };
 
     Ok(ProofInfo {

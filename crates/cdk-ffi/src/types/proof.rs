@@ -58,6 +58,8 @@ pub struct Proof {
     pub witness: Option<Witness>,
     /// Optional DLEQ proof
     pub dleq: Option<ProofDleq>,
+    /// Optional P2BK Ephemeral public
+    pub p2pk_e: Option<String>,
 }
 
 impl From<cdk::nuts::Proof> for Proof {
@@ -69,6 +71,7 @@ impl From<cdk::nuts::Proof> for Proof {
             keyset_id: proof.keyset_id.to_string(),
             witness: proof.witness.map(|w| w.into()),
             dleq: proof.dleq.map(|d| d.into()),
+            p2pk_e: proof.p2pk_e.map(|p2pk_e| p2pk_e.to_string()),
         }
     }
 }
@@ -91,6 +94,13 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
                 .map_err(|e| FfiError::Serialization { msg: e.to_string() })?,
             witness: proof.witness.map(|w| w.into()),
             dleq: proof.dleq.map(|d| d.into()),
+            p2pk_e: proof
+                .p2pk_e
+                .map(|p2pk_e| {
+                    cdk::nuts::PublicKey::from_str(&p2pk_e)
+                        .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })
+                })
+                .transpose()?,
         })
     }
 }

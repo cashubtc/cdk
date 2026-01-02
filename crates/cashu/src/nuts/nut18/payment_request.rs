@@ -96,6 +96,7 @@ pub struct PaymentRequestBuilder {
     description: Option<String>,
     transports: Vec<Transport>,
     nut10: Option<Nut10SecretRequest>,
+    nut26: Option<bool>,
 }
 
 impl PaymentRequestBuilder {
@@ -162,6 +163,12 @@ impl PaymentRequestBuilder {
     /// Set Nut10 secret
     pub fn nut10(mut self, nut10: Nut10SecretRequest) -> Self {
         self.nut10 = Some(nut10);
+        self
+    }
+
+    /// Set Nut26 signal flag
+    pub fn nut26(mut self, nut26: bool) -> Self {
+        self.nut26 = Some(nut26);
         self
     }
 

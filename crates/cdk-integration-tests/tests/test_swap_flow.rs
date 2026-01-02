@@ -452,6 +452,7 @@ async fn test_swap_p2pk_signature_validation() {
         &SplitTarget::default(),
         &spending_conditions,
         &fee_and_amounts,
+        false,
     )
     .expect("Failed to create P2PK preswap");
 
