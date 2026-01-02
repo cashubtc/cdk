@@ -36,7 +36,6 @@ pub trait HttpCacheStorage {
 }
 
 /// Http cache with a pluggable storage backend.
-#[allow(missing_debug_implementations)]
 pub struct HttpCache {
     /// Time to live for the cache.
     pub ttl: Duration,
@@ -44,6 +43,15 @@ pub struct HttpCache {
     pub tti: Duration,
     /// Storage backend for the cache.
     storage: Arc<Box<dyn HttpCacheStorage + Send + Sync>>,
+}
+
+impl std::fmt::Debug for HttpCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpCache")
+            .field("ttl", &self.ttl)
+            .field("tti", &self.tti)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for HttpCache {
