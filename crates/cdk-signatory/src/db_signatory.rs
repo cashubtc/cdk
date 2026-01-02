@@ -25,6 +25,8 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, Signatory
 pub struct DbSignatory {
     keysets: RwLock<HashMap<Id, (MintKeySetInfo, MintKeySet)>>,
     active_keysets: RwLock<HashMap<CurrencyUnit, Id>>,
+    /// Track which keyset IDs are native (from DB) vs computed alternates
+    native_keyset_ids: RwLock<std::collections::HashSet<Id>>,
     localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
     secp_ctx: Secp256k1<secp256k1::All>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
@@ -93,6 +95,7 @@ impl DbSignatory {
         let keys = Self {
             keysets: Default::default(),
             active_keysets: Default::default(),
+            native_keyset_ids: Default::default(),
             localstore,
             custom_paths,
             xpub: xpriv.to_keypair(&secp_ctx).public_key().into(),
@@ -114,19 +117,45 @@ impl DbSignatory {
     async fn reload_keys_from_db(&self) -> Result<(), Error> {
         let mut keysets = self.keysets.write().await;
         let mut active_keysets = self.active_keysets.write().await;
+        let mut native_ids = self.native_keyset_ids.write().await;
         keysets.clear();
         active_keysets.clear();
+        native_ids.clear();
 
         let db_active_keysets = self.localstore.get_active_keysets().await?;
 
-        for mut info in self.localstore.get_keyset_infos().await? {
+        // First, collect all native keysets from the database
+        let native_infos: Vec<MintKeySetInfo> = self.localstore.get_keyset_infos().await?;
+
+        for mut info in native_infos {
             let id = info.id;
             let keyset = self.generate_keyset(&info);
             info.active = db_active_keysets.get(&info.unit) == Some(&info.id);
             if info.active {
                 active_keysets.insert(info.unit.clone(), id);
             }
-            keysets.insert(id, (info, keyset));
+
+            // Track this as a native ID
+            native_ids.insert(id);
+
+            // Store with native ID
+            keysets.insert(id, (info.clone(), keyset.clone()));
+
+            // Also store with alternate ID for dual-ID support (for proof verification)
+            use cdk_common::nut02::KeySetVersion;
+            use cdk_common::Keys;
+            let keys: Keys = keyset.keys.clone().into();
+            let alternate_id = match info.id.get_version() {
+                KeySetVersion::Version00 => {
+                    // Current is V1, compute V2
+                    Id::v2_from_data(&keys, &info.unit, info.final_expiry)
+                }
+                KeySetVersion::Version01 => {
+                    // Current is V2, compute V1
+                    Id::v1_from_keys(&keys)
+                }
+            };
+            keysets.insert(alternate_id, (info, keyset));
         }
 
         Ok(())
@@ -203,14 +232,15 @@ impl Signatory for DbSignatory {
 
     #[tracing::instrument(skip_all)]
     async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
+        let keysets_map = self.keysets.read().await;
+        let native_ids = self.native_keyset_ids.read().await;
+
         Ok(SignatoryKeysets {
             pubkey: self.xpub,
-            keysets: self
-                .keysets
-                .read()
-                .await
-                .values()
-                .map(|k| k.into())
+            keysets: keysets_map
+                .iter()
+                .filter(|(id, _)| native_ids.contains(id))
+                .map(|(_, k)| k.into())
                 .collect::<Vec<_>>(),
         })
     }
@@ -268,9 +298,78 @@ mod test {
 
     use bitcoin::key::Secp256k1;
     use bitcoin::Network;
+    use cdk_common::nut02::KeySetVersion;
     use cdk_common::{Amount, MintKeySet, PublicKey};
 
     use super::*;
+
+    #[tokio::test]
+    async fn test_dual_id_lookup_in_signatory() {
+        // Create a signatory with a V2 keyset
+        let seed = b"test_seed_for_dual_id";
+        let localstore = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("create db"));
+
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::Sat, (0u64, 4u8)); // Small keyset for test
+
+        let signatory = DbSignatory::new(localstore, seed, supported_units, HashMap::new())
+            .await
+            .expect("create signatory");
+
+        // Get the keysets
+        let keysets_response = signatory.keysets().await.expect("get keysets");
+        assert_eq!(keysets_response.keysets.len(), 2); // Sat + Auth
+
+        // Find the Sat keyset (should be V2 native)
+        let sat_keyset = keysets_response
+            .keysets
+            .iter()
+            .find(|k| k.unit == CurrencyUnit::Sat)
+            .expect("find sat keyset");
+
+        assert_eq!(
+            sat_keyset.id.get_version(),
+            KeySetVersion::Version01,
+            "Keyset should be V2 native"
+        );
+
+        // Compute the V1 ID from the keys
+        let v1_id = Id::v1_from_keys(&sat_keyset.keys);
+        assert_ne!(v1_id, sat_keyset.id, "V1 and V2 IDs should be different");
+
+        // Verify the signatory has both IDs in its keysets HashMap
+        {
+            let keysets = signatory.keysets.read().await;
+            assert!(
+                keysets.contains_key(&sat_keyset.id),
+                "Should have native V2 ID"
+            );
+            assert!(keysets.contains_key(&v1_id), "Should have alternate V1 ID");
+        }
+
+        // Now test that blind_sign works with the V1 ID
+        use cdk_common::dhke::blind_message;
+        use cdk_common::secret::Secret;
+
+        let secret = Secret::generate();
+        let (blinded_message, _blinding_factor) =
+            blind_message(secret.as_bytes(), None).expect("blind message");
+
+        let blinded_msg = cdk_common::BlindedMessage {
+            amount: Amount::from(1),
+            blinded_secret: blinded_message,
+            keyset_id: v1_id, // Use V1 ID
+            witness: None,
+        };
+
+        // This should succeed because the signatory stores with both IDs
+        let result = signatory.blind_sign(vec![blinded_msg]).await;
+        assert!(
+            result.is_ok(),
+            "blind_sign should work with V1 ID: {:?}",
+            result.err()
+        );
+    }
 
     #[test]
     fn mint_mod_generate_keyset_from_seed() {
