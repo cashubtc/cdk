@@ -157,7 +157,8 @@ async fn test_websocket_connection() {
         .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![mint_quote
             .id
             .clone()]))
-        .await;
+        .await
+        .expect("failed to subscribe");
 
     // First check we get the unpaid state
     let msg = timeout(Duration::from_secs(10), subscription.recv())
