@@ -73,14 +73,25 @@ pub async fn list_melt_quotes(
     }
 
     println!(
-        "{:<36} {:>10} {:<6} {:<10} {:>12} {:>12}",
-        "ID", "AMOUNT", "UNIT", "STATE", "FEE_RESERVE", "CREATED"
+        "{:<36} {:>10} {:<6} {:<10} {:<10} {:>12} {:>12} {:>12}",
+        "ID", "AMOUNT", "UNIT", "METHOD", "STATE", "FEE_RESERVE", "CREATED", "PAID"
     );
-    println!("{}", "-".repeat(92));
+    println!("{}", "-".repeat(115));
     for q in &quotes {
+        let paid_time = q
+            .paid_time
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "-".to_string());
         println!(
-            "{:<36} {:>10} {:<6} {:<10} {:>12} {:>12}",
-            q.id, q.amount, q.unit, q.state, q.fee_reserve, q.created_time,
+            "{:<36} {:>10} {:<6} {:<10} {:<10} {:>12} {:>12} {:>12}",
+            q.id,
+            q.amount,
+            q.unit,
+            q.payment_method,
+            q.state,
+            q.fee_reserve,
+            q.created_time,
+            paid_time,
         );
     }
 

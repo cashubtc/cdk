@@ -82,19 +82,26 @@ pub async fn list_proofs(
     }
 
     println!(
-        "{:>10} {:<18} {:<10} {:<10} {:<36} {:>12}",
-        "AMOUNT", "KEYSET_ID", "STATE", "OP_KIND", "OP_ID", "CREATED"
+        "{:>10} {:<18} {:<10} {:<10} {:<36} {:>12} {:<36}",
+        "AMOUNT", "KEYSET_ID", "STATE", "OP_KIND", "OP_ID", "CREATED", "QUOTE_ID"
     );
-    println!("{}", "-".repeat(102));
+    println!("{}", "-".repeat(142));
     for p in &proofs {
         let keyset_short = if p.keyset_id.len() > 16 {
             format!("{}...", &p.keyset_id[..16])
         } else {
             p.keyset_id.clone()
         };
+        let quote_id = p.quote_id.as_ref().map(|s| s.as_str()).unwrap_or("-");
         println!(
-            "{:>10} {:<18} {:<10} {:<10} {:<36} {:>12}",
-            p.amount, keyset_short, p.state, p.operation_kind, p.operation_id, p.created_time,
+            "{:>10} {:<18} {:<10} {:<10} {:<36} {:>12} {:<36}",
+            p.amount,
+            keyset_short,
+            p.state,
+            p.operation_kind,
+            p.operation_id,
+            p.created_time,
+            quote_id,
         );
     }
 

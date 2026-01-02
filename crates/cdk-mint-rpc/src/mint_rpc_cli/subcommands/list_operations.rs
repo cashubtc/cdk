@@ -74,13 +74,35 @@ pub async fn list_operations(
     }
 
     println!(
-        "{:<36} {:<6} {:<6} {:>10} {:>10} {:>8} {:>12}",
-        "OP_ID", "KIND", "UNIT", "ISSUED", "REDEEMED", "FEE", "COMPLETED"
+        "{:<36} {:<6} {:<6} {:>10} {:>10} {:>8} {:>12} {:>12} {:>10} {:<12}",
+        "OP_ID",
+        "KIND",
+        "UNIT",
+        "ISSUED",
+        "REDEEMED",
+        "FEE",
+        "COMPLETED",
+        "PAY_AMOUNT",
+        "PAY_FEE",
+        "PAY_METHOD"
     );
-    println!("{}", "-".repeat(94));
+    println!("{}", "-".repeat(128));
     for op in &operations {
+        let payment_amount = op
+            .payment_amount
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let payment_fee = op
+            .payment_fee
+            .map(|f| f.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let payment_method = op
+            .payment_method
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("-");
         println!(
-            "{:<36} {:<6} {:<6} {:>10} {:>10} {:>8} {:>12}",
+            "{:<36} {:<6} {:<6} {:>10} {:>10} {:>8} {:>12} {:>12} {:>10} {:<12}",
             op.operation_id,
             op.operation_kind,
             op.unit,
@@ -88,6 +110,9 @@ pub async fn list_operations(
             op.total_redeemed,
             op.fee_collected,
             op.completed_time,
+            payment_amount,
+            payment_fee,
+            payment_method,
         );
     }
 

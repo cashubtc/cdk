@@ -73,19 +73,21 @@ pub async fn list_mint_quotes(
     }
 
     println!(
-        "{:<36} {:>10} {:<6} {:<10} {:>12} {:>12}",
-        "ID", "AMOUNT", "UNIT", "STATE", "PAID", "ISSUED"
+        "{:<36} {:>10} {:<6} {:<10} {:<10} {:>12} {:>12} {:>15}",
+        "ID", "AMOUNT", "UNIT", "METHOD", "STATE", "PAID", "ISSUED", "CREATED"
     );
-    println!("{}", "-".repeat(92));
+    println!("{}", "-".repeat(118));
     for q in &quotes {
         println!(
-            "{:<36} {:>10} {:<6} {:<10} {:>12} {:>12}",
+            "{:<36} {:>10} {:<6} {:<10} {:<10} {:>12} {:>12} {:>15}",
             q.id,
             q.amount.map(|a| a.to_string()).unwrap_or("-".to_string()),
             q.unit,
+            q.payment_method,
             q.state,
             q.amount_paid,
             q.amount_issued,
+            q.created_time,
         );
     }
 

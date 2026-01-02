@@ -68,16 +68,35 @@ pub async fn get_keysets(
 
     if show_balances {
         println!(
-            "{:<20} {:<10} {:<8} {:>15} {:>15} {:>15} {:>15}",
-            "ID", "UNIT", "ACTIVE", "BALANCE", "ISSUED", "REDEEMED", "FEES"
+            "{:<20} {:<10} {:<8} {:>12} {:>12} {:>8} {:>6} {:>15} {:>15} {:>15} {:>15}",
+            "ID",
+            "UNIT",
+            "ACTIVE",
+            "VALID_FROM",
+            "VALID_TO",
+            "FEE_PPK",
+            "INDEX",
+            "BALANCE",
+            "ISSUED",
+            "REDEEMED",
+            "FEES"
         );
-        println!("{}", "-".repeat(110));
+        println!("{}", "-".repeat(146));
         for ks in keysets {
+            let valid_to = if ks.valid_to == 0 {
+                "-".to_string()
+            } else {
+                ks.valid_to.to_string()
+            };
             println!(
-                "{:<20} {:<10} {:<8} {:>15} {:>15} {:>15} {:>15}",
+                "{:<20} {:<10} {:<8} {:>12} {:>12} {:>8} {:>6} {:>15} {:>15} {:>15} {:>15}",
                 ks.id,
                 ks.unit,
                 ks.active,
+                ks.valid_from,
+                valid_to,
+                ks.input_fee_ppk,
+                ks.derivation_path_index,
                 ks.total_balance.map(|b| b.to_string()).unwrap_or_default(),
                 ks.total_issued.map(|i| i.to_string()).unwrap_or_default(),
                 ks.total_redeemed.map(|r| r.to_string()).unwrap_or_default(),
@@ -87,10 +106,27 @@ pub async fn get_keysets(
             );
         }
     } else {
-        println!("{:<20} {:<10} {}", "ID", "UNIT", "ACTIVE");
-        println!("{}", "-".repeat(40));
+        println!(
+            "{:<20} {:<10} {:<8} {:>12} {:>12} {:>8} {:>6}",
+            "ID", "UNIT", "ACTIVE", "VALID_FROM", "VALID_TO", "FEE_PPK", "INDEX"
+        );
+        println!("{}", "-".repeat(82));
         for ks in keysets {
-            println!("{:<20} {:<10} {}", ks.id, ks.unit, ks.active);
+            let valid_to = if ks.valid_to == 0 {
+                "-".to_string()
+            } else {
+                ks.valid_to.to_string()
+            };
+            println!(
+                "{:<20} {:<10} {:<8} {:>12} {:>12} {:>8} {:>6}",
+                ks.id,
+                ks.unit,
+                ks.active,
+                ks.valid_from,
+                valid_to,
+                ks.input_fee_ppk,
+                ks.derivation_path_index
+            );
         }
     }
 

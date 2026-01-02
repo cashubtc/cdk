@@ -76,10 +76,10 @@ pub async fn list_blind_signatures(
     }
 
     println!(
-        "{:>10} {:<18} {:<10} {:<36} {:>12} {:>12}",
-        "AMOUNT", "KEYSET_ID", "OP_KIND", "OP_ID", "CREATED", "SIGNED"
+        "{:>10} {:<18} {:<10} {:<36} {:>12} {:>12} {:<36}",
+        "AMOUNT", "KEYSET_ID", "OP_KIND", "OP_ID", "CREATED", "SIGNED", "QUOTE_ID"
     );
-    println!("{}", "-".repeat(104));
+    println!("{}", "-".repeat(142));
     for s in &signatures {
         let keyset_short = if s.keyset_id.len() > 16 {
             format!("{}...", &s.keyset_id[..16])
@@ -90,9 +90,16 @@ pub async fn list_blind_signatures(
             .signed_time
             .map(|t| t.to_string())
             .unwrap_or_else(|| "-".to_string());
+        let quote_id = s.quote_id.as_ref().map(|s| s.as_str()).unwrap_or("-");
         println!(
-            "{:>10} {:<18} {:<10} {:<36} {:>12} {:>12}",
-            s.amount, keyset_short, s.operation_kind, s.operation_id, s.created_time, signed,
+            "{:>10} {:<18} {:<10} {:<36} {:>12} {:>12} {:<36}",
+            s.amount,
+            keyset_short,
+            s.operation_kind,
+            s.operation_id,
+            s.created_time,
+            signed,
+            quote_id,
         );
     }
 
