@@ -36,6 +36,7 @@ pub trait HttpCacheStorage {
 }
 
 /// Http cache with a pluggable storage backend.
+#[allow(missing_debug_implementations)]
 pub struct HttpCache {
     /// Time to live for the cache.
     pub ttl: Duration,

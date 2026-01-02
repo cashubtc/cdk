@@ -18,6 +18,7 @@ use super::{RecvFuture, WaitableEvent};
 use crate::Wallet;
 
 /// Proofs for many mint quotes, as they are minted, in streams
+#[allow(missing_debug_implementations)]
 pub struct MultipleMintQuoteProofStream<'a> {
     payment_stream: PaymentStream<'a>,
     wallet: &'a Wallet,
@@ -141,6 +142,7 @@ impl Stream for MultipleMintQuoteProofStream<'_> {
 }
 
 /// Proofs for a single mint quote
+#[allow(missing_debug_implementations)]
 pub struct SingleMintQuoteProofStream<'a>(MultipleMintQuoteProofStream<'a>);
 
 impl<'a> SingleMintQuoteProofStream<'a> {

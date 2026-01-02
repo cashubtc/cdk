@@ -21,6 +21,7 @@ type SubscribeReceived = (Option<MintEvent<String>>, Vec<ActiveSubscription>);
 type PaymentValue = (String, Option<Amount>);
 
 /// PaymentWaiter
+#[allow(missing_debug_implementations)]
 pub struct PaymentStream<'a> {
     wallet: Option<(&'a Wallet, Vec<WalletSubscription>)>,
     is_finalized: bool,

@@ -10,7 +10,7 @@ use crate::RotateNextKeysetRequest;
 ///
 /// This command instructs the mint to rotate to a new keyset, which generates new keys
 /// for signing tokens of the specified unit type.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct RotateNextKeysetCommand {
     /// The unit type for the keyset (e.g., "sat")
     #[arg(short, long)]

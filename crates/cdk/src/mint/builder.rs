@@ -39,6 +39,15 @@ pub struct MintBuilder {
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
 }
 
+impl std::fmt::Debug for MintBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MintBuilder")
+            .field("mint_info", &self.mint_info)
+            .field("supported_units", &self.supported_units)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MintBuilder {
     /// New [`MintBuilder`]
     pub fn new(localstore: DynMintDatabase) -> MintBuilder {

@@ -37,6 +37,14 @@ pub struct LNbits {
     settings: SettingsResponse,
 }
 
+impl std::fmt::Debug for LNbits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LNbits")
+            .field("fee_reserve", &self.fee_reserve)
+            .finish_non_exhaustive()
+    }
+}
+
 impl LNbits {
     /// Create new [`LNbits`] wallet
     #[allow(clippy::too_many_arguments)]
