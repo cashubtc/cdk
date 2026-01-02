@@ -88,14 +88,14 @@ pub async fn list_operations(
     );
     println!("{}", "-".repeat(128));
     for op in &operations {
-        let payment_amount = op
-            .payment_amount
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let payment_fee = op
-            .payment_fee
-            .map(|f| f.to_string())
-            .unwrap_or_else(|| "-".to_string());
+        let payment_amount = match op.payment_amount {
+            Some(a) => a.to_string(),
+            None => "-".to_string(),
+        };
+        let payment_fee = match op.payment_fee {
+            Some(f) => f.to_string(),
+            None => "-".to_string(),
+        };
         let payment_method = op
             .payment_method
             .as_ref()

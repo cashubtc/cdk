@@ -1,9 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-use crate::melt_options::Options::{Amountless, Mpp};
-use cdk::mint::MeltQuote as MintMeltQuote;
-use cdk::mint::Mint;
+use cdk::mint::{MeltQuote as MintMeltQuote, Mint};
 use cdk::nuts::{
     CurrencyUnit, Id, MeltOptions as NutMeltOptions, MeltQuoteState, MintQuoteState, State,
 };
@@ -11,6 +9,7 @@ use cdk::Amount;
 use cdk_common::mint::OperationKind;
 use tonic::Status;
 
+use crate::melt_options::Options::{Amountless, Mpp};
 use crate::{AmountlessOptions, Balance, MeltOptions, MeltQuote, MppOptions};
 
 /// Raw balance data fetched from the mint database

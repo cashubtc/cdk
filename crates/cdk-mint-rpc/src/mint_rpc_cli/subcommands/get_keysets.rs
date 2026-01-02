@@ -1,6 +1,5 @@
 use anyhow::Result;
-use clap::ArgAction;
-use clap::Args;
+use clap::{ArgAction, Args};
 use tonic::transport::Channel;
 use tonic::Request;
 
@@ -83,10 +82,9 @@ pub async fn get_keysets(
         );
         println!("{}", "-".repeat(146));
         for ks in keysets {
-            let valid_to = if ks.valid_to == 0 {
-                "-".to_string()
-            } else {
-                ks.valid_to.to_string()
+            let valid_to = match ks.valid_to {
+                0 => "-".to_string(),
+                v => v.to_string(),
             };
             println!(
                 "{:<20} {:<10} {:<8} {:>12} {:>12} {:>8} {:>6} {:>15} {:>15} {:>15} {:>15}",
@@ -112,10 +110,9 @@ pub async fn get_keysets(
         );
         println!("{}", "-".repeat(82));
         for ks in keysets {
-            let valid_to = if ks.valid_to == 0 {
-                "-".to_string()
-            } else {
-                ks.valid_to.to_string()
+            let valid_to = match ks.valid_to {
+                0 => "-".to_string(),
+                v => v.to_string(),
             };
             println!(
                 "{:<20} {:<10} {:<8} {:>12} {:>12} {:>8} {:>6}",

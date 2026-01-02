@@ -86,10 +86,10 @@ pub async fn list_blind_signatures(
         } else {
             s.keyset_id.clone()
         };
-        let signed = s
-            .signed_time
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| "-".to_string());
+        let signed = match s.signed_time {
+            Some(t) => t.to_string(),
+            None => "-".to_string(),
+        };
         let quote_id = s.quote_id.as_ref().map(|s| s.as_str()).unwrap_or("-");
         println!(
             "{:>10} {:<18} {:<10} {:<36} {:>12} {:>12} {:<36}",

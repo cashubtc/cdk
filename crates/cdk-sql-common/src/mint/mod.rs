@@ -2874,13 +2874,16 @@ where
 // Query builder helpers for filtered list methods
 // ============================================================================
 
-/**
- * Build pagination clause with peek-ahead for has_more detection.
- * Queries for limit+1 rows to determine if more results exist.
- * @param {Option<u64>} limit - maximum number of items to return
- * @param {u64} offset - number of items to skip
- * @returns {(String, Option<usize>)} tuple of SQL clause and requested limit for truncation
- */
+/// Build pagination clause with peek-ahead for has_more detection.
+///
+/// Queries for limit+1 rows to determine if more results exist.
+///
+/// # Arguments
+/// * `limit` - maximum number of items to return
+/// * `offset` - number of items to skip
+///
+/// # Returns
+/// Tuple of SQL clause and requested limit for truncation
 fn build_pagination_clause(limit: Option<u64>, offset: u64) -> (String, Option<usize>) {
     match limit {
         Some(limit) => (
@@ -2892,11 +2895,13 @@ fn build_pagination_clause(limit: Option<u64>, offset: u64) -> (String, Option<u
     }
 }
 
-/**
- * Get ORDER BY direction string based on reversed flag.
- * @param {bool} reversed - if true, sort descending; otherwise ascending
- * @returns {&'static str} "DESC" or "ASC"
- */
+/// Get ORDER BY direction string based on reversed flag.
+///
+/// # Arguments
+/// * `reversed` - if true, sort descending; otherwise ascending
+///
+/// # Returns
+/// "DESC" or "ASC"
 fn order_direction(reversed: bool) -> &'static str {
     if reversed {
         "DESC"
@@ -2905,13 +2910,16 @@ fn order_direction(reversed: bool) -> &'static str {
     }
 }
 
-/**
- * Apply peek-ahead truncation and return has_more flag.
- * If items exceed requested_limit, truncate and return true.
- * @param {&mut Vec<T>} items - mutable reference to items vector
- * @param {Option<usize>} requested_limit - the original limit before peek-ahead
- * @returns {bool} true if there are more items beyond the limit
- */
+/// Apply peek-ahead truncation and return has_more flag.
+///
+/// If items exceed requested_limit, truncate and return true.
+///
+/// # Arguments
+/// * `items` - mutable reference to items vector
+/// * `requested_limit` - the original limit before peek-ahead
+///
+/// # Returns
+/// True if there are more items beyond the limit
 fn apply_pagination_peek_ahead<T>(items: &mut Vec<T>, requested_limit: Option<usize>) -> bool {
     match requested_limit {
         Some(limit) if items.len() > limit => {
@@ -2922,11 +2930,13 @@ fn apply_pagination_peek_ahead<T>(items: &mut Vec<T>, requested_limit: Option<us
     }
 }
 
-/**
- * Join WHERE clauses with AND, returning empty string if no clauses.
- * @param {&[String]} clauses - slice of WHERE clause strings
- * @returns {String} complete WHERE clause or empty string
- */
+/// Join WHERE clauses with AND, returning empty string if no clauses.
+///
+/// # Arguments
+/// * `clauses` - slice of WHERE clause strings
+///
+/// # Returns
+/// Complete WHERE clause or empty string
 fn build_where_clause(clauses: &[String]) -> String {
     if clauses.is_empty() {
         String::new()
@@ -2935,13 +2945,15 @@ fn build_where_clause(clauses: &[String]) -> String {
     }
 }
 
-/**
- * Bind date range parameters to statement if present.
- * @param {Statement} stmt - the SQL statement
- * @param {Option<u64>} start - optional start timestamp
- * @param {Option<u64>} end - optional end timestamp
- * @returns {Statement} statement with bound parameters
- */
+/// Bind date range parameters to statement if present.
+///
+/// # Arguments
+/// * `stmt` - the SQL statement
+/// * `start` - optional start timestamp
+/// * `end` - optional end timestamp
+///
+/// # Returns
+/// Statement with bound parameters
 fn bind_date_range(stmt: Statement, start: Option<u64>, end: Option<u64>) -> Statement {
     let stmt = match start {
         Some(s) => stmt.bind("creation_date_start", s as i64),
@@ -2953,12 +2965,14 @@ fn bind_date_range(stmt: Statement, start: Option<u64>, end: Option<u64>) -> Sta
     }
 }
 
-/**
- * Bind unit filter parameters to statement if present.
- * @param {Statement} stmt - the SQL statement
- * @param {&[CurrencyUnit]} units - slice of currency units to filter by
- * @returns {Statement} statement with bound parameters
- */
+/// Bind unit filter parameters to statement if present.
+///
+/// # Arguments
+/// * `stmt` - the SQL statement
+/// * `units` - slice of currency units to filter by
+///
+/// # Returns
+/// Statement with bound parameters
 fn bind_units(stmt: Statement, units: &[CurrencyUnit]) -> Statement {
     if units.is_empty() {
         stmt
@@ -2967,12 +2981,14 @@ fn bind_units(stmt: Statement, units: &[CurrencyUnit]) -> Statement {
     }
 }
 
-/**
- * Bind keyset ID filter parameters to statement if present.
- * @param {Statement} stmt - the SQL statement
- * @param {&[Id]} keyset_ids - slice of keyset IDs to filter by
- * @returns {Statement} statement with bound parameters
- */
+/// Bind keyset ID filter parameters to statement if present.
+///
+/// # Arguments
+/// * `stmt` - the SQL statement
+/// * `keyset_ids` - slice of keyset IDs to filter by
+///
+/// # Returns
+/// Statement with bound parameters
 fn bind_keyset_ids(stmt: Statement, keyset_ids: &[Id]) -> Statement {
     if keyset_ids.is_empty() {
         stmt
@@ -2984,12 +3000,14 @@ fn bind_keyset_ids(stmt: Statement, keyset_ids: &[Id]) -> Statement {
     }
 }
 
-/**
- * Bind operation filter parameters to statement if present.
- * @param {Statement} stmt - the SQL statement
- * @param {&[String]} operations - slice of operation kinds to filter by
- * @returns {Statement} statement with bound parameters
- */
+/// Bind operation filter parameters to statement if present.
+///
+/// # Arguments
+/// * `stmt` - the SQL statement
+/// * `operations` - slice of operation kinds to filter by
+///
+/// # Returns
+/// Statement with bound parameters
 fn bind_operations(stmt: Statement, operations: &[String]) -> Statement {
     if operations.is_empty() {
         stmt
@@ -3470,11 +3488,13 @@ where
 // Backup helper functions
 // ============================================================================
 
-/**
- * Create a SQLite backup using VACUUM INTO for a consistent snapshot.
- * @param {C} conn - database connection
- * @returns {Vec<u8>} backup file contents
- */
+/// Create a SQLite backup using VACUUM INTO for a consistent snapshot.
+///
+/// # Arguments
+/// * `conn` - database connection
+///
+/// # Returns
+/// Backup file contents as bytes
 async fn create_sqlite_backup<C: DatabaseExecutor>(conn: &C) -> Result<Vec<u8>, Error> {
     let temp_path = std::env::temp_dir().join(format!("cdk_backup_{}.db", unix_time()));
     let temp_path_str = temp_path.to_string_lossy();
@@ -3496,12 +3516,14 @@ async fn create_sqlite_backup<C: DatabaseExecutor>(conn: &C) -> Result<Vec<u8>, 
     Ok(backup_data)
 }
 
-/**
- * Create a SQL dump of all tables.
- * @param {C} conn - database connection
- * @param {&str} engine - database engine name ("sqlite" or "postgres")
- * @returns {Vec<u8>} SQL dump as bytes
- */
+/// Create a SQL dump of all tables.
+///
+/// # Arguments
+/// * `conn` - database connection
+/// * `engine` - database engine name ("sqlite" or "postgres")
+///
+/// # Returns
+/// SQL dump as bytes
 async fn create_sql_dump<C: DatabaseExecutor>(conn: &C, engine: &str) -> Result<Vec<u8>, Error> {
     let mut sql_dump = String::new();
 
@@ -3522,12 +3544,14 @@ fn write_sql_header(sql_dump: &mut String, engine: &str) {
     sql_dump.push_str(&format!("-- Engine: {}\n\n", engine));
 }
 
-/**
- * Fetch list of user tables (excluding system/migration tables).
- * @param {C} conn - database connection
- * @param {&str} engine - database engine name
- * @returns {Vec<String>} list of table names
- */
+/// Fetch list of user tables (excluding system/migration tables).
+///
+/// # Arguments
+/// * `conn` - database connection
+/// * `engine` - database engine name
+///
+/// # Returns
+/// List of table names
 async fn fetch_table_names<C: DatabaseExecutor>(
     conn: &C,
     engine: &str,
@@ -3556,13 +3580,13 @@ fn is_migration_table(name: &str) -> bool {
     name == "_sqlx_migrations" || name == "migrations"
 }
 
-/**
- * Dump a single table's schema and data to SQL.
- * @param {C} conn - database connection
- * @param {&str} engine - database engine name
- * @param {&str} table_name - name of table to dump
- * @param {&mut String} sql_dump - output buffer
- */
+/// Dump a single table's schema and data to SQL.
+///
+/// # Arguments
+/// * `conn` - database connection
+/// * `engine` - database engine name
+/// * `table_name` - name of table to dump
+/// * `sql_dump` - output buffer
 async fn dump_table<C: DatabaseExecutor>(
     conn: &C,
     engine: &str,
@@ -3597,12 +3621,14 @@ async fn dump_table<C: DatabaseExecutor>(
     Ok(())
 }
 
-/**
- * Fetch table schema SQL for SQLite.
- * @param {C} conn - database connection
- * @param {&str} table_name - name of table
- * @returns {Option<String>} CREATE TABLE statement if found
- */
+/// Fetch table schema SQL for SQLite.
+///
+/// # Arguments
+/// * `conn` - database connection
+/// * `table_name` - name of table
+///
+/// # Returns
+/// CREATE TABLE statement if found
 async fn fetch_sqlite_table_schema<C: DatabaseExecutor>(
     conn: &C,
     table_name: &str,
@@ -3620,13 +3646,16 @@ async fn fetch_sqlite_table_schema<C: DatabaseExecutor>(
     }))
 }
 
-/**
- * Fetch table schema SQL for PostgreSQL.
- * Builds CREATE TABLE from information_schema.
- * @param {C} conn - database connection
- * @param {&str} table_name - name of table
- * @returns {Option<String>} CREATE TABLE statement if found
- */
+/// Fetch table schema SQL for PostgreSQL.
+///
+/// Builds CREATE TABLE from information_schema.
+///
+/// # Arguments
+/// * `conn` - database connection
+/// * `table_name` - name of table
+///
+/// # Returns
+/// CREATE TABLE statement if found
 async fn fetch_postgres_table_schema<C: DatabaseExecutor>(
     conn: &C,
     table_name: &str,
@@ -3757,12 +3786,14 @@ fn postgres_type_to_sql(pg_type: &str) -> String {
     }
 }
 
-/**
- * Fetch primary key columns for a PostgreSQL table.
- * @param {C} conn - database connection
- * @param {&str} table_name - name of table
- * @returns {Vec<String>} list of primary key column names
- */
+/// Fetch primary key columns for a PostgreSQL table.
+///
+/// # Arguments
+/// * `conn` - database connection
+/// * `table_name` - name of table
+///
+/// # Returns
+/// List of primary key column names
 async fn fetch_postgres_primary_key<C: DatabaseExecutor>(
     conn: &C,
     table_name: &str,
@@ -3816,12 +3847,15 @@ fn column_to_sql_literal(col: &Column) -> String {
     }
 }
 
-/**
- * Calculate a checksum and return as hex string.
- * Uses std DefaultHasher - not cryptographically secure but sufficient for integrity checks.
- * @param {&[u8]} data - data to checksum
- * @returns {String} 16-character hex string
- */
+/// Calculate a checksum and return as hex string.
+///
+/// Uses std DefaultHasher - not cryptographically secure but sufficient for integrity checks.
+///
+/// # Arguments
+/// * `data` - data to checksum
+///
+/// # Returns
+/// 16-character hex string
 fn checksum_hex(data: &[u8]) -> String {
     use std::hash::{Hash, Hasher};
 

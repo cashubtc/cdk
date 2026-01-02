@@ -78,10 +78,10 @@ pub async fn list_melt_quotes(
     );
     println!("{}", "-".repeat(115));
     for q in &quotes {
-        let paid_time = q
-            .paid_time
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| "-".to_string());
+        let paid_time = match q.paid_time {
+            Some(t) => t.to_string(),
+            None => "-".to_string(),
+        };
         println!(
             "{:<36} {:>10} {:<6} {:<10} {:<10} {:>12} {:>12} {:>12}",
             q.id,
