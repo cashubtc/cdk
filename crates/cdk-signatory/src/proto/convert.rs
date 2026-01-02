@@ -63,6 +63,7 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
             amounts: keys.keys().map(|x| x.to_u64()).collect::<Vec<_>>(),
             keys: cdk_common::Keys::new(keys),
             final_expiry: self.final_expiry,
+            version: self.version,
         })
     }
 }
@@ -82,7 +83,7 @@ impl From<crate::signatory::SignatoryKeySet> for KeySet {
                     .collect(),
             }),
             final_expiry: keyset.final_expiry,
-            version: Default::default(),
+            version: keyset.version,
         }
     }
 }
@@ -335,6 +336,7 @@ impl From<crate::signatory::RotateKeyArguments> for RotationRequest {
             unit: Some(value.unit.into()),
             amounts: value.amounts,
             input_fee_ppk: value.input_fee_ppk,
+            final_expiry: value.final_expiry,
         }
     }
 }
@@ -350,6 +352,7 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
                 .try_into()?,
             amounts: self.amounts,
             input_fee_ppk: self.input_fee_ppk,
+            final_expiry: self.final_expiry,
         })
     }
 }
