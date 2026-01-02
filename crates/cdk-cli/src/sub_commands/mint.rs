@@ -74,7 +74,9 @@ pub async fn mint(
                 let amount = sub_command_args.amount;
                 println!(
                     "Single use: {}",
-                    sub_command_args.single_use.map_or("none".to_string(), |b| b.to_string())
+                    sub_command_args
+                        .single_use
+                        .map_or("none".to_string(), |b| b.to_string())
                 );
                 let quote = wallet
                     .mint_bolt12_quote(amount.map(|a| a.into()), description)
