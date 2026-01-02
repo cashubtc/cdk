@@ -625,18 +625,16 @@ impl CdkMintManagement for MintRPCServer {
         // Spawn task to send chunks
         let data = backup_result.data;
         tokio::spawn(async move {
-            let total_chunks = (data.len() + BACKUP_CHUNK_SIZE - 1) / BACKUP_CHUNK_SIZE;
+            let total_chunks = data.len().div_ceil(BACKUP_CHUNK_SIZE);
 
             for (i, chunk_data) in data.chunks(BACKUP_CHUNK_SIZE).enumerate() {
                 let chunk = BackupChunk {
                     sequence: i as u64,
                     data: chunk_data.to_vec(),
-                    // Include metadata only in first chunk
                     metadata: if i == 0 { Some(metadata.clone()) } else { None },
                 };
 
                 if tx.send(Ok(chunk)).await.is_err() {
-                    // Receiver dropped, stop sending
                     tracing::warn!(
                         "Backup stream receiver dropped at chunk {}/{}",
                         i + 1,

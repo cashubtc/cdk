@@ -3444,10 +3444,6 @@ fn sql_row_to_operation_record(row: Vec<Column>) -> Result<OperationRecord, Erro
     })
 }
 
-// ============================================================================
-// Backup Database Implementation
-// ============================================================================
-
 #[async_trait]
 impl<RM> BackupDatabase for SQLMintDatabase<RM>
 where
@@ -3460,7 +3456,6 @@ where
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let engine = RM::Connection::name().to_string();
 
-        // Validate format is compatible with engine
         if format == BackupFormat::Sqlite && engine != "sqlite" {
             return Err(Error::Internal(
                 "SQLite backup format is only supported for SQLite databases".to_string(),
@@ -3484,10 +3479,6 @@ where
     }
 }
 
-// ============================================================================
-// Backup helper functions
-// ============================================================================
-
 /// Create a SQLite backup using VACUUM INTO for a consistent snapshot.
 ///
 /// # Arguments
@@ -3504,10 +3495,10 @@ async fn create_sqlite_backup<C: DatabaseExecutor>(conn: &C) -> Result<Vec<u8>, 
         .await?;
 
     let backup_data = std::fs::read(&temp_path).map_err(|e| {
-        Error::Database(Box::new(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Failed to read backup file: {}", e),
-        )))
+        Error::Database(Box::new(std::io::Error::other(format!(
+            "Failed to read backup file: {}",
+            e
+        ))))
     })?;
 
     // Best-effort cleanup
