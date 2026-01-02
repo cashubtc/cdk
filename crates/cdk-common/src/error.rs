@@ -626,6 +626,11 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::InvoiceAlreadyPaid,
                 detail: err.to_string(),
             },
+            // Database duplicate error indicates another quote with same invoice is already pending/paid
+            Error::Database(crate::database::Error::Duplicate) => ErrorResponse {
+                code: ErrorCode::InvoiceAlreadyPaid,
+                detail: "Invoice already paid or pending".to_string(),
+            },
             // Fallback: use TokenNotVerified (10001) for unhandled errors
             // as it's the most generic verification failure code in the spec
             _ => ErrorResponse {
