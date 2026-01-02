@@ -34,6 +34,16 @@ pub struct WalletBuilder {
     metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
 }
 
+impl std::fmt::Debug for WalletBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalletBuilder")
+            .field("mint_url", &self.mint_url)
+            .field("unit", &self.unit)
+            .field("target_proof_count", &self.target_proof_count)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for WalletBuilder {
     fn default() -> Self {
         Self {

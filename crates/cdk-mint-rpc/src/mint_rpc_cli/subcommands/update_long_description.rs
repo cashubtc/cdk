@@ -10,7 +10,7 @@ use crate::UpdateDescriptionRequest;
 ///
 /// This command sets a new long description for the mint, which provides detailed
 /// information about the mint's purpose, operation, and policies.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct UpdateLongDescriptionCommand {
     /// The new long description text for the mint
     description: String,

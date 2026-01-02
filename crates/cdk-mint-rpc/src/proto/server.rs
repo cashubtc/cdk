@@ -42,6 +42,7 @@ pub enum Error {
 
 /// CDK Mint RPC Server
 #[derive(Clone)]
+#[allow(missing_debug_implementations)]
 pub struct MintRPCServer {
     socket_addr: SocketAddr,
     mint: Arc<Mint>,

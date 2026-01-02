@@ -320,7 +320,7 @@ impl SecondaryRepaymentQueue {
 }
 
 /// Fake Wallet
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FakeWallet {
     fee_reserve: FeeReserve,
     sender: tokio::sync::mpsc::Sender<WaitPaymentResponse>,

@@ -11,7 +11,7 @@ use crate::UpdateDescriptionRequest;
 /// This command sets a new short description for the mint, which provides a brief
 /// summary of the mint's purpose or characteristics. The short description is typically
 /// displayed in wallets and client interfaces.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct UpdateShortDescriptionCommand {
     /// The new short description text for the mint
     description: String,

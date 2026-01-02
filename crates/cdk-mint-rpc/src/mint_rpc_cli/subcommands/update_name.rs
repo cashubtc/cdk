@@ -10,7 +10,7 @@ use crate::UpdateNameRequest;
 ///
 /// This command sets a new display name for the mint, which is used to identify
 /// the mint in wallet applications and other client interfaces.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct UpdateNameCommand {
     /// The new name for the mint
     name: String,

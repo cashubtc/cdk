@@ -188,6 +188,14 @@ pub struct MultiMintWallet {
     shared_tor_transport: Option<TorAsync>,
 }
 
+impl std::fmt::Debug for MultiMintWallet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultiMintWallet")
+            .field("unit", &self.unit)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MultiMintWallet {
     /// Create a new [MultiMintWallet] for a specific currency unit
     pub async fn new(

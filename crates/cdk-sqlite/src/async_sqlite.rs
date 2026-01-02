@@ -69,6 +69,7 @@ fn to_sqlite_error(err: SqliteError) -> Error {
 }
 
 /// SQLite trasanction handler
+#[allow(missing_debug_implementations)]
 pub struct SQLiteTransactionHandler;
 
 #[async_trait::async_trait]
