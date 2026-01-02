@@ -888,11 +888,6 @@ impl Mint {
     }
 
     /// Restore
-    ///
-    /// # Panics
-    ///
-    /// Panics if the number of blinded signatures returned from the database does not match
-    /// the number of outputs in the request.
     #[instrument(skip_all)]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         #[cfg(feature = "prometheus")]
@@ -912,7 +907,9 @@ impl Mint {
                 .get_blind_signatures(&blinded_message)
                 .await?;
 
-            assert_eq!(blinded_signatures.len(), output_len);
+            if blinded_signatures.len() != output_len {
+                return Err(Error::Internal);
+            }
 
             for (blinded_message, blinded_signature) in
                 request.outputs.into_iter().zip(blinded_signatures)

@@ -340,11 +340,6 @@ impl AuthWallet {
     }
 
     /// Mint blind auth
-    ///
-    /// # Panics
-    ///
-    /// Panics if the number of signatures returned by the mint does not match
-    /// the number of secrets sent in the request.
     #[instrument(skip(self))]
     pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, Error> {
         tracing::debug!("Minting {} blind auth proofs", amount);
@@ -421,7 +416,13 @@ impl AuthWallet {
 
         // Verify the signature DLEQ is valid
         {
-            assert!(mint_res.signatures.len() == premint_secrets.secrets.len());
+            if mint_res.signatures.len() != premint_secrets.secrets.len() {
+                return Err(Error::InvalidMintResponse(format!(
+                    "mint auth signatures ({}) does not match secrets sent ({})",
+                    mint_res.signatures.len(),
+                    premint_secrets.secrets.len()
+                )));
+            }
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
                 let keys = self.load_keyset_keys(sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;

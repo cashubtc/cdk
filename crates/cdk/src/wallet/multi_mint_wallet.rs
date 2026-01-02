@@ -993,7 +993,7 @@ impl MultiMintWallet {
             .subscribe(super::WalletSubscription::Bolt11MintQuoteState(vec![
                 final_mint_quote.id.clone(),
             ]))
-            .await;
+            .await?;
 
         // Step 2: Melt from source wallet using the final melt quote
         let melted = source_wallet.melt(&final_melt_quote.id).await?;

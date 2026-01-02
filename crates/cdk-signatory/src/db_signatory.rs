@@ -38,7 +38,7 @@ impl DbSignatory {
     ///
     /// # Panics
     ///
-    /// Panics if the seed is invalid and cannot be used to create a master key.
+    /// Panics if the seed produces an invalid master key (should never happen with valid entropy).
     pub async fn new(
         localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
         seed: &[u8],
