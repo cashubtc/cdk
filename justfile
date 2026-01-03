@@ -254,13 +254,28 @@ clippy *ARGS="--workspace --all-targets":
 clippy-fix *ARGS="--workspace --all-targets":
   cargo clippy {{ARGS}} --fix
 
-typos: 
+typos:
   typos
 
 # fix all typos
 [no-exit-message]
 typos-fix:
   just typos -w
+
+# run all linting checks (format check, typos, nix format)
+lint:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  echo "Checking Rust formatting..."
+  cargo fmt --all -- --check
+  echo "Checking Nix formatting..."
+  nixpkgs-fmt --check $(echo **.nix)
+  echo "Checking for typos..."
+  typos
+  echo "All checks passed!"
 
 # Goose AI Recipe Commands
 

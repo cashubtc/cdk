@@ -41,6 +41,18 @@ pub struct MeltRequestInfo {
     pub change_outputs: Vec<BlindedMessage>,
 }
 
+/// Result of locking a melt quote and all related quotes atomically.
+///
+/// This struct is returned by [`QuotesTransaction::lock_melt_quote_and_related`]
+/// and contains both the target quote and all quotes sharing the same `request_lookup_id`.
+#[derive(Debug)]
+pub struct LockedMeltQuotes {
+    /// The target quote that was requested, if found
+    pub target: Option<Acquired<MeltQuote>>,
+    /// All quotes sharing the same `request_lookup_id` (including the target)
+    pub all_related: Vec<Acquired<MeltQuote>>,
+}
+
 /// KeysDatabaseWriter
 #[async_trait]
 pub trait KeysDatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
@@ -176,6 +188,36 @@ pub trait QuotesTransaction {
         &mut self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Vec<Acquired<MeltQuote>>, Self::Err>;
+
+    /// Locks a melt quote and all related quotes sharing the same request_lookup_id atomically.
+    ///
+    /// This method prevents deadlocks by acquiring all locks in a single query with consistent
+    /// ordering, rather than locking the target quote first and then related quotes separately.
+    ///
+    /// # Deadlock Prevention
+    ///
+    /// When multiple transactions try to melt quotes sharing the same `request_lookup_id`,
+    /// acquiring locks in two steps (first the target quote, then all related quotes) can cause
+    /// circular wait deadlocks. This method avoids that by:
+    /// 1. Using a subquery to find the `request_lookup_id` for the target quote
+    /// 2. Locking ALL quotes with that `request_lookup_id` in one atomic operation
+    /// 3. Ordering locks consistently by quote ID
+    ///
+    /// # Arguments
+    ///
+    /// * `quote_id` - The ID of the target melt quote
+    ///
+    /// # Returns
+    ///
+    /// A [`LockedMeltQuotes`] containing:
+    /// - `target`: The target quote (if found)
+    /// - `all_related`: All quotes sharing the same `request_lookup_id` (including the target)
+    ///
+    /// If the quote has no `request_lookup_id`, only the target quote is returned and locked.
+    async fn lock_melt_quote_and_related(
+        &mut self,
+        quote_id: &QuoteId,
+    ) -> Result<LockedMeltQuotes, Self::Err>;
 
     /// Updates the request lookup id for a melt quote.
     ///

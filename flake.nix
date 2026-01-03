@@ -22,8 +22,6 @@
     crane = {
       url = "github:ipetkov/crane";
     };
-
-    pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
   };
 
   outputs =
@@ -31,7 +29,6 @@
     , nixpkgs
     , rust-overlay
     , flake-utils
-    , pre-commit-hooks
     , crane
     , ...
     }@inputs:
@@ -532,48 +529,10 @@
 
             # FFI Python tests
             ffi-tests = ffiTests;
-
-            # Pre-commit checks
-            pre-commit-check =
-              let
-                # this is a hack based on https://github.com/cachix/pre-commit-hooks.nix/issues/126
-                # we want to use our own rust stuff from oxalica's overlay
-                _rust = pkgs.rust-bin.stable.latest.default;
-                rust = pkgs.buildEnv {
-                  name = _rust.name;
-                  inherit (_rust) meta;
-                  buildInputs = [ pkgs.makeWrapper ];
-                  paths = [ _rust ];
-                  pathsToLink = [
-                    "/"
-                    "/bin"
-                  ];
-                  postBuild = ''
-                    for i in $out/bin/*; do
-                      wrapProgram "$i" --prefix PATH : "$out/bin"
-                    done
-                  '';
-                };
-              in
-              pre-commit-hooks.lib.${system}.run {
-                src = ./.;
-                hooks = {
-                  rustfmt = {
-                    enable = true;
-                    entry = lib.mkForce "${rust}/bin/cargo-fmt fmt --all -- --config format_code_in_doc_comments=true --check --color always";
-                  };
-                  nixpkgs-fmt.enable = true;
-                  typos.enable = true;
-                  commitizen.enable = true; # conventional commits
-                };
-              };
           };
 
         devShells =
           let
-            # pre-commit-checks
-            _shellHook = (self.checks.${system}.pre-commit-check.shellHook or "");
-
             # devShells
             msrv = pkgs.mkShell (
               {
@@ -581,7 +540,6 @@
                   cargo update
                   cargo update home --precise 0.5.11
                   cargo update typed-index-collections --precise 3.3.0
-              ${_shellHook}
               ";
                 buildInputs = buildInputs ++ [ msrv_toolchain ];
                 inherit nativeBuildInputs;
@@ -592,7 +550,6 @@
             stable = pkgs.mkShell (
               {
                 shellHook = ''
-                  ${_shellHook}
                   # Needed for github ci
                   export LD_LIBRARY_PATH=${
                     pkgs.lib.makeLibraryPath [
@@ -628,15 +585,32 @@
             nightly = pkgs.mkShell (
               {
                 shellHook = ''
-                  ${_shellHook}
                   # Needed for github ci
                   export LD_LIBRARY_PATH=${
                     pkgs.lib.makeLibraryPath [
                       pkgs.zlib
                     ]
                   }:$LD_LIBRARY_PATH
+
+                  # PostgreSQL environment variables
+                  export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
+
+                  echo ""
+                  echo "PostgreSQL commands available:"
+                  echo "  start-postgres  - Initialize and start PostgreSQL"
+                  echo "  stop-postgres   - Stop PostgreSQL (run before exiting)"
+                  echo "  pg-status       - Check PostgreSQL status"
+                  echo "  pg-connect      - Connect to PostgreSQL with psql"
+                  echo ""
                 '';
-                buildInputs = buildInputs ++ [ nightly_toolchain ];
+                buildInputs = buildInputs ++ [
+                  nightly_toolchain
+                  pkgs.postgresql_16
+                  startPostgres
+                  stopPostgres
+                  pgStatus
+                  pgConnect
+                ];
                 inherit nativeBuildInputs;
               }
               // envVars
@@ -646,7 +620,6 @@
             integration = pkgs.mkShell (
               {
                 shellHook = ''
-                  ${_shellHook}
                   # Ensure Docker is available
                   if ! command -v docker &> /dev/null; then
                     echo "Docker is not installed or not in PATH"
@@ -670,7 +643,6 @@
             ffi = pkgs.mkShell (
               {
                 shellHook = ''
-                  ${_shellHook}
                   echo "FFI development shell"
                   echo "  just ffi-test        - Run Python FFI tests"
                   echo "  just ffi-dev-python  - Launch Python REPL with CDK FFI"
