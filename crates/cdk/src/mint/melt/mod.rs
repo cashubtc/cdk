@@ -77,7 +77,7 @@ impl Mint {
                 amount
             }
             Some(MeltOptions::Amountless { amountless: _ }) => {
-                if method == "bolt11"
+                if method.is_bolt11()
                     && !matches!(
                         settings.options,
                         Some(MeltMethodOptions::Bolt11 { amountless: true })

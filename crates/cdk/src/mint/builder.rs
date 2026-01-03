@@ -249,10 +249,9 @@ impl MintBuilder {
         };
 
         let settings = payment_processor.get_settings().await?;
-        let method_str = method.to_string();
 
         // Handle bolt11 methods
-        if method_str == "bolt11" {
+        if method.is_bolt11() {
             if let Some(ref bolt11_settings) = settings.bolt11 {
                 // Add MPP support if available
                 if bolt11_settings.mpp {
@@ -294,7 +293,7 @@ impl MintBuilder {
             }
         }
         // Handle bolt12 methods
-        else if method_str == "bolt12" {
+        else if method.is_bolt12() {
             if settings.bolt12.is_some() {
                 // Add to NUT04 (mint) - bolt12 doesn't have specific options yet
                 let mint_method_settings = MintMethodSettings {
@@ -322,7 +321,7 @@ impl MintBuilder {
         // Handle custom methods
         else {
             // Check if this custom method is supported by the payment processor
-            if settings.custom.contains_key(&method_str) {
+            if settings.custom.contains_key(method.as_str()) {
                 // Add to NUT04 (mint)
                 let mint_method_settings = MintMethodSettings {
                     method: method.clone(),

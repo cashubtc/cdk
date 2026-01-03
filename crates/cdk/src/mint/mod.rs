@@ -759,7 +759,7 @@ impl Mint {
             .payment_ids()
             .contains(&&wait_payment_response.payment_id)
         {
-            if mint_quote.payment_method == "bolt11"
+            if mint_quote.payment_method.is_bolt11()
                 && (quote_state == MintQuoteState::Issued || quote_state == MintQuoteState::Paid)
             {
                 tracing::info!("Received payment notification for already issued quote.");

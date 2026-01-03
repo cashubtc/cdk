@@ -145,10 +145,10 @@ impl TryFrom<MintQuote> for MintQuoteResponse {
     type Error = Error;
 
     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
-        if quote.payment_method == "bolt11" {
+        if quote.payment_method.is_bolt11() {
             let bolt11_response: MintQuoteBolt11Response<QuoteId> = quote.into();
             Ok(MintQuoteResponse::Bolt11(bolt11_response))
-        } else if quote.payment_method == "bolt12" {
+        } else if quote.payment_method.is_bolt12() {
             let bolt12_response = MintQuoteBolt12Response::try_from(quote)?;
             Ok(MintQuoteResponse::Bolt12(bolt12_response))
         } else {
@@ -367,18 +367,14 @@ impl Mint {
             tx.add_mint_quote(quote.clone()).await?;
             tx.commit().await?;
 
-            match payment_method.as_str() {
-                "bolt11" => {
-                    let res: MintQuoteBolt11Response<QuoteId> = quote.clone().into();
-                    self.pubsub_manager
-                        .publish(NotificationPayload::MintQuoteBolt11Response(res));
-                }
-                "bolt12" => {
-                    let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
-                    self.pubsub_manager
-                        .publish(NotificationPayload::MintQuoteBolt12Response(res));
-                }
-                _ => {}
+            if payment_method.is_bolt11() {
+                let res: MintQuoteBolt11Response<QuoteId> = quote.clone().into();
+                self.pubsub_manager
+                    .publish(NotificationPayload::MintQuoteBolt11Response(res));
+            } else if payment_method.is_bolt12() {
+                let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
+                self.pubsub_manager
+                    .publish(NotificationPayload::MintQuoteBolt12Response(res));
             }
 
             quote.try_into()
@@ -620,7 +616,7 @@ impl Mint {
                 return Err(Error::UnpaidQuote);
             }
             MintQuoteState::Issued => {
-                if mint_quote.payment_method == "bolt12"
+                if mint_quote.payment_method.is_bolt12()
                     && mint_quote.amount_paid() > mint_quote.amount_issued()
                 {
                     tracing::warn!("Mint quote should state should have been set to issued upon new payment. Something isn't right. Stopping mint");
@@ -631,37 +627,33 @@ impl Mint {
             MintQuoteState::Paid => (),
         }
 
-        if mint_quote.payment_method == "bolt12" && mint_quote.pubkey.is_none() {
+        if mint_quote.payment_method.is_bolt12() && mint_quote.pubkey.is_none() {
             tracing::warn!("Bolt12 mint quote created without pubkey");
             return Err(Error::SignatureMissingOrInvalid);
         }
 
-        let mint_amount = match mint_quote.payment_method.as_str() {
-            "bolt11" => {
-                let quote_amount = mint_quote.amount.ok_or(Error::AmountUndefined)?;
+        let mint_amount = if mint_quote.payment_method.is_bolt11() {
+            let quote_amount = mint_quote.amount.ok_or(Error::AmountUndefined)?;
 
-                if quote_amount != mint_quote.amount_mintable() {
-                    tracing::error!("The quote amount {} does not equal the amount paid {}.", quote_amount, mint_quote.amount_mintable());
-                    return Err(Error::IncorrectQuoteAmount);
-                }
-
-                quote_amount
-            },
-            "bolt12" => {
-                if mint_quote.amount_mintable() == Amount::ZERO{
-                    tracing::error!(
-                            "Quote state should not be issued if issued {} is => paid {}.",
-                            mint_quote.amount_issued(),
-                            mint_quote.amount_paid()
-                        );
-                    return Err(Error::UnpaidQuote);
-                }
-
-                mint_quote.amount_mintable()
+            if quote_amount != mint_quote.amount_mintable() {
+                tracing::error!("The quote amount {} does not equal the amount paid {}.", quote_amount, mint_quote.amount_mintable());
+                return Err(Error::IncorrectQuoteAmount);
             }
-            _ => {
-                mint_quote.amount_mintable()
+
+            quote_amount
+        } else if mint_quote.payment_method.is_bolt12() {
+            if mint_quote.amount_mintable() == Amount::ZERO{
+                tracing::error!(
+                        "Quote state should not be issued if issued {} is => paid {}.",
+                        mint_quote.amount_issued(),
+                        mint_quote.amount_paid()
+                    );
+                return Err(Error::UnpaidQuote);
             }
+
+            mint_quote.amount_mintable()
+        } else {
+            mint_quote.amount_mintable()
         };
 
         // If the there is a public key provoided in mint quote request
@@ -682,7 +674,7 @@ impl Mint {
             }
         };
 
-        if mint_quote.payment_method == "bolt11" {
+        if mint_quote.payment_method.is_bolt11() {
             // For bolt11 we enforce that mint amount == quote amount
             if outputs_amount != mint_amount {
                 return Err(Error::TransactionUnbalanced(
