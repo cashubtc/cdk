@@ -374,7 +374,7 @@ where
         .fetch_all(&self.inner)
         .await?;
 
-        if rows.is_empty() {
+        if rows.is_empty() || rows.len() != ys.len() {
             return Err(database::Error::ProofNotFound);
         }
 
