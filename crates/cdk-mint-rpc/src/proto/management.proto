@@ -1,14 +1,14 @@
 syntax = "proto3";
 
-package cdk_mint_rpc;
+package cdk_mint_management_rpc;
 
-service CdkMint {
-    rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {}
+service CdkMintManagement {
     rpc UpdateMotd(UpdateMotdRequest) returns (UpdateResponse) {}
     rpc UpdateShortDescription(UpdateDescriptionRequest) returns (UpdateResponse) {}
     rpc UpdateLongDescription(UpdateDescriptionRequest) returns (UpdateResponse) {}
     rpc UpdateIconUrl(UpdateIconUrlRequest) returns (UpdateResponse) {}
     rpc UpdateName(UpdateNameRequest) returns (UpdateResponse) {}
+    rpc UpdateTosUrl(UpdateTosUrlRequest) returns (UpdateResponse) {}
     rpc AddUrl(UpdateUrlRequest) returns (UpdateResponse) {}
     rpc RemoveUrl(UpdateUrlRequest) returns (UpdateResponse) {}
     rpc AddContact(UpdateContactRequest) returns (UpdateResponse) {}
@@ -19,27 +19,12 @@ service CdkMint {
     rpc GetQuoteTtl(GetQuoteTtlRequest) returns (GetQuoteTtlResponse) {}
     rpc UpdateNut04Quote(UpdateNut04QuoteRequest) returns (UpdateNut04QuoteRequest) {}
     rpc RotateNextKeyset(RotateNextKeysetRequest) returns (RotateNextKeysetResponse) {}
+    rpc CreateBackup(CreateBackupRequest) returns (stream BackupChunk) {}
 }
 
-message GetInfoRequest {
-}
-
-message ContactInfo {
-    string method = 1;
-    string info = 2;
-}
-
-message GetInfoResponse {
-    optional string name = 1;
-    optional string version = 2;
-    optional string description = 3;
-    optional string long_description = 4;
-    repeated ContactInfo contact = 5;
-    optional string motd = 6;
-    optional string icon_url = 7;
-    repeated string urls = 8;
-    uint64 total_issued = 9;
-    uint64 total_redeemed = 10;
+enum BackupFormat {
+    BACKUP_FORMAT_SQLITE = 0;
+    BACKUP_FORMAT_SQL = 1;
 }
 
 message UpdateResponse{
@@ -60,6 +45,10 @@ message UpdateIconUrlRequest {
 
 message UpdateNameRequest {
     string name = 1;
+}
+
+message UpdateTosUrlRequest {
+    string tos_url = 1;
 }
 
 
@@ -132,4 +121,22 @@ message RotateNextKeysetResponse {
     string unit = 2;
     repeated uint64 amounts = 3;
     uint64 input_fee_ppk = 4;
+}
+
+message CreateBackupRequest {
+    BackupFormat format = 1;
+}
+
+message BackupChunk {
+    uint64 sequence = 1;
+    bytes data = 2;
+    optional BackupMetadata metadata = 3;
+}
+
+message BackupMetadata {
+    string database_engine = 1;
+    uint64 total_size_bytes = 2;
+    string checksum = 3;
+    uint64 created_at = 4;
+    string format = 5;
 }

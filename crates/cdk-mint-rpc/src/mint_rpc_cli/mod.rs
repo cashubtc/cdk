@@ -4,3 +4,6 @@
 
 /// Subcommands for cli
 pub mod subcommands;
+
+/// Utility functions for CLI operations
+pub mod utils;

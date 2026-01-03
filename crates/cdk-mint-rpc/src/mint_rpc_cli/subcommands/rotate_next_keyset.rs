@@ -3,7 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cdk_mint_client::CdkMintClient;
+use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::RotateNextKeysetRequest;
 
 /// Command to rotate to the next keyset for the mint
@@ -33,7 +33,7 @@ pub struct RotateNextKeysetCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The arguments specifying how the new keyset should be configured
 pub async fn rotate_next_keyset(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut CdkMintManagementClient<Channel>,
     sub_command_args: &RotateNextKeysetCommand,
 ) -> Result<()> {
     let amounts = if let Some(amounts_str) = &sub_command_args.amounts {

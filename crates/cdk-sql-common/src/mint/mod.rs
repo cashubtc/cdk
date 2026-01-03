@@ -16,8 +16,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::mint::{
-    CompletedOperationsDatabase, CompletedOperationsTransaction, LockedMeltQuotes, SagaDatabase,
-    SagaTransaction,
+    BackupDatabase, BackupFormat, BackupResult, BlindSignatureFilter, BlindSignatureListResult,
+    BlindSignatureRecord, CompletedOperationsDatabase, CompletedOperationsTransaction,
+    LockedMeltQuotes, MeltQuoteFilter, MeltQuoteListResult, MintQuoteFilter, MintQuoteListResult,
+    OperationFilter, OperationListResult, OperationRecord, ProofFilter, ProofListResult,
+    ProofRecord, SagaDatabase, SagaTransaction,
 };
 use cdk_common::database::{
     self, Acquired, ConversionError, DbTransactionFinalizer, Error, MintDatabase,
@@ -36,7 +39,7 @@ use cdk_common::state::check_melt_quote_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, MeltQuoteState,
-    PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
+    MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
 };
 use lightning_invoice::Bolt11Invoice;
 use migrations::MIGRATIONS;
@@ -45,7 +48,7 @@ use tracing::instrument;
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::{DatabasePool, Pool, PooledResource};
-use crate::stmt::{query, Column};
+use crate::stmt::{query, Column, Statement};
 use crate::{
     column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
     unpack_into,
@@ -1480,6 +1483,75 @@ where
         Ok(mint_quotes)
     }
 
+    async fn list_mint_quotes_filtered(
+        &self,
+        filter: MintQuoteFilter,
+    ) -> Result<MintQuoteListResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        // Build dynamic WHERE clauses
+        let mut where_clauses: Vec<String> = Vec::new();
+
+        if filter.creation_date_start.is_some() {
+            where_clauses.push("created_time >= :creation_date_start".into());
+        }
+        if filter.creation_date_end.is_some() {
+            where_clauses.push("created_time <= :creation_date_end".into());
+        }
+        if !filter.units.is_empty() {
+            where_clauses.push("unit IN (:units)".into());
+        }
+
+        // State filter - computed from amount_paid and amount_issued (mint-quote specific)
+        if !filter.states.is_empty() {
+            let state_conditions: Vec<&str> = filter
+                .states
+                .iter()
+                .map(|state| match state {
+                    MintQuoteState::Unpaid => "(amount_paid = 0 AND amount_issued = 0)",
+                    MintQuoteState::Paid => "(amount_paid > amount_issued)",
+                    MintQuoteState::Issued => {
+                        "(amount_paid <= amount_issued AND NOT (amount_paid = 0 AND amount_issued = 0))"
+                    }
+                })
+                .collect();
+            where_clauses.push(format!("({})", state_conditions.join(" OR ")));
+        }
+
+        let where_clause = build_where_clause(&where_clauses);
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
+
+        let query_str = format!(
+            r#"
+            SELECT id, amount, unit, request, expiry, request_lookup_id,
+                   pubkey, created_time, amount_paid, amount_issued,
+                   payment_method, request_lookup_id_kind
+            FROM mint_quote
+            {where_clause}
+            ORDER BY created_time {order}
+            {limit_clause}
+            "#,
+            where_clause = where_clause,
+            order = order_direction(filter.reversed),
+            limit_clause = limit_clause,
+        );
+
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_units(stmt, &filter.units);
+
+        let mut quotes = stmt
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let has_more = apply_pagination_peek_ahead(&mut quotes, requested_limit);
+
+        Ok(MintQuoteListResult { quotes, has_more })
+    }
+
     async fn get_melt_quote(
         &self,
         quote_id: &QuoteId,
@@ -1537,6 +1609,70 @@ where
         .into_iter()
         .map(sql_row_to_melt_quote)
         .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn list_melt_quotes_filtered(
+        &self,
+        filter: MeltQuoteFilter,
+    ) -> Result<MeltQuoteListResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        // Build dynamic WHERE clauses
+        let mut where_clauses: Vec<String> = Vec::new();
+
+        if filter.creation_date_start.is_some() {
+            where_clauses.push("created_time >= :creation_date_start".into());
+        }
+        if filter.creation_date_end.is_some() {
+            where_clauses.push("created_time <= :creation_date_end".into());
+        }
+        if !filter.units.is_empty() {
+            where_clauses.push("unit IN (:units)".into());
+        }
+        if !filter.states.is_empty() {
+            where_clauses.push("state IN (:states)".into());
+        }
+
+        let where_clause = build_where_clause(&where_clauses);
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
+
+        let query_str = format!(
+            r#"
+            SELECT id, unit, amount, request, fee_reserve, expiry, state,
+                   payment_preimage, request_lookup_id, created_time, paid_time,
+                   payment_method, options, request_lookup_id_kind
+            FROM melt_quote
+            {where_clause}
+            ORDER BY created_time {order}
+            {limit_clause}
+            "#,
+            where_clause = where_clause,
+            order = order_direction(filter.reversed),
+            limit_clause = limit_clause,
+        );
+
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_units(stmt, &filter.units);
+        let stmt = if !filter.states.is_empty() {
+            stmt.bind_vec(
+                "states",
+                filter.states.iter().map(|s| s.to_string()).collect(),
+            )
+        } else {
+            stmt
+        };
+
+        let mut quotes = stmt
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(sql_row_to_melt_quote)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let has_more = apply_pagination_peek_ahead(&mut quotes, requested_limit);
+
+        Ok(MeltQuoteListResult { quotes, has_more })
     }
 }
 
@@ -1667,6 +1803,25 @@ where
         .collect()
     }
 
+    /// Get total fees collected by keyset id
+    async fn get_total_fees_collected(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                keyset_id,
+                fee_collected as amount
+            FROM
+                keyset_amounts
+        "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_hashmap_amount)
+        .collect()
+    }
+
     async fn get_proof_ys_by_operation_id(
         &self,
         operation_id: &uuid::Uuid,
@@ -1694,6 +1849,85 @@ where
             ))
         })
         .collect::<Result<Vec<_>, _>>()
+    }
+
+    async fn list_proofs_filtered(
+        &self,
+        filter: ProofFilter,
+    ) -> Result<ProofListResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        // Build dynamic WHERE clauses
+        let mut where_clauses: Vec<String> = Vec::new();
+        let needs_keyset_join = !filter.units.is_empty();
+
+        if filter.creation_date_start.is_some() {
+            where_clauses.push("p.created_time >= :creation_date_start".into());
+        }
+        if filter.creation_date_end.is_some() {
+            where_clauses.push("p.created_time <= :creation_date_end".into());
+        }
+        if !filter.states.is_empty() {
+            where_clauses.push("p.state IN (:states)".into());
+        }
+        if !filter.keyset_ids.is_empty() {
+            where_clauses.push("p.keyset_id IN (:keyset_ids)".into());
+        }
+        if !filter.units.is_empty() {
+            where_clauses.push("k.unit IN (:units)".into());
+        }
+        if !filter.operations.is_empty() {
+            where_clauses.push("p.operation_kind IN (:operations)".into());
+        }
+
+        let where_clause = build_where_clause(&where_clauses);
+        let join_clause = if needs_keyset_join {
+            "JOIN keyset k ON p.keyset_id = k.id"
+        } else {
+            ""
+        };
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
+
+        let query_str = format!(
+            r#"
+            SELECT p.amount, p.keyset_id, p.state, p.quote_id, p.created_time,
+                   p.operation_kind, p.operation_id
+            FROM proof p
+            {join_clause}
+            {where_clause}
+            ORDER BY p.created_time {order}
+            {limit_clause}
+            "#,
+            join_clause = join_clause,
+            where_clause = where_clause,
+            order = order_direction(filter.reversed),
+            limit_clause = limit_clause,
+        );
+
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_units(stmt, &filter.units);
+        let stmt = bind_keyset_ids(stmt, &filter.keyset_ids);
+        let stmt = bind_operations(stmt, &filter.operations);
+        let stmt = if !filter.states.is_empty() {
+            stmt.bind_vec(
+                "states",
+                filter.states.iter().map(|s| s.to_string()).collect(),
+            )
+        } else {
+            stmt
+        };
+
+        let mut proofs = stmt
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(sql_row_to_proof_record)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let has_more = apply_pagination_peek_ahead(&mut proofs, requested_limit);
+
+        Ok(ProofListResult { proofs, has_more })
     }
 }
 
@@ -2057,6 +2291,77 @@ where
             ))
         })
         .collect::<Result<Vec<_>, _>>()
+    }
+
+    async fn list_blind_signatures_filtered(
+        &self,
+        filter: BlindSignatureFilter,
+    ) -> Result<BlindSignatureListResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        // Build dynamic WHERE clauses
+        let mut where_clauses: Vec<String> = Vec::new();
+        let needs_keyset_join = !filter.units.is_empty();
+
+        if filter.creation_date_start.is_some() {
+            where_clauses.push("bs.created_time >= :creation_date_start".into());
+        }
+        if filter.creation_date_end.is_some() {
+            where_clauses.push("bs.created_time <= :creation_date_end".into());
+        }
+        if !filter.keyset_ids.is_empty() {
+            where_clauses.push("bs.keyset_id IN (:keyset_ids)".into());
+        }
+        if !filter.units.is_empty() {
+            where_clauses.push("k.unit IN (:units)".into());
+        }
+        if !filter.operations.is_empty() {
+            where_clauses.push("bs.operation_kind IN (:operations)".into());
+        }
+
+        let where_clause = build_where_clause(&where_clauses);
+        let join_clause = if needs_keyset_join {
+            "JOIN keyset k ON bs.keyset_id = k.id"
+        } else {
+            ""
+        };
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
+
+        let query_str = format!(
+            r#"
+            SELECT bs.amount, bs.keyset_id, bs.quote_id, bs.created_time,
+                   bs.signed_time, bs.operation_kind, bs.operation_id
+            FROM blind_signature bs
+            {join_clause}
+            {where_clause}
+            ORDER BY bs.created_time {order}
+            {limit_clause}
+            "#,
+            join_clause = join_clause,
+            where_clause = where_clause,
+            order = order_direction(filter.reversed),
+            limit_clause = limit_clause,
+        );
+
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_keyset_ids(stmt, &filter.keyset_ids);
+        let stmt = bind_units(stmt, &filter.units);
+        let stmt = bind_operations(stmt, &filter.operations);
+
+        let mut signatures = stmt
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(sql_row_to_blind_signature_record)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let has_more = apply_pagination_peek_ahead(&mut signatures, requested_limit);
+
+        Ok(BlindSignatureListResult {
+            signatures,
+            has_more,
+        })
     }
 }
 
@@ -2438,6 +2743,112 @@ where
         .map(sql_row_to_completed_operation)
         .collect::<Result<Vec<_>, _>>()?)
     }
+
+    async fn list_operations_filtered(
+        &self,
+        filter: OperationFilter,
+    ) -> Result<OperationListResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        // Build dynamic WHERE clauses
+        let mut where_clauses: Vec<String> = Vec::new();
+        let needs_unit_join = !filter.units.is_empty();
+
+        if filter.creation_date_start.is_some() {
+            where_clauses.push("co.completed_at >= :creation_date_start".into());
+        }
+        if filter.creation_date_end.is_some() {
+            where_clauses.push("co.completed_at <= :creation_date_end".into());
+        }
+        if !filter.operations.is_empty() {
+            where_clauses.push("co.operation_kind IN (:operations)".into());
+        }
+        if needs_unit_join {
+            where_clauses.push("ou.unit IN (:units)".into());
+        }
+
+        let where_clause = build_where_clause(&where_clauses);
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
+        let order = order_direction(filter.reversed);
+
+        // Different query strategies based on whether we need unit filtering
+        let query_str = if needs_unit_join {
+            // JOIN approach with CTE when filtering by unit
+            format!(
+                r#"
+                WITH operation_units AS (
+                    SELECT p.operation_id, k.unit
+                    FROM proof p
+                    JOIN keyset k ON p.keyset_id = k.id
+                    WHERE p.operation_id IS NOT NULL
+                    UNION
+                    SELECT bs.operation_id, k.unit
+                    FROM blind_signature bs
+                    JOIN keyset k ON bs.keyset_id = k.id
+                    WHERE bs.operation_id IS NOT NULL
+                )
+                SELECT co.operation_id, co.operation_kind, co.completed_at,
+                       co.total_issued, co.total_redeemed, co.fee_collected,
+                       co.payment_amount, co.payment_fee, co.payment_method,
+                       MIN(ou.unit) as unit
+                FROM completed_operations co
+                JOIN operation_units ou ON co.operation_id = ou.operation_id
+                {where_clause}
+                GROUP BY co.operation_id, co.operation_kind, co.completed_at,
+                         co.total_issued, co.total_redeemed, co.fee_collected,
+                         co.payment_amount, co.payment_fee, co.payment_method
+                ORDER BY co.completed_at {order}
+                {limit_clause}
+                "#,
+                where_clause = where_clause,
+                order = order,
+                limit_clause = limit_clause,
+            )
+        } else {
+            // Subquery approach when not filtering by unit (more efficient)
+            format!(
+                r#"
+                SELECT co.operation_id, co.operation_kind, co.completed_at,
+                       co.total_issued, co.total_redeemed, co.fee_collected,
+                       co.payment_amount, co.payment_fee, co.payment_method,
+                       COALESCE(
+                           (SELECT k.unit FROM proof p
+                            JOIN keyset k ON p.keyset_id = k.id
+                            WHERE p.operation_id = co.operation_id LIMIT 1),
+                           (SELECT k.unit FROM blind_signature bs
+                            JOIN keyset k ON bs.keyset_id = k.id
+                            WHERE bs.operation_id = co.operation_id LIMIT 1)
+                       ) as unit
+                FROM completed_operations co
+                {where_clause}
+                ORDER BY co.completed_at {order}
+                {limit_clause}
+                "#,
+                where_clause = where_clause,
+                order = order,
+                limit_clause = limit_clause,
+            )
+        };
+
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_operations(stmt, &filter.operations);
+        let stmt = bind_units(stmt, &filter.units);
+
+        let mut operations = stmt
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(sql_row_to_operation_record)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let has_more = apply_pagination_peek_ahead(&mut operations, requested_limit);
+
+        Ok(OperationListResult {
+            operations,
+            has_more,
+        })
+    }
 }
 
 #[async_trait]
@@ -2458,6 +2869,156 @@ where
         Ok(Box::new(tx))
     }
 }
+
+// ============================================================================
+// Query builder helpers for filtered list methods
+// ============================================================================
+
+/// Build pagination clause with peek-ahead for has_more detection.
+///
+/// Queries for limit+1 rows to determine if more results exist.
+///
+/// # Arguments
+/// * `limit` - maximum number of items to return
+/// * `offset` - number of items to skip
+///
+/// # Returns
+/// Tuple of SQL clause and requested limit for truncation
+fn build_pagination_clause(limit: Option<u64>, offset: u64) -> (String, Option<usize>) {
+    match limit {
+        Some(limit) => (
+            format!("LIMIT {} OFFSET {}", limit + 1, offset),
+            Some(limit as usize),
+        ),
+        None if offset > 0 => (format!("OFFSET {}", offset), None),
+        None => (String::new(), None),
+    }
+}
+
+/// Get ORDER BY direction string based on reversed flag.
+///
+/// # Arguments
+/// * `reversed` - if true, sort descending; otherwise ascending
+///
+/// # Returns
+/// "DESC" or "ASC"
+fn order_direction(reversed: bool) -> &'static str {
+    if reversed {
+        "DESC"
+    } else {
+        "ASC"
+    }
+}
+
+/// Apply peek-ahead truncation and return has_more flag.
+///
+/// If items exceed requested_limit, truncate and return true.
+///
+/// # Arguments
+/// * `items` - mutable reference to items vector
+/// * `requested_limit` - the original limit before peek-ahead
+///
+/// # Returns
+/// True if there are more items beyond the limit
+fn apply_pagination_peek_ahead<T>(items: &mut Vec<T>, requested_limit: Option<usize>) -> bool {
+    match requested_limit {
+        Some(limit) if items.len() > limit => {
+            items.truncate(limit);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Join WHERE clauses with AND, returning empty string if no clauses.
+///
+/// # Arguments
+/// * `clauses` - slice of WHERE clause strings
+///
+/// # Returns
+/// Complete WHERE clause or empty string
+fn build_where_clause(clauses: &[String]) -> String {
+    if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
+    }
+}
+
+/// Bind date range parameters to statement if present.
+///
+/// # Arguments
+/// * `stmt` - the SQL statement
+/// * `start` - optional start timestamp
+/// * `end` - optional end timestamp
+///
+/// # Returns
+/// Statement with bound parameters
+fn bind_date_range(stmt: Statement, start: Option<u64>, end: Option<u64>) -> Statement {
+    let stmt = match start {
+        Some(s) => stmt.bind("creation_date_start", s as i64),
+        None => stmt,
+    };
+    match end {
+        Some(e) => stmt.bind("creation_date_end", e as i64),
+        None => stmt,
+    }
+}
+
+/// Bind unit filter parameters to statement if present.
+///
+/// # Arguments
+/// * `stmt` - the SQL statement
+/// * `units` - slice of currency units to filter by
+///
+/// # Returns
+/// Statement with bound parameters
+fn bind_units(stmt: Statement, units: &[CurrencyUnit]) -> Statement {
+    if units.is_empty() {
+        stmt
+    } else {
+        stmt.bind_vec("units", units.iter().map(|u| u.to_string()).collect())
+    }
+}
+
+/// Bind keyset ID filter parameters to statement if present.
+///
+/// # Arguments
+/// * `stmt` - the SQL statement
+/// * `keyset_ids` - slice of keyset IDs to filter by
+///
+/// # Returns
+/// Statement with bound parameters
+fn bind_keyset_ids(stmt: Statement, keyset_ids: &[Id]) -> Statement {
+    if keyset_ids.is_empty() {
+        stmt
+    } else {
+        stmt.bind_vec(
+            "keyset_ids",
+            keyset_ids.iter().map(|id| id.to_string()).collect(),
+        )
+    }
+}
+
+/// Bind operation filter parameters to statement if present.
+///
+/// # Arguments
+/// * `stmt` - the SQL statement
+/// * `operations` - slice of operation kinds to filter by
+///
+/// # Returns
+/// Statement with bound parameters
+fn bind_operations(stmt: Statement, operations: &[String]) -> Statement {
+    if operations.is_empty() {
+        stmt
+    } else {
+        stmt.bind_vec("operations", operations.to_vec())
+    }
+}
+
+// ============================================================================
+// Row conversion helpers
+// ============================================================================
 
 fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo, Error> {
     unpack_into!(
@@ -2688,6 +3249,27 @@ fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, Option<State>
     ))
 }
 
+fn sql_row_to_proof_record(row: Vec<Column>) -> Result<ProofRecord, Error> {
+    unpack_into!(
+        let (
+            amount, keyset_id, state, quote_id, created_time, operation_kind, operation_id
+        ) = row
+    );
+
+    let amount: u64 = column_as_number!(amount);
+    let created_time: u64 = column_as_number!(created_time);
+
+    Ok(ProofRecord {
+        amount: Amount::from(amount),
+        keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
+        state: column_as_string!(state, State::from_str),
+        quote_id: column_as_nullable_string!(quote_id),
+        created_time,
+        operation_kind: column_as_nullable_string!(operation_kind),
+        operation_id: column_as_nullable_string!(operation_id),
+    })
+}
+
 fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error> {
     unpack_into!(
         let (
@@ -2713,6 +3295,28 @@ fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error>
         keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
         dleq,
+    })
+}
+
+fn sql_row_to_blind_signature_record(row: Vec<Column>) -> Result<BlindSignatureRecord, Error> {
+    unpack_into!(
+        let (
+            amount, keyset_id, quote_id, created_time, signed_time, operation_kind, operation_id
+        ) = row
+    );
+
+    let amount: u64 = column_as_number!(amount);
+    let created_time: u64 = column_as_number!(created_time);
+    let signed_time: Option<u64> = column_as_nullable_number!(signed_time);
+
+    Ok(BlindSignatureRecord {
+        amount: Amount::from(amount),
+        keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
+        quote_id: column_as_nullable_string!(quote_id),
+        created_time,
+        signed_time,
+        operation_kind: column_as_nullable_string!(operation_kind),
+        operation_id: column_as_nullable_string!(operation_id),
     })
 }
 
@@ -2809,6 +3413,453 @@ fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, E
         Some(completed_at),
         payment_method,
     ))
+}
+
+fn sql_row_to_operation_record(row: Vec<Column>) -> Result<OperationRecord, Error> {
+    unpack_into!(
+        let (
+            operation_id, operation_kind, completed_at, total_issued, total_redeemed,
+            fee_collected, payment_amount, payment_fee, payment_method, unit
+        ) = row
+    );
+
+    let total_issued: u64 = column_as_number!(total_issued);
+    let total_redeemed: u64 = column_as_number!(total_redeemed);
+    let fee_collected: u64 = column_as_number!(fee_collected);
+    let completed_time: u64 = column_as_number!(completed_at);
+    let payment_amount_val: Option<u64> = column_as_nullable_number!(payment_amount);
+    let payment_fee_val: Option<u64> = column_as_nullable_number!(payment_fee);
+
+    Ok(OperationRecord {
+        operation_id: column_as_string!(operation_id),
+        operation_kind: column_as_string!(operation_kind),
+        completed_time,
+        total_issued: Amount::from(total_issued),
+        total_redeemed: Amount::from(total_redeemed),
+        fee_collected: Amount::from(fee_collected),
+        payment_amount: payment_amount_val.map(Amount::from),
+        payment_fee: payment_fee_val.map(Amount::from),
+        payment_method: column_as_nullable_string!(payment_method),
+        unit: column_as_nullable_string!(unit),
+    })
+}
+
+#[async_trait]
+impl<RM> BackupDatabase for SQLMintDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    #[instrument(skip(self), err)]
+    async fn create_backup(&self, format: BackupFormat) -> Result<BackupResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let engine = RM::Connection::name().to_string();
+
+        if format == BackupFormat::Sqlite && engine != "sqlite" {
+            return Err(Error::Internal(
+                "SQLite backup format is only supported for SQLite databases".to_string(),
+            ));
+        }
+
+        let data = match format {
+            BackupFormat::Sqlite => create_sqlite_backup(&*conn).await?,
+            BackupFormat::Sql => create_sql_dump(&*conn, &engine).await?,
+        };
+
+        let checksum = checksum_hex(&data);
+
+        Ok(BackupResult {
+            data,
+            format,
+            checksum,
+            created_at: unix_time(),
+            database_engine: engine,
+        })
+    }
+}
+
+/// Create a SQLite backup using VACUUM INTO for a consistent snapshot.
+///
+/// # Arguments
+/// * `conn` - database connection
+///
+/// # Returns
+/// Backup file contents as bytes
+async fn create_sqlite_backup<C: DatabaseExecutor>(conn: &C) -> Result<Vec<u8>, Error> {
+    let temp_path = std::env::temp_dir().join(format!("cdk_backup_{}.db", unix_time()));
+    let temp_path_str = temp_path.to_string_lossy();
+
+    query(&format!("VACUUM INTO '{}'", temp_path_str))?
+        .execute(conn)
+        .await?;
+
+    let backup_data = std::fs::read(&temp_path).map_err(|e| {
+        Error::Database(Box::new(std::io::Error::other(format!(
+            "Failed to read backup file: {}",
+            e
+        ))))
+    })?;
+
+    // Best-effort cleanup
+    let _ = std::fs::remove_file(&temp_path);
+
+    Ok(backup_data)
+}
+
+/// Create a SQL dump of all tables.
+///
+/// # Arguments
+/// * `conn` - database connection
+/// * `engine` - database engine name ("sqlite" or "postgres")
+///
+/// # Returns
+/// SQL dump as bytes
+async fn create_sql_dump<C: DatabaseExecutor>(conn: &C, engine: &str) -> Result<Vec<u8>, Error> {
+    let mut sql_dump = String::new();
+
+    write_sql_header(&mut sql_dump, engine);
+
+    let table_names = fetch_table_names(conn, engine).await?;
+    for table_name in table_names {
+        dump_table(conn, engine, &table_name, &mut sql_dump).await?;
+    }
+
+    Ok(sql_dump.into_bytes())
+}
+
+/// Write SQL dump header with metadata
+fn write_sql_header(sql_dump: &mut String, engine: &str) {
+    sql_dump.push_str("-- CDK Mint Database Backup\n");
+    sql_dump.push_str(&format!("-- Created: {}\n", unix_time()));
+    sql_dump.push_str(&format!("-- Engine: {}\n\n", engine));
+}
+
+/// Fetch list of user tables (excluding system/migration tables).
+///
+/// # Arguments
+/// * `conn` - database connection
+/// * `engine` - database engine name
+///
+/// # Returns
+/// List of table names
+async fn fetch_table_names<C: DatabaseExecutor>(
+    conn: &C,
+    engine: &str,
+) -> Result<Vec<String>, Error> {
+    let tables_query = if engine == "sqlite" {
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    } else {
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
+    };
+
+    let rows = query(tables_query)?.fetch_all(conn).await?;
+
+    let tables = rows
+        .into_iter()
+        .filter_map(|row| match row.first() {
+            Some(Column::Text(name)) if !is_migration_table(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+
+    Ok(tables)
+}
+
+/// Check if table name is a migration table that should be skipped
+fn is_migration_table(name: &str) -> bool {
+    name == "_sqlx_migrations" || name == "migrations"
+}
+
+/// Dump a single table's schema and data to SQL.
+///
+/// # Arguments
+/// * `conn` - database connection
+/// * `engine` - database engine name
+/// * `table_name` - name of table to dump
+/// * `sql_dump` - output buffer
+async fn dump_table<C: DatabaseExecutor>(
+    conn: &C,
+    engine: &str,
+    table_name: &str,
+    sql_dump: &mut String,
+) -> Result<(), Error> {
+    sql_dump.push_str(&format!("\n-- Table: {}\n", table_name));
+
+    // Schema extraction (engine-specific)
+    let schema = if engine == "sqlite" {
+        fetch_sqlite_table_schema(conn, table_name).await?
+    } else {
+        fetch_postgres_table_schema(conn, table_name).await?
+    };
+
+    if let Some(schema) = schema {
+        sql_dump.push_str(&schema);
+        sql_dump.push_str(";\n\n");
+    }
+
+    // Data rows
+    let rows = query(&format!("SELECT * FROM \"{}\"", table_name))?
+        .fetch_all(conn)
+        .await?;
+
+    for row in rows {
+        if !row.is_empty() {
+            sql_dump.push_str(&format_insert_statement(table_name, &row));
+        }
+    }
+
+    Ok(())
+}
+
+/// Fetch table schema SQL for SQLite.
+///
+/// # Arguments
+/// * `conn` - database connection
+/// * `table_name` - name of table
+///
+/// # Returns
+/// CREATE TABLE statement if found
+async fn fetch_sqlite_table_schema<C: DatabaseExecutor>(
+    conn: &C,
+    table_name: &str,
+) -> Result<Option<String>, Error> {
+    let rows = query(&format!(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='{}'",
+        table_name
+    ))?
+    .fetch_all(conn)
+    .await?;
+
+    Ok(rows.first().and_then(|row| match row.first() {
+        Some(Column::Text(schema)) => Some(schema.clone()),
+        _ => None,
+    }))
+}
+
+/// Fetch table schema SQL for PostgreSQL.
+///
+/// Builds CREATE TABLE from information_schema.
+///
+/// # Arguments
+/// * `conn` - database connection
+/// * `table_name` - name of table
+///
+/// # Returns
+/// CREATE TABLE statement if found
+async fn fetch_postgres_table_schema<C: DatabaseExecutor>(
+    conn: &C,
+    table_name: &str,
+) -> Result<Option<String>, Error> {
+    // Query column definitions from information_schema
+    let rows = query(&format!(
+        r#"
+        SELECT column_name, data_type, is_nullable, column_default, character_maximum_length
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' AND table_name = '{}'
+        ORDER BY ordinal_position
+        "#,
+        table_name
+    ))?
+    .fetch_all(conn)
+    .await?;
+
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    let columns: Vec<String> = rows
+        .iter()
+        .filter_map(|row| {
+            let column_name = match row.first() {
+                Some(Column::Text(name)) => name.clone(),
+                _ => return None,
+            };
+
+            let data_type = match row.get(1) {
+                Some(Column::Text(t)) => t.clone(),
+                _ => return None,
+            };
+
+            let is_nullable = match row.get(2) {
+                Some(Column::Text(n)) => n == "YES",
+                _ => true,
+            };
+
+            let column_default = match row.get(3) {
+                Some(Column::Text(d)) => Some(d.clone()),
+                _ => None,
+            };
+
+            let char_max_len: Option<i64> = match row.get(4) {
+                Some(Column::Integer(len)) => Some(*len),
+                _ => None,
+            };
+
+            // Build column type with length if applicable
+            let type_with_len = if let Some(len) = char_max_len {
+                if data_type == "character varying" {
+                    format!("VARCHAR({})", len)
+                } else if data_type == "character" {
+                    format!("CHAR({})", len)
+                } else {
+                    data_type.to_uppercase()
+                }
+            } else {
+                postgres_type_to_sql(&data_type)
+            };
+
+            // Build column definition
+            let mut col_def = format!("\"{}\" {}", column_name, type_with_len);
+
+            if !is_nullable {
+                col_def.push_str(" NOT NULL");
+            }
+
+            if let Some(default) = column_default {
+                // Skip nextval defaults (auto-increment) as they're usually part of SERIAL
+                if !default.starts_with("nextval(") {
+                    col_def.push_str(&format!(" DEFAULT {}", default));
+                }
+            }
+
+            Some(col_def)
+        })
+        .collect();
+
+    if columns.is_empty() {
+        return Ok(None);
+    }
+
+    // Try to get primary key constraint
+    let pk_columns = fetch_postgres_primary_key(conn, table_name).await?;
+
+    let mut create_stmt = format!(
+        "CREATE TABLE \"{}\" (\n    {}",
+        table_name,
+        columns.join(",\n    ")
+    );
+
+    if !pk_columns.is_empty() {
+        create_stmt.push_str(&format!(
+            ",\n    PRIMARY KEY ({})",
+            pk_columns
+                .iter()
+                .map(|c| format!("\"{}\"", c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    create_stmt.push_str("\n)");
+
+    Ok(Some(create_stmt))
+}
+
+/// Convert PostgreSQL data type to standard SQL type
+fn postgres_type_to_sql(pg_type: &str) -> String {
+    match pg_type {
+        "integer" => "INTEGER".to_string(),
+        "bigint" => "BIGINT".to_string(),
+        "smallint" => "SMALLINT".to_string(),
+        "boolean" => "BOOLEAN".to_string(),
+        "text" => "TEXT".to_string(),
+        "bytea" => "BYTEA".to_string(),
+        "timestamp without time zone" => "TIMESTAMP".to_string(),
+        "timestamp with time zone" => "TIMESTAMPTZ".to_string(),
+        "double precision" => "DOUBLE PRECISION".to_string(),
+        "real" => "REAL".to_string(),
+        "numeric" => "NUMERIC".to_string(),
+        "uuid" => "UUID".to_string(),
+        "jsonb" => "JSONB".to_string(),
+        "json" => "JSON".to_string(),
+        other => other.to_uppercase(),
+    }
+}
+
+/// Fetch primary key columns for a PostgreSQL table.
+///
+/// # Arguments
+/// * `conn` - database connection
+/// * `table_name` - name of table
+///
+/// # Returns
+/// List of primary key column names
+async fn fetch_postgres_primary_key<C: DatabaseExecutor>(
+    conn: &C,
+    table_name: &str,
+) -> Result<Vec<String>, Error> {
+    let rows = query(&format!(
+        r#"
+        SELECT a.attname
+        FROM pg_index i
+        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        JOIN pg_class c ON c.oid = i.indrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE i.indisprimary
+          AND c.relname = '{}'
+          AND n.nspname = 'public'
+        ORDER BY array_position(i.indkey, a.attnum)
+        "#,
+        table_name
+    ))?
+    .fetch_all(conn)
+    .await?;
+
+    let pk_columns = rows
+        .into_iter()
+        .filter_map(|row| match row.first() {
+            Some(Column::Text(name)) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+
+    Ok(pk_columns)
+}
+
+/// Format a row as an INSERT statement
+fn format_insert_statement(table_name: &str, row: &[Column]) -> String {
+    let values: Vec<String> = row.iter().map(column_to_sql_literal).collect();
+    format!(
+        "INSERT INTO \"{}\" VALUES ({});\n",
+        table_name,
+        values.join(", ")
+    )
+}
+
+/// Convert a Column value to its SQL literal representation
+fn column_to_sql_literal(col: &Column) -> String {
+    match col {
+        Column::Null => "NULL".to_string(),
+        Column::Integer(i) => i.to_string(),
+        Column::Real(r) => r.to_string(),
+        Column::Text(t) => format!("'{}'", t.replace('\'', "''")),
+        Column::Blob(b) => format!("X'{}'", bytes_to_hex(b)),
+    }
+}
+
+/// Calculate a checksum and return as hex string.
+///
+/// Uses std DefaultHasher - not cryptographically secure but sufficient for integrity checks.
+///
+/// # Arguments
+/// * `data` - data to checksum
+///
+/// # Returns
+/// 16-character hex string
+fn checksum_hex(data: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    format!("{:016x}", hash)
+}
+
+/// Convert bytes to hex string
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 #[cfg(test)]
