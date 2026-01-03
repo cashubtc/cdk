@@ -3,6 +3,7 @@
 use std::ops::Deref;
 use std::str::FromStr;
 
+use cashu::nut00::KnownMethod;
 use cashu::quote_id::QuoteId;
 use cashu::{Amount, BlindSignature, Id, SecretKey};
 
@@ -27,10 +28,11 @@ where
         None,
         0.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt12,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
         vec![],
         vec![],
+        None,
     );
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -53,10 +55,11 @@ where
         None,
         0.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt12,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
         vec![],
         vec![],
+        None,
     );
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     assert!(tx.add_mint_quote(mint_quote.clone()).await.is_ok());
@@ -82,10 +85,11 @@ where
         None,
         0.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt12,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
         vec![],
         vec![],
+        None,
     );
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -141,10 +145,11 @@ where
         None,
         0.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt12,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
         vec![],
         vec![],
+        None,
     );
 
     let p1 = unique_string();
@@ -205,10 +210,11 @@ where
         None,
         0.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt12,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
         vec![],
         vec![],
+        None,
     );
 
     let p1 = unique_string();
@@ -250,10 +256,11 @@ where
         None,
         0.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt12,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
         vec![],
         vec![],
+        None,
     );
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -298,10 +305,11 @@ where
         None,
         0.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt12,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
         vec![],
         vec![],
+        None,
     );
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -325,10 +333,11 @@ where
         None,
         0.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt12,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
         vec![],
         vec![],
+        None,
     );
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -360,10 +369,11 @@ where
         None,
         0.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt12,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
         vec![],
         vec![],
+        None,
     );
 
     let p1 = unique_string();
@@ -392,10 +402,11 @@ where
         None,
         0.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt12,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
         vec![],
         vec![],
+        None,
     );
 
     let p1 = unique_string();
@@ -437,7 +448,7 @@ where
     let blinded_messages = vec![blinded_message];
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let quote = MeltQuote::new(MeltPaymentRequest::Bolt11 { bolt11: "lnbc330n1p5d85skpp5344v3ktclujsjl3h09wgsfm7zytumr7h7zhrl857f5w8nv0a52zqdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5j3rrg8kvpemqxtf86j8tjm90wq77c7ende4e5qmrerq4xsg02vhq9qxpqysgqjltywgyk6uc5qcgwh8xnzmawl2tjlhz8d28tgp3yx8xwtz76x0jqkfh6mmq70hervjxs0keun7ur0spldgll29l0dnz3md50d65sfqqqwrwpsu".parse().unwrap() }, cashu::CurrencyUnit::Sat, 33.into(), Amount::ZERO, 0, None, None, cashu::PaymentMethod::Bolt11);
+    let quote = MeltQuote::new(MeltPaymentRequest::Bolt11 { bolt11: "lnbc330n1p5d85skpp5344v3ktclujsjl3h09wgsfm7zytumr7h7zhrl857f5w8nv0a52zqdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5j3rrg8kvpemqxtf86j8tjm90wq77c7ende4e5qmrerq4xsg02vhq9qxpqysgqjltywgyk6uc5qcgwh8xnzmawl2tjlhz8d28tgp3yx8xwtz76x0jqkfh6mmq70hervjxs0keun7ur0spldgll29l0dnz3md50d65sfqqqwrwpsu".parse().unwrap() }, cashu::CurrencyUnit::Sat, 33.into(), Amount::ZERO, 0, None, None, cashu::PaymentMethod::Known(KnownMethod::Bolt11));
     tx.add_melt_quote(quote.clone()).await.unwrap();
     tx.add_melt_request(&quote.id, inputs_amount, inputs_fee)
         .await
@@ -445,7 +456,11 @@ where
     tx.add_blinded_messages(
         Some(&quote.id),
         &blinded_messages,
-        &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11),
+        &Operation::new_melt(
+            Amount::ZERO,
+            Amount::ZERO,
+            cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        ),
     )
     .await
     .unwrap();
@@ -502,7 +517,7 @@ where
 
     // Now try to add melt request with the same blinded message - should fail due to constraint
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let quote2 = MeltQuote::new(MeltPaymentRequest::Bolt11 { bolt11: "lnbc330n1p5d85skpp5344v3ktclujsjl3h09wgsfm7zytumr7h7zhrl857f5w8nv0a52zqdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5j3rrg8kvpemqxtf86j8tjm90wq77c7ende4e5qmrerq4xsg02vhq9qxpqysgqjltywgyk6uc5qcgwh8xnzmawl2tjlhz8d28tgp3yx8xwtz76x0jqkfh6mmq70hervjxs0keun7ur0spldgll29l0dnz3md50d65sfqqqwrwpsu".parse().unwrap() }, cashu::CurrencyUnit::Sat, 33.into(), Amount::ZERO, 0, None, None, cashu::PaymentMethod::Bolt11);
+    let quote2 = MeltQuote::new(MeltPaymentRequest::Bolt11 { bolt11: "lnbc330n1p5d85skpp5344v3ktclujsjl3h09wgsfm7zytumr7h7zhrl857f5w8nv0a52zqdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5j3rrg8kvpemqxtf86j8tjm90wq77c7ende4e5qmrerq4xsg02vhq9qxpqysgqjltywgyk6uc5qcgwh8xnzmawl2tjlhz8d28tgp3yx8xwtz76x0jqkfh6mmq70hervjxs0keun7ur0spldgll29l0dnz3md50d65sfqqqwrwpsu".parse().unwrap() }, cashu::CurrencyUnit::Sat, 33.into(), Amount::ZERO, 0, None, None, cashu::PaymentMethod::Known(KnownMethod::Bolt11));
     tx.add_melt_quote(quote2.clone()).await.unwrap();
     tx.add_melt_request(&quote2.id, inputs_amount, inputs_fee)
         .await
@@ -511,7 +526,11 @@ where
         .add_blinded_messages(
             Some(&quote2.id),
             &blinded_messages,
-            &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11),
+            &Operation::new_melt(
+                Amount::ZERO,
+                Amount::ZERO,
+                cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+            ),
         )
         .await;
     assert!(result.is_err() && matches!(result.unwrap_err(), Error::Duplicate));
@@ -539,7 +558,7 @@ where
 
     // First insert succeeds
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let quote = MeltQuote::new(MeltPaymentRequest::Bolt11 { bolt11: "lnbc330n1p5d85skpp5344v3ktclujsjl3h09wgsfm7zytumr7h7zhrl857f5w8nv0a52zqdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5j3rrg8kvpemqxtf86j8tjm90wq77c7ende4e5qmrerq4xsg02vhq9qxpqysgqjltywgyk6uc5qcgwh8xnzmawl2tjlhz8d28tgp3yx8xwtz76x0jqkfh6mmq70hervjxs0keun7ur0spldgll29l0dnz3md50d65sfqqqwrwpsu".parse().unwrap() }, cashu::CurrencyUnit::Sat, 33.into(), Amount::ZERO, 0, None, None, cashu::PaymentMethod::Bolt11);
+    let quote = MeltQuote::new(MeltPaymentRequest::Bolt11 { bolt11: "lnbc330n1p5d85skpp5344v3ktclujsjl3h09wgsfm7zytumr7h7zhrl857f5w8nv0a52zqdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5j3rrg8kvpemqxtf86j8tjm90wq77c7ende4e5qmrerq4xsg02vhq9qxpqysgqjltywgyk6uc5qcgwh8xnzmawl2tjlhz8d28tgp3yx8xwtz76x0jqkfh6mmq70hervjxs0keun7ur0spldgll29l0dnz3md50d65sfqqqwrwpsu".parse().unwrap() }, cashu::CurrencyUnit::Sat, 33.into(), Amount::ZERO, 0, None, None, cashu::PaymentMethod::Known(KnownMethod::Bolt11));
     tx.add_melt_quote(quote.clone()).await.unwrap();
     tx.add_melt_request(&quote.id, inputs_amount, inputs_fee)
         .await
@@ -548,7 +567,11 @@ where
         .add_blinded_messages(
             Some(&quote.id),
             &blinded_messages,
-            &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11)
+            &Operation::new_melt(
+                Amount::ZERO,
+                Amount::ZERO,
+                cashu::PaymentMethod::Known(KnownMethod::Bolt11)
+            )
         )
         .await
         .is_ok());
@@ -556,7 +579,7 @@ where
 
     // Second insert with same blinded_message but different quote_id should fail due to unique constraint on blinded_message
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let quote = MeltQuote::new(MeltPaymentRequest::Bolt11 { bolt11: "lnbc330n1p5d85skpp5344v3ktclujsjl3h09wgsfm7zytumr7h7zhrl857f5w8nv0a52zqdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5j3rrg8kvpemqxtf86j8tjm90wq77c7ende4e5qmrerq4xsg02vhq9qxpqysgqjltywgyk6uc5qcgwh8xnzmawl2tjlhz8d28tgp3yx8xwtz76x0jqkfh6mmq70hervjxs0keun7ur0spldgll29l0dnz3md50d65sfqqqwrwpsu".parse().unwrap() }, cashu::CurrencyUnit::Sat, 33.into(), Amount::ZERO, 0, None, None, cashu::PaymentMethod::Bolt11);
+    let quote = MeltQuote::new(MeltPaymentRequest::Bolt11 { bolt11: "lnbc330n1p5d85skpp5344v3ktclujsjl3h09wgsfm7zytumr7h7zhrl857f5w8nv0a52zqdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5j3rrg8kvpemqxtf86j8tjm90wq77c7ende4e5qmrerq4xsg02vhq9qxpqysgqjltywgyk6uc5qcgwh8xnzmawl2tjlhz8d28tgp3yx8xwtz76x0jqkfh6mmq70hervjxs0keun7ur0spldgll29l0dnz3md50d65sfqqqwrwpsu".parse().unwrap() }, cashu::CurrencyUnit::Sat, 33.into(), Amount::ZERO, 0, None, None, cashu::PaymentMethod::Known(KnownMethod::Bolt11));
     tx.add_melt_quote(quote.clone()).await.unwrap();
     tx.add_melt_request(&quote.id, inputs_amount, inputs_fee)
         .await
@@ -565,7 +588,11 @@ where
         .add_blinded_messages(
             Some(&quote.id),
             &blinded_messages,
-            &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11),
+            &Operation::new_melt(
+                Amount::ZERO,
+                Amount::ZERO,
+                cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+            ),
         )
         .await;
     // Expect a database error due to unique violation
@@ -594,7 +621,7 @@ where
 
     // Insert melt request
     let mut tx1 = Database::begin_transaction(&db).await.unwrap();
-    let quote = MeltQuote::new(MeltPaymentRequest::Bolt11 { bolt11: "lnbc330n1p5d85skpp5344v3ktclujsjl3h09wgsfm7zytumr7h7zhrl857f5w8nv0a52zqdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5j3rrg8kvpemqxtf86j8tjm90wq77c7ende4e5qmrerq4xsg02vhq9qxpqysgqjltywgyk6uc5qcgwh8xnzmawl2tjlhz8d28tgp3yx8xwtz76x0jqkfh6mmq70hervjxs0keun7ur0spldgll29l0dnz3md50d65sfqqqwrwpsu".parse().unwrap() }, cashu::CurrencyUnit::Sat, 33.into(), Amount::ZERO, 0, None, None, cashu::PaymentMethod::Bolt11);
+    let quote = MeltQuote::new(MeltPaymentRequest::Bolt11 { bolt11: "lnbc330n1p5d85skpp5344v3ktclujsjl3h09wgsfm7zytumr7h7zhrl857f5w8nv0a52zqdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5j3rrg8kvpemqxtf86j8tjm90wq77c7ende4e5qmrerq4xsg02vhq9qxpqysgqjltywgyk6uc5qcgwh8xnzmawl2tjlhz8d28tgp3yx8xwtz76x0jqkfh6mmq70hervjxs0keun7ur0spldgll29l0dnz3md50d65sfqqqwrwpsu".parse().unwrap() }, cashu::CurrencyUnit::Sat, 33.into(), Amount::ZERO, 0, None, None, cashu::PaymentMethod::Known(KnownMethod::Bolt11));
     tx1.add_melt_quote(quote.clone()).await.unwrap();
     tx1.add_melt_request(&quote.id, inputs_amount, inputs_fee)
         .await
@@ -602,7 +629,11 @@ where
     tx1.add_blinded_messages(
         Some(&quote.id),
         &blinded_messages,
-        &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11),
+        &Operation::new_melt(
+            Amount::ZERO,
+            Amount::ZERO,
+            cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        ),
     )
     .await
     .unwrap();
@@ -643,7 +674,7 @@ where
         0,
         None,
         None,
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
     );
 
     // Add melt quote
@@ -675,7 +706,7 @@ where
         0,
         None,
         None,
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
     );
 
     // Add first melt quote
@@ -706,7 +737,7 @@ where
         0,
         None,
         None,
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
     );
 
     // Add melt quote
@@ -758,7 +789,7 @@ where
         0,
         Some(PaymentIdentifier::CustomId("old_lookup_id".to_string())),
         None,
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
     );
 
     // Add melt quote
@@ -797,10 +828,11 @@ where
         None,
         100.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
         vec![],
         vec![],
+        None,
     );
 
     let quote2 = MintQuote::new(
@@ -813,10 +845,11 @@ where
         None,
         200.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
         vec![],
         vec![],
+        None,
     );
 
     // Add quotes
@@ -847,7 +880,7 @@ where
         0,
         None,
         None,
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
     );
 
     let quote2 = MeltQuote::new(
@@ -860,7 +893,7 @@ where
         0,
         None,
         None,
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
     );
 
     // Add quotes
@@ -894,10 +927,11 @@ where
         None,
         100.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
         vec![],
         vec![],
+        None,
     );
 
     // Add quote
@@ -931,10 +965,11 @@ where
         None,
         100.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
         vec![],
         vec![],
+        None,
     );
 
     // Add quote
@@ -985,7 +1020,10 @@ where
     tx.add_blinded_messages(
         None,
         &blinded_messages,
-        &Operation::new_mint(Amount::ZERO, cashu::PaymentMethod::Bolt11),
+        &Operation::new_mint(
+            Amount::ZERO,
+            cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        ),
     )
     .await
     .unwrap();
@@ -1004,7 +1042,10 @@ where
         .add_blinded_messages(
             None,
             &[blinded_message1],
-            &Operation::new_mint(Amount::ZERO, cashu::PaymentMethod::Bolt11)
+            &Operation::new_mint(
+                Amount::ZERO,
+                cashu::PaymentMethod::Known(KnownMethod::Bolt11)
+            )
         )
         .await
         .is_ok());
@@ -1012,7 +1053,10 @@ where
         .add_blinded_messages(
             None,
             &[blinded_message2],
-            &Operation::new_mint(Amount::ZERO, cashu::PaymentMethod::Bolt11)
+            &Operation::new_mint(
+                Amount::ZERO,
+                cashu::PaymentMethod::Known(KnownMethod::Bolt11)
+            )
         )
         .await
         .is_err());
@@ -1036,10 +1080,11 @@ where
         None,
         1000.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
         vec![],
         vec![],
+        None,
     );
 
     // Add quote
@@ -1097,10 +1142,11 @@ where
         None,
         1000.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
         vec![],
         vec![],
+        None,
     );
 
     // Add quote
@@ -1167,10 +1213,11 @@ where
         None,
         100.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
         vec![],
         vec![],
+        None,
     );
 
     // Add quote
@@ -1203,7 +1250,7 @@ where
         0,
         None,
         None,
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
     );
 
     // Add quote
@@ -1239,10 +1286,11 @@ where
         None,
         100.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
         vec![],
         vec![],
+        None,
     );
 
     // Add quote
@@ -1278,10 +1326,11 @@ where
         None,
         100.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
         vec![],
         vec![],
+        None,
     );
 
     // Add quote
@@ -1354,10 +1403,11 @@ where
         None,
         1000.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
         vec![],
         vec![],
+        None,
     );
 
     // Add quote
@@ -1437,10 +1487,11 @@ where
         None,
         1000.into(),
         0.into(),
-        cashu::PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
         vec![],
         vec![],
+        None,
     );
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();

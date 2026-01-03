@@ -123,6 +123,29 @@ export CDK_PAYMENT_PROCESSOR_LISTEN_PORT="8090";
 
 echo "$CDK_PAYMENT_PROCESSOR_CLN_RPC_PATH"
 
+# Wait for LND certificate and macaroon files to exist (only if using LND backend)
+if [ "$LN_BACKEND" = "LND" ]; then
+    echo "Waiting for LND certificate and macaroon files..."
+    CERT_TIMEOUT=60
+    CERT_START_TIME=$(date +%s)
+    
+    while [ ! -f "$CDK_PAYMENT_PROCESSOR_LND_CERT_FILE" ] || [ ! -f "$CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE" ]; do
+        CURRENT_TIME=$(date +%s)
+        ELAPSED_TIME=$((CURRENT_TIME - CERT_START_TIME))
+        
+        if [ $ELAPSED_TIME -ge $CERT_TIMEOUT ]; then
+            echo "Timeout waiting for LND files after $CERT_TIMEOUT seconds"
+            echo "Expected cert file: $CDK_PAYMENT_PROCESSOR_LND_CERT_FILE"
+            echo "Expected macaroon file: $CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE"
+            exit 1
+        fi
+        
+        sleep 0.5
+    done
+    
+    echo "LND certificate and macaroon files found"
+fi
+
 cargo b --bin cdk-payment-processor
 
 cargo run --bin cdk-payment-processor &

@@ -6,7 +6,7 @@ use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::DynMintPayment;
-use cdk_common::{Amount, MintQuoteState, PaymentMethod};
+use cdk_common::{Amount, MintQuoteState};
 use tracing::instrument;
 
 use super::subscription::PubSubManager;
@@ -27,7 +27,7 @@ impl Mint {
         // We can just return here and do not need to check with ln node.
         // If quote is issued it is already in a final state,
         // If it is paid ln node will only tell us what we already know
-        if quote.payment_method == PaymentMethod::Bolt11
+        if quote.payment_method.is_bolt11()
             && (state == MintQuoteState::Issued || state == MintQuoteState::Paid)
         {
             return Ok(());
@@ -63,7 +63,7 @@ impl Mint {
 
         let current_state = new_quote.state();
 
-        if new_quote.payment_method == PaymentMethod::Bolt11
+        if new_quote.payment_method.is_bolt11()
             && (current_state == MintQuoteState::Issued || current_state == MintQuoteState::Paid)
         {
             return Ok(());

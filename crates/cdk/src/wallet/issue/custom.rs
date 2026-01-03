@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
 use cdk_common::nut04::MintMethodOptions;
-use cdk_common::nut25::MintQuoteBolt12Request;
-use cdk_common::wallet::{Transaction, TransactionDirection};
+use cdk_common::wallet::{MintQuote, Transaction, TransactionDirection};
 use cdk_common::{Proofs, SecretKey};
 use tracing::instrument;
 
@@ -10,33 +9,40 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
-    nut12, MintQuoteBolt12Response, MintRequest, PaymentMethod, PreMintSecrets, SpendingConditions,
+    nut12, MintQuoteCustomRequest, MintRequest, PaymentMethod, PreMintSecrets, SpendingConditions,
     State,
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
-use crate::wallet::MintQuote;
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
-    /// Mint Bolt12
+    /// Mint Quote for Custom Payment Method
     #[instrument(skip(self))]
-    pub async fn mint_bolt12_quote(
+    pub(super) async fn mint_quote_custom(
         &self,
         amount: Option<Amount>,
+        method: &str,
+        request: String,
         description: Option<String>,
+        extra: Option<String>,
     ) -> Result<MintQuote, Error> {
-        let mint_info = self.load_mint_info().await?;
-
         let mint_url = self.mint_url.clone();
         let unit = &self.unit;
 
+        self.refresh_keysets().await?;
+
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
-            let mint_method_settings = mint_info
+            let payment_method = PaymentMethod::Custom(method.to_string());
+            let mint_method_settings = self
+                .localstore
+                .get_mint(mint_url.clone())
+                .await?
+                .ok_or(Error::IncorrectMint)?
                 .nuts
                 .nut04
-                .get_settings(unit, &crate::nuts::PaymentMethod::Bolt12)
+                .get_settings(unit, &payment_method)
                 .ok_or(Error::UnsupportedUnit)?;
 
             match mint_method_settings.options {
@@ -47,101 +53,91 @@ impl Wallet {
 
         let secret_key = SecretKey::generate();
 
-        let mint_request = MintQuoteBolt12Request {
+        let amount = amount.ok_or(Error::AmountUndefined)?;
+
+        let mint_request = MintQuoteCustomRequest {
             amount,
             unit: self.unit.clone(),
             description,
-            pubkey: secret_key.public_key(),
+            pubkey: Some(secret_key.public_key()),
+            extra: serde_json::from_str(&extra.unwrap_or_default())?,
         };
 
-        let quote_res = self.client.post_mint_bolt12_quote(mint_request).await?;
+        let quote_res = self
+            .client
+            .post_mint_custom_quote(method, mint_request)
+            .await?;
 
         let quote = MintQuote::new(
             quote_res.quote,
             mint_url,
-            PaymentMethod::Bolt12,
-            amount,
+            PaymentMethod::Custom(method.to_string()),
+            Some(amount),
             unit.clone(),
-            quote_res.request,
+            request,
             quote_res.expiry.unwrap_or(0),
             Some(secret_key),
         );
-
         let mut tx = self.localstore.begin_db_transaction().await?;
+
         tx.add_mint_quote(quote.clone()).await?;
         tx.commit().await?;
-
         Ok(quote)
     }
 
-    /// Mint bolt12
+    /// Mint with custom payment method
+    /// This is used for all custom payment methods - delegates to existing mint logic
     #[instrument(skip(self))]
-    pub async fn mint_bolt12(
+    pub(super) async fn mint_custom(
         &self,
         quote_id: &str,
-        amount: Option<Amount>,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
+        self.refresh_keysets().await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        let quote_info = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        // Verify it's a custom payment method
+        if !quote_info.payment_method.is_custom() {
+            return Err(Error::UnsupportedPaymentMethod);
+        }
+
+        let amount_mintable = quote_info.amount_mintable();
+
+        if amount_mintable == Amount::ZERO {
+            tracing::debug!("Amount mintable 0.");
+            return Err(Error::AmountUndefined);
+        }
+
+        let unix_time = unix_time();
+
+        if quote_info.expiry > unix_time {
+            tracing::warn!("Attempting to mint with expired quote.");
+        }
+
         let active_keyset_id = self.fetch_active_keyset().await?.id;
         let fee_and_amounts = self
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
-        let mut tx = self.localstore.begin_db_transaction().await?;
-        let quote_info = tx.get_mint_quote(quote_id).await?;
-
-        let quote_info = if let Some(quote) = quote_info {
-            if quote.expiry.le(&unix_time()) && quote.expiry.ne(&0) {
-                tracing::info!("Attempting to mint expired quote.");
-            }
-
-            quote.clone()
-        } else {
-            return Err(Error::UnknownQuote);
-        };
-
-        let (mut tx, quote_info, amount) = match amount {
-            Some(amount) => (tx, quote_info, amount),
-            None => {
-                // If an amount it not supplied with check the status of the quote
-                // The mint will tell us how much can be minted
-                tx.commit().await?;
-                let state = self.mint_bolt12_quote_state(quote_id).await?;
-
-                let mut tx = self.localstore.begin_db_transaction().await?;
-                let quote_info = tx
-                    .get_mint_quote(quote_id)
-                    .await?
-                    .ok_or(Error::UnknownQuote)?;
-
-                (tx, quote_info, state.amount_paid - state.amount_issued)
-            }
-        };
-
-        if amount == Amount::ZERO {
-            tracing::error!("Cannot mint zero amount.");
-            return Err(Error::UnpaidQuote);
-        }
-
-        let split_target = match amount_split_target {
-            SplitTarget::None => {
-                self.determine_split_target_values(&mut tx, amount, &fee_and_amounts)
-                    .await?
-            }
-            s => s,
-        };
-
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
-                amount,
-                &split_target,
+                amount_mintable,
+                &amount_split_target,
                 spending_conditions,
                 &fee_and_amounts,
             )?,
             None => {
-                let amount_split = amount.split_targeted(&split_target, &fee_and_amounts)?;
+                // Calculate how many secrets we'll need
+                let amount_split =
+                    amount_mintable.split_targeted(&amount_split_target, &fee_and_amounts)?;
                 let num_secrets = amount_split.len() as u32;
 
                 tracing::debug!(
@@ -161,8 +157,8 @@ impl Wallet {
                     active_keyset_id,
                     count,
                     &self.seed,
-                    amount,
-                    &split_target,
+                    amount_mintable,
+                    &amount_split_target,
                     &fee_and_amounts,
                 )?
             }
@@ -174,18 +170,11 @@ impl Wallet {
             signature: None,
         };
 
-        if let Some(secret_key) = quote_info.secret_key.clone() {
+        if let Some(secret_key) = quote_info.secret_key {
             request.sign(secret_key)?;
-        } else {
-            tracing::error!("Signature is required for bolt12.");
-            return Err(Error::SignatureMissingOrInvalid);
         }
 
-        tx.commit().await?;
-
         let mint_res = self.client.post_mint(request).await?;
-
-        let mut tx = self.localstore.begin_db_transaction().await?;
 
         let keys = self.load_keyset_keys(active_keyset_id).await?;
 
@@ -208,14 +197,8 @@ impl Wallet {
             &keys,
         )?;
 
-        // Update quote with issued amount
-        let mut quote_info = tx
-            .get_mint_quote(quote_id)
-            .await?
-            .ok_or(Error::UnpaidQuote)?;
-        quote_info.amount_issued += proofs.total_amount()?;
-
-        tx.add_mint_quote(quote_info.clone()).await?;
+        // Remove filled quote from store
+        tx.remove_mint_quote(&quote_info.id).await?;
 
         let proof_infos = proofs
             .iter()
@@ -240,7 +223,7 @@ impl Wallet {
             fee: Amount::ZERO,
             unit: self.unit.clone(),
             ys: proofs.ys()?,
-            timestamp: unix_time(),
+            timestamp: unix_time,
             memo: None,
             metadata: HashMap::new(),
             quote_id: Some(quote_id.to_string()),
@@ -249,37 +232,7 @@ impl Wallet {
             payment_method: Some(quote_info.payment_method),
         })
         .await?;
-
         tx.commit().await?;
-
         Ok(proofs)
-    }
-
-    /// Check mint quote status
-    #[instrument(skip(self, quote_id))]
-    pub async fn mint_bolt12_quote_state(
-        &self,
-        quote_id: &str,
-    ) -> Result<MintQuoteBolt12Response<String>, Error> {
-        let response = self.client.get_mint_quote_bolt12_status(quote_id).await?;
-
-        let mut tx = self.localstore.begin_db_transaction().await?;
-
-        match tx.get_mint_quote(quote_id).await? {
-            Some(quote) => {
-                let mut quote = quote;
-                quote.amount_issued = response.amount_issued;
-                quote.amount_paid = response.amount_paid;
-
-                tx.add_mint_quote(quote).await?;
-            }
-            None => {
-                tracing::info!("Quote mint {} unknown", quote_id);
-            }
-        }
-
-        tx.commit().await?;
-
-        Ok(response)
     }
 }

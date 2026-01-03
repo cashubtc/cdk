@@ -406,11 +406,16 @@ pub struct MintQuote {
     #[serde(default)]
     pub payments: Vec<IncomingPayment>,
     /// Payment Method
-    #[serde(default)]
     pub payment_method: PaymentMethod,
     /// Payment of payment(s) that filled quote
     #[serde(default)]
     pub issuance: Vec<Issuance>,
+    /// Extra payment-method-specific fields
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data without nesting.
+    #[serde(flatten, default)]
+    pub extra_json: Option<serde_json::Value>,
     /// Accumulated changes since this quote was loaded or created.
     ///
     /// This field is not serialized and is used internally to track modifications
@@ -437,6 +442,7 @@ impl MintQuote {
         created_time: u64,
         payments: Vec<IncomingPayment>,
         issuance: Vec<Issuance>,
+        extra_json: Option<serde_json::Value>,
     ) -> Self {
         let id = id.unwrap_or_else(QuoteId::new_uuid);
 
@@ -454,6 +460,7 @@ impl MintQuote {
             payment_method,
             payments,
             issuance,
+            extra_json,
             changes: None,
         }
     }
@@ -698,7 +705,6 @@ pub struct MeltQuote {
     /// Unix time quote was paid
     pub paid_time: Option<u64>,
     /// Payment method
-    #[serde(default)]
     pub payment_method: PaymentMethod,
 }
 
@@ -826,6 +832,33 @@ impl TryFrom<MintQuote> for MintQuoteBolt12Response<String> {
     }
 }
 
+impl TryFrom<crate::mint::MintQuote> for crate::nuts::MintQuoteCustomResponse<QuoteId> {
+    type Error = crate::Error;
+
+    fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
+        Ok(crate::nuts::MintQuoteCustomResponse {
+            state: mint_quote.state(),
+            quote: mint_quote.id.clone(),
+            request: mint_quote.request,
+            expiry: Some(mint_quote.expiry),
+            pubkey: mint_quote.pubkey,
+            amount: mint_quote.amount,
+            unit: Some(mint_quote.unit),
+            extra: mint_quote.extra_json.unwrap_or_default(),
+        })
+    }
+}
+
+impl TryFrom<MintQuote> for crate::nuts::MintQuoteCustomResponse<String> {
+    type Error = crate::Error;
+
+    fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
+        let quote: crate::nuts::MintQuoteCustomResponse<QuoteId> = quote.try_into()?;
+
+        Ok(quote.into())
+    }
+}
+
 impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
     fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response<QuoteId> {
         MeltQuoteBolt11Response {
@@ -872,6 +905,13 @@ pub enum MeltPaymentRequest {
         #[serde(with = "offer_serde")]
         offer: Box<Offer>,
     },
+    /// Custom payment method
+    Custom {
+        /// Payment method name
+        method: String,
+        /// Payment request string
+        request: String,
+    },
 }
 
 impl std::fmt::Display for MeltPaymentRequest {
@@ -879,6 +919,7 @@ impl std::fmt::Display for MeltPaymentRequest {
         match self {
             MeltPaymentRequest::Bolt11 { bolt11 } => write!(f, "{bolt11}"),
             MeltPaymentRequest::Bolt12 { offer } => write!(f, "{offer}"),
+            MeltPaymentRequest::Custom { request, .. } => write!(f, "{request}"),
         }
     }
 }

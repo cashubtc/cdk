@@ -23,6 +23,7 @@ mod tests {
     use std::str::FromStr;
 
     use cdk_common::database::WalletDatabase;
+    use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::{ProofDleq, State};
     use cdk_common::secret::Secret;
 
@@ -166,8 +167,8 @@ mod tests {
         // Test PaymentMethod variants
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
         let payment_methods = [
-            PaymentMethod::Bolt11,
-            PaymentMethod::Bolt12,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            PaymentMethod::Known(KnownMethod::Bolt11),
             PaymentMethod::Custom("custom".to_string()),
         ];
 
@@ -324,7 +325,7 @@ mod tests {
             state: MintQuoteState::Paid,
             expiry: 1000000000,
             secret_key: None,
-            payment_method: PaymentMethod::Bolt11,
+            payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             amount_issued: Amount::from(100),
             amount_paid: Amount::from(100),
         };
@@ -339,7 +340,7 @@ mod tests {
             state: MintQuoteState::Paid,
             expiry: 1000000000,
             secret_key: None,
-            payment_method: PaymentMethod::Bolt11,
+            payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(100),
         };
@@ -354,7 +355,7 @@ mod tests {
             state: MintQuoteState::Unpaid,
             expiry: 1000000000,
             secret_key: None,
-            payment_method: PaymentMethod::Bolt12,
+            payment_method: PaymentMethod::Known(KnownMethod::Bolt12),
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(0),
         };
@@ -369,7 +370,7 @@ mod tests {
             state: MintQuoteState::Unpaid,
             expiry: 1000000000,
             secret_key: None,
-            payment_method: PaymentMethod::Bolt11,
+            payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(0),
         };
