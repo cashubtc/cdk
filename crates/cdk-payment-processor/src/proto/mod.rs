@@ -76,6 +76,13 @@ impl TryFrom<PaymentIdentifier> for CdkPaymentIdentifier {
             (PaymentIdentifierType::CustomId, Some(payment_identifier::Value::Id(id))) => {
                 Ok(CdkPaymentIdentifier::CustomId(id))
             }
+            (PaymentIdentifierType::PaymentId, Some(payment_identifier::Value::Hash(hash))) => {
+                let decoded = hex::decode(hash)?;
+                let hash_array: [u8; 32] = decoded
+                    .try_into()
+                    .map_err(|_| crate::error::Error::InvalidHash)?;
+                Ok(CdkPaymentIdentifier::PaymentId(hash_array))
+            }
             _ => Err(crate::error::Error::InvalidPaymentIdentifier),
         }
     }
@@ -84,7 +91,9 @@ impl TryFrom<PaymentIdentifier> for CdkPaymentIdentifier {
 impl TryFrom<MakePaymentResponse> for CdkMakePaymentResponse {
     type Error = crate::error::Error;
     fn try_from(value: MakePaymentResponse) -> Result<Self, Self::Error> {
-        let status = value.status().as_str_name().parse()?;
+        // Use direct enum conversion instead of parsing string from as_str_name()
+        // as_str_name() returns "QUOTE_STATE_PAID" but MeltQuoteState::from_str expects "PAID"
+        let status: cdk_common::nuts::MeltQuoteState = value.status().into();
         let payment_proof = value.payment_proof;
         let total_spent = value.total_spent.into();
         let unit = CurrencyUnit::from_str(&value.unit)?;
