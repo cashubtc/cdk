@@ -727,6 +727,11 @@ impl PaymentMethod {
         matches!(self, Self::Known(KnownMethod::Bolt12))
     }
 }
+impl Default for PaymentMethod {
+    fn default() -> Self {
+        Self::Known(KnownMethod::Bolt11)
+    }
+}
 
 impl FromStr for PaymentMethod {
     type Err = Error;
