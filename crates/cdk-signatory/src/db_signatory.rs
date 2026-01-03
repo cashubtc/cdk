@@ -22,6 +22,7 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, Signatory
 ///
 /// The private keys and the all key-related data is stored in memory, in the same process, but it
 /// is not accessible from the outside.
+#[allow(missing_debug_implementations)]
 pub struct DbSignatory {
     keysets: RwLock<HashMap<Id, (MintKeySetInfo, MintKeySet)>>,
     active_keysets: RwLock<HashMap<CurrencyUnit, Id>>,
@@ -34,6 +35,10 @@ pub struct DbSignatory {
 
 impl DbSignatory {
     /// Creates a new MemorySignatory instance
+    ///
+    /// # Panics
+    ///
+    /// Panics if the seed produces an invalid master key (should never happen with valid entropy).
     pub async fn new(
         localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
         seed: &[u8],

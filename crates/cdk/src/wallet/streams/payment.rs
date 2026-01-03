@@ -21,6 +21,7 @@ type SubscribeReceived = (Option<MintEvent<String>>, Vec<ActiveSubscription>);
 type PaymentValue = (String, Option<Amount>);
 
 /// PaymentWaiter
+#[allow(missing_debug_implementations)]
 pub struct PaymentStream<'a> {
     wallet: Option<(&'a Wallet, Vec<WalletSubscription>)>,
     is_finalized: bool,
@@ -59,7 +60,18 @@ impl<'a> PaymentStream<'a> {
     fn poll_init_subscription(&mut self, cx: &mut std::task::Context<'_>) -> Option<()> {
         if let Some((wallet, filters)) = self.wallet.take() {
             self.subscriber_future = Some(Box::pin(async move {
-                join_all(filters.into_iter().map(|w| wallet.subscribe(w))).await
+                let results = join_all(filters.into_iter().map(|w| wallet.subscribe(w))).await;
+                // Collect successful subscriptions, log errors
+                results
+                    .into_iter()
+                    .filter_map(|r| match r {
+                        Ok(sub) => Some(sub),
+                        Err(e) => {
+                            tracing::warn!("Failed to create subscription: {}", e);
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
             }));
         }
 

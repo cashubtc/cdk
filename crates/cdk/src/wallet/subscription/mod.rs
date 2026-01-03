@@ -106,7 +106,7 @@ impl SubscriptionManager {
 }
 
 /// MintSubTopics
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct MintSubTopics {}
 
 #[async_trait::async_trait]
