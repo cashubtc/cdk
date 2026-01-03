@@ -256,6 +256,7 @@ macro_rules! mint_db_test {
             reject_duplicate_payment_ids,
             remove_spent_proofs_should_fail,
             get_proofs_with_inconsistent_states_fails,
+            get_proofs_fails_when_some_not_found,
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

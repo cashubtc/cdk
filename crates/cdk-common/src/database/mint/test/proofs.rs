@@ -858,3 +858,81 @@ where
 
     tx.rollback().await.unwrap();
 }
+
+/// Test that get_proofs fails when some requested proofs don't exist
+///
+/// This validates that the database returns an error when not all requested
+/// proofs are found, rather than silently returning a partial result.
+pub async fn get_proofs_fails_when_some_not_found<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+    let quote_id = QuoteId::new_uuid();
+
+    // Create two proofs that will be stored
+    let stored_proofs = vec![
+        Proof {
+            amount: Amount::from(100),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+        Proof {
+            amount: Amount::from(200),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+    ];
+
+    // Create a third proof that will NOT be stored
+    let non_existent_proof = Proof {
+        amount: Amount::from(300),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+    };
+
+    let stored_ys: Vec<_> = stored_proofs.iter().map(|p| p.y().unwrap()).collect();
+    let non_existent_y = non_existent_proof.y().unwrap();
+
+    // Add only the first two proofs
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(
+        stored_proofs,
+        Some(quote_id),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Verify the stored proofs exist
+    let states = db.get_proofs_states(&stored_ys).await.unwrap();
+    assert_eq!(states.len(), 2);
+    assert!(states[0].is_some(), "First proof should exist");
+    assert!(states[1].is_some(), "Second proof should exist");
+
+    // Verify the non-existent proof doesn't exist
+    let states = db.get_proofs_states(&[non_existent_y]).await.unwrap();
+    assert_eq!(states[0], None, "Third proof should not exist");
+
+    // Now try to get all three proofs (2 exist, 1 doesn't) - this should fail
+    let all_ys = vec![stored_ys[0], stored_ys[1], non_existent_y];
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx.get_proofs(&all_ys).await;
+
+    assert!(
+        result.is_err(),
+        "get_proofs should fail when some proofs don't exist (got 2 of 3)"
+    );
+
+    tx.rollback().await.unwrap();
+}
