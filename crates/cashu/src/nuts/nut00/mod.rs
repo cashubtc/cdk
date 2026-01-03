@@ -1066,4 +1066,94 @@ mod tests {
 
         assert!(matches!(deserialized, Witness::P2PKWitness(_)));
     }
+
+    #[test]
+    fn test_proofs_methods_count_by_keyset() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"},
+                {"id":"00ad268c4d1f5826","amount":4,"secret":"secret3","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}
+            ]"#,
+        ).unwrap();
+
+        let counts = proofs.count_by_keyset();
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts[&Id::from_str("009a1f293253e41e").unwrap()], 2);
+        assert_eq!(counts[&Id::from_str("00ad268c4d1f5826").unwrap()], 1);
+    }
+
+    #[test]
+    fn test_proofs_methods_sum_by_keyset() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"},
+                {"id":"00ad268c4d1f5826","amount":4,"secret":"secret3","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}
+            ]"#,
+        ).unwrap();
+
+        let sums = proofs.sum_by_keyset();
+        assert_eq!(sums.len(), 2);
+        assert_eq!(
+            sums[&Id::from_str("009a1f293253e41e").unwrap()],
+            Amount::from(10)
+        );
+        assert_eq!(
+            sums[&Id::from_str("00ad268c4d1f5826").unwrap()],
+            Amount::from(4)
+        );
+    }
+
+    #[test]
+    fn test_proofs_methods_total_amount() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"},
+                {"id":"00ad268c4d1f5826","amount":4,"secret":"secret3","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}
+            ]"#,
+        ).unwrap();
+
+        let total = proofs.total_amount().unwrap();
+        assert_eq!(total, Amount::from(14));
+    }
+
+    #[test]
+    fn test_proofs_methods_ys() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}
+            ]"#,
+        ).unwrap();
+
+        let ys = proofs.ys().unwrap();
+        assert_eq!(ys.len(), 2);
+        // Each Y is hash_to_curve of the secret, verify they're different
+        assert_ne!(ys[0], ys[1]);
+    }
+
+    #[test]
+    fn test_proofs_methods_hashset() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"},
+                {"id":"00ad268c4d1f5826","amount":4,"secret":"secret3","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}
+            ]"#,
+        ).unwrap();
+
+        let proof_set: HashSet<Proof> = proofs.into_iter().collect();
+
+        // Test HashSet implementation of ProofsMethods
+        let counts = proof_set.count_by_keyset();
+        assert_eq!(counts.len(), 2);
+
+        let sums = proof_set.sum_by_keyset();
+        assert_eq!(sums.len(), 2);
+        // Total should be 14 (2 + 8 + 4)
+        let total: u64 = sums.values().map(|a| u64::from(*a)).sum();
+        assert_eq!(total, 14);
+    }
 }

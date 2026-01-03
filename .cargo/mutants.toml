@@ -57,4 +57,12 @@ exclude_re = [
     # hash_to_curve boundary check - would require finding a message that needs exactly 2^16
     # iterations which is impractical. The < vs <= mutation is not realistically testable.
     "crates/cashu/src/dhke.rs:49:.*replace < with",
+
+    # Secret::drop zeroizes memory for security. Testing this properly requires unsafe memory
+    # inspection. The security guarantee comes from using the zeroize crate correctly.
+    "crates/cashu/src/secret.rs.*impl Drop for Secret.*drop",
+
+    # serialize_to_cbor_diag is only used for CLI diagnostic output (decode_token, decode_request).
+    # Not part of any critical path - purely human-readable debugging output.
+    "crates/cashu/src/util/mod.rs.*serialize_to_cbor_diag",
 ]

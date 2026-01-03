@@ -98,3 +98,36 @@ impl<'de> Deserialize<'de> for QuoteId {
         )))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quote_id_display_uuid() {
+        // Test UUID display - should be hyphenated format
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let quote_id = QuoteId::UUID(uuid);
+        let displayed = quote_id.to_string();
+        assert_eq!(displayed, "550e8400-e29b-41d4-a716-446655440000");
+        assert!(!displayed.is_empty());
+
+        // Verify roundtrip works for UUID
+        let parsed: QuoteId = displayed.parse().unwrap();
+        assert_eq!(quote_id, parsed);
+    }
+
+    #[test]
+    fn test_quote_id_display_base64() {
+        // Test BASE64 display - should output the string as-is
+        let base64_str = "SGVsbG8gV29ybGQh"; // "Hello World!" with proper padding
+        let base64_id = QuoteId::BASE64(base64_str.to_string());
+        let displayed = base64_id.to_string();
+        assert_eq!(displayed, base64_str);
+        assert!(!displayed.is_empty());
+
+        // Verify roundtrip works for base64
+        let parsed: QuoteId = displayed.parse().unwrap();
+        assert_eq!(base64_id, parsed);
+    }
+}
