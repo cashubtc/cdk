@@ -120,12 +120,12 @@ impl Wallet {
             .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Pending, self.unit.clone()))
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
-        let mut tx = self.localstore.begin_db_transaction().await?;
-        tx.update_proofs(proofs_info.clone(), vec![]).await?;
+        self.localstore
+            .update_proofs(proofs_info.clone(), vec![])
+            .await?;
 
         let mut pre_swap = self
             .create_swap(
-                tx,
                 active_keyset_id,
                 &fee_and_amounts,
                 None,
@@ -151,10 +151,9 @@ impl Wallet {
                 tracing::error!("Failed to post swap request: {}", err);
 
                 // Remove the pending proofs we added since the swap failed
-                let mut tx = self.localstore.begin_db_transaction().await?;
-                tx.update_proofs(vec![], proofs_info.into_iter().map(|p| p.y).collect())
+                self.localstore
+                    .update_proofs(vec![], proofs_info.into_iter().map(|p| p.y).collect())
                     .await?;
-                tx.commit().await?;
 
                 return Err(err);
             }
@@ -168,8 +167,8 @@ impl Wallet {
             &keys,
         )?;
 
-        let mut tx = self.localstore.begin_db_transaction().await?;
-        tx.increment_keyset_counter(&active_keyset_id, recv_proofs.len() as u32)
+        self.localstore
+            .increment_keyset_counter(&active_keyset_id, recv_proofs.len() as u32)
             .await?;
 
         let total_amount = recv_proofs.total_amount()?;
@@ -179,31 +178,31 @@ impl Wallet {
             .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, self.unit.clone()))
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
-        tx.update_proofs(
-            recv_proof_infos,
-            proofs_info.into_iter().map(|p| p.y).collect(),
-        )
-        .await?;
+        self.localstore
+            .update_proofs(
+                recv_proof_infos,
+                proofs_info.into_iter().map(|p| p.y).collect(),
+            )
+            .await?;
 
         // Add transaction to store
-        tx.add_transaction(Transaction {
-            mint_url: self.mint_url.clone(),
-            direction: TransactionDirection::Incoming,
-            amount: total_amount,
-            fee: proofs_amount - total_amount,
-            unit: self.unit.clone(),
-            ys: proofs_ys,
-            timestamp: unix_time(),
-            memo,
-            metadata: opts.metadata,
-            quote_id: None,
-            payment_request: None,
-            payment_proof: None,
-            payment_method: None,
-        })
-        .await?;
-
-        tx.commit().await?;
+        self.localstore
+            .add_transaction(Transaction {
+                mint_url: self.mint_url.clone(),
+                direction: TransactionDirection::Incoming,
+                amount: total_amount,
+                fee: proofs_amount - total_amount,
+                unit: self.unit.clone(),
+                ys: proofs_ys,
+                timestamp: unix_time(),
+                memo,
+                metadata: opts.metadata,
+                quote_id: None,
+                payment_request: None,
+                payment_proof: None,
+                payment_method: None,
+            })
+            .await?;
 
         Ok(total_amount)
     }

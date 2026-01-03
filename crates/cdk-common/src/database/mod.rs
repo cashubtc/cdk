@@ -29,10 +29,7 @@ pub use mint::{
 #[cfg(all(feature = "mint", feature = "auth"))]
 pub use mint::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
 #[cfg(feature = "wallet")]
-pub use wallet::{
-    Database as WalletDatabase, DatabaseTransaction as WalletDatabaseTransaction,
-    DynWalletDatabaseTransaction,
-};
+pub use wallet::Database as WalletDatabase;
 
 /// A wrapper indicating that a resource has been acquired with a database lock.
 ///

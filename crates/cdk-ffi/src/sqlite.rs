@@ -5,9 +5,9 @@ use cdk_sqlite::wallet::WalletSqliteDatabase as CdkWalletSqliteDatabase;
 use cdk_sqlite::SqliteConnectionManager;
 
 use crate::{
-    CurrencyUnit, FfiError, FfiWalletSQLDatabase, Id, KeySetInfo, Keys, MeltQuote, MintInfo,
-    MintQuote, MintUrl, ProofInfo, ProofState, PublicKey, SpendingConditions, Transaction,
-    TransactionDirection, TransactionId, WalletDatabase,
+    CurrencyUnit, FfiError, FfiWalletSQLDatabase, Id, KeySet, KeySetInfo, Keys, MeltQuote,
+    MintInfo, MintQuote, MintUrl, ProofInfo, ProofState, PublicKey, SpendingConditions,
+    Transaction, TransactionDirection, TransactionId, WalletDatabase,
 };
 
 /// FFI-compatible WalletSqliteDatabase implementation that implements the WalletDatabaseFfi trait
@@ -67,10 +67,10 @@ impl WalletSqliteDatabase {
 #[uniffi::export(async_runtime = "tokio")]
 #[async_trait::async_trait]
 impl WalletDatabase for WalletSqliteDatabase {
-    async fn begin_db_transaction(
-        &self,
-    ) -> Result<Arc<crate::database::WalletDatabaseTransactionWrapper>, FfiError> {
-        self.inner.begin_db_transaction().await
+    // ========== Read methods ==========
+
+    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, FfiError> {
+        self.inner.get_proofs_by_ys(ys).await
     }
 
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError> {
@@ -128,10 +128,6 @@ impl WalletDatabase for WalletSqliteDatabase {
             .await
     }
 
-    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, FfiError> {
-        self.inner.get_proofs_by_ys(ys).await
-    }
-
     async fn get_balance(
         &self,
         mint_url: Option<MintUrl>,
@@ -178,5 +174,110 @@ impl WalletDatabase for WalletSqliteDatabase {
         self.inner
             .kv_list(primary_namespace, secondary_namespace)
             .await
+    }
+
+    async fn kv_write(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), FfiError> {
+        self.inner
+            .kv_write(primary_namespace, secondary_namespace, key, value)
+            .await
+    }
+
+    async fn kv_remove(
+        &self,
+        primary_namespace: String,
+        secondary_namespace: String,
+        key: String,
+    ) -> Result<(), FfiError> {
+        self.inner
+            .kv_remove(primary_namespace, secondary_namespace, key)
+            .await
+    }
+
+    // ========== Write methods ==========
+
+    async fn update_proofs(
+        &self,
+        added: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), FfiError> {
+        self.inner.update_proofs(added, removed_ys).await
+    }
+
+    async fn update_proofs_state(
+        &self,
+        ys: Vec<PublicKey>,
+        state: ProofState,
+    ) -> Result<(), FfiError> {
+        self.inner.update_proofs_state(ys, state).await
+    }
+
+    async fn add_transaction(&self, transaction: Transaction) -> Result<(), FfiError> {
+        self.inner.add_transaction(transaction).await
+    }
+
+    async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError> {
+        self.inner.remove_transaction(transaction_id).await
+    }
+
+    async fn update_mint_url(
+        &self,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
+    ) -> Result<(), FfiError> {
+        self.inner.update_mint_url(old_mint_url, new_mint_url).await
+    }
+
+    async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError> {
+        self.inner.increment_keyset_counter(keyset_id, count).await
+    }
+
+    async fn add_mint(
+        &self,
+        mint_url: MintUrl,
+        mint_info: Option<MintInfo>,
+    ) -> Result<(), FfiError> {
+        self.inner.add_mint(mint_url, mint_info).await
+    }
+
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), FfiError> {
+        self.inner.remove_mint(mint_url).await
+    }
+
+    async fn add_mint_keysets(
+        &self,
+        mint_url: MintUrl,
+        keysets: Vec<KeySetInfo>,
+    ) -> Result<(), FfiError> {
+        self.inner.add_mint_keysets(mint_url, keysets).await
+    }
+
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError> {
+        self.inner.add_mint_quote(quote).await
+    }
+
+    async fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError> {
+        self.inner.remove_mint_quote(quote_id).await
+    }
+
+    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError> {
+        self.inner.add_melt_quote(quote).await
+    }
+
+    async fn remove_melt_quote(&self, quote_id: String) -> Result<(), FfiError> {
+        self.inner.remove_melt_quote(quote_id).await
+    }
+
+    async fn add_keys(&self, keyset: KeySet) -> Result<(), FfiError> {
+        self.inner.add_keys(keyset).await
+    }
+
+    async fn remove_keys(&self, id: Id) -> Result<(), FfiError> {
+        self.inner.remove_keys(id).await
     }
 }

@@ -286,9 +286,8 @@ impl AuthWallet {
     /// Get Auth Token
     #[instrument(skip(self))]
     pub async fn get_blind_auth_token(&self) -> Result<Option<BlindAuthToken>, Error> {
-        let mut tx = self.localstore.begin_db_transaction().await?;
-
-        let auth_proof = match tx
+        let auth_proof = match self
+            .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
                 Some(CurrencyUnit::Auth),
@@ -299,8 +298,9 @@ impl AuthWallet {
             .pop()
         {
             Some(proof) => {
-                tx.update_proofs(vec![], vec![proof.proof.y()?]).await?;
-                tx.commit().await?;
+                self.localstore
+                    .update_proofs(vec![], vec![proof.proof.y()?])
+                    .await?;
                 proof.proof.try_into()?
             }
             None => return Ok(None),
@@ -452,9 +452,7 @@ impl AuthWallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        let mut tx = self.localstore.begin_db_transaction().await?;
-        tx.update_proofs(proof_infos, vec![]).await?;
-        tx.commit().await?;
+        self.localstore.update_proofs(proof_infos, vec![]).await?;
 
         Ok(proofs)
     }

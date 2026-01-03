@@ -8,10 +8,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::common::ProofInfo;
-use cdk_common::database::{
-    validate_kvstore_params, DbTransactionFinalizer, KVStore, KVStoreDatabase, KVStoreTransaction,
-    WalletDatabase, WalletDatabaseTransaction,
-};
+use cdk_common::database::{validate_kvstore_params, KVStoreDatabase, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
@@ -21,79 +18,6 @@ use cdk_common::{
 };
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
-
-/// Enum to abstract over read-only and read-write table access for KV store operations
-enum KvTable<'txn> {
-    ReadOnly(redb::ReadOnlyTable<(&'static str, &'static str, &'static str), &'static [u8]>),
-    ReadWrite(redb::Table<'txn, (&'static str, &'static str, &'static str), &'static [u8]>),
-}
-
-impl KvTable<'_> {
-    /// Read a value from the KV store table
-    #[inline(always)]
-    fn kv_read(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-    ) -> Result<Option<Vec<u8>>, Error> {
-        let result = match self {
-            KvTable::ReadOnly(table) => table
-                .get((primary_namespace, secondary_namespace, key))
-                .map_err(Error::from)?
-                .map(|v| v.value().to_vec()),
-            KvTable::ReadWrite(table) => table
-                .get((primary_namespace, secondary_namespace, key))
-                .map_err(Error::from)?
-                .map(|v| v.value().to_vec()),
-        };
-
-        Ok(result)
-    }
-
-    /// List all keys in a namespace from the KV store table
-    #[inline(always)]
-    fn kv_list(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-    ) -> Result<Vec<String>, Error> {
-        let mut keys = Vec::new();
-
-        // Use range iterator for efficient lookup by namespace prefix
-        let start = (primary_namespace, secondary_namespace, "");
-
-        match self {
-            KvTable::ReadOnly(table) => {
-                for result in table.range(start..).map_err(Error::from)? {
-                    let (key_tuple, _) = result.map_err(Error::from)?;
-                    let (primary_from_db, secondary_from_db, k) = key_tuple.value();
-                    if primary_from_db != primary_namespace
-                        || secondary_from_db != secondary_namespace
-                    {
-                        break;
-                    }
-                    keys.push(k.to_string());
-                }
-            }
-            KvTable::ReadWrite(table) => {
-                for result in table.range(start..).map_err(Error::from)? {
-                    let (key_tuple, _) = result.map_err(Error::from)?;
-                    let (primary_from_db, secondary_from_db, k) = key_tuple.value();
-                    if primary_from_db != primary_namespace
-                        || secondary_from_db != secondary_namespace
-                    {
-                        break;
-                    }
-                    keys.push(k.to_string());
-                }
-            }
-        }
-
-        // Keys are already sorted by the B-tree structure
-        Ok(keys)
-    }
-}
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
@@ -130,29 +54,6 @@ const DATABASE_VERSION: u32 = 4;
 #[derive(Debug, Clone)]
 pub struct WalletRedbDatabase {
     db: Arc<Database>,
-}
-
-/// Redb Wallet Transaction
-pub struct RedbWalletTransaction {
-    write_txn: Option<redb::WriteTransaction>,
-}
-
-impl RedbWalletTransaction {
-    /// Create a new transaction
-    fn new(write_txn: redb::WriteTransaction) -> Self {
-        Self {
-            write_txn: Some(write_txn),
-        }
-    }
-
-    /// Get a mutable reference to the write transaction
-    fn txn(&mut self) -> Result<&mut redb::WriteTransaction, Error> {
-        self.write_txn.as_mut().ok_or_else(|| {
-            Error::CDKDatabase(database::Error::Internal(
-                "Transaction already consumed".to_owned(),
-            ))
-        })
-    }
 }
 
 impl WalletRedbDatabase {
@@ -594,12 +495,499 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         Ok(transactions)
     }
 
-    async fn begin_db_transaction(
+    #[instrument(skip(self, added, removed_ys))]
+    async fn update_proofs(
         &self,
-    ) -> Result<Box<dyn WalletDatabaseTransaction<database::Error> + Send + Sync>, database::Error>
-    {
+        added: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
-        Ok(Box::new(RedbWalletTransaction::new(write_txn)))
+        {
+            let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+
+            for proof_info in added.iter() {
+                table
+                    .insert(
+                        proof_info.y.to_bytes().as_slice(),
+                        serde_json::to_string(&proof_info)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
+
+            for y in removed_ys.iter() {
+                table.remove(y.to_bytes().as_slice()).map_err(Error::from)?;
+            }
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    async fn update_proofs_state(
+        &self,
+        ys: Vec<PublicKey>,
+        state: State,
+    ) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+
+            for y in ys {
+                let y_slice = y.to_bytes();
+                let proof = table
+                    .get(y_slice.as_slice())
+                    .map_err(Error::from)?
+                    .ok_or(Error::UnknownY)?;
+
+                let mut proof_info =
+                    serde_json::from_str::<ProofInfo>(proof.value()).map_err(Error::from)?;
+                drop(proof);
+
+                proof_info.state = state;
+
+                table
+                    .insert(
+                        y_slice.as_slice(),
+                        serde_json::to_string(&proof_info)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn add_transaction(&self, transaction: Transaction) -> Result<(), database::Error> {
+        let id = transaction.id();
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn
+                .open_table(TRANSACTIONS_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(
+                    id.as_slice(),
+                    serde_json::to_string(&transaction)
+                        .map_err(Error::from)?
+                        .as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn update_mint_url(
+        &self,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
+    ) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        // Update proofs table
+        {
+            let read_table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+            let proofs: Vec<ProofInfo> = read_table
+                .iter()
+                .map_err(Error::from)?
+                .flatten()
+                .filter_map(|(_k, v)| {
+                    let proof_info = serde_json::from_str::<ProofInfo>(v.value()).ok()?;
+                    if proof_info.mint_url == old_mint_url {
+                        Some(proof_info)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            drop(read_table);
+
+            if !proofs.is_empty() {
+                let mut write_table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+                for mut proof_info in proofs {
+                    proof_info.mint_url = new_mint_url.clone();
+                    write_table
+                        .insert(
+                            proof_info.y.to_bytes().as_slice(),
+                            serde_json::to_string(&proof_info)
+                                .map_err(Error::from)?
+                                .as_str(),
+                        )
+                        .map_err(Error::from)?;
+                }
+            }
+        }
+
+        // Update mint quotes
+        {
+            let mut table = write_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+
+            let unix_time = unix_time();
+
+            let quotes: Vec<MintQuote> = table
+                .iter()
+                .map_err(Error::from)?
+                .flatten()
+                .filter_map(|(_, quote)| {
+                    let mut q: MintQuote = serde_json::from_str(quote.value()).ok()?;
+                    if q.mint_url == old_mint_url && q.expiry >= unix_time {
+                        q.mint_url = new_mint_url.clone();
+                        Some(q)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for quote in quotes {
+                table
+                    .insert(
+                        quote.id.as_str(),
+                        serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn increment_keyset_counter(
+        &self,
+        keyset_id: &Id,
+        count: u32,
+    ) -> Result<u32, database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        let new_counter = {
+            let mut table = write_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
+            let current_counter = table
+                .get(keyset_id.to_string().as_str())
+                .map_err(Error::from)?
+                .map(|x| x.value())
+                .unwrap_or_default();
+
+            let new_counter = current_counter + count;
+
+            table
+                .insert(keyset_id.to_string().as_str(), new_counter)
+                .map_err(Error::from)?;
+
+            new_counter
+        };
+        write_txn.commit().map_err(Error::from)?;
+        Ok(new_counter)
+    }
+
+    #[instrument(skip(self))]
+    async fn add_mint(
+        &self,
+        mint_url: MintUrl,
+        mint_info: Option<MintInfo>,
+    ) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+            table
+                .insert(
+                    mint_url.to_string().as_str(),
+                    serde_json::to_string(&mint_info)
+                        .map_err(Error::from)?
+                        .as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+            table
+                .remove(mint_url.to_string().as_str())
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn add_mint_keysets(
+        &self,
+        mint_url: MintUrl,
+        keysets: Vec<KeySetInfo>,
+    ) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn
+                .open_multimap_table(MINT_KEYSETS_TABLE)
+                .map_err(Error::from)?;
+            let mut keysets_table = write_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
+            let mut u32_table = write_txn
+                .open_table(KEYSET_U32_MAPPING)
+                .map_err(Error::from)?;
+
+            let mut existing_u32 = false;
+
+            for keyset in keysets {
+                // Check if keyset already exists
+                let existing_keyset = {
+                    let existing_keyset = keysets_table
+                        .get(keyset.id.to_bytes().as_slice())
+                        .map_err(Error::from)?;
+
+                    existing_keyset.map(|r| r.value().to_string())
+                };
+
+                let existing = u32_table
+                    .insert(u32::from(keyset.id), keyset.id.to_string().as_str())
+                    .map_err(Error::from)?;
+
+                match existing {
+                    None => existing_u32 = false,
+                    Some(id) => {
+                        let id = Id::from_str(id.value())?;
+
+                        if id == keyset.id {
+                            existing_u32 = false;
+                        } else {
+                            existing_u32 = true;
+                            break;
+                        }
+                    }
+                }
+
+                let keyset = if let Some(existing_keyset) = existing_keyset {
+                    let mut existing_keyset: KeySetInfo = serde_json::from_str(&existing_keyset)?;
+
+                    existing_keyset.active = keyset.active;
+                    existing_keyset.input_fee_ppk = keyset.input_fee_ppk;
+
+                    existing_keyset
+                } else {
+                    table
+                        .insert(
+                            mint_url.to_string().as_str(),
+                            keyset.id.to_bytes().as_slice(),
+                        )
+                        .map_err(Error::from)?;
+
+                    keyset
+                };
+
+                keysets_table
+                    .insert(
+                        keyset.id.to_bytes().as_slice(),
+                        serde_json::to_string(&keyset)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
+
+            if existing_u32 {
+                tracing::warn!("Keyset already exists for keyset id");
+                return Err(database::Error::Duplicate);
+            }
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(
+                    quote.id.as_str(),
+                    serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            table.remove(quote_id).map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn
+                .open_table(MELT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(
+                    quote.id.as_str(),
+                    serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn
+                .open_table(MELT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            table.remove(quote_id).map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn add_keys(&self, keyset: KeySet) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        keyset.verify_id()?;
+
+        {
+            let mut table = write_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
+
+            let existing_keys = table
+                .insert(
+                    keyset.id.to_string().as_str(),
+                    serde_json::to_string(&keyset.keys)
+                        .map_err(Error::from)?
+                        .as_str(),
+                )
+                .map_err(Error::from)?
+                .is_some();
+
+            let mut table = write_txn
+                .open_table(KEYSET_U32_MAPPING)
+                .map_err(Error::from)?;
+
+            let existing = table
+                .insert(u32::from(keyset.id), keyset.id.to_string().as_str())
+                .map_err(Error::from)?;
+
+            let existing_u32 = match existing {
+                None => false,
+                Some(id) => {
+                    let id = Id::from_str(id.value())?;
+                    id != keyset.id
+                }
+            };
+
+            if existing_keys || existing_u32 {
+                tracing::warn!("Keys already exist for keyset id");
+                return Err(database::Error::Duplicate);
+            }
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn remove_keys(&self, keyset_id: &Id) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
+
+            table
+                .remove(keyset_id.to_string().as_str())
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn remove_transaction(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn
+                .open_table(TRANSACTIONS_TABLE)
+                .map_err(Error::from)?;
+            table
+                .remove(transaction_id.as_slice())
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    // KV Store write methods (non-transactional)
+
+    #[instrument(skip(self, value))]
+    async fn kv_write(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<(), database::Error> {
+        // Validate parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
+
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
+            table
+                .insert((primary_namespace, secondary_namespace, key), value)
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn kv_remove(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<(), database::Error> {
+        // Validate parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
+
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
+            table
+                .remove((primary_namespace, secondary_namespace, key))
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
     }
 }
 
@@ -618,9 +1006,14 @@ impl KVStoreDatabase for WalletRedbDatabase {
         validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
         let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = KvTable::ReadOnly(read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?);
+        let table = read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
 
-        Ok(table.kv_read(primary_namespace, secondary_namespace, key)?)
+        let result = table
+            .get((primary_namespace, secondary_namespace, key))
+            .map_err(Error::from)?
+            .map(|v| v.value().to_vec());
+
+        Ok(result)
     }
 
     #[instrument(skip_all)]
@@ -632,613 +1025,21 @@ impl KVStoreDatabase for WalletRedbDatabase {
         validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
 
         let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = KvTable::ReadOnly(read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?);
+        let table = read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
 
-        Ok(table.kv_list(primary_namespace, secondary_namespace)?)
-    }
-}
+        let mut keys = Vec::new();
+        let start = (primary_namespace, secondary_namespace, "");
 
-#[async_trait]
-impl KVStore for WalletRedbDatabase {
-    async fn begin_transaction(
-        &self,
-    ) -> Result<Box<dyn KVStoreTransaction<Self::Err> + Send + Sync>, database::Error> {
-        let write_txn = self.db.begin_write().map_err(Error::from)?;
-        Ok(Box::new(RedbWalletTransaction::new(write_txn)))
-    }
-}
-
-#[async_trait]
-impl WalletDatabaseTransaction<database::Error> for RedbWalletTransaction {
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keyset_by_id(
-        &mut self,
-        keyset_id: &Id,
-    ) -> Result<Option<KeySetInfo>, database::Error> {
-        let txn = self.txn().map_err(Into::<database::Error>::into)?;
-        let table = txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
-
-        let result = match table
-            .get(keyset_id.to_bytes().as_slice())
-            .map_err(Error::from)?
-        {
-            Some(keyset) => {
-                let keyset: KeySetInfo =
-                    serde_json::from_str(keyset.value()).map_err(Error::from)?;
-
-                Ok(Some(keyset))
+        for result in table.range(start..).map_err(Error::from)? {
+            let (key_tuple, _) = result.map_err(Error::from)?;
+            let (primary_from_db, secondary_from_db, k) = key_tuple.value();
+            if primary_from_db != primary_namespace || secondary_from_db != secondary_namespace {
+                break;
             }
-            None => Ok(None),
-        };
-
-        result
-    }
-
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keys(&mut self, keyset_id: &Id) -> Result<Option<Keys>, database::Error> {
-        let txn = self.txn().map_err(Into::<database::Error>::into)?;
-        let table = txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
-
-        if let Some(mint_info) = table
-            .get(keyset_id.to_string().as_str())
-            .map_err(Error::from)?
-        {
-            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
+            keys.push(k.to_string());
         }
 
-        Ok(None)
-    }
-
-    #[instrument(skip(self))]
-    async fn add_mint(
-        &mut self,
-        mint_url: MintUrl,
-        mint_info: Option<MintInfo>,
-    ) -> Result<(), database::Error> {
-        let txn = self.txn()?;
-        let mut table = txn.open_table(MINTS_TABLE).map_err(Error::from)?;
-        table
-            .insert(
-                mint_url.to_string().as_str(),
-                serde_json::to_string(&mint_info)
-                    .map_err(Error::from)?
-                    .as_str(),
-            )
-            .map_err(Error::from)?;
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn remove_mint(&mut self, mint_url: MintUrl) -> Result<(), database::Error> {
-        let txn = self.txn()?;
-        let mut table = txn.open_table(MINTS_TABLE).map_err(Error::from)?;
-        table
-            .remove(mint_url.to_string().as_str())
-            .map_err(Error::from)?;
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn update_mint_url(
-        &mut self,
-        old_mint_url: MintUrl,
-        new_mint_url: MintUrl,
-    ) -> Result<(), database::Error> {
-        // Update proofs table
-        {
-            let proofs = self
-                .get_proofs(Some(old_mint_url.clone()), None, None, None)
-                .await
-                .map_err(Error::from)?;
-
-            // Proofs with new url
-            let updated_proofs: Vec<ProofInfo> = proofs
-                .clone()
-                .into_iter()
-                .map(|mut p| {
-                    p.mint_url = new_mint_url.clone();
-                    p
-                })
-                .collect();
-
-            if !updated_proofs.is_empty() {
-                self.update_proofs(updated_proofs, vec![]).await?;
-            }
-        }
-
-        // Update mint quotes
-        {
-            let read_txn = self.txn()?;
-            let mut table = read_txn
-                .open_table(MINT_QUOTES_TABLE)
-                .map_err(Error::from)?;
-
-            let unix_time = unix_time();
-
-            let quotes = table
-                .iter()
-                .map_err(Error::from)?
-                .flatten()
-                .filter_map(|(_, quote)| {
-                    let mut q: MintQuote = serde_json::from_str(quote.value())
-                        .inspect_err(|err| {
-                            tracing::warn!(
-                                "Failed to deserialize {}  with error {}",
-                                quote.value(),
-                                err
-                            )
-                        })
-                        .ok()?;
-                    if q.expiry < unix_time {
-                        q.mint_url = new_mint_url.clone();
-                        Some(q)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            for quote in quotes {
-                table
-                    .insert(
-                        quote.id.as_str(),
-                        serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
-                    )
-                    .map_err(Error::from)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn add_mint_keysets(
-        &mut self,
-        mint_url: MintUrl,
-        keysets: Vec<KeySetInfo>,
-    ) -> Result<(), database::Error> {
-        let txn = self.txn()?;
-        let mut table = txn
-            .open_multimap_table(MINT_KEYSETS_TABLE)
-            .map_err(Error::from)?;
-        let mut keysets_table = txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
-        let mut u32_table = txn.open_table(KEYSET_U32_MAPPING).map_err(Error::from)?;
-
-        let mut existing_u32 = false;
-
-        for keyset in keysets {
-            // Check if keyset already exists
-            let existing_keyset = {
-                let existing_keyset = keysets_table
-                    .get(keyset.id.to_bytes().as_slice())
-                    .map_err(Error::from)?;
-
-                existing_keyset.map(|r| r.value().to_string())
-            };
-
-            let existing = u32_table
-                .insert(u32::from(keyset.id), keyset.id.to_string().as_str())
-                .map_err(Error::from)?;
-
-            match existing {
-                None => existing_u32 = false,
-                Some(id) => {
-                    let id = Id::from_str(id.value())?;
-
-                    if id == keyset.id {
-                        existing_u32 = false;
-                    } else {
-                        existing_u32 = true;
-                        break;
-                    }
-                }
-            }
-
-            let keyset = if let Some(existing_keyset) = existing_keyset {
-                let mut existing_keyset: KeySetInfo = serde_json::from_str(&existing_keyset)?;
-
-                existing_keyset.active = keyset.active;
-                existing_keyset.input_fee_ppk = keyset.input_fee_ppk;
-
-                existing_keyset
-            } else {
-                table
-                    .insert(
-                        mint_url.to_string().as_str(),
-                        keyset.id.to_bytes().as_slice(),
-                    )
-                    .map_err(Error::from)?;
-
-                keyset
-            };
-
-            keysets_table
-                .insert(
-                    keyset.id.to_bytes().as_slice(),
-                    serde_json::to_string(&keyset)
-                        .map_err(Error::from)?
-                        .as_str(),
-                )
-                .map_err(Error::from)?;
-        }
-
-        if existing_u32 {
-            tracing::warn!("Keyset already exists for keyset id");
-            return Err(database::Error::Duplicate);
-        }
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn get_mint_quote(
-        &mut self,
-        quote_id: &str,
-    ) -> Result<Option<MintQuote>, database::Error> {
-        let txn = self.txn()?;
-        let table = txn.open_table(MINT_QUOTES_TABLE).map_err(Error::from)?;
-
-        if let Some(mint_info) = table.get(quote_id).map_err(Error::from)? {
-            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
-        }
-
-        Ok(None)
-    }
-
-    #[instrument(skip_all)]
-    async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<(), database::Error> {
-        let txn = self.txn()?;
-        let mut table = txn.open_table(MINT_QUOTES_TABLE).map_err(Error::from)?;
-        table
-            .insert(
-                quote.id.as_str(),
-                serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
-            )
-            .map_err(Error::from)?;
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn remove_mint_quote(&mut self, quote_id: &str) -> Result<(), database::Error> {
-        let txn = self.txn()?;
-        let mut table = txn.open_table(MINT_QUOTES_TABLE).map_err(Error::from)?;
-        table.remove(quote_id).map_err(Error::from)?;
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn get_melt_quote(
-        &mut self,
-        quote_id: &str,
-    ) -> Result<Option<wallet::MeltQuote>, database::Error> {
-        let txn = self.txn()?;
-        let table = txn.open_table(MELT_QUOTES_TABLE).map_err(Error::from)?;
-
-        if let Some(mint_info) = table.get(quote_id).map_err(Error::from)? {
-            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
-        }
-
-        Ok(None)
-    }
-
-    #[instrument(skip_all)]
-    async fn add_melt_quote(&mut self, quote: wallet::MeltQuote) -> Result<(), database::Error> {
-        let txn = self.txn()?;
-        let mut table = txn.open_table(MELT_QUOTES_TABLE).map_err(Error::from)?;
-        table
-            .insert(
-                quote.id.as_str(),
-                serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
-            )
-            .map_err(Error::from)?;
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn remove_melt_quote(&mut self, quote_id: &str) -> Result<(), database::Error> {
-        let txn = self.txn()?;
-        let mut table = txn.open_table(MELT_QUOTES_TABLE).map_err(Error::from)?;
-        table.remove(quote_id).map_err(Error::from)?;
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn add_keys(&mut self, keyset: KeySet) -> Result<(), database::Error> {
-        let txn = self.txn()?;
-
-        keyset.verify_id()?;
-
-        let mut table = txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
-
-        let existing_keys = table
-            .insert(
-                keyset.id.to_string().as_str(),
-                serde_json::to_string(&keyset.keys)
-                    .map_err(Error::from)?
-                    .as_str(),
-            )
-            .map_err(Error::from)?
-            .is_some();
-
-        let mut table = txn.open_table(KEYSET_U32_MAPPING).map_err(Error::from)?;
-
-        let existing = table
-            .insert(u32::from(keyset.id), keyset.id.to_string().as_str())
-            .map_err(Error::from)?;
-
-        let existing_u32 = match existing {
-            None => false,
-            Some(id) => {
-                let id = Id::from_str(id.value())?;
-                id != keyset.id
-            }
-        };
-
-        if existing_keys || existing_u32 {
-            tracing::warn!("Keys already exist for keyset id");
-            return Err(database::Error::Duplicate);
-        }
-
-        Ok(())
-    }
-
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn remove_keys(&mut self, keyset_id: &Id) -> Result<(), database::Error> {
-        let txn = self.txn()?;
-        let mut table = txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
-
-        table
-            .remove(keyset_id.to_string().as_str())
-            .map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn get_proofs(
-        &mut self,
-        mint_url: Option<MintUrl>,
-        unit: Option<CurrencyUnit>,
-        state: Option<Vec<State>>,
-        spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Vec<ProofInfo>, database::Error> {
-        let txn = self.txn()?;
-        let table = txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-
-        let proofs: Vec<ProofInfo> = table
-            .iter()
-            .map_err(Error::from)?
-            .flatten()
-            .filter_map(|(_k, v)| {
-                let mut proof = None;
-
-                if let Ok(proof_info) = serde_json::from_str::<ProofInfo>(v.value()) {
-                    if proof_info.matches_conditions(&mint_url, &unit, &state, &spending_conditions)
-                    {
-                        proof = Some(proof_info)
-                    }
-                }
-
-                proof
-            })
-            .collect();
-
-        Ok(proofs)
-    }
-
-    #[instrument(skip(self, added, deleted_ys))]
-    async fn update_proofs(
-        &mut self,
-        added: Vec<ProofInfo>,
-        deleted_ys: Vec<PublicKey>,
-    ) -> Result<(), database::Error> {
-        let txn = self.txn()?;
-        let mut table = txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-
-        for proof_info in added.iter() {
-            table
-                .insert(
-                    proof_info.y.to_bytes().as_slice(),
-                    serde_json::to_string(&proof_info)
-                        .map_err(Error::from)?
-                        .as_str(),
-                )
-                .map_err(Error::from)?;
-        }
-
-        for y in deleted_ys.iter() {
-            table.remove(y.to_bytes().as_slice()).map_err(Error::from)?;
-        }
-
-        Ok(())
-    }
-
-    async fn update_proofs_state(
-        &mut self,
-        ys: Vec<PublicKey>,
-        state: State,
-    ) -> Result<(), database::Error> {
-        let txn = self.txn()?;
-        let mut table = txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-
-        for y in ys {
-            let y_slice = y.to_bytes();
-            let proof = table
-                .get(y_slice.as_slice())
-                .map_err(Error::from)?
-                .ok_or(Error::UnknownY)?;
-
-            let mut proof_info =
-                serde_json::from_str::<ProofInfo>(proof.value()).map_err(Error::from)?;
-            drop(proof);
-
-            proof_info.state = state;
-
-            table
-                .insert(
-                    y_slice.as_slice(),
-                    serde_json::to_string(&proof_info)
-                        .map_err(Error::from)?
-                        .as_str(),
-                )
-                .map_err(Error::from)?;
-        }
-
-        Ok(())
-    }
-
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn increment_keyset_counter(
-        &mut self,
-        keyset_id: &Id,
-        count: u32,
-    ) -> Result<u32, database::Error> {
-        let txn = self.txn()?;
-        let mut table = txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
-        let current_counter = table
-            .get(keyset_id.to_string().as_str())
-            .map_err(Error::from)?
-            .map(|x| x.value())
-            .unwrap_or_default();
-
-        let new_counter = current_counter + count;
-
-        table
-            .insert(keyset_id.to_string().as_str(), new_counter)
-            .map_err(Error::from)?;
-
-        Ok(new_counter)
-    }
-
-    #[instrument(skip(self))]
-    async fn add_transaction(&mut self, transaction: Transaction) -> Result<(), database::Error> {
-        let id = transaction.id();
-        let txn = self.txn()?;
-        let mut table = txn.open_table(TRANSACTIONS_TABLE).map_err(Error::from)?;
-        table
-            .insert(
-                id.as_slice(),
-                serde_json::to_string(&transaction)
-                    .map_err(Error::from)?
-                    .as_str(),
-            )
-            .map_err(Error::from)?;
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn remove_transaction(
-        &mut self,
-        transaction_id: TransactionId,
-    ) -> Result<(), database::Error> {
-        let txn = self.txn()?;
-        let mut table = txn.open_table(TRANSACTIONS_TABLE).map_err(Error::from)?;
-        table
-            .remove(transaction_id.as_slice())
-            .map_err(Error::from)?;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl KVStoreTransaction<database::Error> for RedbWalletTransaction {
-    #[instrument(skip_all)]
-    async fn kv_read(
-        &mut self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-    ) -> Result<Option<Vec<u8>>, database::Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
-
-        let txn = self.txn()?;
-        let table = KvTable::ReadWrite(txn.open_table(KV_STORE_TABLE).map_err(Error::from)?);
-
-        Ok(table.kv_read(primary_namespace, secondary_namespace, key)?)
-    }
-
-    #[instrument(skip_all)]
-    async fn kv_write(
-        &mut self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-        value: &[u8],
-    ) -> Result<(), database::Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
-
-        let txn = self.txn()?;
-        let mut table = txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
-
-        table
-            .insert((primary_namespace, secondary_namespace, key), value)
-            .map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn kv_remove(
-        &mut self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-    ) -> Result<(), database::Error> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
-
-        let txn = self.txn()?;
-        let mut table = txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
-
-        table
-            .remove((primary_namespace, secondary_namespace, key))
-            .map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn kv_list(
-        &mut self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-    ) -> Result<Vec<String>, database::Error> {
-        // Validate namespace parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
-
-        let txn = self.txn()?;
-        let table = KvTable::ReadWrite(txn.open_table(KV_STORE_TABLE).map_err(Error::from)?);
-
-        Ok(table.kv_list(primary_namespace, secondary_namespace)?)
-    }
-}
-
-#[async_trait]
-impl DbTransactionFinalizer for RedbWalletTransaction {
-    type Err = database::Error;
-
-    async fn commit(mut self: Box<Self>) -> Result<(), database::Error> {
-        if let Some(txn) = self.write_txn.take() {
-            txn.commit().map_err(Error::from)?;
-        }
-        Ok(())
-    }
-
-    async fn rollback(mut self: Box<Self>) -> Result<(), database::Error> {
-        if let Some(txn) = self.write_txn.take() {
-            txn.abort().map_err(Error::from)?;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for RedbWalletTransaction {
-    fn drop(&mut self) {
-        if let Some(txn) = self.write_txn.take() {
-            let _ = txn.abort();
-        }
+        Ok(keys)
     }
 }
 
