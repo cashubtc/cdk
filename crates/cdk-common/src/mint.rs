@@ -406,7 +406,6 @@ pub struct MintQuote {
     #[serde(default)]
     pub payments: Vec<IncomingPayment>,
     /// Payment Method
-    #[serde(default)]
     pub payment_method: PaymentMethod,
     /// Payment of payment(s) that filled quote
     #[serde(default)]
@@ -706,7 +705,6 @@ pub struct MeltQuote {
     /// Unix time quote was paid
     pub paid_time: Option<u64>,
     /// Payment method
-    #[serde(default)]
     pub payment_method: PaymentMethod,
 }
 

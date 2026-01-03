@@ -190,7 +190,7 @@ where
 }
 
 /// Melt Method Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltMethodSettings {
     /// Payment Method e.g. bolt11

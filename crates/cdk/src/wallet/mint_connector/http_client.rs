@@ -19,7 +19,6 @@ use super::{Error, MintConnector};
 use crate::mint_url::MintUrl;
 #[cfg(feature = "auth")]
 use crate::nuts::nut00::{KnownMethod, PaymentMethod};
-
 #[cfg(feature = "auth")]
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{

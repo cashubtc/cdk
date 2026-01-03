@@ -17,7 +17,7 @@ pub struct Mpp {
 }
 
 /// Mpp Method Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MppMethodSettings {
     /// Payment Method e.g. bolt11
