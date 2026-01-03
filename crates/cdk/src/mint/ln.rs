@@ -6,7 +6,7 @@ use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::DynMintPayment;
-use cdk_common::{Amount, MintQuoteState, PaymentMethod};
+use cdk_common::{Amount, MintQuoteState};
 use tracing::instrument;
 
 use super::subscription::PubSubManager;

@@ -728,12 +728,6 @@ impl PaymentMethod {
     }
 }
 
-impl Default for PaymentMethod {
-    fn default() -> Self {
-        Self::Known(KnownMethod::Bolt11)
-    }
-}
-
 impl FromStr for PaymentMethod {
     type Err = Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {

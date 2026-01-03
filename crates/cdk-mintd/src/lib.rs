@@ -811,10 +811,10 @@ async fn setup_authentication(
             add_endpoint(ws_protected_endpoint, &auth_settings.websocket_auth);
         }
 
-        // Custom payment method endpoints will be added dynamically after the mint is built
+        // Custom protected_endpoints will be added dynamically after the mint is built
         // and we can query the payment processors for their supported methods.
         // For now, we don't add any custom endpoints here - they'll be added in the
-        // start_server function after we have access to the mint instance.
+        // start_services_with_shutdown function after we have access to the mint instance.
 
         mint_builder = mint_builder.with_auth(
             auth_localstore.clone(),
