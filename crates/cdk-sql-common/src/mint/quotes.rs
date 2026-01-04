@@ -97,7 +97,6 @@ WHERE quote_id=:quote_id
 }
 
 // Inline helper functions that work with both connections and transactions
-#[inline]
 pub(super) async fn get_mint_quote_inner<T>(
     executor: &T,
     quote_id: &QuoteId,
@@ -140,7 +139,6 @@ where
         .transpose()
 }
 
-#[inline]
 pub(super) async fn get_mint_quote_by_request_inner<T>(
     executor: &T,
     request: &str,
@@ -189,7 +187,6 @@ where
     Ok(mint_quote)
 }
 
-#[inline]
 pub(super) async fn get_mint_quote_by_request_lookup_id_inner<T>(
     executor: &T,
     request_lookup_id: &PaymentIdentifier,
@@ -240,7 +237,6 @@ where
     Ok(mint_quote)
 }
 
-#[inline]
 pub(super) async fn get_melt_quote_inner<T>(
     executor: &T,
     quote_id: &QuoteId,
@@ -283,7 +279,6 @@ where
         .transpose()
 }
 
-#[inline]
 pub(super) async fn get_melt_quotes_by_request_lookup_id_inner<T>(
     executor: &T,
     request_lookup_id: &PaymentIdentifier,
@@ -334,7 +329,6 @@ where
 /// This function acquires all locks in a single query with consistent ordering (by ID),
 /// preventing the circular wait condition that can occur when locks are acquired in
 /// separate queries.
-#[inline]
 async fn lock_melt_quote_and_related_inner<T>(
     executor: &T,
     quote_id: &QuoteId,
