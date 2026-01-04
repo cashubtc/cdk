@@ -17,7 +17,6 @@ use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
 use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
 
-#[inline(always)]
 pub(super) async fn get_current_states<C>(
     conn: &C,
     ys: &[PublicKey],

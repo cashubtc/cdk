@@ -31,7 +31,6 @@ use crate::{
     unpack_into,
 };
 
-#[inline(always)]
 async fn get_mint_quote_payments<C>(
     conn: &C,
     quote_id: &QuoteId,
@@ -68,7 +67,6 @@ where
     .collect()
 }
 
-#[inline(always)]
 async fn get_mint_quote_issuance<C>(conn: &C, quote_id: &QuoteId) -> Result<Vec<Issuance>, Error>
 where
     C: DatabaseExecutor + Send + Sync,
