@@ -7,10 +7,13 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bitcoin::bip32::Xpriv;
+use bitcoin::Network;
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, DynWalletDatabaseTransaction, WalletDatabase};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
+use cdk_common::{PublicKey, SecretKey, SECP256K1};
 use getrandom::getrandom;
 use subscription::{ActiveSubscription, SubscriptionManager};
 #[cfg(feature = "auth")]
@@ -756,6 +759,21 @@ impl Wallet {
     /// This controls how many proofs of each denomination the wallet tries to maintain.
     pub fn set_target_proof_count(&mut self, count: usize) {
         self.target_proof_count = count;
+    }
+
+    /// try to get secret key from p2pk signing key in localstore
+    async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Error> {
+        let signing = self.localstore.get_p2pk_key(pubkey).await?;
+        if let Some(signing) = signing {
+            let xpriv = Xpriv::new_master(Network::Bitcoin, &self.seed)?;
+            return Ok(Some(SecretKey::from(
+                xpriv
+                    .derive_priv(&SECP256K1, &signing.derivation_path)?
+                    .private_key,
+            )));
+        }
+
+        Ok(None)
     }
 }
 
