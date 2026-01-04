@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::database::{self, DbTransactionFinalizer, Error, MintDatabase};
-// Re-export for auth module
 use migrations::MIGRATIONS;
 
 use crate::common::migrate;
