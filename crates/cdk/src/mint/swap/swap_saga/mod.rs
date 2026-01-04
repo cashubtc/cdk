@@ -210,11 +210,6 @@ impl<'a> SwapSaga<'a, Initial> {
         // Update input proof states to Pending
         match tx.update_proofs(&mut new_proofs).await {
             Ok(states) => states,
-            Err(database::Error::AttemptUpdateSpentProof)
-            | Err(database::Error::AttemptRemoveSpentProof) => {
-                tx.rollback().await?;
-                return Err(Error::TokenAlreadySpent);
-            }
             Err(err) => {
                 tx.rollback().await?;
                 return Err(err.into());
