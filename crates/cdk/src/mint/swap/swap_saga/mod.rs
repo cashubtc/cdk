@@ -193,13 +193,14 @@ impl<'a> SwapSaga<'a, Initial> {
 
         let original_state = new_proofs.get_state();
 
-        new_proofs.set_new_state(State::Pending).map_err(|_| {
-            if original_state == State::Pending {
+        if new_proofs.set_new_state(State::Pending).is_err() {
+            tx.rollback().await?;
+            return Err(if original_state == State::Pending {
                 Error::TokenPending
             } else {
                 Error::TokenAlreadySpent
-            }
-        })?;
+            });
+        }
 
         let ys = match input_proofs.ys() {
             Ok(ys) => ys,
@@ -219,13 +220,6 @@ impl<'a> SwapSaga<'a, Initial> {
                 return Err(err.into());
             }
         };
-
-        // Verify proofs weren't already pending or spent
-        if ys.len() != new_proofs.len() {
-            tracing::error!("Mismatched proof states");
-            tx.rollback().await?;
-            return Err(Error::Internal);
-        }
 
         // Add output blinded messages
         if let Err(err) = tx
@@ -423,17 +417,22 @@ impl SwapSaga<'_, Signed> {
             }
         }
 
-        let mut proofs = tx.get_proofs(&self.state_data.ys).await?;
-        proofs.set_new_state(State::Spent)?;
+        let mut proofs = match tx.get_proofs(&self.state_data.ys).await {
+            Ok(proofs) => proofs,
+            Err(err) => {
+                tx.rollback().await?;
+                self.compensate_all().await?;
+                return Err(err.into());
+            }
+        };
+        if proofs.set_new_state(State::Spent).is_err() {
+            tx.rollback().await?;
+            self.compensate_all().await?;
+            return Err(Error::TokenAlreadySpent);
+        }
 
         match tx.update_proofs(&mut proofs).await {
             Ok(_) => {}
-            Err(database::Error::AttemptUpdateSpentProof)
-            | Err(database::Error::AttemptRemoveSpentProof) => {
-                tx.rollback().await?;
-                self.compensate_all().await?;
-                return Err(Error::TokenAlreadySpent);
-            }
             Err(err) => {
                 tx.rollback().await?;
                 self.compensate_all().await?;
@@ -446,11 +445,17 @@ impl SwapSaga<'_, Signed> {
             self.pubsub.proof_state((*pk, State::Spent));
         }
 
-        tx.add_completed_operation(
-            &self.state_data.operation,
-            &self.state_data.fee_breakdown.per_keyset,
-        )
-        .await?;
+        if let Err(err) = tx
+            .add_completed_operation(
+                &self.state_data.operation,
+                &self.state_data.fee_breakdown.per_keyset,
+            )
+            .await
+        {
+            tx.rollback().await?;
+            self.compensate_all().await?;
+            return Err(err.into());
+        }
 
         // Delete saga - swap completed successfully (best-effort, atomic with TX2)
         // Don't fail the swap if saga deletion fails - orphaned saga will be
