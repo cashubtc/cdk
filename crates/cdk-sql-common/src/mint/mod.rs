@@ -14,9 +14,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk_common::database::{self, DbTransactionFinalizer, Error, MintDatabase};
 // Re-export for auth module
-pub(crate) use keys::sql_row_to_keyset_info;
 use migrations::MIGRATIONS;
-pub(crate) use signatures::sql_row_to_blind_signature;
 
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
