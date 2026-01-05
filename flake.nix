@@ -92,11 +92,8 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
 
-        # Source for crane builds
-        src = builtins.path {
-          path = ./.;
-          name = "cdk-source";
-        };
+        # Source for crane builds (uses nix-gitignore to filter out target/, etc.)
+        src = pkgs.nix-gitignore.gitignoreSource [ ] ./.;
 
         # Source for MSRV builds - uses Cargo.lock.msrv with MSRV-compatible deps
         srcMsrv = pkgs.runCommand "cdk-source-msrv" { } ''
