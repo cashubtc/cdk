@@ -1635,29 +1635,29 @@ async fn test_batch_mint_successful_two_quotes_happy_path() {
     let mint = Arc::new(create_and_start_test_mint().await.unwrap());
 
     // Create two PAID quotes with unlocked (no pubkey)
-    // quote_a: 64 sats
+    // quote_a: 5 sats (not a power of 2 - demonstrates quote amounts are independent of output denominations)
     let quote_a = create_and_store_mint_quote(
         &mint,
-        Some(Amount::from(64)),
+        Some(Amount::from(5)),
         PaymentMethod::Bolt11,
-        Amount::from(64), // Paid in full
-        None,             // Unlocked - no pubkey
+        Amount::from(5), // Paid in full
+        None,            // Unlocked - no pubkey
     )
     .await
     .expect("Failed to create quote_a");
 
-    // quote_b: 36 sats
+    // quote_b: 3 sats
     let quote_b = create_and_store_mint_quote(
         &mint,
-        Some(Amount::from(36)),
+        Some(Amount::from(3)),
         PaymentMethod::Bolt11,
-        Amount::from(36), // Paid in full
-        None,             // Unlocked - no pubkey
+        Amount::from(3), // Paid in full
+        None,            // Unlocked - no pubkey
     )
     .await
     .expect("Failed to create quote_b");
 
-    // Create outputs totaling 100 sats (64 + 32 + 4 = 100)
+    // Create outputs totaling 8 sats (5 + 3 = 8)
     let keyset_id = *mint
         .get_active_keysets()
         .get(&CurrencyUnit::Sat)
@@ -1666,28 +1666,14 @@ async fn test_batch_mint_successful_two_quotes_happy_path() {
     let split_target = SplitTarget::default();
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
-    // Create blinded messages for 64 sats
-    let pre_mint_64 =
-        PreMintSecrets::random(keyset_id, Amount::from(64), &split_target, &fee_and_amounts)
-            .expect("premint secrets for 64");
+    // Create blinded messages for 8 sats total
+    let pre_mint =
+        PreMintSecrets::random(keyset_id, Amount::from(8), &split_target, &fee_and_amounts)
+            .expect("premint secrets for 8");
 
-    // Create blinded messages for 32 sats
-    let pre_mint_32 =
-        PreMintSecrets::random(keyset_id, Amount::from(32), &split_target, &fee_and_amounts)
-            .expect("premint secrets for 32");
+    let outputs: Vec<_> = pre_mint.blinded_messages().iter().cloned().collect();
 
-    // Create blinded messages for 4 sats
-    let pre_mint_4 =
-        PreMintSecrets::random(keyset_id, Amount::from(4), &split_target, &fee_and_amounts)
-            .expect("premint secrets for 4");
-
-    // Combine all outputs
-    let mut outputs = Vec::new();
-    outputs.extend(pre_mint_64.blinded_messages().iter().cloned());
-    outputs.extend(pre_mint_32.blinded_messages().iter().cloned());
-    outputs.extend(pre_mint_4.blinded_messages().iter().cloned());
-
-    // Verify total output amount is 100
+    // Verify total output amount is 8
     let total_outputs: Amount = outputs
         .iter()
         .map(|o| o.amount)
@@ -1695,14 +1681,14 @@ async fn test_batch_mint_successful_two_quotes_happy_path() {
         .expect("sum outputs");
     assert_eq!(
         total_outputs,
-        Amount::from(100),
-        "Outputs should total 100 sats"
+        Amount::from(8),
+        "Outputs should total 8 sats"
     );
 
     // Create batch mint request
     let request = BatchMintRequest {
         quotes: vec![quote_a.to_string(), quote_b.to_string()],
-        quote_amounts: Some(vec![Amount::from(64), Amount::from(36)]),
+        quote_amounts: Some(vec![Amount::from(5), Amount::from(3)]),
         outputs: outputs.clone(),
         signatures: None, // No signatures - unlocked quotes
     };
@@ -1721,14 +1707,11 @@ async fn test_batch_mint_successful_two_quotes_happy_path() {
                 "Should return blind signatures"
             );
 
-            // Verify the count matches our outputs (64 + 32 + 4 sats worth of outputs)
+            // Verify the count matches our outputs
             // Each output gets a signature
-            let expected_count = pre_mint_64.blinded_messages().len()
-                + pre_mint_32.blinded_messages().len()
-                + pre_mint_4.blinded_messages().len();
             assert_eq!(
                 response.signatures.len(),
-                expected_count,
+                outputs.len(),
                 "Should return one signature per output"
             );
 
@@ -1741,8 +1724,8 @@ async fn test_batch_mint_successful_two_quotes_happy_path() {
                 .expect("sum signatures");
             assert_eq!(
                 total_signatures,
-                Amount::from(100),
-                "Signature amounts should total 100 sats"
+                Amount::from(8),
+                "Signature amounts should total 8 sats"
             );
         }
         Err(e) => {
