@@ -22,11 +22,6 @@
     crane = {
       url = "github:ipetkov/crane";
     };
-
-    gitignore = {
-      url = "github:hercules-ci/gitignore.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
@@ -35,7 +30,6 @@
     , rust-overlay
     , flake-utils
     , crane
-    , gitignore
     , ...
     }@inputs:
     flake-utils.lib.eachDefaultSystem (
@@ -98,9 +92,8 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
 
-        # Source for crane builds (uses gitignore to filter out target/, etc.)
-        inherit (gitignore.lib) gitignoreSource;
-        src = gitignoreSource ./.;
+        # Source for crane builds (uses nix-gitignore to filter out target/, etc.)
+        src = pkgs.nix-gitignore.gitignoreSource [ ] ./.;
 
         # Source for MSRV builds - uses Cargo.lock.msrv with MSRV-compatible deps
         srcMsrv = pkgs.runCommand "cdk-source-msrv" { } ''
