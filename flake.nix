@@ -116,6 +116,7 @@
 
             # Needed for github ci
             libz
+            openssl
           ]
           ++ libsDarwin;
 
@@ -269,6 +270,7 @@
                   export LD_LIBRARY_PATH=${
                     pkgs.lib.makeLibraryPath [
                       pkgs.zlib
+                      pkgs.openssl
                     ]
                   }:$LD_LIBRARY_PATH
 
