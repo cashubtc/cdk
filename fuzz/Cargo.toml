@@ -1,0 +1,86 @@
+[package]
+name = "cdk-fuzz"
+version = "0.0.0"
+authors = ["Automatically generated"]
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[dependencies.cashu]
+path = "../crates/cashu"
+
+[[bin]]
+name = "fuzz_token"
+path = "fuzz_targets/fuzz_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_payment_request"
+path = "fuzz_targets/fuzz_payment_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_secret"
+path = "fuzz_targets/fuzz_secret.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mint_url"
+path = "fuzz_targets/fuzz_mint_url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_keyset_id"
+path = "fuzz_targets/fuzz_keyset_id.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_proof"
+path = "fuzz_targets/fuzz_proof.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_blind_signature"
+path = "fuzz_targets/fuzz_blind_signature.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_amount"
+path = "fuzz_targets/fuzz_amount.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_currency_unit"
+path = "fuzz_targets/fuzz_currency_unit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_spending_conditions"
+path = "fuzz_targets/fuzz_spending_conditions.rs"
+test = false
+doc = false
+bench = false

@@ -410,6 +410,7 @@
 
             cargo-outdated
             cargo-mutants
+            cargo-fuzz
 
             # Needed for github ci
             libz
