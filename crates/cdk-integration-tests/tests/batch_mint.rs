@@ -27,21 +27,24 @@
 //! - test_batch_mint_parses_mixed_locked_unlocked: Parse mixed requests
 //! - test_batch_mint_round_trip_serialization: Serialization round-trip
 //!
+//! **Happy Path Tests:**
+//! - test_batch_mint_successful_two_quotes_happy_path: Successful batch mint with two paid quotes
+//!
 //! **Coverage Areas:**
 //! - Validation: empty batches, duplicates, size limits, state requirements
 //! - Signature handling: NUT-20 signature verification, pubkey validation
 //! - Quote constraints: payment method/unit consistency, endpoint validation
 //! - Protocol compliance: JSON parsing and serialization
+//! - Success scenarios: batch minting with multiple paid quotes
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use bip39::Mnemonic;
 use cashu::quote_id::QuoteId;
 use cdk::amount::SplitTarget;
 use cdk::cdk_payment::PaymentIdentifier;
-use cdk::mint::{MintBuilder, MintMeltLimits};
+use cdk::mint::MintMeltLimits;
 use cdk::nuts::nut00::BlindedMessage;
 use cdk::nuts::{CurrencyUnit, PaymentMethod, PreMintSecrets, PublicKey, SecretKey};
 use cdk::types::{FeeReserve, QuoteTTL};
@@ -103,7 +106,7 @@ async fn create_and_store_mint_quote_with_unit(
     unit: CurrencyUnit,
 ) -> Result<QuoteId, Box<dyn std::error::Error>> {
     let quote_id = QuoteId::new_uuid();
-    let mut quote = MintQuote::new(
+    let quote = MintQuote::new(
         Some(quote_id.clone()),
         "lnbc1000n...".to_string(),
         unit,
@@ -1619,6 +1622,134 @@ async fn test_batch_mint_with_mixed_spending_conditions() {
         }
         Err(e) => {
             panic!("Unexpected error with mixed conditions: {:?}", e);
+        }
+    }
+}
+
+// ============================================================================
+// Happy Path Tests - Successful Batch Minting
+// ============================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_successful_two_quotes_happy_path() {
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    // Create two PAID quotes with unlocked (no pubkey)
+    // quote_a: 64 sats
+    let quote_a = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(64)),
+        PaymentMethod::Bolt11,
+        Amount::from(64), // Paid in full
+        None,             // Unlocked - no pubkey
+    )
+    .await
+    .expect("Failed to create quote_a");
+
+    // quote_b: 36 sats
+    let quote_b = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(36)),
+        PaymentMethod::Bolt11,
+        Amount::from(36), // Paid in full
+        None,             // Unlocked - no pubkey
+    )
+    .await
+    .expect("Failed to create quote_b");
+
+    // Create outputs totaling 100 sats (64 + 32 + 4 = 100)
+    let keyset_id = *mint
+        .get_active_keysets()
+        .get(&CurrencyUnit::Sat)
+        .expect("keyset for Sat");
+
+    let split_target = SplitTarget::default();
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
+    // Create blinded messages for 64 sats
+    let pre_mint_64 =
+        PreMintSecrets::random(keyset_id, Amount::from(64), &split_target, &fee_and_amounts)
+            .expect("premint secrets for 64");
+
+    // Create blinded messages for 32 sats
+    let pre_mint_32 =
+        PreMintSecrets::random(keyset_id, Amount::from(32), &split_target, &fee_and_amounts)
+            .expect("premint secrets for 32");
+
+    // Create blinded messages for 4 sats
+    let pre_mint_4 =
+        PreMintSecrets::random(keyset_id, Amount::from(4), &split_target, &fee_and_amounts)
+            .expect("premint secrets for 4");
+
+    // Combine all outputs
+    let mut outputs = Vec::new();
+    outputs.extend(pre_mint_64.blinded_messages().iter().cloned());
+    outputs.extend(pre_mint_32.blinded_messages().iter().cloned());
+    outputs.extend(pre_mint_4.blinded_messages().iter().cloned());
+
+    // Verify total output amount is 100
+    let total_outputs: Amount = outputs
+        .iter()
+        .map(|o| o.amount)
+        .try_fold(Amount::ZERO, |acc, a| acc.checked_add(a))
+        .expect("sum outputs");
+    assert_eq!(
+        total_outputs,
+        Amount::from(100),
+        "Outputs should total 100 sats"
+    );
+
+    // Create batch mint request
+    let request = BatchMintRequest {
+        quotes: vec![quote_a.to_string(), quote_b.to_string()],
+        quote_amounts: Some(vec![Amount::from(64), Amount::from(36)]),
+        outputs: outputs.clone(),
+        signatures: None, // No signatures - unlocked quotes
+    };
+
+    // Execute batch mint
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+
+    // Verify success
+    match result {
+        Ok(response) => {
+            // Verify we got blind signatures back
+            assert!(
+                !response.signatures.is_empty(),
+                "Should return blind signatures"
+            );
+
+            // Verify the count matches our outputs (64 + 32 + 4 sats worth of outputs)
+            // Each output gets a signature
+            let expected_count = pre_mint_64.blinded_messages().len()
+                + pre_mint_32.blinded_messages().len()
+                + pre_mint_4.blinded_messages().len();
+            assert_eq!(
+                response.signatures.len(),
+                expected_count,
+                "Should return one signature per output"
+            );
+
+            // Verify total amounts balance
+            let total_signatures: Amount = response
+                .signatures
+                .iter()
+                .map(|s| s.amount)
+                .try_fold(Amount::ZERO, |acc, a| acc.checked_add(a))
+                .expect("sum signatures");
+            assert_eq!(
+                total_signatures,
+                Amount::from(100),
+                "Signature amounts should total 100 sats"
+            );
+        }
+        Err(e) => {
+            panic!(
+                "Batch mint should succeed for valid paid quotes, got error: {:?}",
+                e
+            );
         }
     }
 }
