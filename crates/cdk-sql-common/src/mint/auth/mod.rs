@@ -13,10 +13,12 @@ use cdk_common::{AuthRequired, ProtectedEndpoint};
 use migrations::MIGRATIONS;
 use tracing::instrument;
 
-use super::{sql_row_to_blind_signature, sql_row_to_keyset_info, SQLTransaction};
+use super::SQLTransaction;
 use crate::column_as_string;
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
+use crate::mint::keys::sql_row_to_keyset_info;
+use crate::mint::signatures::sql_row_to_blind_signature;
 use crate::mint::Error;
 use crate::pool::{DatabasePool, Pool, PooledResource};
 use crate::stmt::query;
