@@ -1,9 +1,14 @@
 //! Batch Mint Tests [NUT-XX]
 //!
-//! This file contains tests for the batch minting functionality per NUT-XX specification:
-//! https://github.com/cashubtc/nuts/issues/XX
+//! This file contains tests for the batch minting functionality per NUT-XX specification.
 //!
 //! ## Test Coverage
+//!
+//! **Protocol Parsing:**
+//! - test_batch_mint_parses_unlocked_quotes: Parse unlocked quote requests
+//! - test_batch_mint_parses_locked_quotes: Parse locked quote requests
+//! - test_batch_mint_parses_mixed_locked_unlocked: Parse mixed requests
+//! - test_batch_mint_round_trip_serialization: Serialization round-trip
 //!
 //! **Handler Validation Tests:**
 //! - test_batch_mint_handler_rejects_empty_quotes: Empty quote lists are rejected
@@ -14,28 +19,57 @@
 //! **NUT-20 Signature Validation:**
 //! - test_batch_mint_rejects_invalid_nut20_signatures: Invalid signatures are rejected
 //! - test_batch_mint_rejects_signature_without_pubkey: Signature on unlocked quote is rejected
+//! - test_batch_mint_rejects_reordered_outputs_signature_scope: Reordered outputs fail signature validation
+//! - test_batch_mint_rejects_signature_missing_blinded_message: Missing blinded messages fail signature validation
+//! - test_batch_mint_rejects_missing_signature_for_locked_quote: Locked quotes without signatures are rejected
 //!
 //! **Quote Validation:**
 //! - test_batch_mint_rejects_unpaid_quotes: Unpaid quotes are rejected
 //! - test_batch_mint_enforces_single_payment_method: All quotes must have same payment method
 //! - test_batch_mint_enforces_single_currency_unit: All quotes must have same unit
+//! - test_batch_mint_rejects_output_unit_mismatch: Outputs must match quote currency unit
 //! - test_batch_mint_validates_url_path_payment_method: Quotes must match endpoint payment method
+//! - test_batch_mint_rejects_unparsable_quote_id: Invalid quote IDs are rejected
+//! - test_batch_mint_one_valid_one_unknown_quote: Batch fails atomically with unknown quotes
 //!
-//! **Protocol Parsing:**
-//! - test_batch_mint_parses_unlocked_quotes: Parse unlocked quote requests
-//! - test_batch_mint_parses_locked_quotes: Parse locked quote requests
-//! - test_batch_mint_parses_mixed_locked_unlocked: Parse mixed requests
-//! - test_batch_mint_round_trip_serialization: Serialization round-trip
+//! **Amount Validation:**
+//! - test_batch_mint_bolt11_amount_mismatch: Bolt11 total amounts must match
+//! - test_batch_mint_bolt11_quote_amounts_length_mismatch: Quote amounts array length must match
+//! - test_batch_mint_bolt11_quote_amount_mismatch_individual: Individual quote amounts must match quote values
+//! - test_batch_mint_empty_outputs_array: Empty outputs are rejected
+//!
+//! **BOLT12 Support:**
+//! - test_batch_mint_bolt12_requires_quote_amounts: BOLT12 requires quote_amounts field
+//! - test_batch_mint_bolt12_rejects_over_requested_amount: Cannot mint more than available
+//! - test_batch_mint_bolt12_total_mismatch: Output amounts must match requested amounts
+//! - test_batch_mint_bolt12_incremental_minting: BOLT12 quotes support multiple batch operations
+//!
+//! **Batch Check Endpoint:**
+//! - test_batch_check_returns_only_known_quotes: Unknown quotes omitted from response
+//! - test_batch_check_empty_quotes_array: Empty quotes rejected
+//! - test_batch_check_all_unknown_quotes: Returns empty array when all quotes unknown
+//! - test_batch_check_mixed_paid_unpaid_states: Returns quotes with their respective states
+//! - test_batch_check_rejects_duplicate_quote_ids: Duplicate quote IDs rejected
+//! - test_batch_check_rejects_over_limit: Batch size limit enforced
+//!
+//! **Spending Conditions (NUT-11 P2PK and NUT-14 HTLC):**
+//! - test_batch_mint_with_p2pk_spending_conditions: P2PK conditions preserved through batch mint
+//! - test_batch_mint_with_htlc_spending_conditions: HTLC conditions preserved through batch mint
+//! - test_batch_mint_with_mixed_spending_conditions: Mixed P2PK and HTLC conditions
 //!
 //! **Happy Path Tests:**
-//! - test_batch_mint_successful_two_quotes_happy_path: Successful batch mint with two paid quotes
+//! - test_batch_mint_successful_two_quotes_happy_path: Successful batch mint combining two quotes
+//! - test_batch_mint_locked_quote_valid_signature: Successful locked quote with valid NUT-20 signature
+//! - test_batch_mint_unlocked_quotes_with_null_signatures: Unlocked quotes with explicit null signatures
 //!
-//! **Coverage Areas:**
-//! - Validation: empty batches, duplicates, size limits, state requirements
-//! - Signature handling: NUT-20 signature verification, pubkey validation
-//! - Quote constraints: payment method/unit consistency, endpoint validation
-//! - Protocol compliance: JSON parsing and serialization
-//! - Success scenarios: batch minting with multiple paid quotes
+//! **Coverage Summary:**
+//! - Validation: empty batches, duplicates, size limits, state requirements, amount balancing
+//! - Signature handling: NUT-20 signature verification, pubkey validation, output ordering
+//! - Quote constraints: payment method/unit consistency, endpoint validation, atomic failure
+//! - Protocol compliance: JSON parsing, serialization, check endpoint behavior
+//! - BOLT12: partial minting, incremental operations, amount validation
+//! - Spending conditions: P2PK, HTLC, and mixed condition support
+//! - Success scenarios: batch minting with multiple quotes, locked/unlocked quotes
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -1214,6 +1248,241 @@ async fn test_batch_mint_rejects_unparsable_quote_id() {
     assert!(matches!(result, Err(Error::UnknownQuote)));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_empty_outputs_array() {
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    let quote = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(100)),
+        PaymentMethod::Bolt11,
+        Amount::from(100),
+        None,
+    )
+    .await
+    .expect("quote");
+
+    let request = BatchMintRequest {
+        quotes: vec![quote.to_string()],
+        quote_amounts: Some(vec![Amount::from(100)]),
+        outputs: vec![], // Empty outputs
+        signatures: None,
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+
+    // Should fail due to transaction unbalanced (0 outputs vs 100 quote amount)
+    assert!(
+        matches!(result, Err(Error::TransactionUnbalanced(_, _, _))),
+        "Empty outputs should cause unbalanced transaction"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_bolt11_quote_amount_mismatch_individual() {
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    // Create a 100 sat quote but try to mint only 50 from it
+    let quote = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(100)),
+        PaymentMethod::Bolt11,
+        Amount::from(100),
+        None,
+    )
+    .await
+    .expect("quote");
+
+    let outputs = create_outputs_for_amount(&mint, 50, CurrencyUnit::Sat).await;
+
+    let request = BatchMintRequest {
+        quotes: vec![quote.to_string()],
+        quote_amounts: Some(vec![Amount::from(50)]), // Trying to mint 50 from a 100 sat quote
+        outputs,
+        signatures: None,
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+
+    // For bolt11, the quote_amount must match the quote's fixed amount
+    // Should fail due to amount mismatch or unbalanced transaction
+    assert!(
+        result.is_err(),
+        "Bolt11 quote amount should match the quote's amount"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_unlocked_quotes_with_null_signatures() {
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    // Create two unlocked quotes (no pubkey)
+    let quote1 = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(50)),
+        PaymentMethod::Bolt11,
+        Amount::from(50),
+        None, // No pubkey - unlocked
+    )
+    .await
+    .expect("quote1");
+
+    let quote2 = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(50)),
+        PaymentMethod::Bolt11,
+        Amount::from(50),
+        None, // No pubkey - unlocked
+    )
+    .await
+    .expect("quote2");
+
+    let outputs = create_outputs_for_amount(&mint, 100, CurrencyUnit::Sat).await;
+
+    // Explicitly provide signature array with all nulls
+    let request = BatchMintRequest {
+        quotes: vec![quote1.to_string(), quote2.to_string()],
+        quote_amounts: Some(vec![Amount::from(50), Amount::from(50)]),
+        outputs,
+        signatures: Some(vec![None, None]), // All nulls for unlocked quotes
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+
+    // Should succeed - all quotes are unlocked and all signatures are null
+    assert!(
+        result.is_ok(),
+        "Unlocked quotes with null signatures should succeed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_bolt12_incremental_minting() {
+    let mint = create_bolt12_capable_mint().await;
+
+    // Create a BOLT12 quote with 150 sats paid (amount=None for BOLT12)
+    let quote_id = create_and_store_mint_quote(
+        &mint,
+        None, // BOLT12 quotes don't have a fixed amount
+        PaymentMethod::Bolt12,
+        Amount::from(150), // 150 sats paid
+        None,
+    )
+    .await
+    .expect("quote");
+
+    // First batch: mint 50 sats
+    let outputs_1 = create_outputs_for_amount(&mint, 50, CurrencyUnit::Sat).await;
+    let request_1 = BatchMintRequest {
+        quotes: vec![quote_id.to_string()],
+        quote_amounts: Some(vec![Amount::from(50)]),
+        outputs: outputs_1,
+        signatures: None,
+    };
+
+    let result_1 = mint
+        .process_batch_mint_request(request_1, PaymentMethod::Bolt12)
+        .await;
+
+    assert!(result_1.is_ok(), "First batch mint should succeed");
+    let response_1 = result_1.unwrap();
+    assert!(
+        !response_1.signatures.is_empty(),
+        "Should return signatures"
+    );
+
+    // Verify the quote now has 50 sats issued
+    let quote_after_first = mint
+        .localstore()
+        .get_mint_quote(&quote_id.clone().into())
+        .await
+        .expect("get quote")
+        .expect("quote exists");
+    assert_eq!(
+        quote_after_first.amount_issued(),
+        Amount::from(50),
+        "Should have issued 50 sats"
+    );
+
+    // Second batch: mint another 50 sats using the same quote
+    let outputs_2 = create_outputs_for_amount(&mint, 50, CurrencyUnit::Sat).await;
+    let request_2 = BatchMintRequest {
+        quotes: vec![quote_id.to_string()],
+        quote_amounts: Some(vec![Amount::from(50)]),
+        outputs: outputs_2,
+        signatures: None,
+    };
+
+    let result_2 = mint
+        .process_batch_mint_request(request_2, PaymentMethod::Bolt12)
+        .await;
+
+    assert!(
+        result_2.is_ok(),
+        "Second batch mint with same quote should succeed"
+    );
+    let response_2 = result_2.unwrap();
+    assert!(
+        !response_2.signatures.is_empty(),
+        "Should return signatures"
+    );
+
+    // Verify the quote now has 100 sats issued
+    let quote_after_second = mint
+        .localstore()
+        .get_mint_quote(&quote_id.clone().into())
+        .await
+        .expect("get quote")
+        .expect("quote exists");
+    assert_eq!(
+        quote_after_second.amount_issued(),
+        Amount::from(100),
+        "Should have issued 100 sats total"
+    );
+
+    // Third batch: mint the remaining 50 sats
+    let outputs_3 = create_outputs_for_amount(&mint, 50, CurrencyUnit::Sat).await;
+    let request_3 = BatchMintRequest {
+        quotes: vec![quote_id.to_string()],
+        quote_amounts: Some(vec![Amount::from(50)]),
+        outputs: outputs_3,
+        signatures: None,
+    };
+
+    let result_3 = mint
+        .process_batch_mint_request(request_3, PaymentMethod::Bolt12)
+        .await;
+
+    assert!(
+        result_3.is_ok(),
+        "Third batch mint should succeed and complete the quote"
+    );
+
+    // Verify the quote now has 150 sats issued (fully minted)
+    let quote_final = mint
+        .localstore()
+        .get_mint_quote(&quote_id.clone().into())
+        .await
+        .expect("get quote")
+        .expect("quote exists");
+    assert_eq!(
+        quote_final.amount_issued(),
+        Amount::from(150),
+        "Should have issued all 150 sats"
+    );
+    assert_eq!(
+        quote_final.amount_paid(),
+        quote_final.amount_issued(),
+        "All paid amount should be issued"
+    );
+}
+
 // ============================================================================
 // Spending Conditions (NUT-11 P2PK and NUT-14 HTLC) Tests for Batch Mint
 // ============================================================================
@@ -1627,6 +1896,224 @@ async fn test_batch_mint_with_mixed_spending_conditions() {
 }
 
 // ============================================================================
+// Batch Check Endpoint Tests - Quote Status Checking
+// ============================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_check_returns_only_known_quotes() {
+    use cdk_common::nuts::nutxx::BatchQuoteStatusRequest;
+
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    // Create one known quote
+    let known_quote = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(100)),
+        PaymentMethod::Bolt11,
+        Amount::from(100),
+        None,
+    )
+    .await
+    .expect("quote");
+
+    // Request with one known and two unknown quotes
+    let request = BatchQuoteStatusRequest {
+        quotes: vec![
+            known_quote.to_string(),
+            "unknown-quote-1".to_string(),
+            "invalid_format".to_string(),
+        ],
+    };
+
+    let result = mint
+        .batch_check_mint_quotes(PaymentMethod::Bolt11, request)
+        .await;
+
+    assert!(result.is_ok(), "Check should succeed with partial results");
+    let response = result.unwrap();
+
+    // Should return only the known quote, omitting unknown ones
+    assert_eq!(
+        response.0.len(),
+        1,
+        "Should return only 1 known quote, omitting unknowns"
+    );
+
+    // Verify the returned quote is the known one by checking its ID
+    let cdk_common::nuts::nutxx::BatchQuoteStatusItem::Bolt11(bolt11_response) = &response.0[0]
+    else {
+        panic!("Expected Bolt11 response");
+    };
+    assert_eq!(
+        &bolt11_response.quote,
+        &known_quote.to_string(),
+        "Returned quote ID should match the known quote"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_check_empty_quotes_array() {
+    use cdk_common::nuts::nutxx::BatchQuoteStatusRequest;
+
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    let request = BatchQuoteStatusRequest { quotes: vec![] };
+
+    let result = mint
+        .batch_check_mint_quotes(PaymentMethod::Bolt11, request)
+        .await;
+
+    assert!(result.is_err(), "Empty quotes should be rejected");
+    assert!(matches!(result, Err(Error::BatchEmpty)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_check_all_unknown_quotes() {
+    use cdk_common::nuts::nutxx::BatchQuoteStatusRequest;
+
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    let request = BatchQuoteStatusRequest {
+        quotes: vec![
+            "unknown-1".to_string(),
+            "unknown-2".to_string(),
+            "unknown-3".to_string(),
+        ],
+    };
+
+    let result = mint
+        .batch_check_mint_quotes(PaymentMethod::Bolt11, request)
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Check should succeed even with all unknowns"
+    );
+    let response = result.unwrap();
+
+    // Should return empty array when all quotes are unknown
+    assert_eq!(
+        response.0.len(),
+        0,
+        "Should return empty array when all quotes are unknown"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_check_mixed_paid_unpaid_states() {
+    use cdk_common::nuts::nutxx::BatchQuoteStatusRequest;
+
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    // Create one PAID quote
+    let paid_quote = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(100)),
+        PaymentMethod::Bolt11,
+        Amount::from(100), // amount_paid = 100, so PAID
+        None,
+    )
+    .await
+    .expect("paid quote");
+
+    // Create one UNPAID quote
+    let unpaid_quote = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(50)),
+        PaymentMethod::Bolt11,
+        Amount::ZERO, // amount_paid = 0, so UNPAID
+        None,
+    )
+    .await
+    .expect("unpaid quote");
+
+    let request = BatchQuoteStatusRequest {
+        quotes: vec![paid_quote.to_string(), unpaid_quote.to_string()],
+    };
+
+    let result = mint
+        .batch_check_mint_quotes(PaymentMethod::Bolt11, request)
+        .await;
+
+    assert!(result.is_ok(), "Check should succeed");
+    let response = result.unwrap();
+
+    // Should return both quotes with their respective states
+    assert_eq!(response.0.len(), 2, "Should return both quotes");
+
+    // Verify each quote has the correct state
+    for item in &response.0 {
+        let cdk_common::nuts::nutxx::BatchQuoteStatusItem::Bolt11(resp) = item else {
+            panic!("Expected Bolt11 response");
+        };
+
+        if resp.quote == paid_quote.to_string() {
+            assert_eq!(
+                resp.state,
+                cdk_common::nuts::MintQuoteState::Paid,
+                "Paid quote should be in PAID state"
+            );
+        } else if resp.quote == unpaid_quote.to_string() {
+            assert_eq!(
+                resp.state,
+                cdk_common::nuts::MintQuoteState::Unpaid,
+                "Unpaid quote should be in UNPAID state"
+            );
+        } else {
+            panic!("Unexpected quote ID in response");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_check_rejects_duplicate_quote_ids() {
+    use cdk_common::nuts::nutxx::BatchQuoteStatusRequest;
+
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    let quote = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(100)),
+        PaymentMethod::Bolt11,
+        Amount::from(100),
+        None,
+    )
+    .await
+    .expect("quote");
+
+    // Request with duplicate quote IDs
+    let request = BatchQuoteStatusRequest {
+        quotes: vec![quote.to_string(), quote.to_string()],
+    };
+
+    let result = mint
+        .batch_check_mint_quotes(PaymentMethod::Bolt11, request)
+        .await;
+
+    assert!(result.is_err(), "Should reject duplicate quote IDs");
+    assert!(matches!(result, Err(Error::DuplicatePaymentId)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_check_rejects_over_limit() {
+    use cdk_common::nuts::nutxx::BatchQuoteStatusRequest;
+
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    // Create 101 quote IDs (exceeds the 100 limit)
+    let quotes: Vec<String> = (0..101).map(|i| format!("quote_{}", i)).collect();
+
+    let request = BatchQuoteStatusRequest { quotes };
+
+    let result = mint
+        .batch_check_mint_quotes(PaymentMethod::Bolt11, request)
+        .await;
+
+    assert!(result.is_err(), "Should reject batch over 100 quotes");
+    assert!(matches!(result, Err(Error::BatchSizeExceeded)));
+}
+
+// ============================================================================
 // Happy Path Tests - Successful Batch Minting
 // ============================================================================
 
@@ -1657,32 +2144,29 @@ async fn test_batch_mint_successful_two_quotes_happy_path() {
     .await
     .expect("Failed to create quote_b");
 
-    // Create outputs totaling 8 sats (5 + 3 = 8)
+    // Create a single output for 8 sats (5 + 3 = 8)
+    // This matches the simplified test vector structure
     let keyset_id = *mint
         .get_active_keysets()
         .get(&CurrencyUnit::Sat)
         .expect("keyset for Sat");
 
-    let split_target = SplitTarget::default();
-    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+    let split_target = SplitTarget::None;
+    let fee_and_amounts = (0, vec![8]).into();
 
-    // Create blinded messages for 8 sats total
+    // Create blinded messages for 8 sats as a single output
     let pre_mint =
         PreMintSecrets::random(keyset_id, Amount::from(8), &split_target, &fee_and_amounts)
             .expect("premint secrets for 8");
 
     let outputs: Vec<_> = pre_mint.blinded_messages().iter().cloned().collect();
 
-    // Verify total output amount is 8
-    let total_outputs: Amount = outputs
-        .iter()
-        .map(|o| o.amount)
-        .try_fold(Amount::ZERO, |acc, a| acc.checked_add(a))
-        .expect("sum outputs");
+    // Verify we have a single 8-sat output
+    assert_eq!(outputs.len(), 1, "Should create a single output");
     assert_eq!(
-        total_outputs,
+        outputs[0].amount,
         Amount::from(8),
-        "Outputs should total 8 sats"
+        "Output should be 8 sats"
     );
 
     // Create batch mint request
@@ -1707,25 +2191,16 @@ async fn test_batch_mint_successful_two_quotes_happy_path() {
                 "Should return blind signatures"
             );
 
-            // Verify the count matches our outputs
-            // Each output gets a signature
+            // Verify we got exactly one signature for our single output
             assert_eq!(
                 response.signatures.len(),
-                outputs.len(),
-                "Should return one signature per output"
+                1,
+                "Should return one signature for one output"
             );
-
-            // Verify total amounts balance
-            let total_signatures: Amount = response
-                .signatures
-                .iter()
-                .map(|s| s.amount)
-                .try_fold(Amount::ZERO, |acc, a| acc.checked_add(a))
-                .expect("sum signatures");
             assert_eq!(
-                total_signatures,
+                response.signatures[0].amount,
                 Amount::from(8),
-                "Signature amounts should total 8 sats"
+                "Signature should be for 8 sats"
             );
         }
         Err(e) => {
