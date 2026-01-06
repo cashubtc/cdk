@@ -1736,3 +1736,96 @@ async fn test_batch_mint_successful_two_quotes_happy_path() {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_one_valid_one_unknown_quote() {
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    let valid_quote = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(100)),
+        PaymentMethod::Bolt11,
+        Amount::from(100),
+        None,
+    )
+    .await
+    .expect("quote");
+
+    let outputs = create_outputs_for_amount(&mint, 100, CurrencyUnit::Sat).await;
+
+    let request = BatchMintRequest {
+        quotes: vec![valid_quote.to_string(), "unknown_quote_id".to_string()],
+        quote_amounts: Some(vec![Amount::from(100), Amount::from(0)]),
+        outputs,
+        signatures: None,
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+
+    assert!(matches!(result, Err(Error::UnknownQuote)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_locked_quote_valid_signature() {
+    let mint = Arc::new(create_and_start_test_mint().await.unwrap());
+
+    let mut sk_bytes = [0u8; 32];
+    sk_bytes[31] = 1;
+    let secret_key = SecretKey::from_slice(&sk_bytes).unwrap();
+
+    let quote_id = create_and_store_mint_quote(
+        &mint,
+        Some(Amount::from(2)),
+        PaymentMethod::Bolt11,
+        Amount::from(2),
+        Some(secret_key.public_key()),
+    )
+    .await
+    .expect("quote");
+
+    let keyset_id = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
+    let outputs = vec![
+        BlindedMessage {
+            amount: Amount::from(1),
+            keyset_id,
+            blinded_secret: PublicKey::from_str(
+                "036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2",
+            )
+            .unwrap(),
+            witness: None,
+        },
+        BlindedMessage {
+            amount: Amount::from(1),
+            keyset_id,
+            blinded_secret: PublicKey::from_str(
+                "021f8a566c205633d029094747d2e18f44e05993dda7a5f88f496078205f656e59",
+            )
+            .unwrap(),
+            witness: None,
+        },
+    ];
+
+    let mut mint_req = cdk_common::nuts::MintRequest {
+        quote: quote_id.to_string(),
+        outputs: outputs.clone(),
+        signature: None,
+    };
+    mint_req.sign(secret_key).unwrap();
+
+    let request = BatchMintRequest {
+        quotes: vec![quote_id.to_string()],
+        quote_amounts: Some(vec![Amount::from(2)]),
+        outputs,
+        signatures: Some(vec![mint_req.signature]),
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+
+    assert!(result.is_ok());
+    let response = result.unwrap();
+    assert_eq!(response.signatures.len(), 2);
+}
