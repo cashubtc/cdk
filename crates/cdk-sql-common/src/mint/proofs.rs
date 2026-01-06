@@ -351,7 +351,7 @@ where
         ys: &[PublicKey],
     ) -> Result<Acquired<ProofsWithState>, Self::Err> {
         if ys.is_empty() {
-            return Ok(ProofsWithState::new(vec![], State::Unspent).into());
+            return Err(database::Error::ProofNotFound);
         }
 
         let rows = query(
