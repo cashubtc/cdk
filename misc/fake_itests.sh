@@ -189,6 +189,17 @@ if [ $status3 -ne 0 ]; then
     exit $status3
 fi
 
+# Run fourth test (multi_mint_wallet) only if previous tests succeeded
+echo "Running multi_mint_wallet test"
+cargo test -p cdk-integration-tests --test multi_mint_wallet -- --nocapture
+status4=$?
+
+# Exit with the status of the fourth test
+if [ $status4 -ne 0 ]; then
+    echo "Fourth test (multi_mint_wallet) failed with status $status4, exiting"
+    exit $status4
+fi
+
 # All tests passed
 echo "All tests passed successfully"
 exit 0
