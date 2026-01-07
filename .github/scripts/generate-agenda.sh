@@ -17,79 +17,121 @@ echo "Fetching data since $SINCE_DATE"
 
 # Function to format PR/issue list
 format_list() {
-    local items="$1"
-    if [ -z "$items" ]; then
-        echo "- None"
-    else
-        echo "$items" | while IFS=$'\t' read -r number title url; do
-            echo "- [#$number]($url) - $title"
-        done
+  local items="$1"
+  if [ -z "$items" ]; then
+    echo "- None"
+  else
+    echo "$items" | while IFS=$'\t' read -r number title url; do
+      echo "- [#$number]($url) - $title"
+    done
+  fi
+}
+
+PR_TYPES=("feat" "fix" "refactor" "chore" "docs" "ci" "test")
+
+filter_all_types() {
+  local prs="$1"
+  local result=""
+  local combined_regex=""
+
+  for type in "${PR_TYPES[@]}"; do
+    regex="^$type"
+    filtered=$(echo "$prs" | jq -r --arg regex "$regex" '
+      .[] | select(.title | test($regex; "i")) | [.number, .title, .url] | @tsv
+    ')
+    if [[ -n "$filtered" ]]; then
+      result+="$filtered"$'\n'
     fi
+    combined_regex+="^$type|"
+  done
+  combined_regex="${combined_regex%|}"
+
+  other=$(echo "$prs" | jq -r --arg combined_regex "$combined_regex" '
+    .[] | select(.title | test($combined_regex; "i") | not) | [.number, .title, .url] | @tsv
+  ')
+
+  if [[ -n "$other" ]]; then
+    result+="$other"$'\n'
+  fi
+  echo "$result"
 }
 
 # Fetch merged PRs
 echo "Fetching merged PRs..."
 MERGED_PRS=$(gh pr list \
-    --repo "$REPO" \
-    --state merged \
-    --search "merged:>=$SINCE_DATE" \
-    --json number,title,url \
-    --jq '.[] | [.number, .title, .url] | @tsv' \
-    2>/dev/null || echo "")
+  --repo "$REPO" \
+  --state merged \
+  --search "merged:>=$SINCE_DATE" \
+  --json number,title,url \
+  2>/dev/null || echo "")
+
+MERGED_PRS_FILTERED=$(filter_all_types "$MERGED_PRS")
 
 # Fetch recently active PRs (updated in last week, but not newly created)
 echo "Fetching recently active PRs..."
 RECENTLY_ACTIVE_PRS=$(gh pr list \
-    --repo "$REPO" \
-    --state open \
-    --search "updated:>=$SINCE_DATE -created:>=$SINCE_DATE" \
-    --json number,title,url \
-    --jq '.[] | [.number, .title, .url] | @tsv' \
-    2>/dev/null || echo "")
+  --repo "$REPO" \
+  --state open \
+  --search "updated:>=$SINCE_DATE -created:>=$SINCE_DATE" \
+  --json number,title,url \
+  2>/dev/null || echo "")
+
+RECENTLY_ACTIVE_PRS_FILTERED=$(filter_all_types "$RECENTLY_ACTIVE_PRS")
 
 # Fetch new PRs (opened in the last week)
 echo "Fetching new PRs..."
 NEW_PRS=$(gh pr list \
-    --repo "$REPO" \
-    --state open \
-    --search "created:>=$SINCE_DATE" \
-    --json number,title,url \
-    --jq '.[] | [.number, .title, .url] | @tsv' \
-    2>/dev/null || echo "")
+  --repo "$REPO" \
+  --state open \
+  --search "created:>=$SINCE_DATE" \
+  --json number,title,url \
+  2>/dev/null || echo "")
+
+NEW_PRS_FILTERED=$(filter_all_types "$NEW_PRS")
 
 # Fetch new issues
 echo "Fetching new issues..."
 NEW_ISSUES=$(gh issue list \
-    --repo "$REPO" \
-    --state open \
-    --search "created:>=$SINCE_DATE" \
-    --json number,title,url \
-    --jq '.[] | [.number, .title, .url] | @tsv' \
-    2>/dev/null || echo "")
+  --repo "$REPO" \
+  --state open \
+  --search "created:>=$SINCE_DATE" \
+  --json number,title,url \
+  --jq '.[] | [.number, .title, .url] | @tsv' \
+  2>/dev/null || echo "")
 
 # Fetch discussion items (labeled with meeting-discussion)
 echo "Fetching discussion items..."
 DISCUSSION_PRS=$(gh pr list \
-    --repo "$REPO" \
-    --state open \
-    --label "meeting-discussion" \
-    --json number,title,url \
-    --jq '.[] | [.number, .title, .url] | @tsv' \
-    2>/dev/null || echo "")
+  --repo "$REPO" \
+  --state open \
+  --label "meeting-discussion" \
+  --json number,title,url \
+  --jq '.[] | [.number, .title, .url] | @tsv' \
+  2>/dev/null || echo "")
 
 DISCUSSION_ISSUES=$(gh issue list \
-    --repo "$REPO" \
-    --state open \
-    --label "meeting-discussion" \
-    --json number,title,url \
-    --jq '.[] | [.number, .title, .url] | @tsv' \
-    2>/dev/null || echo "")
+  --repo "$REPO" \
+  --state open \
+  --label "meeting-discussion" \
+  --json number,title,url \
+  --jq '.[] | [.number, .title, .url] | @tsv' \
+  2>/dev/null || echo "")
 
 # Combine discussion items (PRs and issues)
 DISCUSSION_ITEMS=$(printf "%s\n%s" "$DISCUSSION_PRS" "$DISCUSSION_ISSUES" | grep -v '^$' || echo "")
 
+echo "Fetching merged PRs from the nuts repo..."
+MERGED_NUTS=$(gh pr list \
+  --repo cashubtc/nuts \
+  --state merged \
+  --search "merged:>=$SINCE_DATE" \
+  --json number,title,url \
+  --jq '.[] | [.number, .title, .url] | @tsv' \
+  2>/dev/null || echo "")
+
 # Generate markdown
-AGENDA=$(cat <<EOF
+AGENDA=$(
+  cat <<EOF
 # CDK Development Meeting
 
 $MEETING_DATE
@@ -97,8 +139,7 @@ $MEETING_DATE
 Meeting Link: $MEETING_LINK
 
 ## Merged
-
-$(format_list "$MERGED_PRS")
+$(format_list "$MERGED_PRS_FILTERED")
 
 ## New
 
@@ -108,11 +149,14 @@ $(format_list "$NEW_ISSUES")
 
 ### PRs
 
-$(format_list "$NEW_PRS")
+$(format_list "$NEW_PRS_FILTERED")
 
 ## Recently Active
 
-$(format_list "$RECENTLY_ACTIVE_PRS")
+$(format_list "$RECENTLY_ACTIVE_PRS_FILTERED")
+
+## Merged NUTS
+$(format_list "$MERGED_NUTS")
 
 ## Discussion
 
@@ -124,25 +168,25 @@ echo "$AGENDA"
 
 # Output to file if requested
 if [ "${OUTPUT_TO_FILE:-true}" = "true" ]; then
-    mkdir -p "$OUTPUT_DIR"
-    OUTPUT_FILE="$OUTPUT_DIR/$FILE_DATE-agenda.md"
-    echo "$AGENDA" > "$OUTPUT_FILE"
-    echo "Agenda saved to $OUTPUT_FILE"
+  mkdir -p "$OUTPUT_DIR"
+  OUTPUT_FILE="$OUTPUT_DIR/$FILE_DATE-agenda.md"
+  echo "$AGENDA" >"$OUTPUT_FILE"
+  echo "Agenda saved to $OUTPUT_FILE"
 fi
 
 # Create GitHub Discussion if requested
 if [ "${CREATE_DISCUSSION:-false}" = "true" ]; then
-    echo "Creating GitHub discussion..."
-    DISCUSSION_TITLE="CDK Dev Meeting - $MEETING_DATE"
+  echo "Creating GitHub discussion..."
+  DISCUSSION_TITLE="CDK Dev Meeting - $MEETING_DATE"
 
-    # Note: gh CLI doesn't have direct discussion creation yet, so we'd need to use the API
-    # For now, we'll just output instructions
-    echo "To create discussion manually, use the GitHub web interface or API"
-    echo "Title: $DISCUSSION_TITLE"
+  # Note: gh CLI doesn't have direct discussion creation yet, so we'd need to use the API
+  # For now, we'll just output instructions
+  echo "To create discussion manually, use the GitHub web interface or API"
+  echo "Title: $DISCUSSION_TITLE"
 fi
 
 # Output for GitHub Actions
 if [ -n "$GITHUB_OUTPUT" ]; then
-    echo "agenda_file=$OUTPUT_FILE" >> "$GITHUB_OUTPUT"
-    echo "meeting_date=$MEETING_DATE" >> "$GITHUB_OUTPUT"
+  echo "agenda_file=$OUTPUT_FILE" >>"$GITHUB_OUTPUT"
+  echo "meeting_date=$MEETING_DATE" >>"$GITHUB_OUTPUT"
 fi
