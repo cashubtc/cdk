@@ -1,6 +1,7 @@
 **/target
 .DS_Store
 .direnv
+.jj
 .vscode/
 .idea/
 *.redb
