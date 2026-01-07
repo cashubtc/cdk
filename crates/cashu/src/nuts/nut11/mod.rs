@@ -56,6 +56,9 @@ pub enum Error {
     /// Unknown Kind
     #[error("Kind not found")]
     KindNotFound,
+    /// Tag value not found
+    #[error("Tag value not found")]
+    TagValueNotFound,
     /// HTLC hash invalid
     #[error("Invalid hash")]
     InvalidHash,
@@ -821,9 +824,21 @@ where
         let tag_kind = tag.first().map(TagKind::from).ok_or(Error::KindNotFound)?;
 
         match tag_kind {
-            TagKind::SigFlag => Ok(Tag::SigFlag(SigFlag::from_str(tag[1].as_ref())?)),
-            TagKind::NSigs => Ok(Tag::NSigs(tag[1].as_ref().parse()?)),
-            TagKind::Locktime => Ok(Tag::LockTime(tag[1].as_ref().parse()?)),
+            TagKind::SigFlag => Ok(Tag::SigFlag(SigFlag::from_str(
+                tag.get(1).ok_or(Error::TagValueNotFound)?.as_ref(),
+            )?)),
+            TagKind::NSigs => Ok(Tag::NSigs(
+                tag.get(1)
+                    .ok_or(Error::TagValueNotFound)?
+                    .as_ref()
+                    .parse()?,
+            )),
+            TagKind::Locktime => Ok(Tag::LockTime(
+                tag.get(1)
+                    .ok_or(Error::TagValueNotFound)?
+                    .as_ref()
+                    .parse()?,
+            )),
             TagKind::Refund => {
                 let pubkeys = tag
                     .iter()
@@ -842,7 +857,12 @@ where
 
                 Ok(Self::PubKeys(pubkeys))
             }
-            TagKind::NSigsRefund => Ok(Tag::NSigsRefund(tag[1].as_ref().parse()?)),
+            TagKind::NSigsRefund => Ok(Tag::NSigsRefund(
+                tag.get(1)
+                    .ok_or(Error::TagValueNotFound)?
+                    .as_ref()
+                    .parse()?,
+            )),
             TagKind::Custom(name) => {
                 let tags = tag
                     .iter()
