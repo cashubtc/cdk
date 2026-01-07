@@ -84,3 +84,17 @@ path = "fuzz_targets/fuzz_spending_conditions.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_htlc_witness"
+path = "fuzz_targets/fuzz_htlc_witness.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_token_raw_bytes"
+path = "fuzz_targets/fuzz_token_raw_bytes.rs"
+test = false
+doc = false
+bench = false

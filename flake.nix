@@ -93,7 +93,8 @@
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
 
         # Source for crane builds (uses nix-gitignore to filter out target/, etc.)
-        src = pkgs.nix-gitignore.gitignoreSource [ ] ./.;
+        # Using gitignoreSourcePure to read .gitignore directly (works without .git directory for jj users)
+        src = pkgs.nix-gitignore.gitignoreSourcePure [ ] ./.;
 
         # Source for MSRV builds - uses Cargo.lock.msrv with MSRV-compatible deps
         srcMsrv = pkgs.runCommand "cdk-source-msrv" { } ''
