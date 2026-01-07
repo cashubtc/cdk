@@ -394,11 +394,8 @@ impl Proof {
                 .unwrap_or_default()
                 .try_into();
 
-            match secret.kind() {
-                Kind::P2PK => {
-                    needed_sigs += 1;
-                }
-                _ => {}
+            if secret.kind() == Kind::P2PK {
+                needed_sigs += 1;
             }
 
             if let Ok(conditions) = conditions {
@@ -416,7 +413,7 @@ impl Proof {
             }
         }
 
-        return Ok(());
+        Ok(())
     }
 }
 
