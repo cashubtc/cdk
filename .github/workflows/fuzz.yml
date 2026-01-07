@@ -2,7 +2,7 @@ name: Fuzz
 
 on:
   schedule:
-    - cron: "0 4 * * *" # Daily at 4am UTC
+    - cron: "0 2 * * *" # Daily at 2am UTC
   workflow_dispatch: # Allow manual trigger
 
 # Cancel previous runs on same ref
@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         target:
           - fuzz_token
@@ -34,6 +35,11 @@ jobs:
           - fuzz_spending_conditions
           - fuzz_htlc_witness
           - fuzz_token_raw_bytes
+          - fuzz_p2pk_witness
+          - fuzz_witness
+          - fuzz_swap_request
+          - fuzz_melt_request
+          - fuzz_dleq
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -98,3 +98,38 @@ path = "fuzz_targets/fuzz_token_raw_bytes.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_p2pk_witness"
+path = "fuzz_targets/fuzz_p2pk_witness.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_witness"
+path = "fuzz_targets/fuzz_witness.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_swap_request"
+path = "fuzz_targets/fuzz_swap_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_melt_request"
+path = "fuzz_targets/fuzz_melt_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dleq"
+path = "fuzz_targets/fuzz_dleq.rs"
+test = false
+doc = false
+bench = false
