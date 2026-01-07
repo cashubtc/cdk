@@ -257,6 +257,7 @@ macro_rules! mint_db_test {
             remove_spent_proofs_should_fail,
             get_proofs_with_inconsistent_states_fails,
             get_proofs_fails_when_some_not_found,
+            update_proofs_state_updates_proofs_with_state,
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

@@ -301,10 +301,14 @@ pub trait ProofsTransaction {
         operation: &Operation,
     ) -> Result<Acquired<ProofsWithState>, Self::Err>;
 
-    /// Updates the proofs to a given states and return the previous states
-    async fn update_proofs(
+    /// Updates the proofs to the given state in the database.
+    ///
+    /// Also updates the `state` field on the [`ProofsWithState`] wrapper to reflect
+    /// the new state after the database update succeeds.
+    async fn update_proofs_state(
         &mut self,
         proofs: &mut Acquired<ProofsWithState>,
+        new_state: State,
     ) -> Result<(), Self::Err>;
 
     /// get proofs states

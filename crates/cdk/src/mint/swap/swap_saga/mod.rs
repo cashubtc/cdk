@@ -4,6 +4,7 @@ use std::sync::Arc;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
+use cdk_common::state::check_state_transition;
 use cdk_common::{database, Amount, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tokio::sync::Mutex;
 use tracing::instrument;
@@ -191,9 +192,9 @@ impl<'a> SwapSaga<'a, Initial> {
             }
         };
 
-        let original_state = new_proofs.get_state();
+        let original_state = new_proofs.state;
 
-        if new_proofs.set_new_state(State::Pending).is_err() {
+        if check_state_transition(new_proofs.state, State::Pending).is_err() {
             tx.rollback().await?;
             return Err(if original_state == State::Pending {
                 Error::TokenPending
@@ -208,7 +209,10 @@ impl<'a> SwapSaga<'a, Initial> {
         };
 
         // Update input proof states to Pending
-        match tx.update_proofs(&mut new_proofs).await {
+        match tx
+            .update_proofs_state(&mut new_proofs, State::Pending)
+            .await
+        {
             Ok(states) => states,
             Err(err) => {
                 tx.rollback().await?;
@@ -420,13 +424,13 @@ impl SwapSaga<'_, Signed> {
                 return Err(err.into());
             }
         };
-        if proofs.set_new_state(State::Spent).is_err() {
+        if check_state_transition(proofs.state, State::Spent).is_err() {
             tx.rollback().await?;
             self.compensate_all().await?;
             return Err(Error::TokenAlreadySpent);
         }
 
-        match tx.update_proofs(&mut proofs).await {
+        match tx.update_proofs_state(&mut proofs, State::Spent).await {
             Ok(_) => {}
             Err(err) => {
                 tx.rollback().await?;

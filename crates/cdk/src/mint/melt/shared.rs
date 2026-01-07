@@ -8,6 +8,7 @@
 
 use cdk_common::database::{self, Acquired, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, State};
+use cdk_common::state::check_state_transition;
 use cdk_common::{Amount, Error, PublicKey, QuoteId};
 use cdk_signatory::signatory::SignatoryKeySet;
 
@@ -393,10 +394,10 @@ pub async fn finalize_melt_core(
     }
 
     let mut proofs = tx.get_proofs(input_ys).await?;
-    proofs.set_new_state(State::Spent)?;
+    check_state_transition(proofs.state, State::Spent).map_err(|_| Error::UnexpectedProofState)?;
 
     // Mark input proofs as spent
-    match tx.update_proofs(&mut proofs).await {
+    match tx.update_proofs_state(&mut proofs, State::Spent).await {
         Ok(_) => {}
         Err(database::Error::AttemptUpdateSpentProof) => {
             tracing::info!("Proofs for quote {} already marked as spent", quote.id);

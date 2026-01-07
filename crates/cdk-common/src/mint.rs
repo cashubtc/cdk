@@ -18,7 +18,6 @@ use uuid::Uuid;
 
 use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::payment::PaymentIdentifier;
-use crate::state::check_state_transition;
 use crate::{Amount, CurrencyUnit, Error, Id, KeySetInfo, PublicKey};
 
 /// Operation kind for saga persistence
@@ -48,9 +47,9 @@ pub enum OperationKind {
 ///
 /// # State Transitions
 ///
-/// State changes are performed atomically on the entire collection via [`set_new_state`](Self::set_new_state),
-/// which validates the transition before applying it. The database layer then persists
-/// the new state for all proofs in a single transaction.
+/// State transitions are validated using [`check_state_transition`](crate::state::check_state_transition)
+/// before updating. The database layer then persists the new state for all proofs in a single transaction
+/// via [`update_proofs_state`](crate::database::mint::ProofsTransaction::update_proofs_state).
 ///
 /// # Example
 ///
@@ -58,16 +57,17 @@ pub enum OperationKind {
 /// // Database layer ensures all proofs have the same state
 /// let mut proofs = tx.get_proofs(&ys).await?;
 ///
-/// // Transition all proofs to a new state
-/// let old_state = proofs.set_new_state(State::Spent)?;
+/// // Validate the state transition
+/// check_state_transition(proofs.state, State::Spent)?;
 ///
 /// // Persist the state change
-/// tx.update_proofs(&mut proofs).await?;
+/// tx.update_proofs_state(&mut proofs, State::Spent).await?;
 /// ```
 #[derive(Debug)]
 pub struct ProofsWithState {
     proofs: Proofs,
-    state: State,
+    /// The current state of the proofs
+    pub state: State,
 }
 
 impl Deref for ProofsWithState {
@@ -90,27 +90,6 @@ impl ProofsWithState {
             proofs,
             state: current_state,
         }
-    }
-
-    /// Returns the current state shared by all proofs in the collection.
-    pub fn get_state(&self) -> State {
-        self.state
-    }
-
-    /// Transitions all proofs to a new state.
-    ///
-    /// Validates that the state transition is allowed before applying it.
-    /// Returns the previous state on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::UnexpectedProofState`] if the transition from the current
-    /// state to the new state is not permitted.
-    pub fn set_new_state(&mut self, new_state: State) -> Result<State, Error> {
-        check_state_transition(self.state, new_state).map_err(|_| Error::UnexpectedProofState)?;
-        let old_state = self.state;
-        self.state = new_state;
-        Ok(old_state)
     }
 }
 

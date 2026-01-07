@@ -7,6 +7,7 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
+use cdk_common::state::check_state_transition;
 use cdk_common::{Amount, Error, ProofsMethods, PublicKey, QuoteId, State};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -247,7 +248,7 @@ impl MeltSaga<Initial> {
 
         let mut proofs = tx.get_proofs(&input_ys).await?;
 
-        let original_state = proofs.get_state();
+        let original_state = proofs.state;
 
         if matches!(original_state, State::Pending | State::Spent) {
             tx.rollback().await?;
@@ -258,10 +259,11 @@ impl MeltSaga<Initial> {
             });
         }
 
-        proofs.set_new_state(State::Pending)?;
+        check_state_transition(proofs.state, State::Pending)
+            .map_err(|_| Error::UnexpectedProofState)?;
 
         // Update proof states to Pending
-        match tx.update_proofs(&mut proofs).await {
+        match tx.update_proofs_state(&mut proofs, State::Pending).await {
             Ok(states) => states,
             Err(cdk_common::database::Error::AttemptUpdateSpentProof)
             | Err(cdk_common::database::Error::AttemptRemoveSpentProof) => {

@@ -8,6 +8,7 @@ use cashu::{Amount, Id, SecretKey};
 use crate::database::mint::test::setup_keyset;
 use crate::database::mint::{Database, Error, KeysDatabase, Proof, QuoteId};
 use crate::mint::Operation;
+use crate::state::check_state_transition;
 
 /// Test get proofs by keyset id
 pub async fn get_proofs_by_keyset_id<DB>(db: DB)
@@ -218,8 +219,10 @@ where
     // Update to pending
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut proofs = tx.get_proofs(&ys).await.unwrap();
-    proofs.set_new_state(State::Pending).unwrap();
-    tx.update_proofs(&mut proofs).await.unwrap();
+    check_state_transition(proofs.state, State::Pending).unwrap();
+    tx.update_proofs_state(&mut proofs, State::Pending)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Verify new state
@@ -230,14 +233,76 @@ where
     // Update to spent
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut proofs = tx.get_proofs(&ys).await.unwrap();
-    proofs.set_new_state(State::Spent).unwrap();
-    tx.update_proofs(&mut proofs).await.unwrap();
+    check_state_transition(proofs.state, State::Spent).unwrap();
+    tx.update_proofs_state(&mut proofs, State::Spent)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Verify final state
     let states = db.get_proofs_states(&ys).await.unwrap();
     assert_eq!(states[0], Some(State::Spent));
     assert_eq!(states[1], Some(State::Spent));
+}
+
+/// Test that update_proofs_state updates the ProofsWithState.state field
+pub async fn update_proofs_state_updates_proofs_with_state<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use cashu::State;
+
+    let keyset_id = setup_keyset(&db).await;
+    let quote_id = QuoteId::new_uuid();
+
+    let proofs = vec![Proof {
+        amount: Amount::from(100),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+    }];
+
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    // Add proofs and verify initial state
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut proofs = tx
+        .add_proofs(
+            proofs.clone(),
+            Some(quote_id),
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await
+        .unwrap();
+    assert_eq!(proofs.state, State::Unspent);
+
+    // Update to Pending and verify ProofsWithState.state is updated
+    tx.update_proofs_state(&mut proofs, State::Pending)
+        .await
+        .unwrap();
+    assert_eq!(
+        proofs.state,
+        State::Pending,
+        "ProofsWithState.state should be updated to Pending after update_proofs_state"
+    );
+    tx.commit().await.unwrap();
+
+    // Get proofs again and update to Spent
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut proofs = tx.get_proofs(&ys).await.unwrap();
+    assert_eq!(proofs.state, State::Pending);
+
+    tx.update_proofs_state(&mut proofs, State::Spent)
+        .await
+        .unwrap();
+    assert_eq!(
+        proofs.state,
+        State::Spent,
+        "ProofsWithState.state should be updated to Spent after update_proofs_state"
+    );
+    tx.commit().await.unwrap();
 }
 
 /// Test removing proofs
@@ -350,15 +415,19 @@ where
     // First update to Pending (valid state transition)
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut proofs = tx.get_proofs(&[ys[0], ys[1]]).await.unwrap();
-    proofs.set_new_state(State::Pending).unwrap();
-    tx.update_proofs(&mut proofs).await.unwrap();
+    check_state_transition(proofs.state, State::Pending).unwrap();
+    tx.update_proofs_state(&mut proofs, State::Pending)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Then mark some as spent
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut proofs = tx.get_proofs(&[ys[0], ys[1]]).await.unwrap();
-    proofs.set_new_state(State::Spent).unwrap();
-    tx.update_proofs(&mut proofs).await.unwrap();
+    check_state_transition(proofs.state, State::Spent).unwrap();
+    tx.update_proofs_state(&mut proofs, State::Spent)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Get total redeemed
@@ -709,8 +778,10 @@ where
     // Transition proofs to Pending state
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut records = tx.get_proofs(&ys).await.expect("valid records");
-    records.set_new_state(State::Pending).unwrap();
-    tx.update_proofs(&mut records).await.unwrap();
+    check_state_transition(records.state, State::Pending).unwrap();
+    tx.update_proofs_state(&mut records, State::Pending)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Removing Pending proofs should also succeed
@@ -726,8 +797,10 @@ where
     // Now transition proofs to Spent state
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut records = tx.get_proofs(&ys).await.expect("valid records");
-    records.set_new_state(State::Spent).unwrap();
-    tx.update_proofs(&mut records).await.unwrap();
+    check_state_transition(records.state, State::Spent).unwrap();
+    tx.update_proofs_state(&mut records, State::Spent)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Verify proofs are now in Spent state
@@ -824,8 +897,10 @@ where
     // Transition only the first two proofs to Pending state
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut first_two_proofs = tx.get_proofs(&ys[0..2]).await.unwrap();
-    first_two_proofs.set_new_state(State::Pending).unwrap();
-    tx.update_proofs(&mut first_two_proofs).await.unwrap();
+    check_state_transition(first_two_proofs.state, State::Pending).unwrap();
+    tx.update_proofs_state(&mut first_two_proofs, State::Pending)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Verify the states are now inconsistent via get_proofs_states

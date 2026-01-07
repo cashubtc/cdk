@@ -186,11 +186,10 @@ where
         Ok(ProofsWithState::new(proofs, State::Unspent).into())
     }
 
-    /// Persists the current state of the proofs to the database.
+    /// Updates all proofs to the given state in the database.
     ///
-    /// Reads the state from the [`ProofsWithState`] wrapper (previously set via
-    /// [`ProofsWithState::set_new_state`]) and updates all proofs in the database
-    /// to that state.
+    /// Also updates the `state` field on the [`ProofsWithState`] wrapper to reflect
+    /// the new state after the database update succeeds.
     ///
     /// When the new state is `Spent`, this method also updates the `keyset_amounts`
     /// table to track the total redeemed amount per keyset for analytics purposes.
@@ -199,12 +198,12 @@ where
     ///
     /// The proofs must have been previously acquired via `add_proofs`
     /// or `get_proofs` to ensure they are locked within the current transaction.
-    async fn update_proofs(
+    async fn update_proofs_state(
         &mut self,
         proofs: &mut Acquired<ProofsWithState>,
+        new_state: State,
     ) -> Result<(), Self::Err> {
         let ys = proofs.ys()?;
-        let new_state = proofs.get_state();
 
         query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)?
             .bind("new_state", new_state.to_string())
@@ -228,6 +227,8 @@ where
                 .execute(&self.inner)
                 .await?;
         }
+
+        proofs.state = new_state;
 
         Ok(())
     }
