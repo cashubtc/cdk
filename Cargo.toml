@@ -2,6 +2,9 @@
 members = [
     "crates/*",
 ]
+exclude = [
+    "fuzz",
+]
 resolver = "2"
 
 [workspace.lints.rust]

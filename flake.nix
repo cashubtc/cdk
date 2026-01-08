@@ -92,8 +92,23 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
 
-        # Source for crane builds (uses nix-gitignore to filter out target/, etc.)
-        src = pkgs.nix-gitignore.gitignoreSource [ ] ./.;
+        # Source for crane builds - uses lib.fileset for efficient filtering
+        # This is much faster than nix-gitignore when large directories (like target/) exist
+        # because it uses a whitelist approach rather than scanning everything first
+        src = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.intersection
+            (lib.fileset.fromSource (lib.sources.cleanSource ./.))
+            (lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./Cargo.lock.msrv
+              ./README.md
+              ./.cargo
+              ./crates
+              ./fuzz
+            ]);
+        };
 
         # Source for MSRV builds - uses Cargo.lock.msrv with MSRV-compatible deps
         srcMsrv = pkgs.runCommand "cdk-source-msrv" { } ''
@@ -410,6 +425,7 @@
 
             cargo-outdated
             cargo-mutants
+            cargo-fuzz
 
             # Needed for github ci
             libz

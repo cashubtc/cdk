@@ -1,0 +1,149 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # Daily at 2am UTC
+  workflow_dispatch: # Allow manual trigger
+
+# Cancel previous runs on same ref
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  # Group A: Runs on Machine A (fuzz-a labeled runners)
+  fuzz-group-a:
+    name: "Fuzz A: ${{ matrix.target }}"
+    runs-on: [self-hosted, fuzz-a]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        target:
+          - fuzz_token
+          - fuzz_payment_request
+          - fuzz_secret
+          - fuzz_mint_url
+          - fuzz_keyset_id
+          - fuzz_proof
+          - fuzz_blind_signature
+          - fuzz_amount
+          - fuzz_dleq
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Fuzz ${{ matrix.target }}
+        run: nix develop -i -L .#nightly --command just fuzz ${{ matrix.target }} 3600 4
+
+      - name: Create Security Advisory on crash
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.SECURITY_ADVISORY_TOKEN }}
+        run: |
+          TARGET="${{ matrix.target }}"
+          ARTIFACT_DIR="fuzz/artifacts/$TARGET"
+          
+          if [ -d "$ARTIFACT_DIR" ] && [ "$(ls -A $ARTIFACT_DIR 2>/dev/null)" ]; then
+            ARTIFACT_DATA=$(tar czf - "$ARTIFACT_DIR" | base64 -w0)
+            
+            gh api repos/${{ github.repository }}/security-advisories \
+              --method POST \
+              -f summary="[Fuzzing] Crash in $TARGET" \
+              -f description="Automated fuzzing found a crash in \`$TARGET\`.
+
+          **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          **Commit:** ${{ github.sha }}
+
+          ## Crash Artifact (base64 tar.gz)
+
+          \`\`\`
+          $ARTIFACT_DATA
+          \`\`\`
+
+          ## To reproduce locally
+
+          1. Decode: \`echo '<base64-data>' | base64 -d > crash.tar.gz && tar xzf crash.tar.gz\`
+          2. Run: \`cargo fuzz run $TARGET fuzz/artifacts/$TARGET/<crash-file>\`" \
+              -f severity="low" \
+              -f "vulnerabilities[0][package][ecosystem]=other" \
+              -f "vulnerabilities[0][package][name]=cdk"
+          fi
+
+  # Group B: Runs on Machine B (fuzz-b labeled runners)
+  fuzz-group-b:
+    name: "Fuzz B: ${{ matrix.target }}"
+    runs-on: [self-hosted, fuzz-b]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        target:
+          - fuzz_currency_unit
+          - fuzz_spending_conditions
+          - fuzz_htlc_witness
+          - fuzz_token_raw_bytes
+          - fuzz_p2pk_witness
+          - fuzz_witness
+          - fuzz_swap_request
+          - fuzz_melt_request
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Fuzz ${{ matrix.target }}
+        run: nix develop -i -L .#nightly --command just fuzz ${{ matrix.target }} 3600 4
+
+      - name: Create Security Advisory on crash
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.SECURITY_ADVISORY_TOKEN }}
+        run: |
+          TARGET="${{ matrix.target }}"
+          ARTIFACT_DIR="fuzz/artifacts/$TARGET"
+          
+          if [ -d "$ARTIFACT_DIR" ] && [ "$(ls -A $ARTIFACT_DIR 2>/dev/null)" ]; then
+            ARTIFACT_DATA=$(tar czf - "$ARTIFACT_DIR" | base64 -w0)
+            
+            gh api repos/${{ github.repository }}/security-advisories \
+              --method POST \
+              -f summary="[Fuzzing] Crash in $TARGET" \
+              -f description="Automated fuzzing found a crash in \`$TARGET\`.
+
+          **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          **Commit:** ${{ github.sha }}
+
+          ## Crash Artifact (base64 tar.gz)
+
+          \`\`\`
+          $ARTIFACT_DATA
+          \`\`\`
+
+          ## To reproduce locally
+
+          1. Decode: \`echo '<base64-data>' | base64 -d > crash.tar.gz && tar xzf crash.tar.gz\`
+          2. Run: \`cargo fuzz run $TARGET fuzz/artifacts/$TARGET/<crash-file>\`" \
+              -f severity="low" \
+              -f "vulnerabilities[0][package][ecosystem]=other" \
+              -f "vulnerabilities[0][package][name]=cdk"
+          fi
