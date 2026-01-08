@@ -34,6 +34,9 @@ use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
 use crate::Amount;
 
+#[cfg(feature = "wallet")]
+use crate::{Conditions, Kind};
+
 pub mod token;
 pub use token::{Token, TokenV3, TokenV4};
 
@@ -386,6 +389,7 @@ impl Proof {
         if let Ok(secret) = <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
             self.clone().secret,
         ) {
+
             let mut needed_sigs: usize = 0;
             let conditions: Result<Conditions, _> = secret
                 .secret_data()
