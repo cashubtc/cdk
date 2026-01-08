@@ -527,3 +527,6 @@ pub trait Database<Error>:
 
 /// Type alias for Mint Database
 pub type DynMintDatabase = std::sync::Arc<dyn Database<Error> + Send + Sync>;
+
+/// Type alias for Mint Transaction
+pub type DynMintTransaction = Box<dyn Transaction<Error> + Send + Sync>;

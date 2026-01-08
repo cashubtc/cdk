@@ -12,6 +12,7 @@ use tracing::instrument;
 use self::compensation::{CompensatingAction, RemoveSwapSetup};
 use self::state::{Initial, SetupComplete, Signed};
 use crate::mint::subscription::PubSubManager;
+use crate::Mint;
 
 pub mod compensation;
 mod state;
@@ -208,17 +209,11 @@ impl<'a> SwapSaga<'a, Initial> {
             Err(err) => return Err(Error::NUT00(err)),
         };
 
-        // Update input proof states to Pending
-        match tx
-            .update_proofs_state(&mut new_proofs, State::Pending)
-            .await
+        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut new_proofs, State::Pending).await
         {
-            Ok(states) => states,
-            Err(err) => {
-                tx.rollback().await?;
-                return Err(err.into());
-            }
-        };
+            tx.rollback().await?;
+            return Err(err);
+        }
 
         // Add output blinded messages
         if let Err(err) = tx
@@ -424,19 +419,11 @@ impl SwapSaga<'_, Signed> {
                 return Err(err.into());
             }
         };
-        if check_state_transition(proofs.state, State::Spent).is_err() {
+
+        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
             tx.rollback().await?;
             self.compensate_all().await?;
-            return Err(Error::TokenAlreadySpent);
-        }
-
-        match tx.update_proofs_state(&mut proofs, State::Spent).await {
-            Ok(_) => {}
-            Err(err) => {
-                tx.rollback().await?;
-                self.compensate_all().await?;
-                return Err(err.into());
-            }
+            return Err(err);
         }
 
         // Publish proof state changes

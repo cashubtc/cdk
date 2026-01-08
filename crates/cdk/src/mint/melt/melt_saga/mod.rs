@@ -7,7 +7,6 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
-use cdk_common::state::check_state_transition;
 use cdk_common::{Amount, Error, ProofsMethods, PublicKey, QuoteId, State};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -21,6 +20,7 @@ use crate::mint::melt::shared;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::Verification;
 use crate::mint::{MeltQuoteBolt11Response, MeltRequest};
+use crate::Mint;
 
 mod compensation;
 mod state;
@@ -259,22 +259,10 @@ impl MeltSaga<Initial> {
             });
         }
 
-        check_state_transition(proofs.state, State::Pending)
-            .map_err(|_| Error::UnexpectedProofState)?;
-
-        // Update proof states to Pending
-        match tx.update_proofs_state(&mut proofs, State::Pending).await {
-            Ok(states) => states,
-            Err(cdk_common::database::Error::AttemptUpdateSpentProof)
-            | Err(cdk_common::database::Error::AttemptRemoveSpentProof) => {
-                tx.rollback().await?;
-                return Err(Error::TokenAlreadySpent);
-            }
-            Err(err) => {
-                tx.rollback().await?;
-                return Err(err.into());
-            }
-        };
+        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Pending).await {
+            tx.rollback().await?;
+            return Err(err);
+        }
 
         let previous_state = quote.state;
 
