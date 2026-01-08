@@ -9,7 +9,6 @@ use cdk::wallet::MultiMintWallet;
 use cdk::{Amount, StreamExt};
 use cdk_common::nut00::KnownMethod;
 use clap::Args;
-use lightning::types::payment;
 use serde::{Deserialize, Serialize};
 
 use crate::utils::get_or_create_wallet;
