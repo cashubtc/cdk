@@ -81,7 +81,7 @@ impl DbSignatory {
                     Some(0),
                     unit.clone(),
                     &amounts,
-                    fee,
+                    Some(fee),
                     // TODO: add and connect settings for this
                     None,
                 );
@@ -144,7 +144,7 @@ impl DbSignatory {
             &keyset_info.amounts,
             keyset_info.unit.clone(),
             keyset_info.derivation_path.clone(),
-            Some(keyset_info.input_fee_ppk),
+            keyset_info.input_fee_ppk,
             keyset_info.final_expiry,
             keyset_info.id.get_version(),
         )

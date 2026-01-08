@@ -16,7 +16,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::key::Secp256k1;
 #[cfg(feature = "mint")]
 use bitcoin::secp256k1;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
@@ -162,8 +162,6 @@ impl Id {
     ///
     /// This function will not panic under normal circumstances as the hash output
     /// is always valid hex and the correct length.
-    pub fn v2_from_data(map: &Keys, unit: &CurrencyUnit, expiry: Option<u64>) -> Self {
-    pub fn v2_from_data(map: &Keys, unit: &CurrencyUnit, expiry: Option<u64>) -> Self {
     pub fn v2_from_data(
         map: &Keys,
         unit: &CurrencyUnit,
@@ -484,12 +482,6 @@ pub struct KeySet {
     /// Keyset state - indicates whether the mint will sign new outputs with this keyset
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
-    /// Input fee in parts per thousand (ppk) per input spent from this keyset
-    #[serde(
-        deserialize_with = "deserialize_input_fee_ppk",
-        default = "default_input_fee_ppk"
-    )]
-    pub input_fee_ppk: u64,
     /// Keyset [`Keys`]
     pub keys: Keys,
     /// Input Fee PPK
@@ -537,11 +529,8 @@ pub struct KeySetInfo {
     /// Mint will only sign from an active keyset
     pub active: bool,
     /// Input Fee PPK
-    #[serde(
-        deserialize_with = "deserialize_input_fee_ppk",
-        default = "default_input_fee_ppk"
-    )]
-    pub input_fee_ppk: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_fee_ppk: Option<u64>,
     /// Expiry of the keyset
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_expiry: Option<u64>,
@@ -567,19 +556,6 @@ impl KeySetInfosMethods for KeySetInfos {
     fn unit(&self, unit: CurrencyUnit) -> impl Iterator<Item = &KeySetInfo> + '_ {
         self.iter().filter(move |k| k.unit == unit)
     }
-}
-
-fn deserialize_input_fee_ppk<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    // This will either give us a u64 or null (which becomes None)
-    let opt = Option::<u64>::deserialize(deserializer)?;
-    Ok(opt.unwrap_or_else(default_input_fee_ppk))
-}
-
-fn default_input_fee_ppk() -> u64 {
-    0
 }
 
 #[cfg(feature = "mint")]
@@ -718,19 +694,11 @@ impl From<MintKeySet> for Id {
         let keys: Keys = keyset.keys.into();
         match keyset.id.version {
             KeySetVersion::Version00 => Id::v1_from_keys(&keys),
-            KeySetVersion::Version01 => Id::v2_from_data(&keys, &keyset.unit, keyset.final_expiry),
-        let keys: super::KeySet = keyset.into();
-        match keys.id.version {
-            KeySetVersion::Version00 => Id::v1_from_keys(&keys.keys),
-            KeySetVersion::Version01 => Id::v2_from_data(&keys.keys, &keys.unit, keys.final_expiry),
-        let keys: super::KeySet = keyset.into();
-        match keys.id.version {
-            KeySetVersion::Version00 => Id::v1_from_keys(&keys.keys),
             KeySetVersion::Version01 => Id::v2_from_data(
-                &keys.keys,
-                &keys.unit,
-                keys.input_fee_ppk,
-                keys.final_expiry,
+                &keys,
+                &keyset.unit,
+                keyset.input_fee_ppk,
+                keyset.final_expiry,
             ),
         }
     }
