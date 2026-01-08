@@ -34,7 +34,7 @@ pub enum Error {
     #[error(transparent)]
     HexError(#[from] hex::Error),
     /// Keyset length error
-    #[error("NUT02: ID length invalid")]
+    #[error("NUT02: ID length invalid, expected 8 bytes (short/v1) or 33 bytes (v2)")]
     Length,
     /// Unknown version
     #[error("NUT02: Unknown Version")]
@@ -350,6 +350,10 @@ impl ShortKeysetId {
 
     /// [`ShortKeysetId`] from bytes
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.is_empty() {
+            return Err(Error::Length);
+        }
+
         let version = KeySetVersion::from_byte(&bytes[0])?;
         let prefix = bytes[1..].to_vec();
         Ok(Self { version, prefix })

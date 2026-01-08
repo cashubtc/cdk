@@ -1,6 +1,7 @@
 **/target
 .DS_Store
 .direnv
+.jj
 .vscode/
 .idea/
 *.redb
@@ -17,6 +18,10 @@ result
 mutants.out/
 mutants-*.log
 .mutants.lock
+
+# Fuzzing artifacts and runtime corpus (seeds/ is committed)
+fuzz/artifacts/
+fuzz/corpus/
 
 
 # Python ffi
