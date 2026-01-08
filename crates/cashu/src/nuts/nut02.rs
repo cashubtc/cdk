@@ -509,11 +509,8 @@ pub struct KeySetInfo {
     /// Mint will only sign from an active keyset
     pub active: bool,
     /// Input Fee PPK
-    #[serde(
-        deserialize_with = "deserialize_input_fee_ppk",
-        default = "default_input_fee_ppk"
-    )]
-    pub input_fee_ppk: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_fee_ppk: Option<u64>,
     /// Expiry of the keyset
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_expiry: Option<u64>,
@@ -539,19 +536,6 @@ impl KeySetInfosMethods for KeySetInfos {
     fn unit(&self, unit: CurrencyUnit) -> impl Iterator<Item = &KeySetInfo> + '_ {
         self.iter().filter(move |k| k.unit == unit)
     }
-}
-
-fn deserialize_input_fee_ppk<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    // This will either give us a u64 or null (which becomes None)
-    let opt = Option::<u64>::deserialize(deserializer)?;
-    Ok(opt.unwrap_or_else(default_input_fee_ppk))
-}
-
-fn default_input_fee_ppk() -> u64 {
-    0
 }
 
 #[cfg(feature = "mint")]

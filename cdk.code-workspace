@@ -1,0 +1,12 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {
+    "cSpell.words": ["localstore"]
+  },
+  "rust-analyzer.checkOnSave": true,
+  "rust-analyzer.checkOnSave.command": "clippy"
+}
