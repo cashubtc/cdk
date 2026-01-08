@@ -163,26 +163,38 @@ impl Id {
     /// This function will not panic under normal circumstances as the hash output
     /// is always valid hex and the correct length.
     pub fn v2_from_data(map: &Keys, unit: &CurrencyUnit, expiry: Option<u64>) -> Self {
+    pub fn v2_from_data(map: &Keys, unit: &CurrencyUnit, expiry: Option<u64>) -> Self {
+    pub fn v2_from_data(
+        map: &Keys,
+        unit: &CurrencyUnit,
+        input_fee_ppk: Option<u64>,
+        expiry: Option<u64>,
+    ) -> Self {
         let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
         keys.sort_by_key(|(amt, _v)| *amt);
 
-        let mut pubkeys_concat: Vec<u8> = keys
+        let keys_string = keys
             .iter()
-            .map(|(_, pubkey)| pubkey.to_bytes())
-            .collect::<Vec<[u8; 33]>>()
-            .concat();
+            .map(|(amt, pubkey)| format!("{}:{}", amt, hex::encode(pubkey.to_bytes())))
+            .collect::<Vec<String>>()
+            .join(",");
 
-        // Add the unit
-        pubkeys_concat.extend(b"unit:");
-        pubkeys_concat.extend(unit.to_string().to_lowercase().as_bytes());
+        let mut data = keys_string;
+        data.push_str(&format!("|unit:{}", unit));
 
-        // Add the expiration
-        if let Some(expiry) = expiry {
-            pubkeys_concat.extend(b"final_expiry:");
-            pubkeys_concat.extend(expiry.to_string().as_bytes());
+        if let Some(fee) = input_fee_ppk {
+            if fee > 0 {
+                data.push_str(&format!("|input_fee_ppk:{}", fee));
+            }
         }
 
-        let hash = Sha256::hash(&pubkeys_concat);
+        if let Some(expiry) = expiry {
+            if expiry > 0 {
+                data.push_str(&format!("|final_expiry:{}", expiry));
+            }
+        }
+
+        let hash = Sha256::hash(data.as_bytes());
         let hex_of_hash = hex::encode(hash.to_byte_array());
 
         Self {
@@ -480,6 +492,9 @@ pub struct KeySet {
     pub input_fee_ppk: u64,
     /// Keyset [`Keys`]
     pub keys: Keys,
+    /// Input Fee PPK
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_fee_ppk: Option<u64>,
     /// Expiry
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_expiry: Option<u64>,
@@ -490,7 +505,12 @@ impl KeySet {
     pub fn verify_id(&self) -> Result<(), Error> {
         let keys_id = match self.id.version {
             KeySetVersion::Version00 => Id::v1_from_keys(&self.keys),
-            KeySetVersion::Version01 => Id::v2_from_data(&self.keys, &self.unit, self.final_expiry),
+            KeySetVersion::Version01 => Id::v2_from_data(
+                &self.keys,
+                &self.unit,
+                self.input_fee_ppk,
+                self.final_expiry,
+            ),
         };
 
         ensure_cdk!(
@@ -572,6 +592,9 @@ pub struct MintKeySet {
     pub unit: CurrencyUnit,
     /// Keyset [`MintKeys`]
     pub keys: MintKeys,
+    /// Input Fee PPK
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_fee_ppk: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Expiry [`Option<u64>`]
     pub final_expiry: Option<u64>,
@@ -590,6 +613,7 @@ impl MintKeySet {
         xpriv: Xpriv,
         unit: CurrencyUnit,
         amounts: &[u64],
+        input_fee_ppk: Option<u64>,
         final_expiry: Option<u64>,
         version: KeySetVersion,
     ) -> Self {
@@ -615,12 +639,15 @@ impl MintKeySet {
         let keys = MintKeys::new(map);
         let id = match version {
             KeySetVersion::Version00 => Id::v1_from_keys(&keys.clone().into()),
-            KeySetVersion::Version01 => Id::v2_from_data(&keys.clone().into(), &unit, final_expiry),
+            KeySetVersion::Version01 => {
+                Id::v2_from_data(&keys.clone().into(), &unit, input_fee_ppk, final_expiry)
+            }
         };
         Self {
             id,
             unit,
             keys,
+            input_fee_ppk,
             final_expiry,
         }
     }
@@ -637,6 +664,7 @@ impl MintKeySet {
         amounts: &[u64],
         currency_unit: CurrencyUnit,
         derivation_path: DerivationPath,
+        input_fee_ppk: Option<u64>,
         final_expiry: Option<u64>,
         version: KeySetVersion,
     ) -> Self {
@@ -648,6 +676,7 @@ impl MintKeySet {
                 .expect("RNG busted"),
             currency_unit,
             amounts,
+            input_fee_ppk,
             final_expiry,
             version,
         )
@@ -665,6 +694,7 @@ impl MintKeySet {
         amounts: &[u64],
         currency_unit: CurrencyUnit,
         derivation_path: DerivationPath,
+        input_fee_ppk: Option<u64>,
         final_expiry: Option<u64>,
         version: KeySetVersion,
     ) -> Self {
@@ -675,6 +705,7 @@ impl MintKeySet {
                 .expect("RNG busted"),
             currency_unit,
             amounts,
+            input_fee_ppk,
             final_expiry,
             version,
         )
@@ -688,6 +719,19 @@ impl From<MintKeySet> for Id {
         match keyset.id.version {
             KeySetVersion::Version00 => Id::v1_from_keys(&keys),
             KeySetVersion::Version01 => Id::v2_from_data(&keys, &keyset.unit, keyset.final_expiry),
+        let keys: super::KeySet = keyset.into();
+        match keys.id.version {
+            KeySetVersion::Version00 => Id::v1_from_keys(&keys.keys),
+            KeySetVersion::Version01 => Id::v2_from_data(&keys.keys, &keys.unit, keys.final_expiry),
+        let keys: super::KeySet = keyset.into();
+        match keys.id.version {
+            KeySetVersion::Version00 => Id::v1_from_keys(&keys.keys),
+            KeySetVersion::Version01 => Id::v2_from_data(
+                &keys.keys,
+                &keys.unit,
+                keys.input_fee_ppk,
+                keys.final_expiry,
+            ),
         }
     }
 }
@@ -814,24 +858,25 @@ mod test {
     fn test_v2_deserialization_and_id_generation() {
         let unit: CurrencyUnit = CurrencyUnit::from_str("sat").unwrap();
         let expiry: u64 = 2059210353; // +10 years from now
+        let input_fee_ppk = 100;
 
         let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
         let id_from_str =
-            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+            Id::from_str("015ba18a8adcd02e715a58358eb618da4a4b3791151a4bee5e968bb88406ccf76a")
                 .unwrap();
-        let id = Id::v2_from_data(&keys, &unit, Some(expiry));
+        let id = Id::v2_from_data(&keys, &unit, Some(input_fee_ppk), Some(expiry));
         assert_eq!(id, id_from_str);
 
         let keys: Keys = serde_json::from_str(KEYSET).unwrap();
         let id_from_str =
-            Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9e0")
+            Id::from_str("01ab6aa4ff30390da34986d84be5274b48ad7a74265d791095bfc39f4098d9764f")
                 .unwrap();
-        let id = Id::v2_from_data(&keys, &unit, Some(expiry));
+        let id = Id::v2_from_data(&keys, &unit, None, Some(expiry));
         assert_eq!(id, id_from_str);
 
-        let id = Id::v2_from_data(&keys, &unit, None);
+        let id = Id::v2_from_data(&keys, &unit, None, None);
         let id_from_str =
-            Id::from_str("016d72f27c8d22808ad66d1959b3dab83af17e2510db7ffd57d2365d9eec3ced75")
+            Id::from_str("012fbb01a4e200c76df911eeba3b8fe1831202914b24664f4bccbd25852a6708f8")
                 .unwrap();
         assert_eq!(id, id_from_str);
     }

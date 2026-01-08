@@ -93,6 +93,7 @@ impl From<SignatoryKeySet> for KeySet {
             active: Some(val.active),
             input_fee_ppk: val.input_fee_ppk,
             keys: val.keys,
+            input_fee_ppk: Some(val.input_fee_ppk),
             final_expiry: val.final_expiry,
         }
     }

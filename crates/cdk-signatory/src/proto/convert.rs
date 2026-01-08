@@ -326,6 +326,7 @@ impl TryInto<cdk_common::KeySet> for KeySet {
                     .map(|(k, v)| cdk_common::PublicKey::from_slice(&v).map(|pk| (k.into(), pk)))
                     .collect::<Result<BTreeMap<cdk_common::Amount, cdk_common::PublicKey>, _>>()?,
             ),
+            input_fee_ppk: Some(self.input_fee_ppk),
             final_expiry: self.final_expiry,
         })
     }

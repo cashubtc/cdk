@@ -288,6 +288,7 @@ where
         active: None,
         input_fee_ppk: 0,
         keys: keys.clone(),
+        input_fee_ppk: None,
         final_expiry: None,
     };
 
@@ -314,6 +315,7 @@ where
         active: None,
         input_fee_ppk: 0,
         keys: keys.clone(),
+        input_fee_ppk: None,
         final_expiry: None,
     };
 
@@ -340,6 +342,7 @@ where
         active: None,
         input_fee_ppk: 0,
         keys,
+        input_fee_ppk: None,
         final_expiry: None,
     };
 
