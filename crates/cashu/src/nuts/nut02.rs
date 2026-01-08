@@ -504,20 +504,6 @@ impl KeySet {
     }
 }
 
-#[cfg(feature = "mint")]
-impl From<MintKeySet> for KeySet {
-    fn from(keyset: MintKeySet) -> Self {
-        Self {
-            id: keyset.id,
-            unit: keyset.unit,
-            active: None,
-            input_fee_ppk: 0,
-            keys: Keys::from(keyset.keys),
-            final_expiry: keyset.final_expiry,
-        }
-    }
-}
-
 /// KeySetInfo
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
@@ -698,10 +684,10 @@ impl MintKeySet {
 #[cfg(feature = "mint")]
 impl From<MintKeySet> for Id {
     fn from(keyset: MintKeySet) -> Id {
-        let keys: super::KeySet = keyset.into();
-        match keys.id.version {
-            KeySetVersion::Version00 => Id::v1_from_keys(&keys.keys),
-            KeySetVersion::Version01 => Id::v2_from_data(&keys.keys, &keys.unit, keys.final_expiry),
+        let keys: Keys = keyset.keys.into();
+        match keyset.id.version {
+            KeySetVersion::Version00 => Id::v1_from_keys(&keys),
+            KeySetVersion::Version01 => Id::v2_from_data(&keys, &keyset.unit, keyset.final_expiry),
         }
     }
 }
