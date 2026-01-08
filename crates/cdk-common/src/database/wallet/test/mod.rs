@@ -303,6 +303,7 @@ where
         id: keyset_id,
         unit: CurrencyUnit::Sat,
         keys: keys.clone(),
+        input_fee_ppk: None,
         final_expiry: None,
     };
 
@@ -329,6 +330,7 @@ where
         id: keyset_id,
         unit: CurrencyUnit::Sat,
         keys: keys.clone(),
+        input_fee_ppk: None,
         final_expiry: None,
     };
 
@@ -357,6 +359,7 @@ where
         id: keyset_id,
         unit: CurrencyUnit::Sat,
         keys,
+        input_fee_ppk: None,
         final_expiry: None,
     };
 
