@@ -5,7 +5,11 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
+use std::str::FromStr;
+use unicode_normalization::UnicodeNormalization;
 
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -192,6 +196,147 @@ impl MintKeyPair {
     }
 }
 
+/// Currency Unit
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub enum CurrencyUnit {
+    /// Sat
+    #[default]
+    Sat,
+    /// Msat
+    Msat,
+    /// Usd
+    Usd,
+    /// Euro
+    Eur,
+    /// Auth
+    Auth,
+    /// Custom currency unit
+    Custom(String),
+}
+
+impl CurrencyUnit {
+    fn normalize_custom_unit(value: &str) -> String {
+        value.trim().to_uppercase()
+    }
+
+    /// Construct a custom unit, normalizing to uppercase and trimming whitespace.
+    pub fn custom<S: AsRef<str>>(value: S) -> Self {
+        Self::Custom(Self::normalize_custom_unit(value.as_ref()))
+    }
+}
+
+#[cfg(feature = "mint")]
+impl CurrencyUnit {
+    /// Deterministic derivation index for each currency unit
+    ///
+    /// - use SHA-256 so results are identical across platforms
+    ///   and rust versions
+    /// - NFC normalization, lowercasing, and trim to ensure logically
+    ///   equivalent strings map to the same index.
+    /// - reserve a low integer range for known variants
+    pub fn derivation_index(&self) -> Option<u32> {
+        // reserved to ensure backward compatibility for hardcoded derivation paths
+        const RESERVED: u32 = 5;
+
+        match self {
+            Self::Sat => Some(0),
+            Self::Msat => Some(1),
+            Self::Usd => Some(2),
+            Self::Eur => Some(3),
+            Self::Auth => Some(4),
+            Self::Custom(s) => Self::custom_derivation_index(s, RESERVED),
+        }
+    }
+
+    /// Generate deterministic derivation index for custom currency units
+    fn custom_derivation_index(s: &str, reserved: u32) -> Option<u32> {
+        // Canonicalize before hashing to ensure identical representations converge:
+        // 1) trim ASCII whitespace so " usd " == "usd"
+        // 2) NFC normalization so composed/decomposed Unicode forms align
+        // 3) uppercase to guarantee case-insensitive matching while preserving spec intent
+        let trimmed = s.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n'));
+        let canonical = trimmed.nfc().collect::<String>().to_uppercase();
+
+        // use SHA-256 so that the same normalized string always yields the same digest
+        let digest = Sha256::hash(canonical.as_bytes());
+
+        // take 4 bytes in a fixed endianness to get a u32
+        let x = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as u64;
+
+        // Hardened derivation indices are limited to [0, 2^31 - 1]; we already reserve the
+        // low band, so map into [RESERVED, HARDENED_MAX].
+        const HARDENED_MAX: u32 = (1 << 31) - 1;
+        debug_assert!(
+            reserved < HARDENED_MAX,
+            "reserved band leaves no room for custom units"
+        );
+
+        // compute the size of that interval using u64 math to avoid overflow
+        let interval_size = (HARDENED_MAX as u64) - (reserved as u64) + 1;
+
+        // Fold x uniformly into [0, interval_size - 1].
+        let r = (x % interval_size) as u32;
+
+        // shift into [RESERVED, HARDENED_MAX], guaranteeing no overlap with reserved band [0, RESERVED-1].
+        Some(reserved + r)
+    }
+}
+
+impl FromStr for CurrencyUnit {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let trimmed = value.trim();
+        let upper_value = trimmed.to_uppercase();
+        match upper_value.as_str() {
+            "SAT" => Ok(Self::Sat),
+            "MSAT" => Ok(Self::Msat),
+            "USD" => Ok(Self::Usd),
+            "EUR" => Ok(Self::Eur),
+            "AUTH" => Ok(Self::Auth),
+            _ => Ok(Self::custom(trimmed)),
+        }
+    }
+}
+
+impl fmt::Display for CurrencyUnit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            CurrencyUnit::Sat => "SAT",
+            CurrencyUnit::Msat => "MSAT",
+            CurrencyUnit::Usd => "USD",
+            CurrencyUnit::Eur => "EUR",
+            CurrencyUnit::Auth => "AUTH",
+            CurrencyUnit::Custom(unit) => unit,
+        };
+        if let Some(width) = f.width() {
+            write!(f, "{:width$}", s.to_lowercase(), width = width)
+        } else {
+            write!(f, "{}", s.to_lowercase())
+        }
+    }
+}
+
+impl Serialize for CurrencyUnit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for CurrencyUnit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let currency: String = String::deserialize(deserializer)?;
+        Self::from_str(&currency).map_err(|_| serde::de::Error::custom("Unsupported unit"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -246,5 +391,78 @@ mod tests {
 }"#;
         let response: Result<Keys, serde_json::Error> = serde_json::from_str(incorrect_1);
         assert!(response.is_ok());
+    }
+
+    #[test]
+    fn custom_unit_ser_der() {
+        let unit = CurrencyUnit::custom("test");
+        let serialized = serde_json::to_string(&unit).unwrap();
+        let deserialized: CurrencyUnit = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(unit, deserialized)
+    }
+
+    #[test]
+    fn currency_unit_unicode_equivalents_match() {
+        // "é" as composed vs decomposed; both should normalize and hash to same index
+        let composed = CurrencyUnit::custom("café");
+        let decomposed = CurrencyUnit::custom("cafe\u{0301}");
+        assert_eq!(composed.derivation_index(), decomposed.derivation_index());
+    }
+
+    #[test]
+    fn currency_unit_case_and_whitespace_ignored() {
+        let a = CurrencyUnit::from_str("  UsD  ").unwrap();
+        let b = CurrencyUnit::from_str("usd").unwrap();
+        assert_eq!(a.derivation_index(), b.derivation_index());
+    }
+
+    #[cfg(all(test, feature = "mint"))]
+    #[test]
+    fn currency_unit_custom_unit_derivation_index() {
+        let unit = CurrencyUnit::custom("nuts");
+
+        let idx = unit
+            .derivation_index()
+            .expect("custom units should always produce an index");
+
+        assert_eq!(idx, 1_502_388_632);
+    }
+
+    #[cfg(all(test, feature = "mint"))]
+    #[test]
+    fn currency_unit_derivation_index_within_hardened_range() {
+        let idx = CurrencyUnit::custom("hash")
+            .derivation_index()
+            .expect("custom units should always produce an index");
+
+        let hardened_max = (1 << 31) - 1;
+        assert!(idx >= 5 && idx <= hardened_max);
+    }
+
+    #[cfg(all(test, feature = "mint"))]
+    #[test]
+    fn currency_unit_derivation_matches_nut_xx_vectors() {
+        let vectors = [
+            ("sat", 0),
+            ("msat", 1),
+            ("auth", 4),
+            ("usd", 2),
+            ("eur", 3),
+            ("nuts", 1_502_388_632),
+            ("  NUTS  ", 1_502_388_632),
+            ("eurc", 1_321_886_555),
+            ("cafe\u{0301}", 642_348_970),
+            ("CAFÉ", 642_348_970),
+            ("gbp", 1_076_107_758),
+            ("JPY", 1_137_986_283),
+        ];
+
+        for (input, expected) in vectors {
+            let unit = CurrencyUnit::from_str(input).unwrap();
+            let idx = unit
+                .derivation_index()
+                .expect("reserved and custom units should yield indices");
+            assert_eq!(idx, expected, "input {input}");
+        }
     }
 }
