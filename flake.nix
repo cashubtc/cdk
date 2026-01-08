@@ -111,11 +111,21 @@
         };
 
         # Source for MSRV builds - uses Cargo.lock.msrv with MSRV-compatible deps
-        srcMsrv = pkgs.runCommand "cdk-source-msrv" { } ''
-          cp -r ${src} $out
-          chmod -R +w $out
-          cp $out/Cargo.lock.msrv $out/Cargo.lock
-        '';
+        # Use lib.fileset approach (same as src) but substitute Cargo.lock with Cargo.lock.msrv
+        # We include both lock files and use cargoLock override to point to MSRV version
+        srcMsrv = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.intersection
+            (lib.fileset.fromSource (lib.sources.cleanSource ./.))
+            (lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock.msrv
+              ./README.md
+              ./.cargo
+              ./crates
+              ./fuzz
+            ]);
+        };
 
         # Common args for all Crane builds
         commonCraneArgs = {
@@ -140,8 +150,10 @@
         };
 
         # Common args for MSRV builds - uses srcMsrv with pinned deps
+        # Override cargoLock to use Cargo.lock.msrv instead of Cargo.lock
         commonCraneArgsMsrv = commonCraneArgs // {
           src = srcMsrv;
+          cargoLock = ./Cargo.lock.msrv;
         };
 
         # Build ALL dependencies once - this is what gets cached by Cachix
