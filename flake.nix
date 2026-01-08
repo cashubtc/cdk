@@ -376,8 +376,8 @@
           "cdk-mintd-auth-sqlite-fakewallet" = "-p cdk-mintd --no-default-features --features auth,sqlite,fakewallet";
           "cdk-mintd-auth-postgres-lnd" = "-p cdk-mintd --no-default-features --features auth,postgres,lnd";
 
-          # Binaries: cdk-mint-cli
-          "cdk-mint-cli" = "-p cdk-mint-cli";
+          # Binaries: cdk-mint-cli (binary name, package is cdk-mint-rpc)
+          "cdk-mint-cli" = "-p cdk-mint-rpc";
         };
 
         # ========================================

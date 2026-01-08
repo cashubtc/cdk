@@ -29,8 +29,7 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
-    feature = "ldk-node",
-    feature = "fakewallet"
+    feature = "ldk-node"
 ))]
 use cdk::nuts::CurrencyUnit;
 #[cfg(feature = "auth")]
