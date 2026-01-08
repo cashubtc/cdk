@@ -469,6 +469,15 @@ pub struct KeySet {
     pub id: Id,
     /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
+    /// Keyset state - indicates whether the mint will sign new outputs with this keyset
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
+    /// Input fee in parts per thousand (ppk) per input spent from this keyset
+    #[serde(
+        deserialize_with = "deserialize_input_fee_ppk",
+        default = "default_input_fee_ppk"
+    )]
+    pub input_fee_ppk: u64,
     /// Keyset [`Keys`]
     pub keys: Keys,
     /// Expiry
@@ -501,6 +510,8 @@ impl From<MintKeySet> for KeySet {
         Self {
             id: keyset.id,
             unit: keyset.unit,
+            active: None,
+            input_fee_ppk: 0,
             keys: Keys::from(keyset.keys),
             final_expiry: keyset.final_expiry,
         }
