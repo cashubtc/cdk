@@ -33,7 +33,6 @@ use crate::nuts::nut14::{serde_htlc_witness, HTLCWitness};
 use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
 use crate::Amount;
-
 #[cfg(feature = "wallet")]
 use crate::{Conditions, Kind};
 
@@ -389,7 +388,6 @@ impl Proof {
         if let Ok(secret) = <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
             self.clone().secret,
         ) {
-
             let mut needed_sigs: usize = 0;
             let conditions: Result<Conditions, _> = secret
                 .secret_data()
