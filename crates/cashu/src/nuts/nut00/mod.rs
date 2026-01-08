@@ -32,7 +32,7 @@ use crate::nuts::nut12::BlindSignatureDleq;
 use crate::nuts::nut14::{serde_htlc_witness, HTLCWitness};
 use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
-use crate::{Amount, Conditions, Kind};
+use crate::Amount;
 
 pub mod token;
 pub use token::{Token, TokenV3, TokenV4};
