@@ -1234,6 +1234,7 @@ dependencies = [
  "bip39",
  "bitcoin 0.32.8",
  "cdk",
+ "cdk-common",
  "cdk-redb",
  "cdk-sqlite",
  "clap",

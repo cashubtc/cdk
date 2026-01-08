@@ -416,6 +416,115 @@ pub async fn cache_post_mint_custom(
     Ok(result)
 }
 
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderValue, Request, StatusCode};
+
+    use super::*;
+
+    fn create_test_request(prefer_header: Option<&str>) -> Request<()> {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/test")
+            .body(())
+            .unwrap();
+
+        if let Some(header_value) = prefer_header {
+            req.headers_mut().insert(
+                PREFER_HEADER_KEY,
+                HeaderValue::from_str(header_value).unwrap(),
+            );
+        }
+
+        req
+    }
+
+    fn create_test_request_with_bytes(bytes: &[u8]) -> Request<()> {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/test")
+            .body(())
+            .unwrap();
+
+        req.headers_mut()
+            .insert(PREFER_HEADER_KEY, HeaderValue::from_bytes(bytes).unwrap());
+
+        req
+    }
+
+    #[tokio::test]
+    async fn test_prefer_header_respond_async() {
+        let req = create_test_request(Some("respond-async"));
+        let (mut parts, _) = req.into_parts();
+
+        let result = PreferHeader::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().respond_async);
+    }
+
+    #[tokio::test]
+    async fn test_prefer_header_respond_async_with_other_values() {
+        let req = create_test_request(Some("respond-async; wait=10"));
+        let (mut parts, _) = req.into_parts();
+
+        let result = PreferHeader::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().respond_async);
+    }
+
+    #[tokio::test]
+    async fn test_prefer_header_case_insensitive() {
+        let req = create_test_request(Some("RESPOND-ASYNC"));
+        let (mut parts, _) = req.into_parts();
+
+        let result = PreferHeader::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().respond_async);
+    }
+
+    #[tokio::test]
+    async fn test_prefer_header_no_respond_async() {
+        let req = create_test_request(Some("wait=10"));
+        let (mut parts, _) = req.into_parts();
+
+        let result = PreferHeader::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap().respond_async);
+    }
+
+    #[tokio::test]
+    async fn test_prefer_header_missing() {
+        let req = create_test_request(None);
+        let (mut parts, _) = req.into_parts();
+
+        let result = PreferHeader::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap().respond_async);
+    }
+
+    #[tokio::test]
+    async fn test_prefer_header_invalid_value() {
+        let req = create_test_request_with_bytes(&[0xFF, 0xFE]);
+        let (mut parts, _) = req.into_parts();
+
+        let result = PreferHeader::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_err());
+        let (status, message) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(message, "Invalid Prefer header value");
+    }
+
+    #[tokio::test]
+    async fn test_prefer_header_empty_value() {
+        let req = create_test_request(Some(""));
+        let (mut parts, _) = req.into_parts();
+
+        let result = PreferHeader::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap().respond_async);
+    }
+}
+
 /// Cached version of post_melt_custom for NUT-19 caching support
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn cache_post_melt_custom(

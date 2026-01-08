@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
+use crate::nut00::KnownMethod;
 use crate::nut23::QuoteState;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
@@ -215,7 +216,7 @@ impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
         let unit = unit.ok_or_else(|| de::Error::missing_field("unit"))?;
 
         // Create options based on the method and the description flag
-        let options = if method == "bolt11" {
+        let options = if method == PaymentMethod::Known(KnownMethod::Bolt11) {
             description.map(|description| MintMethodOptions::Bolt11 { description })
         } else {
             None

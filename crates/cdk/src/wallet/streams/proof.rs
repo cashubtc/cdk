@@ -9,7 +9,7 @@ use std::task::Poll;
 
 use cdk_common::amount::SplitTarget;
 use cdk_common::wallet::MintQuote;
-use cdk_common::{Error, Proofs, SpendingConditions};
+use cdk_common::{Error, PaymentMethod, Proofs, SpendingConditions};
 use futures::{FutureExt, Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 
@@ -109,12 +109,12 @@ impl Stream for MultipleMintQuoteProofStream<'_> {
                     );
 
                     let mut minting_future = Box::pin(async move {
-                        match mint_quote.payment_method.as_str() {
-                            "bolt11" => wallet
+                        match mint_quote.payment_method {
+                            PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => wallet
                                 .mint(&mint_quote.id, amount_split_target, spending_conditions)
                                 .await
                                 .map(|proofs| (mint_quote, proofs)),
-                            "bolt12" => wallet
+                            PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => wallet
                                 .mint_bolt12(
                                     &mint_quote.id,
                                     amount,

@@ -194,11 +194,11 @@ impl PubSubManager {
 
     /// Helper function to publish even of a mint quote being paid
     pub fn mint_quote_issue(&self, mint_quote: &MintQuote, total_issued: Amount) {
-        match mint_quote.payment_method.as_str() {
-            "bolt11" => {
+        match mint_quote.payment_method {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
                 self.mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Issued);
             }
-            "bolt12" => {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
                 self.mint_quote_bolt12_status(
                     mint_quote.clone(),
                     mint_quote.amount_paid(),
@@ -213,11 +213,11 @@ impl PubSubManager {
 
     /// Helper function to publish even of a mint quote being paid
     pub fn mint_quote_payment(&self, mint_quote: &MintQuote, total_paid: Amount) {
-        match mint_quote.payment_method.as_str() {
-            "bolt11" => {
+        match mint_quote.payment_method {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
                 self.mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
             }
-            "bolt12" => {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
                 self.mint_quote_bolt12_status(
                     mint_quote.clone(),
                     total_paid,

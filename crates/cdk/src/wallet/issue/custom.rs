@@ -23,7 +23,6 @@ impl Wallet {
         &self,
         amount: Option<Amount>,
         method: &str,
-        request: String,
         description: Option<String>,
         extra: Option<String>,
     ) -> Result<MintQuote, Error> {
@@ -74,7 +73,7 @@ impl Wallet {
             PaymentMethod::Custom(method.to_string()),
             Some(amount),
             unit.clone(),
-            request,
+            quote_res.request,
             quote_res.expiry.unwrap_or(0),
             Some(secret_key),
         );

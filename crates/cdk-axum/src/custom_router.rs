@@ -121,4 +121,104 @@ mod tests {
     fn test_validate_custom_method_names_empty() {
         assert!(validate_custom_method_names(&["".to_string()]).is_err());
     }
+
+    #[test]
+    fn test_validate_custom_method_names_multiple_invalid() {
+        assert!(validate_custom_method_names(&[
+            "valid".to_string(),
+            "in valid".to_string(),
+            "also-valid".to_string()
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn test_validate_custom_method_names_special_chars() {
+        // Test various special characters that should fail
+        assert!(validate_custom_method_names(&["pay.pal".to_string()]).is_err());
+        assert!(validate_custom_method_names(&["pay+pal".to_string()]).is_err());
+        assert!(validate_custom_method_names(&["pay$pal".to_string()]).is_err());
+        assert!(validate_custom_method_names(&["pay%pal".to_string()]).is_err());
+        assert!(validate_custom_method_names(&["pay&pal".to_string()]).is_err());
+        assert!(validate_custom_method_names(&["pay*pal".to_string()]).is_err());
+        assert!(validate_custom_method_names(&["pay(pal".to_string()]).is_err());
+        assert!(validate_custom_method_names(&["pay)pal".to_string()]).is_err());
+        assert!(validate_custom_method_names(&["pay=pal".to_string()]).is_err());
+        assert!(validate_custom_method_names(&["pay#pal".to_string()]).is_err());
+    }
+
+    #[test]
+    fn test_validate_custom_method_names_edge_cases() {
+        // Single character names
+        assert!(validate_custom_method_names(&["a".to_string()]).is_ok());
+        assert!(validate_custom_method_names(&["1".to_string()]).is_ok());
+        assert!(validate_custom_method_names(&["-".to_string()]).is_ok());
+        assert!(validate_custom_method_names(&["_".to_string()]).is_ok());
+
+        // Names with only dashes or underscores
+        assert!(validate_custom_method_names(&["---".to_string()]).is_ok());
+        assert!(validate_custom_method_names(&["___".to_string()]).is_ok());
+
+        // Long names
+        let long_name = "a".repeat(100);
+        assert!(validate_custom_method_names(&[long_name]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_custom_method_names_mixed_valid() {
+        assert!(validate_custom_method_names(&[
+            "paypal".to_string(),
+            "cash-app".to_string(),
+            "venmo_pay".to_string(),
+            "method123".to_string(),
+            "UPPERCASE".to_string(),
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn test_validate_custom_method_names_error_messages() {
+        // Test that error messages are descriptive
+        let result = validate_custom_method_names(&["pay/pal".to_string()]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("pay/pal"));
+        assert!(err.contains("invalid characters"));
+
+        let result = validate_custom_method_names(&["".to_string()]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn test_validate_custom_method_names_unicode() {
+        // Unicode characters should fail (not ASCII alphanumeric)
+        assert!(validate_custom_method_names(&["café".to_string()]).is_err());
+        assert!(validate_custom_method_names(&["北京".to_string()]).is_err());
+        assert!(validate_custom_method_names(&["🚀".to_string()]).is_err());
+    }
+
+    #[test]
+    fn test_validate_custom_method_names_empty_list() {
+        // Empty list should be valid (no methods to validate)
+        assert!(validate_custom_method_names(&[]).is_ok());
+    }
+
+    #[test]
+    fn test_create_custom_routers_method_list() {
+        // This test verifies the method list formatting
+        let custom_methods = vec!["paypal".to_string(), "venmo".to_string()];
+
+        let methods_str = custom_methods
+            .iter()
+            .map(|m| m.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        // Verify the method string is formatted correctly
+        assert!(methods_str.contains("paypal"));
+        assert!(methods_str.contains("venmo"));
+        assert_eq!(methods_str, "paypal, venmo");
+    }
 }

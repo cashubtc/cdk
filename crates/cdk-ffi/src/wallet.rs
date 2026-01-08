@@ -270,26 +270,18 @@ impl Wallet {
     /// # Arguments
     /// * `amount` - Optional amount to mint (required for bolt11)
     /// * `method` - Payment method to use (bolt11, bolt12, or custom)
-    /// * `request` - Payment request string (method-specific)
     /// * `description` - Optional description for the quote
     /// * `extra` - Optional JSON string with extra payment-method-specific fields (for custom methods)
     pub async fn mint_quote_unified(
         &self,
         amount: Option<Amount>,
         method: PaymentMethod,
-        request: String,
         description: Option<String>,
         extra: Option<String>,
     ) -> Result<MintQuote, FfiError> {
         let quote = self
             .inner
-            .mint_quote_unified(
-                amount.map(Into::into),
-                method.into(),
-                request,
-                description,
-                extra,
-            )
+            .mint_quote_unified(amount.map(Into::into), method.into(), description, extra)
             .await?;
         Ok(quote.into())
     }

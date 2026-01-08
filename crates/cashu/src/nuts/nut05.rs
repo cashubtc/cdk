@@ -12,6 +12,7 @@ use thiserror::Error;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::ProofsMethods;
+use crate::nut00::KnownMethod;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
 use crate::Amount;
@@ -325,7 +326,8 @@ impl<'de> Visitor<'de> for MeltMethodSettingsVisitor {
         let unit = unit.ok_or_else(|| de::Error::missing_field("unit"))?;
 
         // Create options based on the method and the amountless flag
-        let options = if method == "bolt11" && amountless.is_some() {
+        let options = if method == PaymentMethod::Known(KnownMethod::Bolt11) && amountless.is_some()
+        {
             amountless.map(|amountless| MeltMethodOptions::Bolt11 { amountless })
         } else {
             None
