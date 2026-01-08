@@ -60,7 +60,7 @@ jobs:
           if [ -d "$ARTIFACT_DIR" ] && [ "$(ls -A $ARTIFACT_DIR 2>/dev/null)" ]; then
             ARTIFACT_DATA=$(tar czf - "$ARTIFACT_DIR" | base64 -w0)
             
-            gh api repos/${{ github.repository }}/security-advisories \
+            gh api repos/${{ github.repository }}/security-advisories/reports \
               --method POST \
               -f summary="[Fuzzing] Crash in $TARGET" \
               -f description="Automated fuzzing found a crash in \`$TARGET\`.
@@ -125,7 +125,7 @@ jobs:
           if [ -d "$ARTIFACT_DIR" ] && [ "$(ls -A $ARTIFACT_DIR 2>/dev/null)" ]; then
             ARTIFACT_DATA=$(tar czf - "$ARTIFACT_DIR" | base64 -w0)
             
-            gh api repos/${{ github.repository }}/security-advisories \
+            gh api repos/${{ github.repository }}/security-advisories/reports \
               --method POST \
               -f summary="[Fuzzing] Crash in $TARGET" \
               -f description="Automated fuzzing found a crash in \`$TARGET\`.
