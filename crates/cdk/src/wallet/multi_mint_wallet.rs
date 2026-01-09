@@ -15,7 +15,6 @@ use cdk_common::wallet::{
     MeltQuote, P2PKSigningKey, Transaction, TransactionDirection, TransactionId,
 };
 use cdk_common::{database, KeySetInfo, PublicKey};
-use crate::wallet::p2pk;
 use tokio::sync::RwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
@@ -32,6 +31,7 @@ use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, 
 use crate::types::Melted;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
+use crate::wallet::p2pk;
 use crate::wallet::types::MintQuote;
 use crate::{Amount, Wallet};
 

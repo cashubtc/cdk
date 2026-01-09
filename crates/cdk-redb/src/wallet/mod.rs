@@ -624,22 +624,25 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         derivation_index: u32,
     ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
-        let mut table = write_txn
-            .open_table(P2PK_SIGNING_KEYS_TABLE)
-            .map_err(Error::from)?;
-        table
-            .insert(
-                pubkey.to_bytes().as_slice(),
-                serde_json::to_string(&wallet::P2PKSigningKey {
-                    pubkey: *pubkey,
-                    derivation_path,
-                    derivation_index,
-                    created_time: unix_time(),
-                })
-                .map_err(Error::from)?
-                .as_str(),
-            )
-            .map_err(Error::from)?;
+        {
+            let mut table = write_txn
+                .open_table(P2PK_SIGNING_KEYS_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(
+                    pubkey.to_bytes().as_slice(),
+                    serde_json::to_string(&wallet::P2PKSigningKey {
+                        pubkey: *pubkey,
+                        derivation_path,
+                        derivation_index,
+                        created_time: unix_time(),
+                    })
+                    .map_err(Error::from)?
+                    .as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
         Ok(())
     }
 
