@@ -272,8 +272,8 @@ pub async fn process_melt_change(
 /// # Errors
 ///
 /// * [`Error::UnknownQuote`] if no quote exists with the given ID.
-/// * [`Error::Database(Duplicate)`] if another quote with the same lookup ID is already pending
-///   or paid, indicating a conflicting concurrent melt operation.
+/// * [`Error::PendingQuote`] (code 20005) if another quote with the same lookup ID is pending.
+/// * [`Error::RequestAlreadyPaid`] (code 20006) if another quote with the same lookup ID is paid.
 pub async fn load_melt_quotes_exclusively(
     tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     quote_id: &QuoteId,
@@ -294,17 +294,26 @@ pub async fn load_melt_quotes_exclusively(
 
     let quote = locked.target.ok_or(Error::UnknownQuote)?;
 
-    if locked.all_related.iter().any(|locked_quote| {
+    // Check if any sibling quote (same lookup_id) is already pending or paid
+    if let Some(conflict) = locked.all_related.iter().find(|locked_quote| {
         locked_quote.id != quote.id
             && (locked_quote.state == MeltQuoteState::Pending
                 || locked_quote.state == MeltQuoteState::Paid)
     }) {
         tracing::warn!(
-            "Cannot transition quote {} to Pending: another quote with lookup_id {:?} is already pending or paid",
+            "Cannot transition quote {} to Pending: another quote with lookup_id {:?} is already {:?}",
             quote.id,
             quote.request_lookup_id,
+            conflict.state,
         );
-        return Err(Error::Database(crate::cdk_database::Error::Duplicate));
+        // Return spec-compliant error codes:
+        // - 20005 (QuotePending) if sibling is Pending
+        // - 20006 (InvoiceAlreadyPaid) if sibling is Paid
+        return Err(match conflict.state {
+            MeltQuoteState::Pending => Error::PendingQuote,
+            MeltQuoteState::Paid => Error::RequestAlreadyPaid,
+            _ => unreachable!("Only Pending/Paid states reach this branch"),
+        });
     }
 
     Ok(quote)

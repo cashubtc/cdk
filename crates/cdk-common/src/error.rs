@@ -474,13 +474,10 @@ impl ErrorResponse {
 }
 
 /// Maps NUT11 errors to appropriate error codes
-fn map_nut11_error(nut11_error: &crate::nuts::nut11::Error) -> ErrorCode {
-    match nut11_error {
-        crate::nuts::nut11::Error::SignaturesNotProvided => ErrorCode::WitnessMissingOrInvalid,
-        crate::nuts::nut11::Error::InvalidSignature => ErrorCode::WitnessMissingOrInvalid,
-        crate::nuts::nut11::Error::DuplicateSignature => ErrorCode::DuplicateSignature,
-        _ => ErrorCode::Unknown(9999), // Parsing/validation errors
-    }
+/// All NUT11 errors are witness/signature related, so they map to WitnessMissingOrInvalid (20008)
+fn map_nut11_error(_nut11_error: &crate::nuts::nut11::Error) -> ErrorCode {
+    // All NUT11 errors relate to P2PK/witness validation, which maps to 20008
+    ErrorCode::WitnessMissingOrInvalid
 }
 
 impl From<Error> for ErrorResponse {
@@ -594,11 +591,50 @@ impl From<Error> for ErrorResponse {
                 }
             },
             Error::DuplicateSignatureError => ErrorResponse {
-                code: ErrorCode::DuplicateSignature,
+                code: ErrorCode::WitnessMissingOrInvalid,
                 detail: err.to_string(),
             },
+            Error::IssuedQuote => ErrorResponse {
+                code: ErrorCode::TokensAlreadyIssued,
+                detail: err.to_string(),
+            },
+            Error::UnknownKeySet => ErrorResponse {
+                code: ErrorCode::KeysetNotFound,
+                detail: err.to_string(),
+            },
+            Error::InactiveKeyset => ErrorResponse {
+                code: ErrorCode::KeysetInactive,
+                detail: err.to_string(),
+            },
+            Error::AmountLessNotAllowed => ErrorResponse {
+                code: ErrorCode::AmountlessInvoiceNotSupported,
+                detail: err.to_string(),
+            },
+            Error::IncorrectQuoteAmount => ErrorResponse {
+                code: ErrorCode::IncorrectQuoteAmount,
+                detail: err.to_string(),
+            },
+            Error::PubkeyRequired => ErrorResponse {
+                code: ErrorCode::PubkeyRequired,
+                detail: err.to_string(),
+            },
+            Error::PaidQuote => ErrorResponse {
+                code: ErrorCode::InvoiceAlreadyPaid,
+                detail: err.to_string(),
+            },
+            Error::DuplicatePaymentId => ErrorResponse {
+                code: ErrorCode::InvoiceAlreadyPaid,
+                detail: err.to_string(),
+            },
+            // Database duplicate error indicates another quote with same invoice is already pending/paid
+            Error::Database(crate::database::Error::Duplicate) => ErrorResponse {
+                code: ErrorCode::InvoiceAlreadyPaid,
+                detail: "Invoice already paid or pending".to_string(),
+            },
+            // Fallback: use TokenNotVerified (10001) for unhandled errors
+            // as it's the most generic verification failure code in the spec
             _ => ErrorResponse {
-                code: ErrorCode::Unknown(9999),
+                code: ErrorCode::TokenNotVerified,
                 detail: err.to_string(),
             },
         }
@@ -612,6 +648,7 @@ impl From<crate::database::Error> for Error {
             crate::database::Error::InvalidStateTransition(state) => match state {
                 crate::state::Error::Pending => Self::TokenPending,
                 crate::state::Error::AlreadySpent => Self::TokenAlreadySpent,
+                crate::state::Error::AlreadyPaid => Self::RequestAlreadyPaid,
                 state => Self::Database(crate::database::Error::InvalidStateTransition(state)),
             },
             db_error => Self::Database(db_error),
@@ -629,31 +666,45 @@ impl From<crate::database::Error> for Error {
 impl From<ErrorResponse> for Error {
     fn from(err: ErrorResponse) -> Error {
         match err.code {
-            ErrorCode::TokenAlreadySpent => Self::TokenAlreadySpent,
-            ErrorCode::QuoteNotPaid => Self::UnpaidQuote,
-            ErrorCode::QuotePending => Self::PendingQuote,
-            ErrorCode::QuoteExpired => Self::ExpiredQuote(0, 0),
-            ErrorCode::KeysetNotFound => Self::UnknownKeySet,
-            ErrorCode::KeysetInactive => Self::InactiveKeyset,
-            ErrorCode::BlindedMessageAlreadySigned => Self::BlindedMessageAlreadySigned,
-            ErrorCode::UnsupportedUnit => Self::UnsupportedUnit,
-            ErrorCode::TransactionUnbalanced => Self::TransactionUnbalanced(0, 0, 0),
-            ErrorCode::MintingDisabled => Self::MintingDisabled,
-            ErrorCode::InvoiceAlreadyPaid => Self::RequestAlreadyPaid,
+            // 10xxx - Proof/Token verification errors
             ErrorCode::TokenNotVerified => Self::DHKE(crate::dhke::Error::TokenNotVerified),
-            ErrorCode::LightningError => Self::PaymentFailed,
+            // 11xxx - Input/Output errors
+            ErrorCode::TokenAlreadySpent => Self::TokenAlreadySpent,
+            ErrorCode::TokenPending => Self::TokenPending,
+            ErrorCode::BlindedMessageAlreadySigned => Self::BlindedMessageAlreadySigned,
+            ErrorCode::OutputsPending => Self::TokenPending, // Map to closest equivalent
+            ErrorCode::TransactionUnbalanced => Self::TransactionUnbalanced(0, 0, 0),
             ErrorCode::AmountOutofLimitRange => {
                 Self::AmountOutofLimitRange(Amount::default(), Amount::default(), Amount::default())
             }
-            ErrorCode::TokenPending => Self::TokenPending,
-            ErrorCode::WitnessMissingOrInvalid => Self::SignatureMissingOrInvalid,
             ErrorCode::DuplicateInputs => Self::DuplicateInputs,
             ErrorCode::DuplicateOutputs => Self::DuplicateOutputs,
             ErrorCode::MultipleUnits => Self::MultipleUnits,
             ErrorCode::UnitMismatch => Self::UnitMismatch,
+            ErrorCode::AmountlessInvoiceNotSupported => Self::AmountLessNotAllowed,
+            ErrorCode::IncorrectQuoteAmount => Self::IncorrectQuoteAmount,
+            ErrorCode::UnsupportedUnit => Self::UnsupportedUnit,
+            // 12xxx - Keyset errors
+            ErrorCode::KeysetNotFound => Self::UnknownKeySet,
+            ErrorCode::KeysetInactive => Self::InactiveKeyset,
+            // 20xxx - Quote/Payment errors
+            ErrorCode::QuoteNotPaid => Self::UnpaidQuote,
+            ErrorCode::TokensAlreadyIssued => Self::IssuedQuote,
+            ErrorCode::MintingDisabled => Self::MintingDisabled,
+            ErrorCode::LightningError => Self::PaymentFailed,
+            ErrorCode::QuotePending => Self::PendingQuote,
+            ErrorCode::InvoiceAlreadyPaid => Self::RequestAlreadyPaid,
+            ErrorCode::QuoteExpired => Self::ExpiredQuote(0, 0),
+            ErrorCode::WitnessMissingOrInvalid => Self::SignatureMissingOrInvalid,
+            ErrorCode::PubkeyRequired => Self::PubkeyRequired,
+            // 30xxx - Clear auth errors
             ErrorCode::ClearAuthRequired => Self::ClearAuthRequired,
+            ErrorCode::ClearAuthFailed => Self::ClearAuthFailed,
+            // 31xxx - Blind auth errors
             ErrorCode::BlindAuthRequired => Self::BlindAuthRequired,
-            ErrorCode::DuplicateSignature => Self::DuplicateSignatureError,
+            ErrorCode::BlindAuthFailed => Self::BlindAuthFailed,
+            ErrorCode::BatMintMaxExceeded => Self::InsufficientBlindAuthTokens,
+            ErrorCode::BatRateLimitExceeded => Self::InsufficientBlindAuthTokens,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
@@ -663,58 +714,80 @@ impl From<ErrorResponse> for Error {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum ErrorCode {
-    /// Token is already spent
-    TokenAlreadySpent,
-    /// Token Pending
-    TokenPending,
-    /// Quote is not paid
-    QuoteNotPaid,
-    /// Quote is not expired
-    QuoteExpired,
-    /// Quote Pending
-    QuotePending,
-    /// Keyset is not found
-    KeysetNotFound,
-    /// Keyset inactive
-    KeysetInactive,
-    /// Blinded Message Already signed
-    BlindedMessageAlreadySigned,
-    /// Unsupported unit
-    UnsupportedUnit,
-    /// Token already issed for quote
-    TokensAlreadyIssued,
-    /// Minting Disabled
-    MintingDisabled,
-    /// Invoice Already Paid
-    InvoiceAlreadyPaid,
-    /// Token Not Verified
+    // 10xxx - Proof/Token verification errors
+    /// Proof verification failed (10001)
     TokenNotVerified,
-    /// Lightning Error
-    LightningError,
-    /// Unbalanced Error
+
+    // 11xxx - Input/Output errors
+    /// Proofs already spent (11001)
+    TokenAlreadySpent,
+    /// Proofs are pending (11002)
+    TokenPending,
+    /// Outputs already signed (11003)
+    BlindedMessageAlreadySigned,
+    /// Outputs are pending (11004)
+    OutputsPending,
+    /// Transaction is not balanced (11005)
     TransactionUnbalanced,
-    /// Amount outside of allowed range
+    /// Amount outside of limit range (11006)
     AmountOutofLimitRange,
-    /// Witness missing or invalid
-    WitnessMissingOrInvalid,
-    /// Duplicate Inputs
+    /// Duplicate inputs provided (11007)
     DuplicateInputs,
-    /// Duplicate Outputs
+    /// Duplicate outputs provided (11008)
     DuplicateOutputs,
-    /// Multiple Units
+    /// Inputs/Outputs of multiple units (11009)
     MultipleUnits,
-    /// Input unit does not match output
+    /// Inputs and outputs not of same unit (11010)
     UnitMismatch,
-    /// Clear Auth Required
+    /// Amountless invoice is not supported (11011)
+    AmountlessInvoiceNotSupported,
+    /// Amount in request does not equal invoice (11012)
+    IncorrectQuoteAmount,
+    /// Unit in request is not supported (11013)
+    UnsupportedUnit,
+
+    // 12xxx - Keyset errors
+    /// Keyset is not known (12001)
+    KeysetNotFound,
+    /// Keyset is inactive, cannot sign messages (12002)
+    KeysetInactive,
+
+    // 20xxx - Quote/Payment errors
+    /// Quote request is not paid (20001)
+    QuoteNotPaid,
+    /// Quote has already been issued (20002)
+    TokensAlreadyIssued,
+    /// Minting is disabled (20003)
+    MintingDisabled,
+    /// Lightning payment failed (20004)
+    LightningError,
+    /// Quote is pending (20005)
+    QuotePending,
+    /// Invoice already paid (20006)
+    InvoiceAlreadyPaid,
+    /// Quote is expired (20007)
+    QuoteExpired,
+    /// Signature for mint request invalid (20008)
+    WitnessMissingOrInvalid,
+    /// Pubkey required for mint quote (20009)
+    PubkeyRequired,
+
+    // 30xxx - Clear auth errors
+    /// Endpoint requires clear auth (30001)
     ClearAuthRequired,
-    /// Clear Auth Failed
+    /// Clear authentication failed (30002)
     ClearAuthFailed,
-    /// Blind Auth Required
+
+    // 31xxx - Blind auth errors
+    /// Endpoint requires blind auth (31001)
     BlindAuthRequired,
-    /// Blind Auth Failed
+    /// Blind authentication failed (31002)
     BlindAuthFailed,
-    /// Duplicate signature from same pubkey
-    DuplicateSignature,
+    /// Maximum BAT mint amount exceeded (31003)
+    BatMintMaxExceeded,
+    /// BAT mint rate limit exceeded (31004)
+    BatRateLimitExceeded,
+
     /// Unknown error code
     Unknown(u16),
 }
@@ -723,32 +796,43 @@ impl ErrorCode {
     /// Error code from u16
     pub fn from_code(code: u16) -> Self {
         match code {
-            10002 => Self::BlindedMessageAlreadySigned,
-            10003 => Self::TokenNotVerified,
+            // 10xxx - Proof/Token verification errors
+            10001 => Self::TokenNotVerified,
+            // 11xxx - Input/Output errors
             11001 => Self::TokenAlreadySpent,
-            11002 => Self::TransactionUnbalanced,
-            11005 => Self::UnsupportedUnit,
+            11002 => Self::TokenPending,
+            11003 => Self::BlindedMessageAlreadySigned,
+            11004 => Self::OutputsPending,
+            11005 => Self::TransactionUnbalanced,
             11006 => Self::AmountOutofLimitRange,
             11007 => Self::DuplicateInputs,
             11008 => Self::DuplicateOutputs,
             11009 => Self::MultipleUnits,
             11010 => Self::UnitMismatch,
-            11012 => Self::TokenPending,
+            11011 => Self::AmountlessInvoiceNotSupported,
+            11012 => Self::IncorrectQuoteAmount,
+            11013 => Self::UnsupportedUnit,
+            // 12xxx - Keyset errors
             12001 => Self::KeysetNotFound,
             12002 => Self::KeysetInactive,
-            20000 => Self::LightningError,
+            // 20xxx - Quote/Payment errors
             20001 => Self::QuoteNotPaid,
             20002 => Self::TokensAlreadyIssued,
             20003 => Self::MintingDisabled,
+            20004 => Self::LightningError,
             20005 => Self::QuotePending,
             20006 => Self::InvoiceAlreadyPaid,
             20007 => Self::QuoteExpired,
             20008 => Self::WitnessMissingOrInvalid,
-            20009 => Self::DuplicateSignature,
+            20009 => Self::PubkeyRequired,
+            // 30xxx - Clear auth errors
             30001 => Self::ClearAuthRequired,
             30002 => Self::ClearAuthFailed,
+            // 31xxx - Blind auth errors
             31001 => Self::BlindAuthRequired,
             31002 => Self::BlindAuthFailed,
+            31003 => Self::BatMintMaxExceeded,
+            31004 => Self::BatRateLimitExceeded,
             _ => Self::Unknown(code),
         }
     }
@@ -756,32 +840,43 @@ impl ErrorCode {
     /// Error code to u16
     pub fn to_code(&self) -> u16 {
         match self {
-            Self::BlindedMessageAlreadySigned => 10002,
-            Self::TokenNotVerified => 10003,
+            // 10xxx - Proof/Token verification errors
+            Self::TokenNotVerified => 10001,
+            // 11xxx - Input/Output errors
             Self::TokenAlreadySpent => 11001,
-            Self::TransactionUnbalanced => 11002,
-            Self::UnsupportedUnit => 11005,
+            Self::TokenPending => 11002,
+            Self::BlindedMessageAlreadySigned => 11003,
+            Self::OutputsPending => 11004,
+            Self::TransactionUnbalanced => 11005,
             Self::AmountOutofLimitRange => 11006,
             Self::DuplicateInputs => 11007,
             Self::DuplicateOutputs => 11008,
             Self::MultipleUnits => 11009,
             Self::UnitMismatch => 11010,
-            Self::TokenPending => 11012,
+            Self::AmountlessInvoiceNotSupported => 11011,
+            Self::IncorrectQuoteAmount => 11012,
+            Self::UnsupportedUnit => 11013,
+            // 12xxx - Keyset errors
             Self::KeysetNotFound => 12001,
             Self::KeysetInactive => 12002,
-            Self::LightningError => 20000,
+            // 20xxx - Quote/Payment errors
             Self::QuoteNotPaid => 20001,
             Self::TokensAlreadyIssued => 20002,
             Self::MintingDisabled => 20003,
+            Self::LightningError => 20004,
             Self::QuotePending => 20005,
             Self::InvoiceAlreadyPaid => 20006,
             Self::QuoteExpired => 20007,
             Self::WitnessMissingOrInvalid => 20008,
-            Self::DuplicateSignature => 20009,
+            Self::PubkeyRequired => 20009,
+            // 30xxx - Clear auth errors
             Self::ClearAuthRequired => 30001,
             Self::ClearAuthFailed => 30002,
+            // 31xxx - Blind auth errors
             Self::BlindAuthRequired => 31001,
             Self::BlindAuthFailed => 31002,
+            Self::BatMintMaxExceeded => 31003,
+            Self::BatRateLimitExceeded => 31004,
             Self::Unknown(code) => *code,
         }
     }
