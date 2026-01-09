@@ -2328,8 +2328,7 @@ mod tests {
 
         // Create a random public key that doesn't exist in the database
         // Using a hardcoded valid compressed public key bytes
-        let fake_pubkey_hex =
-            "02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc";
+        let fake_pubkey_hex = "02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc";
         let fake_pubkey = PublicKey::from_hex(fake_pubkey_hex).unwrap();
 
         let result = multi_wallet.get_public_key(&fake_pubkey).await.unwrap();
