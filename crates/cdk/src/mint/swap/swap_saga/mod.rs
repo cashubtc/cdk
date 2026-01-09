@@ -4,7 +4,6 @@ use std::sync::Arc;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
-use cdk_common::state::check_state_transition;
 use cdk_common::{database, Amount, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tokio::sync::Mutex;
 use tracing::instrument;
@@ -12,6 +11,7 @@ use tracing::instrument;
 use self::compensation::{CompensatingAction, RemoveSwapSetup};
 use self::state::{Initial, SetupComplete, Signed};
 use crate::mint::subscription::PubSubManager;
+use crate::Mint;
 
 pub mod compensation;
 mod state;
@@ -177,54 +177,30 @@ impl<'a> SwapSaga<'a, Initial> {
         );
 
         // Add input proofs to DB
-        if let Err(err) = tx
+        let mut new_proofs = match tx
             .add_proofs(input_proofs.clone(), quote_id.clone(), &operation)
             .await
         {
-            tx.rollback().await?;
-            return Err(match err {
-                database::Error::Duplicate => Error::TokenPending,
-                database::Error::AttemptUpdateSpentProof => Error::TokenAlreadySpent,
-                _ => Error::Database(err),
-            });
-        }
+            Ok(proofs) => proofs,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(match err {
+                    database::Error::Duplicate => Error::TokenPending,
+                    database::Error::AttemptUpdateSpentProof => Error::TokenAlreadySpent,
+                    _ => Error::Database(err),
+                });
+            }
+        };
 
         let ys = match input_proofs.ys() {
             Ok(ys) => ys,
             Err(err) => return Err(Error::NUT00(err)),
         };
 
-        // Update input proof states to Pending
-        let original_proof_states = match tx.update_proofs_states(&ys, State::Pending).await {
-            Ok(states) => states,
-            Err(database::Error::AttemptUpdateSpentProof)
-            | Err(database::Error::AttemptRemoveSpentProof) => {
-                tx.rollback().await?;
-                return Err(Error::TokenAlreadySpent);
-            }
-            Err(err) => {
-                tx.rollback().await?;
-                return Err(err.into());
-            }
-        };
-
-        // Verify proofs weren't already pending or spent
-        if ys.len() != original_proof_states.len() {
-            tracing::error!("Mismatched proof states");
+        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut new_proofs, State::Pending).await
+        {
             tx.rollback().await?;
-            return Err(Error::Internal);
-        }
-
-        let forbidden_states = [State::Pending, State::Spent];
-        for original_state in original_proof_states.iter().flatten() {
-            if forbidden_states.contains(original_state) {
-                tx.rollback().await?;
-                return Err(if *original_state == State::Pending {
-                    Error::TokenPending
-                } else {
-                    Error::TokenAlreadySpent
-                });
-            }
+            return Err(err);
         }
 
         // Add output blinded messages
@@ -423,33 +399,19 @@ impl SwapSaga<'_, Signed> {
             }
         }
 
-        for current_state in tx
-            .get_proofs_states(&self.state_data.ys)
-            .await?
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .ok_or(Error::UnexpectedProofState)?
-        {
-            check_state_transition(current_state, State::Spent)
-                .map_err(|_| Error::UnexpectedProofState)?;
-        }
-
-        match tx
-            .update_proofs_states(&self.state_data.ys, State::Spent)
-            .await
-        {
-            Ok(_) => {}
-            Err(database::Error::AttemptUpdateSpentProof)
-            | Err(database::Error::AttemptRemoveSpentProof) => {
-                tx.rollback().await?;
-                self.compensate_all().await?;
-                return Err(Error::TokenAlreadySpent);
-            }
+        let mut proofs = match tx.get_proofs(&self.state_data.ys).await {
+            Ok(proofs) => proofs,
             Err(err) => {
                 tx.rollback().await?;
                 self.compensate_all().await?;
                 return Err(err.into());
             }
+        };
+
+        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
+            tx.rollback().await?;
+            self.compensate_all().await?;
+            return Err(err);
         }
 
         // Publish proof state changes
@@ -457,11 +419,17 @@ impl SwapSaga<'_, Signed> {
             self.pubsub.proof_state((*pk, State::Spent));
         }
 
-        tx.add_completed_operation(
-            &self.state_data.operation,
-            &self.state_data.fee_breakdown.per_keyset,
-        )
-        .await?;
+        if let Err(err) = tx
+            .add_completed_operation(
+                &self.state_data.operation,
+                &self.state_data.fee_breakdown.per_keyset,
+            )
+            .await
+        {
+            tx.rollback().await?;
+            self.compensate_all().await?;
+            return Err(err.into());
+        }
 
         // Delete saga - swap completed successfully (best-effort, atomic with TX2)
         // Don't fail the swap if saga deletion fails - orphaned saga will be
