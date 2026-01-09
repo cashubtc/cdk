@@ -8,12 +8,12 @@
 
 use cdk_common::database::{self, Acquired, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, State};
-use cdk_common::state::check_state_transition;
 use cdk_common::{Amount, Error, PublicKey, QuoteId};
 use cdk_signatory::signatory::SignatoryKeySet;
 
 use crate::mint::subscription::PubSubManager;
 use crate::mint::MeltQuote;
+use crate::Mint;
 
 /// Retrieves fee and amount configuration for the keyset matching the change outputs.
 ///
@@ -393,28 +393,9 @@ pub async fn finalize_melt_core(
             .await?;
     }
 
-    for current_state in tx
-        .get_proofs_states(input_ys)
-        .await?
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or(Error::UnexpectedProofState)?
-    {
-        check_state_transition(current_state, State::Spent)
-            .map_err(|_| Error::UnexpectedProofState)?;
-    }
+    let mut proofs = tx.get_proofs(input_ys).await?;
 
-    // Mark input proofs as spent
-    match tx.update_proofs_states(input_ys, State::Spent).await {
-        Ok(_) => {}
-        Err(database::Error::AttemptUpdateSpentProof) => {
-            tracing::info!("Proofs for quote {} already marked as spent", quote.id);
-            return Ok(());
-        }
-        Err(err) => {
-            return Err(err.into());
-        }
-    }
+    Mint::update_proofs_state(tx, &mut proofs, State::Spent).await?;
 
     // Publish proof state changes
     for pk in input_ys.iter() {

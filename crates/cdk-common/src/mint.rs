@@ -1,6 +1,7 @@
 //! Mint types
 
 use std::fmt;
+use std::ops::Deref;
 use std::str::FromStr;
 
 use bitcoin::bip32::DerivationPath;
@@ -8,7 +9,7 @@ use cashu::quote_id::QuoteId;
 use cashu::util::unix_time;
 use cashu::{
     Bolt11Invoice, MeltOptions, MeltQuoteBolt11Response, MintQuoteBolt11Response,
-    MintQuoteBolt12Response, PaymentMethod,
+    MintQuoteBolt12Response, PaymentMethod, Proofs, State,
 };
 use lightning::offers::offer::Offer;
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,67 @@ pub enum OperationKind {
     Mint,
     /// Melt operation
     Melt,
+}
+
+/// A collection of proofs that share a common state.
+///
+/// This type enforces the invariant that all proofs in the collection have the same state.
+/// The mint never needs to operate on a set of proofs with different states - proofs are
+/// always processed together as a unit (e.g., during swap, melt, or mint operations).
+///
+/// # Database Layer Responsibility
+///
+/// This design shifts the responsibility of ensuring state consistency to the database layer.
+/// When the database retrieves proofs via [`get_proofs`](crate::database::mint::ProofsTransaction::get_proofs),
+/// it must verify that all requested proofs share the same state and return an error if they don't.
+/// This prevents invalid proof sets from propagating through the system.
+///
+/// # State Transitions
+///
+/// State transitions are validated using [`check_state_transition`](crate::state::check_state_transition)
+/// before updating. The database layer then persists the new state for all proofs in a single transaction
+/// via [`update_proofs_state`](crate::database::mint::ProofsTransaction::update_proofs_state).
+///
+/// # Example
+///
+/// ```ignore
+/// // Database layer ensures all proofs have the same state
+/// let mut proofs = tx.get_proofs(&ys).await?;
+///
+/// // Validate the state transition
+/// check_state_transition(proofs.state, State::Spent)?;
+///
+/// // Persist the state change
+/// tx.update_proofs_state(&mut proofs, State::Spent).await?;
+/// ```
+#[derive(Debug)]
+pub struct ProofsWithState {
+    proofs: Proofs,
+    /// The current state of the proofs
+    pub state: State,
+}
+
+impl Deref for ProofsWithState {
+    type Target = Proofs;
+
+    fn deref(&self) -> &Self::Target {
+        &self.proofs
+    }
+}
+
+impl ProofsWithState {
+    /// Creates a new `ProofsWithState` with the given proofs and their shared state.
+    ///
+    /// # Note
+    ///
+    /// This constructor assumes all proofs share the given state. It is typically
+    /// called by the database layer after verifying state consistency.
+    pub fn new(proofs: Proofs, current_state: State) -> Self {
+        Self {
+            proofs,
+            state: current_state,
+        }
+    }
 }
 
 impl fmt::Display for OperationKind {

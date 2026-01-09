@@ -7,7 +7,6 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
-use cdk_common::state::check_state_transition;
 use cdk_common::{Amount, Error, ProofsMethods, PublicKey, QuoteId, State};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -21,6 +20,7 @@ use crate::mint::melt::shared;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::Verification;
 use crate::mint::{MeltQuoteBolt11Response, MeltRequest};
+use crate::Mint;
 
 mod compensation;
 mod state;
@@ -246,48 +246,11 @@ impl MeltSaga<Initial> {
 
         let input_ys = melt_request.inputs().ys()?;
 
-        for current_state in tx
-            .get_proofs_states(&input_ys)
-            .await?
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .ok_or(Error::UnexpectedProofState)?
-        {
-            check_state_transition(current_state, State::Pending)
-                .map_err(|_| Error::UnexpectedProofState)?;
-        }
+        let mut proofs = tx.get_proofs(&input_ys).await?;
 
-        // Update proof states to Pending
-        let original_states = match tx.update_proofs_states(&input_ys, State::Pending).await {
-            Ok(states) => states,
-            Err(cdk_common::database::Error::AttemptUpdateSpentProof)
-            | Err(cdk_common::database::Error::AttemptRemoveSpentProof) => {
-                tx.rollback().await?;
-                return Err(Error::TokenAlreadySpent);
-            }
-            Err(err) => {
-                tx.rollback().await?;
-                return Err(err.into());
-            }
-        };
-
-        // Check for forbidden states (Pending or Spent)
-        let has_forbidden_state = original_states
-            .iter()
-            .any(|state| matches!(state, Some(State::Pending) | Some(State::Spent)));
-
-        if has_forbidden_state {
+        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Pending).await {
             tx.rollback().await?;
-            return Err(
-                if original_states
-                    .iter()
-                    .any(|s| matches!(s, Some(State::Pending)))
-                {
-                    Error::TokenPending
-                } else {
-                    Error::TokenAlreadySpent
-                },
-            );
+            return Err(err);
         }
 
         let previous_state = quote.state;
