@@ -216,7 +216,7 @@ where
             .bind("id", keyset.id.to_string())
             .bind("unit", keyset.unit.to_string())
             .bind("active", keyset.active)
-            .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
+            .bind("input_fee_ppk", keyset.input_fee_ppk.map(|v| v as i64))
             .bind("final_expiry", keyset.final_expiry.map(|v| v as i64))
             .bind("keyset_u32", u32::from(keyset.id))
             .execute(&self.inner)
@@ -1366,7 +1366,7 @@ fn sql_row_to_keyset(row: Vec<Column>) -> Result<KeySetInfo, Error> {
         id: column_as_string!(id, Id::from_str, Id::from_bytes),
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         active: matches!(active, Column::Integer(1)),
-        input_fee_ppk: column_as_nullable_number!(input_fee_ppk).unwrap_or_default(),
+        input_fee_ppk: column_as_nullable_number!(input_fee_ppk),
         final_expiry: column_as_nullable_number!(final_expiry),
     })
 }

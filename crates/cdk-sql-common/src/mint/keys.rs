@@ -45,7 +45,7 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
         derivation_path: column_as_string!(derivation_path, DerivationPath::from_str),
         derivation_path_index: column_as_nullable_number!(derivation_path_index),
         amounts,
-        input_fee_ppk: column_as_number!(row_keyset_ppk),
+        input_fee_ppk: column_as_nullable_number!(row_keyset_ppk),
         final_expiry: column_as_nullable_number!(valid_to),
     })
 }
@@ -85,7 +85,7 @@ where
         .bind("valid_to", keyset.final_expiry.map(|v| v as i64))
         .bind("derivation_path", keyset.derivation_path.to_string())
         .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
-        .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
+        .bind("input_fee_ppk", keyset.input_fee_ppk.map(|v| v as i64))
         .bind("derivation_path_index", keyset.derivation_path_index)
         .execute(&self.inner)
         .await?;
