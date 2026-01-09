@@ -10,8 +10,8 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cashu::nut00::KnownMethod;
 use bitcoin::bip32::DerivationPath;
+use cashu::nut00::KnownMethod;
 use cashu::secret::Secret;
 use cashu::{Amount, CurrencyUnit, SecretKey};
 
