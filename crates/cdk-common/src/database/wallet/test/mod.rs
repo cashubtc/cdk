@@ -303,6 +303,8 @@ where
     let keyset = cashu::KeySet {
         id: keyset_id,
         unit: CurrencyUnit::Sat,
+        active: None,
+        input_fee_ppk: 0,
         keys: keys.clone(),
         final_expiry: None,
     };
@@ -329,6 +331,8 @@ where
     let keyset = cashu::KeySet {
         id: keyset_id,
         unit: CurrencyUnit::Sat,
+        active: None,
+        input_fee_ppk: 0,
         keys: keys.clone(),
         final_expiry: None,
     };
@@ -357,6 +361,8 @@ where
     let keyset = cashu::KeySet {
         id: keyset_id,
         unit: CurrencyUnit::Sat,
+        active: None,
+        input_fee_ppk: 0,
         keys,
         final_expiry: None,
     };
