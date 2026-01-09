@@ -1156,4 +1156,144 @@ mod tests {
         let total: u64 = sums.values().map(|a| u64::from(*a)).sum();
         assert_eq!(total, 14);
     }
+
+    #[test]
+    fn test_hashset_total_amount() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"},
+                {"id":"00ad268c4d1f5826","amount":4,"secret":"secret3","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}
+            ]"#,
+        )
+        .unwrap();
+
+        let proof_set: HashSet<Proof> = proofs.into_iter().collect();
+
+        // Test total_amount directly on HashSet
+        let total = proof_set.total_amount().unwrap();
+        assert_eq!(total, Amount::from(14));
+    }
+
+    #[test]
+    fn test_hashset_ys() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}
+            ]"#,
+        )
+        .unwrap();
+
+        let proof_set: HashSet<Proof> = proofs.into_iter().collect();
+
+        // Test ys() directly on HashSet - should return 2 public keys
+        let ys = proof_set.ys().unwrap();
+        assert_eq!(ys.len(), 2);
+        // Each Y is hash_to_curve of the secret, verify they're different
+        assert_ne!(ys[0], ys[1]);
+    }
+
+    #[test]
+    fn test_hashset_without_dleqs() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}
+            ]"#,
+        )
+        .unwrap();
+
+        let proof_set: HashSet<Proof> = proofs.into_iter().collect();
+
+        // Test without_dleqs() directly on HashSet
+        let proofs_without_dleqs = proof_set.without_dleqs();
+        assert_eq!(proofs_without_dleqs.len(), 2);
+        // Verify all dleqs are None
+        for proof in &proofs_without_dleqs {
+            assert!(proof.dleq.is_none());
+        }
+    }
+
+    #[test]
+    fn test_blind_signature_partial_cmp() {
+        let sig1 = BlindSignature {
+            amount: Amount::from(10),
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            c: PublicKey::from_str(
+                "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea",
+            )
+            .unwrap(),
+            dleq: None,
+        };
+        let sig2 = BlindSignature {
+            amount: Amount::from(20),
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            c: PublicKey::from_str(
+                "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea",
+            )
+            .unwrap(),
+            dleq: None,
+        };
+        let sig3 = BlindSignature {
+            amount: Amount::from(10),
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            c: PublicKey::from_str(
+                "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea",
+            )
+            .unwrap(),
+            dleq: None,
+        };
+
+        // Test partial_cmp
+        assert_eq!(sig1.partial_cmp(&sig2), Some(Ordering::Less));
+        assert_eq!(sig2.partial_cmp(&sig1), Some(Ordering::Greater));
+        assert_eq!(sig1.partial_cmp(&sig3), Some(Ordering::Equal));
+
+        // Verify sorting works
+        let mut sigs = vec![sig2.clone(), sig1.clone(), sig3.clone()];
+        sigs.sort();
+        assert_eq!(sigs[0].amount, Amount::from(10));
+        assert_eq!(sigs[2].amount, Amount::from(20));
+    }
+
+    #[test]
+    fn test_witness_preimage() {
+        // Test HTLCWitness returns Some(preimage)
+        let htlc_witness = HTLCWitness {
+            preimage: "test_preimage".to_string(),
+            signatures: Some(vec!["sig1".to_string()]),
+        };
+        let witness = Witness::HTLCWitness(htlc_witness);
+        assert_eq!(witness.preimage(), Some("test_preimage".to_string()));
+
+        // Test P2PKWitness returns None
+        let p2pk_witness = P2PKWitness {
+            signatures: vec!["sig1".to_string()],
+        };
+        let witness = Witness::P2PKWitness(p2pk_witness);
+        assert_eq!(witness.preimage(), None);
+    }
+
+    #[test]
+    fn test_proof_is_active() {
+        let proof: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+
+        let active_keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let inactive_keyset_id = Id::from_str("00ad268c4d1f5826").unwrap();
+
+        // Test is_active returns true when keyset is in active list
+        assert!(proof.is_active(&[active_keyset_id]));
+
+        // Test is_active returns false when keyset is not in active list
+        assert!(!proof.is_active(&[inactive_keyset_id]));
+
+        // Test with empty list
+        assert!(!proof.is_active(&[]));
+
+        // Test with multiple active keysets
+        assert!(proof.is_active(&[inactive_keyset_id, active_keyset_id]));
+    }
 }
