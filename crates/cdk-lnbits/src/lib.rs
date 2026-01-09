@@ -266,7 +266,7 @@ impl MintPayment for LNbits {
 
     async fn make_payment(
         &self,
-        _unit: &CurrencyUnit,
+        unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         match options {
@@ -297,15 +297,17 @@ impl MintPayment for LNbits {
                     MeltQuoteState::Unpaid
                 };
 
-                let total_spent = Amount::new(
-                    (invoice_info
+                let total_spent_msat = Amount::new(
+                    invoice_info
                         .details
                         .amount
-                        .checked_add(invoice_info.details.fee)
-                        .ok_or(Error::AmountOverflow)?)
-                    .unsigned_abs(),
+                        .unsigned_abs()
+                        .checked_add(invoice_info.details.fee.unsigned_abs())
+                        .ok_or(Error::AmountOverflow)?,
                     CurrencyUnit::Msat,
                 );
+
+                let total_spent = total_spent_msat.convert_to(unit)?;
 
                 Ok(MakePaymentResponse {
                     payment_lookup_id: PaymentIdentifier::PaymentHash(

@@ -528,6 +528,11 @@ impl Amount<CurrencyUnit> {
 
         Ok(Amount::new(converted_value, target_unit.clone()))
     }
+
+    /// Returns a string representation that includes the unit
+    pub fn display_with_unit(&self) -> String {
+        format!("{} {}", self.value, self.unit)
+    }
 }
 
 impl<U> fmt::Display for Amount<U> {

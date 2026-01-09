@@ -384,9 +384,40 @@ pub async fn finalize_melt_core(
     }
 
     // Validate inputs amount
-    if inputs_amount.checked_sub(&inputs_fee)?.value() < total_spent.value() {
-        tracing::error!("Over paid melt quote {}", quote.id);
-        return Err(Error::IncorrectQuoteAmount);
+    let net_inputs = inputs_amount.checked_sub(&inputs_fee)?;
+
+    // Convert total_spent to the same unit as net_inputs for comparison.
+    // Backends should return total_spent in the quote's unit, but we convert defensively.
+    let total_spent = total_spent.convert_to(net_inputs.unit())?;
+
+    tracing::debug!(
+        "Melt validation for quote {}: inputs_amount={}, inputs_fee={}, net_inputs={}, total_spent={}, quote_amount={}, fee_reserve={}",
+        quote.id,
+        inputs_amount.display_with_unit(),
+        inputs_fee.display_with_unit(),
+        net_inputs.display_with_unit(),
+        total_spent.display_with_unit(),
+        quote.amount().display_with_unit(),
+        quote.fee_reserve().display_with_unit(),
+    );
+
+    // This can only happen on backends where we cannot set the max fee (e.g., LNbits).
+    // LNbits does not allow setting a fee limit, so payments can exceed the fee reserve.
+    debug_assert!(
+        net_inputs >= total_spent,
+        "Over paid melt quote {}: net_inputs ({}) < total_spent ({}). Payment already complete, finalizing with no change.",
+        quote.id,
+        net_inputs.display_with_unit(),
+        total_spent.display_with_unit(),
+    );
+    if net_inputs < total_spent {
+        tracing::error!(
+            "Over paid melt quote {}: net_inputs ({}) < total_spent ({}). Payment already complete, finalizing with no change.",
+            quote.id,
+            net_inputs.display_with_unit(),
+            total_spent.display_with_unit(),
+        );
+        // Payment is already done - continue finalization but no change will be returned
     }
 
     // Update quote state to Paid
