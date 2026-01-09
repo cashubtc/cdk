@@ -292,11 +292,6 @@ impl MeltSaga<Initial> {
 
         let previous_state = quote.state;
 
-        // Publish proof state changes
-        for pk in input_ys.iter() {
-            self.pubsub.proof_state((*pk, State::Pending));
-        }
-
         if input_unit != Some(quote.unit.clone()) {
             tx.rollback().await?;
             return Err(Error::UnitMismatch);
@@ -329,9 +324,6 @@ impl MeltSaga<Initial> {
                 return Err(err.into());
             }
         };
-
-        self.pubsub
-            .melt_quote_status(&*quote, None, None, MeltQuoteState::Pending);
 
         let inputs_fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
 
@@ -410,6 +402,14 @@ impl MeltSaga<Initial> {
         }
 
         tx.commit().await?;
+        // Publish proof state changes
+        for pk in input_ys.iter() {
+            self.pubsub.proof_state((*pk, State::Pending));
+        }
+
+        // Publish melt quote status change AFTER transaction commits
+        self.pubsub
+            .melt_quote_status(&*quote, None, None, MeltQuoteState::Pending);
 
         // Store blinded messages for state
         let blinded_messages_vec = melt_request.outputs().clone().unwrap_or_default();
@@ -553,6 +553,7 @@ impl MeltSaga<SetupComplete> {
         mint_quote.add_payment(amount, self.state_data.quote.id.to_string(), None)?;
         tx.update_mint_quote(&mut mint_quote).await?;
 
+        tx.commit().await?;
         self.pubsub
             .mint_quote_payment(&mint_quote, mint_quote.amount_paid());
 
@@ -561,8 +562,6 @@ impl MeltSaga<SetupComplete> {
             self.state_data.quote.id,
             mint_quote.id
         );
-
-        tx.commit().await?;
 
         Ok((self, SettlementDecision::Internal { amount }))
     }

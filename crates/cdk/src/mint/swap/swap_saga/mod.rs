@@ -239,11 +239,6 @@ impl<'a> SwapSaga<'a, Initial> {
             });
         }
 
-        // Publish proof state changes
-        for pk in &ys {
-            self.pubsub.proof_state((*pk, State::Pending));
-        }
-
         // Store data in saga struct (avoid duplication in state enum)
         let blinded_messages_vec = blinded_messages.to_vec();
         let blinded_secrets: Vec<PublicKey> = blinded_messages_vec
@@ -260,7 +255,10 @@ impl<'a> SwapSaga<'a, Initial> {
         }
 
         tx.commit().await?;
-
+        // Publish proof state changes
+        for pk in &ys {
+            self.pubsub.proof_state((*pk, State::Pending));
+        }
         // Register compensation (uses LIFO via push_front)
         let compensations = Arc::clone(&self.compensations);
         compensations
@@ -452,11 +450,6 @@ impl SwapSaga<'_, Signed> {
             }
         }
 
-        // Publish proof state changes
-        for pk in &self.state_data.ys {
-            self.pubsub.proof_state((*pk, State::Spent));
-        }
-
         tx.add_completed_operation(
             &self.state_data.operation,
             &self.state_data.fee_breakdown.per_keyset,
@@ -475,7 +468,10 @@ impl SwapSaga<'_, Signed> {
         }
 
         tx.commit().await?;
-
+        // Publish proof state changes
+        for pk in &self.state_data.ys {
+            self.pubsub.proof_state((*pk, State::Spent));
+        }
         // Clear compensations - swap is complete
         self.compensations.lock().await.clear();
 
