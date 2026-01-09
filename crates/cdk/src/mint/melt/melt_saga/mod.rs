@@ -248,17 +248,6 @@ impl MeltSaga<Initial> {
 
         let mut proofs = tx.get_proofs(&input_ys).await?;
 
-        let original_state = proofs.state;
-
-        if matches!(original_state, State::Pending | State::Spent) {
-            tx.rollback().await?;
-            return Err(if original_state == State::Pending {
-                Error::TokenPending
-            } else {
-                Error::TokenAlreadySpent
-            });
-        }
-
         if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Pending).await {
             tx.rollback().await?;
             return Err(err);

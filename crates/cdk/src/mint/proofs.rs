@@ -1,6 +1,6 @@
 use cdk_common::database::{Acquired, DynMintTransaction};
 use cdk_common::mint::ProofsWithState;
-use cdk_common::state::check_state_transition;
+use cdk_common::state::{self, check_state_transition};
 use cdk_common::{Error, State};
 
 use crate::Mint;
@@ -22,7 +22,11 @@ impl Mint {
         proofs: &mut Acquired<ProofsWithState>,
         new_state: State,
     ) -> Result<(), Error> {
-        check_state_transition(proofs.state, new_state).map_err(|_| Error::UnexpectedProofState)?;
+        check_state_transition(proofs.state, new_state).map_err(|err| match err {
+            state::Error::AlreadySpent => Error::TokenAlreadySpent,
+            state::Error::Pending => Error::TokenPending,
+            _ => Error::UnexpectedProofState,
+        })?;
 
         tx.update_proofs_state(proofs, new_state)
             .await
@@ -170,7 +174,7 @@ mod tests {
 
         let result = Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending).await;
 
-        assert!(matches!(result, Err(Error::UnexpectedProofState)));
+        assert!(matches!(result, Err(Error::TokenPending)));
     }
 
     /// Test that update_proofs_state rejects invalid transition from Spent
@@ -215,7 +219,7 @@ mod tests {
 
         let result = Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending).await;
 
-        assert!(matches!(result, Err(Error::UnexpectedProofState)));
+        assert!(matches!(result, Err(Error::TokenAlreadySpent)));
     }
 
     /// Test that ProofsWithState.state is updated after successful update

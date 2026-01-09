@@ -4,7 +4,6 @@ use std::sync::Arc;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
-use cdk_common::state::check_state_transition;
 use cdk_common::{database, Amount, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tokio::sync::Mutex;
 use tracing::instrument;
@@ -192,17 +191,6 @@ impl<'a> SwapSaga<'a, Initial> {
                 });
             }
         };
-
-        let original_state = new_proofs.state;
-
-        if check_state_transition(new_proofs.state, State::Pending).is_err() {
-            tx.rollback().await?;
-            return Err(if original_state == State::Pending {
-                Error::TokenPending
-            } else {
-                Error::TokenAlreadySpent
-            });
-        }
 
         let ys = match input_proofs.ys() {
             Ok(ys) => ys,
