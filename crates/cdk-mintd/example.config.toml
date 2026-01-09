@@ -169,6 +169,11 @@ max_delay_time = 3
 # addr = "127.0.0.1"
 # port = 50051
 # tls_dir = "/path/to/tls"
+# 
+# Note: To support custom payment methods (e.g., paypal, venmo, cashapp),
+# your gRPC payment processor should return them in the `custom` field of 
+# the get_settings() response. The mint will automatically create routes
+# for these methods (e.g., /v1/mint/quote/paypal, /v1/mint/paypal, etc.)
 
 # [auth]
 # Set to true to enable authentication features (defaults to false)

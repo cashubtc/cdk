@@ -7,6 +7,7 @@ use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::PaymentMethod;
 use cdk::wallet::MultiMintWallet;
 use cdk::{Amount, StreamExt};
+use cdk_common::nut00::KnownMethod;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
@@ -51,7 +52,7 @@ pub async fn mint(
 
     let quote = match &sub_command_args.quote_id {
         None => match payment_method {
-            PaymentMethod::Bolt11 => {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
                 let amount = sub_command_args
                     .amount
                     .ok_or(anyhow!("Amount must be defined"))?;
@@ -63,7 +64,7 @@ pub async fn mint(
 
                 quote
             }
-            PaymentMethod::Bolt12 => {
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
                 let amount = sub_command_args.amount;
                 println!("{:?}", sub_command_args.single_use);
                 let quote = wallet
@@ -77,7 +78,22 @@ pub async fn mint(
                 quote
             }
             _ => {
-                todo!()
+                let amount = sub_command_args.amount;
+                println!("{:?}", sub_command_args.single_use);
+                let quote = wallet
+                    .mint_quote_unified(
+                        amount.map(|a| a.into()),
+                        payment_method.clone(),
+                        None,
+                        None,
+                    )
+                    .await?;
+
+                println!("Quote: {quote:#?}");
+
+                println!("Please pay: {}", quote.request);
+
+                quote
             }
         },
         Some(quote_id) => wallet

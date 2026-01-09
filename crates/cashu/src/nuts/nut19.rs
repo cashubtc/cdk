@@ -31,6 +31,18 @@ impl CachedEndpoint {
     }
 }
 
+impl Path {
+    /// Create a custom mint path for a payment method
+    pub fn custom_mint(method: &str) -> Self {
+        Path::Custom(format!("/v1/mint/{}", method))
+    }
+
+    /// Create a custom melt path for a payment method
+    pub fn custom_melt(method: &str) -> Self {
+        Path::Custom(format!("/v1/melt/{}", method))
+    }
+}
+
 /// HTTP method
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -43,22 +55,37 @@ pub enum Method {
 }
 
 /// Route path
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum Path {
-    /// Bolt11 Mint
-    #[serde(rename = "/v1/mint/bolt11")]
-    MintBolt11,
-    /// Bolt11 Melt
-    #[serde(rename = "/v1/melt/bolt11")]
-    MeltBolt11,
     /// Swap
-    #[serde(rename = "/v1/swap")]
     Swap,
-    /// Bolt12 Mint
-    #[serde(rename = "/v1/mint/bolt12")]
-    MintBolt12,
-    /// Bolt12 Melt
-    #[serde(rename = "/v1/melt/bolt12")]
-    MeltBolt12,
+    /// Custom payment method path (including bolt11, bolt12, and other methods)
+    Custom(String),
+}
+
+impl Serialize for Path {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let s = match self {
+            Path::Swap => "/v1/swap",
+            Path::Custom(custom) => custom.as_str(),
+        };
+        serializer.serialize_str(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Path {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "/v1/swap" => Path::Swap,
+            custom => Path::Custom(custom.to_string()),
+        })
+    }
 }

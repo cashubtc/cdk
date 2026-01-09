@@ -15,15 +15,36 @@ service CdkPaymentProcessor {
 message EmptyRequest {}
 
 message SettingsResponse {
-  string inner = 1;
+  string unit = 1;
+  Bolt11Settings bolt11 = 2;
+  Bolt12Settings bolt12 = 3;
+  map<string, string> custom = 4;
 }
+
+message Bolt12Settings {
+    bool amountless = 2;
+}
+
+message Bolt11Settings {
+    bool mpp = 1;
+    bool amountless = 2;
+    bool invoice_description = 5;
+}
+
 
 message Bolt11IncomingPaymentOptions {
   optional string description = 1;
   uint64 amount = 2;
   optional uint64 unix_expiry = 3;
 }
-
+message CustomIncomingPaymentOptions {
+  optional string description = 1;
+  optional uint64 amount = 2;
+  optional uint64 unix_expiry = 3;
+  // Extra payment-method-specific fields as JSON string
+  // These fields are flattened into the JSON representation on the client side
+  optional string extra_json = 4;
+}
 message Bolt12IncomingPaymentOptions {
   optional string description = 1;
   optional uint64 amount = 2;
@@ -31,26 +52,32 @@ message Bolt12IncomingPaymentOptions {
 }
 
 enum PaymentMethodType {
-  BOLT11 = 0;
-  BOLT12 = 1;
+  PAYMENT_METHOD_TYPE_UNSPECIFIED = 0;
+  PAYMENT_METHOD_TYPE_BOLT11 = 1;
+  PAYMENT_METHOD_TYPE_BOLT12 = 2;
+  PAYMENT_METHOD_TYPE_CUSTOM = 3;
 }
 
 enum OutgoingPaymentRequestType {
-  BOLT11_INVOICE = 0;
-  BOLT12_OFFER = 1;
+  OUTGOING_PAYMENT_REQUEST_TYPE_UNSPECIFIED = 0;
+  OUTGOING_PAYMENT_REQUEST_TYPE_BOLT11_INVOICE = 1;
+  OUTGOING_PAYMENT_REQUEST_TYPE_BOLT12_OFFER = 2;
+  OUTGOING_PAYMENT_REQUEST_TYPE_CUSTOM = 3;
 }
 
 enum PaymentIdentifierType {
-  PAYMENT_HASH = 0;
-  OFFER_ID = 1;
-  LABEL = 2;
-  BOLT12_PAYMENT_HASH = 3;
-  CUSTOM_ID = 4;
-  PAYMENT_ID = 5;
+  PAYMENT_IDENTIFIER_TYPE_UNSPECIFIED = 0;
+  PAYMENT_IDENTIFIER_TYPE_PAYMENT_HASH = 1;
+  PAYMENT_IDENTIFIER_TYPE_OFFER_ID = 2;
+  PAYMENT_IDENTIFIER_TYPE_LABEL = 3;
+  PAYMENT_IDENTIFIER_TYPE_BOLT12_PAYMENT_HASH = 4;
+  PAYMENT_IDENTIFIER_TYPE_CUSTOM_ID = 5;
+  PAYMENT_IDENTIFIER_TYPE_PAYMENT_ID = 6;
 }
 
 message PaymentIdentifier {
   PaymentIdentifierType type = 1;
+
   oneof value {
     string hash = 2; // Used for PAYMENT_HASH and BOLT12_PAYMENT_HASH
     string id = 3;   // Used for OFFER_ID, LABEL, and CUSTOM_ID
@@ -61,6 +88,7 @@ message IncomingPaymentOptions {
   oneof options {
     Bolt11IncomingPaymentOptions bolt11 = 1;
     Bolt12IncomingPaymentOptions bolt12 = 2;
+    CustomIncomingPaymentOptions custom = 3;
   }
 }
 
@@ -73,6 +101,9 @@ message CreatePaymentResponse {
   PaymentIdentifier request_identifier = 1;
   string request = 2;
   optional uint64 expiry = 3;
+  // Extra payment-method-specific fields as JSON string
+  // For custom payment methods, these fields are flattened into the response
+  optional string extra_json = 4;
 }
 
 message Mpp {
@@ -95,15 +126,19 @@ message PaymentQuoteRequest {
   string unit = 2;
   optional MeltOptions options = 3;
   OutgoingPaymentRequestType request_type = 4;
+  // Extra payment-method-specific fields as JSON string
+  // For custom payment methods, these fields are passed through for validation
+  optional string extra_json = 5;
 }
 
 enum QuoteState {
-    UNPAID = 0;
-    PAID = 1;
-    PENDING = 2;
-    UNKNOWN = 3;
-    FAILED = 4;
-    ISSUED = 5;
+    QUOTE_STATE_UNSPECIFIED = 0;
+    QUOTE_STATE_UNPAID = 1;
+    QUOTE_STATE_PAID = 2;
+    QUOTE_STATE_PENDING = 3;
+    QUOTE_STATE_UNKNOWN = 4;
+    QUOTE_STATE_FAILED = 5;
+    QUOTE_STATE_ISSUED = 6;
 }
 
 
@@ -113,6 +148,9 @@ message PaymentQuoteResponse {
   uint64 fee = 3;
   QuoteState state = 4;
   string unit = 5;
+  // Extra payment-method-specific fields as JSON string
+  // For custom payment methods, these fields are flattened into the response
+  optional string extra_json = 6;
 }
 
 message Bolt11OutgoingPaymentOptions {
@@ -128,16 +166,28 @@ message Bolt12OutgoingPaymentOptions {
   optional uint64 timeout_secs = 3;
   optional MeltOptions melt_options = 5;
 }
+message CustomOutgoingPaymentOptions {
+  string offer = 1;
+  optional uint64 max_fee_amount = 2;
+  optional uint64 timeout_secs = 3;
+  optional MeltOptions melt_options = 5;
+  // Extra payment-method-specific fields as JSON string
+  // These fields are flattened into the JSON representation on the client side
+  optional string extra_json = 6;
+}
 
 enum OutgoingPaymentOptionsType {
-  OUTGOING_BOLT11 = 0;
-  OUTGOING_BOLT12 = 1;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_UNSPECIFIED = 0;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_BOLT11 = 1;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_BOLT12 = 2;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_CUSTOM = 3;
 }
 
 message OutgoingPaymentVariant {
   oneof options {
     Bolt11OutgoingPaymentOptions bolt11 = 1;
     Bolt12OutgoingPaymentOptions bolt12 = 2;
+    CustomOutgoingPaymentOptions custom = 3;
   }
 }
 
@@ -153,6 +203,9 @@ message MakePaymentResponse {
   QuoteState status = 3;
   uint64 total_spent = 4;
   string unit = 5;
+  // Extra payment-method-specific fields as JSON string
+  // For custom payment methods, these fields are flattened into the response
+  optional string extra_json = 6;
 }
 
 message CheckIncomingPaymentRequest {

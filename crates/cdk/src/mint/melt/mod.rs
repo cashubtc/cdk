@@ -3,12 +3,16 @@ use std::str::FromStr;
 use cdk_common::amount::amount_for_offer;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
+use cdk_common::nut00::KnownMethod;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::{
-    Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, OutgoingPaymentOptions,
+    Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, CustomOutgoingPaymentOptions,
+    OutgoingPaymentOptions,
 };
 use cdk_common::quote_id::QuoteId;
-use cdk_common::{MeltOptions, MeltQuoteBolt12Request, SpendingConditionVerification};
+use cdk_common::{
+    MeltOptions, MeltQuoteBolt12Request, MeltQuoteCustomRequest, SpendingConditionVerification,
+};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use lightning::offers::offer::Offer;
@@ -73,7 +77,7 @@ impl Mint {
                 amount
             }
             Some(MeltOptions::Amountless { amountless: _ }) => {
-                if method == PaymentMethod::Bolt11
+                if method.is_bolt11()
                     && !matches!(
                         settings.options,
                         Some(MeltMethodOptions::Bolt11 { amountless: true })
@@ -107,7 +111,7 @@ impl Mint {
         }
     }
 
-    /// Get melt quote for either BOLT11 or BOLT12
+    /// Get melt quote for BOLT11, BOLT12, or Custom payment methods
     ///
     /// This function accepts a `MeltQuoteRequest` enum and delegates to the
     /// appropriate handler based on the request type.
@@ -123,6 +127,7 @@ impl Mint {
             MeltQuoteRequest::Bolt12(bolt12_request) => {
                 self.get_melt_bolt12_quote_impl(&bolt12_request).await
             }
+            MeltQuoteRequest::Custom(request) => self.get_melt_custom_quote_impl(&request).await,
         }
     }
 
@@ -145,7 +150,7 @@ impl Mint {
             .payment_processors
             .get(&PaymentProcessorKey::new(
                 unit.clone(),
-                PaymentMethod::Bolt11,
+                PaymentMethod::Known(KnownMethod::Bolt11),
             ))
             .ok_or_else(|| {
                 tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
@@ -190,7 +195,7 @@ impl Mint {
         self.check_melt_request_acceptable(
             payment_quote.amount,
             unit.clone(),
-            PaymentMethod::Bolt11,
+            PaymentMethod::Known(KnownMethod::Bolt11),
             request.to_string(),
             *options,
         )
@@ -208,7 +213,7 @@ impl Mint {
             unix_time() + melt_ttl,
             payment_quote.request_lookup_id.clone(),
             *options,
-            PaymentMethod::Bolt11,
+            PaymentMethod::Known(KnownMethod::Bolt11),
         );
 
         tracing::debug!(
@@ -255,7 +260,7 @@ impl Mint {
             .payment_processors
             .get(&PaymentProcessorKey::new(
                 unit.clone(),
-                PaymentMethod::Bolt12,
+                PaymentMethod::Known(KnownMethod::Bolt12),
             ))
             .ok_or_else(|| {
                 tracing::info!("Could not get ln backend for {}, bolt12 ", unit);
@@ -296,7 +301,7 @@ impl Mint {
         self.check_melt_request_acceptable(
             payment_quote.amount,
             unit.clone(),
-            PaymentMethod::Bolt12,
+            PaymentMethod::Known(KnownMethod::Bolt12),
             request.clone(),
             *options,
         )
@@ -314,7 +319,7 @@ impl Mint {
             unix_time() + self.quote_ttl().await?.melt_ttl,
             payment_quote.request_lookup_id.clone(),
             *options,
-            PaymentMethod::Bolt12,
+            PaymentMethod::Known(KnownMethod::Bolt12),
         );
 
         tracing::debug!(
@@ -334,6 +339,123 @@ impl Mint {
         {
             METRICS.dec_in_flight_requests("get_melt_bolt11_quote");
             METRICS.record_mint_operation("get_melt_bolt11_quote", true);
+        }
+
+        Ok(quote.into())
+    }
+
+    /// Implementation of get_melt_custom_quote
+    #[instrument(skip_all)]
+    async fn get_melt_custom_quote_impl(
+        &self,
+        melt_request: &MeltQuoteCustomRequest,
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("get_melt_custom_quote");
+
+        let MeltQuoteCustomRequest {
+            request,
+            unit,
+            method,
+            extra,
+        } = melt_request;
+
+        let ln = self
+            .payment_processors
+            .get(&PaymentProcessorKey::new(
+                unit.clone(),
+                PaymentMethod::from(method.as_str()),
+            ))
+            .ok_or_else(|| {
+                tracing::info!("Could not get payment processor for {}, {} ", unit, method);
+                Error::UnsupportedUnit
+            })?;
+
+        // Convert extra serde_json::Value to JSON string if not null
+        let extra_json = if extra.is_null() {
+            None
+        } else {
+            Some(extra.to_string())
+        };
+
+        let custom_options =
+            OutgoingPaymentOptions::Custom(Box::new(CustomOutgoingPaymentOptions {
+                method: method.to_string(),
+                request: request.clone(),
+                max_fee_amount: None,
+                timeout_secs: None,
+                melt_options: None,
+                extra_json,
+            }));
+
+        let payment_quote = ln
+            .get_payment_quote(&melt_request.unit, custom_options)
+            .await
+            .map_err(|err| {
+                tracing::error!(
+                    "Could not get payment quote for melt quote, {} {}, {}",
+                    unit,
+                    method,
+                    err
+                );
+
+                #[cfg(feature = "prometheus")]
+                {
+                    METRICS.dec_in_flight_requests("get_melt_custom_quote");
+                    METRICS.record_mint_operation("get_melt_custom_quote", false);
+                    METRICS.record_error();
+                }
+                Error::UnsupportedUnit
+            })?;
+
+        if &payment_quote.unit != unit {
+            return Err(Error::UnitMismatch);
+        }
+
+        // For custom methods, we don't validate amount limits upfront since
+        // the payment processor handles method-specific validation
+        self.check_melt_request_acceptable(
+            payment_quote.amount,
+            unit.clone(),
+            PaymentMethod::from(method.as_str()),
+            request.clone(),
+            None, // Custom methods don't use options
+        )
+        .await?;
+
+        let melt_ttl = self.quote_ttl().await?.melt_ttl;
+
+        let quote = MeltQuote::new(
+            MeltPaymentRequest::Custom {
+                method: method.to_string(),
+                request: request.clone(),
+            },
+            unit.clone(),
+            payment_quote.amount,
+            payment_quote.fee,
+            unix_time() + melt_ttl,
+            payment_quote.request_lookup_id.clone(),
+            None, // Custom methods don't use options
+            PaymentMethod::from(method.as_str()),
+        );
+
+        tracing::debug!(
+            "New {} melt quote {} for {} {} with request id {:?}",
+            method,
+            quote.id,
+            payment_quote.amount,
+            unit,
+            payment_quote.request_lookup_id
+        );
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.add_melt_quote(quote.clone()).await?;
+        tx.commit().await?;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("get_melt_custom_quote");
+            METRICS.record_mint_operation("get_melt_custom_quote", true);
         }
 
         Ok(quote.into())

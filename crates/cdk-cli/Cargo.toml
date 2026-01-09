@@ -24,6 +24,7 @@ bitcoin.workspace = true
 cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "nostr", "bip353"]}
 cdk-redb = { workspace = true, features = ["wallet"], optional = true }
 cdk-sqlite = { workspace = true, features = ["wallet"] }
+cdk-common = { workspace = true, features = ["wallet"] }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

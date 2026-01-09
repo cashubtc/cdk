@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut25::MintQuoteBolt12Request;
 use cdk_common::wallet::{Transaction, TransactionDirection};
@@ -36,7 +37,10 @@ impl Wallet {
             let mint_method_settings = mint_info
                 .nuts
                 .nut04
-                .get_settings(unit, &crate::nuts::PaymentMethod::Bolt12)
+                .get_settings(
+                    unit,
+                    &crate::nuts::PaymentMethod::Known(KnownMethod::Bolt12),
+                )
                 .ok_or(Error::UnsupportedUnit)?;
 
             match mint_method_settings.options {
@@ -59,7 +63,7 @@ impl Wallet {
         let quote = MintQuote::new(
             quote_res.quote,
             mint_url,
-            PaymentMethod::Bolt12,
+            PaymentMethod::Known(KnownMethod::Bolt12),
             amount,
             unit.clone(),
             quote_res.request,

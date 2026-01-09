@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use cdk_common::amount::SplitTarget;
+use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use cdk_common::PaymentMethod;
 use lightning_invoice::Bolt11Invoice;
@@ -88,7 +89,7 @@ impl Wallet {
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_preimage: quote_res.payment_preimage,
-            payment_method: PaymentMethod::Bolt11,
+            payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
         };
 
         let mut tx = self.localstore.begin_db_transaction().await?;
@@ -211,22 +212,28 @@ impl Wallet {
         tx.commit().await?;
 
         let melt_response = match quote_info.payment_method {
-            cdk_common::PaymentMethod::Bolt11 => {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
                 self.try_proof_operation_or_reclaim(
                     request.inputs().clone(),
                     self.client.post_melt(request),
                 )
                 .await?
             }
-            cdk_common::PaymentMethod::Bolt12 => {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
                 self.try_proof_operation_or_reclaim(
                     request.inputs().clone(),
                     self.client.post_melt_bolt12(request),
                 )
                 .await?
             }
-            cdk_common::PaymentMethod::Custom(_) => {
-                return Err(Error::UnsupportedPaymentMethod);
+            cdk_common::PaymentMethod::Custom(ref _method) => {
+                // For now, custom methods will use the same post_melt endpoint
+                // This will be enhanced when custom HTTP client methods are added
+                self.try_proof_operation_or_reclaim(
+                    request.inputs().clone(),
+                    self.client.post_melt(request),
+                )
+                .await?
             }
         };
 
@@ -258,10 +265,11 @@ impl Wallet {
         };
 
         let payment_preimage = melt_response.payment_preimage.clone();
+        let state = melt_response.state;
 
         let melted = Melted::from_proofs(
-            melt_response.state,
-            melt_response.payment_preimage,
+            state,
+            payment_preimage.clone(),
             quote_info.amount,
             proofs.clone(),
             change_proofs.clone(),
