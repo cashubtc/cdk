@@ -56,16 +56,12 @@ where
     ) -> Result<Response<proto::BlindSignResponse>, Status> {
         let metadata = request.metadata();
         let signatory = self.load_signatory(metadata).await?;
-        let result = match signatory
-            .blind_sign(
-                request
-                    .into_inner()
-                    .blinded_messages
-                    .into_iter()
-                    .map(|blind_message| blind_message.try_into())
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
-            .await
+        let blinded_messages = request.into_inner().blinded_messages;
+        let mut converted_messages = Vec::with_capacity(blinded_messages.len());
+        for msg in blinded_messages {
+            converted_messages.push(msg.try_into()?);
+        }
+        let result = match signatory.blind_sign(converted_messages).await
         {
             Ok(blind_signatures) => proto::BlindSignResponse {
                 sigs: Some(proto::BlindSignatures {
@@ -92,16 +88,12 @@ where
     ) -> Result<Response<proto::BooleanResponse>, Status> {
         let metadata = request.metadata();
         let signatory = self.load_signatory(metadata).await?;
-        let result = match signatory
-            .verify_proofs(
-                request
-                    .into_inner()
-                    .proof
-                    .into_iter()
-                    .map(|x| x.try_into())
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
-            .await
+        let proofs = request.into_inner().proof;
+        let mut converted_proofs = Vec::with_capacity(proofs.len());
+        for p in proofs {
+            converted_proofs.push(p.try_into()?);
+        }
+        let result = match signatory.verify_proofs(converted_proofs).await
         {
             Ok(()) => proto::BooleanResponse {
                 success: true,
