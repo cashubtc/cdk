@@ -27,7 +27,11 @@ format_list() {
   fi
 }
 
-PR_TYPES=("feat" "fix" "refactor" "chore" "docs" "ci" "test")
+PR_TYPES=("feat" "fix" "refactor" "chore" "docs" "ci" "test" "backport")
+EXCLUDE_PATTERNS=(
+  "^\\[Backport"
+  "Weekly Meeting Agenda"
+)
 
 filter_all_types() {
   local prs="$1"
@@ -35,20 +39,37 @@ filter_all_types() {
   local combined_regex=""
 
   for type in "${PR_TYPES[@]}"; do
-    regex="^$type"
+    if [ "$type" = "backport" ]; then
+      # backports are explicitly done in another section.
+      # They still need to be filtered out of the the others grouping.
+      regex="^\\[Backport"
+      combined_regex+="^$type|"
+      continue
+    else
+      regex="^$type"
+      combined_regex+="^$type|"
+    fi
     filtered=$(echo "$prs" | jq -r --arg regex "$regex" '
-      .[] | select(.title | test($regex; "i")) | [.number, .title, .url] | @tsv
+      .[] | select(.title | ltrimstr(" ") | rtrimstr(" ") | test($regex; "i")) | [.number, .title, .url] | @tsv
     ')
     if [[ -n "$filtered" ]]; then
       result+="$filtered"$'\n'
     fi
-    combined_regex+="^$type|"
   done
   combined_regex="${combined_regex%|}"
 
-  other=$(echo "$prs" | jq -r --arg combined_regex "$combined_regex" '
-    .[] | select(.title | test($combined_regex; "i") | not) | [.number, .title, .url] | @tsv
+  # Build exclusion regex from EXCLUDE_PATTERNS
+  local exclude_regex=$(
+    IFS="|"
+    echo "${EXCLUDE_PATTERNS[*]}"
+  )
+
+  other=$(echo "$prs" | jq -r --arg combined_regex "$combined_regex" --arg exclude_regex "$exclude_regex" '
+  .[] | select((.title | ltrimstr(" ") | rtrimstr(" ") | test($combined_regex; "i") | not) and (.title | ltrimstr(" ") | rtrimstr(" ") | test($exclude_regex; "i") | not)) | [.number, .title, .url] | @tsv
   ')
+  # other=$(echo "$prs" | jq -r --arg combined_regex "$combined_regex" '
+  #   .[] | select(.title | test($combined_regex; "i") | not) | [.number, .title, .url] | @tsv
+  # ')
 
   if [[ -n "$other" ]]; then
     result+="$other"$'\n'
@@ -66,6 +87,7 @@ MERGED_PRS=$(gh pr list \
   2>/dev/null || echo "")
 
 MERGED_PRS_FILTERED=$(filter_all_types "$MERGED_PRS")
+BACKPORT_PRS=$(echo "$MERGED_PRS" | jq -r '.[] | select(.title | test("^\\[Backport"; "i")) | [.number, .title, .url] | @tsv')
 
 # Fetch recently active PRs (updated in last week, but not newly created)
 echo "Fetching recently active PRs..."
@@ -156,7 +178,12 @@ $(format_list "$NEW_PRS_FILTERED")
 $(format_list "$RECENTLY_ACTIVE_PRS_FILTERED")
 
 ## Merged NUTS
+
 $(format_list "$MERGED_NUTS")
+
+## Backports
+
+$(format_list "$BACKPORT_PRS")
 
 ## Discussion
 
