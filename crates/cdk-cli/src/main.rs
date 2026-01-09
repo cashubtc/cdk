@@ -109,6 +109,10 @@ enum Commands {
     CatLogin(sub_commands::cat_login::CatLoginSubCommand),
     /// Cat login with device code flow
     CatDeviceLogin(sub_commands::cat_device_login::CatDeviceLoginSubCommand),
+    /// Generate a public key
+    GeneratePublicKey(sub_commands::generate_public_key::GeneratePublicKeySubCommand),
+    /// Get public keys
+    GetPublicKeys(sub_commands::get_public_keys::GetPublicKeysSubCommand),
 }
 
 #[tokio::main]
@@ -299,6 +303,17 @@ async fn main() -> Result<()> {
                 &work_dir,
             )
             .await
+        }
+        Commands::GeneratePublicKey(sub_command_args) => {
+            sub_commands::generate_public_key::generate_public_key(
+                &multi_mint_wallet,
+                sub_command_args,
+            )
+            .await
+        }
+        Commands::GetPublicKeys(sub_command_args) => {
+            sub_commands::get_public_keys::get_public_keys(&multi_mint_wallet, sub_command_args)
+                .await
         }
     }
 }
