@@ -261,6 +261,30 @@ impl Wallet {
             .await?;
         Ok(quote.into())
     }
+    /// Get a mint quote using a unified interface for any payment method
+    ///
+    /// This method supports bolt11, bolt12, and custom payment methods.
+    /// For custom methods, you can pass extra JSON data that will be forwarded
+    /// to the payment processor.
+    ///
+    /// # Arguments
+    /// * `amount` - Optional amount to mint (required for bolt11)
+    /// * `method` - Payment method to use (bolt11, bolt12, or custom)
+    /// * `description` - Optional description for the quote
+    /// * `extra` - Optional JSON string with extra payment-method-specific fields (for custom methods)
+    pub async fn mint_quote_unified(
+        &self,
+        amount: Option<Amount>,
+        method: PaymentMethod,
+        description: Option<String>,
+        extra: Option<String>,
+    ) -> Result<MintQuote, FfiError> {
+        let quote = self
+            .inner
+            .mint_quote_unified(amount.map(Into::into), method.into(), description, extra)
+            .await?;
+        Ok(quote.into())
+    }
 
     /// Mint tokens using bolt12
     pub async fn mint_bolt12(
@@ -284,7 +308,27 @@ impl Wallet {
 
         Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
+    pub async fn mint_unified(
+        &self,
+        quote_id: String,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> Result<Proofs, FfiError> {
+        let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
 
+        let proofs = self
+            .inner
+            .mint_unified(
+                &quote_id,
+                amount.map(Into::into),
+                amount_split_target.into(),
+                conditions,
+            )
+            .await?;
+
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
+    }
     /// Get a quote for a bolt12 melt
     pub async fn melt_bolt12_quote(
         &self,
@@ -295,7 +339,39 @@ impl Wallet {
         let quote = self.inner.melt_bolt12_quote(request, cdk_options).await?;
         Ok(quote.into())
     }
+    /// Get a melt quote using a unified interface for any payment method
+    ///
+    /// This method supports bolt11, bolt12, and custom payment methods.
+    /// For custom methods, you can pass extra JSON data that will be forwarded
+    /// to the payment processor.
+    ///
+    /// # Arguments
+    /// * `method` - Payment method to use (bolt11, bolt12, or custom)
+    /// * `request` - Payment request string (invoice, offer, or custom format)
+    /// * `options` - Optional melt options (MPP, amountless, etc.)
+    /// * `extra` - Optional JSON string with extra payment-method-specific fields (for custom methods)
+    pub async fn melt_quote_unified(
+        &self,
+        method: PaymentMethod,
+        request: String,
+        options: Option<MeltOptions>,
+        extra: Option<String>,
+    ) -> Result<MeltQuote, FfiError> {
+        // Parse the extra JSON string into a serde_json::Value
+        let extra_value = extra
+            .map(|s| serde_json::from_str(&s))
+            .transpose()
+            .map_err(|e| FfiError::Generic {
+                msg: format!("Invalid extra JSON: {}", e),
+            })?;
 
+        let cdk_options = options.map(Into::into);
+        let quote = self
+            .inner
+            .melt_quote_unified(method.into(), request, cdk_options, extra_value)
+            .await?;
+        Ok(quote.into())
+    }
     /// Swap proofs
     pub async fn swap(
         &self,

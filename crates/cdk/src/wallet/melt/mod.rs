@@ -3,15 +3,20 @@ use std::collections::HashMap;
 use cdk_common::database::DynWalletDatabaseTransaction;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
-use cdk_common::{Error, MeltQuoteBolt11Response, MeltQuoteState, ProofsMethods, State};
+use cdk_common::{
+    Error, MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod, ProofsMethods, State,
+};
 use tracing::instrument;
 
+use crate::nuts::nut00::KnownMethod;
+use crate::nuts::MeltOptions;
 use crate::Wallet;
 
+mod bolt11;
+mod bolt12;
+mod custom;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 mod melt_bip353;
-mod melt_bolt11;
-mod melt_bolt12;
 #[cfg(feature = "wallet")]
 mod melt_lightning_address;
 
@@ -126,7 +131,7 @@ impl Wallet {
             .nut05
             .methods
             .iter()
-            .any(|m| m.method == PaymentMethod::Bolt12);
+            .any(|m| m.method == PaymentMethod::Known(KnownMethod::Bolt12));
 
         if supports_bolt12 {
             // Mint supports bolt12, try BIP353 first
@@ -149,6 +154,35 @@ impl Wallet {
         } else {
             // Mint doesn't support bolt12, use Lightning address directly
             self.melt_lightning_address_quote(address, amount).await
+        }
+    }
+    /// Unified melt quote method for all payment methods
+    ///
+    /// Routes to the appropriate handler based on the payment method.
+    /// For custom payment methods, you can pass extra JSON data that will be
+    /// forwarded to the payment processor.
+    ///
+    /// # Arguments
+    /// * `method` - Payment method to use (bolt11, bolt12, or custom)
+    /// * `request` - Payment request string (invoice, offer, or custom format)
+    /// * `options` - Optional melt options (MPP, amountless, etc.)
+    /// * `extra` - Optional extra payment-method-specific data as JSON (for custom methods)
+    pub async fn melt_quote_unified(
+        &self,
+        method: PaymentMethod,
+        request: String,
+        options: Option<MeltOptions>,
+        extra: Option<serde_json::Value>,
+    ) -> Result<MeltQuote, Error> {
+        match method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => self.melt_quote(request, options).await,
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                self.melt_bolt12_quote(request, options).await
+            }
+            PaymentMethod::Custom(custom_method) => {
+                self.melt_quote_custom(&custom_method, request, options, extra)
+                    .await
+            }
         }
     }
 }

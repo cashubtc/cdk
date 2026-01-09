@@ -76,6 +76,13 @@ impl TryFrom<PaymentIdentifier> for CdkPaymentIdentifier {
             (PaymentIdentifierType::CustomId, Some(payment_identifier::Value::Id(id))) => {
                 Ok(CdkPaymentIdentifier::CustomId(id))
             }
+            (PaymentIdentifierType::PaymentId, Some(payment_identifier::Value::Hash(hash))) => {
+                let decoded = hex::decode(hash)?;
+                let hash_array: [u8; 32] = decoded
+                    .try_into()
+                    .map_err(|_| crate::error::Error::InvalidHash)?;
+                Ok(CdkPaymentIdentifier::PaymentId(hash_array))
+            }
             _ => Err(crate::error::Error::InvalidPaymentIdentifier),
         }
     }
@@ -84,7 +91,9 @@ impl TryFrom<PaymentIdentifier> for CdkPaymentIdentifier {
 impl TryFrom<MakePaymentResponse> for CdkMakePaymentResponse {
     type Error = crate::error::Error;
     fn try_from(value: MakePaymentResponse) -> Result<Self, Self::Error> {
-        let status = value.status().as_str_name().parse()?;
+        // Use direct enum conversion instead of parsing string from as_str_name()
+        // as_str_name() returns "QUOTE_STATE_PAID" but MeltQuoteState::from_str expects "PAID"
+        let status: cdk_common::nuts::MeltQuoteState = value.status().into();
         let payment_proof = value.payment_proof;
         let total_spent = value.total_spent.into();
         let unit = CurrencyUnit::from_str(&value.unit)?;
@@ -109,6 +118,7 @@ impl From<CdkMakePaymentResponse> for MakePaymentResponse {
             status: QuoteState::from(value.status).into(),
             total_spent: value.total_spent.into(),
             unit: value.unit.to_string(),
+            extra_json: None,
         }
     }
 }
@@ -119,6 +129,7 @@ impl From<CreateIncomingPaymentResponse> for CreatePaymentResponse {
             request_identifier: Some(value.request_lookup_id.into()),
             request: value.request,
             expiry: value.expiry,
+            extra_json: None,
         }
     }
 }
@@ -134,10 +145,13 @@ impl TryFrom<CreatePaymentResponse> for CreateIncomingPaymentResponse {
             request_lookup_id: request_identifier.try_into()?,
             request: value.request,
             expiry: value.expiry,
+            extra_json: Some(
+                serde_json::from_str(value.extra_json.unwrap_or_default().as_str())
+                    .unwrap_or_default(),
+            ),
         })
     }
 }
-
 impl From<cdk_common::payment::PaymentQuoteResponse> for PaymentQuoteResponse {
     fn from(value: cdk_common::payment::PaymentQuoteResponse) -> Self {
         Self {
@@ -146,6 +160,7 @@ impl From<cdk_common::payment::PaymentQuoteResponse> for PaymentQuoteResponse {
             fee: value.fee.into(),
             unit: value.unit.to_string(),
             state: QuoteState::from(value.state).into(),
+            extra_json: None,
         }
     }
 }
@@ -209,6 +224,7 @@ impl From<QuoteState> for cdk_common::nuts::MeltQuoteState {
             QuoteState::Unknown => Self::Unknown,
             QuoteState::Failed => Self::Failed,
             QuoteState::Issued => Self::Unknown,
+            QuoteState::Unspecified => Self::Unknown,
         }
     }
 }

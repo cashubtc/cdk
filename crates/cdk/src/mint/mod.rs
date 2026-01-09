@@ -46,6 +46,7 @@ mod verification;
 
 pub use builder::{MintBuilder, MintMeltLimits};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
+pub use issue::{MintQuoteRequest, MintQuoteResponse};
 pub use verification::Verification;
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
@@ -398,6 +399,37 @@ impl Mint {
         Ok(())
     }
 
+    /// Get all custom payment methods supported by registered payment processors
+    ///
+    /// This queries all payment processors for their supported custom methods
+    /// and returns a deduplicated list.
+    pub async fn get_custom_payment_methods(&self) -> Result<Vec<String>, Error> {
+        use std::collections::HashSet;
+        let mut custom_methods = HashSet::new();
+        let mut seen_processors = Vec::new();
+
+        for processor in self.payment_processors.values() {
+            // Skip if we've already queried this processor instance
+            if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
+                continue;
+            }
+            seen_processors.push(Arc::clone(processor));
+
+            match processor.get_settings().await {
+                Ok(settings) => {
+                    for (method, _) in settings.custom {
+                        custom_methods.insert(method);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to get settings from payment processor: {}", e);
+                }
+            }
+        }
+
+        Ok(custom_methods.into_iter().collect())
+    }
+
     /// Get the payment processor for the given unit and payment method
     pub fn get_payment_processor(
         &self,
@@ -727,7 +759,7 @@ impl Mint {
             .payment_ids()
             .contains(&&wait_payment_response.payment_id)
         {
-            if mint_quote.payment_method == PaymentMethod::Bolt11
+            if mint_quote.payment_method.is_bolt11()
                 && (quote_state == MintQuoteState::Issued || quote_state == MintQuoteState::Paid)
             {
                 tracing::info!("Received payment notification for already issued quote.");

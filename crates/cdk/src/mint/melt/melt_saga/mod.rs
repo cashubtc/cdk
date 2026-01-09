@@ -5,6 +5,7 @@ use cdk_common::amount::to_unit;
 use cdk_common::database::mint::MeltRequestInfo;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
+use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
 use cdk_common::state::check_state_transition;
 use cdk_common::{Amount, Error, ProofsMethods, PublicKey, QuoteId, State};
@@ -508,7 +509,7 @@ impl MeltSaga<SetupComplete> {
         // Mint quote has already been settled
         if (mint_quote.state() == cdk_common::nuts::MintQuoteState::Issued
             || mint_quote.state() == cdk_common::nuts::MintQuoteState::Paid)
-            && mint_quote.payment_method == crate::mint::PaymentMethod::Bolt11
+            && mint_quote.payment_method == crate::mint::PaymentMethod::Known(KnownMethod::Bolt11)
         {
             tx.rollback().await?;
             self.compensate_all().await?;

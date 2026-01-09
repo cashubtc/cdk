@@ -10,7 +10,6 @@ use cdk_common::payment::{
     PaymentQuoteResponse as CdkPaymentQuoteResponse, WaitPaymentResponse,
 };
 use futures::{Stream, StreamExt};
-use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tonic::{async_trait, Request};
@@ -87,7 +86,7 @@ impl PaymentProcessorClient {
 impl MintPayment for PaymentProcessorClient {
     type Err = cdk_common::payment::Error;
 
-    async fn get_settings(&self) -> Result<Value, Self::Err> {
+    async fn get_settings(&self) -> Result<cdk_common::payment::SettingsResponse, Self::Err> {
         let mut inner = self.inner.clone();
         let response = inner
             .get_settings(Request::new(EmptyRequest {}))
@@ -99,7 +98,22 @@ impl MintPayment for PaymentProcessorClient {
 
         let settings = response.into_inner();
 
-        Ok(serde_json::from_str(&settings.inner)?)
+        Ok(cdk_common::payment::SettingsResponse {
+            unit: settings.unit,
+            bolt11: settings
+                .bolt11
+                .map(|b| cdk_common::payment::Bolt11Settings {
+                    mpp: b.mpp,
+                    amountless: b.amountless,
+                    invoice_description: b.invoice_description,
+                }),
+            bolt12: settings
+                .bolt12
+                .map(|b| cdk_common::payment::Bolt12Settings {
+                    amountless: b.amountless,
+                }),
+            custom: settings.custom,
+        })
     }
 
     /// Create a new invoice
@@ -111,6 +125,16 @@ impl MintPayment for PaymentProcessorClient {
         let mut inner = self.inner.clone();
 
         let proto_options = match options {
+            CdkIncomingPaymentOptions::Custom(opts) => IncomingPaymentOptions {
+                options: Some(super::incoming_payment_options::Options::Custom(
+                    super::CustomIncomingPaymentOptions {
+                        description: opts.description,
+                        amount: Some(opts.amount.into()),
+                        unix_expiry: opts.unix_expiry,
+                        extra_json: opts.extra_json.clone(),
+                    },
+                )),
+            },
             CdkIncomingPaymentOptions::Bolt11(opts) => IncomingPaymentOptions {
                 options: Some(super::incoming_payment_options::Options::Bolt11(
                     super::Bolt11IncomingPaymentOptions {
@@ -157,6 +181,9 @@ impl MintPayment for PaymentProcessorClient {
         let mut inner = self.inner.clone();
 
         let request_type = match &options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
+                OutgoingPaymentRequestType::Custom
+            }
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(_) => {
                 OutgoingPaymentRequestType::Bolt11Invoice
             }
@@ -166,13 +193,20 @@ impl MintPayment for PaymentProcessorClient {
         };
 
         let proto_request = match &options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.request.to_string(),
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => opts.bolt11.to_string(),
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(opts) => opts.offer.to_string(),
         };
 
         let proto_options = match &options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.melt_options,
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => opts.melt_options,
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(opts) => opts.melt_options,
+        };
+
+        let extra_json = match &options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.extra_json.clone(),
+            _ => None,
         };
 
         let response = inner
@@ -181,6 +215,7 @@ impl MintPayment for PaymentProcessorClient {
                 unit: unit.to_string(),
                 options: proto_options.map(Into::into),
                 request_type: request_type.into(),
+                extra_json,
             }))
             .await
             .map_err(|err| {
@@ -199,8 +234,20 @@ impl MintPayment for PaymentProcessorClient {
         options: cdk_common::payment::OutgoingPaymentOptions,
     ) -> Result<CdkMakePaymentResponse, Self::Err> {
         let mut inner = self.inner.clone();
-
         let payment_options = match options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => {
+                super::OutgoingPaymentVariant {
+                    options: Some(super::outgoing_payment_variant::Options::Custom(
+                        super::CustomOutgoingPaymentOptions {
+                            offer: opts.request.to_string(),
+                            max_fee_amount: opts.max_fee_amount.map(Into::into),
+                            timeout_secs: opts.timeout_secs,
+                            melt_options: opts.melt_options.map(Into::into),
+                            extra_json: opts.extra_json.clone(),
+                        },
+                    )),
+                }
+            }
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => {
                 super::OutgoingPaymentVariant {
                     options: Some(super::outgoing_payment_variant::Options::Bolt11(

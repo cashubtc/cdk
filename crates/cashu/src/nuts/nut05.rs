@@ -10,8 +10,9 @@ use serde::ser::{SerializeStruct, Serializer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::nut00::{BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
+use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::ProofsMethods;
+use crate::nut00::KnownMethod;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
 use crate::Amount;
@@ -190,7 +191,7 @@ where
 }
 
 /// Melt Method Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltMethodSettings {
     /// Payment Method e.g. bolt11
@@ -325,7 +326,8 @@ impl<'de> Visitor<'de> for MeltMethodSettingsVisitor {
         let unit = unit.ok_or_else(|| de::Error::missing_field("unit"))?;
 
         // Create options based on the method and the amountless flag
-        let options = if method == PaymentMethod::Bolt11 && amountless.is_some() {
+        let options = if method == PaymentMethod::Known(KnownMethod::Bolt11) && amountless.is_some()
+        {
             amountless.map(|amountless| MeltMethodOptions::Bolt11 { amountless })
         } else {
             None
@@ -418,11 +420,131 @@ impl Settings {
     }
 }
 
+/// Custom payment method melt quote request
+///
+/// This is a generic request type for melting tokens with custom payment methods.
+///
+/// The `extra` field allows payment-method-specific fields to be included
+/// without being nested. When serialized, extra fields merge into the parent JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct MeltQuoteCustomRequest {
+    /// Custom payment method name
+    pub method: String,
+    /// Payment request string (method-specific format)
+    pub request: String,
+    /// Currency unit
+    pub unit: CurrencyUnit,
+    /// Extra payment-method-specific fields
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
+    #[cfg_attr(feature = "swagger", schema(value_type = Object, additional_properties = true))]
+    pub extra: serde_json::Value,
+}
+
+/// Custom payment method melt quote response
+///
+/// This is a generic response type for custom payment methods.
+///
+/// The `extra` field allows payment-method-specific fields to be included
+/// without being nested. When serialized, extra fields merge into the parent JSON:
+/// ```json
+/// {
+///   "quote": "abc123",
+///   "state": "UNPAID",
+///   "amount": 1000,
+///   "fee_reserve": 10,
+///   "custom_field": "value"
+/// }
+/// ```
+///
+/// This separation enables proper validation layering: the mint verifies
+/// well-defined fields (amount, fee_reserve, state, etc.) while passing extra
+/// through to the gRPC payment processor for method-specific validation.
+///
+/// It also provides a clean upgrade path: when a payment method becomes speced,
+/// its fields can be promoted from `extra` to well-defined struct fields without
+/// breaking existing clients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+#[serde(bound = "Q: Serialize + for<'a> Deserialize<'a>")]
+pub struct MeltQuoteCustomResponse<Q> {
+    /// Quote ID
+    pub quote: Q,
+    /// Amount to be melted
+    pub amount: Amount,
+    /// Fee reserve required
+    pub fee_reserve: Amount,
+    /// Quote State
+    pub state: QuoteState,
+    /// Unix timestamp until the quote is valid
+    pub expiry: u64,
+    /// Payment preimage (if payment completed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_preimage: Option<String>,
+    /// Change (blinded signatures for overpaid amount)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change: Option<Vec<BlindSignature>>,
+    /// Payment request (optional, for reference)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    /// Currency unit
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<CurrencyUnit>,
+    /// Extra payment-method-specific fields
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data without nesting.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
+    #[cfg_attr(feature = "swagger", schema(value_type = Object, additional_properties = true))]
+    pub extra: serde_json::Value,
+}
+
+#[cfg(feature = "mint")]
+impl<Q: ToString> MeltQuoteCustomResponse<Q> {
+    /// Convert the MeltQuoteCustomResponse with a quote type Q to a String
+    pub fn to_string_id(&self) -> MeltQuoteCustomResponse<String> {
+        MeltQuoteCustomResponse {
+            quote: self.quote.to_string(),
+            amount: self.amount,
+            fee_reserve: self.fee_reserve,
+            state: self.state,
+            expiry: self.expiry,
+            payment_preimage: self.payment_preimage.clone(),
+            change: self.change.clone(),
+            request: self.request.clone(),
+            unit: self.unit.clone(),
+            extra: self.extra.clone(),
+        }
+    }
+}
+
+#[cfg(feature = "mint")]
+impl From<MeltQuoteCustomResponse<QuoteId>> for MeltQuoteCustomResponse<String> {
+    fn from(value: MeltQuoteCustomResponse<QuoteId>) -> Self {
+        Self {
+            quote: value.quote.to_string(),
+            amount: value.amount,
+            fee_reserve: value.fee_reserve,
+            state: value.state,
+            expiry: value.expiry,
+            payment_preimage: value.payment_preimage,
+            change: value.change,
+            request: value.request,
+            unit: value.unit,
+            extra: value.extra,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{from_str, json, to_string};
 
     use super::*;
+    use crate::nut00::KnownMethod;
 
     #[test]
     fn test_melt_method_settings_top_level_amountless() {
@@ -439,7 +561,7 @@ mod tests {
         let settings: MeltMethodSettings = from_str(json_str).unwrap();
 
         // Check that amountless was correctly moved to options
-        assert_eq!(settings.method, PaymentMethod::Bolt11);
+        assert_eq!(settings.method, PaymentMethod::Known(KnownMethod::Bolt11));
         assert_eq!(settings.unit, CurrencyUnit::Sat);
         assert_eq!(settings.min_amount, Some(Amount::from(0)));
         assert_eq!(settings.max_amount, Some(Amount::from(10000)));

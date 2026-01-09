@@ -173,6 +173,24 @@ pub struct Bolt12IncomingPaymentOptions {
     pub unix_expiry: Option<u64>,
 }
 
+/// Options for creating a custom incoming payment request
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CustomIncomingPaymentOptions {
+    /// Payment method name (e.g., "paypal", "venmo")
+    pub method: String,
+    /// Optional description for the payment request
+    pub description: Option<String>,
+    /// Amount for the payment request
+    pub amount: Amount,
+    /// Optional expiry time as Unix timestamp in seconds
+    pub unix_expiry: Option<u64>,
+    /// Extra payment-method-specific fields as JSON string
+    ///
+    /// These fields are passed through to the payment processor for
+    /// method-specific validation (e.g., ehash share).
+    pub extra_json: Option<String>,
+}
+
 /// Options for creating an incoming payment request
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IncomingPaymentOptions {
@@ -180,6 +198,8 @@ pub enum IncomingPaymentOptions {
     Bolt11(Bolt11IncomingPaymentOptions),
     /// BOLT12 payment request options
     Bolt12(Box<Bolt12IncomingPaymentOptions>),
+    /// Custom payment method options
+    Custom(Box<CustomIncomingPaymentOptions>),
 }
 
 /// Options for BOLT11 outgoing payments
@@ -208,6 +228,26 @@ pub struct Bolt12OutgoingPaymentOptions {
     pub melt_options: Option<MeltOptions>,
 }
 
+/// Options for custom outgoing payments
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CustomOutgoingPaymentOptions {
+    /// Payment method name
+    pub method: String,
+    /// Payment request string (method-specific format)
+    pub request: String,
+    /// Maximum fee amount allowed for the payment
+    pub max_fee_amount: Option<Amount>,
+    /// Optional timeout in seconds
+    pub timeout_secs: Option<u64>,
+    /// Melt options
+    pub melt_options: Option<MeltOptions>,
+    /// Extra payment-method-specific fields as JSON string
+    ///
+    /// These fields are passed through to the payment processor for
+    /// method-specific validation.
+    pub extra_json: Option<String>,
+}
+
 /// Options for creating an outgoing payment
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum OutgoingPaymentOptions {
@@ -215,6 +255,8 @@ pub enum OutgoingPaymentOptions {
     Bolt11(Box<Bolt11OutgoingPaymentOptions>),
     /// BOLT12 payment options
     Bolt12(Box<Bolt12OutgoingPaymentOptions>),
+    /// Custom payment method options
+    Custom(Box<CustomOutgoingPaymentOptions>),
 }
 
 impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
@@ -246,6 +288,16 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                     },
                 )))
             }
+            MeltPaymentRequest::Custom { method, request } => Ok(OutgoingPaymentOptions::Custom(
+                Box::new(CustomOutgoingPaymentOptions {
+                    method,
+                    request,
+                    max_fee_amount: Some(melt_quote.fee_reserve),
+                    timeout_secs: None,
+                    melt_options: melt_quote.options,
+                    extra_json: None,
+                }),
+            )),
         }
     }
 }
@@ -271,7 +323,7 @@ pub trait MintPayment {
     }
 
     /// Base Settings
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err>;
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err>;
 
     /// Create a new invoice
     async fn create_incoming_payment_request(
@@ -364,6 +416,12 @@ pub struct CreateIncomingPaymentResponse {
     pub request: String,
     /// Unix Expiry of Invoice
     pub expiry: Option<u64>,
+    /// Extra payment-method-specific fields
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data without nesting.
+    #[serde(flatten, default)]
+    pub extra_json: Option<serde_json::Value>,
 }
 
 /// Payment response
@@ -396,30 +454,46 @@ pub struct PaymentQuoteResponse {
     pub state: MeltQuoteState,
 }
 
-/// Ln backend settings
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+/// BOLT11 settings
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Bolt11Settings {
-    /// MPP supported
+    /// Multi-part payment (MPP) supported
     pub mpp: bool,
-    /// Base unit of backend
-    pub unit: CurrencyUnit,
-    /// Invoice Description supported
-    pub invoice_description: bool,
-    /// Paying amountless invoices supported
+    /// Amountless invoice support
     pub amountless: bool,
-    /// Bolt12 supported
-    pub bolt12: bool,
+    /// Invoice description supported
+    pub invoice_description: bool,
 }
 
-impl TryFrom<Bolt11Settings> for Value {
-    type Error = crate::error::Error;
+/// BOLT12 settings
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Bolt12Settings {
+    /// Amountless offer support
+    pub amountless: bool,
+}
 
-    fn try_from(value: Bolt11Settings) -> Result<Self, Self::Error> {
-        serde_json::to_value(value).map_err(|err| err.into())
+/// Payment processor settings response
+/// Mirrors the proto SettingsResponse structure
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsResponse {
+    /// Base unit of backend
+    pub unit: String,
+    /// BOLT11 settings (None if not supported)
+    pub bolt11: Option<Bolt11Settings>,
+    /// BOLT12 settings (None if not supported)
+    pub bolt12: Option<Bolt12Settings>,
+    /// Custom payment methods settings (method name -> settings data)
+    #[serde(default)]
+    pub custom: std::collections::HashMap<String, String>,
+}
+
+impl From<SettingsResponse> for Value {
+    fn from(value: SettingsResponse) -> Self {
+        serde_json::to_value(value).unwrap_or(Value::Null)
     }
 }
 
-impl TryFrom<Value> for Bolt11Settings {
+impl TryFrom<Value> for SettingsResponse {
     type Error = crate::error::Error;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
@@ -466,7 +540,7 @@ where
 {
     type Err = T::Err;
 
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
         let start = std::time::Instant::now();
         METRICS.inc_in_flight_requests("get_settings");
 

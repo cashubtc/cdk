@@ -15,8 +15,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bip39::Mnemonic;
+use cashu::nut00::KnownMethod;
+use cashu::PaymentMethod;
 use cdk::mint::{MintBuilder, MintMeltLimits};
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use cdk::nuts::CurrencyUnit;
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk_fake_wallet::FakeWallet;
 use cdk_sqlite::mint::memory;
@@ -51,7 +53,7 @@ async fn test_correct_keyset() {
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::Bolt11,
+            PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 5_000),
             Arc::new(fake_wallet),
         )
@@ -152,7 +154,7 @@ async fn test_concurrent_duplicate_payment_handling() {
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::Bolt11,
+            PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 5_000),
             Arc::new(fake_wallet),
         )
@@ -179,10 +181,11 @@ async fn test_concurrent_duplicate_payment_handling() {
         None,
         Amount::ZERO,
         Amount::ZERO,
-        PaymentMethod::Bolt11,
+        PaymentMethod::Known(KnownMethod::Bolt11),
         current_time,
         vec![],
         vec![],
+        None, // extra_json
     );
 
     // Add the quote to the database

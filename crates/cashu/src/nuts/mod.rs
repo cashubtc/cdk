@@ -47,9 +47,13 @@ pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
 #[cfg(feature = "wallet")]
 pub use nut03::PreSwap;
 pub use nut03::{SwapRequest, SwapResponse};
-pub use nut04::{MintMethodSettings, MintRequest, MintResponse, Settings as NUT04Settings};
+pub use nut04::{
+    MintMethodSettings, MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest, MintResponse,
+    Settings as NUT04Settings,
+};
 pub use nut05::{
-    MeltMethodSettings, MeltRequest, QuoteState as MeltQuoteState, Settings as NUT05Settings,
+    MeltMethodSettings, MeltQuoteCustomRequest, MeltQuoteCustomResponse, MeltRequest,
+    QuoteState as MeltQuoteState, Settings as NUT05Settings,
 };
 pub use nut06::{ContactInfo, MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
