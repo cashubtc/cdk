@@ -61,8 +61,7 @@ where
         for msg in blinded_messages {
             converted_messages.push(msg.try_into()?);
         }
-        let result = match signatory.blind_sign(converted_messages).await
-        {
+        let result = match signatory.blind_sign(converted_messages).await {
             Ok(blind_signatures) => proto::BlindSignResponse {
                 sigs: Some(proto::BlindSignatures {
                     blind_signatures: blind_signatures
@@ -93,8 +92,7 @@ where
         for p in proofs {
             converted_proofs.push(p.try_into()?);
         }
-        let result = match signatory.verify_proofs(converted_proofs).await
-        {
+        let result = match signatory.verify_proofs(converted_proofs).await {
             Ok(()) => proto::BooleanResponse {
                 success: true,
                 ..Default::default()
