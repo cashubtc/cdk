@@ -623,7 +623,6 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         derivation_path: DerivationPath,
         derivation_index: u32,
     ) -> Result<(), database::Error> {
-        // let txn = self.txn()?;
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         let mut table = write_txn
             .open_table(P2PK_SIGNING_KEYS_TABLE)

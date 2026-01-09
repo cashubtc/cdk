@@ -14,6 +14,7 @@ use cdk_common::database::{
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
+use cdk_common::util::unix_time;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
 use cdk_common::{
     database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PaymentMethod, Proof,
@@ -1322,8 +1323,8 @@ where
     ) -> Result<(), Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let query_str = r#"
-        INSERT INTO p2pk_signing_key (pubkey, derivation_index, derivation_path)
-        VALUES (:pubkey, :derivation_index, :derivation_path)
+        INSERT INTO p2pk_signing_key (pubkey, derivation_index, derivation_path, created_time)
+        VALUES (:pubkey, :derivation_index, :derivation_path, :created_time)
         "#
         .to_string();
 
@@ -1331,6 +1332,7 @@ where
             .bind("pubkey", pubkey.to_bytes().to_vec())
             .bind("derivation_index", derivation_index)
             .bind("derivation_path", derivation_path.to_string())
+            .bind("created_time", unix_time() as i64)
             .execute(&*conn)
             .await?;
 

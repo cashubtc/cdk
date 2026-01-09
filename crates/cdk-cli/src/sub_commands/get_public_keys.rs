@@ -1,4 +1,4 @@
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use cdk::wallet::MultiMintWallet;
 use clap::Args;
 
@@ -13,10 +13,8 @@ pub async fn get_public_keys(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &GetPublicKeysSubCommand,
 ) -> Result<()> {
-    let list_public_keys = multi_mint_wallet.get_public_keys().await?;
     if sub_command_args.latest {
-        // keys are ordered by creation time, so the first one is the latest
-        let latest_public_key = list_public_keys.first().cloned();
+        let latest_public_key = multi_mint_wallet.get_latest_public_key().await?;
 
         match latest_public_key {
             Some(key) => {
@@ -33,6 +31,10 @@ pub async fn get_public_keys(
         return Ok(());
     }
 
+    let list_public_keys = multi_mint_wallet.get_public_keys().await?;
+    if list_public_keys.is_empty() {
+        println!("\npublic not found!\n");
+    }
     println!("\npublic keys found:\n");
     for public_key in list_public_keys {
         println!("public key: {}", public_key.pubkey.to_hex());

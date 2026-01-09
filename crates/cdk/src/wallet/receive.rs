@@ -116,7 +116,10 @@ impl Wallet {
                         }
                     }
 
-                    proof.enough_signatures()?;
+                    match secret.kind() {
+                        Kind::P2PK => proof.verify_p2pk()?,
+                        Kind::HTLC => proof.verify_htlc()?,
+                    }
 
                     if conditions.sig_flag.eq(&SigFlag::SigAll) {
                         sig_flag = SigFlag::SigAll;

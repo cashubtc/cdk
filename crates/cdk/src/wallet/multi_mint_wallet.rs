@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Result;
-use bitcoin::bip32::{DerivationPath, Xpriv};
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
 use cdk_common::database::WalletDatabase;
 use cdk_common::task::spawn;
@@ -2002,7 +2002,12 @@ impl MultiMintWallet {
         }
         last_derivation_index += 1;
 
-        let derivation_path = DerivationPath::from_str(&format!("m/0/{}", last_derivation_index))?;
+        let derivation_path = DerivationPath::from(vec![
+            ChildNumber::from_hardened_idx(129372)?,
+            ChildNumber::from_hardened_idx(1)?,
+            ChildNumber::from_hardened_idx(last_derivation_index)?,
+        ]);
+
         let xpriv = Xpriv::new_master(Network::Bitcoin, &self.seed)?;
 
         let derived_key = xpriv.derive_priv(&SECP256K1, &derivation_path)?.private_key;
