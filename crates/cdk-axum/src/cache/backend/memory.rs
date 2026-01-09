@@ -11,6 +11,7 @@ use crate::cache::{HttpCacheKey, HttpCacheStorage, DEFAULT_TTI_SECS, DEFAULT_TTL
 ///
 /// The cache is limited to 10,000 entries and it is not shared between
 /// instances nor persisted.
+#[allow(missing_debug_implementations)]
 pub struct InMemoryHttpCache(pub Cache<HttpCacheKey, Vec<u8>>);
 
 impl Default for InMemoryHttpCache {

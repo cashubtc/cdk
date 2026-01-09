@@ -8,6 +8,7 @@ use crate::proto::signatory_client::SignatoryClient;
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
 /// A client for the Signatory service.
+#[allow(missing_debug_implementations)]
 pub struct SignatoryRpcClient {
     client: SignatoryClient<tonic::transport::Channel>,
     url: String,

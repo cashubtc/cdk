@@ -47,6 +47,15 @@ pub struct CdkLdkNode {
     web_addr: Option<SocketAddr>,
 }
 
+impl std::fmt::Debug for CdkLdkNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CdkLdkNode")
+            .field("fee_reserve", &self.fee_reserve)
+            .field("web_addr", &self.web_addr)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Configuration for connecting to Bitcoin RPC
 ///
 /// Contains the necessary connection parameters for Bitcoin Core RPC interface.

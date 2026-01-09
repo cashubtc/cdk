@@ -22,6 +22,7 @@ use crate::event::MintEvent;
 
 /// Mint subtopics
 #[derive(Clone)]
+#[allow(missing_debug_implementations)]
 pub struct MintPubSubSpec {
     db: DynMintDatabase,
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
@@ -175,6 +176,7 @@ impl Spec for MintPubSubSpec {
 }
 
 /// PubsubManager
+#[allow(missing_debug_implementations)]
 pub struct PubSubManager(Pubsub<MintPubSubSpec>);
 
 impl PubSubManager {

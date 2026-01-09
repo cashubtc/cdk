@@ -79,6 +79,12 @@ pub struct Mint {
     task_state: Arc<Mutex<TaskState>>,
 }
 
+impl std::fmt::Debug for Mint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mint").finish_non_exhaustive()
+    }
+}
+
 /// State for managing background tasks
 #[derive(Default)]
 struct TaskState {
@@ -931,7 +937,9 @@ impl Mint {
                 .get_blind_signatures(&blinded_message)
                 .await?;
 
-            assert_eq!(blinded_signatures.len(), output_len);
+            if blinded_signatures.len() != output_len {
+                return Err(Error::Internal);
+            }
 
             for (blinded_message, blinded_signature) in
                 request.outputs.into_iter().zip(blinded_signatures)

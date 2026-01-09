@@ -331,7 +331,7 @@ impl SecondaryRepaymentQueue {
 }
 
 /// Fake Wallet
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FakeWallet {
     fee_reserve: FeeReserve,
     sender: tokio::sync::mpsc::Sender<WaitPaymentResponse>,
@@ -822,6 +822,10 @@ impl MintPayment for FakeWallet {
 }
 
 /// Create fake invoice
+///
+/// # Panics
+///
+/// Panics if the hardcoded secret key or payment hash bytes are invalid.
 #[instrument]
 pub fn create_fake_invoice(amount_msat: u64, description: String) -> Bolt11Invoice {
     let private_key = SecretKey::from_slice(

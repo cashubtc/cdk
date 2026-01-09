@@ -274,6 +274,7 @@ impl Saga {
 }
 
 /// Operation
+#[derive(Debug)]
 pub struct Operation {
     id: Uuid,
     kind: OperationKind,

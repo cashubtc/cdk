@@ -45,6 +45,15 @@ pub struct HttpCache {
     storage: Arc<Box<dyn HttpCacheStorage + Send + Sync>>,
 }
 
+impl std::fmt::Debug for HttpCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpCache")
+            .field("ttl", &self.ttl)
+            .field("tti", &self.tti)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for HttpCache {
     fn default() -> Self {
         Self::new(

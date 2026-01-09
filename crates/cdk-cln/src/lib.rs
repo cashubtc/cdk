@@ -57,6 +57,15 @@ pub struct Cln {
     kv_store: DynKVStore,
 }
 
+impl std::fmt::Debug for Cln {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cln")
+            .field("rpc_socket", &self.rpc_socket)
+            .field("fee_reserve", &self.fee_reserve)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Cln {
     /// Create new [`Cln`]
     pub async fn new(

@@ -167,6 +167,7 @@ where
 }
 
 /// Generic transaction handler for SQLite
+#[allow(missing_debug_implementations)]
 pub struct GenericTransactionHandler<W>(PhantomData<W>);
 
 #[async_trait::async_trait]

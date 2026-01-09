@@ -109,13 +109,13 @@ mod tests {
     }
 
     #[test]
-    pub fn test_invalid_length() {
+    fn test_invalid_length() {
         assert_eq!(decode("1").unwrap_err(), Error::OddLength);
         assert_eq!(decode("666f6f6261721").unwrap_err(), Error::OddLength);
     }
 
     #[test]
-    pub fn test_invalid_char() {
+    fn test_invalid_char() {
         assert_eq!(
             decode("66ag").unwrap_err(),
             Error::InvalidHexCharacter { c: 'g', index: 3 }

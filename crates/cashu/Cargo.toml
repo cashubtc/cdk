@@ -45,5 +45,25 @@ uuid = { workspace = true, features = ["js"], optional = true }
 [dev-dependencies]
 bip39.workspace = true
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+# pedantic = { level = "warn", priority = -1 }
+# nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+clone_on_ref_ptr = "warn"
+# missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+missing_safety_doc = "warn"
+large_enum_variant = "warn"
+redundant_else = "warn"
+redundant_closure_for_method_calls = "warn"
+unneeded_field_pattern = "warn"
+use_debug = "warn"
+
+[lints.rustdoc]
+missing_docs = "warn"
+bare_urls = "warn"
