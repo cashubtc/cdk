@@ -115,7 +115,7 @@ strum = "0.27.1"
 strum_macros = "0.27.1"
 rustls = { version = "0.23.27", default-features = false, features = ["ring"] }
 prometheus = { version = "0.13.4", features = ["process"], default-features = false }
-nostr-sdk = { version = "0.43.0", default-features = false, features = [
+nostr-sdk = { version = "0.44.1", default-features = false, features = [
     "nip04",
     "nip44",
     "nip59"
