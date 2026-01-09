@@ -1,0 +1,126 @@
+name: Merge Queue
+
+on:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  pre-commit-checks:
+    name: "Cargo fmt, typos"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+          installCommand: nix profile install nixpkgs#cachix
+        continue-on-error: true
+      - name: Cargo fmt
+        run: nix develop -i -L .#stable --command cargo fmt --check
+      - name: typos
+        run: nix develop -i -L .#stable --command typos
+
+  tests:
+    name: "Tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Run workspace tests
+        run: nix develop -i -L .#stable --command bash -c "start-postgres && cargo test --workspace --exclude cdk-integration-tests"
+
+  # Discover MSRV checks from flake - single source of truth
+  discover-msrv-checks:
+    name: "Discover MSRV checks"
+    runs-on: self-hosted
+    timeout-minutes: 5
+    outputs:
+      checks: ${{ steps.checks.outputs.checks }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Get MSRV check names
+        id: checks
+        run: |
+          # Get all MSRV check names (prefixed with "msrv-")
+          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "msrv-") (builtins.attrNames attrs)' --json)
+          echo "checks=$checks" >> $GITHUB_OUTPUT
+          echo "Found MSRV checks: $checks"
+
+  msrv-build:
+    name: "MSRV: ${{ matrix.check }}"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: [pre-commit-checks, discover-msrv-checks]
+    strategy:
+      fail-fast: true
+      matrix:
+        check: ${{ fromJson(needs.discover-msrv-checks.outputs.checks) }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build
+        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
+
+  # Discover WASM checks from flake - single source of truth
+  discover-wasm-checks:
+    name: "Discover WASM checks"
+    runs-on: self-hosted
+    timeout-minutes: 5
+    outputs:
+      checks: ${{ steps.checks.outputs.checks }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Get WASM check names
+        id: checks
+        run: |
+          # Get all WASM check names (prefixed with "wasm-")
+          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "wasm-") (builtins.attrNames attrs)' --json)
+          echo "checks=$checks" >> $GITHUB_OUTPUT
+          echo "Found WASM checks: $checks"
+
+  check-wasm:
+    name: "WASM: ${{ matrix.check }}"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: [pre-commit-checks, discover-wasm-checks]
+    strategy:
+      fail-fast: true
+      matrix:
+        check: ${{ fromJson(needs.discover-wasm-checks.outputs.checks) }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build WASM
+        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
