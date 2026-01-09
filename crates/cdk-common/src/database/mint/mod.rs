@@ -36,9 +36,9 @@ pub use super::kvstore::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeltRequestInfo {
     /// Total amount of all input proofs in the melt request
-    pub inputs_amount: Amount,
+    pub inputs_amount: Amount<CurrencyUnit>,
     /// Fee amount associated with the input proofs
-    pub inputs_fee: Amount,
+    pub inputs_fee: Amount<CurrencyUnit>,
     /// Blinded messages for change outputs
     pub change_outputs: Vec<BlindedMessage>,
 }
@@ -99,8 +99,8 @@ pub trait QuotesTransaction {
     async fn add_melt_request(
         &mut self,
         quote_id: &QuoteId,
-        inputs_amount: Amount,
-        inputs_fee: Amount,
+        inputs_amount: Amount<CurrencyUnit>,
+        inputs_fee: Amount<CurrencyUnit>,
     ) -> Result<(), Self::Err>;
 
     /// Add blinded_messages for a quote_id

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
-use cdk_common::amount::{to_unit, Amount};
+use cdk_common::amount::Amount;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
@@ -271,9 +271,8 @@ impl MintPayment for Cln {
 
                             let response = WaitPaymentResponse {
                                 payment_identifier: request_lookup_id,
-                                payment_amount: amount_msats.msat().into(),
-                                unit: CurrencyUnit::Msat,
-                                payment_id: payment_hash.to_string()
+                                payment_amount: Amount::new(amount_msats.msat(), CurrencyUnit::Msat),
+                                payment_id: payment_hash.to_string(),
                             };
                             tracing::info!("CLN: Created WaitPaymentResponse with amount {} msats", amount_msats.msat());
                             let event = Event::PaymentReceived(response);
@@ -334,11 +333,12 @@ impl MintPayment for Cln {
                         .into()
                 };
                 // Convert to target unit
-                let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+                let amount =
+                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
 
                 // Calculate fee
                 let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
                 let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
@@ -347,9 +347,8 @@ impl MintPayment for Cln {
                         *bolt11_options.bolt11.payment_hash().as_ref(),
                     )),
                     amount,
-                    fee: fee.into(),
+                    fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -368,20 +367,19 @@ impl MintPayment for Cln {
                 };
 
                 // Convert to target unit
-                let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+                let amount = Amount::new(amount_msat, CurrencyUnit::Msat).convert_to(unit)?;
 
                 // Calculate fee
                 let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
                 let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: None,
                     amount,
-                    fee: fee.into(),
+                    fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
         }
@@ -521,15 +519,14 @@ impl MintPayment for Cln {
                 };
 
                 MakePaymentResponse {
-                    payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                     payment_lookup_id: payment_identifier,
+                    payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                     status,
-                    total_spent: to_unit(
+                    total_spent: Amount::new(
                         pay_response.amount_sent_msat.msat(),
-                        &CurrencyUnit::Msat,
-                        unit,
-                    )?,
-                    unit: unit.clone(),
+                        CurrencyUnit::Msat,
+                    )
+                    .convert_to(unit)?,
                 }
             }
             Err(err) => {
@@ -562,8 +559,10 @@ impl MintPayment for Cln {
 
                 let label = Uuid::new_v4().to_string();
 
-                let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
-                let amount_msat = AmountOrAny::Amount(CLN_Amount::from_msat(amount.into()));
+                let amount_converted =
+                    Amount::new(amount.into(), unit.clone()).convert_to(&CurrencyUnit::Msat)?;
+                let amount_msat =
+                    AmountOrAny::Amount(CLN_Amount::from_msat(amount_converted.value()));
 
                 let invoice_response = cln_client
                     .call_typed(&InvoiceRequest {
@@ -604,9 +603,10 @@ impl MintPayment for Cln {
                 // Match like this until we change to option
                 let amount = match amount {
                     Some(amount) => {
-                        let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+                        let amount = Amount::new(amount.into(), unit.clone())
+                            .convert_to(&CurrencyUnit::Msat)?;
 
-                        amount.to_string()
+                        amount.value().to_string()
                     }
                     None => "any".to_string(),
                 };
@@ -711,13 +711,13 @@ impl MintPayment for Cln {
             .filter(|p| p.amount_msat.is_some()) // Filter out invoices without an amount
             .map(|p| WaitPaymentResponse {
                 payment_identifier: payment_identifier.clone(),
-                payment_amount: p
-                    .amount_msat
-                    // Safe to expect since we filtered for Some
-                    .expect("We have filter out those without amounts")
-                    .msat()
-                    .into(),
-                unit: CurrencyUnit::Msat,
+                payment_amount: Amount::new(
+                    p.amount_msat
+                        // Safe to expect since we filtered for Some
+                        .expect("We have filter out those without amounts")
+                        .msat(),
+                    CurrencyUnit::Msat,
+                ),
                 payment_id: p.payment_hash.to_string(),
             })
             .collect())
@@ -761,16 +761,16 @@ impl MintPayment for Cln {
                     status,
                     total_spent: pays_response
                         .amount_sent_msat
-                        .map_or(Amount::ZERO, |a| a.msat().into()),
-                    unit: CurrencyUnit::Msat,
+                        .map_or(Amount::new(0, CurrencyUnit::Msat), |a| {
+                            Amount::new(a.msat(), CurrencyUnit::Msat)
+                        }),
                 })
             }
             None => Ok(MakePaymentResponse {
                 payment_lookup_id: payment_identifier.clone(),
                 payment_proof: None,
                 status: MeltQuoteState::Unknown,
-                total_spent: Amount::ZERO,
-                unit: CurrencyUnit::Msat,
+                total_spent: Amount::new(0, CurrencyUnit::Msat),
             }),
         }
     }

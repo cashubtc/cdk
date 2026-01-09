@@ -4,7 +4,7 @@ use std::sync::Arc;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
-use cdk_common::{database, Amount, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
+use cdk_common::{database, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tokio::sync::Mutex;
 use tracing::instrument;
 
@@ -150,27 +150,37 @@ impl<'a> SwapSaga<'a, Initial> {
     ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
         let mut tx = self.db.begin_transaction().await?;
 
+        let output_verification = self
+            .mint
+            .verify_outputs(&mut tx, blinded_messages)
+            .await
+            .map_err(|err| {
+                tracing::debug!("Output verification failed: {:?}", err);
+                err
+            })?;
+
         // Verify balance within the transaction
         self.mint
             .verify_transaction_balanced(
-                &mut tx,
                 input_verification.clone(),
+                output_verification.clone(),
                 input_proofs,
-                blinded_messages,
             )
             .await?;
 
         // Calculate amounts to create Operation
         let total_redeemed = input_verification.amount;
-        let total_issued = Amount::try_sum(blinded_messages.iter().map(|bm| bm.amount))?;
+        let total_issued = output_verification.amount;
+
         let fee_breakdown = self.mint.get_proofs_fee(input_proofs).await?;
 
         // Create Operation with actual amounts now that we know them
+        // Convert typed amounts to untyped for Operation::new
         let operation = Operation::new(
             self.state_data.operation_id,
             cdk_common::mint::OperationKind::Swap,
-            total_issued,
-            total_redeemed,
+            total_issued.clone().into(),
+            total_redeemed.clone().into(),
             fee_breakdown.total,
             None, // complete_at
             None, // payment_method (not applicable for swap)

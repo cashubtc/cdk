@@ -263,12 +263,13 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
     type Error = Error;
 
     fn try_from(melt_quote: crate::mint::MeltQuote) -> Result<Self, Self::Error> {
-        match melt_quote.request {
+        let fee_reserve = melt_quote.fee_reserve();
+        match &melt_quote.request {
             MeltPaymentRequest::Bolt11 { bolt11 } => Ok(OutgoingPaymentOptions::Bolt11(Box::new(
                 Bolt11OutgoingPaymentOptions {
-                    max_fee_amount: Some(melt_quote.fee_reserve),
+                    max_fee_amount: Some(fee_reserve.to_owned().into()),
                     timeout_secs: None,
-                    bolt11,
+                    bolt11: bolt11.clone(),
                     melt_options: melt_quote.options,
                 },
             ))),
@@ -281,18 +282,18 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
 
                 Ok(OutgoingPaymentOptions::Bolt12(Box::new(
                     Bolt12OutgoingPaymentOptions {
-                        max_fee_amount: Some(melt_quote.fee_reserve),
+                        max_fee_amount: Some(fee_reserve.clone().into()),
                         timeout_secs: None,
-                        offer: *offer,
+                        offer: *offer.clone(),
                         melt_options,
                     },
                 )))
             }
             MeltPaymentRequest::Custom { method, request } => Ok(OutgoingPaymentOptions::Custom(
                 Box::new(CustomOutgoingPaymentOptions {
-                    method,
-                    request,
-                    max_fee_amount: Some(melt_quote.fee_reserve),
+                    method: method.to_string(),
+                    request: request.to_string(),
+                    max_fee_amount: Some(melt_quote.fee_reserve().into()),
                     timeout_secs: None,
                     melt_options: melt_quote.options,
                     extra_json: None,
@@ -385,26 +386,30 @@ impl Default for Event {
         // The actual processing will filter these out
         Event::PaymentReceived(WaitPaymentResponse {
             payment_identifier: PaymentIdentifier::CustomId("default".to_string()),
-            payment_amount: Amount::from(0),
-            unit: CurrencyUnit::Msat,
+            payment_amount: Amount::new(0, CurrencyUnit::Msat),
             payment_id: "default".to_string(),
         })
     }
 }
 
 /// Wait any invoice response
-#[derive(Debug, Clone, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash)]
 pub struct WaitPaymentResponse {
     /// Request look up id
     /// Id that relates the quote and payment request
     pub payment_identifier: PaymentIdentifier,
-    /// Payment amount
-    pub payment_amount: Amount,
-    /// Unit
-    pub unit: CurrencyUnit,
+    /// Payment amount (typed with unit for compile-time safety)
+    pub payment_amount: Amount<CurrencyUnit>,
     /// Unique id of payment
     // Payment hash
     pub payment_id: String,
+}
+
+impl WaitPaymentResponse {
+    /// Get the currency unit
+    pub fn unit(&self) -> &CurrencyUnit {
+        self.payment_amount.unit()
+    }
 }
 
 /// Create incoming payment response
@@ -425,7 +430,7 @@ pub struct CreateIncomingPaymentResponse {
 }
 
 /// Payment response
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct MakePaymentResponse {
     /// Payment hash
     pub payment_lookup_id: PaymentIdentifier,
@@ -433,25 +438,35 @@ pub struct MakePaymentResponse {
     pub payment_proof: Option<String>,
     /// Status
     pub status: MeltQuoteState,
-    /// Total Amount Spent
-    pub total_spent: Amount,
-    /// Unit of total spent
-    pub unit: CurrencyUnit,
+    /// Total Amount Spent (typed with unit for compile-time safety)
+    pub total_spent: Amount<CurrencyUnit>,
+}
+
+impl MakePaymentResponse {
+    /// Get the currency unit
+    pub fn unit(&self) -> &CurrencyUnit {
+        self.total_spent.unit()
+    }
 }
 
 /// Payment quote response
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct PaymentQuoteResponse {
     /// Request look up id
     pub request_lookup_id: Option<PaymentIdentifier>,
-    /// Amount
-    pub amount: Amount,
-    /// Fee required for melt
-    pub fee: Amount,
-    /// Currency unit of `amount` and `fee`
-    pub unit: CurrencyUnit,
+    /// Amount (typed with unit for compile-time safety)
+    pub amount: Amount<CurrencyUnit>,
+    /// Fee required for melt (typed with unit for compile-time safety)
+    pub fee: Amount<CurrencyUnit>,
     /// Status
     pub state: MeltQuoteState,
+}
+
+impl PaymentQuoteResponse {
+    /// Get the currency unit
+    pub fn unit(&self) -> &CurrencyUnit {
+        self.amount.unit()
+    }
 }
 
 /// BOLT11 settings
@@ -591,8 +606,8 @@ where
         let success = result.is_ok();
 
         if let Ok(ref quote) = result {
-            let amount: f64 = u64::from(quote.amount) as f64;
-            let fee: f64 = u64::from(quote.fee) as f64;
+            let amount: f64 = quote.amount.value() as f64;
+            let fee: f64 = quote.fee.value() as f64;
             METRICS.record_lightning_payment(amount, fee);
         }
 
