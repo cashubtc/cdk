@@ -37,9 +37,10 @@ exclude_re = [
     # amount.rs:331 - Sub returning Default/0 causes infinite loops
     "crates/cashu/src/amount.rs:331:.*replace.*sub.*with Default",
 
-    # Trivial getters - not worth testing
+    # Trivial getters/setters - not worth testing
     "FeeAndAmounts::fee",
     "FeeAndAmounts::amounts",
+    "BlindedMessage::witness",
 
     # Trivial trait implementations - unrealistic mutations
     "crates/cashu/src/amount.rs.*impl From<&u64> for Amount.*from",
