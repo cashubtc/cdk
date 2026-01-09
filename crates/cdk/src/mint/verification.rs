@@ -94,10 +94,7 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
-        Ok(keyset_units
-            .into_iter()
-            .next()
-            .expect("Length is check above"))
+        keyset_units.into_iter().next().ok_or(Error::Internal)
     }
 
     /// Verify input keyset
@@ -135,10 +132,7 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
-        Ok(keyset_units
-            .into_iter()
-            .next()
-            .expect("Length is check above"))
+        keyset_units.into_iter().next().ok_or(Error::Internal)
     }
 
     /// Verifies that the outputs have not already been signed

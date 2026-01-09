@@ -30,6 +30,7 @@ enum Request {
 /// This implements the actor model, ensuring the Signatory and their private key is moved from the
 /// main thread to their own tokio task, and communicates with the main program by passing messages,
 /// an extra layer of security to move the keys to another layer.
+#[allow(missing_debug_implementations)]
 pub struct Service {
     pipeline: mpsc::Sender<Request>,
     runner: Option<JoinHandle<()>>,

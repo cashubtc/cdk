@@ -11,7 +11,7 @@ use crate::{GetQuoteTtlRequest, UpdateQuoteTtlRequest};
 /// This command configures how long mint and melt quotes remain valid before
 /// automatically expiring. Quote TTL settings help manage pending operations and
 /// resource usage on the mint.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct UpdateQuoteTtlCommand {
     /// The TTL (in seconds) for mint quotes
     #[arg(long)]
@@ -44,7 +44,7 @@ pub async fn update_quote_ttl(
 /// Command to get the current time-to-live (TTL) settings for quotes
 ///
 /// This command retrieves the current TTL settings for mint and melt quotes.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct GetQuoteTtlCommand {}
 
 /// Executes the get_quote_ttl command against the mint server

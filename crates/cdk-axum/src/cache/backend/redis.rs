@@ -14,6 +14,15 @@ pub struct HttpCacheRedis {
     client: redis::Client,
 }
 
+impl std::fmt::Debug for HttpCacheRedis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpCacheRedis")
+            .field("cache_ttl", &self.cache_ttl)
+            .field("prefix", &self.prefix)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Configuration for the Redis cache storage.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {

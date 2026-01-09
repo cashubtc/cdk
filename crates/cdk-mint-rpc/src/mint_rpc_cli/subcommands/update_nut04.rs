@@ -11,7 +11,7 @@ use crate::{MintMethodOptions, UpdateNut04Request};
 /// NUT-04 defines how tokens are minted in exchange for external payments. This command
 /// allows configuring the available token units, payment methods, amounts, and other settings
 /// for the minting process.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct UpdateNut04Command {
     /// The token unit type (e.g., "sat")
     #[arg(short, long)]

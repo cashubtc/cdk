@@ -24,6 +24,7 @@ pub trait SubscriptionRequest {
 }
 
 /// Active Subscription
+#[allow(missing_debug_implementations)]
 pub struct ActiveSubscription<S>
 where
     S: Spec + 'static,

@@ -44,6 +44,7 @@ where
 }
 
 /// SQL Transaction Writer
+#[allow(missing_debug_implementations)]
 pub struct SQLWalletTransaction<RM>
 where
     RM: DatabasePool + 'static,

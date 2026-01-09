@@ -11,7 +11,7 @@ use crate::{MeltMethodOptions, UpdateNut05Request};
 /// NUT-05 defines how tokens are melted (redeemed) in exchange for external payments.
 /// This command allows configuring the available token units, payment methods, amounts,
 /// and other settings for the melting process.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct UpdateNut05Command {
     /// The token unit type (e.g., "sat")
     #[arg(short, long)]

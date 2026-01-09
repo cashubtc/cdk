@@ -33,6 +33,14 @@ pub struct PaymentProcessorServer {
     handle: Option<Arc<JoinHandle<anyhow::Result<()>>>>,
 }
 
+impl std::fmt::Debug for PaymentProcessorServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaymentProcessorServer")
+            .field("socket_addr", &self.socket_addr)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PaymentProcessorServer {
     /// Create new [`PaymentProcessorServer`]
     pub fn new(

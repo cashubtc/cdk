@@ -181,6 +181,10 @@ impl MultiMintWallet {
     }
 
     /// Remove mint from MultiMintWallet
+    ///
+    /// # Panics
+    ///
+    /// Panics if the hardcoded fallback URL is invalid (should never happen).
     pub async fn remove_mint(&self, mint_url: MintUrl) {
         let url_str = mint_url.url.clone();
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into().unwrap_or_else(|_| {

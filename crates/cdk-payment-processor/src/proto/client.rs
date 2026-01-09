@@ -29,6 +29,13 @@ pub struct PaymentProcessorClient {
     cancel_incoming_payment_listener: CancellationToken,
 }
 
+impl std::fmt::Debug for PaymentProcessorClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaymentProcessorClient")
+            .finish_non_exhaustive()
+    }
+}
+
 impl PaymentProcessorClient {
     /// Payment Processor
     pub async fn new(addr: &str, port: u16, tls_dir: Option<PathBuf>) -> anyhow::Result<Self> {

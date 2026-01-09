@@ -62,6 +62,14 @@ pub struct Lnd {
     unit: CurrencyUnit,
 }
 
+impl std::fmt::Debug for Lnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lnd")
+            .field("fee_reserve", &self.fee_reserve)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Lnd {
     /// Maximum number of attempts at a partial payment
     pub const MAX_ROUTE_RETRIES: usize = 50;

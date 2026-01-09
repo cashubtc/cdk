@@ -66,6 +66,11 @@ impl Melted {
     }
 
     /// Total amount melted
+    ///
+    /// # Panics
+    ///
+    /// Panics if the sum of `amount` and `fee_paid` overflows. This should not
+    /// happen as the fee is validated when calculated.
     pub fn total_amount(&self) -> Amount {
         self.amount
             .checked_add(self.fee_paid)

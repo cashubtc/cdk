@@ -92,7 +92,7 @@ impl fmt::Display for KeySetVersion {
 }
 
 /// Keyset ID bytes
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum IdBytes {
     /// Bytes for v1
@@ -157,6 +157,11 @@ impl Id {
     /// 4 - If a final expiration is specified, convert it into a radix-10 string and concatenate it (e.g "final_expiry:1896187313")
     /// 5 - HASH_SHA256 the concatenated byte array and take the first 31 bytes
     /// 6 - prefix it with a keyset ID version byte
+    ///
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances as the hash output
+    /// is always valid hex and the correct length.
     pub fn v2_from_data(map: &Keys, unit: &CurrencyUnit, expiry: Option<u64>) -> Self {
         let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
         keys.sort_by_key(|(amt, _v)| *amt);
@@ -198,6 +203,11 @@ impl Id {
     ///   3. HASH_SHA256 the concatenated public keys
     ///   4. take the first 14 characters of the hex-encoded hash
     ///   5. prefix it with a keyset ID version byte
+    ///
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances as the hash output
+    /// is always valid hex and the correct length.
     pub fn v1_from_keys(map: &Keys) -> Self {
         let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
         keys.sort_by_key(|(amt, _v)| *amt);
@@ -573,6 +583,11 @@ pub struct MintKeySet {
 #[cfg(feature = "mint")]
 impl MintKeySet {
     /// Generate new [`MintKeySet`]
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the RNG fails or if key derivation fails,
+    /// which should not happen under normal circumstances.
     pub fn generate<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         xpriv: Xpriv,
@@ -614,6 +629,11 @@ impl MintKeySet {
     }
 
     /// Generate new [`MintKeySet`] from seed
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the RNG fails or if key derivation fails,
+    /// which should not happen under normal circumstances.
     pub fn generate_from_seed<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         seed: &[u8],
@@ -637,6 +657,11 @@ impl MintKeySet {
     }
 
     /// Generate new [`MintKeySet`] from xpriv
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the RNG fails or if key derivation fails,
+    /// which should not happen under normal circumstances.
     pub fn generate_from_xpriv<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         xpriv: Xpriv,

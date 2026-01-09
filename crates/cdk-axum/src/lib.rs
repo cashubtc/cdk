@@ -58,6 +58,7 @@ use swagger_imports::*;
 
 /// CDK Mint State
 #[derive(Clone)]
+#[allow(missing_debug_implementations)]
 pub struct MintState {
     mint: Arc<Mint>,
     cache: Arc<cache::HttpCache>,
@@ -91,6 +92,7 @@ macro_rules! define_api_doc {
             )
         )]
         /// Swagger api docs
+        #[allow(missing_debug_implementations)]
         pub struct ApiDoc;
     };
 }

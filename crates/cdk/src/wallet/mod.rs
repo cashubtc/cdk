@@ -209,10 +209,13 @@ impl Wallet {
     }
 
     /// Subscribe to events
-    pub async fn subscribe<T: Into<WalletParams>>(&self, query: T) -> ActiveSubscription {
+    pub async fn subscribe<T: Into<WalletParams>>(
+        &self,
+        query: T,
+    ) -> Result<ActiveSubscription, Error> {
         self.subscription
             .subscribe(self.mint_url.clone(), query.into())
-            .expect("FIXME")
+            .map_err(|e| Error::SubscriptionError(e.to_string()))
     }
 
     /// Fee required to redeem proof set
@@ -508,7 +511,13 @@ impl Wallet {
 
                 // the response outputs and premint secrets should be the same after filtering
                 // blinded messages the mint did not have signatures for
-                assert_eq!(response.outputs.len(), premint_secrets.len());
+                if response.outputs.len() != premint_secrets.len() {
+                    return Err(Error::InvalidMintResponse(format!(
+                        "restore response outputs ({}) does not match premint secrets ({})",
+                        response.outputs.len(),
+                        premint_secrets.len()
+                    )));
+                }
 
                 let proofs = construct_proofs(
                     response.signatures,

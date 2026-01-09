@@ -521,7 +521,7 @@ impl TryFrom<Value> for SettingsResponse {
 /// This wrapper implements the Decorator pattern to collect metrics on all
 /// MintPayment trait methods. It wraps any existing MintPayment implementation
 /// and automatically records timing and operation metrics.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 #[cfg(feature = "prometheus")]
 pub struct MetricsMintPayment<T> {
     inner: T,

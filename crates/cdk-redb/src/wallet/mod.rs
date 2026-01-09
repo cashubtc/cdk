@@ -134,6 +134,7 @@ pub struct WalletRedbDatabase {
 }
 
 /// Redb Wallet Transaction
+#[allow(missing_debug_implementations)]
 pub struct RedbWalletTransaction {
     write_txn: Option<redb::WriteTransaction>,
 }

@@ -10,7 +10,7 @@ use crate::UpdateNut04QuoteRequest;
 ///
 /// NUT-04 quotes represent pending mint operations. This command allows updating
 /// the state of a quote (e.g., marking it as paid) to process the minting of tokens.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct UpdateNut04QuoteCommand {
     /// The ID of the quote to update
     quote_id: String,

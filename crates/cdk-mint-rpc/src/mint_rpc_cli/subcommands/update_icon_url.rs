@@ -10,7 +10,7 @@ use crate::UpdateIconUrlRequest;
 ///
 /// This command sets a new icon URL for the mint, which is used to visually
 /// identify the mint in wallet applications and other client interfaces.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct UpdateIconUrlCommand {
     /// The URL to the mint's icon image
     name: String,

@@ -10,7 +10,7 @@ use crate::UpdateContactRequest;
 ///
 /// This command adds a new contact method with associated information to the mint.
 /// Contact methods allow users to reach the mint operators through various channels.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct AddContactCommand {
     /// The contact method type (e.g., "email", "twitter", "telegram")
     method: String,
@@ -43,7 +43,7 @@ pub async fn add_contact(
 ///
 /// This command removes an existing contact method and its associated information
 /// from the mint's available contact methods.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct RemoveContactCommand {
     /// The contact method type to remove (e.g., "email", "twitter", "telegram")
     method: String,

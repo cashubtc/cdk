@@ -416,7 +416,13 @@ impl AuthWallet {
 
         // Verify the signature DLEQ is valid
         {
-            assert!(mint_res.signatures.len() == premint_secrets.secrets.len());
+            if mint_res.signatures.len() != premint_secrets.secrets.len() {
+                return Err(Error::InvalidMintResponse(format!(
+                    "mint auth signatures ({}) does not match secrets sent ({})",
+                    mint_res.signatures.len(),
+                    premint_secrets.secrets.len()
+                )));
+            }
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
                 let keys = self.load_keyset_keys(sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;

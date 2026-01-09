@@ -38,6 +38,7 @@ type ActiveSubscriptions<S> =
 type CacheEvent<S> = HashMap<<<S as Spec>::Event as Event>::Topic, <S as Spec>::Event>;
 
 /// Subscription consumer
+#[allow(missing_debug_implementations)]
 pub struct Consumer<T>
 where
     T: Transport + 'static,
@@ -58,6 +59,7 @@ where
 }
 
 /// Remote consumer
+#[allow(missing_debug_implementations)]
 pub struct RemoteActiveConsumer<T>
 where
     T: Transport + 'static,
@@ -106,6 +108,7 @@ where
 
 /// Struct to relay events from Poll and Streams from the external subscription to the local
 /// subscribers
+#[allow(missing_debug_implementations)]
 pub struct InternalRelay<S>
 where
     S: Spec + 'static,
@@ -398,6 +401,7 @@ where
 pub type SubscribeMessage<S> = (<S as Spec>::SubscriptionId, <S as Spec>::Topic);
 
 /// Messages sent from the [`Consumer`] to the [`Transport`] background loop.
+#[allow(missing_debug_implementations)]
 pub enum StreamCtrl<S>
 where
     S: Spec + 'static,

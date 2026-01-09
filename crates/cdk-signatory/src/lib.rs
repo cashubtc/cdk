@@ -5,8 +5,6 @@
 //!
 //! Even if it is embedded in the same process, the keys are not accessible from the outside of this
 //! module, all communication is done through the Signatory trait and the signatory manager.
-#![deny(missing_docs)]
-#![deny(warnings)]
 
 #[cfg(feature = "grpc")]
 mod proto;
