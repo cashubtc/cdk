@@ -14,9 +14,11 @@ use crate::wallet::types::{MintQuote, TransactionDirection};
 use crate::wallet::Wallet;
 
 /// KV store namespace for npubcash-related data
-const NPUBCASH_KV_NAMESPACE: &str = "npubcash";
+pub const NPUBCASH_KV_NAMESPACE: &str = "npubcash";
 /// KV store key for the last fetch timestamp (stored as u64 Unix timestamp)
 const LAST_FETCH_TIMESTAMP_KEY: &str = "last_fetch_timestamp";
+/// KV store key for the active mint URL
+pub const ACTIVE_MINT_KEY: &str = "active_mint";
 
 impl Wallet {
     /// Enable NpubCash integration for this wallet
@@ -165,72 +167,25 @@ impl Wallet {
         self.process_npubcash_quotes(quotes).await
     }
 
-    /// Subscribe to NpubCash quote updates via polling and add them to the wallet
-    ///
-    /// This method polls for new quotes every 5 seconds and calls the callback
-    /// with newly added quotes. This function runs indefinitely and only returns
-    /// on error.
+    /// Create a stream that continuously polls NpubCash and yields proofs as payments arrive
     ///
     /// # Arguments
     ///
-    /// * `callback` - Function to call when new quotes are found and added to wallet
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if NpubCash is not enabled or if fetching/processing quotes fails
-    #[instrument(skip(self, callback))]
-    pub async fn subscribe_npubcash_updates<F>(&self, callback: F) -> Result<(), Error>
-    where
-        F: Fn(Vec<MintQuote>) + Send + Sync + 'static,
-    {
-        use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-        tracing::info!("Starting NpubCash quote polling");
-
-        // Verify NpubCash is enabled
-        let client = self.get_npubcash_client().await?;
-
-        // Get initial timestamp
-        let mut last_timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| Error::Custom(e.to_string()))?
-            .as_secs();
-
-        loop {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-
-            // Fetch raw npubcash quotes
-            match client.get_quotes(Some(last_timestamp)).await {
-                Ok(npubcash_quotes) => {
-                    if !npubcash_quotes.is_empty() {
-                        tracing::debug!("Found {} new quotes", npubcash_quotes.len());
-
-                        // Update timestamp to most recent quote
-                        if let Some(max_ts) = npubcash_quotes.iter().map(|q| q.created_at).max() {
-                            last_timestamp = max_ts;
-                        }
-
-                        // Convert quotes and add to wallet
-                        let mut mint_quotes = Vec::with_capacity(npubcash_quotes.len());
-                        for quote in npubcash_quotes {
-                            match self.add_npubcash_mint_quote(quote).await {
-                                Ok(Some(mint_quote)) => mint_quotes.push(mint_quote),
-                                Ok(None) => (),
-                                Err(e) => tracing::error!("Failed to add NpubCash quote: {}", e),
-                            }
-                        }
-
-                        if !mint_quotes.is_empty() {
-                            callback(mint_quotes);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!("Error polling quotes: {}", e);
-                    // Continue polling despite errors
-                }
-            }
-        }
+    /// * `split_target` - How to split the minted proofs
+    /// * `spending_conditions` - Optional spending conditions for the minted proofs
+    /// * `poll_interval` - How often to check for new quotes
+    pub fn npubcash_proof_stream(
+        &self,
+        split_target: cdk_common::amount::SplitTarget,
+        spending_conditions: Option<crate::nuts::SpendingConditions>,
+        poll_interval: std::time::Duration,
+    ) -> crate::wallet::streams::npubcash::WalletNpubCashProofStream {
+        crate::wallet::streams::npubcash::WalletNpubCashProofStream::new(
+            self.clone(),
+            poll_interval,
+            split_target,
+            spending_conditions,
+        )
     }
 
     /// Set the mint URL in NpubCash settings
@@ -332,15 +287,14 @@ impl Wallet {
     ///
     /// * `timestamp` - Unix timestamp of the fetch
     async fn set_last_npubcash_fetch_timestamp(&self, timestamp: u64) -> Result<(), Error> {
-        let mut tx = self.localstore.begin_db_transaction().await?;
-        tx.kv_write(
-            NPUBCASH_KV_NAMESPACE,
-            "",
-            LAST_FETCH_TIMESTAMP_KEY,
-            &timestamp.to_be_bytes(),
-        )
-        .await?;
-        tx.commit().await?;
+        self.localstore
+            .kv_write(
+                NPUBCASH_KV_NAMESPACE,
+                "",
+                LAST_FETCH_TIMESTAMP_KEY,
+                &timestamp.to_be_bytes(),
+            )
+            .await?;
         Ok(())
     }
 }

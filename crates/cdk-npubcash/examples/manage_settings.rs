@@ -39,9 +39,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("✓ Successfully set mint URL");
             println!(
                 "  Current mint URL: {}",
-                response.data.mint_url.as_deref().unwrap_or("None")
+                response.data.user.mint_url.as_deref().unwrap_or("None")
             );
-            println!("  Lock quotes: {}", response.data.lock_quotes);
+            println!("  Lock quotes: {}", response.data.user.lock_quote);
             println!("\nNote: Quotes are always locked by default for security.");
         }
         Err(e) => {

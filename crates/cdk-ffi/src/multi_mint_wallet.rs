@@ -351,7 +351,12 @@ impl MultiMintWallet {
 
         let proofs = self
             .inner
-            .mint(&cdk_mint_url, &quote_id, conditions)
+            .mint(
+                &cdk_mint_url,
+                &quote_id,
+                cdk::amount::SplitTarget::default(),
+                conditions,
+            )
             .await?;
         Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
@@ -368,6 +373,7 @@ impl MultiMintWallet {
     ) -> Result<Proofs, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
         let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
+        let timeout = std::time::Duration::from_secs(timeout_secs);
 
         let proofs = self
             .inner
@@ -376,7 +382,7 @@ impl MultiMintWallet {
                 &quote_id,
                 split_target.into(),
                 conditions,
-                timeout_secs,
+                timeout,
             )
             .await?;
         Ok(proofs.into_iter().map(|p| p.into()).collect())

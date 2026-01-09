@@ -157,7 +157,11 @@ name = "token-proofs"
 required-features = ["wallet"]
 
 [[example]]
-name = "npubcash-poll"
+name = "npubcash"
+required-features = ["npubcash"]
+
+[[example]]
+name = "multimint-npubcash"
 required-features = ["npubcash"]
 
 [dev-dependencies]

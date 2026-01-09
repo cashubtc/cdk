@@ -80,8 +80,8 @@
 //! # let client = NpubCashClient::new(base_url, auth_provider);
 //! // Set mint URL
 //! let response = client.set_mint_url("https://my-mint.com").await?;
-//! println!("Mint URL: {:?}", response.data.mint_url);
-//! println!("Lock quotes: {}", response.data.lock_quotes);
+//! println!("Mint URL: {:?}", response.data.user.mint_url);
+//! println!("Lock quote: {}", response.data.user.lock_quote);
 //! # Ok(())
 //! # }
 //! ```
