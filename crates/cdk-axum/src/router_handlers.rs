@@ -3,7 +3,7 @@ use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use cdk::error::{ErrorCode, ErrorResponse};
+use cdk::error::ErrorResponse;
 #[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
@@ -341,38 +341,6 @@ where
     T: Into<ErrorResponse>,
 {
     let err_response: ErrorResponse = error.into();
-    let status_code = match err_response.code {
-        // Client errors (400 Bad Request)
-        ErrorCode::TokenAlreadySpent
-        | ErrorCode::TokenPending
-        | ErrorCode::QuoteNotPaid
-        | ErrorCode::QuoteExpired
-        | ErrorCode::QuotePending
-        | ErrorCode::KeysetNotFound
-        | ErrorCode::KeysetInactive
-        | ErrorCode::BlindedMessageAlreadySigned
-        | ErrorCode::UnsupportedUnit
-        | ErrorCode::TokensAlreadyIssued
-        | ErrorCode::MintingDisabled
-        | ErrorCode::InvoiceAlreadyPaid
-        | ErrorCode::TokenNotVerified
-        | ErrorCode::TransactionUnbalanced
-        | ErrorCode::AmountOutofLimitRange
-        | ErrorCode::WitnessMissingOrInvalid
-        | ErrorCode::DuplicateSignature
-        | ErrorCode::DuplicateInputs
-        | ErrorCode::DuplicateOutputs
-        | ErrorCode::MultipleUnits
-        | ErrorCode::UnitMismatch
-        | ErrorCode::ClearAuthRequired
-        | ErrorCode::BlindAuthRequired => StatusCode::BAD_REQUEST,
-
-        // Auth failures (401 Unauthorized)
-        ErrorCode::ClearAuthFailed | ErrorCode::BlindAuthFailed => StatusCode::UNAUTHORIZED,
-
-        // Lightning/payment errors and unknown errors (500 Internal Server Error)
-        ErrorCode::LightningError | ErrorCode::Unknown(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    };
-
-    (status_code, Json(err_response)).into_response()
+    // Per NUT-00 spec: "In case of an error, mints respond with the HTTP status code 400"
+    (StatusCode::BAD_REQUEST, Json(err_response)).into_response()
 }

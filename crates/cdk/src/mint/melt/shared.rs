@@ -8,12 +8,12 @@
 
 use cdk_common::database::{self, Acquired, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, State};
-use cdk_common::state::check_state_transition;
 use cdk_common::{Amount, Error, PublicKey, QuoteId};
 use cdk_signatory::signatory::SignatoryKeySet;
 
 use crate::mint::subscription::PubSubManager;
 use crate::mint::MeltQuote;
+use crate::Mint;
 
 /// Retrieves fee and amount configuration for the keyset matching the change outputs.
 ///
@@ -272,8 +272,8 @@ pub async fn process_melt_change(
 /// # Errors
 ///
 /// * [`Error::UnknownQuote`] if no quote exists with the given ID.
-/// * [`Error::Database(Duplicate)`] if another quote with the same lookup ID is already pending
-///   or paid, indicating a conflicting concurrent melt operation.
+/// * [`Error::PendingQuote`] (code 20005) if another quote with the same lookup ID is pending.
+/// * [`Error::RequestAlreadyPaid`] (code 20006) if another quote with the same lookup ID is paid.
 pub async fn load_melt_quotes_exclusively(
     tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     quote_id: &QuoteId,
@@ -294,17 +294,26 @@ pub async fn load_melt_quotes_exclusively(
 
     let quote = locked.target.ok_or(Error::UnknownQuote)?;
 
-    if locked.all_related.iter().any(|locked_quote| {
+    // Check if any sibling quote (same lookup_id) is already pending or paid
+    if let Some(conflict) = locked.all_related.iter().find(|locked_quote| {
         locked_quote.id != quote.id
             && (locked_quote.state == MeltQuoteState::Pending
                 || locked_quote.state == MeltQuoteState::Paid)
     }) {
         tracing::warn!(
-            "Cannot transition quote {} to Pending: another quote with lookup_id {:?} is already pending or paid",
+            "Cannot transition quote {} to Pending: another quote with lookup_id {:?} is already {:?}",
             quote.id,
             quote.request_lookup_id,
+            conflict.state,
         );
-        return Err(Error::Database(crate::cdk_database::Error::Duplicate));
+        // Return spec-compliant error codes:
+        // - 20005 (QuotePending) if sibling is Pending
+        // - 20006 (InvoiceAlreadyPaid) if sibling is Paid
+        return Err(match conflict.state {
+            MeltQuoteState::Pending => Error::PendingQuote,
+            MeltQuoteState::Paid => Error::RequestAlreadyPaid,
+            _ => unreachable!("Only Pending/Paid states reach this branch"),
+        });
     }
 
     Ok(quote)
@@ -393,28 +402,9 @@ pub async fn finalize_melt_core(
             .await?;
     }
 
-    for current_state in tx
-        .get_proofs_states(input_ys)
-        .await?
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or(Error::UnexpectedProofState)?
-    {
-        check_state_transition(current_state, State::Spent)
-            .map_err(|_| Error::UnexpectedProofState)?;
-    }
+    let mut proofs = tx.get_proofs(input_ys).await?;
 
-    // Mark input proofs as spent
-    match tx.update_proofs_states(input_ys, State::Spent).await {
-        Ok(_) => {}
-        Err(database::Error::AttemptUpdateSpentProof) => {
-            tracing::info!("Proofs for quote {} already marked as spent", quote.id);
-            return Ok(());
-        }
-        Err(err) => {
-            return Err(err.into());
-        }
-    }
+    Mint::update_proofs_state(tx, &mut proofs, State::Spent).await?;
 
     // Publish proof state changes
     for pk in input_ys.iter() {
