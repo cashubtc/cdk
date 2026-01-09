@@ -8,7 +8,7 @@
 
 use cdk_common::database::{self, Acquired, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, State};
-use cdk_common::{Amount, Error, PublicKey, QuoteId};
+use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
 use cdk_signatory::signatory::SignatoryKeySet;
 
 use crate::mint::subscription::PubSubManager;
@@ -183,9 +183,9 @@ pub async fn process_melt_change(
     mint: &super::super::Mint,
     db: &DynMintDatabase,
     quote_id: &QuoteId,
-    inputs_amount: Amount,
-    total_spent: Amount,
-    inputs_fee: Amount,
+    inputs_amount: Amount<CurrencyUnit>,
+    total_spent: Amount<CurrencyUnit>,
+    inputs_fee: Amount<CurrencyUnit>,
     change_outputs: Vec<BlindedMessage>,
 ) -> Result<
     (
@@ -203,13 +203,16 @@ pub async fn process_melt_change(
         return Ok((None, tx));
     }
 
-    let change_target = inputs_amount - total_spent - inputs_fee;
+    let change_target: Amount = inputs_amount
+        .checked_sub(&total_spent)?
+        .checked_sub(&inputs_fee)?
+        .into();
 
     // Get keyset configuration
     let fee_and_amounts = get_keyset_fee_and_amounts(&mint.keysets, &change_outputs);
 
     // Split change into denominations
-    let mut amounts = change_target.split(&fee_and_amounts);
+    let mut amounts: Vec<Amount> = change_target.split(&fee_and_amounts);
 
     if change_outputs.len() < amounts.len() {
         tracing::debug!(
@@ -363,27 +366,58 @@ pub async fn finalize_melt_core(
     pubsub: &PubSubManager,
     quote: &mut Acquired<MeltQuote>,
     input_ys: &[PublicKey],
-    inputs_amount: Amount,
-    inputs_fee: Amount,
-    total_spent: Amount,
+    inputs_amount: Amount<CurrencyUnit>,
+    inputs_fee: Amount<CurrencyUnit>,
+    total_spent: Amount<CurrencyUnit>,
     payment_preimage: Option<String>,
     payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
 ) -> Result<(), Error> {
     // Validate quote amount vs payment amount
-    if quote.amount > total_spent {
+    if quote.amount() > total_spent {
         tracing::error!(
             "Payment amount {} is less than quote amount {} for quote {}",
             total_spent,
-            quote.amount,
+            quote.amount(),
             quote.id
         );
         return Err(Error::IncorrectQuoteAmount);
     }
 
     // Validate inputs amount
-    if inputs_amount - inputs_fee < total_spent {
-        tracing::error!("Over paid melt quote {}", quote.id);
-        return Err(Error::IncorrectQuoteAmount);
+    let net_inputs = inputs_amount.checked_sub(&inputs_fee)?;
+
+    // Convert total_spent to the same unit as net_inputs for comparison.
+    // Backends should return total_spent in the quote's unit, but we convert defensively.
+    let total_spent = total_spent.convert_to(net_inputs.unit())?;
+
+    tracing::debug!(
+        "Melt validation for quote {}: inputs_amount={}, inputs_fee={}, net_inputs={}, total_spent={}, quote_amount={}, fee_reserve={}",
+        quote.id,
+        inputs_amount.display_with_unit(),
+        inputs_fee.display_with_unit(),
+        net_inputs.display_with_unit(),
+        total_spent.display_with_unit(),
+        quote.amount().display_with_unit(),
+        quote.fee_reserve().display_with_unit(),
+    );
+
+    // This can only happen on backends where we cannot set the max fee (e.g., LNbits).
+    // LNbits does not allow setting a fee limit, so payments can exceed the fee reserve.
+    debug_assert!(
+        net_inputs >= total_spent,
+        "Over paid melt quote {}: net_inputs ({}) < total_spent ({}). Payment already complete, finalizing with no change.",
+        quote.id,
+        net_inputs.display_with_unit(),
+        total_spent.display_with_unit(),
+    );
+    if net_inputs < total_spent {
+        tracing::error!(
+            "Over paid melt quote {}: net_inputs ({}) < total_spent ({}). Payment already complete, finalizing with no change.",
+            quote.id,
+            net_inputs.display_with_unit(),
+            total_spent.display_with_unit(),
+        );
+        // Payment is already done - continue finalization but no change will be returned
     }
 
     // Update quote state to Paid
@@ -442,16 +476,11 @@ pub async fn finalize_melt_quote(
     db: &DynMintDatabase,
     pubsub: &PubSubManager,
     quote: &MeltQuote,
-    total_spent: Amount,
+    total_spent: Amount<CurrencyUnit>,
     payment_preimage: Option<String>,
     payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
 ) -> Result<Option<Vec<BlindSignature>>, Error> {
-    use cdk_common::amount::to_unit;
-
     tracing::info!("Finalizing melt quote {}", quote.id);
-
-    // Convert total_spent to quote unit
-    let total_spent = to_unit(total_spent, &quote.unit, &quote.unit).unwrap_or(total_spent);
 
     let mut tx = db.begin_transaction().await?;
 
@@ -490,9 +519,9 @@ pub async fn finalize_melt_quote(
         pubsub,
         &mut locked_quote,
         &input_ys,
-        melt_request_info.inputs_amount,
-        melt_request_info.inputs_fee,
-        total_spent,
+        melt_request_info.inputs_amount.clone(),
+        melt_request_info.inputs_fee.clone(),
+        total_spent.clone(),
         payment_preimage.clone(),
         payment_lookup_id,
     )

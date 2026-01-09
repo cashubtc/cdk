@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
-use cdk_common::amount::{to_unit, Amount};
+use cdk_common::amount::Amount;
 use cdk_common::common::FeeReserve;
 use cdk_common::ensure_cdk;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
@@ -47,6 +47,9 @@ pub mod error;
 
 /// Default maximum size for the secondary repayment queue
 const DEFAULT_REPAY_QUEUE_MAX_SIZE: usize = 100;
+
+/// Payment state entry containing the melt quote state and amount spent
+type PaymentStateEntry = (MeltQuoteState, Amount<CurrencyUnit>);
 
 /// Cache duration for exchange rate (5 minutes)
 const RATE_CACHE_DURATION: Duration = Duration::from_secs(300);
@@ -139,11 +142,11 @@ async fn convert_currency_amount(
     from_unit: &CurrencyUnit,
     target_unit: &CurrencyUnit,
     rate_cache: &ExchangeRateCache,
-) -> Result<Amount, Error> {
+) -> Result<Amount<CurrencyUnit>, Error> {
     use CurrencyUnit::*;
 
     // Try basic unit conversion first (handles SAT/MSAT and same-unit conversions)
-    if let Ok(converted) = to_unit(amount, from_unit, target_unit) {
+    if let Ok(converted) = Amount::new(amount, from_unit.clone()).convert_to(target_unit) {
         return Ok(converted);
     }
 
@@ -153,15 +156,17 @@ async fn convert_currency_amount(
         (Usd | Eur, Sat) => {
             let rate = rate_cache.get_btc_rate(from_unit).await?;
             let fiat_amount = amount as f64 / 100.0; // cents to dollars/euros
-            Ok(Amount::from(
-                (fiat_amount / rate * 100_000_000.0).round() as u64
+            Ok(Amount::new(
+                (fiat_amount / rate * 100_000_000.0).round() as u64,
+                target_unit.clone(),
             )) // to sats
         }
         (Usd | Eur, Msat) => {
             let rate = rate_cache.get_btc_rate(from_unit).await?;
             let fiat_amount = amount as f64 / 100.0; // cents to dollars/euros
-            Ok(Amount::from(
+            Ok(Amount::new(
                 (fiat_amount / rate * 100_000_000_000.0).round() as u64,
+                target_unit.clone(),
             )) // to msats
         }
 
@@ -169,12 +174,18 @@ async fn convert_currency_amount(
         (Sat, Usd | Eur) => {
             let rate = rate_cache.get_btc_rate(target_unit).await?;
             let btc_amount = amount as f64 / 100_000_000.0; // sats to BTC
-            Ok(Amount::from((btc_amount * rate * 100.0).round() as u64)) // to cents
+            Ok(Amount::new(
+                (btc_amount * rate * 100.0).round() as u64,
+                target_unit.clone(),
+            )) // to cents
         }
         (Msat, Usd | Eur) => {
             let rate = rate_cache.get_btc_rate(target_unit).await?;
             let btc_amount = amount as f64 / 100_000_000_000.0; // msats to BTC
-            Ok(Amount::from((btc_amount * rate * 100.0).round() as u64)) // to cents
+            Ok(Amount::new(
+                (btc_amount * rate * 100.0).round() as u64,
+                target_unit.clone(),
+            )) // to cents
         }
 
         _ => Err(Error::UnknownInvoiceAmount), // Unsupported conversion
@@ -265,9 +276,11 @@ impl SecondaryRepaymentQueue {
 
                     // Create amount based on unit, ensuring minimum of 1 sat worth
                     let secondary_amount = match &unit {
-                        CurrencyUnit::Sat => Amount::from(random_amount),
-                        CurrencyUnit::Msat => Amount::from(u64::max(random_amount * 1000, 1000)),
-                        _ => Amount::from(u64::max(random_amount, 1)), // fallback
+                        CurrencyUnit::Sat => Amount::new(random_amount, unit.clone()),
+                        CurrencyUnit::Msat => {
+                            Amount::new(u64::max(random_amount * 1000, 1000), unit.clone())
+                        }
+                        _ => Amount::new(u64::max(random_amount, 1), unit.clone()), // fallback
                     };
 
                     // Generate a unique payment identifier for this secondary payment
@@ -301,7 +314,6 @@ impl SecondaryRepaymentQueue {
                     let secondary_response = WaitPaymentResponse {
                         payment_identifier: payment.clone(),
                         payment_amount: secondary_amount,
-                        unit: unit.clone(),
                         payment_id: unique_payment_id.to_string(),
                     };
 
@@ -324,7 +336,7 @@ pub struct FakeWallet {
     fee_reserve: FeeReserve,
     sender: tokio::sync::mpsc::Sender<WaitPaymentResponse>,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<WaitPaymentResponse>>>>,
-    payment_states: Arc<Mutex<HashMap<String, (MeltQuoteState, Amount)>>>,
+    payment_states: Arc<Mutex<HashMap<String, PaymentStateEntry>>>,
     failed_payment_check: Arc<Mutex<HashSet<String>>>,
     payment_delay: u64,
     wait_invoice_cancel_token: CancellationToken,
@@ -339,7 +351,7 @@ impl FakeWallet {
     /// Create new [`FakeWallet`]
     pub fn new(
         fee_reserve: FeeReserve,
-        payment_states: HashMap<String, (MeltQuoteState, Amount)>,
+        payment_states: HashMap<String, PaymentStateEntry>,
         fail_payment_check: HashSet<String>,
         payment_delay: u64,
         unit: CurrencyUnit,
@@ -357,7 +369,7 @@ impl FakeWallet {
     /// Create new [`FakeWallet`] with custom secondary repayment queue size
     pub fn new_with_repay_queue_size(
         fee_reserve: FeeReserve,
-        payment_states: HashMap<String, (MeltQuoteState, Amount)>,
+        payment_states: HashMap<String, PaymentStateEntry>,
         fail_payment_check: HashSet<String>,
         payment_delay: u64,
         unit: CurrencyUnit,
@@ -519,7 +531,7 @@ impl MintPayment for FakeWallet {
         .await?;
 
         let relative_fee_reserve =
-            (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+            (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
 
         let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
 
@@ -528,9 +540,8 @@ impl MintPayment for FakeWallet {
         Ok(PaymentQuoteResponse {
             request_lookup_id,
             amount,
-            fee: fee.into(),
+            fee: Amount::new(fee, unit.clone()),
             state: MeltQuoteState::Unpaid,
-            unit: unit.clone(),
         })
     }
 
@@ -571,9 +582,9 @@ impl MintPayment for FakeWallet {
                 };
 
                 let amount_spent = if checkout_going_status == MeltQuoteState::Paid {
-                    amount_msat.into()
+                    Amount::new(amount_msat, CurrencyUnit::Msat)
                 } else {
-                    Amount::ZERO
+                    Amount::new(0, CurrencyUnit::Msat)
                 };
 
                 payment_states.insert(payment_hash.clone(), (checkout_going_status, amount_spent));
@@ -596,13 +607,12 @@ impl MintPayment for FakeWallet {
                 .await?;
 
                 Ok(MakePaymentResponse {
-                    payment_proof: Some("".to_string()),
                     payment_lookup_id: PaymentIdentifier::PaymentHash(
                         *bolt11.payment_hash().as_ref(),
                     ),
+                    payment_proof: Some("".to_string()),
                     status: payment_status,
-                    total_spent: total_spent + 1.into(),
-                    unit: unit.clone(),
+                    total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -627,11 +637,10 @@ impl MintPayment for FakeWallet {
                 .await?;
 
                 Ok(MakePaymentResponse {
-                    payment_proof: Some("".to_string()),
                     payment_lookup_id: PaymentIdentifier::CustomId(Uuid::new_v4().to_string()),
+                    payment_proof: Some("".to_string()),
                     status: MeltQuoteState::Paid,
-                    total_spent: total_spent + 1.into(),
-                    unit: unit.clone(),
+                    total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
                 })
             }
             OutgoingPaymentOptions::Custom(_) => {
@@ -668,7 +677,7 @@ impl MintPayment for FakeWallet {
                             &self.exchange_rate_cache,
                         )
                         .await?;
-                        offer_builder.amount_msats(amount_msat.into())
+                        offer_builder.amount_msats(amount_msat.value())
                     }
                     None => offer_builder,
                 };
@@ -693,10 +702,9 @@ impl MintPayment for FakeWallet {
                     &CurrencyUnit::Msat,
                     &self.exchange_rate_cache,
                 )
-                .await?
-                .into();
+                .await?;
 
-                let invoice = create_fake_invoice(amount_msat, description.clone());
+                let invoice = create_fake_invoice(amount_msat.value(), description.clone());
                 let payment_hash = invoice.payment_hash();
 
                 (
@@ -717,7 +725,6 @@ impl MintPayment for FakeWallet {
         let duration = time::Duration::from_secs(self.payment_delay);
         let payment_hash_clone = payment_hash.clone();
         let incoming_payment = self.incoming_payments.clone();
-        let unit_clone = self.unit.clone();
 
         let final_amount = if amount == Amount::ZERO {
             // For any-amount invoices, generate a random amount for the initial payment
@@ -726,9 +733,9 @@ impl MintPayment for FakeWallet {
             let mut rng = OsRng;
             let random_amount: u64 = rng.gen_range(1000..=10000);
             // Use the same unit as the wallet for any-amount invoices
-            Amount::from(random_amount)
+            Amount::new(random_amount, unit.clone())
         } else {
-            amount
+            Amount::new(u64::from(amount), unit.clone())
         };
 
         // Schedule the immediate payment (original behavior maintained)
@@ -739,7 +746,6 @@ impl MintPayment for FakeWallet {
             let response = WaitPaymentResponse {
                 payment_identifier: payment_hash_clone.clone(),
                 payment_amount: final_amount,
-                unit: unit_clone,
                 payment_id: payment_hash_clone.to_string(),
             };
             let mut incoming = incoming_payment.write().await;
@@ -797,7 +803,8 @@ impl MintPayment for FakeWallet {
         let states = self.payment_states.lock().await;
         let status = states.get(&request_lookup_id.to_string()).cloned();
 
-        let (status, total_spent) = status.unwrap_or((MeltQuoteState::Unknown, Amount::default()));
+        let (status, total_spent) =
+            status.unwrap_or((MeltQuoteState::Unknown, Amount::new(0, CurrencyUnit::Msat)));
 
         let fail_payments = self.failed_payment_check.lock().await;
 
@@ -806,11 +813,10 @@ impl MintPayment for FakeWallet {
         }
 
         Ok(MakePaymentResponse {
-            payment_proof: Some("".to_string()),
             payment_lookup_id: request_lookup_id.clone(),
+            payment_proof: Some("".to_string()),
             status,
             total_spent,
-            unit: CurrencyUnit::Msat,
         })
     }
 }

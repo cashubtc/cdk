@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cdk_common::amount::{to_unit, Amount, MSAT_IN_SAT};
+use cdk_common::amount::{Amount, MSAT_IN_SAT};
 use cdk_common::common::FeeReserve;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
@@ -122,8 +122,7 @@ impl LNbits {
 
         Ok(Some(WaitPaymentResponse {
             payment_identifier: PaymentIdentifier::PaymentHash(hash),
-            payment_amount: Amount::from(amount.unsigned_abs()),
-            unit: CurrencyUnit::Msat,
+            payment_amount: Amount::new(amount.unsigned_abs(), CurrencyUnit::Msat),
             payment_id: msg.to_string(),
         }))
     }
@@ -253,10 +252,9 @@ impl MintPayment for LNbits {
                     request_lookup_id: Some(PaymentIdentifier::PaymentHash(
                         *bolt11_options.bolt11.payment_hash().as_ref(),
                     )),
-                    amount: to_unit(amount_msat, &CurrencyUnit::Msat, unit)?,
-                    fee: to_unit(fee, &CurrencyUnit::Msat, unit)?,
+                    amount: Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?,
+                    fee: Amount::new(fee, CurrencyUnit::Msat).convert_to(unit)?,
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
             OutgoingPaymentOptions::Bolt12(_bolt12_options) => {
@@ -268,7 +266,7 @@ impl MintPayment for LNbits {
 
     async fn make_payment(
         &self,
-        _unit: &CurrencyUnit,
+        unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         match options {
@@ -299,14 +297,17 @@ impl MintPayment for LNbits {
                     MeltQuoteState::Unpaid
                 };
 
-                let total_spent = Amount::from(
-                    (invoice_info
+                let total_spent_msat = Amount::new(
+                    invoice_info
                         .details
                         .amount
-                        .checked_add(invoice_info.details.fee)
-                        .ok_or(Error::AmountOverflow)?)
-                    .unsigned_abs(),
+                        .unsigned_abs()
+                        .checked_add(invoice_info.details.fee.unsigned_abs())
+                        .ok_or(Error::AmountOverflow)?,
+                    CurrencyUnit::Msat,
                 );
+
+                let total_spent = total_spent_msat.convert_to(unit)?;
 
                 Ok(MakePaymentResponse {
                     payment_lookup_id: PaymentIdentifier::PaymentHash(
@@ -318,7 +319,6 @@ impl MintPayment for LNbits {
                     payment_proof: Some(invoice_info.details.payment_hash),
                     status,
                     total_spent,
-                    unit: CurrencyUnit::Msat,
                 })
             }
             OutgoingPaymentOptions::Bolt12(_) => {
@@ -343,7 +343,9 @@ impl MintPayment for LNbits {
                 let expiry = unix_expiry.map(|t| t - time_now);
 
                 let invoice_request = CreateInvoiceRequest {
-                    amount: to_unit(amount, unit, &CurrencyUnit::Sat)?.into(),
+                    amount: Amount::new(amount.into(), unit.clone())
+                        .convert_to(&CurrencyUnit::Sat)?
+                        .value(),
                     memo: Some(description),
                     unit: unit.to_string(),
                     expiry,
@@ -404,8 +406,7 @@ impl MintPayment for LNbits {
         match payment.paid {
             true => Ok(vec![WaitPaymentResponse {
                 payment_identifier: payment_identifier.clone(),
-                payment_amount: Amount::from(amount.unsigned_abs()),
-                unit: CurrencyUnit::Msat,
+                payment_amount: Amount::new(amount.unsigned_abs(), CurrencyUnit::Msat),
                 payment_id: payment.details.payment_hash,
             }]),
             false => Ok(vec![]),
@@ -430,10 +431,10 @@ impl MintPayment for LNbits {
             payment_lookup_id: payment_identifier.clone(),
             payment_proof: payment.preimage,
             status: lnbits_to_melt_status(&payment.details.status),
-            total_spent: Amount::from(
+            total_spent: Amount::new(
                 payment.details.amount.unsigned_abs() + payment.details.fee.unsigned_abs(),
+                CurrencyUnit::Msat,
             ),
-            unit: CurrencyUnit::Msat,
         };
 
         Ok(pay_response)

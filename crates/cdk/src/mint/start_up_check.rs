@@ -75,7 +75,7 @@ impl Mint {
     async fn finalize_paid_melt_quote(
         &self,
         quote: &MeltQuote,
-        total_spent: cdk_common::Amount,
+        total_spent: cdk_common::Amount<cdk_common::CurrencyUnit>,
         payment_preimage: Option<String>,
         payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
     ) -> Result<(), Error> {
@@ -381,7 +381,7 @@ impl Mint {
                                 );
 
                                 // Get payment info for finalization
-                                let total_spent = quote.amount;
+                                let total_spent = quote.amount();
                                 let payment_lookup_id =
                                     quote.request_lookup_id.clone().unwrap_or_else(|| {
                                         cdk_common::payment::PaymentIdentifier::CustomId(

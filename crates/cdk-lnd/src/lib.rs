@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cdk_common::amount::{to_unit, Amount, MSAT_IN_SAT};
+use cdk_common::amount::{Amount, MSAT_IN_SAT};
 use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
@@ -305,8 +305,7 @@ impl MintPayment for Lnd {
 
                                             let wait_response = WaitPaymentResponse {
                                                 payment_identifier: PaymentIdentifier::PaymentHash(hash_slice),
-                                                payment_amount: Amount::from(msg.amt_paid_msat as u64),
-                                                unit: CurrencyUnit::Msat,
+                                                payment_amount: Amount::new(msg.amt_paid_msat as u64, CurrencyUnit::Msat),
                                                 payment_id: hash,
                                             };
                                             let event = Event::PaymentReceived(wait_response);
@@ -362,10 +361,11 @@ impl MintPayment for Lnd {
                         .into(),
                 };
 
-                let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+                let amount =
+                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
 
                 let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
 
                 let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
 
@@ -376,9 +376,8 @@ impl MintPayment for Lnd {
                         *bolt11_options.bolt11.payment_hash().as_ref(),
                     )),
                     amount,
-                    fee: fee.into(),
+                    fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
             OutgoingPaymentOptions::Bolt12(_) => {
@@ -511,8 +510,7 @@ impl MintPayment for Lnd {
                                     ),
                                     payment_proof: payment_preimage,
                                     status,
-                                    total_spent: total_amt.into(),
-                                    unit: CurrencyUnit::Sat,
+                                    total_spent: Amount::new(total_amt, CurrencyUnit::Sat),
                                 });
                             }
 
@@ -574,8 +572,7 @@ impl MintPayment for Lnd {
                             payment_lookup_id: payment_identifier,
                             payment_proof: payment_preimage,
                             status,
-                            total_spent: total_amount.into(),
-                            unit: CurrencyUnit::Sat,
+                            total_spent: Amount::new(total_amount, CurrencyUnit::Sat),
                         })
                     }
                 }
@@ -599,7 +596,9 @@ impl MintPayment for Lnd {
                 let amount = bolt11_options.amount;
                 let unix_expiry = bolt11_options.unix_expiry;
 
-                let amount_msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+                let amount_msat: Amount = Amount::new(amount.into(), unit.clone())
+                    .convert_to(&CurrencyUnit::Msat)?
+                    .into();
 
                 let invoice_request = lnrpc::Invoice {
                     value_msat: u64::from(amount_msat) as i64,
@@ -657,8 +656,7 @@ impl MintPayment for Lnd {
         if invoice.state() == InvoiceState::Settled {
             Ok(vec![WaitPaymentResponse {
                 payment_identifier: payment_identifier.clone(),
-                payment_amount: Amount::from(invoice.amt_paid_msat as u64),
-                unit: CurrencyUnit::Msat,
+                payment_amount: Amount::new(invoice.amt_paid_msat as u64, CurrencyUnit::Msat),
                 payment_id: hex::encode(invoice.r_hash),
             }])
         } else {
@@ -691,8 +689,7 @@ impl MintPayment for Lnd {
                         payment_lookup_id: payment_identifier.clone(),
                         payment_proof: None,
                         status: MeltQuoteState::Unknown,
-                        total_spent: Amount::ZERO,
-                        unit: self.unit.clone(),
+                        total_spent: Amount::new(0, self.unit.clone()),
                     });
                 } else {
                     return Err(payment::Error::UnknownPaymentState);
@@ -710,8 +707,7 @@ impl MintPayment for Lnd {
                             payment_lookup_id: payment_identifier.clone(),
                             payment_proof: Some(update.payment_preimage),
                             status: MeltQuoteState::Unknown,
-                            total_spent: Amount::ZERO,
-                            unit: self.unit.clone(),
+                            total_spent: Amount::new(0, self.unit.clone()),
                         },
                         PaymentStatus::InFlight | PaymentStatus::Initiated => {
                             // Continue waiting for the next update
@@ -721,21 +717,20 @@ impl MintPayment for Lnd {
                             payment_lookup_id: payment_identifier.clone(),
                             payment_proof: Some(update.payment_preimage),
                             status: MeltQuoteState::Paid,
-                            total_spent: Amount::from(
+                            total_spent: Amount::new(
                                 (update
                                     .value_sat
                                     .checked_add(update.fee_sat)
                                     .ok_or(Error::AmountOverflow)?)
                                     as u64,
+                                CurrencyUnit::Sat,
                             ),
-                            unit: CurrencyUnit::Sat,
                         },
                         PaymentStatus::Failed => MakePaymentResponse {
                             payment_lookup_id: payment_identifier.clone(),
                             payment_proof: Some(update.payment_preimage),
                             status: MeltQuoteState::Failed,
-                            total_spent: Amount::ZERO,
-                            unit: self.unit.clone(),
+                            total_spent: Amount::new(0, self.unit.clone()),
                         },
                     };
 

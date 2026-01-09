@@ -284,10 +284,8 @@ where
                     continue;
                 };
 
-            remote_subscription.total_subscribers = remote_subscription
-                .total_subscribers
-                .checked_sub(1)
-                .unwrap_or_default();
+            remote_subscription.total_subscribers =
+                remote_subscription.total_subscribers.saturating_sub(1);
 
             if remote_subscription.total_subscribers == 0 {
                 let mut cached_events = self.cached_events.write();

@@ -42,13 +42,15 @@ where
     query(
         r#"
         SELECT
-            payment_id,
-            timestamp,
-            amount
+            p.payment_id,
+            p.timestamp,
+            p.amount,
+            q.unit
         FROM
-            mint_quote_payments
+            mint_quote_payments p
+        JOIN mint_quote q ON p.quote_id = q.id
         WHERE
-            quote_id=:quote_id
+            p.quote_id=:quote_id
         "#,
     )?
     .bind("quote_id", quote_id.to_string())
@@ -58,8 +60,9 @@ where
     .map(|row| {
         let amount: u64 = column_as_number!(row[2].clone());
         let time: u64 = column_as_number!(row[1].clone());
+        let unit = column_as_string!(&row[3], CurrencyUnit::from_str);
         Ok(IncomingPayment::new(
-            amount.into(),
+            Amount::from(amount).with_unit(unit),
             column_as_string!(&row[0]),
             time,
         ))
@@ -74,9 +77,10 @@ where
     // Get payment IDs and timestamps from the mint_quote_payments table
     query(
         r#"
-SELECT amount, timestamp
-FROM mint_quote_issued
-WHERE quote_id=:quote_id
+SELECT i.amount, i.timestamp, q.unit
+FROM mint_quote_issued i
+JOIN mint_quote q ON i.quote_id = q.id
+WHERE i.quote_id=:quote_id
             "#,
     )?
     .bind("quote_id", quote_id.to_string())
@@ -85,9 +89,11 @@ WHERE quote_id=:quote_id
     .into_iter()
     .map(|row| {
         let time: u64 = column_as_number!(row[1].clone());
+        let unit = column_as_string!(&row[2], CurrencyUnit::from_str);
         Ok(Issuance::new(
             Amount::from_i64(column_as_number!(row[0].clone()))
-                .expect("Is amount when put into db"),
+                .expect("Is amount when put into db")
+                .with_unit(unit),
             time,
         ))
     })
@@ -420,18 +426,19 @@ fn sql_row_to_mint_quote(
     let amount_paid: u64 = column_as_number!(amount_paid);
     let amount_issued: u64 = column_as_number!(amount_issued);
     let payment_method = column_as_string!(payment_method, PaymentMethod::from_str);
+    let unit = column_as_string!(unit, CurrencyUnit::from_str);
 
     Ok(MintQuote::new(
         Some(QuoteId::from_str(&id)?),
         request_str,
-        column_as_string!(unit, CurrencyUnit::from_str),
-        amount.map(Amount::from),
+        unit.clone(),
+        amount.map(|a| Amount::from(a).with_unit(unit.clone())),
         column_as_number!(expiry),
         PaymentIdentifier::new(&request_lookup_id_kind, &request_lookup_id)
             .map_err(|_| ConversionError::MissingParameter("Payment id".to_string()))?,
         pubkey,
-        amount_paid.into(),
-        amount_issued.into(),
+        Amount::from(amount_paid).with_unit(unit.clone()),
+        Amount::from(amount_issued).with_unit(unit),
         payment_method,
         column_as_number!(created_time),
         payments,
@@ -511,21 +518,22 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
         }
     };
 
-    Ok(MeltQuote {
-        id: QuoteId::from_str(&id)?,
-        unit: CurrencyUnit::from_str(&unit)?,
-        amount: Amount::from(amount),
+    let unit = CurrencyUnit::from_str(&unit)?;
+    Ok(MeltQuote::from_db(
+        QuoteId::from_str(&id)?,
+        unit,
         request,
-        fee_reserve: Amount::from(fee_reserve),
+        amount,
+        fee_reserve,
         state,
         expiry,
         payment_preimage,
         request_lookup_id,
         options,
-        created_time: created_time as u64,
+        created_time as u64,
         paid_time,
         payment_method,
-    })
+    ))
 }
 
 #[async_trait]
@@ -538,8 +546,8 @@ where
     async fn add_melt_request(
         &mut self,
         quote_id: &QuoteId,
-        inputs_amount: Amount,
-        inputs_fee: Amount,
+        inputs_amount: Amount<CurrencyUnit>,
+        inputs_fee: Amount<CurrencyUnit>,
     ) -> Result<(), Self::Err> {
         // Insert melt_request
         query(
@@ -641,9 +649,10 @@ where
     ) -> Result<Option<database::mint::MeltRequestInfo>, Self::Err> {
         let melt_request_row = query(
             r#"
-            SELECT inputs_amount, inputs_fee
-            FROM melt_request
-            WHERE quote_id = :quote_id
+            SELECT mr.inputs_amount, mr.inputs_fee, mq.unit
+            FROM melt_request mr
+            JOIN melt_quote mq ON mr.quote_id = mq.id
+            WHERE mr.quote_id = :quote_id
             FOR UPDATE
             "#,
         )?
@@ -654,6 +663,8 @@ where
         if let Some(row) = melt_request_row {
             let inputs_amount: u64 = column_as_number!(row[0].clone());
             let inputs_fee: u64 = column_as_number!(row[1].clone());
+            let unit_str = column_as_string!(&row[2]);
+            let unit = CurrencyUnit::from_str(&unit_str)?;
 
             // Get blinded messages from blind_signature table where c IS NULL
             let blinded_messages_rows = query(
@@ -686,8 +697,8 @@ where
             let blinded_messages = blinded_messages?;
 
             Ok(Some(database::mint::MeltRequestInfo {
-                inputs_amount: Amount::from(inputs_amount),
-                inputs_fee: Amount::from(inputs_fee),
+                inputs_amount: Amount::from(inputs_amount).with_unit(unit.clone()),
+                inputs_fee: Amount::from(inputs_fee).with_unit(unit),
                 change_outputs: blinded_messages,
             }))
         } else {
@@ -808,7 +819,7 @@ where
             "#,
         )?
         .bind("id", quote.id.to_string())
-        .bind("amount", quote.amount.map(|a| a.to_i64()))
+        .bind("amount", quote.amount.clone().map(|a| a.to_i64()))
         .bind("unit", quote.unit.to_string())
         .bind("request", quote.request.clone())
         .bind("expiry", quote.expiry as i64)
@@ -846,9 +857,9 @@ where
         )?
         .bind("id", quote.id.to_string())
         .bind("unit", quote.unit.to_string())
-        .bind("amount", quote.amount.to_i64())
+        .bind("amount", quote.amount().to_i64())
         .bind("request", serde_json::to_string(&quote.request)?)
-        .bind("fee_reserve", quote.fee_reserve.to_i64())
+        .bind("fee_reserve", quote.fee_reserve().to_i64())
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
         .bind("payment_preimage", quote.payment_preimage)

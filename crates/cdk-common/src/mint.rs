@@ -439,12 +439,12 @@ pub struct MintQuoteChange {
 }
 
 /// Mint Quote Info
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct MintQuote {
     /// Quote id
     pub id: QuoteId,
     /// Amount of quote
-    pub amount: Option<Amount>,
+    pub amount: Option<Amount<CurrencyUnit>>,
     /// Unit of quote
     pub unit: CurrencyUnit,
     /// Quote payment request e.g. bolt11
@@ -456,34 +456,24 @@ pub struct MintQuote {
     /// Pubkey
     pub pubkey: Option<PublicKey>,
     /// Unix time quote was created
-    #[serde(default)]
     pub created_time: u64,
-    /// Amount paid
-    #[serde(default)]
-    amount_paid: Amount,
-    /// Amount issued
-    #[serde(default)]
-    amount_issued: Amount,
+    /// Amount paid (typed for type safety)
+    amount_paid: Amount<CurrencyUnit>,
+    /// Amount issued (typed for type safety)
+    amount_issued: Amount<CurrencyUnit>,
     /// Payment of payment(s) that filled quote
-    #[serde(default)]
     pub payments: Vec<IncomingPayment>,
     /// Payment Method
     pub payment_method: PaymentMethod,
     /// Payment of payment(s) that filled quote
-    #[serde(default)]
     pub issuance: Vec<Issuance>,
     /// Extra payment-method-specific fields
-    ///
-    /// These fields are flattened into the JSON representation, allowing
-    /// custom payment methods to include additional data without nesting.
-    #[serde(flatten, default)]
     pub extra_json: Option<serde_json::Value>,
     /// Accumulated changes since this quote was loaded or created.
     ///
     /// This field is not serialized and is used internally to track modifications
     /// that need to be persisted. Use [`Self::take_changes`] to extract pending
     /// changes for persistence.
-    #[serde(skip)]
     changes: Option<MintQuoteChange>,
 }
 
@@ -494,12 +484,12 @@ impl MintQuote {
         id: Option<QuoteId>,
         request: String,
         unit: CurrencyUnit,
-        amount: Option<Amount>,
+        amount: Option<Amount<CurrencyUnit>>,
         expiry: u64,
         request_lookup_id: PaymentIdentifier,
         pubkey: Option<PublicKey>,
-        amount_paid: Amount,
-        amount_issued: Amount,
+        amount_paid: Amount<CurrencyUnit>,
+        amount_issued: Amount<CurrencyUnit>,
         payment_method: PaymentMethod,
         created_time: u64,
         payments: Vec<IncomingPayment>,
@@ -511,7 +501,7 @@ impl MintQuote {
         Self {
             id,
             amount,
-            unit,
+            unit: unit.clone(),
             request,
             expiry,
             request_lookup_id,
@@ -527,10 +517,23 @@ impl MintQuote {
         }
     }
 
+    /// Increment the amount paid on the mint quote by a given amount
+    #[instrument(skip(self))]
+    pub fn increment_amount_paid(
+        &mut self,
+        additional_amount: Amount<CurrencyUnit>,
+    ) -> Result<Amount, crate::Error> {
+        self.amount_paid = self
+            .amount_paid
+            .checked_add(&additional_amount)
+            .map_err(|_| crate::Error::AmountOverflow)?;
+        Ok(Amount::from(self.amount_paid.value()))
+    }
+
     /// Amount paid
     #[instrument(skip(self))]
-    pub fn amount_paid(&self) -> Amount {
-        self.amount_paid
+    pub fn amount_paid(&self) -> Amount<CurrencyUnit> {
+        self.amount_paid.clone()
     }
 
     /// Records tokens being issued against this mint quote.
@@ -556,11 +559,14 @@ impl MintQuote {
     /// Returns [`crate::Error::AmountOverflow`] if adding the issuance amount would
     /// cause an arithmetic overflow.
     #[instrument(skip(self))]
-    pub fn add_issuance(&mut self, additional_amount: Amount) -> Result<Amount, crate::Error> {
+    pub fn add_issuance(
+        &mut self,
+        additional_amount: Amount<CurrencyUnit>,
+    ) -> Result<Amount<CurrencyUnit>, crate::Error> {
         let new_amount_issued = self
             .amount_issued
-            .checked_add(additional_amount)
-            .ok_or(crate::Error::AmountOverflow)?;
+            .checked_add(&additional_amount)
+            .map_err(|_| crate::Error::AmountOverflow)?;
 
         // Can't issue more than what's been paid
         if new_amount_issued > self.amount_paid {
@@ -571,17 +577,17 @@ impl MintQuote {
             .get_or_insert_default()
             .issuances
             .get_or_insert_default()
-            .push(additional_amount);
+            .push(additional_amount.into());
 
         self.amount_issued = new_amount_issued;
 
-        Ok(self.amount_issued)
+        Ok(self.amount_issued.clone())
     }
 
     /// Amount issued
     #[instrument(skip(self))]
-    pub fn amount_issued(&self) -> Amount {
-        self.amount_issued
+    pub fn amount_issued(&self) -> Amount<CurrencyUnit> {
+        self.amount_issued.clone()
     }
 
     /// Get state of mint quote
@@ -601,8 +607,10 @@ impl MintQuote {
     /// The value is computed as the difference between the total amount that
     /// has been paid for this issuance (`self.amount_paid`) and the amount
     /// that has already been issued (`self.amount_issued`). In other words,
-    pub fn amount_mintable(&self) -> Amount {
-        self.amount_paid - self.amount_issued
+    pub fn amount_mintable(&self) -> Amount<CurrencyUnit> {
+        self.amount_paid
+            .checked_sub(&self.amount_issued)
+            .unwrap_or_else(|_| Amount::new(0, self.unit.clone()))
     }
 
     /// Extracts and returns all pending changes, leaving the internal change tracker empty.
@@ -640,7 +648,7 @@ impl MintQuote {
     #[instrument(skip(self))]
     pub fn add_payment(
         &mut self,
-        amount: Amount,
+        amount: Amount<CurrencyUnit>,
         payment_id: String,
         time: Option<u64>,
     ) -> Result<(), crate::Error> {
@@ -650,6 +658,11 @@ impl MintQuote {
         if payment_ids.contains(&&payment_id) {
             return Err(crate::Error::DuplicatePaymentId);
         }
+
+        self.amount_paid = self
+            .amount_paid
+            .checked_add(&amount)
+            .map_err(|_| crate::Error::AmountOverflow)?;
 
         let payment = IncomingPayment::new(amount, payment_id, time);
 
@@ -661,48 +674,34 @@ impl MintQuote {
             .get_or_insert_default()
             .push(payment);
 
-        self.amount_paid = self
-            .amount_paid
-            .checked_add(amount)
-            .ok_or(crate::Error::AmountOverflow)?;
-
         Ok(())
     }
 
     /// Compute quote state
     #[instrument(skip(self))]
     fn compute_quote_state(&self) -> MintQuoteState {
-        if self.amount_paid == Amount::ZERO && self.amount_issued == Amount::ZERO {
+        let zero_amount = Amount::new(0, self.unit.clone());
+
+        if self.amount_paid == zero_amount && self.amount_issued == zero_amount {
             return MintQuoteState::Unpaid;
         }
 
-        match self.amount_paid.cmp(&self.amount_issued) {
+        match self.amount_paid.value().cmp(&self.amount_issued.value()) {
             std::cmp::Ordering::Less => {
-                // self.amount_paid is less than other (amount issued)
-                // Handle case where paid amount is insufficient
                 tracing::error!("We should not have issued more then has been paid");
                 MintQuoteState::Issued
             }
-            std::cmp::Ordering::Equal => {
-                // We do this extra check for backwards compatibility for quotes where amount paid/issed was not tracked
-                // self.amount_paid equals other (amount issued)
-                // Handle case where paid amount exactly matches
-                MintQuoteState::Issued
-            }
-            std::cmp::Ordering::Greater => {
-                // self.amount_paid is greater than other (amount issued)
-                // Handle case where paid amount exceeds required amount
-                MintQuoteState::Paid
-            }
+            std::cmp::Ordering::Equal => MintQuoteState::Issued,
+            std::cmp::Ordering::Greater => MintQuoteState::Paid,
         }
     }
 }
 
 /// Mint Payments
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct IncomingPayment {
     /// Amount
-    pub amount: Amount,
+    pub amount: Amount<CurrencyUnit>,
     /// Pyament unix time
     pub time: u64,
     /// Payment id
@@ -711,7 +710,7 @@ pub struct IncomingPayment {
 
 impl IncomingPayment {
     /// New [`IncomingPayment`]
-    pub fn new(amount: Amount, payment_id: String, time: u64) -> Self {
+    pub fn new(amount: Amount<CurrencyUnit>, payment_id: String, time: u64) -> Self {
         Self {
             payment_id,
             time,
@@ -720,35 +719,35 @@ impl IncomingPayment {
     }
 }
 
-/// Informattion about issued quote
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+/// Information about issued quote
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Issuance {
     /// Amount
-    pub amount: Amount,
+    pub amount: Amount<CurrencyUnit>,
     /// Time
     pub time: u64,
 }
 
 impl Issuance {
     /// Create new [`Issuance`]
-    pub fn new(amount: Amount, time: u64) -> Self {
+    pub fn new(amount: Amount<CurrencyUnit>, time: u64) -> Self {
         Self { amount, time }
     }
 }
 
 /// Melt Quote Info
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct MeltQuote {
     /// Quote id
     pub id: QuoteId,
     /// Quote unit
     pub unit: CurrencyUnit,
-    /// Quote amount
-    pub amount: Amount,
     /// Quote Payment request e.g. bolt11
     pub request: MeltPaymentRequest,
-    /// Quote fee reserve
-    pub fee_reserve: Amount,
+    /// Quote amount (typed for type safety)
+    amount: Amount<CurrencyUnit>,
+    /// Quote fee reserve (typed for type safety)
+    fee_reserve: Amount<CurrencyUnit>,
     /// Quote state
     pub state: MeltQuoteState,
     /// Expiration time of quote
@@ -762,7 +761,6 @@ pub struct MeltQuote {
     /// Used for amountless invoices and MPP payments
     pub options: Option<MeltOptions>,
     /// Unix time quote was created
-    #[serde(default)]
     pub created_time: u64,
     /// Unix time quote was paid
     pub paid_time: Option<u64>,
@@ -776,8 +774,8 @@ impl MeltQuote {
     pub fn new(
         request: MeltPaymentRequest,
         unit: CurrencyUnit,
-        amount: Amount,
-        fee_reserve: Amount,
+        amount: Amount<CurrencyUnit>,
+        fee_reserve: Amount<CurrencyUnit>,
         expiry: u64,
         request_lookup_id: Option<PaymentIdentifier>,
         options: Option<MeltOptions>,
@@ -787,9 +785,9 @@ impl MeltQuote {
 
         Self {
             id: QuoteId::UUID(id),
-            amount,
-            unit,
+            unit: unit.clone(),
             request,
+            amount,
             fee_reserve,
             state: MeltQuoteState::Unpaid,
             expiry,
@@ -798,6 +796,61 @@ impl MeltQuote {
             options,
             created_time: unix_time(),
             paid_time: None,
+            payment_method,
+        }
+    }
+
+    /// Quote amount
+    #[inline]
+    pub fn amount(&self) -> Amount<CurrencyUnit> {
+        self.amount.clone()
+    }
+
+    /// Fee reserve
+    #[inline]
+    pub fn fee_reserve(&self) -> Amount<CurrencyUnit> {
+        self.fee_reserve.clone()
+    }
+
+    /// Total amount needed (amount + fee_reserve)
+    pub fn total_needed(&self) -> Result<Amount, crate::Error> {
+        let total = self
+            .amount
+            .checked_add(&self.fee_reserve)
+            .map_err(|_| crate::Error::AmountOverflow)?;
+        Ok(Amount::from(total.value()))
+    }
+
+    /// Create MeltQuote from database fields (for deserialization)
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_db(
+        id: QuoteId,
+        unit: CurrencyUnit,
+        request: MeltPaymentRequest,
+        amount: u64,
+        fee_reserve: u64,
+        state: MeltQuoteState,
+        expiry: u64,
+        payment_preimage: Option<String>,
+        request_lookup_id: Option<PaymentIdentifier>,
+        options: Option<MeltOptions>,
+        created_time: u64,
+        paid_time: Option<u64>,
+        payment_method: PaymentMethod,
+    ) -> Self {
+        Self {
+            id,
+            unit: unit.clone(),
+            request,
+            amount: Amount::new(amount, unit.clone()),
+            fee_reserve: Amount::new(fee_reserve, unit),
+            state,
+            expiry,
+            payment_preimage,
+            request_lookup_id,
+            options,
+            created_time,
+            paid_time,
             payment_method,
         }
     }
@@ -853,7 +906,7 @@ impl From<MintQuote> for MintQuoteBolt11Response<QuoteId> {
             request: mint_quote.request,
             expiry: Some(mint_quote.expiry),
             pubkey: mint_quote.pubkey,
-            amount: mint_quote.amount,
+            amount: mint_quote.amount.map(Into::into),
             unit: Some(mint_quote.unit.clone()),
         }
     }
@@ -875,10 +928,10 @@ impl TryFrom<crate::mint::MintQuote> for MintQuoteBolt12Response<QuoteId> {
             quote: mint_quote.id.clone(),
             request: mint_quote.request,
             expiry: Some(mint_quote.expiry),
-            amount_paid: mint_quote.amount_paid,
-            amount_issued: mint_quote.amount_issued,
+            amount_paid: Amount::from(mint_quote.amount_paid.value()),
+            amount_issued: Amount::from(mint_quote.amount_issued.value()),
             pubkey: mint_quote.pubkey.ok_or(crate::Error::PubkeyRequired)?,
-            amount: mint_quote.amount,
+            amount: mint_quote.amount.map(Into::into),
             unit: mint_quote.unit,
         })
     }
@@ -904,7 +957,7 @@ impl TryFrom<crate::mint::MintQuote> for crate::nuts::MintQuoteCustomResponse<Qu
             request: mint_quote.request,
             expiry: Some(mint_quote.expiry),
             pubkey: mint_quote.pubkey,
-            amount: mint_quote.amount,
+            amount: mint_quote.amount.map(Into::into),
             unit: Some(mint_quote.unit),
             extra: mint_quote.extra_json.unwrap_or_default(),
         })
@@ -929,8 +982,8 @@ impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
             change: None,
             state: melt_quote.state,
             expiry: melt_quote.expiry,
-            amount: melt_quote.amount,
-            fee_reserve: melt_quote.fee_reserve,
+            amount: melt_quote.amount().clone().into(),
+            fee_reserve: melt_quote.fee_reserve().clone().into(),
             request: None,
             unit: Some(melt_quote.unit.clone()),
         }
@@ -941,8 +994,8 @@ impl From<MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
     fn from(melt_quote: MeltQuote) -> MeltQuoteBolt11Response<QuoteId> {
         MeltQuoteBolt11Response {
             quote: melt_quote.id.clone(),
-            amount: melt_quote.amount,
-            fee_reserve: melt_quote.fee_reserve,
+            amount: melt_quote.amount().clone().into(),
+            fee_reserve: melt_quote.fee_reserve().clone().into(),
             state: melt_quote.state,
             expiry: melt_quote.expiry,
             payment_preimage: melt_quote.payment_preimage,

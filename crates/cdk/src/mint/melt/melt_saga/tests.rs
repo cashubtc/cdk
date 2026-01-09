@@ -582,7 +582,7 @@ async fn test_crash_recovery_internal_settlement() {
         crate::mint::melt::melt_saga::state::SettlementDecision::Internal { amount } => {
             assert_eq!(
                 amount,
-                Amount::from(4_000),
+                Amount::from(4_000).with_unit(cdk_common::CurrencyUnit::Sat),
                 "Internal settlement amount should match"
             );
         }
@@ -1460,8 +1460,7 @@ async fn test_get_incomplete_sagas_filters_by_kind() {
     // STEP 3: Create a swap saga
     let swap_proofs = mint_test_proofs(&mint, Amount::from(5_000)).await.unwrap();
     let swap_verification = crate::mint::Verification {
-        amount: Amount::from(5_000),
-        unit: Some(cdk_common::nuts::CurrencyUnit::Sat),
+        amount: Amount::from(5_000).with_unit(cdk_common::nuts::CurrencyUnit::Sat),
     };
 
     let (swap_outputs, _) = create_test_blinded_messages(&mint, Amount::from(5_000))

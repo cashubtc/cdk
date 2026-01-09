@@ -11,9 +11,8 @@ use cdk_common::PaymentMethod;
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
-use crate::amount::to_unit;
 use crate::nuts::{CurrencyUnit, MeltOptions, MeltQuoteBolt11Response, MeltQuoteBolt12Request};
-use crate::{Error, Wallet};
+use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Melt Quote for BOLT12 offer
@@ -38,7 +37,9 @@ impl Wallet {
                 .map(|opt| opt.amount_msat())
                 .or_else(|| amount_for_offer(&offer, &CurrencyUnit::Msat).ok())
                 .ok_or(Error::AmountUndefined)?;
-            let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit)?;
+            let amount_quote_unit = Amount::new(amount_msat.into(), CurrencyUnit::Msat)
+                .convert_to(&self.unit)?
+                .into();
 
             if quote_res.amount != amount_quote_unit {
                 tracing::warn!(

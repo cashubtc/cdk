@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use cdk_common::amount::to_unit;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::DynMintAuthDatabase;
@@ -707,7 +706,7 @@ impl Mint {
         pubsub_manager: &Arc<PubSubManager>,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
-        if wait_payment_response.payment_amount == Amount::ZERO {
+        if wait_payment_response.payment_amount.value() == 0 {
             tracing::warn!(
                 "Received payment response with 0 amount with payment id {}.",
                 wait_payment_response.payment_id
@@ -748,9 +747,9 @@ impl Mint {
         pubsub_manager: &Arc<PubSubManager>,
     ) -> Result<(), Error> {
         tracing::debug!(
-            "Received payment notification of {} {} for mint quote {} with payment id {}",
+            "Received payment notification of {} {:?} for mint quote {} with payment id {}",
             wait_payment_response.payment_amount,
-            wait_payment_response.unit,
+            wait_payment_response.unit(),
             mint_quote.id,
             wait_payment_response.payment_id.to_string()
         );
@@ -765,13 +764,11 @@ impl Mint {
             {
                 tracing::info!("Received payment notification for already issued quote.");
             } else {
-                let payment_amount_quote_unit = to_unit(
-                    wait_payment_response.payment_amount,
-                    &wait_payment_response.unit,
-                    &mint_quote.unit,
-                )?;
+                let payment_amount_quote_unit: Amount<CurrencyUnit> = wait_payment_response
+                    .payment_amount
+                    .convert_to(&mint_quote.unit)?;
 
-                if payment_amount_quote_unit == Amount::ZERO {
+                if payment_amount_quote_unit.value() == 0 {
                     tracing::error!("Zero amount payments should not be recorded.");
                     return Err(Error::AmountUndefined);
                 }
