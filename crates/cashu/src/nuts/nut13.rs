@@ -204,7 +204,7 @@ impl PreMintSecrets {
     ) -> Result<Self, Error> {
         let mut pre_mint_secrets = PreMintSecrets::new(keyset_id);
 
-        for i in start_count..=end_count {
+        for i in start_count..end_count {
             let secret = Secret::from_seed(seed, keyset_id, i)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, i)?;
 
@@ -528,7 +528,7 @@ mod tests {
 
         assert_eq!(
             pre_mint_secrets.secrets.len(),
-            (end_count - start_count + 1) as usize
+            (end_count - start_count) as usize
         );
 
         // Verify each secret in the batch

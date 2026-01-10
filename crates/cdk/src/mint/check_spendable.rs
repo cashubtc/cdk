@@ -1,4 +1,5 @@
-use futures::future::try_join_all;
+use std::collections::HashMap;
+
 use tracing::instrument;
 
 use super::{CheckStateRequest, CheckStateResponse, Mint, ProofState, State};
@@ -12,29 +13,44 @@ impl Mint {
         check_state: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
         let states = self.localstore.get_proofs_states(&check_state.ys).await?;
-        assert_eq!(check_state.ys.len(), states.len());
 
-        let proof_states_futures =
-            check_state
-                .ys
-                .iter()
-                .zip(states.iter())
-                .map(|(y, state)| async move {
-                    let witness: Result<Option<cdk_common::Witness>, Error> = if state.is_some() {
-                        let proofs = self.localstore.get_proofs_by_ys(&[*y]).await?;
-                        Ok(proofs.first().cloned().flatten().and_then(|p| p.witness))
-                    } else {
-                        Ok(None)
-                    };
+        if check_state.ys.len() != states.len() {
+            tracing::error!("Database did not return states for all proofs");
+            return Err(Error::UnknownPaymentState);
+        }
 
-                    witness.map(|w| ProofState {
-                        y: *y,
-                        state: state.unwrap_or(State::Unspent),
-                        witness: w,
-                    })
-                });
+        // Collect ys that need witness fetching (where state.is_some())
+        let ys_needing_witness: Vec<_> = check_state
+            .ys
+            .iter()
+            .zip(states.iter())
+            .filter_map(|(y, state)| state.as_ref().map(|_| *y))
+            .collect();
 
-        let proof_states = try_join_all(proof_states_futures).await?;
+        // Build a lookup map for witnesses (only query if there are ys to fetch)
+        let witness_map: HashMap<_, _> = if ys_needing_witness.is_empty() {
+            HashMap::new()
+        } else {
+            self.localstore
+                .get_proofs_by_ys(&ys_needing_witness)
+                .await?
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p.y().ok().map(|y| (y, p.witness)))
+                .collect()
+        };
+
+        // Construct response without additional queries
+        let proof_states = check_state
+            .ys
+            .iter()
+            .zip(states.iter())
+            .map(|(y, state)| ProofState {
+                y: *y,
+                state: state.unwrap_or(State::Unspent),
+                witness: witness_map.get(y).cloned().flatten(),
+            })
+            .collect();
 
         Ok(CheckStateResponse {
             states: proof_states,

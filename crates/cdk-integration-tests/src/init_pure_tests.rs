@@ -249,8 +249,11 @@ pub fn setup_tracing() {
 
     let h2_filter = "h2=warn";
     let hyper_filter = "hyper=warn";
+    let tokio_postgres = "tokio_postgres=warn";
 
-    let env_filter = EnvFilter::new(format!("{default_filter},{h2_filter},{hyper_filter}"));
+    let env_filter = EnvFilter::new(format!(
+        "{default_filter},{h2_filter},{hyper_filter},{tokio_postgres}"
+    ));
 
     // Ok if successful, Err if already initialized
     // Allows us to setup tracing at the start of several parallel tests
