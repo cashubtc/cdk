@@ -379,29 +379,38 @@ async fn test_restore_large_proof_count() {
     .expect("failed to create new wallet");
 
     let mint_amount: u64 = 3000;
+    let batch_size: u64 = 999; // Keep under 1000 outputs per request
 
-    let mint_quote = wallet
-        .mint_quote(mint_amount.into(), None)
-        .await
-        .unwrap();
+    // Mint in batches to avoid exceeding the 1000 output limit per request
+    let mut total_proofs = 0usize;
+    let mut remaining = mint_amount;
 
-    let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
-    pay_if_regtest(&get_test_temp_dir(), &invoice)
-        .await
-        .unwrap();
+    while remaining > 0 {
+        let batch = remaining.min(batch_size);
 
-    // Mint with SplitTarget::Value(1) to create 3000 individual 1-sat proofs
-    let proofs = wallet
-        .wait_and_mint_quote(
-            mint_quote.clone(),
-            SplitTarget::Value(1.into()),
-            None,
-            tokio::time::Duration::from_secs(120),
-        )
-        .await
-        .expect("payment");
+        let mint_quote = wallet.mint_quote(batch.into(), None).await.unwrap();
 
-    assert_eq!(proofs.len(), mint_amount as usize);
+        let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
+        pay_if_regtest(&get_test_temp_dir(), &invoice)
+            .await
+            .unwrap();
+
+        // Mint with SplitTarget::Value(1) to create individual 1-sat proofs
+        let proofs = wallet
+            .wait_and_mint_quote(
+                mint_quote.clone(),
+                SplitTarget::Value(1.into()),
+                None,
+                tokio::time::Duration::from_secs(120),
+            )
+            .await
+            .expect("payment");
+
+        total_proofs += proofs.len();
+        remaining -= batch;
+    }
+
+    assert_eq!(total_proofs, mint_amount as usize);
     assert_eq!(wallet.total_balance().await.unwrap(), mint_amount.into());
 
     let wallet_2 = Wallet::new(
@@ -421,16 +430,22 @@ async fn test_restore_large_proof_count() {
     assert_eq!(proofs.len(), mint_amount as usize);
     assert_eq!(restored, mint_amount.into());
 
-    let expected_fee = wallet.get_proofs_fee(&proofs).await.unwrap().total;
-    wallet_2
-        .swap(None, SplitTarget::default(), proofs, None, false)
-        .await
-        .unwrap();
+    // Swap in batches to avoid exceeding the 1000 input limit per request
+    let mut total_fee = Amount::ZERO;
+    for batch in proofs.chunks(batch_size as usize) {
+        let batch_vec = batch.to_vec();
+        let batch_fee = wallet_2.get_proofs_fee(&batch_vec).await.unwrap().total;
+        total_fee += batch_fee;
+        wallet_2
+            .swap(None, SplitTarget::default(), batch.to_vec(), None, false)
+            .await
+            .unwrap();
+    }
 
     // Since we have to do a swap we expect to restore amount - fee
     assert_eq!(
         wallet_2.total_balance().await.unwrap(),
-        Amount::from(mint_amount) - expected_fee
+        Amount::from(mint_amount) - total_fee
     );
 
     let proofs = wallet.get_unspent_proofs().await.unwrap();

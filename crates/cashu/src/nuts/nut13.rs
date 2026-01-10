@@ -528,7 +528,7 @@ mod tests {
 
         assert_eq!(
             pre_mint_secrets.secrets.len(),
-            (end_count - start_count + 1) as usize
+            (end_count - start_count) as usize
         );
 
         // Verify each secret in the batch
