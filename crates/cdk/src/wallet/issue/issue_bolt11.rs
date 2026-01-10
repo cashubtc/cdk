@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::wallet::{MintQuote, Transaction, TransactionDirection};
 use cdk_common::PaymentMethod;
@@ -60,10 +59,7 @@ impl Wallet {
             let settings = mint_info
                 .nuts
                 .nut04
-                .get_settings(
-                    &unit,
-                    &crate::nuts::PaymentMethod::Known(KnownMethod::Bolt11),
-                )
+                .get_settings(&unit, &crate::nuts::PaymentMethod::Bolt11)
                 .ok_or(Error::UnsupportedUnit)?;
 
             match settings.options {
@@ -86,7 +82,7 @@ impl Wallet {
         let quote = MintQuote::new(
             quote_res.quote,
             mint_url,
-            PaymentMethod::Known(KnownMethod::Bolt11),
+            PaymentMethod::Bolt11,
             Some(amount),
             unit,
             quote_res.request,
@@ -130,7 +126,7 @@ impl Wallet {
 
         for mint_quote in mint_quotes {
             match mint_quote.payment_method {
-                PaymentMethod::Known(KnownMethod::Bolt11) => {
+                PaymentMethod::Bolt11 => {
                     let mint_quote_response = self.mint_quote_state(&mint_quote.id).await?;
 
                     if mint_quote_response.state == MintQuoteState::Paid {
@@ -140,7 +136,7 @@ impl Wallet {
                         total_amount += proofs.total_amount()?;
                     }
                 }
-                PaymentMethod::Known(KnownMethod::Bolt12) => {
+                PaymentMethod::Bolt12 => {
                     let mint_quote_response = self.mint_bolt12_quote_state(&mint_quote.id).await?;
                     if mint_quote_response.amount_paid > mint_quote_response.amount_issued {
                         let proofs = self
@@ -233,7 +229,7 @@ impl Wallet {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        if quote_info.payment_method != PaymentMethod::Known(KnownMethod::Bolt11) {
+        if quote_info.payment_method != PaymentMethod::Bolt11 {
             return Err(Error::UnsupportedPaymentMethod);
         }
 

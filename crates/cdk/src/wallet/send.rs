@@ -46,7 +46,6 @@ impl Wallet {
         // Get available proofs matching conditions
         let mut available_proofs = self
             .get_proofs_with(
-                None,
                 Some(vec![State::Unspent]),
                 opts.conditions.clone().map(|c| vec![c]),
             )
@@ -184,10 +183,9 @@ impl Wallet {
         tracing::debug!("Send amounts: {:?}", send_amounts);
         tracing::debug!("Send fee: {:?}", send_fee);
 
-        let mut tx = self.localstore.begin_db_transaction().await?;
-
         // Reserve proofs
-        tx.update_proofs_state(proofs.ys()?, State::Reserved)
+        self.localstore
+            .update_proofs_state(proofs.ys()?, State::Reserved)
             .await?;
 
         // Check if proofs are exact send amount (and does not exceed max_proofs)
@@ -217,8 +215,6 @@ impl Wallet {
             force_swap,
             is_exact_or_offline,
         )?;
-
-        tx.commit().await?;
 
         // Return prepared send
         Ok(PreparedSend {
@@ -340,13 +336,10 @@ impl PreparedSend {
             return Err(Error::InsufficientFunds);
         }
 
-        let mut tx = self.wallet.localstore.begin_db_transaction().await?;
-
         // Check if proofs are reserved or unspent
         let sendable_proof_ys = self
             .wallet
             .get_proofs_with(
-                Some(&mut tx),
                 Some(vec![State::Reserved, State::Unspent]),
                 self.options.conditions.clone().map(|c| vec![c]),
             )
@@ -367,7 +360,9 @@ impl PreparedSend {
             proofs_to_send.ys()?
         );
 
-        tx.update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
+        self.wallet
+            .localstore
+            .update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
             .await?;
 
         // Include token memo
@@ -375,24 +370,24 @@ impl PreparedSend {
         let memo = send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
 
         // Add transaction to store
-        tx.add_transaction(Transaction {
-            mint_url: self.wallet.mint_url.clone(),
-            direction: TransactionDirection::Outgoing,
-            amount: self.amount,
-            fee: total_send_fee,
-            unit: self.wallet.unit.clone(),
-            ys: proofs_to_send.ys()?,
-            timestamp: unix_time(),
-            memo: memo.clone(),
-            metadata: self.options.metadata,
-            quote_id: None,
-            payment_request: None,
-            payment_proof: None,
-            payment_method: None,
-        })
-        .await?;
-
-        tx.commit().await?;
+        self.wallet
+            .localstore
+            .add_transaction(Transaction {
+                mint_url: self.wallet.mint_url.clone(),
+                direction: TransactionDirection::Outgoing,
+                amount: self.amount,
+                fee: total_send_fee,
+                unit: self.wallet.unit.clone(),
+                ys: proofs_to_send.ys()?,
+                timestamp: unix_time(),
+                memo: memo.clone(),
+                metadata: self.options.metadata,
+                quote_id: None,
+                payment_request: None,
+                payment_proof: None,
+                payment_method: None,
+            })
+            .await?;
 
         // Create and return token
         Ok(Token::new(
@@ -407,12 +402,10 @@ impl PreparedSend {
     pub async fn cancel(self) -> Result<(), Error> {
         tracing::info!("Cancelling prepared send");
 
-        let mut tx = self.wallet.localstore.begin_db_transaction().await?;
-
         // Double-check proofs state
         let reserved_proofs = self
             .wallet
-            .get_proofs_with(Some(&mut tx), Some(vec![State::Reserved]), None)
+            .get_proofs_with(Some(vec![State::Reserved]), None)
             .await?
             .ys()?;
 
@@ -425,10 +418,10 @@ impl PreparedSend {
             return Err(Error::UnexpectedProofState);
         }
 
-        tx.update_proofs_state(self.proofs().ys()?, State::Unspent)
+        self.wallet
+            .localstore
+            .update_proofs_state(self.proofs().ys()?, State::Unspent)
             .await?;
-
-        tx.commit().await?;
 
         Ok(())
     }

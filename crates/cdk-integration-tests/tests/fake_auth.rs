@@ -515,9 +515,11 @@ async fn test_reuse_auth_proof() {
         assert!(quote.amount == Some(10.into()));
     }
 
-    let mut tx = wallet.localstore.begin_db_transaction().await.unwrap();
-    tx.update_proofs(proofs, vec![]).await.unwrap();
-    tx.commit().await.unwrap();
+    wallet
+        .localstore
+        .update_proofs(proofs, vec![])
+        .await
+        .unwrap();
 
     {
         let quote_res = wallet.mint_quote(10.into(), None).await;

@@ -1,5 +1,4 @@
 use cdk_common::amount::FeeAndAmounts;
-use cdk_common::database::DynWalletDatabaseTransaction;
 use cdk_common::nut02::KeySetInfosMethods;
 use cdk_common::Id;
 use tracing::instrument;
@@ -37,7 +36,6 @@ impl Wallet {
 
         let pre_swap = self
             .create_swap(
-                self.localstore.begin_db_transaction().await?,
                 active_keyset_id,
                 &fee_and_amounts,
                 amount,
@@ -134,10 +132,9 @@ impl Wallet {
             .map(|proof| proof.y())
             .collect::<Result<Vec<PublicKey>, _>>()?;
 
-        let mut tx = self.localstore.begin_db_transaction().await?;
-
-        tx.update_proofs(added_proofs, deleted_ys).await?;
-        tx.commit().await?;
+        self.localstore
+            .update_proofs(added_proofs, deleted_ys)
+            .await?;
 
         Ok(send_proofs)
     }
@@ -199,11 +196,10 @@ impl Wallet {
     }
 
     /// Create Swap Payload
-    #[instrument(skip(self, proofs, tx))]
+    #[instrument(skip(self, proofs))]
     #[allow(clippy::too_many_arguments)]
     pub async fn create_swap(
         &self,
-        mut tx: DynWalletDatabaseTransaction,
         active_keyset_id: Id,
         fee_and_amounts: &FeeAndAmounts,
         amount: Option<Amount>,
@@ -219,7 +215,9 @@ impl Wallet {
         let proofs_total = proofs.total_amount()?;
 
         let ys: Vec<PublicKey> = proofs.ys()?;
-        tx.update_proofs_state(ys, State::Reserved).await?;
+        self.localstore
+            .update_proofs_state(ys, State::Reserved)
+            .await?;
 
         let total_to_subtract = amount
             .unwrap_or(Amount::ZERO)
@@ -257,7 +255,7 @@ impl Wallet {
         // else use state refill
         let change_split_target = match amount_split_target {
             SplitTarget::None => {
-                self.determine_split_target_values(&mut tx, change_amount, fee_and_amounts)
+                self.determine_split_target_values(change_amount, fee_and_amounts)
                     .await?
             }
             s => s,
@@ -294,7 +292,8 @@ impl Wallet {
                 total_secrets_needed
             );
 
-            let new_counter = tx
+            let new_counter = self
+                .localstore
                 .increment_keyset_counter(&active_keyset_id, total_secrets_needed)
                 .await?;
 
@@ -362,8 +361,6 @@ impl Wallet {
         desired_messages.sort_secrets();
 
         let swap_request = SwapRequest::new(proofs, desired_messages.blinded_messages());
-
-        tx.commit().await?;
 
         Ok(PreSwap {
             pre_mint_secrets: desired_messages,

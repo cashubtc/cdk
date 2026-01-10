@@ -42,9 +42,7 @@ impl Wallet {
             payment_preimage: quote_res.payment_preimage,
             payment_method: PaymentMethod::Custom(method.to_string()),
         };
-        let mut tx = self.localstore.begin_db_transaction().await?;
-        tx.add_melt_quote(quote.clone()).await?;
-        tx.commit().await?;
+        self.localstore.add_melt_quote(quote.clone()).await?;
 
         Ok(quote)
     }
