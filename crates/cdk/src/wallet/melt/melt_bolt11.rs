@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use cdk_common::amount::SplitTarget;
-use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use cdk_common::PaymentMethod;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
+use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
@@ -67,9 +67,7 @@ impl Wallet {
                 .or_else(|| invoice.amount_milli_satoshis())
                 .ok_or(Error::InvoiceAmountUndefined)?;
 
-            let amount_quote_unit = Amount::new(amount_msat, CurrencyUnit::Msat)
-                .convert_to(&self.unit)?
-                .into();
+            let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit)?;
 
             if quote_res.amount != amount_quote_unit {
                 tracing::warn!(
@@ -90,7 +88,7 @@ impl Wallet {
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_preimage: quote_res.payment_preimage,
-            payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
+            payment_method: PaymentMethod::Bolt11,
         };
 
         self.localstore.add_melt_quote(quote.clone()).await?;
@@ -206,28 +204,22 @@ impl Wallet {
         );
 
         let melt_response = match quote_info.payment_method {
-            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
+            cdk_common::PaymentMethod::Bolt11 => {
                 self.try_proof_operation_or_reclaim(
                     request.inputs().clone(),
                     self.client.post_melt(request),
                 )
                 .await?
             }
-            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
+            cdk_common::PaymentMethod::Bolt12 => {
                 self.try_proof_operation_or_reclaim(
                     request.inputs().clone(),
                     self.client.post_melt_bolt12(request),
                 )
                 .await?
             }
-            cdk_common::PaymentMethod::Custom(ref _method) => {
-                // For now, custom methods will use the same post_melt endpoint
-                // This will be enhanced when custom HTTP client methods are added
-                self.try_proof_operation_or_reclaim(
-                    request.inputs().clone(),
-                    self.client.post_melt(request),
-                )
-                .await?
+            cdk_common::PaymentMethod::Custom(_) => {
+                return Err(Error::UnsupportedPaymentMethod);
             }
         };
 
@@ -259,11 +251,10 @@ impl Wallet {
         };
 
         let payment_preimage = melt_response.payment_preimage.clone();
-        let state = melt_response.state;
 
         let melted = Melted::from_proofs(
-            state,
-            payment_preimage.clone(),
+            melt_response.state,
+            melt_response.payment_preimage,
             quote_info.amount,
             proofs.clone(),
             change_proofs.clone(),
