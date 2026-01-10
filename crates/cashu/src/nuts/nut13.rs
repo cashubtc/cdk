@@ -204,7 +204,7 @@ impl PreMintSecrets {
     ) -> Result<Self, Error> {
         let mut pre_mint_secrets = PreMintSecrets::new(keyset_id);
 
-        for i in start_count..=end_count {
+        for i in start_count..end_count {
             let secret = Secret::from_seed(seed, keyset_id, i)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, i)?;
 

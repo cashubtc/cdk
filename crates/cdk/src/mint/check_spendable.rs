@@ -12,7 +12,11 @@ impl Mint {
         check_state: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
         let states = self.localstore.get_proofs_states(&check_state.ys).await?;
-        assert_eq!(check_state.ys.len(), states.len());
+
+        if check_state.ys.len() != states.len() {
+            tracing::error!("Database did not return states for all proofs");
+            return Err(Error::UnknownPaymentState);
+        }
 
         let proof_states_futures =
             check_state
