@@ -121,9 +121,10 @@ pub fn setup_tracing(
     let tower_http = "tower_http=warn";
     let rustls = "rustls=warn";
     let tungstenite = "tungstenite=warn";
+    let tokio_postgres = "tokio_postgres=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{default_filter},{hyper_filter},{h2_filter},{tower_filter},{tower_http},{rustls},{tungstenite}"
+        "{default_filter},{hyper_filter},{h2_filter},{tower_filter},{tower_http},{rustls},{tungstenite},{tokio_postgres}"
     ));
 
     use config::LoggingOutput;
