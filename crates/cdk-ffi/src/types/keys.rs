@@ -220,7 +220,6 @@ impl TryFrom<KeySet> for cdk::nuts::KeySet {
             input_fee_ppk: keyset.input_fee_ppk,
             keys,
             final_expiry: keyset.final_expiry,
-            input_fee_ppk: keyset.input_fee_ppk,
         })
     }
 }
