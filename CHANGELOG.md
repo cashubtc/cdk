@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.14.3](https://github.com/cashubtc/cdk/releases/tag/v0.14.3)
+
 ### Added
 - cdk-ffi: Export token creation from raw bytes ([cloudsupper]).
 
