@@ -316,6 +316,8 @@ impl TryInto<cdk_common::KeySet> for KeySet {
                 .ok_or(cdk_common::error::Error::Custom(INTERNAL_ERROR.to_owned()))?
                 .try_into()
                 .map_err(|_| cdk_common::Error::Custom("Invalid unit encoding".to_owned()))?,
+            active: Some(self.active),
+            input_fee_ppk: self.input_fee_ppk,
             keys: cdk_common::Keys::new(
                 self.keys
                     .ok_or(cdk_common::error::Error::Custom(INTERNAL_ERROR.to_owned()))?
