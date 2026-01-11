@@ -134,9 +134,10 @@ impl PaymentRequest {
     /// # Examples
     ///
     /// ```
+    /// use std::str::FromStr;
+    ///
     /// use cashu::nuts::nut18::PaymentRequest;
     /// use cashu::{Amount, MintUrl};
-    /// use std::str::FromStr;
     ///
     /// let payment_request = PaymentRequest {
     ///     payment_id: Some("test123".to_string()),
