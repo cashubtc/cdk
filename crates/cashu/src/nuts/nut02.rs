@@ -469,6 +469,15 @@ pub struct KeySet {
     pub id: Id,
     /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
+    /// Keyset state - indicates whether the mint will sign new outputs with this keyset
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
+    /// Input fee in parts per thousand (ppk) per input spent from this keyset
+    #[serde(
+        deserialize_with = "deserialize_input_fee_ppk",
+        default = "default_input_fee_ppk"
+    )]
+    pub input_fee_ppk: u64,
     /// Keyset [`Keys`]
     pub keys: Keys,
     /// Expiry
@@ -492,18 +501,6 @@ impl KeySet {
         ensure_cdk!(keys_id == self.id, Error::IncorrectKeysetId);
 
         Ok(())
-    }
-}
-
-#[cfg(feature = "mint")]
-impl From<MintKeySet> for KeySet {
-    fn from(keyset: MintKeySet) -> Self {
-        Self {
-            id: keyset.id,
-            unit: keyset.unit,
-            keys: Keys::from(keyset.keys),
-            final_expiry: keyset.final_expiry,
-        }
     }
 }
 
@@ -687,10 +684,10 @@ impl MintKeySet {
 #[cfg(feature = "mint")]
 impl From<MintKeySet> for Id {
     fn from(keyset: MintKeySet) -> Id {
-        let keys: super::KeySet = keyset.into();
-        match keys.id.version {
-            KeySetVersion::Version00 => Id::v1_from_keys(&keys.keys),
-            KeySetVersion::Version01 => Id::v2_from_data(&keys.keys, &keys.unit, keys.final_expiry),
+        let keys: Keys = keyset.keys.into();
+        match keyset.id.version {
+            KeySetVersion::Version00 => Id::v1_from_keys(&keys),
+            KeySetVersion::Version01 => Id::v2_from_data(&keys, &keyset.unit, keyset.final_expiry),
         }
     }
 }
