@@ -38,6 +38,8 @@ use crate::OidcClient;
 
 #[cfg(feature = "auth")]
 mod auth;
+#[cfg(feature = "nostr")]
+mod nostr_backup;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub use mint_connector::TorHttpClient;
 mod balance;
@@ -72,6 +74,8 @@ pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::AuthHttpClient;
 pub use mint_connector::{HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector};
 pub use multi_mint_wallet::{MultiMintReceiveOptions, MultiMintSendOptions, MultiMintWallet};
+#[cfg(feature = "nostr")]
+pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResult};
 pub use payment_request::CreateRequestParams;
 #[cfg(feature = "nostr")]
 pub use payment_request::NostrWaitInfo;
@@ -167,9 +171,9 @@ impl Wallet {
     /// Create new [`Wallet`] using the builder pattern
     /// # Synopsis
     /// ```rust
-    /// use bitcoin::bip32::Xpriv;
     /// use std::sync::Arc;
     ///
+    /// use bitcoin::bip32::Xpriv;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::{Wallet, WalletBuilder};
     /// use cdk_sqlite::wallet::memory;
