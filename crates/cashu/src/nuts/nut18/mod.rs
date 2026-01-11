@@ -1,4 +1,9 @@
-//! NUT-18 module imports
+//! NUT-18: Payment Requests
+//!
+//! This module provides JSON-based payment request functionality (CREQ-A format).
+//! For bech32m encoding (CREQ-B format), see NUT-26.
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/18.md>
 
 pub mod error;
 pub mod payment_request;

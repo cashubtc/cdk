@@ -195,6 +195,7 @@ dependencies = [
 name = "cdk-fuzz"
 version = "0.0.0"
 dependencies = [
+ "bitcoin",
  "cashu",
  "libfuzzer-sys",
  "serde_json",

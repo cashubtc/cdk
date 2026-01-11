@@ -1088,6 +1088,7 @@ dependencies = [
  "ciborium",
  "lightning 0.2.0",
  "lightning-invoice 0.34.0",
+ "nostr-sdk",
  "once_cell",
  "regex",
  "serde",
