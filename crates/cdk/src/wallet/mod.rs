@@ -535,9 +535,18 @@ impl Wallet {
                 // Extract signatures, rs, and secrets in matching order
                 // Each tuple (idx, premint, signature) ensures correct pairing
                 let proofs = construct_proofs(
-                    matched_secrets.iter().map(|(_, _, sig)| sig.clone()).collect(),
-                    matched_secrets.iter().map(|(_, p, _)| p.r.clone()).collect(),
-                    matched_secrets.iter().map(|(_, p, _)| p.secret.clone()).collect(),
+                    matched_secrets
+                        .iter()
+                        .map(|(_, _, sig)| sig.clone())
+                        .collect(),
+                    matched_secrets
+                        .iter()
+                        .map(|(_, p, _)| p.r.clone())
+                        .collect(),
+                    matched_secrets
+                        .iter()
+                        .map(|(_, p, _)| p.secret.clone())
+                        .collect(),
                     &keys,
                 )?;
 
