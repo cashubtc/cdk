@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### Added
+- cdk-ffi: Export token creation from raw bytes ([cloudsupper]).
+
+### Fixed
+- cdk: Batch proof witness queries in check_state to prevent pool exhaustion ([thesimplekid]).
+- cdk-mint-rpc: Set payment_id and payment_amount when moving mint_quote into PAID state ([asmo]).
+- cdk: Fix fee_ppk unit mismatch in select_exact_proofs ([thesimplekid]).
+- cdk: Fix wallet restore gaps ([thesimplekid]).
+
 ## [0.14.2](https://github.com/cashubtc/cdk/releases/tag/v0.14.2)
 
 ### Added
@@ -717,3 +726,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [SatsAndSports]: https://github.com/SatsAndSports
 [stefanbitcr]: https://github.com/stefanbitcr
 [lescuer97]: https://github.com/lescuer97
+[cloudsupper]: https://github.com/cloudsupper
