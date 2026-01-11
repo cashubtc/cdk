@@ -1377,7 +1377,7 @@ dependencies = [
  "getrandom 0.2.16",
  "ldk-node",
  "lightning-invoice 0.34.0",
- "ln-regtest-rs",
+ "ln-regtest-rs 0.1.0 (git+https://github.com/thesimplekid/ln-regtest-rs?rev=70eb1551)",
  "once_cell",
  "rand 0.9.2",
  "reqwest",
@@ -4219,6 +4219,25 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
+name = "ln-regtest-rs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoincore-rpc",
+ "cln-rpc",
+ "fedimint-tonic-lnd",
+ "lightning 0.1.8",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
 
 [[package]]
 name = "ln-regtest-rs"
