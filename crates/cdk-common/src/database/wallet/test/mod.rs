@@ -287,7 +287,7 @@ where
         unit: CurrencyUnit::Sat,
         active: None,
         keys: keys.clone(),
-        input_fee_ppk: None,
+        input_fee_ppk: 0,
         final_expiry: None,
     };
 
@@ -313,7 +313,7 @@ where
         unit: CurrencyUnit::Sat,
         active: None,
         keys: keys.clone(),
-        input_fee_ppk: None,
+        input_fee_ppk: 0,
         final_expiry: None,
     };
 
@@ -339,7 +339,7 @@ where
         unit: CurrencyUnit::Sat,
         active: None,
         keys,
-        input_fee_ppk: None,
+        input_fee_ppk: 0,
         final_expiry: None,
     };
 

@@ -105,7 +105,7 @@ impl Wallet {
         self.get_mint_keysets()
             .await?
             .active()
-            .min_by_key(|k| k.input_fee_ppk.unwrap_or(0))
+            .min_by_key(|k| k.input_fee_ppk)
             .cloned()
             .ok_or(Error::NoActiveKeyset)
     }
@@ -124,7 +124,7 @@ impl Wallet {
             .await?
             .active_keysets
             .iter()
-            .min_by_key(|k| k.input_fee_ppk.unwrap_or(0))
+            .min_by_key(|k| k.input_fee_ppk)
             .map(|ks| (**ks).clone())
             .ok_or(Error::NoActiveKeyset)
     }
@@ -148,7 +148,7 @@ impl Wallet {
             fees.insert(
                 keyset.id,
                 (
-                    keyset.input_fee_ppk.unwrap_or(0),
+                    keyset.input_fee_ppk,
                     keys.iter()
                         .map(|(amount, _)| amount.to_u64())
                         .collect::<Vec<_>>(),

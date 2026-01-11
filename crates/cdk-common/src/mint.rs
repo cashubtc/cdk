@@ -876,8 +876,8 @@ pub struct MintKeySetInfo {
     /// Supported amounts
     pub amounts: Vec<u64>,
     /// Input Fee ppk
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_fee_ppk: Option<u64>,
+    #[serde(default)]
+    pub input_fee_ppk: u64,
     /// Final expiry
     pub final_expiry: Option<u64>,
 }

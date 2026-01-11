@@ -58,7 +58,7 @@ pub async fn init_keysets(
 
             if let Some((input_fee_ppk, max_order)) = supported_units.get(&unit) {
                 if !keysets.is_empty()
-                    && highest_index_keyset.input_fee_ppk.unwrap_or(0) == *input_fee_ppk
+                    && highest_index_keyset.input_fee_ppk == *input_fee_ppk
                     && highest_index_keyset.amounts.len() == (*max_order as usize)
                 {
                     tracing::debug!("Current highest index keyset matches expect fee and max order. Setting active");
@@ -100,7 +100,7 @@ pub async fn init_keysets(
                         Some(derivation_path_index),
                         unit.clone(),
                         &highest_index_keyset.amounts,
-                        Some(*input_fee_ppk),
+                        *input_fee_ppk,
                         // TODO: add Mint settings for a final expiry of newly generated keysets
                         None,
                     );
@@ -130,7 +130,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
     derivation_path_index: Option<u32>,
     unit: CurrencyUnit,
     amounts: &[u64],
-    input_fee_ppk: Option<u64>,
+    input_fee_ppk: u64,
     final_expiry: Option<u64>,
 ) -> (MintKeySet, MintKeySetInfo) {
     let keyset = MintKeySet::generate(

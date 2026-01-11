@@ -45,7 +45,7 @@ pub struct RotateKeyArguments {
     /// Max order
     pub amounts: Vec<u64>,
     /// Input fee
-    pub input_fee_ppk: Option<u64>,
+    pub input_fee_ppk: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -73,8 +73,8 @@ pub struct SignatoryKeySet {
     pub keys: Keys,
     /// Amounts supported by the keyset
     pub amounts: Vec<u64>,
-    /// Information about the fee per public key
-    pub input_fee_ppk: Option<u64>,
+    /// Input fee for the keyset (parts per thousand)
+    pub input_fee_ppk: u64,
     /// Final expiry of the keyset (unix timestamp in the future)
     pub final_expiry: Option<u64>,
 }

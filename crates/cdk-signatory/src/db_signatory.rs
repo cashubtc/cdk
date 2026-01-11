@@ -81,7 +81,7 @@ impl DbSignatory {
                     Some(0),
                     unit.clone(),
                     &amounts,
-                    Some(fee),
+                    fee,
                     // TODO: add and connect settings for this
                     None,
                 );
@@ -287,7 +287,7 @@ mod test {
             &[1, 2],
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
-            None,
+            0,
             None,
             cdk_common::nut02::KeySetVersion::Version00,
         );
@@ -334,7 +334,7 @@ mod test {
             &[1, 2],
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
-            None,
+            0,
             None,
             cdk_common::nut02::KeySetVersion::Version00,
         );

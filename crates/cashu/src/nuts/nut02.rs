@@ -165,7 +165,7 @@ impl Id {
     pub fn v2_from_data(
         map: &Keys,
         unit: &CurrencyUnit,
-        input_fee_ppk: Option<u64>,
+        input_fee_ppk: u64,
         expiry: Option<u64>,
     ) -> Self {
         let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
@@ -180,10 +180,8 @@ impl Id {
         let mut data = keys_string;
         data.push_str(&format!("|unit:{}", unit));
 
-        if let Some(fee) = input_fee_ppk {
-            if fee > 0 {
-                data.push_str(&format!("|input_fee_ppk:{}", fee));
-            }
+        if input_fee_ppk > 0 {
+            data.push_str(&format!("|input_fee_ppk:{}", input_fee_ppk));
         }
 
         if let Some(expiry) = expiry {
@@ -485,8 +483,8 @@ pub struct KeySet {
     /// Keyset [`Keys`]
     pub keys: Keys,
     /// Input Fee PPK
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_fee_ppk: Option<u64>,
+    #[serde(default)]
+    pub input_fee_ppk: u64,
     /// Expiry
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_expiry: Option<u64>,
@@ -529,8 +527,8 @@ pub struct KeySetInfo {
     /// Mint will only sign from an active keyset
     pub active: bool,
     /// Input Fee PPK
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_fee_ppk: Option<u64>,
+    #[serde(default)]
+    pub input_fee_ppk: u64,
     /// Expiry of the keyset
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_expiry: Option<u64>,
@@ -569,8 +567,8 @@ pub struct MintKeySet {
     /// Keyset [`MintKeys`]
     pub keys: MintKeys,
     /// Input Fee PPK
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_fee_ppk: Option<u64>,
+    #[serde(default)]
+    pub input_fee_ppk: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Expiry [`Option<u64>`]
     pub final_expiry: Option<u64>,
@@ -589,7 +587,7 @@ impl MintKeySet {
         xpriv: Xpriv,
         unit: CurrencyUnit,
         amounts: &[u64],
-        input_fee_ppk: Option<u64>,
+        input_fee_ppk: u64,
         final_expiry: Option<u64>,
         version: KeySetVersion,
     ) -> Self {
@@ -634,13 +632,14 @@ impl MintKeySet {
     ///
     /// This function will panic if the RNG fails or if key derivation fails,
     /// which should not happen under normal circumstances.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_from_seed<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         seed: &[u8],
         amounts: &[u64],
         currency_unit: CurrencyUnit,
         derivation_path: DerivationPath,
-        input_fee_ppk: Option<u64>,
+        input_fee_ppk: u64,
         final_expiry: Option<u64>,
         version: KeySetVersion,
     ) -> Self {
@@ -664,13 +663,14 @@ impl MintKeySet {
     ///
     /// This function will panic if the RNG fails or if key derivation fails,
     /// which should not happen under normal circumstances.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_from_xpriv<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         xpriv: Xpriv,
         amounts: &[u64],
         currency_unit: CurrencyUnit,
         derivation_path: DerivationPath,
-        input_fee_ppk: Option<u64>,
+        input_fee_ppk: u64,
         final_expiry: Option<u64>,
         version: KeySetVersion,
     ) -> Self {
@@ -832,17 +832,17 @@ mod test {
         let id_from_str =
             Id::from_str("015ba18a8adcd02e715a58358eb618da4a4b3791151a4bee5e968bb88406ccf76a")
                 .unwrap();
-        let id = Id::v2_from_data(&keys, &unit, Some(input_fee_ppk), Some(expiry));
+        let id = Id::v2_from_data(&keys, &unit, input_fee_ppk, Some(expiry));
         assert_eq!(id, id_from_str);
 
         let keys: Keys = serde_json::from_str(KEYSET).unwrap();
         let id_from_str =
             Id::from_str("01ab6aa4ff30390da34986d84be5274b48ad7a74265d791095bfc39f4098d9764f")
                 .unwrap();
-        let id = Id::v2_from_data(&keys, &unit, None, Some(expiry));
+        let id = Id::v2_from_data(&keys, &unit, 0, Some(expiry));
         assert_eq!(id, id_from_str);
 
-        let id = Id::v2_from_data(&keys, &unit, None, None);
+        let id = Id::v2_from_data(&keys, &unit, 0, None);
         let id_from_str =
             Id::from_str("012fbb01a4e200c76df911eeba3b8fe1831202914b24664f4bccbd25852a6708f8")
                 .unwrap();

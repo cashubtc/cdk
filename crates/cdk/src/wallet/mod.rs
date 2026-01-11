@@ -251,7 +251,7 @@ impl Wallet {
                 .keysets
                 .get(keyset_id)
                 .ok_or(Error::UnknownKeySet)?;
-            fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk.unwrap_or(0));
+            fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk);
         }
 
         let fee_breakdown = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
@@ -272,8 +272,7 @@ impl Wallet {
             .keysets
             .get(keyset_id)
             .ok_or(Error::UnknownKeySet)?
-            .input_fee_ppk
-            .unwrap_or(0);
+            .input_fee_ppk;
 
         let fee = (input_fee_ppk * count).div_ceil(1000);
 

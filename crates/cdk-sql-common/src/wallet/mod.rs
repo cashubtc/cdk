@@ -1368,7 +1368,7 @@ fn sql_row_to_keyset(row: Vec<Column>) -> Result<KeySetInfo, Error> {
         id: column_as_string!(id, Id::from_str, Id::from_bytes),
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         active: matches!(active, Column::Integer(1)),
-        input_fee_ppk: column_as_nullable_number!(input_fee_ppk),
+        input_fee_ppk: column_as_nullable_number!(input_fee_ppk).unwrap_or(0),
         final_expiry: column_as_nullable_number!(final_expiry),
     })
 }
