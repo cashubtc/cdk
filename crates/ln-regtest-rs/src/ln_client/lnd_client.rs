@@ -1,24 +1,24 @@
 //! LND Client
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
-use fedimint_tonic_lnd::{
-    lnrpc::{
-        ConnectPeerRequest, GetInfoRequest, GetInfoResponse, LightningAddress, ListChannelsRequest,
-        NewAddressRequest, OpenChannelRequest, WalletBalanceRequest,
-    },
-    Client,
+use fedimint_tonic_lnd::lnrpc::{
+    ConnectPeerRequest, GetInfoRequest, GetInfoResponse, LightningAddress, ListChannelsRequest,
+    NewAddressRequest, OpenChannelRequest, WalletBalanceRequest,
 };
-use tokio::{sync::Mutex, time::sleep};
+use fedimint_tonic_lnd::Client;
+use serde_json::Value;
+use tokio::process::Command;
+use tokio::sync::Mutex;
+use tokio::time::sleep;
 
+use super::types::{Balance, ConnectInfo};
+use super::LightningClient;
 use crate::{hex, InvoiceStatus};
-
-use super::{
-    types::{Balance, ConnectInfo},
-    LightningClient,
-};
 
 /// Lnd
 #[derive(Clone)]
@@ -109,6 +109,119 @@ impl LndClient {
 
         Ok(balance as u64)
     }
+
+    pub async fn add_hold_invoice(&self, payment_hash: &str, amount_sat: u64) -> Result<String> {
+        let rpc_server = self.address.trim_start_matches("https://");
+
+        let output = Command::new("lncli")
+            .arg(format!("--rpcserver={}", rpc_server))
+            .arg(format!("--tlscertpath={}", self.cert_file.display()))
+            .arg(format!("--macaroonpath={}", self.macaroon_file.display()))
+            .arg("addholdinvoice")
+            .arg(payment_hash)
+            .arg(amount_sat.to_string())
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            bail!(
+                "Failed to create hold invoice: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let stdout = String::from_utf8(output.stdout)?;
+        let json: Value = serde_json::from_str(&stdout)?;
+
+        json["payment_request"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!("No payment_request in response"))
+    }
+
+    pub async fn cancel_invoice(&self, payment_hash: &str) -> Result<()> {
+        let rpc_server = self.address.trim_start_matches("https://");
+
+        let output = Command::new("lncli")
+            .arg(format!("--rpcserver={}", rpc_server))
+            .arg(format!("--tlscertpath={}", self.cert_file.display()))
+            .arg(format!("--macaroonpath={}", self.macaroon_file.display()))
+            .arg("cancelinvoice")
+            .arg(payment_hash)
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            bail!(
+                "Failed to cancel invoice: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    pub async fn settle_invoice(&self, preimage: &str) -> Result<()> {
+        let rpc_server = self.address.trim_start_matches("https://");
+
+        let output = Command::new("lncli")
+            .arg(format!("--rpcserver={}", rpc_server))
+            .arg(format!("--tlscertpath={}", self.cert_file.display()))
+            .arg(format!("--macaroonpath={}", self.macaroon_file.display()))
+            .arg("settleinvoice")
+            .arg(preimage)
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            bail!(
+                "Failed to settle invoice: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    pub async fn wait_for_hold_invoice_accepted(&self, payment_hash: &str) -> Result<()> {
+        let rpc_server = self.address.trim_start_matches("https://");
+        let start = std::time::Instant::now();
+        let mut last_state: Option<String> = None;
+
+        loop {
+            if start.elapsed() > Duration::from_secs(120) {
+                bail!(
+                    "Timeout waiting for hold invoice to be accepted (last state: {})",
+                    last_state.as_deref().unwrap_or("unknown")
+                );
+            }
+
+            let output = Command::new("lncli")
+                .arg(format!("--rpcserver={}", rpc_server))
+                .arg(format!("--tlscertpath={}", self.cert_file.display()))
+                .arg(format!("--macaroonpath={}", self.macaroon_file.display()))
+                .arg("lookupinvoice")
+                .arg(payment_hash)
+                .output()
+                .await?;
+
+            if output.status.success() {
+                let stdout = String::from_utf8(output.stdout)?;
+                let json: Value = serde_json::from_str(&stdout)?;
+
+                if let Some(state) = json["state"].as_str() {
+                    last_state = Some(state.to_string());
+                    match state {
+                        "ACCEPTED" | "SETTLED" => return Ok(()),
+                        "CANCELED" => bail!("Hold invoice was cancelled"),
+                        _ => {}
+                    }
+                }
+            }
+
+            sleep(Duration::from_millis(500)).await;
+        }
+    }
 }
 
 #[async_trait]
@@ -175,11 +288,12 @@ impl LightningClient for LndClient {
     ) -> Result<()> {
         let client = &self.client;
 
-        let mut open_channel_request = OpenChannelRequest::default();
-
-        open_channel_request.node_pubkey = hex::decode(peer_id)?;
-        open_channel_request.push_sat = push_amount.unwrap_or_default() as i64;
-        open_channel_request.local_funding_amount = amount_sat as i64;
+        let open_channel_request = OpenChannelRequest {
+            node_pubkey: hex::decode(peer_id)?,
+            push_sat: push_amount.unwrap_or_default() as i64,
+            local_funding_amount: amount_sat as i64,
+            ..Default::default()
+        };
 
         let _connect_peer = client
             .lock()

@@ -1,9 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::InvoiceStatus;
-
 use self::types::{Balance, ConnectInfo};
+use crate::InvoiceStatus;
 
 pub mod cln_client;
 pub mod lnd_client;

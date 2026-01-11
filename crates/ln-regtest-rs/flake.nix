@@ -42,7 +42,7 @@
         };
 
 
-        # Nighly for creating lock files
+        # Nightly for creating lock files
         nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default);
 
         # Common inputs

@@ -1,11 +1,9 @@
 //! CLAnd
 
-use std::{
-    path::PathBuf,
-    process::{Child, Command, Stdio},
-    thread::sleep,
-    time::Duration,
-};
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::thread::sleep;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 
@@ -76,7 +74,7 @@ impl Clnd {
     }
 
     pub fn pid(&self) -> Result<u32> {
-        let child = self.child.as_ref().ok_or(anyhow!("Unknow child"))?;
+        let child = self.child.as_ref().ok_or(anyhow!("Unknown child"))?;
 
         Ok(child.id())
     }

@@ -80,9 +80,27 @@ pub async fn init_lnd_client(work_dir: &Path) -> LndClient {
     let lnd_dir = get_lnd_dir(work_dir, "one");
     let cert_file = lnd_dir.join("tls.cert");
     let macaroon_file = lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon");
-    LndClient::new(format!("https://{LND_RPC_ADDR}"), cert_file, macaroon_file)
+
+    let mut tries = 0;
+    loop {
+        match LndClient::new(
+            format!("https://{LND_RPC_ADDR}"),
+            cert_file.clone(),
+            macaroon_file.clone(),
+        )
         .await
-        .unwrap()
+        {
+            Ok(client) => return client,
+            Err(e) => {
+                tries += 1;
+                if tries > 15 {
+                    panic!("Could not connect to lnd rpc after retries: {e}");
+                }
+                println!("Could not connect to lnd rpc (try {tries}/15): {e}");
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
 }
 
 /// Pays a Bolt11Invoice if it's on the regtest network, otherwise returns Ok

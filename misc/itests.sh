@@ -22,6 +22,12 @@ cleanup() {
 
     echo "Mint binary terminated"
 
+    # If the regtest parent was force-killed, child processes (bitcoind/lnd/cln)
+    # can survive. Kill anything still referencing the temp dir.
+    if [ ! -z "${CDK_ITESTS_DIR:-}" ]; then
+        pkill -f "$CDK_ITESTS_DIR" 2>/dev/null || true
+    fi
+
     # # Remove the temporary directory
     # if [ ! -z "$CDK_ITESTS_DIR" ] && [ -d "$CDK_ITESTS_DIR" ]; then
     #     rm -rf "$CDK_ITESTS_DIR"

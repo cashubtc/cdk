@@ -1,13 +1,12 @@
 //! Bitcoind RPC Client
 
+use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
-use std::{path::PathBuf, str::FromStr};
 
 use anyhow::Result;
-use bitcoincore_rpc::{
-    bitcoin::{Address, Amount},
-    Auth, Client, RpcApi,
-};
+use bitcoincore_rpc::bitcoin::{Address, Amount};
+use bitcoincore_rpc::{Auth, Client, RpcApi};
 
 /// Bitcoin client
 #[derive(Clone)]

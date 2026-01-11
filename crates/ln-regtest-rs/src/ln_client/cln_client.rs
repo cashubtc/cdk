@@ -1,34 +1,31 @@
 //! CLN rpc client
 
-use std::{path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
-use cln_rpc::{
-    model::{
-        requests::{
-            ConnectRequest, FetchinvoiceRequest, FundchannelRequest, GetinfoRequest,
-            InvoiceRequest, ListchannelsRequest, ListfundsRequest, ListinvoicesRequest,
-            ListpaysRequest, ListtransactionsRequest, NewaddrRequest, OfferRequest, PayRequest,
-        },
-        responses::{
-            GetinfoResponse, ListchannelsResponse, ListfundsOutputsStatus,
-            ListinvoicesInvoicesStatus, ListpaysPaysStatus, PayStatus,
-        },
-    },
-    primitives::{Amount, AmountOrAll, AmountOrAny, PublicKey},
-    ClnRpc, Request,
+use cln_rpc::model::requests::{
+    ConnectRequest, FetchinvoiceRequest, FundchannelRequest, GetinfoRequest, InvoiceRequest,
+    ListchannelsRequest, ListfundsRequest, ListinvoicesRequest, ListpaysRequest,
+    ListtransactionsRequest, NewaddrRequest, OfferRequest, PayRequest,
 };
+use cln_rpc::model::responses::{
+    GetinfoResponse, ListchannelsResponse, ListfundsOutputsStatus, ListinvoicesInvoicesStatus,
+    ListpaysPaysStatus, PayStatus,
+};
+use cln_rpc::primitives::{Amount, AmountOrAll, AmountOrAny, PublicKey};
+use cln_rpc::{ClnRpc, Request};
 use lightning::offers::offer::Offer;
-use tokio::{sync::Mutex, time::sleep};
+use tokio::sync::Mutex;
+use tokio::time::sleep;
 use uuid::Uuid;
 
+use super::types::{Balance, ConnectInfo};
+use super::LightningClient;
 use crate::{hex, InvoiceStatus};
-
-use super::{
-    types::{Balance, ConnectInfo},
-    LightningClient,
-};
 
 /// Cln
 #[derive(Clone)]
@@ -109,7 +106,7 @@ impl ClnClient {
 
         let cln_response = cln_client
             .call_typed(&FetchinvoiceRequest {
-                amount_msat: amount_msat.map(|a| Amount::from_msat(a)),
+                amount_msat: amount_msat.map(Amount::from_msat),
                 payer_note: None,
                 quantity: None,
                 recurrence_counter: None,
@@ -139,7 +136,7 @@ impl ClnClient {
 
         let label = Uuid::new_v4().to_string();
 
-        // Match like this untill we change to option
+        // Match like this until we change to option
         let amount = match amount_msat {
             Some(amount) => amount.to_string(),
             None => "any".to_string(),
@@ -184,7 +181,7 @@ impl LightningClient for ClnClient {
             _ => bail!("CLN returned wrong response kind"),
         };
 
-        let address = response.binding.ok_or(anyhow!("Unknow cln address"))?;
+        let address = response.binding.ok_or(anyhow!("Unknown cln address"))?;
 
         let address = address.first().ok_or(anyhow!("Unknown cln address"))?;
 
@@ -533,7 +530,7 @@ impl LightningClient for ClnClient {
     }
 
     async fn pay_bolt12_offer(&self, offer: &str, amount_msats: Option<u64>) -> Result<String> {
-        let offer = Offer::from_str(&offer).map_err(|_| anyhow!("Invalid offer"))?;
+        let offer = Offer::from_str(offer).map_err(|_| anyhow!("Invalid offer"))?;
 
         let amount = match amount_msats {
             Some(amount) => Amount::from_msat(amount),
