@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Error, Nut10SecretRequest, Transport};
 use crate::mint_url::MintUrl;
+use crate::nut26::CREQ_B_HRP;
 use crate::nuts::{CurrencyUnit, Proofs};
 use crate::Amount;
 
@@ -73,6 +74,13 @@ impl FromStr for PaymentRequest {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Check if it's a bech32m format (CREQ-B) - case insensitive
+        if s.to_lowercase().starts_with(CREQ_B_HRP) {
+            // Use the bech32 decoding from NUT-26
+            return Self::from_bech32_string(s).map_err(Error::Nut26Error);
+        }
+
+        // Otherwise, try the legacy CBOR format (CREQ-A)
         let s = s
             .strip_prefix(PAYMENT_REQUEST_PREFIX)
             .ok_or(Error::InvalidPrefix)?;
@@ -180,7 +188,7 @@ impl PaymentRequestBuilder {
     }
 }
 
-/// Payment Request
+/// Payment Request Payload
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentRequestPayload {
     /// Id
@@ -673,5 +681,53 @@ mod tests {
         // Test decoding the expected encoded string
         let decoded_from_spec = PaymentRequest::from_str(expected_encoded).unwrap();
         assert_eq!(decoded_from_spec.payment_id.as_ref().unwrap(), "c9e45d2a");
+    }
+
+    #[test]
+    fn test_from_str_handles_both_formats() {
+        // Create a payment request
+        let payment_request = PaymentRequest {
+            payment_id: Some("test456".to_string()),
+            amount: Some(Amount::from(100)),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            description: Some("Test both formats".to_string()),
+            transports: vec![],
+            nut10: None,
+        };
+
+        // Test CBOR format (CREQ-A) - from Display trait
+        let cbor_encoded = payment_request.to_string();
+        assert!(cbor_encoded.starts_with("creqA"));
+        let decoded_cbor =
+            PaymentRequest::from_str(&cbor_encoded).expect("Should decode CBOR format");
+        assert_eq!(decoded_cbor.payment_id, payment_request.payment_id);
+        assert_eq!(decoded_cbor.amount, payment_request.amount);
+        assert_eq!(decoded_cbor.unit, payment_request.unit);
+        assert_eq!(decoded_cbor.description, payment_request.description);
+
+        // Test bech32 format (CREQ-B)
+        let bech32_encoded = payment_request
+            .to_bech32_string()
+            .expect("Should encode to bech32");
+        assert!(bech32_encoded.to_uppercase().starts_with("CREQB"));
+        let decoded_bech32 =
+            PaymentRequest::from_str(&bech32_encoded).expect("Should decode bech32 format");
+        assert_eq!(decoded_bech32.payment_id, payment_request.payment_id);
+        assert_eq!(decoded_bech32.amount, payment_request.amount);
+        assert_eq!(decoded_bech32.unit, payment_request.unit);
+        assert_eq!(decoded_bech32.description, payment_request.description);
+
+        // Test case insensitivity for bech32
+        let bech32_lowercase = bech32_encoded.to_lowercase();
+        let decoded_lowercase =
+            PaymentRequest::from_str(&bech32_lowercase).expect("Should decode lowercase bech32");
+        assert_eq!(decoded_lowercase.payment_id, payment_request.payment_id);
+
+        let bech32_uppercase = bech32_encoded.to_uppercase();
+        let decoded_uppercase =
+            PaymentRequest::from_str(&bech32_uppercase).expect("Should decode uppercase bech32");
+        assert_eq!(decoded_uppercase.payment_id, payment_request.payment_id);
     }
 }
