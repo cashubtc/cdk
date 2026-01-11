@@ -83,9 +83,9 @@ jobs:
           BINARY_NAME="${BINARY_NAME#example-}"
           ./result/bin/$BINARY_NAME
 
-  # Discover clippy checks from flake - single source of truth
+  # Discover clippy + test checks from flake - single source of truth
   discover-checks:
-    name: "Discover clippy checks"
+    name: "Discover checks"
     runs-on: self-hosted
     timeout-minutes: 5
     outputs:
@@ -93,7 +93,7 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Get clippy check names
+      - name: Get check names
         id: checks
         run: |
           # Get all check names except pre-commit-check, example-*, msrv-*, wasm-*, doc-tests, strict-docs, ffi-tests
@@ -102,9 +102,10 @@ jobs:
           echo "checks=$checks" >> $GITHUB_OUTPUT
           echo "Found checks: $checks"
 
-  # Dynamic clippy matrix - uses cached deps from Cachix
-  clippy:
-    name: "Clippy: ${{ matrix.check }}"
+  # Dynamic clippy + test matrix - uses cached deps from Cachix
+  # Each check runs both clippy and unit tests for that crate/feature combination
+  clippy-and-test:
+    name: "Check: ${{ matrix.check }}"
     runs-on: self-hosted
     timeout-minutes: 30
     needs: [pre-commit-checks, discover-checks]
@@ -121,12 +122,12 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
         continue-on-error: true
-      - name: Run clippy check
+      - name: Run clippy and tests
         run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
 
-  # Run tests using nix develop (tests need to execute, not just build)
-  tests:
-    name: "Tests"
+  # Tests that require a running PostgreSQL instance
+  postgres-tests:
+    name: "PostgreSQL Tests"
     runs-on: self-hosted
     timeout-minutes: 30
     needs: pre-commit-checks
@@ -139,8 +140,8 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
         continue-on-error: true
-      - name: Run workspace tests
-        run: nix develop -i -L .#stable --command bash -c "start-postgres && cargo test --workspace --exclude cdk-integration-tests"
+      - name: Run clippy and tests for cdk-postgres
+        run: nix develop -i -L .#stable --command bash -c "start-postgres && cargo clippy -p cdk-postgres -- -D warnings && cargo test -p cdk-postgres"
 
   regtest-itest:
     name: "Integration regtest tests"
