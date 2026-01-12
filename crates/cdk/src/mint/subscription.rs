@@ -57,73 +57,44 @@ impl MintPubSubSpec {
     ) -> Result<Vec<MintEvent<QuoteId>>, String> {
         let mut to_return = vec![];
         let mut public_keys: Vec<PublicKey> = Vec::new();
-        let mut melt_queries = Vec::new();
-        let mut mint_queries = Vec::new();
 
         for idx in request.iter() {
             match idx {
                 NotificationId::ProofState(pk) => public_keys.push(*pk),
-                NotificationId::MeltQuoteBolt11(uuid) => {
-                    melt_queries.push(self.db.get_melt_quote(uuid))
+                NotificationId::MeltQuoteBolt11(uuid) | NotificationId::MeltQuoteBolt12(uuid) => {
+                    if let Some(melt_quote) = self
+                        .db
+                        .get_melt_quote(uuid)
+                        .await
+                        .map_err(|e| e.to_string())?
+                    {
+                        let melt_quote: MeltQuoteBolt11Response<_> = melt_quote.into();
+                        to_return.push(melt_quote.into());
+                    }
                 }
-                NotificationId::MintQuoteBolt11(uuid) => {
-                    mint_queries.push(self.get_mint_quote(uuid))
-                }
-                NotificationId::MintQuoteBolt12(uuid) => {
-                    mint_queries.push(self.get_mint_quote(uuid))
-                }
-                NotificationId::MeltQuoteBolt12(uuid) => {
-                    melt_queries.push(self.db.get_melt_quote(uuid))
+                NotificationId::MintQuoteBolt11(uuid) | NotificationId::MintQuoteBolt12(uuid) => {
+                    if let Some(mint_quote) =
+                        self.get_mint_quote(uuid).await.map_err(|e| e.to_string())?
+                    {
+                        let mint_quote = match mint_quote.payment_method.as_str() {
+                            "bolt11" => {
+                                let response: MintQuoteBolt11Response<QuoteId> = mint_quote.into();
+                                response.into()
+                            }
+                            "bolt12" => match mint_quote.try_into() {
+                                Ok(response) => {
+                                    let response: MintQuoteBolt12Response<QuoteId> = response;
+                                    response.into()
+                                }
+                                Err(_) => continue,
+                            },
+                            _ => continue,
+                        };
+
+                        to_return.push(mint_quote);
+                    }
                 }
             }
-        }
-
-        if !melt_queries.is_empty() {
-            to_return.extend(
-                futures::future::try_join_all(melt_queries)
-                    .await
-                    .map(|quotes| {
-                        quotes
-                            .into_iter()
-                            .filter_map(|quote| quote.map(|x| x.into()))
-                            .map(|x: MeltQuoteBolt11Response<QuoteId>| x.into())
-                            .collect::<Vec<_>>()
-                    })
-                    .map_err(|e| e.to_string())?,
-            );
-        }
-
-        if !mint_queries.is_empty() {
-            to_return.extend(
-                futures::future::try_join_all(mint_queries)
-                    .await
-                    .map(|quotes| {
-                        quotes
-                            .into_iter()
-                            .filter_map(|quote| {
-                                quote.and_then(|mint_quotes| {
-                                    match mint_quotes.payment_method.as_str() {
-                                        "bolt11" => {
-                                            let response: MintQuoteBolt11Response<QuoteId> =
-                                                mint_quotes.into();
-                                            Some(response.into())
-                                        }
-                                        "bolt12" => match mint_quotes.try_into() {
-                                            Ok(response) => {
-                                                let response: MintQuoteBolt12Response<QuoteId> =
-                                                    response;
-                                                Some(response.into())
-                                            }
-                                            Err(_) => None,
-                                        },
-                                        _ => None,
-                                    }
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .map_err(|e| e.to_string())?,
-            );
         }
 
         if !public_keys.is_empty() {
