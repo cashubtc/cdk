@@ -929,6 +929,14 @@ impl Mint {
             let mut outputs = Vec::with_capacity(output_len);
             let mut signatures = Vec::with_capacity(output_len);
 
+            // Build a position map to track original request order for verification
+            let position_map: HashMap<PublicKey, usize> = request
+                .outputs
+                .iter()
+                .enumerate()
+                .map(|(idx, output)| (output.blinded_secret, idx))
+                .collect();
+
             let blinded_message: Vec<PublicKey> =
                 request.outputs.iter().map(|b| b.blinded_secret).collect();
 
@@ -948,6 +956,29 @@ impl Mint {
                     outputs.push(blinded_message);
                     signatures.push(blinded_signature);
                 }
+            }
+
+            // Verify response outputs maintain the same relative order as the request
+            // This ensures the NUT-09 spec requirement that outputs[i] corresponds to signatures[i]
+            let mut last_position: Option<usize> = None;
+            for output in &outputs {
+                let current_position =
+                    position_map.get(&output.blinded_secret).ok_or_else(|| {
+                        tracing::error!("Restore response contains output not in original request");
+                        Error::Internal
+                    })?;
+
+                if let Some(last_pos) = last_position {
+                    if *current_position <= last_pos {
+                        tracing::error!(
+                            "Restore response outputs are out of order: position {} after {}",
+                            current_position,
+                            last_pos
+                        );
+                        return Err(Error::Internal);
+                    }
+                }
+                last_position = Some(*current_position);
             }
 
             Ok(RestoreResponse {
