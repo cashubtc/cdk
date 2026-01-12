@@ -89,7 +89,7 @@ impl Wallet {
         let quote_info = self.localstore.get_mint_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
-            if quote.expiry.le(&unix_time()) && quote.expiry.ne(&0) {
+            if quote.expiry < unix_time() && quote.expiry != 0 {
                 tracing::info!("Attempting to mint expired quote.");
             }
 

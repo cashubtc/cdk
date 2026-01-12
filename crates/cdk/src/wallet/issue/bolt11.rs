@@ -246,7 +246,7 @@ impl Wallet {
 
         let unix_time = unix_time();
 
-        if quote_info.expiry > unix_time {
+        if quote_info.expiry < unix_time && quote_info.expiry != 0 {
             tracing::warn!("Attempting to mint with expired quote.");
         }
 

@@ -637,10 +637,100 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::InvoiceAlreadyPaid,
                 detail: "Invoice already paid or pending".to_string(),
             },
-            // Fallback: use TokenNotVerified (10001) for unhandled errors
-            // as it's the most generic verification failure code in the spec
-            _ => ErrorResponse {
+
+            // DHKE errors - TokenNotVerified for actual verification failures
+            Error::DHKE(crate::dhke::Error::TokenNotVerified) => ErrorResponse {
                 code: ErrorCode::TokenNotVerified,
+                detail: err.to_string(),
+            },
+            Error::DHKE(_) => ErrorResponse {
+                code: ErrorCode::Unknown(50000),
+                detail: err.to_string(),
+            },
+
+            // Verification errors
+            Error::CouldNotVerifyDleq => ErrorResponse {
+                code: ErrorCode::TokenNotVerified,
+                detail: err.to_string(),
+            },
+            Error::SignatureMissingOrInvalid => ErrorResponse {
+                code: ErrorCode::WitnessMissingOrInvalid,
+                detail: err.to_string(),
+            },
+            Error::SigAllUsedInMelt => ErrorResponse {
+                code: ErrorCode::WitnessMissingOrInvalid,
+                detail: err.to_string(),
+            },
+
+            // Keyset/key errors
+            Error::AmountKey => ErrorResponse {
+                code: ErrorCode::KeysetNotFound,
+                detail: err.to_string(),
+            },
+            Error::KeysetUnknown(_) => ErrorResponse {
+                code: ErrorCode::KeysetNotFound,
+                detail: err.to_string(),
+            },
+            Error::NoActiveKeyset => ErrorResponse {
+                code: ErrorCode::KeysetInactive,
+                detail: err.to_string(),
+            },
+
+            // Quote/payment errors
+            Error::UnknownQuote => ErrorResponse {
+                code: ErrorCode::Unknown(50000),
+                detail: err.to_string(),
+            },
+            Error::MeltingDisabled => ErrorResponse {
+                code: ErrorCode::MintingDisabled,
+                detail: err.to_string(),
+            },
+            Error::PaymentPending => ErrorResponse {
+                code: ErrorCode::QuotePending,
+                detail: err.to_string(),
+            },
+            Error::UnknownPaymentState => ErrorResponse {
+                code: ErrorCode::Unknown(50000),
+                detail: err.to_string(),
+            },
+
+            // Transaction/amount errors
+            Error::SplitValuesGreater => ErrorResponse {
+                code: ErrorCode::TransactionUnbalanced,
+                detail: err.to_string(),
+            },
+            Error::AmountOverflow => ErrorResponse {
+                code: ErrorCode::TransactionUnbalanced,
+                detail: err.to_string(),
+            },
+            Error::OverIssue => ErrorResponse {
+                code: ErrorCode::TransactionUnbalanced,
+                detail: err.to_string(),
+            },
+
+            // Invoice parsing errors - no spec code for invalid format
+            Error::InvalidPaymentRequest => ErrorResponse {
+                code: ErrorCode::Unknown(50000),
+                detail: err.to_string(),
+            },
+            Error::InvoiceAmountUndefined => ErrorResponse {
+                code: ErrorCode::AmountlessInvoiceNotSupported,
+                detail: err.to_string(),
+            },
+
+            // Internal/system errors - use Unknown(99999)
+            Error::Internal => ErrorResponse {
+                code: ErrorCode::Unknown(50000),
+                detail: err.to_string(),
+            },
+            Error::Database(_) => ErrorResponse {
+                code: ErrorCode::Unknown(50000),
+                detail: err.to_string(),
+            },
+
+            // Fallback for any remaining errors - use Unknown(99999) instead of TokenNotVerified
+            _ => ErrorResponse {
+                code: ErrorCode::Unknown(50000),
                 detail: err.to_string(),
             },
         }
