@@ -76,12 +76,12 @@ impl MintPubSubSpec {
                     if let Some(mint_quote) =
                         self.get_mint_quote(uuid).await.map_err(|e| e.to_string())?
                     {
-                        let mint_quote = match mint_quote.payment_method.as_str() {
-                            "bolt11" => {
+                        let mint_quote = match idx {
+                            NotificationId::MintQuoteBolt11(_) => {
                                 let response: MintQuoteBolt11Response<QuoteId> = mint_quote.into();
                                 response.into()
                             }
-                            "bolt12" => match mint_quote.try_into() {
+                            NotificationId::MintQuoteBolt12(_) => match mint_quote.try_into() {
                                 Ok(response) => {
                                     let response: MintQuoteBolt12Response<QuoteId> = response;
                                     response.into()
