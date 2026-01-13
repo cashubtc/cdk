@@ -65,6 +65,7 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
             amounts: keys.keys().map(|x| x.to_u64()).collect::<Vec<_>>(),
             keys: cdk_common::Keys::new(keys),
             final_expiry: self.final_expiry,
+            version: self.version,
             issuer_version: self
                 .issuer_version
                 .map(|v| IssuerVersion::from_str(&v))

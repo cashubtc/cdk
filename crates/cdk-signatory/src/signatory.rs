@@ -82,6 +82,8 @@ pub struct SignatoryKeySet {
     pub final_expiry: Option<u64>,
     /// Issuer Version
     pub issuer_version: Option<IssuerVersion>,
+    /// Version is the derivation_path_index
+    pub version: u32,
 }
 
 impl From<&SignatoryKeySet> for KeySet {
@@ -135,6 +137,7 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
             input_fee_ppk: info.input_fee_ppk,
             amounts: info.amounts.clone(),
             keys: key.keys.clone().into(),
+            version: info.derivation_path_index.unwrap_or(1),
             final_expiry: key.final_expiry,
             issuer_version: info.issuer_version.clone(),
         }

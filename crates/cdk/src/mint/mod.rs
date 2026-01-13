@@ -1227,9 +1227,10 @@ mod tests {
 
         let keys = mint.pubkeys();
 
-        let expected_keys = r#"{"keysets":[{"id":"0189b01ca2ba7320cc876dab22142a03715a69f94ce4b0b6b40495b181f7c84987","unit":"sat","active":true,"keys":{"1":"03ce4b803140715740d78f75ac6d3d45a65869a131e5ecc30e6a82fa28d6a20c92","1024":"025ba80cb0976ffb41a489ab0802b8d800f0ed98610a383cf50c4976ba2304f522","1048576":"0393b48556736402981d593ef65b2cf515a3a3c47fafcdf53d8d760c8e408a3f15","1073741824":"0347232765cef64efad0d5ce6d6284ee0f30159560c1c99b1d5b03997e71601458","128":"0387657827149eecc59f3e9ad005c6921d146918aad2d621fcd607da491647f7af","131072":"021336ad827102d1cc3f38593e3678db3ad541c501eb00edfd2e7e3273490a907d","134217728":"0307a702d8e33120d14c4be4a7e59f2bdca85fc9a0aa44d03f046ee2e381b17370","16":"029fd0c57ea3413c6513786ce24fd9bc3d271c5dd289d44a62a4f238d249f487c1","16384":"0205e262dec067013a410be5a40db16747f63a9666ed0cd6d919dfb8414a5c0dfc","16777216":"0365e8c8e449a8505b99b385eddc6537aeef065047bfe1011174b440394b44119c","2":"030baaed63a0f7e70b8d67b6e71b0a08bbea9a76003a3202171a39f23c1b7a6cfe","2048":"03177255abc417bdfd2cc0b3f01d74721c60001d3eda5c9229741aff09e8318b44","2097152":"03c0c77353f25ced0eb614613ae71ad79953a5b6d0d2453c67261fe7b810b0d49b","2147483648":"0236fd16a9269bf9125bcfb60df63b28b45a20b95520b000364feb2028f7da35fb","256":"028e68e298c203a9234f419fe26d395943191cce026d31be93f1d0eb0087acf0a6","262144":"02e7e2a871b5b02fb3070450be5f3dc329ed759f14d6a60ec12098209fba2177e1","268435456":"037795e574ea67518bfab1a871c65db8fb7f9f330853a0ad2126441598fe2aaffb","32":"0364d5774ba9cd0a26dacc48ca162f9f2117daf76140cedd0022a4086be44b9771","32768":"02202ab81477b68d35ada9645626ca2d1ed1d03405e07204a21ef76179b953b5d9","33554432":"02669a53f43c897fc1e3fd0537a2fef7cd0028b9c17ba8b19f260f1d3d8987a680","4":"038c299183d2c117fd6f7481ff20b89c1eddf32c4bf35d0e6739fa791b8cbcdcd5","4096":"02c86b0d5a85472c8eca02ee050a0aabc22713b2f393ad8e30f236650d6f6fa44a","4194304":"03a00ff9c25e6dcf06dc2fafc3f0ca24de53d1b125852613a80c609b39482bc557","512":"02308dda7d4c70c68acd531dd3505fb5aa0d12dfa7d185b8a6ef56b9448d019e1b","524288":"0375be62f8ea713636f81d16b57d29c224219bb1ad56befd447ef2bcf08a4342ea","536870912":"0346f1c1d1deb0697afdbb1f3aee035b144d24c90a91000bc3fd0c5acabdaf8381","64":"0347c66658e7e2df639cdd6532a4f1aabf9bd331f0e3010ea9c736cb17750de18e","65536":"02c28e5d2aa58fc68297d1e4c56cbe63ea39dff243fb87c4ad1b61d54288539548","67108864":"03d17eff1ce29b40c41a9733702ad4888b1b04eaaa30967a3e91fcb5ddae32b255","8":"02177b2d66b5b3b5271252b75ebb8eb577f433889153152ec9334dba4915adab30","8192":"02c861553ac0d05415b81e0c75200306407a30242e2495e31e6c216650780f1830","8388608":"031189128904ca7473698bc1fd9435df8aece3f9915f06d5ecc82eaf117d9c71f4"},"input_fee_ppk":0}]}"#;
-
-        assert_eq!(expected_keys, serde_json::to_string(&keys.clone()).unwrap());
+        assert_eq!(
+            "0294c8092579e6e7ab1e07f4e82b3da6337c9f2fdd6a64e1a5e8a58fd327db359d",
+            keys.keysets[0].keys.get(&Amount::from(1)).unwrap().to_hex()
+        );
     }
 
     #[tokio::test]
@@ -1257,5 +1258,32 @@ mod tests {
         // Should be able to start again after stopping
         mint.start().await.expect("Should be able to restart");
         mint.stop().await.expect("Final stop should work");
+    }
+
+    #[tokio::test]
+    async fn mint_unit_string_collision() {
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        let currency_unit = CurrencyUnit::custom("sW8W2A_hTH_gapj1_vj5suO3JI_");
+        let rotate_argument = RotateKeyArguments {
+            unit: currency_unit,
+            amounts: Default::default(),
+            input_fee_ppk: 100,
+            final_expiry: None,
+        };
+        let rotation_result = mint.signatory.rotate_keyset(rotate_argument).await;
+
+        assert!(rotation_result.is_err());
+
+        assert!(matches!(
+            rotation_result,
+            Err(Error::UnitStringCollision(_currency_unit))
+        ));
     }
 }

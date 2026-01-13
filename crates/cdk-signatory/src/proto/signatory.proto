@@ -63,7 +63,7 @@ message KeySet {
   uint64 input_fee_ppk = 4;
   Keys keys = 5;
   optional uint64 final_expiry = 6;
-  uint64 version = 7;
+  uint32 version = 7;
   optional string issuer_version = 8;
 }
 
@@ -106,7 +106,6 @@ message Proof {
   bytes secret = 3;
   bytes c = 4;
 }
-
 
 message BlindSignatures {
   repeated BlindSignature blind_signatures = 1;
