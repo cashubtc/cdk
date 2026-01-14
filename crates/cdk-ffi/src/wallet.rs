@@ -39,7 +39,7 @@ impl Wallet {
         let m = Mnemonic::parse(&mnemonic)
             .map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
         let seed = m.to_seed_normalized("");
-
+        tracing::info!("creating ffi wallet");
         // Convert the FFI database trait to a CDK database implementation
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
