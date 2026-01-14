@@ -495,6 +495,8 @@ impl MintMetadataCache {
                 let keyset = KeySet {
                     id: *keyset_id,
                     unit: keyset_info.unit.clone(),
+                    active: Some(keyset_info.active),
+                    input_fee_ppk: keyset_info.input_fee_ppk,
                     final_expiry: keyset_info.final_expiry,
                     keys: (**keys).clone(),
                 };

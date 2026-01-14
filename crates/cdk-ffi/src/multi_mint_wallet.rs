@@ -1004,6 +1004,95 @@ impl From<MultiMintSendOptions> for CdkMultiMintSendOptions {
     }
 }
 
+/// Nostr backup methods for MultiMintWallet (NUT-XX)
+#[uniffi::export(async_runtime = "tokio")]
+impl MultiMintWallet {
+    /// Get the hex-encoded public key used for Nostr mint backup
+    ///
+    /// This key is deterministically derived from the wallet seed and can be used
+    /// to identify and decrypt backup events on Nostr relays.
+    pub fn backup_public_key(&self) -> Result<String, FfiError> {
+        let keys = self.inner.backup_keys()?;
+        Ok(keys.public_key().to_hex())
+    }
+
+    /// Backup the current mint list to Nostr relays
+    ///
+    /// Creates an encrypted NIP-78 addressable event containing all mint URLs
+    /// and publishes it to the specified relays.
+    ///
+    /// # Arguments
+    ///
+    /// * `relays` - List of Nostr relay URLs (e.g., "wss://relay.damus.io")
+    /// * `options` - Backup options including optional client name
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let relays = vec!["wss://relay.damus.io".to_string(), "wss://nos.lol".to_string()];
+    /// let options = BackupOptions { client: Some("my-wallet".to_string()) };
+    /// let result = wallet.backup_mints(relays, options).await?;
+    /// println!("Backup published with event ID: {}", result.event_id);
+    /// ```
+    pub async fn backup_mints(
+        &self,
+        relays: Vec<String>,
+        options: BackupOptions,
+    ) -> Result<BackupResult, FfiError> {
+        let result = self.inner.backup_mints(relays, options.into()).await?;
+        Ok(result.into())
+    }
+
+    /// Restore mint list from Nostr relays
+    ///
+    /// Fetches the most recent backup event from the specified relays,
+    /// decrypts it, and optionally adds the discovered mints to the wallet.
+    ///
+    /// # Arguments
+    ///
+    /// * `relays` - List of Nostr relay URLs to fetch from
+    /// * `add_mints` - If true, automatically add discovered mints to the wallet
+    /// * `options` - Restore options including timeout
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let relays = vec!["wss://relay.damus.io".to_string()];
+    /// let result = wallet.restore_mints(relays, true, RestoreOptions::default()).await?;
+    /// println!("Restored {} mints, {} newly added", result.mint_count, result.mints_added);
+    /// ```
+    pub async fn restore_mints(
+        &self,
+        relays: Vec<String>,
+        add_mints: bool,
+        options: RestoreOptions,
+    ) -> Result<RestoreResult, FfiError> {
+        let result = self
+            .inner
+            .restore_mints(relays, add_mints, options.into())
+            .await?;
+        Ok(result.into())
+    }
+
+    /// Fetch the backup without adding mints to the wallet
+    ///
+    /// This is useful for previewing what mints are in the backup before
+    /// deciding to add them.
+    ///
+    /// # Arguments
+    ///
+    /// * `relays` - List of Nostr relay URLs to fetch from
+    /// * `options` - Restore options including timeout
+    pub async fn fetch_backup(
+        &self,
+        relays: Vec<String>,
+        options: RestoreOptions,
+    ) -> Result<MintBackup, FfiError> {
+        let backup = self.inner.fetch_backup(relays, options.into()).await?;
+        Ok(backup.into())
+    }
+}
+
 /// Type alias for balances by mint URL
 pub type BalanceMap = HashMap<String, Amount>;
 

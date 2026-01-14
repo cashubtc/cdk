@@ -11,6 +11,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1"
+bitcoin = { version = "0.32.2", default-features = false }
 
 [dependencies.cashu]
 path = "../crates/cashu"
@@ -130,6 +131,20 @@ bench = false
 [[bin]]
 name = "fuzz_dleq"
 path = "fuzz_targets/fuzz_dleq.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_payment_request_bech32"
+path = "fuzz_targets/fuzz_payment_request_bech32.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_payment_request_bech32_bytes"
+path = "fuzz_targets/fuzz_payment_request_bech32_bytes.rs"
 test = false
 doc = false
 bench = false

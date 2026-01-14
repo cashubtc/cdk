@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::wallet::{MintQuote, Transaction, TransactionDirection};
-use cdk_common::{Proofs, SecretKey};
+use cdk_common::{MintQuoteState, Proofs, SecretKey};
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
@@ -113,7 +113,7 @@ impl Wallet {
 
         let unix_time = unix_time();
 
-        if quote_info.expiry > unix_time {
+        if quote_info.expiry < unix_time && quote_info.expiry != 0 {
             tracing::warn!("Attempting to mint with expired quote.");
         }
 
@@ -167,8 +167,8 @@ impl Wallet {
             signature: None,
         };
 
-        if let Some(secret_key) = quote_info.secret_key {
-            request.sign(secret_key)?;
+        if let Some(secret_key) = &quote_info.secret_key {
+            request.sign(secret_key.clone())?;
         }
 
         let mint_res = self.client.post_mint(request).await?;
@@ -194,8 +194,12 @@ impl Wallet {
             &keys,
         )?;
 
-        // Remove filled quote from store
-        self.localstore.remove_mint_quote(&quote_info.id).await?;
+        // Update quote with issued amount
+        let mut quote_info = quote_info;
+        quote_info.state = MintQuoteState::Issued;
+        quote_info.amount_issued = proofs.total_amount()?;
+
+        self.localstore.add_mint_quote(quote_info.clone()).await?;
 
         let proof_infos = proofs
             .iter()
