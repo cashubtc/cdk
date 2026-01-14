@@ -6,7 +6,7 @@
 use std::str::FromStr;
 
 use cdk_common::database::Error as DatabaseError;
-use cdk_common::mint::OperationKind;
+use cdk_common::mint::{OperationKind, Saga};
 use cdk_common::QuoteId;
 
 use super::{Error, Mint};
@@ -15,6 +15,23 @@ use crate::mint::{MeltQuote, MeltQuoteState};
 use crate::types::PaymentProcessorKey;
 
 impl Mint {
+    /// Get incomplete melt saga by quote_id
+    async fn get_melt_saga_by_quote_id(&self, quote_id: &str) -> Result<Option<Saga>, Error> {
+        let incomplete_sagas = self
+            .localstore
+            .get_incomplete_sagas(OperationKind::Melt)
+            .await?;
+
+        for saga in incomplete_sagas {
+            if let Some(ref qid) = saga.quote_id {
+                if qid == quote_id {
+                    return Ok(Some(saga));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Checks the payment status of a melt quote with the LN backend
     ///
     /// This is a helper function used by saga recovery to determine whether to
@@ -296,7 +313,7 @@ impl Mint {
                 }
             };
 
-            let quote = match self.localstore.get_melt_quote(&quote_id_parsed).await {
+            let mut quote = match self.localstore.get_melt_quote(&quote_id_parsed).await {
                 Ok(Some(q)) => q,
                 Ok(None) => {
                     tracing::warn!(
@@ -457,68 +474,54 @@ impl Mint {
                     Ok(payment_response) => {
                         match payment_response.status {
                             MeltQuoteState::Paid => {
-                                // Payment succeeded - finalize instead of compensating
-                                tracing::info!(
-                                    "Saga {} for quote {} - payment PAID on LN backend, will finalize",
-                                    saga.operation_id,
-                                    quote_id
-                                );
-
-                                if let Err(err) = self
-                                    .finalize_paid_melt_quote(
-                                        &quote,
-                                        payment_response.total_spent,
-                                        payment_response.payment_proof,
-                                        &payment_response.payment_lookup_id,
-                                    )
-                                    .await
+                                if let Err(err) = super::saga_recovery::process_melt_saga_outcome(
+                                    &saga,
+                                    &mut quote,
+                                    &payment_response,
+                                    &self.localstore,
+                                    &self.pubsub_manager,
+                                    self,
+                                )
+                                .await
                                 {
                                     tracing::error!(
-                                        "Failed to finalize paid melt saga {}: {}. Will retry on next recovery cycle.",
+                                        "Failed to process paid melt saga {}: {}. Will retry on next recovery cycle.",
                                         saga.operation_id,
                                         err
                                     );
                                     continue;
                                 }
-
-                                // Delete saga after successful finalization
-                                let mut tx = self.localstore.begin_transaction().await?;
-                                if let Err(e) = tx.delete_saga(&saga.operation_id).await {
-                                    tracing::error!(
-                                        "Failed to delete saga {}: {}. Will retry on next recovery cycle.",
-                                        saga.operation_id,
-                                        e
-                                    );
-                                    tx.rollback().await?;
-                                    continue;
-                                }
-                                tx.commit().await?;
-                                tracing::info!(
-                                    "Successfully recovered and finalized melt saga {}",
-                                    saga.operation_id
-                                );
-
-                                continue; // Skip compensation, saga handled
+                                continue; // Saga handled
                             }
                             MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
-                                // Payment failed - compensate
-                                tracing::info!(
-                                    "Saga {} for quote {} - payment {} on LN backend, will compensate",
-                                    saga.operation_id,
-                                    quote_id,
-                                    payment_response.status
-                                );
-                                true
+                                if let Err(err) = super::saga_recovery::process_melt_saga_outcome(
+                                    &saga,
+                                    &mut quote,
+                                    &payment_response,
+                                    &self.localstore,
+                                    &self.pubsub_manager,
+                                    self,
+                                )
+                                .await
+                                {
+                                    tracing::error!(
+                                        "Failed to process failed melt saga {}: {}. Will retry on next recovery cycle.",
+                                        saga.operation_id,
+                                        err
+                                    );
+                                    continue;
+                                }
+                                continue; // Saga handled
                             }
                             MeltQuoteState::Pending | MeltQuoteState::Unknown => {
                                 // Payment still pending - skip for check_pending_melt_quotes
                                 tracing::info!(
-                                    "Saga {} for quote {} - payment {} on LN backend, skipping (will be handled by check_pending_melt_quotes)",
+                                    "Saga {} for quote {} - payment {} on LN backend, skipping",
                                     saga.operation_id,
                                     quote_id,
                                     payment_response.status
                                 );
-                                continue; // Skip this saga, don't compensate or finalize
+                                continue; // Skip this saga
                             }
                         }
                     }
@@ -657,6 +660,44 @@ impl Mint {
             "Successfully recovered {} incomplete melt sagas.",
             total_sagas
         );
+
+        Ok(())
+    }
+
+    /// Handle pending melt quote by resuming the saga
+    pub(crate) async fn handle_pending_melt_quote(
+        &self,
+        quote: &mut MeltQuote,
+    ) -> Result<(), Error> {
+        if quote.state != MeltQuoteState::Pending {
+            return Ok(());
+        }
+
+        let saga = match self
+            .get_melt_saga_by_quote_id(&quote.id.to_string())
+            .await?
+        {
+            Some(saga) => saga,
+            None => {
+                tracing::warn!(
+                    "No saga found for pending melt quote {}, cannot resume",
+                    quote.id
+                );
+                return Ok(());
+            }
+        };
+
+        let payment_response = self.check_melt_payment_status(quote).await?;
+
+        super::saga_recovery::process_melt_saga_outcome(
+            &saga,
+            quote,
+            &payment_response,
+            &self.localstore,
+            &self.pubsub_manager,
+            self,
+        )
+        .await?;
 
         Ok(())
     }

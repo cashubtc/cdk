@@ -62,6 +62,8 @@ impl MintPubSubSpec {
             match idx {
                 NotificationId::ProofState(pk) => public_keys.push(*pk),
                 NotificationId::MeltQuoteBolt11(uuid) | NotificationId::MeltQuoteBolt12(uuid) => {
+                    // TODO: In the HTTP handler, we check with the LN backend if a payment is in a pending quote state to resolve stuck payments.
+                    // Implement similar logic here for WebSocket-only wallets.
                     if let Some(melt_quote) = self
                         .db
                         .get_melt_quote(uuid)
