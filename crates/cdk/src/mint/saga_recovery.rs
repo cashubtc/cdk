@@ -7,6 +7,7 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltQuote, Saga};
 use cdk_common::nuts::MeltQuoteState;
 use cdk_common::payment::MakePaymentResponse;
+use cdk_common::State;
 use tracing::instrument;
 
 use crate::mint::subscription::PubSubManager;
@@ -79,6 +80,11 @@ pub(crate) async fn process_melt_saga_outcome(
             .await?;
 
             quote.state = MeltQuoteState::Unpaid;
+
+            // Publish proof state changes
+            for pk in input_ys.iter() {
+                pubsub.proof_state((*pk, State::Unspent));
+            }
         }
         MeltQuoteState::Pending | MeltQuoteState::Unknown => {
             tracing::debug!(

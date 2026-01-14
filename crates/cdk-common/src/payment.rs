@@ -82,7 +82,7 @@ impl From<Infallible> for Error {
 }
 
 /// Payment identifier types
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "type", content = "value")]
 pub enum PaymentIdentifier {
     /// Label identifier
@@ -147,6 +147,21 @@ impl std::fmt::Display for PaymentIdentifier {
             Self::Bolt12PaymentHash(h) => write!(f, "{}", hex::encode(h)),
             Self::PaymentId(h) => write!(f, "{}", hex::encode(h)),
             Self::CustomId(c) => write!(f, "{c}"),
+        }
+    }
+}
+
+impl std::fmt::Debug for PaymentIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PaymentIdentifier::PaymentHash(h) => write!(f, "PaymentHash({})", hex::encode(h)),
+            PaymentIdentifier::Bolt12PaymentHash(h) => {
+                write!(f, "Bolt12PaymentHash({})", hex::encode(h))
+            }
+            PaymentIdentifier::PaymentId(h) => write!(f, "PaymentId({})", hex::encode(h)),
+            PaymentIdentifier::Label(s) => write!(f, "Label({})", s),
+            PaymentIdentifier::OfferId(s) => write!(f, "OfferId({})", s),
+            PaymentIdentifier::CustomId(s) => write!(f, "CustomId({})", s),
         }
     }
 }
