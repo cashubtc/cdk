@@ -1,0 +1,20 @@
+[package]
+name = "cdk-log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Conditional logging macros for CDK (FFI-compatible)"
+homepage = "https://github.com/cashubtc/cdk"
+
+[features]
+default = []
+# When this feature is enabled, use println! instead of tracing
+ffi = []
+
+[dependencies]
+tracing.workspace = true
+
+[lints]
+workspace = true

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use bip39::Mnemonic;
 use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
+use cdk_log::{log_debug, log_error, log_info};
 
 use crate::error::FfiError;
 use crate::token::Token;
@@ -35,26 +36,35 @@ impl Wallet {
         db: Arc<dyn crate::database::WalletDatabase>,
         config: WalletConfig,
     ) -> Result<Self, FfiError> {
+        log_info!("Creating wallet for mint: {}", mint_url);
+        log_debug!("Wallet unit: {:?}", unit);
+
         // Parse mnemonic and generate seed without passphrase
-        let m = Mnemonic::parse(&mnemonic)
-            .map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+        let m = Mnemonic::parse(&mnemonic).map_err(|e| {
+            log_error!("Failed to parse mnemonic: {}", e);
+            FfiError::InvalidMnemonic { msg: e.to_string() }
+        })?;
         let seed = m.to_seed_normalized("");
 
         // Convert the FFI database trait to a CDK database implementation
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
-        let wallet =
-            CdkWalletBuilder::new()
-                .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
-                    FfiError::InvalidUrl { msg: e.to_string() }
-                })?)
-                .unit(unit.into())
-                .localstore(localstore)
-                .seed(seed)
-                .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
-                .build()
-                .map_err(FfiError::from)?;
+        let wallet = CdkWalletBuilder::new()
+            .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
+                log_error!("Invalid mint URL: {}", e);
+                FfiError::InvalidUrl { msg: e.to_string() }
+            })?)
+            .unit(unit.into())
+            .localstore(localstore)
+            .seed(seed)
+            .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
+            .build()
+            .map_err(|e| {
+                log_error!("Failed to build wallet: {}", e);
+                FfiError::from(e)
+            })?;
 
+        log_info!("Wallet created successfully");
         Ok(Self {
             inner: Arc::new(wallet),
         })

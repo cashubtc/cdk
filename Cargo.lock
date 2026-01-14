@@ -1332,6 +1332,7 @@ dependencies = [
  "bip39",
  "cdk",
  "cdk-common",
+ "cdk-log",
  "cdk-postgres",
  "cdk-sql-common",
  "cdk-sqlite",
@@ -1453,6 +1454,13 @@ dependencies = [
  "tokio-util",
  "tonic 0.13.1",
  "tonic-build 0.13.1",
+ "tracing",
+]
+
+[[package]]
+name = "cdk-log"
+version = "0.14.0"
+dependencies = [
  "tracing",
 ]
 
