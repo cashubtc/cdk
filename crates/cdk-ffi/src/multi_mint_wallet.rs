@@ -806,7 +806,7 @@ impl MultiMintWallet {
             .inner
             .wait_for_nostr_payment(info_inner)
             .await
-            .map_err(|e| FfiError::internal(e))?;
+            .map_err(FfiError::internal)?;
         Ok(amount.into())
     }
 }

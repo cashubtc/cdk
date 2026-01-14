@@ -50,7 +50,7 @@ impl WalletPostgresDatabase {
             Err(_) => pg_runtime()
                 .block_on(async move { cdk_postgres::new_wallet_pg_database(url.as_str()).await }),
         }
-        .map_err(|e| FfiError::database(e))?;
+        .map_err(FfiError::database)?;
         Ok(Arc::new(WalletPostgresDatabase {
             inner: FfiWalletSQLDatabase::new(inner),
         }))

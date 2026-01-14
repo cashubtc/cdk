@@ -800,7 +800,7 @@ where
             .inner
             .get_proofs_by_ys(cdk_ys)
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
 
         Ok(result.into_iter().map(Into::into).collect())
     }
@@ -811,7 +811,7 @@ where
             .inner
             .get_mint(cdk_mint_url)
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
         Ok(result.map(Into::into))
     }
 
@@ -820,7 +820,7 @@ where
             .inner
             .get_mints()
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
         Ok(result
             .into_iter()
             .map(|(k, v)| (k.into(), v.map(Into::into)))
@@ -836,7 +836,7 @@ where
             .inner
             .get_mint_keysets(cdk_mint_url)
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
         Ok(result.map(|keysets| keysets.into_iter().map(Into::into).collect()))
     }
 
@@ -846,7 +846,7 @@ where
             .inner
             .get_keyset_by_id(&cdk_id)
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
         Ok(result.map(Into::into))
     }
 
@@ -855,7 +855,7 @@ where
             .inner
             .get_mint_quote(&quote_id)
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
         Ok(result.map(|q| q.into()))
     }
 
@@ -864,7 +864,7 @@ where
             .inner
             .get_mint_quotes()
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
         Ok(result.into_iter().map(|q| q.into()).collect())
     }
 
@@ -873,7 +873,7 @@ where
             .inner
             .get_unissued_mint_quotes()
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
         Ok(result.into_iter().map(|q| q.into()).collect())
     }
 
@@ -882,7 +882,7 @@ where
             .inner
             .get_melt_quote(&quote_id)
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
         Ok(result.map(|q| q.into()))
     }
 
@@ -891,7 +891,7 @@ where
             .inner
             .get_melt_quotes()
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
         Ok(result.into_iter().map(|q| q.into()).collect())
     }
 
@@ -901,7 +901,7 @@ where
             .inner
             .get_keys(&cdk_id)
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
         Ok(result.map(Into::into))
     }
 
@@ -928,7 +928,7 @@ where
             .inner
             .get_proofs(cdk_mint_url, cdk_unit, cdk_state, cdk_spending_conditions)
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
 
         Ok(result.into_iter().map(Into::into).collect())
     }
@@ -946,7 +946,7 @@ where
         self.inner
             .get_balance(cdk_mint_url, cdk_unit, cdk_state)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn get_transaction(
@@ -958,7 +958,7 @@ where
             .inner
             .get_transaction(cdk_id)
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
         Ok(result.map(Into::into))
     }
 
@@ -976,7 +976,7 @@ where
             .inner
             .list_transactions(cdk_mint_url, cdk_direction, cdk_unit)
             .await
-            .map_err(|e| FfiError::database(e))?;
+            .map_err(FfiError::database)?;
 
         Ok(result.into_iter().map(Into::into).collect())
     }
@@ -990,7 +990,7 @@ where
         self.inner
             .kv_read(&primary_namespace, &secondary_namespace, &key)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn kv_list(
@@ -1001,7 +1001,7 @@ where
         self.inner
             .kv_list(&primary_namespace, &secondary_namespace)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn kv_write(
@@ -1014,7 +1014,7 @@ where
         self.inner
             .kv_write(&primary_namespace, &secondary_namespace, &key, &value)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn kv_remove(
@@ -1026,7 +1026,7 @@ where
         self.inner
             .kv_remove(&primary_namespace, &secondary_namespace, &key)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     // ========== Write methods ==========
@@ -1061,7 +1061,7 @@ where
         self.inner
             .update_proofs(cdk_added, cdk_removed_ys)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn update_proofs_state(
@@ -1077,7 +1077,7 @@ where
         self.inner
             .update_proofs_state(cdk_ys, cdk_state)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), FfiError> {
@@ -1085,7 +1085,7 @@ where
         self.inner
             .add_transaction(cdk_transaction)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError> {
@@ -1093,7 +1093,7 @@ where
         self.inner
             .remove_transaction(cdk_id)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn update_mint_url(
@@ -1106,7 +1106,7 @@ where
         self.inner
             .update_mint_url(cdk_old, cdk_new)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError> {
@@ -1114,7 +1114,7 @@ where
         self.inner
             .increment_keyset_counter(&cdk_id, count)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn add_mint(
@@ -1127,7 +1127,7 @@ where
         self.inner
             .add_mint(cdk_mint_url, cdk_mint_info)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), FfiError> {
@@ -1135,7 +1135,7 @@ where
         self.inner
             .remove_mint(cdk_mint_url)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn add_mint_keysets(
@@ -1148,7 +1148,7 @@ where
         self.inner
             .add_mint_keysets(cdk_mint_url, cdk_keysets)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError> {
@@ -1156,14 +1156,14 @@ where
         self.inner
             .add_mint_quote(cdk_quote)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError> {
         self.inner
             .remove_mint_quote(&quote_id)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError> {
@@ -1171,14 +1171,14 @@ where
         self.inner
             .add_melt_quote(cdk_quote)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn remove_melt_quote(&self, quote_id: String) -> Result<(), FfiError> {
         self.inner
             .remove_melt_quote(&quote_id)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn add_keys(&self, keyset: KeySet) -> Result<(), FfiError> {
@@ -1186,7 +1186,7 @@ where
         self.inner
             .add_keys(cdk_keyset)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 
     async fn remove_keys(&self, id: Id) -> Result<(), FfiError> {
@@ -1194,7 +1194,7 @@ where
         self.inner
             .remove_keys(&cdk_id)
             .await
-            .map_err(|e| FfiError::database(e))
+            .map_err(FfiError::database)
     }
 }
 

@@ -510,7 +510,7 @@ impl Wallet {
 
     /// Get fees for a specific keyset ID
     pub async fn get_keyset_fees_by_id(&self, keyset_id: String) -> Result<u64, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(|e| FfiError::internal(e))?;
+        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
         Ok(self
             .inner
             .get_keyset_fees_and_amounts_by_id(id)
@@ -539,7 +539,7 @@ impl Wallet {
         proof_count: u32,
         keyset_id: String,
     ) -> Result<Amount, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(|e| FfiError::internal(e))?;
+        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
         let fee = self
             .inner
             .get_keyset_count_fee(&id, proof_count as u64)

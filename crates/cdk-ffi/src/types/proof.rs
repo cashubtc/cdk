@@ -130,7 +130,7 @@ pub fn proof_has_dleq(proof: &Proof) -> bool {
 #[uniffi::export]
 pub fn proof_verify_htlc(proof: &Proof) -> Result<(), FfiError> {
     let cdk_proof: cdk::nuts::Proof = proof.clone().try_into()?;
-    cdk_proof.verify_htlc().map_err(|e| FfiError::internal(e))
+    cdk_proof.verify_htlc().map_err(FfiError::internal)
 }
 
 /// Verify DLEQ proof on a proof
@@ -143,7 +143,7 @@ pub fn proof_verify_dleq(
     let cdk_pubkey: cdk::nuts::PublicKey = mint_pubkey.try_into()?;
     cdk_proof
         .verify_dleq(cdk_pubkey)
-        .map_err(|e| FfiError::internal(e))
+        .map_err(FfiError::internal)
 }
 
 /// Sign a P2PK proof with a secret key, returning a new signed proof
@@ -155,7 +155,7 @@ pub fn proof_sign_p2pk(proof: Proof, secret_key_hex: String) -> Result<Proof, Ff
 
     cdk_proof
         .sign_p2pk(secret_key)
-        .map_err(|e| FfiError::internal(e))?;
+        .map_err(FfiError::internal)?;
 
     Ok(cdk_proof.into())
 }
