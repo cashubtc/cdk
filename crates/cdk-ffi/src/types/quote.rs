@@ -59,7 +59,7 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             .secret_key
             .map(|hex| cdk::nuts::SecretKey::from_hex(&hex))
             .transpose()
-            .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
+            .map_err(|e| FfiError::internal(format!("Invalid secret key: {}", e)))?;
 
         Ok(Self {
             id: quote.id,

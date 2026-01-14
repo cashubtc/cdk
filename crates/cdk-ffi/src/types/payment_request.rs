@@ -97,7 +97,7 @@ impl PaymentRequest {
     pub fn from_string(encoded: String) -> Result<Arc<Self>, FfiError> {
         use std::str::FromStr;
         let inner = cdk::nuts::PaymentRequest::from_str(&encoded)
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+            .map_err(|e| FfiError::internal(e))?;
         Ok(Arc::new(Self { inner }))
     }
 

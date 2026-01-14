@@ -192,16 +192,16 @@ impl SecretKey {
     pub fn from_hex(hex: String) -> Result<Self, FfiError> {
         // Validate hex string length (should be 64 characters for 32 bytes)
         if hex.len() != 64 {
-            return Err(FfiError::InvalidHex {
-                msg: "Secret key hex must be exactly 64 characters (32 bytes)".to_string(),
-            });
+            return Err(FfiError::internal(
+                "Secret key hex must be exactly 64 characters (32 bytes)",
+            ));
         }
 
         // Validate hex format
         if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(FfiError::InvalidHex {
-                msg: "Secret key hex contains invalid characters".to_string(),
-            });
+            return Err(FfiError::internal(
+                "Secret key hex contains invalid characters",
+            ));
         }
 
         Ok(Self { hex })
@@ -364,9 +364,9 @@ impl PreparedSend {
             if let Ok(mut guard) = self.inner.lock() {
                 guard.take()
             } else {
-                return Err(FfiError::Generic {
-                    msg: "Failed to acquire lock on PreparedSend".to_string(),
-                });
+                return Err(FfiError::internal(
+                    "Failed to acquire lock on PreparedSend",
+                ));
             }
         };
 
@@ -375,9 +375,9 @@ impl PreparedSend {
             let token = inner.confirm(send_memo).await?;
             Ok(token.into())
         } else {
-            Err(FfiError::Generic {
-                msg: "PreparedSend has already been consumed or cancelled".to_string(),
-            })
+            Err(FfiError::internal(
+                "PreparedSend has already been consumed or cancelled",
+            ))
         }
     }
 
@@ -387,9 +387,9 @@ impl PreparedSend {
             if let Ok(mut guard) = self.inner.lock() {
                 guard.take()
             } else {
-                return Err(FfiError::Generic {
-                    msg: "Failed to acquire lock on PreparedSend".to_string(),
-                });
+                return Err(FfiError::internal(
+                    "Failed to acquire lock on PreparedSend",
+                ));
             }
         };
 
@@ -397,9 +397,9 @@ impl PreparedSend {
             inner.cancel().await?;
             Ok(())
         } else {
-            Err(FfiError::Generic {
-                msg: "PreparedSend has already been consumed or cancelled".to_string(),
-            })
+            Err(FfiError::internal(
+                "PreparedSend has already been consumed or cancelled",
+            ))
         }
     }
 }

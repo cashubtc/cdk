@@ -166,16 +166,16 @@ impl TransactionId {
     pub fn from_hex(hex: String) -> Result<Self, FfiError> {
         // Validate hex string length (should be 64 characters for 32 bytes)
         if hex.len() != 64 {
-            return Err(FfiError::InvalidHex {
-                msg: "Transaction ID hex must be exactly 64 characters (32 bytes)".to_string(),
-            });
+            return Err(FfiError::internal(
+                "Transaction ID hex must be exactly 64 characters (32 bytes)",
+            ));
         }
 
         // Validate hex format
         if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(FfiError::InvalidHex {
-                msg: "Transaction ID hex contains invalid characters".to_string(),
-            });
+            return Err(FfiError::internal(
+                "Transaction ID hex contains invalid characters",
+            ));
         }
 
         Ok(Self { hex })
@@ -206,7 +206,7 @@ impl TryFrom<TransactionId> for cdk::wallet::types::TransactionId {
 
     fn try_from(id: TransactionId) -> Result<Self, Self::Error> {
         cdk::wallet::types::TransactionId::from_hex(&id.hex)
-            .map_err(|e| FfiError::InvalidHex { msg: e.to_string() })
+            .map_err(|e| FfiError::internal(format!("Invalid transaction ID: {}", e)))
     }
 }
 
@@ -244,14 +244,14 @@ impl TryFrom<AuthProof> for cdk::nuts::AuthProof {
         use std::str::FromStr;
         Ok(Self {
             keyset_id: cdk::nuts::Id::from_str(&auth_proof.keyset_id)
-                .map_err(|e| FfiError::Serialization { msg: e.to_string() })?,
+                .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             secret: {
                 use std::str::FromStr;
                 cdk::secret::Secret::from_str(&auth_proof.secret)
-                    .map_err(|e| FfiError::Serialization { msg: e.to_string() })?
+                    .map_err(|e| FfiError::internal(format!("Invalid secret: {}", e)))?
             },
             c: cdk::nuts::PublicKey::from_str(&auth_proof.c)
-                .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?,
+                .map_err(|e| FfiError::internal(format!("Invalid public key: {}", e)))?,
             dleq: None, // FFI doesn't expose DLEQ proofs for simplicity
         })
     }
