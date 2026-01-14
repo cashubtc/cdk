@@ -364,9 +364,7 @@ impl PreparedSend {
             if let Ok(mut guard) = self.inner.lock() {
                 guard.take()
             } else {
-                return Err(FfiError::internal(
-                    "Failed to acquire lock on PreparedSend",
-                ));
+                return Err(FfiError::internal("Failed to acquire lock on PreparedSend"));
             }
         };
 
@@ -387,9 +385,7 @@ impl PreparedSend {
             if let Ok(mut guard) = self.inner.lock() {
                 guard.take()
             } else {
-                return Err(FfiError::internal(
-                    "Failed to acquire lock on PreparedSend",
-                ));
+                return Err(FfiError::internal("Failed to acquire lock on PreparedSend"));
             }
         };
 

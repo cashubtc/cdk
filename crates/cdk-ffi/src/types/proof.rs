@@ -130,9 +130,7 @@ pub fn proof_has_dleq(proof: &Proof) -> bool {
 #[uniffi::export]
 pub fn proof_verify_htlc(proof: &Proof) -> Result<(), FfiError> {
     let cdk_proof: cdk::nuts::Proof = proof.clone().try_into()?;
-    cdk_proof
-        .verify_htlc()
-        .map_err(|e| FfiError::internal(e))
+    cdk_proof.verify_htlc().map_err(|e| FfiError::internal(e))
 }
 
 /// Verify DLEQ proof on a proof
@@ -288,7 +286,8 @@ impl TryFrom<Conditions> for cdk::nuts::nut11::Conditions {
                     .pubkeys
                     .into_iter()
                     .map(|s| {
-                        s.parse().map_err(|e| FfiError::internal(format!("Invalid pubkey: {}", e)))
+                        s.parse()
+                            .map_err(|e| FfiError::internal(format!("Invalid pubkey: {}", e)))
                     })
                     .collect::<Result<Vec<_>, _>>()?,
             )
@@ -302,7 +301,8 @@ impl TryFrom<Conditions> for cdk::nuts::nut11::Conditions {
                     .refund_keys
                     .into_iter()
                     .map(|s| {
-                        s.parse().map_err(|e| FfiError::internal(format!("Invalid refund key: {}", e)))
+                        s.parse()
+                            .map_err(|e| FfiError::internal(format!("Invalid refund key: {}", e)))
                     })
                     .collect::<Result<Vec<_>, _>>()?,
             )
@@ -311,9 +311,7 @@ impl TryFrom<Conditions> for cdk::nuts::nut11::Conditions {
         let sig_flag = match conditions.sig_flag {
             0 => cdk::nuts::nut11::SigFlag::SigInputs,
             1 => cdk::nuts::nut11::SigFlag::SigAll,
-            _ => {
-                return Err(FfiError::internal("Invalid sig_flag value"))
-            }
+            _ => return Err(FfiError::internal("Invalid sig_flag value")),
         };
 
         Ok(Self {

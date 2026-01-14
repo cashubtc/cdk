@@ -80,8 +80,8 @@ impl MultiMintWallet {
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
         // Parse proxy URL
-        let proxy_url =
-            url::Url::parse(&proxy_url).map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))?;
+        let proxy_url = url::Url::parse(&proxy_url)
+            .map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))?;
 
         let wallet = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| {
@@ -133,7 +133,10 @@ impl MultiMintWallet {
             wallet.set_metadata_cache_ttl(ttl);
             Ok(())
         } else {
-            Err(FfiError::internal(format!("Mint not found: {}", cdk_mint_url)))
+            Err(FfiError::internal(format!(
+                "Mint not found: {}",
+                cdk_mint_url
+            )))
         }
     }
 
