@@ -816,11 +816,7 @@ where
     }
 
     async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, FfiError> {
-        let result = self
-            .inner
-            .get_mints()
-            .await
-            .map_err(FfiError::database)?;
+        let result = self.inner.get_mints().await.map_err(FfiError::database)?;
         Ok(result
             .into_iter()
             .map(|(k, v)| (k.into(), v.map(Into::into)))
