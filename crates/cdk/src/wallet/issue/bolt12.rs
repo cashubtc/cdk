@@ -182,7 +182,10 @@ impl Wallet {
             return Err(Error::SignatureMissingOrInvalid);
         }
 
-        let mint_res = self.client.post_mint(request).await?;
+        let mint_res = self
+            .client
+            .post_mint(&PaymentMethod::Known(KnownMethod::Bolt12), request)
+            .await?;
 
         let keys = self.load_keyset_keys(active_keyset_id).await?;
 

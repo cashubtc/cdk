@@ -22,7 +22,7 @@ impl Wallet {
     pub(super) async fn mint_quote_custom(
         &self,
         amount: Option<Amount>,
-        method: &str,
+        method: &PaymentMethod,
         description: Option<String>,
         extra: Option<String>,
     ) -> Result<MintQuote, Error> {
@@ -177,7 +177,7 @@ impl Wallet {
 
         let mint_res = self
             .client
-            .post_mint_custom(&quote_info.payment_method, request)
+            .post_mint(&quote_info.payment_method, request)
             .await?;
 
         let keys = self.load_keyset_keys(active_keyset_id).await?;

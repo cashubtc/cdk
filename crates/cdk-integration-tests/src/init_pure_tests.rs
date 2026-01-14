@@ -109,7 +109,11 @@ impl MintConnector for DirectMintConnection {
             .map(Into::into)
     }
 
-    async fn post_mint(&self, request: MintRequest<String>) -> Result<MintResponse, Error> {
+    async fn post_mint(
+        &self,
+        _method: &PaymentMethod,
+        request: MintRequest<String>,
+    ) -> Result<MintResponse, Error> {
         let request_id: MintRequest<QuoteId> = request.try_into().unwrap();
         self.mint.process_mint_request(request_id).await
     }
@@ -136,6 +140,7 @@ impl MintConnector for DirectMintConnection {
 
     async fn post_melt(
         &self,
+        _method: &PaymentMethod,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let request_uuid = request.try_into().unwrap();
@@ -215,19 +220,11 @@ impl MintConnector for DirectMintConnection {
             .await
             .map(Into::into)
     }
-    /// Melt [NUT-23]
-    async fn post_melt_bolt12(
-        &self,
-        _request: MeltRequest<String>,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        // Implementation to be added later
-        Err(Error::UnsupportedPaymentMethod)
-    }
 
     /// Mint Quote for Custom Payment Method
     async fn post_mint_custom_quote(
         &self,
-        _method: &str,
+        _method: &PaymentMethod,
         _request: MintQuoteCustomRequest,
     ) -> Result<MintQuoteCustomResponse<String>, Error> {
         // Custom payment methods not implemented in test mock
@@ -238,24 +235,6 @@ impl MintConnector for DirectMintConnection {
     async fn post_melt_custom_quote(
         &self,
         _request: MeltQuoteCustomRequest,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        // Custom payment methods not implemented in test mock
-        Err(Error::UnsupportedPaymentMethod)
-    }
-
-    async fn post_mint_custom(
-        &self,
-        _method: &PaymentMethod,
-        _request: MintRequest<String>,
-    ) -> Result<MintResponse, Error> {
-        // Custom payment methods not implemented in test mock
-        Err(Error::UnsupportedPaymentMethod)
-    }
-
-    async fn post_melt_custom(
-        &self,
-        _method: &PaymentMethod,
-        _request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         // Custom payment methods not implemented in test mock
         Err(Error::UnsupportedPaymentMethod)

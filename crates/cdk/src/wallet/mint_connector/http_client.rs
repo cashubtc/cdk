@@ -17,7 +17,6 @@ use web_time::{Duration, Instant};
 use super::transport::Transport;
 use super::{Error, MintConnector};
 use crate::mint_url::MintUrl;
-#[cfg(feature = "auth")]
 use crate::nuts::nut00::{KnownMethod, PaymentMethod};
 #[cfg(feature = "auth")]
 use crate::nuts::nut22::MintAuthRequest;
@@ -326,24 +325,31 @@ where
 
     /// Mint Tokens [NUT-04]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_mint(&self, request: MintRequest<String>) -> Result<MintResponse, Error> {
+    async fn post_mint(
+        &self,
+        method: &PaymentMethod,
+        request: MintRequest<String>,
+    ) -> Result<MintResponse, Error> {
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(
-                Method::Post,
-                RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
-            )
+            .get_auth_token(Method::Post, RoutePath::Mint(method.to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]
         let auth_token = None;
-        self.retriable_http_request(
-            nut19::Method::Post,
-            nut19::Path::Custom("/v1/mint/bolt11".to_string()),
-            auth_token,
-            &request,
-        )
-        .await
+
+        let path = match method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                nut19::Path::Custom("/v1/mint/bolt11".to_string())
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                nut19::Path::Custom("/v1/mint/bolt12".to_string())
+            }
+            PaymentMethod::Custom(m) => nut19::Path::custom_mint(m),
+        };
+
+        self.retriable_http_request(nut19::Method::Post, path, auth_token, &request)
+            .await
     }
 
     /// Melt Quote [NUT-05]
@@ -396,26 +402,29 @@ where
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_melt(
         &self,
+        method: &PaymentMethod,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(
-                Method::Post,
-                RoutePath::Melt(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
-            )
+            .get_auth_token(Method::Post, RoutePath::Melt(method.to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]
         let auth_token = None;
 
-        self.retriable_http_request(
-            nut19::Method::Post,
-            nut19::Path::Custom("/v1/melt/bolt11".to_string()),
-            auth_token,
-            &request,
-        )
-        .await
+        let path = match method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                nut19::Path::Custom("/v1/melt/bolt11".to_string())
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                nut19::Path::Custom("/v1/melt/bolt12".to_string())
+            }
+            PaymentMethod::Custom(m) => nut19::Path::custom_melt(m),
+        };
+
+        self.retriable_http_request(nut19::Method::Post, path, auth_token, &request)
+            .await
     }
 
     /// Swap Token [NUT-03]
@@ -591,39 +600,16 @@ where
         self.transport.http_get(url, auth_token).await
     }
 
-    /// Melt Bolt12 [NUT-23]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_melt_bolt12(
-        &self,
-        request: MeltRequest<String>,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(
-                Method::Post,
-                RoutePath::Melt(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
-            )
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.retriable_http_request(
-            nut19::Method::Post,
-            nut19::Path::Custom("/v1/melt/bolt12".to_string()),
-            auth_token,
-            &request,
-        )
-        .await
-    }
-
     /// Mint Quote for Custom Payment Method
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn post_mint_custom_quote(
         &self,
-        method: &str,
+        method: &PaymentMethod,
         request: MintQuoteCustomRequest,
     ) -> Result<MintQuoteCustomResponse<String>, Error> {
-        let url = self.mint_url.join_paths(&["v1", "mint", "quote", method])?;
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", &method.to_string()])?;
 
         #[cfg(feature = "auth")]
         let auth_token = self
@@ -656,56 +642,10 @@ where
 
         self.transport.http_post(url, auth_token, &request).await
     }
-
-    /// Mint Tokens for Custom Payment Method
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_mint_custom(
-        &self,
-        method: &PaymentMethod,
-        request: MintRequest<String>,
-    ) -> Result<MintResponse, Error> {
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::Mint(method.to_string()))
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.retriable_http_request(
-            nut19::Method::Post,
-            nut19::Path::custom_mint(&method.to_string()),
-            auth_token,
-            &request,
-        )
-        .await
-    }
-
-    /// Melt for Custom Payment Method
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_melt_custom(
-        &self,
-        method: &PaymentMethod,
-        request: MeltRequest<String>,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::Melt(method.to_string()))
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-
-        self.retriable_http_request(
-            nut19::Method::Post,
-            nut19::Path::custom_melt(&method.to_string()),
-            auth_token,
-            &request,
-        )
-        .await
-    }
 }
 
 /// Http Client
+
 #[derive(Debug, Clone)]
 #[cfg(feature = "auth")]
 pub struct AuthHttpClient<T>
