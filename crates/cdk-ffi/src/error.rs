@@ -4,7 +4,6 @@ use cdk::Error as CdkError;
 
 /// FFI Error type that wraps CDK errors for cross-language use
 #[derive(Debug, thiserror::Error, uniffi::Error)]
-#[uniffi(flat_error)]
 pub enum FfiError {
     /// Generic error with message
     #[error("CDK Error: {msg}")]
