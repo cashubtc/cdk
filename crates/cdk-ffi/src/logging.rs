@@ -30,8 +30,7 @@ pub fn init_logging(level: String) {
     INIT.call_once(|| {
         use tracing_subscriber::{fmt, EnvFilter};
 
-        let filter =
-            EnvFilter::try_new(&level).unwrap_or_else(|_| EnvFilter::new("info"));
+        let filter = EnvFilter::try_new(&level).unwrap_or_else(|_| EnvFilter::new("info"));
 
         fmt().with_env_filter(filter).with_target(true).init();
     });
