@@ -221,11 +221,10 @@ impl Wallet {
                 .await?
             }
             cdk_common::PaymentMethod::Custom(ref _method) => {
-                // For now, custom methods will use the same post_melt endpoint
-                // This will be enhanced when custom HTTP client methods are added
                 self.try_proof_operation_or_reclaim(
                     request.inputs().clone(),
-                    self.client.post_melt(request),
+                    self.client
+                        .post_melt_custom(&quote_info.payment_method, request),
                 )
                 .await?
             }

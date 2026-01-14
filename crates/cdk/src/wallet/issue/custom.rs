@@ -171,7 +171,14 @@ impl Wallet {
             request.sign(secret_key.clone())?;
         }
 
-        let mint_res = self.client.post_mint(request).await?;
+        if !quote_info.payment_method.is_custom() {
+            return Err(Error::UnsupportedPaymentMethod);
+        }
+
+        let mint_res = self
+            .client
+            .post_mint_custom(&quote_info.payment_method, request)
+            .await?;
 
         let keys = self.load_keyset_keys(active_keyset_id).await?;
 

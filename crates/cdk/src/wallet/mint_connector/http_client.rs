@@ -656,6 +656,53 @@ where
 
         self.transport.http_post(url, auth_token, &request).await
     }
+
+    /// Mint Tokens for Custom Payment Method
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_mint_custom(
+        &self,
+        method: &PaymentMethod,
+        request: MintRequest<String>,
+    ) -> Result<MintResponse, Error> {
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::Mint(method.to_string()))
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.retriable_http_request(
+            nut19::Method::Post,
+            nut19::Path::custom_mint(&method.to_string()),
+            auth_token,
+            &request,
+        )
+        .await
+    }
+
+    /// Melt for Custom Payment Method
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_melt_custom(
+        &self,
+        method: &PaymentMethod,
+        request: MeltRequest<String>,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::Melt(method.to_string()))
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+
+        self.retriable_http_request(
+            nut19::Method::Post,
+            nut19::Path::custom_melt(&method.to_string()),
+            auth_token,
+            &request,
+        )
+        .await
+    }
 }
 
 /// Http Client

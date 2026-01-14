@@ -242,6 +242,24 @@ impl MintConnector for DirectMintConnection {
         // Custom payment methods not implemented in test mock
         Err(Error::UnsupportedPaymentMethod)
     }
+
+    async fn post_mint_custom(
+        &self,
+        _method: &PaymentMethod,
+        _request: MintRequest<String>,
+    ) -> Result<MintResponse, Error> {
+        // Custom payment methods not implemented in test mock
+        Err(Error::UnsupportedPaymentMethod)
+    }
+
+    async fn post_melt_custom(
+        &self,
+        _method: &PaymentMethod,
+        _request: MeltRequest<String>,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        // Custom payment methods not implemented in test mock
+        Err(Error::UnsupportedPaymentMethod)
+    }
 }
 
 pub fn setup_tracing() {
