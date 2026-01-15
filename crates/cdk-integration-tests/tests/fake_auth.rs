@@ -432,9 +432,13 @@ async fn test_melt_with_auth() {
         .await
         .expect("Could not get melt quote");
 
-    let after_melt = wallet.melt(&melt_quote.id).await.expect("Could not melt");
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .expect("Could not prepare melt");
+    let after_melt = prepared.confirm().await.expect("Could not melt");
 
-    assert!(after_melt.state == MeltQuoteState::Paid);
+    assert!(after_melt.state() == MeltQuoteState::Paid);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

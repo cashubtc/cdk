@@ -36,14 +36,6 @@ impl FfiError {
             message: msg.to_string(),
         }
     }
-
-    /// Create a database error (uses Unknown code 50000)
-    pub fn database(msg: impl ToString) -> Self {
-        FfiError::Cdk {
-            code: 50000,
-            message: msg.to_string(),
-        }
-    }
 }
 
 impl From<CdkError> for FfiError {

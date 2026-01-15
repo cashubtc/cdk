@@ -812,12 +812,13 @@ async fn test_mint_change_with_fee_melt() {
         .await
         .unwrap();
 
-    let w = wallet_alice
-        .melt_proofs(&melt_quote.id, proofs)
+    let prepared = wallet_alice
+        .prepare_melt_proofs(&melt_quote.id, proofs, std::collections::HashMap::new())
         .await
         .unwrap();
+    let w = prepared.confirm().await.unwrap();
 
-    assert_eq!(w.change.unwrap().total_amount().unwrap(), 97.into());
+    assert_eq!(w.change().unwrap().total_amount().unwrap(), 97.into());
 
     // Check amounts after melting
     // Melting redeems 100 sats and issues 97 sats as change

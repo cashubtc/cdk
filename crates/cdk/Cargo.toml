@@ -154,6 +154,18 @@ required-features = ["wallet", "nostr"]
 name = "token-proofs"
 required-features = ["wallet"]
 
+[[example]]
+name = "receive-token"
+required-features = ["wallet"]
+
+[[example]]
+name = "multi-mint-wallet"
+required-features = ["wallet"]
+
+[[example]]
+name = "restore-wallet"
+required-features = ["wallet"]
+
 [dev-dependencies]
 rand.workspace = true
 cdk-sqlite.workspace = true
