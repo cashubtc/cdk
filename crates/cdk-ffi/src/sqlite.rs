@@ -28,13 +28,11 @@ impl WalletSqliteDatabase {
             Err(_) => {
                 // No current runtime, create a new one
                 tokio::runtime::Runtime::new()
-                    .map_err(|e| FfiError::Database {
-                        msg: format!("Failed to create runtime: {}", e),
-                    })?
+                    .map_err(|e| FfiError::internal(format!("Failed to create runtime: {}", e)))?
                     .block_on(async move { CdkWalletSqliteDatabase::new(file_path.as_str()).await })
             }
         }
-        .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        .map_err(FfiError::database)?;
         Ok(Arc::new(Self {
             inner: FfiWalletSQLDatabase::new(db),
         }))
@@ -50,13 +48,11 @@ impl WalletSqliteDatabase {
             Err(_) => {
                 // No current runtime, create a new one
                 tokio::runtime::Runtime::new()
-                    .map_err(|e| FfiError::Database {
-                        msg: format!("Failed to create runtime: {}", e),
-                    })?
+                    .map_err(|e| FfiError::internal(format!("Failed to create runtime: {}", e)))?
                     .block_on(async move { cdk_sqlite::wallet::memory::empty().await })
             }
         }
-        .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        .map_err(FfiError::database)?;
         Ok(Arc::new(Self {
             inner: FfiWalletSQLDatabase::new(db),
         }))

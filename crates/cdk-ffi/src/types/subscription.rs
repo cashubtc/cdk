@@ -120,9 +120,7 @@ impl ActiveSubscription {
         guard
             .recv()
             .await
-            .ok_or(FfiError::Generic {
-                msg: "Subscription closed".to_string(),
-            })
+            .ok_or_else(|| FfiError::internal("Subscription closed"))
             .map(Into::into)
     }
 
