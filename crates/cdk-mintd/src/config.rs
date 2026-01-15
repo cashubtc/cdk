@@ -373,10 +373,12 @@ impl Default for FakeWallet {
 
 // Helper functions to provide default values
 // Common fee defaults for all backends
+#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
 fn default_fee_percent() -> f32 {
     0.02
 }
 
+#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
 fn default_reserve_fee_min() -> Amount {
     2.into()
 }

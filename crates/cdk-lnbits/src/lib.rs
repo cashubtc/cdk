@@ -9,13 +9,13 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cdk_common::amount::{to_unit, Amount, MSAT_IN_SAT};
+use cdk_common::amount::{Amount, MSAT_IN_SAT};
 use cdk_common::common::FeeReserve;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
-    MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
-    PaymentQuoteResponse, WaitPaymentResponse,
+    self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
+    MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
+    WaitPaymentResponse,
 };
 use cdk_common::util::{hex, unix_time};
 use cdk_common::Bolt11Invoice;
@@ -23,7 +23,6 @@ use error::Error;
 use futures::Stream;
 use lnbits_rs::api::invoice::CreateInvoiceRequest;
 use lnbits_rs::LNBitsClient;
-use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 pub mod error;
@@ -35,7 +34,15 @@ pub struct LNbits {
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
-    settings: Bolt11Settings,
+    settings: SettingsResponse,
+}
+
+impl std::fmt::Debug for LNbits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LNbits")
+            .field("fee_reserve", &self.fee_reserve)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LNbits {
@@ -54,12 +61,15 @@ impl LNbits {
             fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
-            settings: Bolt11Settings {
-                mpp: false,
-                unit: CurrencyUnit::Sat,
-                invoice_description: true,
-                amountless: false,
-                bolt12: false,
+            settings: SettingsResponse {
+                unit: CurrencyUnit::Sat.to_string(),
+                bolt11: Some(payment::Bolt11Settings {
+                    mpp: false,
+                    amountless: false,
+                    invoice_description: true,
+                }),
+                bolt12: None,
+                custom: std::collections::HashMap::new(),
             },
         })
     }
@@ -120,8 +130,7 @@ impl LNbits {
 
         Ok(Some(WaitPaymentResponse {
             payment_identifier: PaymentIdentifier::PaymentHash(hash),
-            payment_amount: Amount::from(amount.unsigned_abs()),
-            unit: CurrencyUnit::Msat,
+            payment_amount: Amount::new(amount.unsigned_abs(), CurrencyUnit::Msat),
             payment_id: msg.to_string(),
         }))
     }
@@ -141,8 +150,8 @@ impl LNbits {
 impl MintPayment for LNbits {
     type Err = payment::Error;
 
-    async fn get_settings(&self) -> Result<Value, Self::Err> {
-        Ok(serde_json::to_value(&self.settings)?)
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        Ok(self.settings.clone())
     }
 
     fn is_wait_invoice_active(&self) -> bool {
@@ -251,21 +260,21 @@ impl MintPayment for LNbits {
                     request_lookup_id: Some(PaymentIdentifier::PaymentHash(
                         *bolt11_options.bolt11.payment_hash().as_ref(),
                     )),
-                    amount: to_unit(amount_msat, &CurrencyUnit::Msat, unit)?,
-                    fee: to_unit(fee, &CurrencyUnit::Msat, unit)?,
+                    amount: Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?,
+                    fee: Amount::new(fee, CurrencyUnit::Msat).convert_to(unit)?,
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
             OutgoingPaymentOptions::Bolt12(_bolt12_options) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
             }
+            OutgoingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
 
     async fn make_payment(
         &self,
-        _unit: &CurrencyUnit,
+        unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         match options {
@@ -296,14 +305,17 @@ impl MintPayment for LNbits {
                     MeltQuoteState::Unpaid
                 };
 
-                let total_spent = Amount::from(
-                    (invoice_info
+                let total_spent_msat = Amount::new(
+                    invoice_info
                         .details
                         .amount
-                        .checked_add(invoice_info.details.fee)
-                        .ok_or(Error::AmountOverflow)?)
-                    .unsigned_abs(),
+                        .unsigned_abs()
+                        .checked_add(invoice_info.details.fee.unsigned_abs())
+                        .ok_or(Error::AmountOverflow)?,
+                    CurrencyUnit::Msat,
                 );
+
+                let total_spent = total_spent_msat.convert_to(unit)?;
 
                 Ok(MakePaymentResponse {
                     payment_lookup_id: PaymentIdentifier::PaymentHash(
@@ -315,12 +327,12 @@ impl MintPayment for LNbits {
                     payment_proof: Some(invoice_info.details.payment_hash),
                     status,
                     total_spent,
-                    unit: CurrencyUnit::Msat,
                 })
             }
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
             }
+            OutgoingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
 
@@ -339,7 +351,9 @@ impl MintPayment for LNbits {
                 let expiry = unix_expiry.map(|t| t - time_now);
 
                 let invoice_request = CreateInvoiceRequest {
-                    amount: to_unit(amount, unit, &CurrencyUnit::Sat)?.into(),
+                    amount: Amount::new(amount.into(), unit.clone())
+                        .convert_to(&CurrencyUnit::Sat)?
+                        .value(),
                     memo: Some(description),
                     unit: unit.to_string(),
                     expiry,
@@ -367,11 +381,13 @@ impl MintPayment for LNbits {
                     ),
                     request: request.to_string(),
                     expiry,
+                    extra_json: None,
                 })
             }
             IncomingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
             }
+            IncomingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
 
@@ -398,8 +414,7 @@ impl MintPayment for LNbits {
         match payment.paid {
             true => Ok(vec![WaitPaymentResponse {
                 payment_identifier: payment_identifier.clone(),
-                payment_amount: Amount::from(amount.unsigned_abs()),
-                unit: CurrencyUnit::Msat,
+                payment_amount: Amount::new(amount.unsigned_abs(), CurrencyUnit::Msat),
                 payment_id: payment.details.payment_hash,
             }]),
             false => Ok(vec![]),
@@ -424,10 +439,10 @@ impl MintPayment for LNbits {
             payment_lookup_id: payment_identifier.clone(),
             payment_proof: payment.preimage,
             status: lnbits_to_melt_status(&payment.details.status),
-            total_spent: Amount::from(
+            total_spent: Amount::new(
                 payment.details.amount.unsigned_abs() + payment.details.fee.unsigned_abs(),
+                CurrencyUnit::Msat,
             ),
-            unit: CurrencyUnit::Msat,
         };
 
         Ok(pay_response)

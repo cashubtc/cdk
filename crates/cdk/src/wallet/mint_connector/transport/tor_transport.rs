@@ -1,4 +1,4 @@
-///! Tor transport implementation (non-wasm32 only)
+//! Tor transport implementation (non-wasm32 only)
 use std::sync::Arc;
 
 use arti_client::{TorClient, TorClientConfig};

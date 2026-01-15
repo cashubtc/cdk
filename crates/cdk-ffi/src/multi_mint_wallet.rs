@@ -36,7 +36,7 @@ impl MultiMintWallet {
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
         let m = Mnemonic::parse(&mnemonic)
-            .map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
         let seed = m.to_seed_normalized("");
 
         // Convert the FFI database trait to a CDK database implementation
@@ -51,9 +51,7 @@ impl MultiMintWallet {
             Err(_) => {
                 // No current runtime, create a new one
                 tokio::runtime::Runtime::new()
-                    .map_err(|e| FfiError::Database {
-                        msg: format!("Failed to create runtime: {}", e),
-                    })?
+                    .map_err(|e| FfiError::internal(format!("Failed to create runtime: {}", e)))?
                     .block_on(async move {
                         CdkMultiMintWallet::new(localstore, seed, unit.into()).await
                     })
@@ -75,15 +73,15 @@ impl MultiMintWallet {
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
         let m = Mnemonic::parse(&mnemonic)
-            .map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
         let seed = m.to_seed_normalized("");
 
         // Convert the FFI database trait to a CDK database implementation
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
         // Parse proxy URL
-        let proxy_url =
-            url::Url::parse(&proxy_url).map_err(|e| FfiError::InvalidUrl { msg: e.to_string() })?;
+        let proxy_url = url::Url::parse(&proxy_url)
+            .map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))?;
 
         let wallet = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| {
@@ -95,9 +93,7 @@ impl MultiMintWallet {
             Err(_) => {
                 // No current runtime, create a new one
                 tokio::runtime::Runtime::new()
-                    .map_err(|e| FfiError::Database {
-                        msg: format!("Failed to create runtime: {}", e),
-                    })?
+                    .map_err(|e| FfiError::internal(format!("Failed to create runtime: {}", e)))?
                     .block_on(async move {
                         CdkMultiMintWallet::new_with_proxy(localstore, seed, unit.into(), proxy_url)
                             .await
@@ -137,9 +133,10 @@ impl MultiMintWallet {
             wallet.set_metadata_cache_ttl(ttl);
             Ok(())
         } else {
-            Err(FfiError::Generic {
-                msg: format!("Mint not found: {}", cdk_mint_url),
-            })
+            Err(FfiError::internal(format!(
+                "Mint not found: {}",
+                cdk_mint_url
+            )))
         }
     }
 
@@ -181,6 +178,10 @@ impl MultiMintWallet {
     }
 
     /// Remove mint from MultiMintWallet
+    ///
+    /// # Panics
+    ///
+    /// Panics if the hardcoded fallback URL is invalid (should never happen).
     pub async fn remove_mint(&self, mint_url: MintUrl) {
         let url_str = mint_url.url.clone();
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into().unwrap_or_else(|_| {
@@ -805,7 +806,7 @@ impl MultiMintWallet {
             .inner
             .wait_for_nostr_payment(info_inner)
             .await
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+            .map_err(FfiError::internal)?;
         Ok(amount.into())
     }
 }
@@ -997,6 +998,95 @@ impl From<MultiMintSendOptions> for CdkMultiMintSendOptions {
             .collect();
         opts.send_options = options.send_options.into();
         opts
+    }
+}
+
+/// Nostr backup methods for MultiMintWallet (NUT-XX)
+#[uniffi::export(async_runtime = "tokio")]
+impl MultiMintWallet {
+    /// Get the hex-encoded public key used for Nostr mint backup
+    ///
+    /// This key is deterministically derived from the wallet seed and can be used
+    /// to identify and decrypt backup events on Nostr relays.
+    pub fn backup_public_key(&self) -> Result<String, FfiError> {
+        let keys = self.inner.backup_keys()?;
+        Ok(keys.public_key().to_hex())
+    }
+
+    /// Backup the current mint list to Nostr relays
+    ///
+    /// Creates an encrypted NIP-78 addressable event containing all mint URLs
+    /// and publishes it to the specified relays.
+    ///
+    /// # Arguments
+    ///
+    /// * `relays` - List of Nostr relay URLs (e.g., "wss://relay.damus.io")
+    /// * `options` - Backup options including optional client name
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let relays = vec!["wss://relay.damus.io".to_string(), "wss://nos.lol".to_string()];
+    /// let options = BackupOptions { client: Some("my-wallet".to_string()) };
+    /// let result = wallet.backup_mints(relays, options).await?;
+    /// println!("Backup published with event ID: {}", result.event_id);
+    /// ```
+    pub async fn backup_mints(
+        &self,
+        relays: Vec<String>,
+        options: BackupOptions,
+    ) -> Result<BackupResult, FfiError> {
+        let result = self.inner.backup_mints(relays, options.into()).await?;
+        Ok(result.into())
+    }
+
+    /// Restore mint list from Nostr relays
+    ///
+    /// Fetches the most recent backup event from the specified relays,
+    /// decrypts it, and optionally adds the discovered mints to the wallet.
+    ///
+    /// # Arguments
+    ///
+    /// * `relays` - List of Nostr relay URLs to fetch from
+    /// * `add_mints` - If true, automatically add discovered mints to the wallet
+    /// * `options` - Restore options including timeout
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let relays = vec!["wss://relay.damus.io".to_string()];
+    /// let result = wallet.restore_mints(relays, true, RestoreOptions::default()).await?;
+    /// println!("Restored {} mints, {} newly added", result.mint_count, result.mints_added);
+    /// ```
+    pub async fn restore_mints(
+        &self,
+        relays: Vec<String>,
+        add_mints: bool,
+        options: RestoreOptions,
+    ) -> Result<RestoreResult, FfiError> {
+        let result = self
+            .inner
+            .restore_mints(relays, add_mints, options.into())
+            .await?;
+        Ok(result.into())
+    }
+
+    /// Fetch the backup without adding mints to the wallet
+    ///
+    /// This is useful for previewing what mints are in the backup before
+    /// deciding to add them.
+    ///
+    /// # Arguments
+    ///
+    /// * `relays` - List of Nostr relay URLs to fetch from
+    /// * `options` - Restore options including timeout
+    pub async fn fetch_backup(
+        &self,
+        relays: Vec<String>,
+        options: RestoreOptions,
+    ) -> Result<MintBackup, FfiError> {
+        let backup = self.inner.fetch_backup(relays, options.into()).await?;
+        Ok(backup.into())
     }
 }
 

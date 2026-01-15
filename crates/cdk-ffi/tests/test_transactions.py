@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test suite for CDK FFI wallet and transaction operations
+Test suite for CDK FFI wallet database operations
 """
 
 import asyncio
@@ -29,333 +29,7 @@ sys.path.insert(0, str(bindings_path))
 import cdk_ffi
 
 
-# Transaction Tests (using explicit transactions)
-
-async def test_increment_keyset_counter_commit():
-    """Test that increment_keyset_counter works and persists after commit"""
-    print("\n=== Test: Increment Keyset Counter with Commit ===")
-
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        db_path = tmp.name
-
-    try:
-        backend = cdk_ffi.WalletDbBackend.SQLITE(path=db_path)
-        db = cdk_ffi.create_wallet_db(backend)
-
-        keyset_id = cdk_ffi.Id(hex="004146bdf4a9afab")
-        mint_url = cdk_ffi.MintUrl(url="https://testmint.example.com")
-        keyset_info = cdk_ffi.KeySetInfo(
-            id=keyset_id.hex,
-            unit=cdk_ffi.CurrencyUnit.SAT(),
-            active=True,
-            input_fee_ppk=0
-        )
-
-        # Setup
-        tx = await db.begin_db_transaction()
-        await tx.add_mint(mint_url, None)
-        await tx.add_mint_keysets(mint_url, [keyset_info])
-        await tx.commit()
-
-        # Increment counter in transaction
-        tx = await db.begin_db_transaction()
-        counter1 = await tx.increment_keyset_counter(keyset_id, 1)
-        counter2 = await tx.increment_keyset_counter(keyset_id, 5)
-        await tx.commit()
-
-        assert counter1 == 1, f"Expected counter 1, got {counter1}"
-        assert counter2 == 6, f"Expected counter 6, got {counter2}"
-        print("✓ Counters incremented correctly")
-
-        # Verify persistence
-        tx_read = await db.begin_db_transaction()
-        counter3 = await tx_read.increment_keyset_counter(keyset_id, 0)
-        await tx_read.rollback()
-        assert counter3 == 6, f"Expected persisted counter 6, got {counter3}"
-        print("✓ Counter persisted after commit")
-
-        print("✓ Test passed: Counter increments and commits work")
-
-    finally:
-        if os.path.exists(db_path):
-            os.unlink(db_path)
-
-
-async def test_implicit_rollback_on_drop():
-    """Test that transactions are implicitly rolled back when dropped"""
-    print("\n=== Test: Implicit Rollback on Drop ===")
-
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        db_path = tmp.name
-
-    try:
-        backend = cdk_ffi.WalletDbBackend.SQLITE(path=db_path)
-        db = cdk_ffi.create_wallet_db(backend)
-
-        keyset_id = cdk_ffi.Id(hex="004146bdf4a9afab")
-        mint_url = cdk_ffi.MintUrl(url="https://testmint.example.com")
-
-        # Setup
-        tx = await db.begin_db_transaction()
-        await tx.add_mint(mint_url, None)
-        keyset_info = cdk_ffi.KeySetInfo(
-            id=keyset_id.hex,
-            unit=cdk_ffi.CurrencyUnit.SAT(),
-            active=True,
-            input_fee_ppk=0
-        )
-        await tx.add_mint_keysets(mint_url, [keyset_info])
-        await tx.commit()
-
-        # Get initial counter
-        tx_read = await db.begin_db_transaction()
-        initial_counter = await tx_read.increment_keyset_counter(keyset_id, 0)
-        await tx_read.rollback()
-        print(f"Initial counter: {initial_counter}")
-
-        # Increment without commit
-        tx_no_commit = await db.begin_db_transaction()
-        incremented = await tx_no_commit.increment_keyset_counter(keyset_id, 10)
-        print(f"Counter incremented to {incremented} (not committed)")
-        del tx_no_commit
-
-        await asyncio.sleep(0.5)
-        print("Transaction dropped (should trigger implicit rollback)")
-
-        # Verify rollback
-        tx_verify = await db.begin_db_transaction()
-        final_counter = await tx_verify.increment_keyset_counter(keyset_id, 0)
-        await tx_verify.rollback()
-
-        assert final_counter == initial_counter, \
-            f"Expected counter to rollback to {initial_counter}, got {final_counter}"
-        print("✓ Implicit rollback works correctly")
-
-        print("✓ Test passed: Implicit rollback on drop works")
-
-    finally:
-        if os.path.exists(db_path):
-            os.unlink(db_path)
-
-
-async def test_explicit_rollback():
-    """Test explicit rollback of transaction changes"""
-    print("\n=== Test: Explicit Rollback ===")
-
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        db_path = tmp.name
-
-    try:
-        backend = cdk_ffi.WalletDbBackend.SQLITE(path=db_path)
-        db = cdk_ffi.create_wallet_db(backend)
-
-        keyset_id = cdk_ffi.Id(hex="004146bdf4a9afab")
-        mint_url = cdk_ffi.MintUrl(url="https://testmint.example.com")
-
-        # Setup
-        tx = await db.begin_db_transaction()
-        await tx.add_mint(mint_url, None)
-        keyset_info = cdk_ffi.KeySetInfo(
-            id=keyset_id.hex,
-            unit=cdk_ffi.CurrencyUnit.SAT(),
-            active=True,
-            input_fee_ppk=0
-        )
-        await tx.add_mint_keysets(mint_url, [keyset_info])
-        counter_initial = await tx.increment_keyset_counter(keyset_id, 5)
-        await tx.commit()
-        print(f"Initial counter: {counter_initial}")
-
-        # Increment and rollback
-        tx_rollback = await db.begin_db_transaction()
-        counter_incremented = await tx_rollback.increment_keyset_counter(keyset_id, 100)
-        print(f"Counter incremented to {counter_incremented} in transaction")
-        await tx_rollback.rollback()
-        print("Explicitly rolled back transaction")
-
-        # Verify rollback
-        tx_verify = await db.begin_db_transaction()
-        counter_after = await tx_verify.increment_keyset_counter(keyset_id, 0)
-        await tx_verify.rollback()
-
-        assert counter_after == counter_initial, \
-            f"Expected counter {counter_initial}, got {counter_after}"
-        print("✓ Explicit rollback works correctly")
-
-        print("✓ Test passed: Explicit rollback works")
-
-    finally:
-        if os.path.exists(db_path):
-            os.unlink(db_path)
-
-
-async def test_transaction_reads():
-    """Test reading data within transactions"""
-    print("\n=== Test: Transaction Reads ===")
-
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        db_path = tmp.name
-
-    try:
-        backend = cdk_ffi.WalletDbBackend.SQLITE(path=db_path)
-        db = cdk_ffi.create_wallet_db(backend)
-
-        keyset_id = cdk_ffi.Id(hex="004146bdf4a9afab")
-        mint_url = cdk_ffi.MintUrl(url="https://testmint.example.com")
-
-        # Add keyset in transaction and read within same transaction
-        tx = await db.begin_db_transaction()
-        await tx.add_mint(mint_url, None)
-        keyset_info = cdk_ffi.KeySetInfo(
-            id=keyset_id.hex,
-            unit=cdk_ffi.CurrencyUnit.SAT(),
-            active=True,
-            input_fee_ppk=0
-        )
-        await tx.add_mint_keysets(mint_url, [keyset_info])
-
-        keyset_read = await tx.get_keyset_by_id(keyset_id)
-        assert keyset_read is not None, "Should read within transaction"
-        assert keyset_read.id == keyset_id.hex, "Keyset ID should match"
-        print("✓ Read keyset within transaction")
-
-        await tx.commit()
-
-        # Read from new transaction
-        tx_new = await db.begin_db_transaction()
-        keyset_read2 = await tx_new.get_keyset_by_id(keyset_id)
-        assert keyset_read2 is not None, "Should read committed keyset"
-        await tx_new.rollback()
-        print("✓ Read keyset in new transaction")
-
-        print("✓ Test passed: Transaction reads work")
-
-    finally:
-        if os.path.exists(db_path):
-            os.unlink(db_path)
-
-
-async def test_multiple_increments_same_transaction():
-    """Test multiple increments in same transaction"""
-    print("\n=== Test: Multiple Increments in Same Transaction ===")
-
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        db_path = tmp.name
-
-    try:
-        backend = cdk_ffi.WalletDbBackend.SQLITE(path=db_path)
-        db = cdk_ffi.create_wallet_db(backend)
-
-        keyset_id = cdk_ffi.Id(hex="004146bdf4a9afab")
-        mint_url = cdk_ffi.MintUrl(url="https://testmint.example.com")
-
-        # Setup
-        tx = await db.begin_db_transaction()
-        await tx.add_mint(mint_url, None)
-        keyset_info = cdk_ffi.KeySetInfo(
-            id=keyset_id.hex,
-            unit=cdk_ffi.CurrencyUnit.SAT(),
-            active=True,
-            input_fee_ppk=0
-        )
-        await tx.add_mint_keysets(mint_url, [keyset_info])
-        await tx.commit()
-
-        # Multiple increments in one transaction
-        tx = await db.begin_db_transaction()
-        counters = []
-        for i in range(1, 6):
-            counter = await tx.increment_keyset_counter(keyset_id, 1)
-            counters.append(counter)
-
-        expected = list(range(1, 6))
-        assert counters == expected, f"Expected {expected}, got {counters}"
-        print(f"✓ Counters incremented: {counters}")
-
-        await tx.commit()
-
-        # Verify final value
-        tx_verify = await db.begin_db_transaction()
-        final = await tx_verify.increment_keyset_counter(keyset_id, 0)
-        await tx_verify.rollback()
-        assert final == 5, f"Expected final counter 5, got {final}"
-        print("✓ Final counter value correct")
-
-        print("✓ Test passed: Multiple increments work")
-
-    finally:
-        if os.path.exists(db_path):
-            os.unlink(db_path)
-
-
-async def test_transaction_atomicity():
-    """Test that transaction rollback reverts all changes"""
-    print("\n=== Test: Transaction Atomicity ===")
-
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        db_path = tmp.name
-
-    try:
-        backend = cdk_ffi.WalletDbBackend.SQLITE(path=db_path)
-        db = cdk_ffi.create_wallet_db(backend)
-
-        mint_url1 = cdk_ffi.MintUrl(url="https://mint1.example.com")
-        mint_url2 = cdk_ffi.MintUrl(url="https://mint2.example.com")
-        keyset_id = cdk_ffi.Id(hex="004146bdf4a9afab")
-
-        # Transaction with multiple operations
-        tx = await db.begin_db_transaction()
-        await tx.add_mint(mint_url1, None)
-        await tx.add_mint(mint_url2, None)
-        keyset_info = cdk_ffi.KeySetInfo(
-            id=keyset_id.hex,
-            unit=cdk_ffi.CurrencyUnit.SAT(),
-            active=True,
-            input_fee_ppk=0
-        )
-        await tx.add_mint_keysets(mint_url1, [keyset_info])
-        await tx.increment_keyset_counter(keyset_id, 42)
-        print("✓ Performed multiple operations")
-
-        # Rollback
-        await tx.rollback()
-        print("✓ Rolled back transaction")
-
-        # Verify nothing persisted
-        tx_read = await db.begin_db_transaction()
-        keyset_read = await tx_read.get_keyset_by_id(keyset_id)
-        await tx_read.rollback()
-        assert keyset_read is None, "Keyset should not exist after rollback"
-        print("✓ Nothing persisted after rollback")
-
-        # Now commit
-        tx2 = await db.begin_db_transaction()
-        await tx2.add_mint(mint_url1, None)
-        await tx2.add_mint(mint_url2, None)
-        await tx2.add_mint_keysets(mint_url1, [keyset_info])
-        await tx2.increment_keyset_counter(keyset_id, 42)
-        await tx2.commit()
-        print("✓ Committed transaction")
-
-        # Verify persistence
-        tx_verify = await db.begin_db_transaction()
-        keyset_after = await tx_verify.get_keyset_by_id(keyset_id)
-        assert keyset_after is not None, "Keyset should exist after commit"
-        counter_after = await tx_verify.increment_keyset_counter(keyset_id, 0)
-        await tx_verify.rollback()
-        assert counter_after == 42, f"Expected counter 42, got {counter_after}"
-        print("✓ All operations persisted after commit")
-
-        print("✓ Test passed: Transaction atomicity works")
-
-    finally:
-        if os.path.exists(db_path):
-            os.unlink(db_path)
-
-
-
-
-# Wallet Tests (using direct wallet methods without explicit transactions)
+# Wallet Database Tests
 
 async def test_wallet_creation():
     """Test creating a wallet with SQLite backend"""
@@ -394,20 +68,16 @@ async def test_wallet_mint_management():
 
         mint_url = cdk_ffi.MintUrl(url="https://testmint.example.com")
 
-        # Add mint (using transaction)
-        tx = await db.begin_db_transaction()
-        await tx.add_mint(mint_url, None)
-        await tx.commit()
+        # Add mint
+        await db.add_mint(mint_url, None)
         print("✓ Added mint to wallet")
 
-        # Get specific mint (read-only, can use db directly)
+        # Get specific mint
         await db.get_mint(mint_url)
         print("✓ Retrieved mint from database")
 
-        # Remove mint (using transaction)
-        tx = await db.begin_db_transaction()
-        await tx.remove_mint(mint_url)
-        await tx.commit()
+        # Remove mint
+        await db.remove_mint(mint_url)
         print("✓ Removed mint from wallet")
 
         # Verify removal
@@ -436,26 +106,24 @@ async def test_wallet_keyset_management():
         mint_url = cdk_ffi.MintUrl(url="https://testmint.example.com")
         keyset_id = cdk_ffi.Id(hex="004146bdf4a9afab")
 
-        # Add mint and keyset (using transaction)
-        tx = await db.begin_db_transaction()
-        await tx.add_mint(mint_url, None)
+        # Add mint and keyset
+        await db.add_mint(mint_url, None)
         keyset_info = cdk_ffi.KeySetInfo(
             id=keyset_id.hex,
             unit=cdk_ffi.CurrencyUnit.SAT(),
             active=True,
             input_fee_ppk=0
         )
-        await tx.add_mint_keysets(mint_url, [keyset_info])
-        await tx.commit()
+        await db.add_mint_keysets(mint_url, [keyset_info])
         print("✓ Added mint and keyset")
 
-        # Query keyset by ID (read-only)
+        # Query keyset by ID
         keyset = await db.get_keyset_by_id(keyset_id)
         assert keyset is not None, "Keyset should exist"
         assert keyset.id == keyset_id.hex, "Keyset ID should match"
         print(f"✓ Retrieved keyset: {keyset.id}")
 
-        # Query keysets for mint (read-only)
+        # Query keysets for mint
         keysets = await db.get_mint_keysets(mint_url)
         assert keysets is not None and len(keysets) > 0, "Should have keysets for mint"
         print(f"✓ Retrieved {len(keysets)} keyset(s) for mint")
@@ -481,25 +149,21 @@ async def test_wallet_keyset_counter():
         mint_url = cdk_ffi.MintUrl(url="https://testmint.example.com")
         keyset_id = cdk_ffi.Id(hex="004146bdf4a9afab")
 
-        # Setup (using transaction)
-        tx = await db.begin_db_transaction()
-        await tx.add_mint(mint_url, None)
+        # Setup
+        await db.add_mint(mint_url, None)
         keyset_info = cdk_ffi.KeySetInfo(
             id=keyset_id.hex,
             unit=cdk_ffi.CurrencyUnit.SAT(),
             active=True,
             input_fee_ppk=0
         )
-        await tx.add_mint_keysets(mint_url, [keyset_info])
-        await tx.commit()
+        await db.add_mint_keysets(mint_url, [keyset_info])
         print("✓ Setup complete")
 
-        # Increment counter (using transaction)
-        tx = await db.begin_db_transaction()
-        counter1 = await tx.increment_keyset_counter(keyset_id, 1)
-        counter2 = await tx.increment_keyset_counter(keyset_id, 5)
-        counter3 = await tx.increment_keyset_counter(keyset_id, 0)
-        await tx.commit()
+        # Increment counter
+        counter1 = await db.increment_keyset_counter(keyset_id, 1)
+        counter2 = await db.increment_keyset_counter(keyset_id, 5)
+        counter3 = await db.increment_keyset_counter(keyset_id, 0)
 
         print(f"✓ Counter after +1: {counter1}")
         assert counter1 == 1, f"Expected counter 1, got {counter1}"
@@ -528,13 +192,11 @@ async def test_wallet_quotes():
 
         mint_url = cdk_ffi.MintUrl(url="https://testmint.example.com")
 
-        # Add mint (using transaction)
-        tx = await db.begin_db_transaction()
-        await tx.add_mint(mint_url, None)
-        await tx.commit()
+        # Add mint
+        await db.add_mint(mint_url, None)
         print("✓ Added mint")
 
-        # Query quotes (read-only)
+        # Query quotes
         mint_quotes = await db.get_mint_quotes()
         assert isinstance(mint_quotes, list), "get_mint_quotes should return a list"
         print(f"✓ Retrieved {len(mint_quotes)} mint quote(s)")
@@ -575,18 +237,10 @@ async def test_wallet_proofs_by_ys():
 
 async def main():
     """Run all tests"""
-    print("Starting CDK FFI Wallet and Transaction Tests")
+    print("Starting CDK FFI Wallet Database Tests")
     print("=" * 50)
 
     tests = [
-        # Transaction tests
-        ("Increment Counter with Commit", test_increment_keyset_counter_commit),
-        ("Implicit Rollback on Drop", test_implicit_rollback_on_drop),
-        ("Explicit Rollback", test_explicit_rollback),
-        ("Transaction Reads", test_transaction_reads),
-        ("Multiple Increments", test_multiple_increments_same_transaction),
-        ("Transaction Atomicity", test_transaction_atomicity),
-        # Wallet tests (read methods + write via transactions)
         ("Wallet Creation", test_wallet_creation),
         ("Wallet Mint Management", test_wallet_mint_management),
         ("Wallet Keyset Management", test_wallet_keyset_management),

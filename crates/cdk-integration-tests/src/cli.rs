@@ -29,9 +29,10 @@ pub fn init_logging(enable_logging: bool, log_level: tracing::Level) {
         let rustls_filter = "rustls=warn";
         let reqwest_filter = "reqwest=warn";
         let tower_filter = "tower_http=warn";
+        let tokio_postgres_filter = "tokio_postgres=warn";
 
         let env_filter = EnvFilter::new(format!(
-            "{default_filter},{hyper_filter},{h2_filter},{rustls_filter},{reqwest_filter},{tower_filter}"
+            "{default_filter},{hyper_filter},{h2_filter},{rustls_filter},{reqwest_filter},{tower_filter},{tokio_postgres_filter}"
         ));
 
         // Ok if successful, Err if already initialized

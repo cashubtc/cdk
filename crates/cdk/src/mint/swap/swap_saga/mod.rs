@@ -4,14 +4,14 @@ use std::sync::Arc;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
-use cdk_common::state::check_state_transition;
-use cdk_common::{database, Amount, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
+use cdk_common::{database, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tokio::sync::Mutex;
 use tracing::instrument;
 
 use self::compensation::{CompensatingAction, RemoveSwapSetup};
 use self::state::{Initial, SetupComplete, Signed};
 use crate::mint::subscription::PubSubManager;
+use crate::Mint;
 
 pub mod compensation;
 mod state;
@@ -150,81 +150,67 @@ impl<'a> SwapSaga<'a, Initial> {
     ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
         let mut tx = self.db.begin_transaction().await?;
 
+        let output_verification = self
+            .mint
+            .verify_outputs(&mut tx, blinded_messages)
+            .await
+            .map_err(|err| {
+                tracing::debug!("Output verification failed: {:?}", err);
+                err
+            })?;
+
         // Verify balance within the transaction
         self.mint
             .verify_transaction_balanced(
-                &mut tx,
                 input_verification.clone(),
+                output_verification.clone(),
                 input_proofs,
-                blinded_messages,
             )
             .await?;
 
         // Calculate amounts to create Operation
         let total_redeemed = input_verification.amount;
-        let total_issued = Amount::try_sum(blinded_messages.iter().map(|bm| bm.amount))?;
+        let total_issued = output_verification.amount;
+
         let fee_breakdown = self.mint.get_proofs_fee(input_proofs).await?;
 
         // Create Operation with actual amounts now that we know them
+        // Convert typed amounts to untyped for Operation::new
         let operation = Operation::new(
             self.state_data.operation_id,
             cdk_common::mint::OperationKind::Swap,
-            total_issued,
-            total_redeemed,
+            total_issued.clone().into(),
+            total_redeemed.clone().into(),
             fee_breakdown.total,
             None, // complete_at
             None, // payment_method (not applicable for swap)
         );
 
         // Add input proofs to DB
-        if let Err(err) = tx
+        let mut new_proofs = match tx
             .add_proofs(input_proofs.clone(), quote_id.clone(), &operation)
             .await
         {
-            tx.rollback().await?;
-            return Err(match err {
-                database::Error::Duplicate => Error::TokenPending,
-                database::Error::AttemptUpdateSpentProof => Error::TokenAlreadySpent,
-                _ => Error::Database(err),
-            });
-        }
+            Ok(proofs) => proofs,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(match err {
+                    database::Error::Duplicate => Error::TokenPending,
+                    database::Error::AttemptUpdateSpentProof => Error::TokenAlreadySpent,
+                    _ => Error::Database(err),
+                });
+            }
+        };
 
         let ys = match input_proofs.ys() {
             Ok(ys) => ys,
             Err(err) => return Err(Error::NUT00(err)),
         };
 
-        // Update input proof states to Pending
-        let original_proof_states = match tx.update_proofs_states(&ys, State::Pending).await {
-            Ok(states) => states,
-            Err(database::Error::AttemptUpdateSpentProof)
-            | Err(database::Error::AttemptRemoveSpentProof) => {
-                tx.rollback().await?;
-                return Err(Error::TokenAlreadySpent);
-            }
-            Err(err) => {
-                tx.rollback().await?;
-                return Err(err.into());
-            }
-        };
-
-        // Verify proofs weren't already pending or spent
-        if ys.len() != original_proof_states.len() {
-            tracing::error!("Mismatched proof states");
+        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut new_proofs, State::Pending).await
+        {
             tx.rollback().await?;
-            return Err(Error::Internal);
-        }
-
-        let forbidden_states = [State::Pending, State::Spent];
-        for original_state in original_proof_states.iter().flatten() {
-            if forbidden_states.contains(original_state) {
-                tx.rollback().await?;
-                return Err(if *original_state == State::Pending {
-                    Error::TokenPending
-                } else {
-                    Error::TokenAlreadySpent
-                });
-            }
+            return Err(err);
         }
 
         // Add output blinded messages
@@ -237,11 +223,6 @@ impl<'a> SwapSaga<'a, Initial> {
                 database::Error::Duplicate => Error::DuplicateOutputs,
                 _ => Error::Database(err),
             });
-        }
-
-        // Publish proof state changes
-        for pk in &ys {
-            self.pubsub.proof_state((*pk, State::Pending));
         }
 
         // Store data in saga struct (avoid duplication in state enum)
@@ -260,7 +241,10 @@ impl<'a> SwapSaga<'a, Initial> {
         }
 
         tx.commit().await?;
-
+        // Publish proof state changes
+        for pk in &ys {
+            self.pubsub.proof_state((*pk, State::Pending));
+        }
         // Register compensation (uses LIFO via push_front)
         let compensations = Arc::clone(&self.compensations);
         compensations
@@ -423,45 +407,32 @@ impl SwapSaga<'_, Signed> {
             }
         }
 
-        for current_state in tx
-            .get_proofs_states(&self.state_data.ys)
-            .await?
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .ok_or(Error::UnexpectedProofState)?
-        {
-            check_state_transition(current_state, State::Spent)
-                .map_err(|_| Error::UnexpectedProofState)?;
-        }
-
-        match tx
-            .update_proofs_states(&self.state_data.ys, State::Spent)
-            .await
-        {
-            Ok(_) => {}
-            Err(database::Error::AttemptUpdateSpentProof)
-            | Err(database::Error::AttemptRemoveSpentProof) => {
-                tx.rollback().await?;
-                self.compensate_all().await?;
-                return Err(Error::TokenAlreadySpent);
-            }
+        let mut proofs = match tx.get_proofs(&self.state_data.ys).await {
+            Ok(proofs) => proofs,
             Err(err) => {
                 tx.rollback().await?;
                 self.compensate_all().await?;
                 return Err(err.into());
             }
+        };
+
+        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
+            tx.rollback().await?;
+            self.compensate_all().await?;
+            return Err(err);
         }
 
-        // Publish proof state changes
-        for pk in &self.state_data.ys {
-            self.pubsub.proof_state((*pk, State::Spent));
+        if let Err(err) = tx
+            .add_completed_operation(
+                &self.state_data.operation,
+                &self.state_data.fee_breakdown.per_keyset,
+            )
+            .await
+        {
+            tx.rollback().await?;
+            self.compensate_all().await?;
+            return Err(err.into());
         }
-
-        tx.add_completed_operation(
-            &self.state_data.operation,
-            &self.state_data.fee_breakdown.per_keyset,
-        )
-        .await?;
 
         // Delete saga - swap completed successfully (best-effort, atomic with TX2)
         // Don't fail the swap if saga deletion fails - orphaned saga will be
@@ -475,7 +446,10 @@ impl SwapSaga<'_, Signed> {
         }
 
         tx.commit().await?;
-
+        // Publish proof state changes
+        for pk in &self.state_data.ys {
+            self.pubsub.proof_state((*pk, State::Spent));
+        }
         // Clear compensations - swap is complete
         self.compensations.lock().await.clear();
 

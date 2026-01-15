@@ -10,7 +10,7 @@ use crate::RotateNextKeysetRequest;
 ///
 /// This command instructs the mint to rotate to a new keyset, which generates new keys
 /// for signing tokens of the specified unit type.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct RotateNextKeysetCommand {
     /// The unit type for the keyset (e.g., "sat")
     #[arg(short, long)]
@@ -56,8 +56,11 @@ pub async fn rotate_next_keyset(
     let response = response.into_inner();
 
     println!(
-        "Rotated to new keyset {} for unit {} with amounts {:?} and fee of {}",
-        response.id, response.unit, response.amounts, response.input_fee_ppk
+        "Rotated to new keyset {} for unit {} with amounts {} and fee of {}",
+        response.id,
+        response.unit,
+        serde_json::to_string(&response.amounts)?,
+        response.input_fee_ppk
     );
 
     Ok(())

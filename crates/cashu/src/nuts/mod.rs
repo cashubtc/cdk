@@ -25,6 +25,9 @@ pub mod nut19;
 pub mod nut20;
 pub mod nut23;
 pub mod nut25;
+pub mod nut26;
+#[cfg(all(feature = "wallet", feature = "nostr"))]
+pub mod nut27;
 
 #[cfg(feature = "auth")]
 mod auth;
@@ -47,9 +50,13 @@ pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
 #[cfg(feature = "wallet")]
 pub use nut03::PreSwap;
 pub use nut03::{SwapRequest, SwapResponse};
-pub use nut04::{MintMethodSettings, MintRequest, MintResponse, Settings as NUT04Settings};
+pub use nut04::{
+    MintMethodSettings, MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest, MintResponse,
+    Settings as NUT04Settings,
+};
 pub use nut05::{
-    MeltMethodSettings, MeltRequest, QuoteState as MeltQuoteState, Settings as NUT05Settings,
+    MeltMethodSettings, MeltQuoteCustomRequest, MeltQuoteCustomResponse, MeltRequest,
+    QuoteState as MeltQuoteState, Settings as NUT05Settings,
 };
 pub use nut06::{ContactInfo, MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
@@ -61,11 +68,15 @@ pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
 pub use nut17::NotificationPayload;
 pub use nut18::{
-    PaymentRequest, PaymentRequestBuilder, PaymentRequestPayload, Transport, TransportBuilder,
-    TransportType,
+    Nut10SecretRequest, PaymentRequest, PaymentRequestBuilder, PaymentRequestPayload, Transport,
+    TransportBuilder, TransportType,
 };
 pub use nut23::{
     MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
     MintQuoteBolt11Response, QuoteState as MintQuoteState,
 };
 pub use nut25::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+#[cfg(all(feature = "wallet", feature = "nostr"))]
+pub use nut27::{
+    backup_filter_params, create_backup_event, decrypt_backup_event, derive_nostr_keys, MintBackup,
+};

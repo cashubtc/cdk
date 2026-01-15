@@ -226,13 +226,13 @@ impl MintInfo {
 
         if let Some(nut21_settings) = &self.nuts.nut21 {
             for endpoint in nut21_settings.protected_endpoints.iter() {
-                protected_endpoints.insert(*endpoint, AuthRequired::Clear);
+                protected_endpoints.insert(endpoint.clone(), AuthRequired::Clear);
             }
         }
 
         if let Some(nut22_settings) = &self.nuts.nut22 {
             for endpoint in nut22_settings.protected_endpoints.iter() {
-                protected_endpoints.insert(*endpoint, AuthRequired::Blind);
+                protected_endpoints.insert(endpoint.clone(), AuthRequired::Blind);
             }
         }
         protected_endpoints
@@ -506,6 +506,7 @@ impl ContactInfo {
 mod tests {
 
     use super::*;
+    use crate::nut00::KnownMethod;
     use crate::nut04::MintMethodOptions;
 
     #[test]
@@ -668,7 +669,10 @@ mod tests {
         let t = mint_info
             .nuts
             .nut04
-            .get_settings(&crate::CurrencyUnit::Sat, &crate::PaymentMethod::Bolt11)
+            .get_settings(
+                &crate::CurrencyUnit::Sat,
+                &crate::PaymentMethod::Known(KnownMethod::Bolt11),
+            )
             .unwrap();
 
         let t = t.options.unwrap();
@@ -697,7 +701,7 @@ mod tests {
         let mint_info_with_nut15 = MintInfo {
             name: Some("Test Mint".to_string()),
             nuts: Nuts::default().nut15(vec![MppMethodSettings {
-                method: crate::PaymentMethod::Bolt11,
+                method: crate::PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: crate::CurrencyUnit::Sat,
             }]),
             ..Default::default()

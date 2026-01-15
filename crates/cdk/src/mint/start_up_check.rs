@@ -75,7 +75,7 @@ impl Mint {
     async fn finalize_paid_melt_quote(
         &self,
         quote: &MeltQuote,
-        total_spent: cdk_common::Amount,
+        total_spent: cdk_common::Amount<cdk_common::CurrencyUnit>,
         payment_preimage: Option<String>,
         payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
     ) -> Result<(), Error> {
@@ -381,7 +381,7 @@ impl Mint {
                                 );
 
                                 // Get payment info for finalization
-                                let total_spent = quote.amount;
+                                let total_spent = quote.amount();
                                 let payment_lookup_id =
                                     quote.request_lookup_id.clone().unwrap_or_else(|| {
                                         cdk_common::payment::PaymentIdentifier::CustomId(
@@ -399,28 +399,29 @@ impl Mint {
                                     .await
                                 {
                                     tracing::error!(
-                                        "Failed to finalize internal settlement saga {}: {}",
+                                        "Failed to finalize internal settlement saga {}: {}. Will retry on next recovery cycle.",
                                         saga.operation_id,
                                         err
                                     );
+                                    continue;
                                 }
 
                                 // Delete saga after successful finalization
                                 let mut tx = self.localstore.begin_transaction().await?;
                                 if let Err(e) = tx.delete_saga(&saga.operation_id).await {
                                     tracing::error!(
-                                        "Failed to delete saga for {}: {}",
+                                        "Failed to delete saga {}: {}. Will retry on next recovery cycle.",
                                         saga.operation_id,
                                         e
                                     );
                                     tx.rollback().await?;
-                                } else {
-                                    tx.commit().await?;
-                                    tracing::info!(
-                                        "Successfully recovered and finalized internal settlement saga {}",
-                                        saga.operation_id
-                                    );
+                                    continue;
                                 }
+                                tx.commit().await?;
+                                tracing::info!(
+                                    "Successfully recovered and finalized internal settlement saga {}",
+                                    saga.operation_id
+                                );
 
                                 continue; // Skip to next saga
                             }
@@ -473,28 +474,29 @@ impl Mint {
                                     .await
                                 {
                                     tracing::error!(
-                                        "Failed to finalize paid melt saga {}: {}",
+                                        "Failed to finalize paid melt saga {}: {}. Will retry on next recovery cycle.",
                                         saga.operation_id,
                                         err
                                     );
+                                    continue;
                                 }
 
                                 // Delete saga after successful finalization
                                 let mut tx = self.localstore.begin_transaction().await?;
                                 if let Err(e) = tx.delete_saga(&saga.operation_id).await {
                                     tracing::error!(
-                                        "Failed to delete saga for {}: {}",
+                                        "Failed to delete saga {}: {}. Will retry on next recovery cycle.",
                                         saga.operation_id,
                                         e
                                     );
                                     tx.rollback().await?;
-                                } else {
-                                    tx.commit().await?;
-                                    tracing::info!(
-                                        "Successfully recovered and finalized melt saga {}",
-                                        saga.operation_id
-                                    );
+                                    continue;
                                 }
+                                tx.commit().await?;
+                                tracing::info!(
+                                    "Successfully recovered and finalized melt saga {}",
+                                    saga.operation_id
+                                );
 
                                 continue; // Skip compensation, saga handled
                             }

@@ -1,13 +1,12 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use cdk_common::amount::to_unit;
 use cdk_common::database::mint::MeltRequestInfo;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
+use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
-use cdk_common::state::check_state_transition;
-use cdk_common::{Amount, Error, ProofsMethods, PublicKey, QuoteId, State};
+use cdk_common::{Amount, CurrencyUnit, Error, ProofsMethods, PublicKey, QuoteId, State};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use tokio::sync::Mutex;
@@ -20,6 +19,7 @@ use crate::mint::melt::shared;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::Verification;
 use crate::mint::{MeltQuoteBolt11Response, MeltRequest};
+use crate::Mint;
 
 mod compensation;
 mod state;
@@ -196,8 +196,8 @@ impl MeltSaga<Initial> {
     ) -> Result<MeltSaga<SetupComplete>, Error> {
         let Verification {
             amount: input_amount,
-            unit: input_unit,
         } = input_verification;
+        let input_unit = Some(input_amount.unit().clone());
 
         let mut tx = self.db.begin_transaction().await?;
 
@@ -219,10 +219,10 @@ impl MeltSaga<Initial> {
         let operation = Operation::new(
             self.state_data.operation_id,
             cdk_common::mint::OperationKind::Melt,
-            Amount::ZERO,         // total_issued (change will be calculated later)
-            input_amount,         // total_redeemed
-            fee_breakdown.total,  // fee_collected
-            None,                 // complete_at
+            Amount::ZERO, // total_issued (change will be calculated later)
+            input_amount.clone().into(), // total_redeemed (convert to untyped)
+            fee_breakdown.total, // fee_collected
+            None,         // complete_at
             Some(payment_method), // payment_method
         );
 
@@ -245,56 +245,14 @@ impl MeltSaga<Initial> {
 
         let input_ys = melt_request.inputs().ys()?;
 
-        for current_state in tx
-            .get_proofs_states(&input_ys)
-            .await?
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .ok_or(Error::UnexpectedProofState)?
-        {
-            check_state_transition(current_state, State::Pending)
-                .map_err(|_| Error::UnexpectedProofState)?;
-        }
+        let mut proofs = tx.get_proofs(&input_ys).await?;
 
-        // Update proof states to Pending
-        let original_states = match tx.update_proofs_states(&input_ys, State::Pending).await {
-            Ok(states) => states,
-            Err(cdk_common::database::Error::AttemptUpdateSpentProof)
-            | Err(cdk_common::database::Error::AttemptRemoveSpentProof) => {
-                tx.rollback().await?;
-                return Err(Error::TokenAlreadySpent);
-            }
-            Err(err) => {
-                tx.rollback().await?;
-                return Err(err.into());
-            }
-        };
-
-        // Check for forbidden states (Pending or Spent)
-        let has_forbidden_state = original_states
-            .iter()
-            .any(|state| matches!(state, Some(State::Pending) | Some(State::Spent)));
-
-        if has_forbidden_state {
+        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Pending).await {
             tx.rollback().await?;
-            return Err(
-                if original_states
-                    .iter()
-                    .any(|s| matches!(s, Some(State::Pending)))
-                {
-                    Error::TokenPending
-                } else {
-                    Error::TokenAlreadySpent
-                },
-            );
+            return Err(err);
         }
 
         let previous_state = quote.state;
-
-        // Publish proof state changes
-        for pk in input_ys.iter() {
-            self.pubsub.proof_state((*pk, State::Pending));
-        }
 
         if input_unit != Some(quote.unit.clone()) {
             tx.rollback().await?;
@@ -329,27 +287,29 @@ impl MeltSaga<Initial> {
             }
         };
 
-        self.pubsub
-            .melt_quote_status(&*quote, None, None, MeltQuoteState::Pending);
-
         let inputs_fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
+        let inputs_fee = inputs_fee_breakdown.total.with_unit(quote.unit.clone());
+        let fee_reserve = quote.fee_reserve();
 
-        let required_total = quote.amount + quote.fee_reserve + inputs_fee_breakdown.total;
+        let required_total = quote
+            .amount()
+            .checked_add(&fee_reserve)?
+            .checked_add(&inputs_fee)?;
 
-        if input_amount < required_total {
+        if input_amount < required_total.clone() {
             tracing::info!(
                 "Melt request unbalanced: inputs {}, amount {}, fee_reserve {}, input_fee {}, required {}",
                 input_amount,
-                quote.amount,
-                quote.fee_reserve,
-                inputs_fee_breakdown.total,
+                quote.amount(),
+                fee_reserve,
+                inputs_fee,
                 required_total
             );
             tx.rollback().await?;
             return Err(Error::TransactionUnbalanced(
-                input_amount.into(),
-                quote.amount.into(),
-                (inputs_fee_breakdown.total + quote.fee_reserve).into(),
+                input_amount.to_u64(),
+                quote.amount().value(),
+                inputs_fee.checked_add(&fee_reserve)?.value(),
             ));
         }
 
@@ -364,7 +324,7 @@ impl MeltSaga<Initial> {
                     }
                 };
 
-                if input_unit != output_verification.unit {
+                if input_unit.as_ref() != Some(output_verification.amount.unit()) {
                     tx.rollback().await?;
                     return Err(Error::UnitMismatch);
                 }
@@ -374,8 +334,8 @@ impl MeltSaga<Initial> {
         // Add melt request tracking record
         tx.add_melt_request(
             melt_request.quote_id(),
-            melt_request.inputs_amount()?,
-            inputs_fee_breakdown.total,
+            melt_request.inputs_amount()?.with_unit(quote.unit.clone()),
+            inputs_fee.clone(),
         )
         .await?;
 
@@ -409,6 +369,14 @@ impl MeltSaga<Initial> {
         }
 
         tx.commit().await?;
+        // Publish proof state changes
+        for pk in input_ys.iter() {
+            self.pubsub.proof_state((*pk, State::Pending));
+        }
+
+        // Publish melt quote status change AFTER transaction commits
+        self.pubsub
+            .melt_quote_status(&*quote, None, None, MeltQuoteState::Pending);
 
         // Store blinded messages for state
         let blinded_messages_vec = melt_request.outputs().clone().unwrap_or_default();
@@ -508,20 +476,23 @@ impl MeltSaga<SetupComplete> {
         // Mint quote has already been settled
         if (mint_quote.state() == cdk_common::nuts::MintQuoteState::Issued
             || mint_quote.state() == cdk_common::nuts::MintQuoteState::Paid)
-            && mint_quote.payment_method == crate::mint::PaymentMethod::Bolt11
+            && mint_quote.payment_method == crate::mint::PaymentMethod::Known(KnownMethod::Bolt11)
         {
             tx.rollback().await?;
             self.compensate_all().await?;
             return Err(Error::RequestAlreadyPaid);
         }
 
-        let inputs_amount_quote_unit = melt_request.inputs_amount().map_err(|_| {
-            tracing::error!("Proof inputs in melt quote overflowed");
-            Error::AmountOverflow
-        })?;
+        let inputs_amount_quote_unit = melt_request
+            .inputs_amount()
+            .map_err(|_| {
+                tracing::error!("Proof inputs in melt quote overflowed");
+                Error::AmountOverflow
+            })?
+            .with_unit(mint_quote.unit.clone());
 
-        if let Some(amount) = mint_quote.amount {
-            if amount > inputs_amount_quote_unit {
+        if let Some(ref amount) = mint_quote.amount {
+            if amount > &inputs_amount_quote_unit {
                 tracing::debug!(
                     "Not enough inputs provided: {} needed {}",
                     inputs_amount_quote_unit,
@@ -533,7 +504,7 @@ impl MeltSaga<SetupComplete> {
             }
         }
 
-        let amount = self.state_data.quote.amount;
+        let amount = self.state_data.quote.amount();
 
         tracing::info!(
             "Mint quote {} paid {} from internal payment.",
@@ -549,9 +520,10 @@ impl MeltSaga<SetupComplete> {
         )
         .await?;
 
-        mint_quote.add_payment(amount, self.state_data.quote.id.to_string(), None)?;
+        mint_quote.add_payment(amount.clone(), self.state_data.quote.id.to_string(), None)?;
         tx.update_mint_quote(&mut mint_quote).await?;
 
+        tx.commit().await?;
         self.pubsub
             .mint_quote_payment(&mint_quote, mint_quote.amount_paid());
 
@@ -560,8 +532,6 @@ impl MeltSaga<SetupComplete> {
             self.state_data.quote.id,
             mint_quote.id
         );
-
-        tx.commit().await?;
 
         Ok((self, SettlementDecision::Internal { amount }))
     }
@@ -626,7 +596,6 @@ impl MeltSaga<SetupComplete> {
                 MakePaymentResponse {
                     status: MeltQuoteState::Paid,
                     total_spent: amount,
-                    unit: self.state_data.quote.unit.clone(),
                     payment_proof: None,
                     payment_lookup_id: self
                         .state_data
@@ -686,7 +655,7 @@ impl MeltSaga<SetupComplete> {
                             "Got {} status when paying melt quote {} for {} {}. Verifying with backend...",
                             pay.status,
                             self.state_data.quote.id,
-                            self.state_data.quote.amount,
+                            self.state_data.quote.amount(),
                             self.state_data.quote.unit
                         );
 
@@ -861,15 +830,17 @@ impl MeltSaga<PaymentConfirmed> {
     /// - `UnitMismatch`: Failed to convert payment amount to quote unit
     #[instrument(skip_all)]
     pub async fn finalize(self) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
-        let total_spent = to_unit(
-            self.state_data.payment_result.total_spent,
-            &self.state_data.payment_result.unit,
-            &self.state_data.quote.unit,
-        )
-        .map_err(|e| {
-            tracing::error!("Failed to convert total_spent to quote unit: {:?}", e);
-            Error::UnitMismatch
-        })?;
+        tracing::info!("TX2: Finalizing melt (mark spent + change)");
+
+        let total_spent: Amount<CurrencyUnit> = self
+            .state_data
+            .payment_result
+            .total_spent
+            .convert_to(&self.state_data.quote.unit)
+            .map_err(|e| {
+                tracing::error!("Failed to convert total_spent to quote unit: {:?}", e);
+                Error::UnitMismatch
+            })?;
 
         let payment_preimage = self.state_data.payment_result.payment_proof.clone();
         let payment_lookup_id = &self.state_data.payment_result.payment_lookup_id;
@@ -896,9 +867,9 @@ impl MeltSaga<PaymentConfirmed> {
             &self.pubsub,
             &mut quote,
             &self.state_data.input_ys,
-            inputs_amount,
-            inputs_fee,
-            total_spent,
+            inputs_amount.clone(),
+            inputs_fee.clone(),
+            total_spent.clone(),
             payment_preimage.clone(),
             payment_lookup_id,
         )
@@ -931,8 +902,8 @@ impl MeltSaga<PaymentConfirmed> {
                 &self.mint,
                 &self.db,
                 &self.state_data.quote.id,
-                inputs_amount,
-                total_spent,
+                inputs_amount.clone(),
+                total_spent.clone(),
                 inputs_fee,
                 change_outputs,
             )
@@ -958,10 +929,9 @@ impl MeltSaga<PaymentConfirmed> {
         // Set payment details for melt operation
         // payment_amount = the Lightning invoice amount
         // payment_fee = actual fee paid (total_spent - invoice_amount)
-        let payment_fee = total_spent
-            .checked_sub(self.state_data.quote.amount)
-            .unwrap_or(Amount::ZERO);
-        operation.set_payment_details(self.state_data.quote.amount, payment_fee);
+        let payment_fee = total_spent.checked_sub(&self.state_data.quote.amount())?;
+
+        operation.set_payment_details(self.state_data.quote.amount().into(), payment_fee.into());
 
         tx.add_completed_operation(&operation, &self.state_data.fee_breakdown.per_keyset)
             .await?;
@@ -992,11 +962,11 @@ impl MeltSaga<PaymentConfirmed> {
         }
 
         let response = MeltQuoteBolt11Response {
-            amount: self.state_data.quote.amount,
+            amount: self.state_data.quote.amount().into(),
             payment_preimage,
             change,
-            quote: self.state_data.quote.id,
-            fee_reserve: self.state_data.quote.fee_reserve,
+            quote: self.state_data.quote.id.clone(),
+            fee_reserve: self.state_data.quote.fee_reserve().into(),
             state: MeltQuoteState::Paid,
             expiry: self.state_data.quote.expiry,
             request: Some(self.state_data.quote.request.to_string()),

@@ -375,7 +375,7 @@ async fn test_p2pk_locktime_after_expiry() {
     let mint = test_mint.mint();
 
     let (alice_secret, alice_pubkey) = create_test_keypair();
-    let (bob_secret, bob_pubkey) = create_test_keypair();
+    let (_bob_secret, bob_pubkey) = create_test_keypair();
 
     // Set locktime in the past (already expired)
     let locktime = unix_time() - 3600;
@@ -544,7 +544,7 @@ async fn test_p2pk_multisig_locktime() {
     let (_carol_secret, carol_pubkey) = create_test_keypair();
 
     // After locktime: Need 1-of-2 from (Dave, Eve) as refund keys
-    let (dave_secret, dave_pubkey) = create_test_keypair();
+    let (_dave_secret, dave_pubkey) = create_test_keypair();
     let (_eve_secret, eve_pubkey) = create_test_keypair();
 
     let locktime = unix_time() - 100; // Already expired

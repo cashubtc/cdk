@@ -188,6 +188,14 @@ pub struct MultiMintWallet {
     shared_tor_transport: Option<TorAsync>,
 }
 
+impl std::fmt::Debug for MultiMintWallet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultiMintWallet")
+            .field("unit", &self.unit)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MultiMintWallet {
     /// Create a new [MultiMintWallet] for a specific currency unit
     pub async fn new(
@@ -262,6 +270,15 @@ impl MultiMintWallet {
         wallet.load_wallets().await?;
 
         Ok(wallet)
+    }
+
+    /// Get a reference to the wallet seed
+    ///
+    /// This is used internally for key derivation operations.
+    #[inline(always)]
+    #[cfg(all(feature = "wallet", feature = "nostr"))]
+    pub(crate) fn seed(&self) -> &[u8; 64] {
+        &self.seed
     }
 
     /// Adds a mint to this [MultiMintWallet]
@@ -985,7 +1002,7 @@ impl MultiMintWallet {
             .subscribe(super::WalletSubscription::Bolt11MintQuoteState(vec![
                 final_mint_quote.id.clone(),
             ]))
-            .await;
+            .await?;
 
         // Step 2: Melt from source wallet using the final melt quote
         let melted = source_wallet.melt(&final_melt_quote.id).await?;

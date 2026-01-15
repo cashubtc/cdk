@@ -10,6 +10,8 @@ use crate::error::FfiError;
 /// Transport type for payment request delivery
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum TransportType {
+    /// In-band transport (tokens returned directly in response)
+    InBand,
     /// Nostr transport (privacy-preserving)
     Nostr,
     /// HTTP POST transport
@@ -19,6 +21,7 @@ pub enum TransportType {
 impl From<cdk::nuts::TransportType> for TransportType {
     fn from(t: cdk::nuts::TransportType) -> Self {
         match t {
+            cdk::nuts::TransportType::InBand => TransportType::InBand,
             cdk::nuts::TransportType::Nostr => TransportType::Nostr,
             cdk::nuts::TransportType::HttpPost => TransportType::HttpPost,
         }
@@ -28,6 +31,7 @@ impl From<cdk::nuts::TransportType> for TransportType {
 impl From<TransportType> for cdk::nuts::TransportType {
     fn from(t: TransportType) -> Self {
         match t {
+            TransportType::InBand => cdk::nuts::TransportType::InBand,
             TransportType::Nostr => cdk::nuts::TransportType::Nostr,
             TransportType::HttpPost => cdk::nuts::TransportType::HttpPost,
         }
@@ -92,8 +96,7 @@ impl PaymentRequest {
     #[uniffi::constructor]
     pub fn from_string(encoded: String) -> Result<Arc<Self>, FfiError> {
         use std::str::FromStr;
-        let inner = cdk::nuts::PaymentRequest::from_str(&encoded)
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+        let inner = cdk::nuts::PaymentRequest::from_str(&encoded).map_err(FfiError::internal)?;
         Ok(Arc::new(Self { inner }))
     }
 

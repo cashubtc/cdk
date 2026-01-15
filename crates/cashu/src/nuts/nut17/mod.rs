@@ -3,6 +3,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::PublicKey;
+use crate::nut00::KnownMethod;
 use crate::nuts::{
     CurrencyUnit, MeltQuoteBolt11Response, MintQuoteBolt11Response, PaymentMethod, ProofState,
 };
@@ -63,7 +64,7 @@ impl SupportedMethods {
         ];
 
         Self {
-            method: PaymentMethod::Bolt11,
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
             unit,
             commands,
         }
@@ -78,33 +79,91 @@ impl SupportedMethods {
         ];
 
         Self {
-            method: PaymentMethod::Bolt12,
+            method: PaymentMethod::Known(KnownMethod::Bolt12),
+            unit,
+            commands,
+        }
+    }
+
+    /// Create [`SupportedMethods`] for custom payment method with all supported commands
+    pub fn default_custom(method: PaymentMethod, unit: CurrencyUnit) -> Self {
+        let method_name = method.to_string();
+        let commands = vec![
+            WsCommand::Custom(format!("{}_mint_quote", method_name)),
+            WsCommand::Custom(format!("{}_melt_quote", method_name)),
+            WsCommand::ProofState,
+        ];
+
+        Self {
+            method,
             unit,
             commands,
         }
     }
 }
 
+impl WsCommand {
+    /// Create a custom mint quote command for a payment method
+    pub fn custom_mint_quote(method: &str) -> Self {
+        WsCommand::Custom(format!("{}_mint_quote", method))
+    }
+
+    /// Create a custom melt quote command for a payment method
+    pub fn custom_melt_quote(method: &str) -> Self {
+        WsCommand::Custom(format!("{}_melt_quote", method))
+    }
+}
+
 /// WebSocket commands supported by the Cashu mint
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-#[serde(rename_all = "snake_case")]
 pub enum WsCommand {
     /// Command to request a Lightning invoice for minting tokens
-    #[serde(rename = "bolt11_mint_quote")]
     Bolt11MintQuote,
     /// Command to request a Lightning payment for melting tokens
-    #[serde(rename = "bolt11_melt_quote")]
     Bolt11MeltQuote,
     /// Websocket support for Bolt12 Mint Quote
-    #[serde(rename = "bolt12_mint_quote")]
     Bolt12MintQuote,
     /// Websocket support for Bolt12 Melt Quote
-    #[serde(rename = "bolt12_melt_quote")]
     Bolt12MeltQuote,
     /// Command to check the state of a proof
-    #[serde(rename = "proof_state")]
     ProofState,
+    /// Custom payment method command
+    Custom(String),
+}
+
+impl Serialize for WsCommand {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let s = match self {
+            WsCommand::Bolt11MintQuote => "bolt11_mint_quote",
+            WsCommand::Bolt11MeltQuote => "bolt11_melt_quote",
+            WsCommand::Bolt12MintQuote => "bolt12_mint_quote",
+            WsCommand::Bolt12MeltQuote => "bolt12_melt_quote",
+            WsCommand::ProofState => "proof_state",
+            WsCommand::Custom(custom) => custom.as_str(),
+        };
+        serializer.serialize_str(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for WsCommand {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "bolt11_mint_quote" => WsCommand::Bolt11MintQuote,
+            "bolt11_melt_quote" => WsCommand::Bolt11MeltQuote,
+            "bolt12_mint_quote" => WsCommand::Bolt12MintQuote,
+            "bolt12_melt_quote" => WsCommand::Bolt12MeltQuote,
+            "proof_state" => WsCommand::ProofState,
+            custom => WsCommand::Custom(custom.to_string()),
+        })
+    }
 }
 
 impl<T> From<MintQuoteBolt12Response<T>> for NotificationPayload<T>

@@ -82,9 +82,7 @@ impl TryFrom<PublicKey> for cdk::nuts::PublicKey {
     fn try_from(key: PublicKey) -> Result<Self, Self::Error> {
         key.hex
             .parse()
-            .map_err(|e| FfiError::InvalidCryptographicKey {
-                msg: format!("Invalid public key: {}", e),
-            })
+            .map_err(|e| FfiError::internal(format!("Invalid public key: {}", e)))
     }
 }
 
@@ -127,7 +125,7 @@ impl TryFrom<Keys> for cdk::nuts::Keys {
         for (amount_u64, pubkey_hex) in keys.keys {
             let amount = cdk::Amount::from(amount_u64);
             let pubkey = cdk::nuts::PublicKey::from_str(&pubkey_hex)
-                .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
+                .map_err(|e| FfiError::internal(format!("Invalid public key: {}", e)))?;
             keys_map.insert(amount, pubkey);
         }
 
@@ -161,6 +159,10 @@ pub struct KeySet {
     pub id: String,
     /// Currency unit
     pub unit: CurrencyUnit,
+    /// Keyset state - indicates whether the mint will sign new outputs with this keyset
+    pub active: Option<bool>,
+    /// Input fee in parts per thousand (ppk) per input spent from this keyset
+    pub input_fee_ppk: u64,
     /// The keys (map of amount to public key hex)
     pub keys: HashMap<u64, String>,
     /// Optional expiry timestamp
@@ -172,6 +174,8 @@ impl From<cdk::nuts::KeySet> for KeySet {
         Self {
             id: keyset.id.to_string(),
             unit: keyset.unit.into(),
+            active: keyset.active,
+            input_fee_ppk: keyset.input_fee_ppk,
             keys: keyset
                 .keys
                 .keys()
@@ -192,7 +196,7 @@ impl TryFrom<KeySet> for cdk::nuts::KeySet {
 
         // Convert id
         let id = cdk::nuts::Id::from_str(&keyset.id)
-            .map_err(|e| FfiError::Serialization { msg: e.to_string() })?;
+            .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?;
 
         // Convert unit
         let unit: cdk::nuts::CurrencyUnit = keyset.unit.into();
@@ -202,7 +206,7 @@ impl TryFrom<KeySet> for cdk::nuts::KeySet {
         for (amount_u64, pubkey_hex) in keyset.keys {
             let amount = cdk::Amount::from(amount_u64);
             let pubkey = cdk::nuts::PublicKey::from_str(&pubkey_hex)
-                .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
+                .map_err(|e| FfiError::internal(format!("Invalid public key: {}", e)))?;
             keys_map.insert(amount, pubkey);
         }
         let keys = cdk::nuts::Keys::new(keys_map);
@@ -210,6 +214,8 @@ impl TryFrom<KeySet> for cdk::nuts::KeySet {
         Ok(cdk::nuts::KeySet {
             id,
             unit,
+            active: keyset.active,
+            input_fee_ppk: keyset.input_fee_ppk,
             keys,
             final_expiry: keyset.final_expiry,
         })

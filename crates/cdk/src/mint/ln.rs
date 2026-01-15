@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cdk_common::amount::to_unit;
 use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::DynMintPayment;
-use cdk_common::{Amount, MintQuoteState, PaymentMethod};
+use cdk_common::MintQuoteState;
 use tracing::instrument;
 
 use super::subscription::PubSubManager;
@@ -27,7 +26,7 @@ impl Mint {
         // We can just return here and do not need to check with ln node.
         // If quote is issued it is already in a final state,
         // If it is paid ln node will only tell us what we already know
-        if quote.payment_method == PaymentMethod::Bolt11
+        if quote.payment_method.is_bolt11()
             && (state == MintQuoteState::Issued || state == MintQuoteState::Paid)
         {
             return Ok(());
@@ -63,7 +62,7 @@ impl Mint {
 
         let current_state = new_quote.state();
 
-        if new_quote.payment_method == PaymentMethod::Bolt11
+        if new_quote.payment_method.is_bolt11()
             && (current_state == MintQuoteState::Issued || current_state == MintQuoteState::Paid)
         {
             return Ok(());
@@ -71,16 +70,16 @@ impl Mint {
 
         for payment in ln_status {
             if !new_quote.payment_ids().contains(&&payment.payment_id)
-                && payment.payment_amount > Amount::ZERO
+                && payment.payment_amount.value() > 0
             {
                 tracing::debug!(
-                    "Found payment of {} {} for quote {} when checking.",
-                    payment.payment_amount,
-                    payment.unit,
+                    "Found payment of {} {:?} for quote {} when checking.",
+                    payment.payment_amount.value(),
+                    payment.unit(),
                     new_quote.id
                 );
 
-                let amount_paid = to_unit(payment.payment_amount, &payment.unit, &new_quote.unit)?;
+                let amount_paid = payment.payment_amount.convert_to(&new_quote.unit)?;
 
                 match new_quote.add_payment(amount_paid, payment.payment_id.clone(), None) {
                     Ok(()) => {

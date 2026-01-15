@@ -58,7 +58,7 @@ pub async fn init_keysets(
 
             if let Some((input_fee_ppk, max_order)) = supported_units.get(&unit) {
                 if !keysets.is_empty()
-                    && &highest_index_keyset.input_fee_ppk == input_fee_ppk
+                    && highest_index_keyset.input_fee_ppk == *input_fee_ppk
                     && highest_index_keyset.amounts.len() == (*max_order as usize)
                 {
                     tracing::debug!("Current highest index keyset matches expect fee and max order. Setting active");
@@ -69,6 +69,7 @@ pub async fn init_keysets(
                         &highest_index_keyset.amounts,
                         highest_index_keyset.unit.clone(),
                         highest_index_keyset.derivation_path.clone(),
+                        highest_index_keyset.input_fee_ppk,
                         highest_index_keyset.final_expiry,
                         cdk_common::nut02::KeySetVersion::Version00,
                     );
@@ -139,6 +140,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
             .expect("RNG busted"),
         unit,
         amounts,
+        input_fee_ppk,
         final_expiry,
         // TODO: change this to Version01 to generate keysets v2
         cdk_common::nut02::KeySetVersion::Version00,

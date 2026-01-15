@@ -3,9 +3,11 @@
 //! UniFFI bindings for the CDK Wallet and related types.
 
 #![warn(clippy::unused_async)]
+#![allow(missing_debug_implementations)]
 
 pub mod database;
 pub mod error;
+pub mod logging;
 pub mod multi_mint_wallet;
 #[cfg(feature = "postgres")]
 pub mod postgres;
@@ -16,6 +18,7 @@ pub mod wallet;
 
 pub use database::*;
 pub use error::*;
+pub use logging::*;
 pub use multi_mint_wallet::*;
 pub use types::*;
 pub use wallet::*;
