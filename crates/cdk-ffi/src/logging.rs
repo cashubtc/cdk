@@ -28,11 +28,27 @@ static INIT: Once = std::sync::Once::new();
 #[uniffi::export]
 pub fn init_logging(level: String) {
     INIT.call_once(|| {
-        use tracing_subscriber::{fmt, EnvFilter};
+        #[cfg(target_os = "android")]
+        {
+            use android_logger::{Config, FilterBuilder};
+            use log::LevelFilter;
 
-        let filter = EnvFilter::try_new(&level).unwrap_or_else(|_| EnvFilter::new("info"));
+            android_logger::init_once(
+                Config::default()
+                    .with_max_level(LevelFilter::Trace)
+                    .with_tag("cdk")
+                    .with_filter(FilterBuilder::new().parse(&level).build()),
+            );
+        }
 
-        fmt().with_env_filter(filter).with_target(true).init();
+        #[cfg(not(target_os = "android"))]
+        {
+            use tracing_subscriber::{fmt, EnvFilter};
+
+            let filter = EnvFilter::try_new(&level).unwrap_or_else(|_| EnvFilter::new("info"));
+
+            fmt().with_env_filter(filter).with_target(true).init();
+        }
     });
 }
 
