@@ -9,13 +9,15 @@ use cdk_common::{Error, PublicKey, QuoteId};
 use tracing::instrument;
 use uuid::Uuid;
 
+use crate::mint::subscription::PubSubManager;
+
 /// Trait for compensating actions in the saga pattern.
 ///
 /// Compensating actions are registered as steps complete and executed in reverse
 /// order (LIFO) if the saga fails. Each action should be idempotent.
 #[async_trait]
 pub trait CompensatingAction: Send + Sync {
-    async fn execute(&self, db: &DynMintDatabase) -> Result<(), Error>;
+    async fn execute(&self, db: &DynMintDatabase, pubsub: &PubSubManager) -> Result<(), Error>;
     fn name(&self) -> &'static str;
 }
 
@@ -46,7 +48,7 @@ pub struct RemoveMeltSetup {
 #[async_trait]
 impl CompensatingAction for RemoveMeltSetup {
     #[instrument(skip_all)]
-    async fn execute(&self, db: &DynMintDatabase) -> Result<(), Error> {
+    async fn execute(&self, db: &DynMintDatabase, pubsub: &PubSubManager) -> Result<(), Error> {
         tracing::info!(
             "Compensation: Removing melt setup for quote {} ({} proofs, {} blinded messages, saga {})",
             self.quote_id,
@@ -57,6 +59,7 @@ impl CompensatingAction for RemoveMeltSetup {
 
         super::super::shared::rollback_melt_quote(
             db,
+            pubsub,
             &self.quote_id,
             &self.input_ys,
             &self.blinded_secrets,
