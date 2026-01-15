@@ -19,9 +19,10 @@ use std::time::Duration;
 use bip39::Mnemonic;
 use cashu::ProofsMethods;
 use cdk::amount::{Amount, SplitTarget};
+use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{
     CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, MintRequest, Mpp,
-    NotificationPayload, PreMintSecrets,
+    NotificationPayload, PaymentMethod, PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
 use cdk_integration_tests::{get_mint_url_from_env, get_second_mint_url_from_env, get_test_client};
@@ -342,8 +343,14 @@ async fn test_cached_mint() {
         .sign(secret_key.expect("Secret key on quote"))
         .unwrap();
 
-    let response = http_client.post_mint(request.clone()).await.unwrap();
-    let response1 = http_client.post_mint(request).await.unwrap();
+    let response = http_client
+        .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request.clone())
+        .await
+        .unwrap();
+    let response1 = http_client
+        .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request)
+        .await
+        .unwrap();
 
     assert!(response == response1);
 }

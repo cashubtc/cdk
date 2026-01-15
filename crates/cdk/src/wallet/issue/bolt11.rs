@@ -306,7 +306,10 @@ impl Wallet {
             request.sign(secret_key.clone())?;
         }
 
-        let mint_res = self.client.post_mint(request).await?;
+        let mint_res = self
+            .client
+            .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request)
+            .await?;
 
         let keys = self.load_keyset_keys(active_keyset_id).await?;
 

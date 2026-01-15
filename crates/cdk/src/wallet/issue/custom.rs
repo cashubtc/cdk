@@ -22,7 +22,7 @@ impl Wallet {
     pub(super) async fn mint_quote_custom(
         &self,
         amount: Option<Amount>,
-        method: &str,
+        method: &PaymentMethod,
         description: Option<String>,
         extra: Option<String>,
     ) -> Result<MintQuote, Error> {
@@ -171,7 +171,14 @@ impl Wallet {
             request.sign(secret_key.clone())?;
         }
 
-        let mint_res = self.client.post_mint(request).await?;
+        if !quote_info.payment_method.is_custom() {
+            return Err(Error::UnsupportedPaymentMethod);
+        }
+
+        let mint_res = self
+            .client
+            .post_mint(&quote_info.payment_method, request)
+            .await?;
 
         let keys = self.load_keyset_keys(active_keyset_id).await?;
 
