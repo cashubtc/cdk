@@ -37,23 +37,22 @@ impl Wallet {
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
         let m = Mnemonic::parse(&mnemonic)
-            .map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
         let seed = m.to_seed_normalized("");
         tracing::info!("creating ffi wallet");
         // Convert the FFI database trait to a CDK database implementation
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
-        let wallet =
-            CdkWalletBuilder::new()
-                .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
-                    FfiError::InvalidUrl { msg: e.to_string() }
-                })?)
-                .unit(unit.into())
-                .localstore(localstore)
-                .seed(seed)
-                .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
-                .build()
-                .map_err(FfiError::from)?;
+        let wallet = CdkWalletBuilder::new()
+            .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
+                FfiError::internal(format!("Invalid URL: {}", e))
+            })?)
+            .unit(unit.into())
+            .localstore(localstore)
+            .seed(seed)
+            .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
+            .build()
+            .map_err(FfiError::from)?;
 
         Ok(Self {
             inner: Arc::new(wallet),
@@ -361,9 +360,7 @@ impl Wallet {
         let extra_value = extra
             .map(|s| serde_json::from_str(&s))
             .transpose()
-            .map_err(|e| FfiError::Generic {
-                msg: format!("Invalid extra JSON: {}", e),
-            })?;
+            .map_err(|e| FfiError::internal(format!("Invalid extra JSON: {}", e)))?;
 
         let cdk_options = options.map(Into::into);
         let quote = self
@@ -514,8 +511,7 @@ impl Wallet {
 
     /// Get fees for a specific keyset ID
     pub async fn get_keyset_fees_by_id(&self, keyset_id: String) -> Result<u64, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id)
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
         Ok(self
             .inner
             .get_keyset_fees_and_amounts_by_id(id)
@@ -544,8 +540,7 @@ impl Wallet {
         proof_count: u32,
         keyset_id: String,
     ) -> Result<Amount, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id)
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
         let fee = self
             .inner
             .get_keyset_count_fee(&id, proof_count as u64)
@@ -681,15 +676,15 @@ pub struct WalletConfig {
 /// Generates a new random mnemonic phrase
 #[uniffi::export]
 pub fn generate_mnemonic() -> Result<String, FfiError> {
-    let mnemonic =
-        Mnemonic::generate(12).map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+    let mnemonic = Mnemonic::generate(12)
+        .map_err(|e| FfiError::internal(format!("Failed to generate mnemonic: {}", e)))?;
     Ok(mnemonic.to_string())
 }
 
 /// Converts a mnemonic phrase to its entropy bytes
 #[uniffi::export]
 pub fn mnemonic_to_entropy(mnemonic: String) -> Result<Vec<u8>, FfiError> {
-    let m =
-        Mnemonic::parse(&mnemonic).map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+    let m = Mnemonic::parse(&mnemonic)
+        .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
     Ok(m.to_entropy())
 }

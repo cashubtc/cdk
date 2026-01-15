@@ -23,7 +23,7 @@ impl FromStr for Token {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let token = cdk::nuts::Token::from_str(s)
-            .map_err(|e| FfiError::InvalidToken { msg: e.to_string() })?;
+            .map_err(|e| FfiError::internal(format!("Invalid token: {}", e)))?;
         Ok(Token { inner: token })
     }
 }
@@ -46,7 +46,7 @@ impl Token {
     #[uniffi::constructor]
     pub fn from_string(encoded_token: String) -> Result<Token, FfiError> {
         let token = cdk::nuts::Token::from_str(&encoded_token)
-            .map_err(|e| FfiError::InvalidToken { msg: e.to_string() })?;
+            .map_err(|e| FfiError::internal(format!("Invalid token: {}", e)))?;
         Ok(Token { inner: token })
     }
 

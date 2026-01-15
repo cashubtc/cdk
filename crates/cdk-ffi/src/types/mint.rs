@@ -19,7 +19,7 @@ pub struct MintUrl {
 impl MintUrl {
     pub fn new(url: String) -> Result<Self, FfiError> {
         // Validate URL format
-        url::Url::parse(&url).map_err(|e| FfiError::InvalidUrl { msg: e.to_string() })?;
+        url::Url::parse(&url).map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))?;
 
         Ok(Self { url })
     }
@@ -38,7 +38,7 @@ impl TryFrom<MintUrl> for cdk::mint_url::MintUrl {
 
     fn try_from(mint_url: MintUrl) -> Result<Self, Self::Error> {
         cdk::mint_url::MintUrl::from_str(&mint_url.url)
-            .map_err(|e| FfiError::InvalidUrl { msg: e.to_string() })
+            .map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))
     }
 }
 
@@ -426,12 +426,10 @@ impl TryFrom<ProtectedEndpoint> for cdk::nuts::ProtectedEndpoint {
             "GET" => cdk::nuts::Method::Get,
             "POST" => cdk::nuts::Method::Post,
             _ => {
-                return Err(FfiError::Generic {
-                    msg: format!(
-                        "Invalid HTTP method: {}. Only GET and POST are supported",
-                        endpoint.method
-                    ),
-                })
+                return Err(FfiError::internal(format!(
+                    "Invalid HTTP method: {}. Only GET and POST are supported",
+                    endpoint.method
+                )))
             }
         };
 
@@ -467,9 +465,10 @@ impl TryFrom<ProtectedEndpoint> for cdk::nuts::ProtectedEndpoint {
                 cdk::nuts::RoutePath::Melt(NutPaymentMethod::Known(KnownMethod::Bolt12).to_string())
             }
             _ => {
-                return Err(FfiError::Generic {
-                    msg: format!("Unknown route path: {}", endpoint.path),
-                })
+                return Err(FfiError::internal(format!(
+                    "Unknown route path: {}",
+                    endpoint.path
+                )))
             }
         };
 

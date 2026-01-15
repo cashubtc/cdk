@@ -36,7 +36,7 @@ impl MultiMintWallet {
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
         let m = Mnemonic::parse(&mnemonic)
-            .map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
         let seed = m.to_seed_normalized("");
 
         // Convert the FFI database trait to a CDK database implementation
@@ -51,9 +51,7 @@ impl MultiMintWallet {
             Err(_) => {
                 // No current runtime, create a new one
                 tokio::runtime::Runtime::new()
-                    .map_err(|e| FfiError::Database {
-                        msg: format!("Failed to create runtime: {}", e),
-                    })?
+                    .map_err(|e| FfiError::internal(format!("Failed to create runtime: {}", e)))?
                     .block_on(async move {
                         CdkMultiMintWallet::new(localstore, seed, unit.into()).await
                     })
@@ -75,15 +73,15 @@ impl MultiMintWallet {
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
         let m = Mnemonic::parse(&mnemonic)
-            .map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
         let seed = m.to_seed_normalized("");
 
         // Convert the FFI database trait to a CDK database implementation
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
         // Parse proxy URL
-        let proxy_url =
-            url::Url::parse(&proxy_url).map_err(|e| FfiError::InvalidUrl { msg: e.to_string() })?;
+        let proxy_url = url::Url::parse(&proxy_url)
+            .map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))?;
 
         let wallet = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| {
@@ -95,9 +93,7 @@ impl MultiMintWallet {
             Err(_) => {
                 // No current runtime, create a new one
                 tokio::runtime::Runtime::new()
-                    .map_err(|e| FfiError::Database {
-                        msg: format!("Failed to create runtime: {}", e),
-                    })?
+                    .map_err(|e| FfiError::internal(format!("Failed to create runtime: {}", e)))?
                     .block_on(async move {
                         CdkMultiMintWallet::new_with_proxy(localstore, seed, unit.into(), proxy_url)
                             .await
@@ -137,9 +133,10 @@ impl MultiMintWallet {
             wallet.set_metadata_cache_ttl(ttl);
             Ok(())
         } else {
-            Err(FfiError::Generic {
-                msg: format!("Mint not found: {}", cdk_mint_url),
-            })
+            Err(FfiError::internal(format!(
+                "Mint not found: {}",
+                cdk_mint_url
+            )))
         }
     }
 
@@ -809,7 +806,7 @@ impl MultiMintWallet {
             .inner
             .wait_for_nostr_payment(info_inner)
             .await
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+            .map_err(FfiError::internal)?;
         Ok(amount.into())
     }
 }
