@@ -286,8 +286,8 @@ where
         id: keyset_id,
         unit: CurrencyUnit::Sat,
         active: None,
-        input_fee_ppk: 0,
         keys: keys.clone(),
+        input_fee_ppk: 0,
         final_expiry: None,
     };
 
@@ -312,8 +312,8 @@ where
         id: keyset_id,
         unit: CurrencyUnit::Sat,
         active: None,
-        input_fee_ppk: 0,
         keys: keys.clone(),
+        input_fee_ppk: 0,
         final_expiry: None,
     };
 
@@ -338,8 +338,8 @@ where
         id: keyset_id,
         unit: CurrencyUnit::Sat,
         active: None,
-        input_fee_ppk: 0,
         keys,
+        input_fee_ppk: 0,
         final_expiry: None,
     };
 

@@ -144,6 +144,7 @@ impl DbSignatory {
             &keyset_info.amounts,
             keyset_info.unit.clone(),
             keyset_info.derivation_path.clone(),
+            keyset_info.input_fee_ppk,
             keyset_info.final_expiry,
             keyset_info.id.get_version(),
         )
@@ -286,6 +287,7 @@ mod test {
             &[1, 2],
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
+            0,
             None,
             cdk_common::nut02::KeySetVersion::Version00,
         );
@@ -332,6 +334,7 @@ mod test {
             &[1, 2],
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
+            0,
             None,
             cdk_common::nut02::KeySetVersion::Version00,
         );

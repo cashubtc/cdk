@@ -73,7 +73,7 @@ pub struct SignatoryKeySet {
     pub keys: Keys,
     /// Amounts supported by the keyset
     pub amounts: Vec<u64>,
-    /// Information about the fee per public key
+    /// Input fee for the keyset (parts per thousand)
     pub input_fee_ppk: u64,
     /// Final expiry of the keyset (unix timestamp in the future)
     pub final_expiry: Option<u64>,
@@ -91,8 +91,8 @@ impl From<SignatoryKeySet> for KeySet {
             id: val.id,
             unit: val.unit,
             active: Some(val.active),
-            input_fee_ppk: val.input_fee_ppk,
             keys: val.keys,
+            input_fee_ppk: val.input_fee_ppk,
             final_expiry: val.final_expiry,
         }
     }

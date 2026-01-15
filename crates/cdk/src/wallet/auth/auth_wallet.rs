@@ -390,7 +390,7 @@ impl AuthWallet {
             keysets
                 .get(&active_keyset_id)
                 .map(|x| x.input_fee_ppk)
-                .unwrap_or_default(),
+                .unwrap_or(0),
             self.load_keyset_keys(active_keyset_id)
                 .await?
                 .iter()
