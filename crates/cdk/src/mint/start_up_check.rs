@@ -5,7 +5,6 @@
 
 use std::str::FromStr;
 
-use cdk_common::database::Error as DatabaseError;
 use cdk_common::mint::{OperationKind, Saga};
 use cdk_common::QuoteId;
 
@@ -162,7 +161,10 @@ impl Mint {
             };
 
             // Execute compensation (includes saga deletion)
-            if let Err(e) = compensation.execute(&self.localstore).await {
+            if let Err(e) = compensation
+                .execute(&self.localstore, &self.pubsub_manager)
+                .await
+            {
                 tracing::error!(
                     "Failed to compensate saga {}: {}. Continuing...",
                     saga.operation_id,
@@ -547,112 +549,23 @@ impl Mint {
                     blinded_secrets.len()
                 );
 
-                let mut tx = self.localstore.begin_transaction().await?;
-
-                // Remove blinded messages (change outputs)
-                if !blinded_secrets.is_empty() {
-                    if let Err(e) = tx.delete_blinded_messages(&blinded_secrets).await {
-                        tracing::error!(
-                            "Failed to delete blinded messages for saga {}: {}",
-                            saga.operation_id,
-                            e
-                        );
-                        tx.rollback().await?;
-                        continue;
-                    }
-                }
-
-                // Remove proofs (inputs)
-                if !input_ys.is_empty() {
-                    match tx.remove_proofs(&input_ys, None).await {
-                        Ok(()) => {}
-                        Err(DatabaseError::AttemptRemoveSpentProof) => {
-                            // Proofs are already spent or missing - this is okay for compensation.
-                            // The goal is to make proofs unusable, and they already are.
-                            // Continue with saga deletion to avoid infinite recovery loop.
-                            tracing::warn!(
-                                "Saga {} compensation: proofs already spent or missing, proceeding with saga cleanup",
-                                saga.operation_id
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to remove proofs for saga {}: {}",
-                                saga.operation_id,
-                                e
-                            );
-                            tx.rollback().await?;
-                            continue;
-                        }
-                    }
-                }
-
-                // Reset quote state to Unpaid (melt-specific, unlike swap)
-                // Acquire lock on the quote first
-                let mut locked_quote = match tx.get_melt_quote(&quote_id_parsed).await {
-                    Ok(Some(q)) => q,
-                    Ok(None) => {
-                        tracing::warn!(
-                            "Melt quote {} not found for saga {} - may have been cleaned up",
-                            quote_id_parsed,
-                            saga.operation_id
-                        );
-                        // Continue with saga deletion even if quote is gone
-                        if let Err(e) = tx.delete_saga(&saga.operation_id).await {
-                            tracing::error!("Failed to delete saga {}: {}", saga.operation_id, e);
-                            tx.rollback().await?;
-                            continue;
-                        }
-                        tx.commit().await?;
-                        continue;
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to get quote for saga {}: {}",
-                            saga.operation_id,
-                            e
-                        );
-                        tx.rollback().await?;
-                        continue;
-                    }
-                };
-
-                if let Err(e) = tx
-                    .update_melt_quote_state(&mut locked_quote, MeltQuoteState::Unpaid, None)
-                    .await
+                if let Err(err) = super::melt::shared::rollback_melt_quote(
+                    &self.localstore,
+                    &self.pubsub_manager,
+                    &quote_id_parsed,
+                    &input_ys,
+                    &blinded_secrets,
+                    &saga.operation_id,
+                )
+                .await
                 {
                     tracing::error!(
-                        "Failed to reset quote state for saga {}: {}",
+                        "Failed to rollback melt quote {} for saga {}: {}",
+                        quote_id_parsed,
                         saga.operation_id,
-                        e
+                        err
                     );
-                    tx.rollback().await?;
-                    continue;
                 }
-
-                // Delete melt request tracking record
-                if let Err(e) = tx.delete_melt_request(&quote_id_parsed).await {
-                    tracing::error!(
-                        "Failed to delete melt request for saga {}: {}",
-                        saga.operation_id,
-                        e
-                    );
-                    // Don't fail if melt request doesn't exist - it might not have been created yet
-                }
-
-                // Delete saga after successful compensation
-                if let Err(e) = tx.delete_saga(&saga.operation_id).await {
-                    tracing::error!("Failed to delete saga for {}: {}", saga.operation_id, e);
-                    tx.rollback().await?;
-                    continue;
-                }
-
-                tx.commit().await?;
-
-                tracing::info!(
-                    "Successfully recovered and compensated melt saga {}",
-                    saga.operation_id
-                );
             }
         }
 

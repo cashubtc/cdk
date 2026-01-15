@@ -1003,7 +1003,7 @@ impl<S> MeltSaga<S> {
 
         while let Some(compensation) = compensations.pop_front() {
             tracing::debug!("Running compensation: {}", compensation.name());
-            if let Err(e) = compensation.execute(&self.db).await {
+            if let Err(e) = compensation.execute(&self.db, &self.pubsub).await {
                 tracing::error!(
                     "Compensation {} failed: {}. Continuing...",
                     compensation.name(),
