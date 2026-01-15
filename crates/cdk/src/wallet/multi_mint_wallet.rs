@@ -1180,6 +1180,25 @@ impl MultiMintWallet {
         Ok(quote)
     }
 
+    /// Mint tokens at a specific mint
+    #[instrument(skip(self))]
+    pub async fn mint(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> Result<Proofs, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet
+            .mint(quote_id, amount_split_target, spending_conditions)
+            .await
+    }
+
     /// Check all mint quotes
     /// If quote is paid, wallet will mint
     #[instrument(skip(self))]
@@ -1205,25 +1224,177 @@ impl MultiMintWallet {
         Ok(total_amount)
     }
 
-    /// Mint a specific quote
+    /// Set the active mint for NpubCash integration
+    ///
+    /// This method sets the active mint for NpubCash in the key-value store.
+    /// Since all wallets share the same seed (and thus the same Nostr identity),
+    /// only one mint should be active for NpubCash at a time to avoid conflicts.
+    #[cfg(feature = "npubcash")]
     #[instrument(skip(self))]
-    pub async fn mint(
+    pub async fn set_active_npubcash_mint(&self, mint_url: MintUrl) -> Result<(), Error> {
+        use super::npubcash::{ACTIVE_MINT_KEY, NPUBCASH_KV_NAMESPACE};
+
+        self.localstore
+            .kv_write(
+                NPUBCASH_KV_NAMESPACE,
+                "",
+                ACTIVE_MINT_KEY,
+                mint_url.to_string().as_bytes(),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// Get the active mint for NpubCash integration
+    ///
+    /// Returns the currently active mint URL from the key-value store, if any.
+    #[cfg(feature = "npubcash")]
+    #[instrument(skip(self))]
+    pub async fn get_active_npubcash_mint(&self) -> Result<Option<MintUrl>, Error> {
+        use super::npubcash::{ACTIVE_MINT_KEY, NPUBCASH_KV_NAMESPACE};
+
+        let value = self
+            .localstore
+            .kv_read(NPUBCASH_KV_NAMESPACE, "", ACTIVE_MINT_KEY)
+            .await?;
+
+        match value {
+            Some(bytes) => {
+                let url_str = String::from_utf8(bytes)
+                    .map_err(|_| Error::Custom("Invalid UTF-8 in active mint URL".into()))?;
+                let mint_url = MintUrl::from_str(&url_str)?;
+                Ok(Some(mint_url))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Enable NpubCash integration on a specific mint
+    ///
+    /// This sets up NpubCash authentication and registers the mint URL with the
+    /// NpubCash server. It also sets this mint as the active NpubCash mint.
+    #[cfg(feature = "npubcash")]
+    #[instrument(skip(self))]
+    pub async fn enable_npubcash(
         &self,
-        mint_url: &MintUrl,
-        quote_id: &str,
-        conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, Error> {
+        mint_url: MintUrl,
+        npubcash_url: String,
+    ) -> Result<(), Error> {
         let wallets = self.wallets.read().await;
-        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+        let wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet
-            .mint(quote_id, SplitTarget::default(), conditions)
-            .await
+        wallet.enable_npubcash(npubcash_url).await?;
+        drop(wallets);
+
+        self.set_active_npubcash_mint(mint_url).await?;
+        Ok(())
+    }
+
+    /// Get the Nostr keys used for NpubCash authentication
+    ///
+    /// Since all wallets share the same seed, they all have the same Nostr identity.
+    /// This returns the keys from any wallet in the MultiMintWallet.
+    #[cfg(feature = "npubcash")]
+    pub async fn get_npubcash_keys(&self) -> Result<nostr_sdk::Keys, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.values().next().ok_or(Error::Custom(
+            "No wallets available to get NpubCash keys".into(),
+        ))?;
+        wallet.get_npubcash_keys()
+    }
+
+    /// Sync quotes from NpubCash for the active mint
+    ///
+    /// Fetches quotes from the NpubCash server and filters them to only return
+    /// quotes for the currently active mint.
+    #[cfg(feature = "npubcash")]
+    #[instrument(skip(self))]
+    pub async fn sync_npubcash_quotes(
+        &self,
+    ) -> Result<Vec<crate::wallet::types::MintQuote>, Error> {
+        let active_mint = self
+            .get_active_npubcash_mint()
+            .await?
+            .ok_or(Error::Custom("No active NpubCash mint set".into()))?;
+
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(&active_mint).ok_or(Error::UnknownMint {
+            mint_url: active_mint.to_string(),
+        })?;
+
+        let all_quotes = wallet.sync_npubcash_quotes().await?;
+
+        // Filter to only quotes for the active mint
+        let filtered_quotes: Vec<_> = all_quotes
+            .into_iter()
+            .filter(|q| q.mint_url == active_mint)
+            .collect();
+
+        Ok(filtered_quotes)
+    }
+
+    /// Mint ecash from a paid NpubCash quote
+    ///
+    /// This mints ecash from a quote on the active NpubCash mint.
+    #[cfg(feature = "npubcash")]
+    #[instrument(skip(self))]
+    pub async fn mint_npubcash_quote(
+        &self,
+        quote_id: &str,
+        split_target: SplitTarget,
+    ) -> Result<Proofs, Error> {
+        let active_mint = self
+            .get_active_npubcash_mint()
+            .await?
+            .ok_or(Error::Custom("No active NpubCash mint set".into()))?;
+
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(&active_mint).ok_or(Error::UnknownMint {
+            mint_url: active_mint.to_string(),
+        })?;
+
+        wallet.mint(quote_id, split_target, None).await
+    }
+
+    /// Create a stream that continuously polls NpubCash and yields proofs as payments arrive
+    ///
+    /// This provides a reactive way to handle incoming NpubCash payments. The stream will:
+    /// 1. Poll NpubCash for new paid quotes
+    /// 2. Automatically mint them using the active mint
+    /// 3. Yield the result (MintQuote, Proofs)
+    ///
+    /// # Arguments
+    ///
+    /// * `split_target` - How to split the minted proofs
+    /// * `spending_conditions` - Optional spending conditions for the minted proofs
+    /// * `poll_interval` - How often to check for new quotes
+    #[cfg(feature = "npubcash")]
+    pub fn npubcash_proof_stream(
+        &self,
+        split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+        poll_interval: std::time::Duration,
+    ) -> crate::wallet::streams::npubcash::NpubCashProofStream {
+        crate::wallet::streams::npubcash::NpubCashProofStream::new(
+            self.clone(),
+            poll_interval,
+            split_target,
+            spending_conditions,
+        )
     }
 
     /// Wait for a mint quote to be paid and automatically mint the proofs
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint URL where the quote was created
+    /// * `quote_id` - The quote ID to wait for
+    /// * `split_target` - How to split the minted proofs
+    /// * `spending_conditions` - Optional spending conditions for the minted proofs
+    /// * `timeout` - Maximum time to wait for the quote to be paid
     #[cfg(not(target_arch = "wasm32"))]
     #[instrument(skip(self))]
     pub async fn wait_for_mint_quote(
@@ -1231,8 +1402,8 @@ impl MultiMintWallet {
         mint_url: &MintUrl,
         quote_id: &str,
         split_target: SplitTarget,
-        conditions: Option<SpendingConditions>,
-        timeout_secs: u64,
+        spending_conditions: Option<SpendingConditions>,
+        timeout: std::time::Duration,
     ) -> Result<Proofs, Error> {
         let wallets = self.wallets.read().await;
         let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
@@ -1248,9 +1419,8 @@ impl MultiMintWallet {
             .ok_or(Error::UnknownQuote)?;
 
         // Wait for the quote to be paid and mint the proofs
-        let timeout_duration = tokio::time::Duration::from_secs(timeout_secs);
         wallet
-            .wait_and_mint_quote(quote, split_target, conditions, timeout_duration)
+            .wait_and_mint_quote(quote, split_target, spending_conditions, timeout)
             .await
     }
 

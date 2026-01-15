@@ -55,7 +55,13 @@ async fn fund_multi_mint_wallet(
         .unwrap();
 
     let proofs = wallet
-        .wait_for_mint_quote(mint_url, &mint_quote.id, SplitTarget::default(), None, 60)
+        .wait_for_mint_quote(
+            mint_url,
+            &mint_quote.id,
+            SplitTarget::default(),
+            None,
+            std::time::Duration::from_secs(60),
+        )
         .await
         .expect("mint failed");
 
@@ -117,7 +123,7 @@ async fn test_multi_mint_wallet_mint() {
 
     // Call mint() directly (quote should be Paid at this point)
     let proofs = multi_mint_wallet
-        .mint(&mint_url, &mint_quote.id, None)
+        .mint(&mint_url, &mint_quote.id, SplitTarget::default(), None)
         .await
         .unwrap();
 

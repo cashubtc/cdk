@@ -11,11 +11,12 @@ rust-version.workspace = true
 readme = "README.md"
 
 [features]
-default = []
+default = ["npubcash"]
 sqlcipher = ["cdk-sqlite/sqlcipher"]
 # MSRV is not tracked with redb enabled
 redb = ["dep:cdk-redb"]
 tor = ["cdk/tor"]
+npubcash = ["cdk/npubcash"]
 
 [dependencies]
 anyhow.workspace = true
