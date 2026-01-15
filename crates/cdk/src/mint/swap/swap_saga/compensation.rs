@@ -4,9 +4,11 @@ use cdk_common::{Error, PublicKey};
 use tracing::instrument;
 use uuid::Uuid;
 
+use crate::mint::subscription::PubSubManager;
+
 #[async_trait]
 pub trait CompensatingAction: Send + Sync {
-    async fn execute(&self, db: &DynMintDatabase) -> Result<(), Error>;
+    async fn execute(&self, db: &DynMintDatabase, pubsub: &PubSubManager) -> Result<(), Error>;
     fn name(&self) -> &'static str;
 }
 
@@ -31,7 +33,7 @@ pub struct RemoveSwapSetup {
 #[async_trait]
 impl CompensatingAction for RemoveSwapSetup {
     #[instrument(skip_all)]
-    async fn execute(&self, db: &DynMintDatabase) -> Result<(), Error> {
+    async fn execute(&self, db: &DynMintDatabase, _pubsub: &PubSubManager) -> Result<(), Error> {
         if self.blinded_secrets.is_empty() && self.input_ys.is_empty() {
             return Ok(());
         }

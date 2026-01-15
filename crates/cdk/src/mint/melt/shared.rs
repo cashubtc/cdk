@@ -74,6 +74,7 @@ pub fn get_keyset_fee_and_amounts(
 /// Returns database errors if transaction fails
 pub async fn rollback_melt_quote(
     db: &DynMintDatabase,
+    pubsub: &PubSubManager,
     quote_id: &QuoteId,
     input_ys: &[PublicKey],
     blinded_secrets: &[PublicKey],
@@ -93,9 +94,22 @@ pub async fn rollback_melt_quote(
 
     let mut tx = db.begin_transaction().await?;
 
+    let mut proofs_recovered = false;
+
     // Remove input proofs
     if !input_ys.is_empty() {
-        tx.remove_proofs(input_ys, Some(quote_id.clone())).await?;
+        match tx.remove_proofs(input_ys, Some(quote_id.clone())).await {
+            Ok(_) => {
+                proofs_recovered = true;
+            }
+            Err(database::Error::AttemptRemoveSpentProof) => {
+                tracing::warn!(
+                    "Proofs already spent or missing during rollback for quote {}",
+                    quote_id
+                );
+            }
+            Err(e) => return Err(e.into()),
+        }
     }
 
     // Remove blinded messages (change outputs)
@@ -131,6 +145,13 @@ pub async fn rollback_melt_quote(
     }
 
     tx.commit().await?;
+
+    // Publish proof state changes
+    if proofs_recovered {
+        for pk in input_ys.iter() {
+            pubsub.proof_state((*pk, State::Unspent));
+        }
+    }
 
     tracing::info!(
         "Successfully rolled back melt quote {} and deleted saga {}",

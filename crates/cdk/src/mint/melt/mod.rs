@@ -461,7 +461,7 @@ impl Mint {
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("check_melt_quote");
-        let quote = match self.localstore.get_melt_quote(quote_id).await {
+        let mut quote = match self.localstore.get_melt_quote(quote_id).await {
             Ok(Some(quote)) => quote,
             Ok(None) => {
                 #[cfg(feature = "prometheus")]
@@ -482,6 +482,8 @@ impl Mint {
                 return Err(err.into());
             }
         };
+
+        self.handle_pending_melt_quote(&mut quote).await?;
 
         let blind_signatures = match self
             .localstore
