@@ -477,7 +477,7 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
   if [[ "$LANG" == "go" ]]; then
     if ! command -v uniffi-bindgen-go >/dev/null 2>&1; then
       echo "⬇️  Installing uniffi-bindgen-go..."
-      cargo install uniffi-bindgen-go --git https://github.com/NordSecurity/uniffi-bindgen-go --tag v0.4.0+v0.28.3
+      cargo install uniffi-bindgen-go --git https://github.com/kegsay/uniffi-bindgen-go --tag v0.4.0+v0.28.3
     fi
     uniffi-bindgen-go "target/$BUILD_TYPE/libcdk_ffi.$LIB_EXT" \
       --library  \
