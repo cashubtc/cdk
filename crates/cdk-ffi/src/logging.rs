@@ -48,7 +48,11 @@ pub fn init_logging(level: String) {
 
             let filter = EnvFilter::try_new(&level).unwrap_or_else(|_| EnvFilter::new("info"));
 
-            fmt().with_env_filter(filter).with_target(true).init();
+            fmt()
+                .with_env_filter(filter)
+                .with_target(true)
+                .with_ansi(false)
+                .init();
         }
     });
 }
