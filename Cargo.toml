@@ -65,6 +65,7 @@ cdk-postgres = { path = "./crates/cdk-postgres", default-features = true, versio
 cdk-signatory = { path = "./crates/cdk-signatory", version = "=0.14.0", default-features = false }
 cdk-mintd = { path = "./crates/cdk-mintd", version = "=0.14.0", default-features = false }
 cdk-prometheus = { path = "./crates/cdk-prometheus", version = "=0.14.0", default-features = false }
+cdk-npubcash = { path = "./crates/cdk-npubcash", version = "=0.14.0" }
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"

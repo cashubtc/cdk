@@ -705,7 +705,13 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .unwrap();
 
     let _proofs = multi_mint_wallet
-        .wait_for_mint_quote(&mint_url, &mint_quote.id, SplitTarget::default(), None, 60)
+        .wait_for_mint_quote(
+            &mint_url,
+            &mint_quote.id,
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(60),
+        )
         .await
         .expect("mint failed");
 

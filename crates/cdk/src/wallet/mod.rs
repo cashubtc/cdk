@@ -13,7 +13,7 @@ use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
 use getrandom::getrandom;
 use subscription::{ActiveSubscription, SubscriptionManager};
-#[cfg(feature = "auth")]
+#[cfg(any(feature = "auth", feature = "npubcash"))]
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
@@ -50,6 +50,8 @@ mod melt;
 mod mint_connector;
 mod mint_metadata_cache;
 pub mod multi_mint_wallet;
+#[cfg(feature = "npubcash")]
+mod npubcash;
 pub mod payment_request;
 mod proofs;
 mod receive;
@@ -105,6 +107,8 @@ pub struct Wallet {
     metadata_cache_ttl: Arc<RwLock<Option<Duration>>>,
     #[cfg(feature = "auth")]
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
+    #[cfg(feature = "npubcash")]
+    npubcash_client: Arc<TokioRwLock<Option<Arc<cdk_npubcash::NpubCashClient>>>>,
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,

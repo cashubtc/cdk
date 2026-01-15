@@ -14,6 +14,9 @@ pub mod payment;
 pub mod proof;
 mod wait;
 
+#[cfg(feature = "npubcash")]
+pub mod npubcash;
+
 /// Shared type
 type RecvFuture<'a, Ret> = Pin<Box<dyn Future<Output = Ret> + Send + 'a>>;
 
