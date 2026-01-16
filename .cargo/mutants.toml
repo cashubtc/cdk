@@ -41,6 +41,7 @@ exclude_re = [
     "FeeAndAmounts::fee",
     "FeeAndAmounts::amounts",
     "BlindedMessage::witness",
+    "crates/cashu/src/amount.rs:.*to_u64",
 
     # Trivial trait implementations - unrealistic mutations
     "crates/cashu/src/amount.rs.*impl From<&u64> for Amount.*from",

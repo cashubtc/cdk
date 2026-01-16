@@ -1916,4 +1916,46 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn test_amount_currency_unit_to_i64() {
+        let amount = Amount::new(100, CurrencyUnit::Sat);
+        assert_eq!(amount.to_i64(), Some(100));
+
+        let amount = Amount::new(i64::MAX as u64, CurrencyUnit::Sat);
+        assert_eq!(amount.to_i64(), Some(i64::MAX));
+
+        let amount = Amount::new(i64::MAX as u64 + 1, CurrencyUnit::Sat);
+        assert_eq!(amount.to_i64(), None);
+
+        let amount = Amount::new(0, CurrencyUnit::Sat);
+        assert_eq!(amount.to_i64(), Some(0));
+
+        let amount = Amount::new(1, CurrencyUnit::Sat);
+        assert_eq!(amount.to_i64(), Some(1));
+    }
+
+    #[test]
+    fn test_display_with_unit() {
+        let amount = Amount::new(100, CurrencyUnit::Sat);
+        assert_eq!(amount.display_with_unit(), "100 sat");
+
+        let amount = Amount::new(50, CurrencyUnit::Msat);
+        assert_eq!(amount.display_with_unit(), "50 msat");
+
+        let amount = Amount::new(100, CurrencyUnit::Usd);
+        assert_eq!(amount.display_with_unit(), "100 usd");
+
+        let amount = Amount::new(123, CurrencyUnit::Custom("BTC".to_string()));
+        assert_eq!(amount.display_with_unit(), "123 btc");
+    }
+
+    #[test]
+    fn test_amount_add_operator() {
+        let a = Amount::from(100);
+        let b = Amount::from(50);
+        let sum = a + b;
+        assert_eq!(sum, Amount::from(150));
+        assert_ne!(sum, Amount::ZERO);
+    }
 }

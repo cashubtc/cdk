@@ -1554,7 +1554,7 @@ dependencies = [
  "chrono",
  "nostr-sdk",
  "reqwest",
- "rustls 0.23.35",
+ "rustls 0.23.36",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
