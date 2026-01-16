@@ -603,10 +603,10 @@ impl MeltSaga<SetupComplete> {
                     }
                     MeltQuoteState::Unknown => {
                         tracing::warn!(
-                            "LN payment unknown, proofs remain pending for quote: {}",
+                            "Lightning payment for quote {} unknown.",
                             self.state_data.quote.id
                         );
-                        return Err(Error::PaymentFailed);
+                        return Err(Error::PendingQuote);
                     }
                     MeltQuoteState::Pending => {
                         tracing::warn!(
@@ -730,7 +730,7 @@ impl MeltSaga<SetupComplete> {
             self.state_data.quote.unit
         );
 
-        let check_response = self.check_payment_state(ln, &pay.payment_lookup_id).await?;
+        let mut check_response = self.check_payment_state(ln, &pay.payment_lookup_id).await?;
 
         if check_response.status == MeltQuoteState::Paid {
             // Race condition: Payment succeeded during verification
@@ -738,6 +738,23 @@ impl MeltSaga<SetupComplete> {
                 "Payment initially returned {} but confirmed as Paid. Proceeding to finalize.",
                 pay.status
             );
+            return Ok(check_response);
+        }
+
+        // If we knew it was Pending, but now it's Unknown, stick with Pending to avoid
+        // accidental refund of an in-flight payment.
+        if pay.status == MeltQuoteState::Pending && check_response.status == MeltQuoteState::Unknown
+        {
+            tracing::warn!(
+                "Payment was initially Pending but verification returned Unknown. Keeping as Pending for safety."
+            );
+            return Ok(pay);
+        }
+
+        if check_response.status == MeltQuoteState::Unknown {
+            // When the first make payment is an error response
+            // and the follow up is unknown we treat it as a failed payment
+            check_response.status = MeltQuoteState::Failed;
         }
 
         Ok(check_response)
@@ -774,13 +791,19 @@ impl MeltSaga<SetupComplete> {
                 Error::Internal
             })?;
 
-        let check_response = self.check_payment_state(ln, lookup_id).await?;
+        let mut check_response = self.check_payment_state(ln, lookup_id).await?;
 
         tracing::info!(
-            "Initial payment attempt for {} errored. Follow up check stateus: {}",
+            "Initial payment attempt for {} errored. Follow up check status: {}",
             self.state_data.quote.id,
             check_response.status
         );
+
+        if check_response.status == MeltQuoteState::Unknown {
+            // When the first make payment is an error response
+            // and the follow up is unknown we treat it as a failed payment
+            check_response.status = MeltQuoteState::Failed;
+        }
 
         Ok(check_response)
     }

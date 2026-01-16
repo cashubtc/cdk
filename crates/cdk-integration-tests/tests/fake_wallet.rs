@@ -133,7 +133,7 @@ async fn test_fake_melt_payment_fail() {
     assert!(melt.is_err());
 
     let wallet_bal = wallet.total_balance().await.unwrap();
-    assert_eq!(wallet_bal, 98.into());
+    assert_eq!(wallet_bal, 100.into());
 }
 
 /// Tests that when both the pay_invoice and check_invoice both fail,
@@ -247,7 +247,7 @@ async fn test_fake_melt_payment_return_fail_status() {
 
     wallet.check_all_pending_proofs().await.unwrap();
 
-    assert!(!wallet
+    assert!(wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await
@@ -308,7 +308,7 @@ async fn test_fake_melt_payment_error_unknown() {
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
-    assert!(!wallet
+    assert!(wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await
