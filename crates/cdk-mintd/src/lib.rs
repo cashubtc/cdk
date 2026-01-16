@@ -141,6 +141,7 @@ pub fn setup_tracing(
 
             tracing_subscriber::fmt()
                 .with_env_filter(env_filter)
+                .with_ansi(false)
                 .with_writer(stderr)
                 .init();
 
@@ -168,6 +169,7 @@ pub fn setup_tracing(
 
             tracing_subscriber::fmt()
                 .with_env_filter(env_filter)
+                .with_ansi(false)
                 .with_writer(file_writer)
                 .init();
 
@@ -207,6 +209,7 @@ pub fn setup_tracing(
 
             tracing_subscriber::fmt()
                 .with_env_filter(env_filter)
+                .with_ansi(false)
                 .with_writer(stderr.and(file_writer))
                 .init();
 

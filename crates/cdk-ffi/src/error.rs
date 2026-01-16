@@ -12,20 +12,20 @@ use cdk_common::error::ErrorResponse;
 pub enum FfiError {
     /// CDK error with protocol-compliant error code
     /// The code corresponds to the Cashu protocol error codes (e.g., 11001, 20001, etc.)
-    #[error("[{code}] {message}")]
+    #[error("[{code}] {error_message}")]
     Cdk {
         /// Error code from the Cashu protocol specification
         code: u32,
         /// Human-readable error message
-        message: String,
+        error_message: String,
     },
 
     /// Internal/infrastructure error (no protocol error code)
     /// Used for errors that don't map to Cashu protocol codes
-    #[error("{message}")]
+    #[error("{error_message}")]
     Internal {
         /// Human-readable error message
-        message: String,
+        error_message: String,
     },
 }
 
@@ -33,7 +33,7 @@ impl FfiError {
     /// Create an internal error from any type that implements ToString
     pub fn internal(msg: impl ToString) -> Self {
         FfiError::Internal {
-            message: msg.to_string(),
+            error_message: msg.to_string(),
         }
     }
 
@@ -41,7 +41,7 @@ impl FfiError {
     pub fn database(msg: impl ToString) -> Self {
         FfiError::Cdk {
             code: 50000,
-            message: msg.to_string(),
+            error_message: msg.to_string(),
         }
     }
 }
@@ -51,7 +51,7 @@ impl From<CdkError> for FfiError {
         let response = ErrorResponse::from(err);
         FfiError::Cdk {
             code: response.code.to_code() as u32,
-            message: response.detail,
+            error_message: response.detail,
         }
     }
 }
