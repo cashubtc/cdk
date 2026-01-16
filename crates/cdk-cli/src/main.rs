@@ -134,7 +134,10 @@ async fn main() -> Result<()> {
     let env_filter = EnvFilter::new(format!("{default_filter},{filter}"));
 
     // Parse input
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_ansi(false)
+        .init();
 
     let work_dir = match &args.work_dir {
         Some(work_dir) => work_dir.clone(),

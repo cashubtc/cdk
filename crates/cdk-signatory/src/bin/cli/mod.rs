@@ -50,6 +50,7 @@ pub fn init_logging(enable_logging: bool, log_level: tracing::Level) {
         // Ok if successful, Err if already initialized
         let _ = tracing_subscriber::fmt()
             .with_env_filter(env_filter)
+            .with_ansi(false)
             .try_init();
     }
 }
