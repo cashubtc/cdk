@@ -8,6 +8,9 @@ use cdk_common::{PublicKey, SECP256K1};
 
 use crate::error::Error;
 
+// UTF-8 for 🔐
+const P2PK_PURPOSE: u32 = 128272;
+
 /// Generates and stores public key in database
 pub async fn generate_public_key(
     localstore: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
@@ -25,7 +28,7 @@ pub async fn generate_public_key(
     last_derivation_index += 1;
 
     let derivation_path = DerivationPath::from(vec![
-        ChildNumber::from_hardened_idx(0)?,
+        ChildNumber::from_hardened_idx(P2PK_PURPOSE)?,
         ChildNumber::from_hardened_idx(last_derivation_index)?,
     ]);
 
