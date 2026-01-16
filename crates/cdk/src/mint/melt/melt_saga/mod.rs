@@ -587,134 +587,12 @@ impl MeltSaga<SetupComplete> {
         settlement: SettlementDecision,
     ) -> Result<MeltSaga<PaymentConfirmed>, Error> {
         let payment_result = match settlement {
-            SettlementDecision::Internal { amount } => {
-                tracing::info!(
-                    "Payment settled internally for {} {}",
-                    amount,
-                    self.state_data.quote.unit
-                );
-                MakePaymentResponse {
-                    status: MeltQuoteState::Paid,
-                    total_spent: amount,
-                    payment_proof: None,
-                    payment_lookup_id: self
-                        .state_data
-                        .quote
-                        .request_lookup_id
-                        .clone()
-                        .unwrap_or_else(|| {
-                            cdk_common::payment::PaymentIdentifier::CustomId(
-                                self.state_data.quote.id.to_string(),
-                            )
-                        }),
-                }
-            }
+            SettlementDecision::Internal { amount } => self.handle_internal_payment(amount),
             SettlementDecision::RequiresExternalPayment => {
-                // Get LN payment processor
-                let ln = self
-                    .mint
-                    .payment_processors
-                    .get(&crate::types::PaymentProcessorKey::new(
-                        self.state_data.quote.unit.clone(),
-                        self.state_data.quote.payment_method.clone(),
-                    ))
-                    .ok_or_else(|| {
-                        tracing::info!(
-                            "Could not get ln backend for {}, {}",
-                            self.state_data.quote.unit,
-                            self.state_data.quote.payment_method
-                        );
-                        Error::UnsupportedUnit
-                    })?;
+                let response = self.attempt_external_payment().await?;
 
-                // Update saga state to PaymentAttempted BEFORE making payment
-                // This ensures crash recovery knows payment may have been attempted
-                {
-                    let mut tx = self.db.begin_transaction().await?;
-                    tx.update_saga(
-                        &self.operation_id,
-                        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
-                    )
-                    .await?;
-                    tx.commit().await?;
-                }
-
-                // Make payment with idempotent verification
-                let payment_response = match ln
-                    .make_payment(
-                        &self.state_data.quote.unit,
-                        self.state_data.quote.clone().try_into()?,
-                    )
-                    .await
-                {
-                    Ok(pay)
-                        if pay.status == MeltQuoteState::Unknown
-                            || pay.status == MeltQuoteState::Failed =>
-                    {
-                        tracing::warn!(
-                            "Got {} status when paying melt quote {} for {} {}. Verifying with backend...",
-                            pay.status,
-                            self.state_data.quote.id,
-                            self.state_data.quote.amount(),
-                            self.state_data.quote.unit
-                        );
-
-                        let check_response = self
-                            .check_payment_state(Arc::clone(ln), &pay.payment_lookup_id)
-                            .await?;
-
-                        if check_response.status == MeltQuoteState::Paid {
-                            // Race condition: Payment succeeded during verification
-                            tracing::info!(
-                                "Payment initially returned {} but confirmed as Paid. Proceeding to finalize.",
-                                pay.status
-                            );
-                            check_response
-                        } else {
-                            check_response
-                        }
-                    }
-                    Ok(pay) => pay,
-                    Err(err) => {
-                        if matches!(err, crate::cdk_payment::Error::InvoiceAlreadyPaid) {
-                            tracing::info!("Invoice already paid, verifying payment status");
-                        } else {
-                            // Other error - check if payment actually succeeded
-                            tracing::error!(
-                                "Error returned attempting to pay: {} {}",
-                                self.state_data.quote.id,
-                                err
-                            );
-                        }
-
-                        let lookup_id = self
-                            .state_data
-                            .quote
-                            .request_lookup_id
-                            .as_ref()
-                            .ok_or_else(|| {
-                                tracing::error!(
-                                "No payment id, cannot verify payment status for {} after error",
-                                self.state_data.quote.id
-                            );
-                                Error::Internal
-                            })?;
-
-                        let check_response =
-                            self.check_payment_state(Arc::clone(ln), lookup_id).await?;
-
-                        tracing::info!(
-                            "Initial payment attempt for {} errored. Follow up check stateus: {}",
-                            self.state_data.quote.id,
-                            check_response.status
-                        );
-
-                        check_response
-                    }
-                };
-
-                match payment_response.status {
-                    MeltQuoteState::Paid => payment_response,
+                match response.status {
+                    MeltQuoteState::Paid => response,
                     MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
                         tracing::info!(
                             "Lightning payment for quote {} failed.",
@@ -741,8 +619,6 @@ impl MeltSaga<SetupComplete> {
             }
         };
 
-        // TODO: Add total spent > quote check
-
         // Transition to PaymentConfirmed state
         Ok(MeltSaga {
             mint: self.mint,
@@ -761,6 +637,152 @@ impl MeltSaga<SetupComplete> {
                 fee_breakdown: self.state_data.fee_breakdown,
             },
         })
+    }
+
+    fn handle_internal_payment(&self, amount: Amount<CurrencyUnit>) -> MakePaymentResponse {
+        tracing::info!(
+            "Payment settled internally for {} {}",
+            amount,
+            self.state_data.quote.unit
+        );
+        MakePaymentResponse {
+            status: MeltQuoteState::Paid,
+            total_spent: amount,
+            payment_proof: None,
+            payment_lookup_id: self
+                .state_data
+                .quote
+                .request_lookup_id
+                .clone()
+                .unwrap_or_else(|| {
+                    cdk_common::payment::PaymentIdentifier::CustomId(
+                        self.state_data.quote.id.to_string(),
+                    )
+                }),
+        }
+    }
+
+    async fn attempt_external_payment(&self) -> Result<MakePaymentResponse, Error> {
+        // Get LN payment processor
+        let ln = self
+            .mint
+            .payment_processors
+            .get(&crate::types::PaymentProcessorKey::new(
+                self.state_data.quote.unit.clone(),
+                self.state_data.quote.payment_method.clone(),
+            ))
+            .ok_or_else(|| {
+                tracing::info!(
+                    "Could not get ln backend for {}, {}",
+                    self.state_data.quote.unit,
+                    self.state_data.quote.payment_method
+                );
+                Error::UnsupportedUnit
+            })?;
+
+        // Update saga state to PaymentAttempted BEFORE making payment
+        // This ensures crash recovery knows payment may have been attempted
+        {
+            let mut tx = self.db.begin_transaction().await?;
+            tx.update_saga(
+                &self.operation_id,
+                SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+            )
+            .await?;
+            tx.commit().await?;
+        }
+
+        self.execute_payment_and_verify(Arc::clone(ln)).await
+    }
+
+    async fn execute_payment_and_verify(
+        &self,
+        ln: Arc<
+            dyn cdk_common::payment::MintPayment<Err = cdk_common::payment::Error> + Send + Sync,
+        >,
+    ) -> Result<MakePaymentResponse, Error> {
+        // Make payment with idempotent verification
+        match ln
+            .make_payment(
+                &self.state_data.quote.unit,
+                self.state_data.quote.clone().try_into()?,
+            )
+            .await
+        {
+            Ok(pay) if pay.status == MeltQuoteState::Paid => Ok(pay),
+            Ok(pay) => self.verify_ambiguous_payment(ln, pay).await,
+            Err(err) => self.handle_payment_error(ln, err).await,
+        }
+    }
+
+    async fn verify_ambiguous_payment(
+        &self,
+        ln: Arc<
+            dyn cdk_common::payment::MintPayment<Err = cdk_common::payment::Error> + Send + Sync,
+        >,
+        pay: MakePaymentResponse,
+    ) -> Result<MakePaymentResponse, Error> {
+        tracing::warn!(
+            "Got {} status when paying melt quote {} for {} {}. Verifying with backend...",
+            pay.status,
+            self.state_data.quote.id,
+            self.state_data.quote.amount(),
+            self.state_data.quote.unit
+        );
+
+        let check_response = self.check_payment_state(ln, &pay.payment_lookup_id).await?;
+
+        if check_response.status == MeltQuoteState::Paid {
+            // Race condition: Payment succeeded during verification
+            tracing::info!(
+                "Payment initially returned {} but confirmed as Paid. Proceeding to finalize.",
+                pay.status
+            );
+        }
+
+        Ok(check_response)
+    }
+
+    async fn handle_payment_error(
+        &self,
+        ln: Arc<
+            dyn cdk_common::payment::MintPayment<Err = cdk_common::payment::Error> + Send + Sync,
+        >,
+        err: cdk_common::payment::Error,
+    ) -> Result<MakePaymentResponse, Error> {
+        if matches!(err, crate::cdk_payment::Error::InvoiceAlreadyPaid) {
+            tracing::info!("Invoice already paid, verifying payment status");
+        } else {
+            // Other error - check if payment actually succeeded
+            tracing::error!(
+                "Error returned attempting to pay: {} {}",
+                self.state_data.quote.id,
+                err
+            );
+        }
+
+        let lookup_id = self
+            .state_data
+            .quote
+            .request_lookup_id
+            .as_ref()
+            .ok_or_else(|| {
+                tracing::error!(
+                    "No payment id, cannot verify payment status for {} after error",
+                    self.state_data.quote.id
+                );
+                Error::Internal
+            })?;
+
+        let check_response = self.check_payment_state(ln, lookup_id).await?;
+
+        tracing::info!(
+            "Initial payment attempt for {} errored. Follow up check stateus: {}",
+            self.state_data.quote.id,
+            check_response.status
+        );
+
+        Ok(check_response)
     }
 
     /// Helper to check payment state with LN backend
