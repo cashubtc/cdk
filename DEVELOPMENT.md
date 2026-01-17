@@ -366,6 +366,28 @@ Not all changes should be backported to stable branches. **Don't add backport la
 
 If a backport isn't appropriate, simply don't add the backport label to the PR.
 
+## CI & Infrastructure
+
+CDK uses a specialized self-hosted infrastructure for CI/CD, specifically for fuzzing and integration tests.
+
+### Self-Hosted Runners
+
+Our infrastructure is defined in the [cdk-infra](https://github.com/thesimplekid/cdk-infra) repository. It utilizes a "warm pool" of ephemeral NixOS containers to provide reproducible, isolated, and high-performance runners.
+
+**Key Features:**
+- **Ephemeral:** Each job runs in a fresh, ephemeral NixOS container that is destroyed immediately after use.
+- **Warm Pool:** Containers are pre-provisioned to ensure instant job pickup.
+- **Nix Native:** Fully supports Nix builds and caching.
+- **Isolation:** Runners are network-isolated for security.
+
+### Architecture
+
+The system consists of:
+- **Runners:** Two dedicated hosts (`cdk-runner-01` and `cdk-runner-02`) running NixOS.
+- **Controller:** A custom Rust controller manages the lifecycle of the containers, monitoring the repository for queued jobs and maintaining the warm pool.
+
+For more details on the infrastructure implementation, deployment, and management, please refer to the [cdk-infra repository](https://github.com/thesimplekid/cdk-infra).
+
 ## Additional Resources
 
 - [Nix Documentation](https://nixos.org/manual/nix/stable/)
