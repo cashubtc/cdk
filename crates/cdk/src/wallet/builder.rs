@@ -55,7 +55,7 @@ impl Default for WalletBuilder {
             auth_wallet: None,
             seed: None,
             client: None,
-            metadata_cache_ttl: None,
+            metadata_cache_ttl: Some(Duration::from_secs(3600)),
             use_http_subscription: false,
             metadata_cache: None,
             metadata_caches: HashMap::new(),
@@ -76,6 +76,13 @@ impl WalletBuilder {
     }
 
     /// Set metadata_cache_ttl
+    ///
+    /// The TTL determines how often the wallet checks the mint for new keysets and information.
+    ///
+    /// If `None`, the cache will never expire and the wallet will use cached data indefinitely
+    /// (unless manually refreshed).
+    ///
+    /// The default value is 1 hour (3600 seconds).
     pub fn set_metadata_cache_ttl(mut self, metadata_cache_ttl: Option<Duration>) -> Self {
         self.metadata_cache_ttl = metadata_cache_ttl;
         self
@@ -259,5 +266,16 @@ impl WalletBuilder {
             subscription: SubscriptionManager::new(client, self.use_http_subscription),
             in_error_swap_reverted_proofs: Arc::new(false.into()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_ttl() {
+        let builder = WalletBuilder::default();
+        assert_eq!(builder.metadata_cache_ttl, Some(Duration::from_secs(3600)));
     }
 }
