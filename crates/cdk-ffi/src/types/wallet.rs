@@ -9,6 +9,7 @@ use super::amount::{Amount, SplitTarget};
 use super::proof::{Proofs, SpendingConditions};
 use crate::error::FfiError;
 use crate::token::Token;
+use crate::types::keys::PublicKey;
 
 /// FFI-compatible SendMemo
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -460,5 +461,45 @@ impl From<cdk::nuts::MeltOptions> for MeltOptions {
                 amount_msat: amountless.amount_msat.into(),
             },
         }
+    }
+}
+
+/// FFI-compatible P2PKSigningKey
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct P2PKSigningKey {
+    pub pubkey: PublicKey,
+    pub derivation_path: String,
+    pub derivation_index: u32,
+    pub created_time: u64,
+}
+
+impl From<cdk_common::wallet::P2PKSigningKey> for P2PKSigningKey {
+    fn from(key: cdk_common::wallet::P2PKSigningKey) -> Self {
+        Self {
+            pubkey: key.pubkey.into(),
+            derivation_path: key.derivation_path.to_string(),
+            derivation_index: key.derivation_index,
+            created_time: key.created_time,
+        }
+    }
+}
+
+impl TryFrom<P2PKSigningKey> for cdk_common::wallet::P2PKSigningKey {
+    type Error = FfiError;
+
+    fn try_from(key: P2PKSigningKey) -> Result<Self, Self::Error> {
+        use std::str::FromStr;
+
+        use cdk_common::bitcoin::bip32::DerivationPath;
+
+        let derivation_path =
+            DerivationPath::from_str(&key.derivation_path).map_err(FfiError::internal)?;
+
+        Ok(Self {
+            pubkey: key.pubkey.try_into()?,
+            derivation_path,
+            derivation_index: key.derivation_index,
+            created_time: key.created_time,
+        })
     }
 }

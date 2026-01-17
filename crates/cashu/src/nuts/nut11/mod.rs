@@ -488,8 +488,6 @@ pub struct Conditions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refund_keys: Option<Vec<PublicKey>>,
     /// Number of signatures required
-    ///
-    /// Default is 1
     #[serde(skip_serializing_if = "Option::is_none")]
     pub num_sigs: Option<u64>,
     /// Signature flag
