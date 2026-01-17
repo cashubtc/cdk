@@ -92,6 +92,15 @@ pub struct WalletConfig {
     pub auth_connector: Option<Arc<dyn super::auth::AuthMintConnector + Send + Sync>>,
     /// Target number of proofs to maintain at each denomination
     pub target_proof_count: Option<usize>,
+    /// Metadata cache TTL
+    ///
+    /// The TTL determines how often the wallet checks the mint for new keysets and information.
+    ///
+    /// If `None`, the cache will never expire and the wallet will use cached data indefinitely
+    /// (unless manually refreshed).
+    ///
+    /// The default value is 1 hour (3600 seconds).
+    pub metadata_cache_ttl: Option<std::time::Duration>,
 }
 
 impl WalletConfig {
@@ -122,6 +131,19 @@ impl WalletConfig {
     /// Set target proof count
     pub fn with_target_proof_count(mut self, count: usize) -> Self {
         self.target_proof_count = Some(count);
+        self
+    }
+
+    /// Set metadata cache TTL
+    ///
+    /// The TTL determines how often the wallet checks the mint for new keysets and information.
+    ///
+    /// If `None`, the cache will never expire and the wallet will use cached data indefinitely
+    /// (unless manually refreshed).
+    ///
+    /// The default value is 1 hour (3600 seconds).
+    pub fn with_metadata_cache_ttl(mut self, ttl: Option<std::time::Duration>) -> Self {
+        self.metadata_cache_ttl = ttl;
         self
     }
 }
@@ -346,6 +368,11 @@ impl MultiMintWallet {
                     wallet.set_client(connector);
                 }
 
+                // Update metadata cache TTL if provided
+                if let Some(ttl) = config.metadata_cache_ttl {
+                    wallet.set_metadata_cache_ttl(Some(ttl));
+                }
+
                 // TODO: Handle auth_connector if provided
                 #[cfg(feature = "auth")]
                 if let Some(_auth_connector) = config.auth_connector {
@@ -402,13 +429,17 @@ impl MultiMintWallet {
         if let Some(cfg) = config {
             if let Some(custom_connector) = &cfg.mint_connector {
                 // Use custom connector with WalletBuilder
-                let builder = WalletBuilder::new()
+                let mut builder = WalletBuilder::new()
                     .mint_url(mint_url.clone())
                     .unit(self.unit.clone())
                     .localstore(self.localstore.clone())
                     .seed(self.seed)
                     .target_proof_count(cfg.target_proof_count.unwrap_or(3))
                     .shared_client(custom_connector.clone());
+
+                if let Some(ttl) = cfg.metadata_cache_ttl {
+                    builder = builder.set_metadata_cache_ttl(Some(ttl));
+                }
 
                 // TODO: Handle auth_connector if provided
                 #[cfg(feature = "auth")]
@@ -424,6 +455,7 @@ impl MultiMintWallet {
 
         // Fall back to existing logic: proxy/Tor/default
         let target_proof_count = config.and_then(|c| c.target_proof_count).unwrap_or(3);
+        let metadata_cache_ttl = config.and_then(|c| c.metadata_cache_ttl);
 
         let wallet = if let Some(proxy_url) = &self.proxy_config {
             // Create wallet with proxy-configured client
@@ -443,14 +475,19 @@ impl MultiMintWallet {
                     crate::wallet::HttpClient::new(mint_url.clone())
                 }
             });
-            WalletBuilder::new()
+            let mut builder = WalletBuilder::new()
                 .mint_url(mint_url.clone())
                 .unit(self.unit.clone())
                 .localstore(self.localstore.clone())
                 .seed(self.seed)
                 .target_proof_count(target_proof_count)
-                .client(client)
-                .build()?
+                .client(client);
+
+            if let Some(ttl) = metadata_cache_ttl {
+                builder = builder.set_metadata_cache_ttl(Some(ttl));
+            }
+
+            builder.build()?
         } else {
             #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
             if let Some(tor) = &self.shared_tor_transport {
@@ -471,35 +508,48 @@ impl MultiMintWallet {
                     }
                 };
 
-                WalletBuilder::new()
+                let mut builder = WalletBuilder::new()
                     .mint_url(mint_url.clone())
                     .unit(self.unit.clone())
                     .localstore(self.localstore.clone())
                     .seed(self.seed)
                     .target_proof_count(target_proof_count)
-                    .client(client)
-                    .build()?
+                    .client(client);
+
+                if let Some(ttl) = metadata_cache_ttl {
+                    builder = builder.set_metadata_cache_ttl(Some(ttl));
+                }
+
+                builder.build()?
             } else {
                 // Create wallet with default client
-                Wallet::new(
+                let wallet = Wallet::new(
                     &mint_url.to_string(),
                     self.unit.clone(),
                     self.localstore.clone(),
                     self.seed,
                     Some(target_proof_count),
-                )?
+                )?;
+                if let Some(ttl) = metadata_cache_ttl {
+                    wallet.set_metadata_cache_ttl(Some(ttl));
+                }
+                wallet
             }
 
             #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
             {
                 // Create wallet with default client
-                Wallet::new(
+                let wallet = Wallet::new(
                     &mint_url.to_string(),
                     self.unit.clone(),
                     self.localstore.clone(),
                     self.seed,
                     Some(target_proof_count),
-                )?
+                )?;
+                if let Some(ttl) = metadata_cache_ttl {
+                    wallet.set_metadata_cache_ttl(Some(ttl));
+                }
+                wallet
             }
         };
 
@@ -2454,5 +2504,12 @@ mod tests {
             redeem_fee: None,
         };
         assert!(token_data_no_memo.memo.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_wallet_config_metadata_ttl() {
+        let ttl = std::time::Duration::from_secs(12345);
+        let config = WalletConfig::new().with_metadata_cache_ttl(Some(ttl));
+        assert_eq!(config.metadata_cache_ttl, Some(ttl));
     }
 }
