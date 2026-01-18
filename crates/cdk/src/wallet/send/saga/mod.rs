@@ -618,9 +618,51 @@ impl<'a> SendSaga<'a, TokenCreated> {
             return Err(Error::Custom("Token already claimed".to_string()));
         }
 
-        // 2. Attempt to swap the proofs back to ourselves
+        // 2. Lock the saga by transitioning to RollingBack state
+        //    This prevents the proof watcher from thinking the swap is a claim by the recipient
+        let operation_id = self.state_data.operation_id;
+        let mut rolling_back_saga = WalletSaga::new(
+            operation_id,
+            WalletSagaState::Send(SendSagaState::RollingBack),
+            self.state_data.proofs.total_amount()?,
+            self.wallet.mint_url.clone(),
+            self.wallet.unit.clone(),
+            OperationData::Send(SendOperationData {
+                amount: self.state_data.proofs.total_amount()?,
+                memo: None,
+                counter_start: None,
+                counter_end: None,
+                token: None,
+                proofs: Some(self.state_data.proofs.clone()),
+            }),
+        );
+
+        // Fetch current version to ensure optimistic locking works
+        let current_saga = self
+            .wallet
+            .localstore
+            .get_saga(&operation_id)
+            .await?
+            .ok_or(Error::Custom("Saga not found".to_string()))?;
+
+        rolling_back_saga.version = current_saga.version;
+        // update_state increments version and sets timestamp
+        rolling_back_saga.update_state(WalletSagaState::Send(SendSagaState::RollingBack));
+
+        if !self
+            .wallet
+            .localstore
+            .update_saga(rolling_back_saga)
+            .await?
+        {
+            return Err(Error::Custom(
+                "Saga version conflict during rollback lock".to_string(),
+            ));
+        }
+
+        // 3. Attempt to swap the proofs back to ourselves
         //    We use the swap method which handles new secret generation
-        let swapped_proofs = self
+        let swap_result = self
             .wallet
             .swap(
                 None, // Swap all
@@ -629,33 +671,63 @@ impl<'a> SendSaga<'a, TokenCreated> {
                 None,
                 false,
             )
-            .await?;
+            .await;
 
-        // 3. Mark the operation as revoked/cancelled
-        //    We create a compensating transaction (Incoming) to balance the ledger
-        let amount_recovered = match swapped_proofs {
-            Some(proofs) => proofs.total_amount()?,
-            None => {
-                // If swap returned None, it means all proofs were kept (refreshed)
-                // The recovered amount is the input amount minus swap fees
-                let input_amount = self.state_data.proofs.total_amount()?;
-                let fee = self
-                    .wallet
-                    .get_proofs_fee(&self.state_data.proofs)
-                    .await?
-                    .total;
-                input_amount.checked_sub(fee).unwrap_or(Amount::ZERO)
+        match swap_result {
+            Ok(swapped_proofs) => {
+                // 4. Mark the operation as revoked/cancelled
+                //    We create a compensating transaction (Incoming) to balance the ledger
+                let amount_recovered = match swapped_proofs {
+                    Some(proofs) => proofs.total_amount()?,
+                    None => {
+                        // If swap returned None, it means all proofs were kept (refreshed)
+                        // The recovered amount is the input amount minus swap fees
+                        let input_amount = self.state_data.proofs.total_amount()?;
+                        let fee = self
+                            .wallet
+                            .get_proofs_fee(&self.state_data.proofs)
+                            .await?
+                            .total;
+                        input_amount.checked_sub(fee).unwrap_or(Amount::ZERO)
+                    }
+                };
+
+                // Update the original transaction to mark it as part of a revocation?
+                // Or just log the new transaction. The swap internal logic already logs a transaction for the swap.
+                // But we want to clean up the Saga.
+
+                // 5. Delete the saga
+                self.finalize().await?;
+
+                Ok(amount_recovered)
             }
-        };
+            Err(e) => {
+                tracing::error!("Revoke swap failed: {}. Reverting lock.", e);
 
-        // Update the original transaction to mark it as part of a revocation?
-        // Or just log the new transaction. The swap internal logic already logs a transaction for the swap.
-        // But we want to clean up the Saga.
+                // 6. On failure, we MUST revert the state to TokenCreated
+                //    and mark proofs as PendingSpent so monitoring can resume.
+                //    We also need to fetch fresh version again.
+                let current_saga = self
+                    .wallet
+                    .localstore
+                    .get_saga(&operation_id)
+                    .await?
+                    .ok_or(Error::Custom("Saga not found during revert".to_string()))?;
 
-        // 4. Delete the saga
-        self.finalize().await?;
+                let mut revert_saga = current_saga;
+                revert_saga.update_state(WalletSagaState::Send(SendSagaState::TokenCreated));
 
-        Ok(amount_recovered)
+                self.wallet.localstore.update_saga(revert_saga).await?;
+
+                // Revert proofs to PendingSpent
+                self.wallet
+                    .localstore
+                    .update_proofs_state(self.state_data.proofs.ys()?, State::PendingSpent)
+                    .await?;
+
+                Err(e)
+            }
+        }
     }
 
     /// Check the status of the sent token.

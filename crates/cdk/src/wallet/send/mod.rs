@@ -319,6 +319,20 @@ impl Wallet {
             .await?
             .ok_or(Error::Custom("Saga not found".to_string()))?;
 
+        // If we are currently rolling back (revoking), we lie and say it's not claimed.
+        // This prevents the race condition where the swap (reclaim) makes the proofs
+        // look "spent" to the watcher before we finish revocation.
+        if let cdk_common::wallet::WalletSagaState::Send(
+            cdk_common::wallet::SendSagaState::RollingBack,
+        ) = saga_record.state
+        {
+            tracing::debug!(
+                "Operation {} is rolling back - returning pending status",
+                operation_id
+            );
+            return Ok(false);
+        }
+
         if let cdk_common::wallet::WalletSagaState::Send(
             cdk_common::wallet::SendSagaState::TokenCreated,
         ) = saga_record.state
