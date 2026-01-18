@@ -380,3 +380,135 @@ async fn test_melt_with_swap_non_optimal_proofs() -> Result<()> {
 
     Ok(())
 }
+
+/// Tests recovery when a crash occurs after the swap but before the melt request is persisted.
+///
+/// This simulates the "Swap Gap":
+/// 1. MeltSaga prepares (ProofsReserved).
+/// 2. Swap executes (Old proofs spent, New proofs created).
+/// 3. CRASH (MeltSaga not updated to MeltRequested).
+/// 4. Recovery runs.
+///
+/// Expected behavior:
+/// - The recovery should see ProofsReserved.
+/// - It attempts to revert reservation.
+/// - Since old proofs are spent (deleted from DB), revert does nothing.
+/// - Saga is deleted.
+/// - Wallet contains NEW proofs from the swap.
+/// - No double counting (Old + New).
+#[tokio::test]
+async fn test_melt_swap_gap_recovery() -> Result<()> {
+    use cdk::amount::SplitTarget;
+    use cdk::nuts::CurrencyUnit;
+
+    setup_tracing();
+
+    let mint = create_and_start_test_mint().await?;
+    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
+
+    // 1. Configure Mint with Input Fees to force a swap
+    // 1000 ppk = 1 sat per proof
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        1000,
+    )
+    .await
+    .expect("Failed to rotate keyset");
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // 2. Fund Wallet with small proofs
+    // 500 sats total in 50-sat proofs.
+    let initial_amount = 500u64;
+    fund_wallet(
+        wallet.clone(),
+        initial_amount,
+        Some(SplitTarget::Value(Amount::from(50))),
+    )
+    .await?;
+
+    let initial_balance = wallet.total_balance().await?;
+    assert_eq!(initial_balance, Amount::from(initial_amount));
+
+    // 3. Create Melt Quote
+    let invoice = create_fake_invoice(100_000, "test gap".to_string());
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+
+    // 4. Prepare Melt
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await?;
+
+    // Verify we have proofs to swap
+    let proofs_to_swap = prepared.proofs_to_swap();
+    assert!(!proofs_to_swap.is_empty(), "Should have proofs to swap");
+
+    // 5. Simulate the Gap (Manual Swap)
+    // Calculate target amount (what MeltSaga would do)
+    // We only need to swap for the amount + reserve, change will handle the rest.
+    // Including input_fee in target request causes us to request more than we have available
+    // (since input_fee is deducted from inputs).
+    let target_swap_amount = melt_quote.amount + melt_quote.fee_reserve;
+
+    tracing::info!("Simulating swap for amount: {}", target_swap_amount);
+
+    // Perform the swap
+    // Note: this consumes the old proofs from the DB and adds new ones.
+    // The `prepared` saga state in memory still points to old proofs,
+    // and the DB saga state is still 'ProofsReserved' with old proofs.
+    let swapped_proofs = wallet
+        .swap(
+            Some(target_swap_amount),
+            SplitTarget::None,
+            proofs_to_swap.clone(),
+            None,
+            false,
+        )
+        .await?;
+
+    assert!(swapped_proofs.is_some(), "Swap should succeed");
+    let swapped_proofs = swapped_proofs.unwrap();
+
+    // The swap places the requested amount in 'Reserved' state.
+    // Since we are simulating a crash where these were not consumed,
+    // we need to set them to Unspent to verify the wallet balance is conserved.
+    // In a real scenario, a "stuck reserved proofs" cleanup mechanism would handle this.
+    let ys = swapped_proofs.ys()?;
+    wallet
+        .localstore
+        .update_proofs_state(ys, cdk::nuts::State::Unspent)
+        .await?;
+
+    // 6. Recover
+    // At this point, the MeltSaga in DB is stale (points to spent proofs).
+    // Recovery should clean it up.
+    let report = wallet.recover_incomplete_sagas().await?;
+
+    tracing::info!("Recovery report: {:?}", report);
+
+    // 7. Verify
+    // The saga should be gone/handled.
+    // We check the DB directly to ensure saga is gone.
+    let saga = wallet.localstore.get_saga(&prepared.operation_id()).await?;
+    assert!(saga.is_none(), "Saga should be deleted after recovery");
+
+    // Check Balance
+    // We expect: Initial - Swap Fees.
+    // The melt didn't happen (cancelled).
+    // The swap happened.
+    let current_balance = wallet.total_balance().await?;
+
+    assert!(
+        current_balance < Amount::from(initial_amount),
+        "Balance should have decreased by fee"
+    );
+    assert!(
+        current_balance > Amount::from(initial_amount) - Amount::from(50),
+        "Fee shouldn't be huge. Initial: {}, Current: {}",
+        initial_amount,
+        current_balance
+    );
+
+    Ok(())
+}

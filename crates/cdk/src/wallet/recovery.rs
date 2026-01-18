@@ -993,7 +993,7 @@ mod tests {
             *self.check_state_response.lock().unwrap() = Some(response);
         }
 
-        fn set_restore_response(&self, response: Result<RestoreResponse, Error>) {
+        fn _set_restore_response(&self, response: Result<RestoreResponse, Error>) {
             *self.restore_response.lock().unwrap() = Some(response);
         }
 
