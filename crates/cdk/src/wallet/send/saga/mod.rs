@@ -631,13 +631,22 @@ impl<'a> SendSaga<'a, TokenCreated> {
             )
             .await?;
 
-        let Some(swapped_proofs) = swapped_proofs else {
-            return Err(Error::Custom("Swap returned no proofs".to_string()));
-        };
-
         // 3. Mark the operation as revoked/cancelled
         //    We create a compensating transaction (Incoming) to balance the ledger
-        let amount_recovered = swapped_proofs.total_amount()?;
+        let amount_recovered = match swapped_proofs {
+            Some(proofs) => proofs.total_amount()?,
+            None => {
+                // If swap returned None, it means all proofs were kept (refreshed)
+                // The recovered amount is the input amount minus swap fees
+                let input_amount = self.state_data.proofs.total_amount()?;
+                let fee = self
+                    .wallet
+                    .get_proofs_fee(&self.state_data.proofs)
+                    .await?
+                    .total;
+                input_amount.checked_sub(fee).unwrap_or(Amount::ZERO)
+            }
+        };
 
         // Update the original transaction to mark it as part of a revocation?
         // Or just log the new transaction. The swap internal logic already logs a transaction for the swap.
