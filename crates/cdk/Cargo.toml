@@ -180,6 +180,10 @@ required-features = ["wallet"]
 name = "restore-wallet"
 required-features = ["wallet"]
 
+[[example]]
+name = "revoke_send"
+required-features = ["wallet"]
+
 [dev-dependencies]
 rand.workspace = true
 cdk-sqlite.workspace = true

@@ -786,7 +786,6 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             Some(self.state_data.premint_secrets.blinded_messages()),
         );
 
-        // Make the melt request based on payment method
         let melt_result = match quote_info.payment_method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
                 self.wallet
@@ -808,7 +807,6 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             }
         };
 
-        // Handle the result
         let melt_response = match melt_result {
             Ok(response) => response,
             Err(e) => {
@@ -816,7 +814,6 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             }
         };
 
-        // Process the response based on state
         match melt_response.state {
             MeltQuoteState::Paid => self.finalize_success(melt_response, metadata).await,
             MeltQuoteState::Pending => {
@@ -828,7 +825,6 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                 Err(Error::PaymentFailed)
             }
             _ => {
-                // Unknown state - treat as success but log warning
                 tracing::warn!(
                     "Melt quote {} returned unexpected state {:?}",
                     quote_info.id,
@@ -880,7 +876,6 @@ impl<'a> MeltSaga<'a, MeltRequested> {
 
         let payment_preimage = response.payment_preimage.clone();
 
-        // Calculate fee paid
         let proofs_total = final_proofs.total_amount()?;
         let change_total = change_proofs
             .as_ref()
@@ -889,12 +884,10 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             .unwrap_or(Amount::ZERO);
         let fee = proofs_total - quote_info.amount - change_total;
 
-        // Update quote state
         let mut updated_quote = quote_info.clone();
         updated_quote.state = response.state;
         self.wallet.localstore.add_melt_quote(updated_quote).await?;
 
-        // Add change proofs and remove spent proofs
         let change_proof_infos = match change_proofs.clone() {
             Some(change_proofs) => change_proofs
                 .into_iter()
@@ -917,7 +910,6 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             .update_proofs(change_proof_infos, deleted_ys)
             .await?;
 
-        // Add transaction
         self.wallet
             .localstore
             .add_transaction(Transaction {
@@ -938,7 +930,6 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             })
             .await?;
 
-        // Release quote reservation
         if let Err(e) = self
             .wallet
             .localstore
@@ -952,7 +943,6 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             );
         }
 
-        // Delete saga record
         if let Err(e) = self.wallet.localstore.delete_saga(&operation_id).await {
             tracing::warn!(
                 "Failed to delete melt saga {}: {}. Will be cleaned up on recovery.",

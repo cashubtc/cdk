@@ -288,12 +288,6 @@ impl<'a> MintSaga<'a, Initial> {
             self.state_data.operation_id
         );
 
-        let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
-        let fee_and_amounts = self
-            .wallet
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
-
         let quote_info = self
             .wallet
             .localstore
@@ -307,6 +301,10 @@ impl<'a> MintSaga<'a, Initial> {
                 // If amount is not supplied, check the status of the quote
                 let state = self.wallet.mint_bolt12_quote_state(quote_id).await?;
 
+                if state.amount_paid == Amount::ZERO {
+                    return Err(Error::UnpaidQuote);
+                }
+
                 let quote_info = self
                     .wallet
                     .localstore
@@ -317,6 +315,12 @@ impl<'a> MintSaga<'a, Initial> {
                 (quote_info, state.amount_paid - state.amount_issued)
             }
         };
+
+        let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .wallet
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
 
         self.prepare_common(
             quote_id,
@@ -445,15 +449,12 @@ impl<'a> MintSaga<'a, Prepared> {
                 }),
             );
 
-            // Update saga state - if this fails due to version conflict, another instance
-            // is processing this saga, which should not happen during normal operation
             if !wallet.localstore.update_saga(updated_saga).await? {
                 return Err(Error::Custom(
                     "Saga version conflict during update - another instance may be processing this saga".to_string(),
                 ));
             }
 
-            // Post mint request
             let mint_res = wallet
                 .client
                 .post_mint(&payment_method, mint_request.clone())
@@ -461,7 +462,6 @@ impl<'a> MintSaga<'a, Prepared> {
 
             let keys = wallet.load_keyset_keys(active_keyset_id).await?;
 
-            // Verify DLEQ proofs
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
                 let keys = wallet.load_keyset_keys(sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
@@ -471,7 +471,6 @@ impl<'a> MintSaga<'a, Prepared> {
                 }
             }
 
-            // Construct proofs
             let proofs = construct_proofs(
                 mint_res.signatures,
                 premint_secrets.rs(),
@@ -481,14 +480,11 @@ impl<'a> MintSaga<'a, Prepared> {
 
             let minted_amount = proofs.total_amount()?;
 
-            // Update quote based on payment method
             match payment_method {
                 PaymentMethod::Known(KnownMethod::Bolt11) => {
-                    // Remove filled quote from store
                     wallet.localstore.remove_mint_quote(&quote_id).await?;
                 }
                 PaymentMethod::Known(KnownMethod::Bolt12) => {
-                    // Update quote with issued amount
                     let mut quote_info = wallet
                         .localstore
                         .get_mint_quote(&quote_id)
@@ -498,7 +494,6 @@ impl<'a> MintSaga<'a, Prepared> {
                     wallet.localstore.add_mint_quote(quote_info).await?;
                 }
                 PaymentMethod::Custom(_) => {
-                    // Update quote with issued amount
                     let mut quote_info = wallet
                         .localstore
                         .get_mint_quote(&quote_id)
@@ -510,7 +505,6 @@ impl<'a> MintSaga<'a, Prepared> {
                 }
             }
 
-            // Store proofs
             let proof_infos = proofs
                 .iter()
                 .map(|proof| {
@@ -525,7 +519,6 @@ impl<'a> MintSaga<'a, Prepared> {
 
             wallet.localstore.update_proofs(proof_infos, vec![]).await?;
 
-            // Add transaction record
             wallet
                 .localstore
                 .add_transaction(Transaction {
@@ -564,10 +557,8 @@ impl<'a> MintSaga<'a, Prepared> {
 
         match logic_res {
             Ok(finalized_data) => {
-                // Clear compensations - operation completed successfully
                 clear_compensations(&mut compensations).await;
 
-                // Delete saga record - mint completed successfully (best-effort)
                 if let Err(e) = wallet.localstore.delete_saga(&operation_id).await {
                     tracing::warn!(
                         "Failed to delete mint saga {}: {}. Will be cleaned up on recovery.",
@@ -577,7 +568,6 @@ impl<'a> MintSaga<'a, Prepared> {
                     // Don't fail the mint if saga deletion fails - orphaned saga is harmless
                 }
 
-                // Transition to Finalized state
                 Ok(MintSaga {
                     wallet,
                     compensations,

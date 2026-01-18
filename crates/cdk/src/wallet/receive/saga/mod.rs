@@ -90,10 +90,8 @@ impl<'a> ReceiveSaga<'a, Initial> {
             self.state_data.operation_id
         );
 
-        // Load mint info (in case this is the first time receiving from this mint)
         let _mint_info = self.wallet.load_mint_info().await?;
 
-        // Get active keyset
         let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
 
         let mut proofs = proofs;
@@ -170,7 +168,6 @@ impl<'a> ReceiveSaga<'a, Initial> {
         // Store sig_flag for later use in execute
         // (This is handled in execute when signing blinded messages)
 
-        // Transition to Prepared state
         Ok(ReceiveSaga {
             wallet: self.wallet,
             compensations: self.compensations,
@@ -224,7 +221,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         let operation_id = self.state_data.operation_id;
         let operation_id_str = operation_id.to_string();
 
-        // Store proofs in Pending state with operation ID for recovery tracking
         let proofs_info = proofs
             .clone()
             .into_iter()
@@ -274,7 +270,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         )
         .await;
 
-        // Create swap request
         let mut pre_swap = self
             .wallet
             .create_swap(
@@ -341,7 +336,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             ));
         }
 
-        // Execute swap
         let swap_response = match self.wallet.client.post_swap(pre_swap.swap_request).await {
             Ok(response) => response,
             Err(err) => {
@@ -351,7 +345,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             }
         };
 
-        // Construct new proofs from swap response
         let recv_proofs = construct_proofs(
             swap_response.signatures,
             pre_swap.pre_mint_secrets.rs(),
@@ -359,7 +352,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             &keys,
         )?;
 
-        // Increment keyset counter
         self.wallet
             .localstore
             .increment_keyset_counter(&self.state_data.active_keyset_id, recv_proofs.len() as u32)
@@ -368,7 +360,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         let total_amount = recv_proofs.total_amount()?;
         let fee = self.state_data.proofs_amount - total_amount;
 
-        // Store new proofs and remove old ones
         let recv_proof_infos = recv_proofs
             .into_iter()
             .map(|proof| {
@@ -389,7 +380,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             )
             .await?;
 
-        // Add transaction record
         self.wallet
             .localstore
             .add_transaction(Transaction {
@@ -410,10 +400,8 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             })
             .await?;
 
-        // Clear compensations - operation completed successfully
         clear_compensations(&mut self.compensations).await;
 
-        // Delete saga record - receive completed successfully (best-effort)
         if let Err(e) = self.wallet.localstore.delete_saga(&operation_id).await {
             tracing::warn!(
                 "Failed to delete receive saga {}: {}. Will be cleaned up on recovery.",
@@ -423,7 +411,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             // Don't fail the receive if saga deletion fails - orphaned saga is harmless
         }
 
-        // Transition to Finalized state
         Ok(ReceiveSaga {
             wallet: self.wallet,
             compensations: self.compensations,

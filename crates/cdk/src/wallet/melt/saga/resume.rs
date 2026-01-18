@@ -217,7 +217,6 @@ impl Wallet {
             .checked_sub(data.amount + change_amount)
             .unwrap_or(Amount::ZERO);
 
-        // Delete the saga record
         self.localstore.delete_saga(saga_id).await?;
 
         Ok(FinalizedMelt::new(
