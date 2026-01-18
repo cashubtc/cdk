@@ -35,3 +35,7 @@ ALTER TABLE mint_quote ADD COLUMN IF NOT EXISTS used_by_operation TEXT;
 -- Create indexes for efficient operation-based quote queries
 CREATE INDEX IF NOT EXISTS melt_quote_used_by_operation_index ON melt_quote(used_by_operation);
 CREATE INDEX IF NOT EXISTS mint_quote_used_by_operation_index ON mint_quote(used_by_operation);
+
+-- Add saga_id to transactions to link persistent history with lifecycle state
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS saga_id TEXT;
+CREATE INDEX IF NOT EXISTS transactions_saga_id_index ON transactions(saga_id);

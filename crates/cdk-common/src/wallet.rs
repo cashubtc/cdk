@@ -216,6 +216,9 @@ pub struct Transaction {
     /// Payment method (e.g., Bolt11, Bolt12) for mint/melt transactions
     #[serde(default)]
     pub payment_method: Option<PaymentMethod>,
+    /// Saga ID if this transaction was part of a saga
+    #[serde(default)]
+    pub saga_id: Option<String>,
 }
 
 impl Transaction {
@@ -647,6 +650,8 @@ pub struct SendOperationData {
     pub counter_end: Option<u32>,
     /// Token data (when in Pending/Finalized state)
     pub token: Option<String>,
+    /// Proofs being sent
+    pub proofs: Option<Proofs>,
 }
 
 /// Operation-specific data for Receive operations

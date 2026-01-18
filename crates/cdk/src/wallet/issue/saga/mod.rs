@@ -546,6 +546,7 @@ impl<'a> MintSaga<'a, Prepared> {
                 payment_request: Some(self.state_data.quote_info.request.clone()),
                 payment_proof: None,
                 payment_method: Some(self.state_data.payment_method.clone()),
+                saga_id: None,
             })
             .await?;
 

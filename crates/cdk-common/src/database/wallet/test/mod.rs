@@ -152,6 +152,7 @@ fn test_transaction(mint_url: MintUrl, direction: TransactionDirection) -> Trans
         payment_request: None,
         payment_proof: None,
         payment_method: None,
+        saga_id: None,
     }
 }
 
