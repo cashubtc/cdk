@@ -42,7 +42,6 @@ impl CompensatingAction for RemovePendingProofs {
             .await
             .map_err(Error::Database)?;
 
-        // Delete saga record (best-effort)
         if let Err(e) = self.localstore.delete_saga(&self.saga_id).await {
             tracing::warn!(
                 "Compensation: Failed to delete saga {}: {}. Will be cleaned up on recovery.",

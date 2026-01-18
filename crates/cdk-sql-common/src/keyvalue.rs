@@ -215,6 +215,7 @@ where
 }
 
 /// Generic implementation of kv_write for database (non-transactional)
+#[cfg(feature = "wallet")]
 pub(crate) async fn kv_write<RM>(
     pool: &Arc<Pool<RM>>,
     primary_namespace: &str,
@@ -255,6 +256,7 @@ where
 }
 
 /// Generic implementation of kv_remove for database (non-transactional)
+#[cfg(feature = "wallet")]
 pub(crate) async fn kv_remove<RM>(
     pool: &Arc<Pool<RM>>,
     primary_namespace: &str,

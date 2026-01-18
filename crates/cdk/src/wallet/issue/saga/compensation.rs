@@ -81,18 +81,12 @@ impl CompensatingAction for MintCompensation {
             self.quote_id
         );
 
-        // No actual compensation needed for mint operations
-        // Counter increments are not reversed (see module docs)
-        // Quote and proofs are not modified until after successful mint
-
-        // Delete saga record (best-effort)
         if let Err(e) = self.localstore.delete_saga(&self.saga_id).await {
             tracing::warn!(
                 "Compensation: Failed to delete saga {}: {}. Will be cleaned up on recovery.",
                 self.saga_id,
                 e
             );
-            // Don't fail compensation if saga deletion fails - orphaned saga is harmless
         }
 
         Ok(())

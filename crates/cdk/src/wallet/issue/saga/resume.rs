@@ -98,7 +98,6 @@ impl Wallet {
             }
         }
 
-        // Delete the saga record
         self.localstore.delete_saga(saga_id).await?;
 
         Ok(())

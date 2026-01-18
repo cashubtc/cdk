@@ -791,14 +791,10 @@ impl OperationData {
 /// - No lock expiration/cleanup needed
 /// - Conflicts are rare in practice (sagas are short-lived)
 ///
-/// # Example
-///
-/// ```ignore
-/// // Instance A reads saga with version=1
-/// // Instance B reads saga with version=1
-/// // Instance A updates successfully, version becomes 2
-/// // Instance B's update fails (version mismatch) - it knows to skip
-/// ```
+/// Instance A reads saga with version=1
+/// Instance B reads saga with version=1
+/// Instance A updates successfully, version becomes 2
+/// Instance B's update fails (version mismatch) - it knows to skip
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WalletSaga {
     /// Unique operation ID
