@@ -79,7 +79,7 @@ impl<'a> SwapSaga<'a, Initial> {
     /// and delete the saga if later steps fail.
     #[instrument(skip_all)]
     pub async fn prepare(
-        self,
+        mut self,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
         input_proofs: Proofs,
@@ -153,7 +153,7 @@ impl<'a> SwapSaga<'a, Initial> {
 
         // Register compensation to revert proof reservation and delete saga on failure
         add_compensation(
-            &self.compensations,
+            &mut self.compensations,
             Box::new(RevertSwapProofReservation {
                 localstore: self.wallet.localstore.clone(),
                 proof_ys: input_ys.clone(),
@@ -194,7 +194,7 @@ impl<'a> SwapSaga<'a, Prepared> {
     ///
     /// On success, compensations are cleared.
     #[instrument(skip_all)]
-    pub async fn execute(self) -> Result<SwapSaga<'a, Finalized>, Error> {
+    pub async fn execute(mut self) -> Result<SwapSaga<'a, Finalized>, Error> {
         tracing::info!(
             "Executing swap for operation {}",
             self.state_data.operation_id
@@ -249,7 +249,7 @@ impl<'a> SwapSaga<'a, Prepared> {
             Ok(response) => response,
             Err(err) => {
                 tracing::error!("Swap failed: {}", err);
-                execute_compensations(&self.compensations).await?;
+                execute_compensations(&mut self.compensations).await?;
                 return Err(err);
             }
         };
@@ -343,7 +343,7 @@ impl<'a> SwapSaga<'a, Prepared> {
             .await?;
 
         // Clear compensations - operation completed successfully
-        clear_compensations(&self.compensations).await;
+        clear_compensations(&mut self.compensations).await;
 
         // Delete saga record - swap completed successfully (best-effort)
         if let Err(e) = self.wallet.localstore.delete_saga(&operation_id).await {
