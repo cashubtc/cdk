@@ -435,6 +435,8 @@ pub enum SendSagaState {
     ProofsReserved,
     /// Token created, proofs marked pending spent
     TokenCreated,
+    /// Send is being rolled back (transient state)
+    RollingBack,
 }
 
 impl fmt::Display for SendSagaState {
@@ -442,6 +444,7 @@ impl fmt::Display for SendSagaState {
         match self {
             SendSagaState::ProofsReserved => write!(f, "proofs_reserved"),
             SendSagaState::TokenCreated => write!(f, "token_created"),
+            SendSagaState::RollingBack => write!(f, "rolling_back"),
         }
     }
 }
@@ -452,6 +455,7 @@ impl FromStr for SendSagaState {
         match s {
             "proofs_reserved" => Ok(SendSagaState::ProofsReserved),
             "token_created" => Ok(SendSagaState::TokenCreated),
+            "rolling_back" => Ok(SendSagaState::RollingBack),
             _ => Err(Error::InvalidOperationState),
         }
     }
@@ -615,6 +619,7 @@ impl WalletSagaState {
             WalletSagaState::Send(s) => match s {
                 SendSagaState::ProofsReserved => "proofs_reserved",
                 SendSagaState::TokenCreated => "token_created",
+                SendSagaState::RollingBack => "rolling_back",
             },
             WalletSagaState::Receive(s) => match s {
                 ReceiveSagaState::ProofsPending => "proofs_pending",

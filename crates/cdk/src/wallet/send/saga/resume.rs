@@ -62,6 +62,88 @@ impl Wallet {
                 );
                 self.recover_or_complete_send(&saga.id).await
             }
+            SendSagaState::RollingBack => {
+                // We crashed during revocation
+                tracing::info!(
+                    "Send saga {} in RollingBack state - checking proof states",
+                    saga.id
+                );
+                self.recover_rolling_back_send(&saga.id).await
+            }
+        }
+    }
+
+    /// Recover a saga that crashed during revocation (RollingBack state).
+    async fn recover_rolling_back_send(
+        &self,
+        saga_id: &uuid::Uuid,
+    ) -> Result<RecoveryAction, Error> {
+        // Get the reserved/pending proofs for this operation
+        let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
+
+        if reserved_proofs.is_empty() {
+            // No proofs found - saga may have completed (swap successful)
+            tracing::warn!(
+                "No reserved proofs found for rolling back send saga {} - assuming swap success",
+                saga_id
+            );
+            self.localstore.delete_saga(saga_id).await?;
+            return Ok(RecoveryAction::Recovered);
+        }
+
+        // Check proof states with the mint
+        match self.are_proofs_spent(&reserved_proofs).await {
+            Ok(true) => {
+                // Proofs are spent - swap succeeded (or recipient claimed)
+                // In either case, the saga is done.
+                tracing::info!(
+                    "Send saga {} (RollingBack) - proofs are spent, marking as complete",
+                    saga_id
+                );
+                // Ensure local state matches (Spent)
+                let proof_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
+                self.localstore
+                    .update_proofs_state(proof_ys, State::Spent)
+                    .await?;
+                self.localstore.delete_saga(saga_id).await?;
+                Ok(RecoveryAction::Recovered)
+            }
+            Ok(false) => {
+                // Proofs are NOT spent - swap failed or didn't happen.
+                // Revert to TokenCreated so user can see it as "Pending" and try again.
+                tracing::info!(
+                    "Send saga {} (RollingBack) - proofs not spent, reverting to TokenCreated",
+                    saga_id
+                );
+
+                let current_saga = self
+                    .localstore
+                    .get_saga(saga_id)
+                    .await?
+                    .ok_or(Error::Custom("Saga not found during recovery".to_string()))?;
+
+                let mut revert_saga = current_saga;
+                revert_saga.update_state(cdk_common::wallet::WalletSagaState::Send(
+                    cdk_common::wallet::SendSagaState::TokenCreated,
+                ));
+
+                self.localstore.update_saga(revert_saga).await?;
+
+                let proof_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
+                self.localstore
+                    .update_proofs_state(proof_ys, State::PendingSpent)
+                    .await?;
+
+                Ok(RecoveryAction::Recovered)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Send saga {} (RollingBack) - can't check proof states ({}), skipping",
+                    saga_id,
+                    e
+                );
+                Ok(RecoveryAction::Skipped)
+            }
         }
     }
 
