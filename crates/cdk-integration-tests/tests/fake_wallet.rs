@@ -20,10 +20,10 @@ use std::time::Duration;
 use bip39::Mnemonic;
 use cashu::Amount;
 use cdk::amount::SplitTarget;
-use cdk::nuts::nut00::ProofsMethods;
+use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{
-    CurrencyUnit, MeltQuoteState, MeltRequest, MintRequest, PreMintSecrets, Proofs, SecretKey,
-    State, SwapRequest,
+    CurrencyUnit, MeltQuoteState, MeltRequest, MintRequest, PaymentMethod, PreMintSecrets, Proofs,
+    SecretKey, State, SwapRequest,
 };
 use cdk::wallet::types::TransactionDirection;
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
@@ -433,7 +433,10 @@ async fn test_fake_melt_change_in_quote() {
         Some(premint_secrets.blinded_messages()),
     );
 
-    let melt_response = client.post_melt(melt_request).await.unwrap();
+    let melt_response = client
+        .post_melt(&PaymentMethod::Known(KnownMethod::Bolt11), melt_request)
+        .await
+        .unwrap();
 
     assert!(melt_response.change.is_some());
 
@@ -514,7 +517,9 @@ async fn test_fake_mint_without_witness() {
         signature: None,
     };
 
-    let response = http_client.post_mint(request.clone()).await;
+    let response = http_client
+        .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request.clone())
+        .await;
 
     match response {
         Err(cdk::error::Error::SignatureMissingOrInvalid) => {} //pass
@@ -570,7 +575,9 @@ async fn test_fake_mint_with_wrong_witness() {
         .sign(secret_key)
         .expect("failed to sign the mint request");
 
-    let response = http_client.post_mint(request.clone()).await;
+    let response = http_client
+        .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request.clone())
+        .await;
 
     match response {
         Err(cdk::error::Error::SignatureMissingOrInvalid) => {} //pass
@@ -632,7 +639,12 @@ async fn test_fake_mint_inflated() {
     }
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
-    let response = http_client.post_mint(mint_request.clone()).await;
+    let response = http_client
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            mint_request.clone(),
+        )
+        .await;
 
     match response {
         Err(err) => match err {
@@ -725,7 +737,12 @@ async fn test_fake_mint_multiple_units() {
     }
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
-    let response = http_client.post_mint(mint_request.clone()).await;
+    let response = http_client
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            mint_request.clone(),
+        )
+        .await;
 
     match response {
         Err(err) => match err {
@@ -928,7 +945,12 @@ async fn test_fake_mint_multiple_unit_melt() {
         let melt_request = MeltRequest::new(melt_quote.id, inputs, None);
 
         let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
-        let response = http_client.post_melt(melt_request.clone()).await;
+        let response = http_client
+            .post_melt(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                melt_request.clone(),
+            )
+            .await;
 
         match response {
             Err(err) => match err {
@@ -978,7 +1000,12 @@ async fn test_fake_mint_multiple_unit_melt() {
 
         let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
-        let response = http_client.post_melt(melt_request.clone()).await;
+        let response = http_client
+            .post_melt(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                melt_request.clone(),
+            )
+            .await;
 
         match response {
             Err(err) => match err {
@@ -1258,7 +1285,12 @@ async fn test_fake_mint_melt_spend_after_fail() {
     let melt_request = MeltRequest::new(melt_quote.id, proofs, None);
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
-    let response = http_client.post_melt(melt_request.clone()).await;
+    let response = http_client
+        .post_melt(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            melt_request.clone(),
+        )
+        .await;
 
     match response {
         Err(err) => match err {
@@ -1385,7 +1417,12 @@ async fn test_fake_mint_duplicate_proofs_melt() {
     let melt_request = MeltRequest::new(melt_quote.id, inputs, None);
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
-    let response = http_client.post_melt(melt_request.clone()).await;
+    let response = http_client
+        .post_melt(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            melt_request.clone(),
+        )
+        .await;
 
     match response {
         Err(err) => match err {

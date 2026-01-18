@@ -205,31 +205,12 @@ impl Wallet {
             Some(premint_secrets.blinded_messages()),
         );
 
-        let melt_response = match quote_info.payment_method {
-            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
-                self.try_proof_operation_or_reclaim(
-                    request.inputs().clone(),
-                    self.client.post_melt(request),
-                )
-                .await?
-            }
-            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
-                self.try_proof_operation_or_reclaim(
-                    request.inputs().clone(),
-                    self.client.post_melt_bolt12(request),
-                )
-                .await?
-            }
-            cdk_common::PaymentMethod::Custom(ref _method) => {
-                // For now, custom methods will use the same post_melt endpoint
-                // This will be enhanced when custom HTTP client methods are added
-                self.try_proof_operation_or_reclaim(
-                    request.inputs().clone(),
-                    self.client.post_melt(request),
-                )
-                .await?
-            }
-        };
+        let melt_response = self
+            .try_proof_operation_or_reclaim(
+                request.inputs().clone(),
+                self.client.post_melt(&quote_info.payment_method, request),
+            )
+            .await?;
 
         let active_keys = self.load_keyset_keys(active_keyset_id).await?;
 

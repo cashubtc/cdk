@@ -21,8 +21,8 @@ use bip39::Mnemonic;
 use cashu::{MeltRequest, PreMintSecrets};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, State};
+use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
+use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, PaymentMethod, State};
 use cdk::wallet::{HttpClient, MintConnector, MultiMintWallet, Wallet};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
@@ -818,7 +818,10 @@ async fn test_fake_melt_change_in_quote() {
         Some(premint_secrets.blinded_messages()),
     );
 
-    let melt_response = client.post_melt(melt_request).await.unwrap();
+    let melt_response = client
+        .post_melt(&PaymentMethod::Known(KnownMethod::Bolt11), melt_request)
+        .await
+        .unwrap();
 
     assert!(melt_response.change.is_some());
 

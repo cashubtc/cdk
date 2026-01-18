@@ -30,8 +30,8 @@ impl Wallet {
                 // For bolt12, request is the offer string
                 self.mint_bolt12_quote(amount, description).await
             }
-            PaymentMethod::Custom(custom_method) => {
-                self.mint_quote_custom(amount, &custom_method, description, extra)
+            PaymentMethod::Custom(ref _custom_method) => {
+                self.mint_quote_custom(amount, &method, description, extra)
                     .await
             }
         }
