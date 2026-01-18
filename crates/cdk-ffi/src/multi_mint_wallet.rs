@@ -292,6 +292,44 @@ impl MultiMintWallet {
         Ok(restored.into())
     }
 
+    /// Get all pending send operations across all mints
+    pub async fn get_pending_sends(&self) -> Result<Vec<PendingSend>, FfiError> {
+        let sends = self.inner.get_pending_sends().await?;
+        Ok(sends
+            .into_iter()
+            .map(|(mint_url, id)| PendingSend {
+                mint_url: mint_url.into(),
+                operation_id: id.to_string(),
+            })
+            .collect())
+    }
+
+    /// Revoke a pending send operation for a specific mint
+    pub async fn revoke_send(
+        &self,
+        mint_url: MintUrl,
+        operation_id: String,
+    ) -> Result<Amount, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let uuid = uuid::Uuid::parse_str(&operation_id)
+            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
+        let amount = self.inner.revoke_send(cdk_mint_url, uuid).await?;
+        Ok(amount.into())
+    }
+
+    /// Check status of a pending send operation for a specific mint
+    pub async fn check_send_status(
+        &self,
+        mint_url: MintUrl,
+        operation_id: String,
+    ) -> Result<bool, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let uuid = uuid::Uuid::parse_str(&operation_id)
+            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
+        let claimed = self.inner.check_send_status(cdk_mint_url, uuid).await?;
+        Ok(claimed)
+    }
+
     /// Send tokens from a specific mint
     ///
     /// This method prepares and confirms the send in one step.
@@ -916,6 +954,15 @@ impl From<CdkTransferResult> for TransferResult {
             target_balance_after: result.target_balance_after.into(),
         }
     }
+}
+
+/// Represents a pending send operation
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PendingSend {
+    /// The mint URL where the send is pending
+    pub mint_url: MintUrl,
+    /// The operation ID of the pending send
+    pub operation_id: String,
 }
 
 /// Data extracted from a token including mint URL, proofs, and memo

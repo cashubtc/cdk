@@ -168,6 +168,28 @@ impl Wallet {
         Ok(amount.into())
     }
 
+    /// Get all pending send operations
+    pub async fn get_pending_sends(&self) -> Result<Vec<String>, FfiError> {
+        let sends = self.inner.get_pending_sends().await?;
+        Ok(sends.into_iter().map(|id| id.to_string()).collect())
+    }
+
+    /// Revoke a pending send operation
+    pub async fn revoke_send(&self, operation_id: String) -> Result<Amount, FfiError> {
+        let uuid = uuid::Uuid::parse_str(&operation_id)
+            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
+        let amount = self.inner.revoke_send(uuid).await?;
+        Ok(amount.into())
+    }
+
+    /// Check status of a pending send operation
+    pub async fn check_send_status(&self, operation_id: String) -> Result<bool, FfiError> {
+        let uuid = uuid::Uuid::parse_str(&operation_id)
+            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
+        let claimed = self.inner.check_send_status(uuid).await?;
+        Ok(claimed)
+    }
+
     /// Prepare a send operation
     pub async fn prepare_send(
         &self,
