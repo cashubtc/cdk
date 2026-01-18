@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
@@ -56,7 +57,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for quote to be paid and mint proofs
     // With the fake mint, this happens automatically
     let proofs = wallet
-        .wait_for_mint_quote(&mint_url, &mint_quote.id, SplitTarget::default(), None, 30)
+        .wait_for_mint_quote(
+            &mint_url,
+            &mint_quote.id,
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(30),
+        )
         .await?;
 
     let minted_amount = proofs.total_amount()?;
