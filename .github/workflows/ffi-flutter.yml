@@ -34,11 +34,20 @@ jobs:
         run: |
           cd cdk-flutter/rust
           # Replace crates.io version with local path
-          # Matches: cdk = { version = "..."... } and replaces with cdk = { path = "../../cdk", ... }
-          sed -i 's/^cdk = { version = "[^"]*",/cdk = { path = "..\/..\/cdk",/' Cargo.toml
+          # We must point to the specific crate directory, not the workspace root
+          
+          # Patch cdk
+          sed -i 's/^cdk = { version = "[^"]*",/cdk = { path = "..\/..\/cdk\/crates\/cdk",/' Cargo.toml
+          
+          # Patch cdk-common (to ensure we use the local version matching cdk)
+          sed -i 's/^cdk-common = { version = "[^"]*",/cdk-common = { path = "..\/..\/cdk\/crates\/cdk-common",/' Cargo.toml
+          
+          # Patch cdk-sqlite (to ensure we use the local version matching cdk)
+          sed -i 's/^cdk-sqlite = { version = "[^"]*",/cdk-sqlite = { path = "..\/..\/cdk\/crates\/cdk-sqlite",/' Cargo.toml
           
           # Verify the change
-          grep "^cdk =" Cargo.toml
+          echo "Patched Cargo.toml:"
+          grep "^cdk" Cargo.toml
 
       - name: Verify Compilation
         run: |
