@@ -690,3 +690,64 @@ async fn test_multi_mint_wallet_list_transactions() {
         "Should have more transactions after melt"
     );
 }
+
+/// Test send revocation via MultiMintWallet
+///
+/// This test verifies:
+/// 1. Create and confirm a send
+/// 2. Verify it appears in pending sends
+/// 3. Verify status is "not claimed"
+/// 4. Revoke the send
+/// 5. Verify balance is restored and pending send is gone
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_multi_mint_wallet_revoke_send() {
+    let multi_mint_wallet = create_test_multi_mint_wallet().await;
+
+    let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
+    multi_mint_wallet
+        .add_mint(mint_url.clone())
+        .await
+        .expect("failed to add mint");
+
+    // Fund the wallet
+    fund_multi_mint_wallet(&multi_mint_wallet, &mint_url, 100.into()).await;
+
+    // Create a send
+    let send_options = SendOptions::default();
+    let prepared_send = multi_mint_wallet
+        .prepare_send(mint_url.clone(), 50.into(), send_options)
+        .await
+        .unwrap();
+
+    let operation_id = prepared_send.operation_id();
+    let _token = prepared_send.confirm(None).await.unwrap();
+
+    // Verify it appears in pending sends
+    let pending = multi_mint_wallet.get_pending_sends().await.unwrap();
+    assert_eq!(pending.len(), 1, "Should have 1 pending send");
+    assert_eq!(pending[0].0, mint_url, "Mint URL should match");
+    assert_eq!(pending[0].1, operation_id, "Operation ID should match");
+
+    // Verify status
+    let claimed = multi_mint_wallet
+        .check_send_status(mint_url.clone(), operation_id)
+        .await
+        .unwrap();
+    assert!(!claimed, "Token should not be claimed yet");
+
+    // Revoke the send
+    let restored_amount = multi_mint_wallet
+        .revoke_send(mint_url.clone(), operation_id)
+        .await
+        .unwrap();
+
+    assert_eq!(restored_amount, 50.into(), "Should restore 50 sats");
+
+    // Verify pending send is gone
+    let pending_after = multi_mint_wallet.get_pending_sends().await.unwrap();
+    assert!(pending_after.is_empty(), "Should have no pending sends");
+
+    // Verify balance is back to 100
+    let balance = multi_mint_wallet.total_balance().await.unwrap();
+    assert_eq!(balance, 100.into(), "Balance should be fully restored");
+}

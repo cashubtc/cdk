@@ -1387,6 +1387,60 @@ impl MultiMintWallet {
         Ok((final_mint_quote, final_melt_quote))
     }
 
+    /// Get all pending send operations across all mints
+    ///
+    /// Returns a list of (MintUrl, Uuid) tuples for all pending sends.
+    #[instrument(skip(self))]
+    pub async fn get_pending_sends(&self) -> Result<Vec<(MintUrl, Uuid)>, Error> {
+        let mut pending_sends = Vec::new();
+
+        for (mint_url, wallet) in self.wallets.read().await.iter() {
+            let wallet_pending = wallet.get_pending_sends().await?;
+            for id in wallet_pending {
+                pending_sends.push((mint_url.clone(), id));
+            }
+        }
+
+        Ok(pending_sends)
+    }
+
+    /// Revoke a pending send operation for a specific mint
+    ///
+    /// Attempts to reclaim the funds by swapping the proofs back to the wallet.
+    /// If successful, the saga is deleted.
+    #[instrument(skip(self))]
+    pub async fn revoke_send(
+        &self,
+        mint_url: MintUrl,
+        operation_id: Uuid,
+    ) -> Result<Amount, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.revoke_send(operation_id).await
+    }
+
+    /// Check status of a pending send operation for a specific mint
+    ///
+    /// Checks if the token has been claimed by the recipient.
+    /// If claimed, the saga is finalized (deleted).
+    /// Returns true if claimed, false if still pending.
+    #[instrument(skip(self))]
+    pub async fn check_send_status(
+        &self,
+        mint_url: MintUrl,
+        operation_id: Uuid,
+    ) -> Result<bool, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.check_send_status(operation_id).await
+    }
+
     /// Execute the actual transfer using the prepared quotes
     async fn execute_transfer(
         &self,

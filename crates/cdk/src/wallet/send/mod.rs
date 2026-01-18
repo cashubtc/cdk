@@ -252,6 +252,9 @@ impl Wallet {
         Ok(incomplete
             .into_iter()
             .filter_map(|s| {
+                if s.mint_url != self.mint_url {
+                    return None;
+                }
                 if let cdk_common::wallet::WalletSagaState::Send(
                     cdk_common::wallet::SendSagaState::TokenCreated,
                 ) = s.state
