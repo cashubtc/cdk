@@ -267,10 +267,11 @@ pub fn setup_tracing() {
 
     let h2_filter = "h2=warn";
     let hyper_filter = "hyper=warn";
+    let tower_filter = "tower=warn";
     let tokio_postgres = "tokio_postgres=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{default_filter},{h2_filter},{hyper_filter},{tokio_postgres}"
+        "{default_filter},{h2_filter},{hyper_filter},{tower_filter},{tokio_postgres}"
     ));
 
     // Ok if successful, Err if already initialized
