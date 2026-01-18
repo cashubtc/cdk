@@ -25,6 +25,23 @@ For detailed configuration of each Lightning backend, see:
 - **[CLN](../cdk-cln/README.md)** - Core Lightning
 - **[LNbits](../cdk-lnbits/README.md)** - LNbits API integration
 
+## Prerequisites
+
+### Ubuntu/Debian
+```bash
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Install build dependencies
+sudo apt install pkg-config
+sudo apt-get install protobuf-compiler
+```
+
+### Other Linux Distributions
+- **Rust**: Install from [rustup.rs](https://rustup.rs/)
+- **pkg-config**: Usually available as `pkg-config` or `pkgconfig` package
+- **protobuf-compiler**: Usually available as `protobuf-compiler` or `protobuf` package
+
 ## Installation
 
 ### Option 1: Download Pre-built Binary
@@ -44,6 +61,12 @@ nix develop
 # Build binary
 cargo build --bin cdk-mintd --release
 # Binary will be at ./target/release/cdk-mintd
+
+# Install to ~/.cargo/bin (makes it available system-wide)
+cargo install --path crates/cdk-mintd
+
+# Verify installation
+cdk-mintd --version
 ```
 
 ## Configuration
