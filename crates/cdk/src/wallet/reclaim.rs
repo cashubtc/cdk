@@ -85,7 +85,7 @@ impl Wallet {
                 Ok(r) => Ok(r),
                 Err(err) => {
                     tracing::error!(
-                        "Http operation failed with \"{}\", revering  {} proofs states to UNSPENT",
+                        "Http operation failed with \"{}\", attempting to revert  {} proofs states to UNSPENT",
                         err,
                         inputs.len()
                     );
