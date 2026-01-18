@@ -209,7 +209,7 @@ impl<'a> SendSaga<'a, Initial> {
     }
 
     async fn internal_prepare(
-        self,
+        mut self,
         amount: Amount,
         opts: SendOptions,
         proofs: Proofs,
@@ -273,7 +273,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         // Register compensation to revert reservation and delete saga on failure
         add_compensation(
-            &self.compensations,
+            &mut self.compensations,
             Box::new(RevertProofReservation {
                 localstore: self.wallet.localstore.clone(),
                 proof_ys,

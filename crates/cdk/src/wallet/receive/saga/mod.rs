@@ -200,7 +200,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
     /// Registers a compensation action that will remove pending proofs
     /// if the swap fails.
     #[instrument(skip_all)]
-    pub async fn execute(self) -> Result<ReceiveSaga<'a, Finalized>, Error> {
+    pub async fn execute(mut self) -> Result<ReceiveSaga<'a, Finalized>, Error> {
         tracing::info!(
             "Executing receive for operation {}",
             self.state_data.operation_id
@@ -265,7 +265,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 
         // Register compensation to remove pending proofs and delete saga on failure
         add_compensation(
-            &self.compensations,
+            &mut self.compensations,
             Box::new(RemovePendingProofs {
                 localstore: self.wallet.localstore.clone(),
                 proof_ys: proofs_info.iter().map(|p| p.y).collect(),
@@ -346,7 +346,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             Ok(response) => response,
             Err(err) => {
                 tracing::error!("Failed to post swap request: {}", err);
-                execute_compensations(&self.compensations).await?;
+                execute_compensations(&mut self.compensations).await?;
                 return Err(err);
             }
         };
@@ -411,7 +411,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             .await?;
 
         // Clear compensations - operation completed successfully
-        clear_compensations(&self.compensations).await;
+        clear_compensations(&mut self.compensations).await;
 
         // Delete saga record - receive completed successfully (best-effort)
         if let Err(e) = self.wallet.localstore.delete_saga(&operation_id).await {

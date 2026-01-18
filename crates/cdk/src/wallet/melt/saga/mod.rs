@@ -78,7 +78,7 @@ impl<'a> MeltSaga<'a, Initial> {
     /// if later steps fail.
     #[instrument(skip_all)]
     pub async fn prepare(
-        self,
+        mut self,
         quote_id: &str,
         _metadata: HashMap<String, String>,
     ) -> Result<MeltSaga<'a, Prepared>, Error> {
@@ -108,7 +108,7 @@ impl<'a> MeltSaga<'a, Initial> {
 
         // Register compensation to release quote on failure
         add_compensation(
-            &self.compensations,
+            &mut self.compensations,
             Box::new(ReleaseMeltQuote {
                 localstore: self.wallet.localstore.clone(),
                 operation_id: self.state_data.operation_id,
@@ -139,7 +139,6 @@ impl<'a> MeltSaga<'a, Initial> {
         )?;
         let proofs_total = exact_input_proofs.total_amount()?;
 
-        // If exact match, use proofs directly without swap
         if proofs_total == inputs_needed_amount {
             let proof_ys = exact_input_proofs.ys()?;
             let operation_id = self.state_data.operation_id;
@@ -172,7 +171,7 @@ impl<'a> MeltSaga<'a, Initial> {
 
             // Register compensation
             add_compensation(
-                &self.compensations,
+                &mut self.compensations,
                 Box::new(RevertProofReservation {
                     localstore: self.wallet.localstore.clone(),
                     proof_ys,
@@ -284,7 +283,7 @@ impl<'a> MeltSaga<'a, Initial> {
 
         // Register compensation
         add_compensation(
-            &self.compensations,
+            &mut self.compensations,
             Box::new(RevertProofReservation {
                 localstore: self.wallet.localstore.clone(),
                 proof_ys,
@@ -328,7 +327,7 @@ impl<'a> MeltSaga<'a, Initial> {
     /// if later steps fail.
     #[instrument(skip_all)]
     pub async fn prepare_with_proofs(
-        self,
+        mut self,
         quote_id: &str,
         proofs: Proofs,
         _metadata: HashMap<String, String>,
@@ -366,7 +365,7 @@ impl<'a> MeltSaga<'a, Initial> {
 
         // Register compensation to release quote on failure
         add_compensation(
-            &self.compensations,
+            &mut self.compensations,
             Box::new(ReleaseMeltQuote {
                 localstore: self.wallet.localstore.clone(),
                 operation_id: self.state_data.operation_id,
@@ -419,7 +418,7 @@ impl<'a> MeltSaga<'a, Initial> {
 
         // Register compensation to revert proofs on failure
         add_compensation(
-            &self.compensations,
+            &mut self.compensations,
             Box::new(RevertProofReservation {
                 localstore: self.wallet.localstore.clone(),
                 proof_ys,
@@ -706,7 +705,9 @@ impl<'a> MeltSaga<'a, Prepared> {
 
     /// Execute compensations and cancel the melt.
     async fn compensate(self) {
-        let mut compensations = self.compensations.lock().await;
+        // We move compensations out of self so we can iterate it while owning self
+        // Note: self is already owned, so we can just move fields out
+        let mut compensations = self.compensations;
         while let Some(action) = compensations.pop_front() {
             if let Err(e) = action.execute().await {
                 tracing::warn!("Compensation {} failed: {}", action.name(), e);
