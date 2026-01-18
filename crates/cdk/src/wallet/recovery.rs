@@ -1053,7 +1053,11 @@ mod tests {
             unimplemented!()
         }
 
-        async fn post_mint(&self, _request: MintRequest<String>) -> Result<MintResponse, Error> {
+        async fn post_mint(
+            &self,
+            _method: &PaymentMethod,
+            _request: MintRequest<String>,
+        ) -> Result<MintResponse, Error> {
             unimplemented!()
         }
 
@@ -1079,6 +1083,7 @@ mod tests {
 
         async fn post_melt(
             &self,
+            _method: &PaymentMethod,
             _request: MeltRequest<String>,
         ) -> Result<MeltQuoteBolt11Response<String>, Error> {
             unimplemented!()
@@ -1147,16 +1152,9 @@ mod tests {
             unimplemented!()
         }
 
-        async fn post_melt_bolt12(
-            &self,
-            _request: MeltRequest<String>,
-        ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-            unimplemented!()
-        }
-
         async fn post_mint_custom_quote(
             &self,
-            _method: &str,
+            _method: &PaymentMethod,
             _request: MintQuoteCustomRequest,
         ) -> Result<MintQuoteCustomResponse<String>, Error> {
             unimplemented!()

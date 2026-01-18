@@ -1,19 +1,10 @@
-use std::collections::HashMap;
-
-use cdk_common::nut04::MintMethodOptions;
-use cdk_common::wallet::{MintQuote, Transaction, TransactionDirection};
-use cdk_common::{MintQuoteState, Proofs, SecretKey};
+use cdk_common::wallet::MintQuote;
+use cdk_common::SecretKey;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
-use crate::dhke::construct_proofs;
-use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::{
-    nut12, MintQuoteCustomRequest, MintRequest, PaymentMethod, PreMintSecrets, SpendingConditions,
-    State,
-};
-use crate::types::ProofInfo;
-use crate::util::unix_time;
+use crate::nuts::{MintQuoteCustomRequest, PaymentMethod, SpendingConditions};
+use crate::wallet::issue::MintSaga;
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
@@ -30,25 +21,6 @@ impl Wallet {
         let unit = &self.unit;
 
         self.refresh_keysets().await?;
-
-        // If we have a description, we check that the mint supports it.
-        if description.is_some() {
-            let payment_method = PaymentMethod::Custom(method.to_string());
-            let mint_method_settings = self
-                .localstore
-                .get_mint(mint_url.clone())
-                .await?
-                .ok_or(Error::IncorrectMint)?
-                .nuts
-                .nut04
-                .get_settings(unit, &payment_method)
-                .ok_or(Error::UnsupportedUnit)?;
-
-            match mint_method_settings.options {
-                Some(MintMethodOptions::Bolt11 { description }) if description => (),
-                _ => return Err(Error::InvoiceDescriptionUnsupported),
-            }
-        }
 
         let secret_key = SecretKey::generate();
 
@@ -90,158 +62,16 @@ impl Wallet {
         quote_id: &str,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, Error> {
+    ) -> Result<cdk_common::Proofs, Error> {
         self.refresh_keysets().await?;
 
-        let quote_info = self
-            .localstore
-            .get_mint_quote(quote_id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
-
-        // Verify it's a custom payment method
-        if !quote_info.payment_method.is_custom() {
-            return Err(Error::UnsupportedPaymentMethod);
-        }
-
-        let amount_mintable = quote_info.amount_mintable();
-
-        if amount_mintable == Amount::ZERO {
-            tracing::debug!("Amount mintable 0.");
-            return Err(Error::AmountUndefined);
-        }
-
-        let unix_time = unix_time();
-
-        if quote_info.expiry < unix_time && quote_info.expiry != 0 {
-            tracing::warn!("Attempting to mint with expired quote.");
-        }
-
-        let active_keyset_id = self.fetch_active_keyset().await?.id;
-        let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+        let saga = MintSaga::new(self);
+        let prepared = saga
+            .prepare_custom(quote_id, amount_split_target, spending_conditions)
             .await?;
 
-        let premint_secrets = match &spending_conditions {
-            Some(spending_conditions) => PreMintSecrets::with_conditions(
-                active_keyset_id,
-                amount_mintable,
-                &amount_split_target,
-                spending_conditions,
-                &fee_and_amounts,
-            )?,
-            None => {
-                // Calculate how many secrets we'll need
-                let amount_split =
-                    amount_mintable.split_targeted(&amount_split_target, &fee_and_amounts)?;
-                let num_secrets = amount_split.len() as u32;
+        let finalized = prepared.execute().await?;
 
-                tracing::debug!(
-                    "Incrementing keyset {} counter by {}",
-                    active_keyset_id,
-                    num_secrets
-                );
-
-                // Atomically get the counter range we need
-                let new_counter = self
-                    .localstore
-                    .increment_keyset_counter(&active_keyset_id, num_secrets)
-                    .await?;
-
-                let count = new_counter - num_secrets;
-
-                PreMintSecrets::from_seed(
-                    active_keyset_id,
-                    count,
-                    &self.seed,
-                    amount_mintable,
-                    &amount_split_target,
-                    &fee_and_amounts,
-                )?
-            }
-        };
-
-        let mut request = MintRequest {
-            quote: quote_id.to_string(),
-            outputs: premint_secrets.blinded_messages(),
-            signature: None,
-        };
-
-        if let Some(secret_key) = &quote_info.secret_key {
-            request.sign(secret_key.clone())?;
-        }
-
-        if !quote_info.payment_method.is_custom() {
-            return Err(Error::UnsupportedPaymentMethod);
-        }
-
-        let mint_res = self
-            .client
-            .post_mint(&quote_info.payment_method, request)
-            .await?;
-
-        let keys = self.load_keyset_keys(active_keyset_id).await?;
-
-        // Verify the signature DLEQ is valid
-        {
-            for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
-                let keys = self.load_keyset_keys(sig.keyset_id).await?;
-                let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
-                match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
-                    Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
-                    Err(_) => return Err(Error::CouldNotVerifyDleq),
-                }
-            }
-        }
-
-        let proofs = construct_proofs(
-            mint_res.signatures,
-            premint_secrets.rs(),
-            premint_secrets.secrets(),
-            &keys,
-        )?;
-
-        // Update quote with issued amount
-        let mut quote_info = quote_info;
-        quote_info.state = MintQuoteState::Issued;
-        quote_info.amount_issued = proofs.total_amount()?;
-
-        self.localstore.add_mint_quote(quote_info.clone()).await?;
-
-        let proof_infos = proofs
-            .iter()
-            .map(|proof| {
-                ProofInfo::new(
-                    proof.clone(),
-                    self.mint_url.clone(),
-                    State::Unspent,
-                    quote_info.unit.clone(),
-                )
-            })
-            .collect::<Result<Vec<ProofInfo>, _>>()?;
-
-        // Add new proofs to store
-        self.localstore.update_proofs(proof_infos, vec![]).await?;
-
-        // Add transaction to store
-        self.localstore
-            .add_transaction(Transaction {
-                mint_url: self.mint_url.clone(),
-                direction: TransactionDirection::Incoming,
-                amount: proofs.total_amount()?,
-                fee: Amount::ZERO,
-                unit: self.unit.clone(),
-                ys: proofs.ys()?,
-                timestamp: unix_time,
-                memo: None,
-                metadata: HashMap::new(),
-                quote_id: Some(quote_id.to_string()),
-                payment_request: Some(quote_info.request),
-                payment_proof: None,
-                payment_method: Some(quote_info.payment_method),
-            })
-            .await?;
-
-        Ok(proofs)
+        Ok(finalized.into_proofs())
     }
 }
