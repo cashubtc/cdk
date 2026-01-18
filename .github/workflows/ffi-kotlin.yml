@@ -1,0 +1,47 @@
+name: FFI - Kotlin Bindings
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify-kotlin:
+    name: Verify Kotlin Bindings
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CDK
+        uses: actions/checkout@v4
+        with:
+          path: cdk
+
+      - name: Checkout CDK Kotlin
+        uses: actions/checkout@v4
+        with:
+          repository: cashubtc/cdk-kotlin
+          path: cdk-kotlin
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Just
+        uses: extractions/setup-just@v1
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Generate Bindings
+        run: |
+          cd cdk-kotlin
+          # cdk-kotlin justfile expects CDK at ../cdk by default
+          just generate
+
+      - name: Verify Compilation
+        run: |
+          cd cdk-kotlin
+          # Fast check: compiles the code without running emulator tests
+          just test-compile

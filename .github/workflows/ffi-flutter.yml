@@ -1,0 +1,47 @@
+name: FFI - Flutter Bindings
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify-flutter:
+    name: Verify Flutter Bindings
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CDK
+        uses: actions/checkout@v4
+        with:
+          path: cdk
+
+      - name: Checkout CDK Flutter
+        uses: actions/checkout@v4
+        with:
+          repository: cashubtc/cdk_flutter
+          path: cdk-flutter
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Patch Cargo Dependency
+        run: |
+          cd cdk-flutter/rust
+          # Replace crates.io version with local path
+          # Matches: cdk = { version = "..."... } and replaces with cdk = { path = "../../cdk", ... }
+          sed -i 's/^cdk = { version = "[^"]*",/cdk = { path = "..\/..\/cdk",/' Cargo.toml
+          
+          # Verify the change
+          grep "^cdk =" Cargo.toml
+
+      - name: Verify Compilation
+        run: |
+          cd cdk-flutter/rust
+          # Check ensures that the rust code compiles against the local CDK
+          cargo check

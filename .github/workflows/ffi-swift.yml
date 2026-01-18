@@ -1,0 +1,43 @@
+name: FFI - Swift Bindings
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify-swift:
+    name: Verify Swift Bindings
+    runs-on: macos-latest
+    steps:
+      - name: Checkout CDK
+        uses: actions/checkout@v4
+        with:
+          path: cdk
+
+      - name: Checkout CDK Swift
+        uses: actions/checkout@v4
+        with:
+          repository: cashubtc/cdk-swift
+          path: cdk-swift
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Just
+        uses: extractions/setup-just@v1
+
+      - name: Generate Bindings
+        run: |
+          cd cdk-swift
+          # Point to the local cdk checkout
+          export CDK_DIR=../cdk
+          just generate
+
+      - name: Verify Build
+        run: |
+          cd cdk-swift
+          export CDK_DIR=../cdk
+          # build-native builds for the current platform (macOS) which is faster
+          just build-native
