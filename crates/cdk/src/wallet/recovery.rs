@@ -680,6 +680,7 @@ mod tests {
                 counter_start: None,
                 counter_end: None,
                 token: None,
+                proofs: None,
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -1526,7 +1527,8 @@ mod tests {
                 memo: None,
                 counter_start: None,
                 counter_end: None,
-                token: Some("cashuA...".to_string()),
+                token: None,
+                proofs: None,
             }),
         );
         db.add_saga(saga).await.unwrap();

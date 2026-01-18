@@ -40,3 +40,16 @@ pub struct Prepared {
     /// Fee the recipient will pay to redeem the token
     pub send_fee: Amount,
 }
+
+/// Token created state - the send has been confirmed and the token generated.
+///
+/// The saga remains in this state until the recipient claims the token
+/// or the sender revokes it.
+/// Methods available: `revoke()`, `check_status()`
+#[derive(Debug)]
+pub struct TokenCreated {
+    /// Unique operation identifier
+    pub operation_id: Uuid,
+    /// Proofs included in the token (needed for revocation/checking status)
+    pub proofs: Proofs,
+}

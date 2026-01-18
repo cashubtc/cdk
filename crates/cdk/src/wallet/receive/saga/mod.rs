@@ -406,6 +406,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 payment_request: None,
                 payment_proof: None,
                 payment_method: None,
+                saga_id: None,
             })
             .await?;
 

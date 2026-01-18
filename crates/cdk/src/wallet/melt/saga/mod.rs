@@ -933,6 +933,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                 payment_request: Some(quote_info.request.clone()),
                 payment_proof: payment_preimage.clone(),
                 payment_method: Some(quote_info.payment_method.clone()),
+                saga_id: Some(operation_id.to_string()),
             })
             .await?;
 

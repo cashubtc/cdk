@@ -560,6 +560,7 @@ impl Wallet {
                         payment_request: Some(quote.request.clone()),
                         payment_proof: response.payment_preimage.clone(),
                         payment_method: Some(quote.payment_method.clone()),
+                        saga_id: None,
                     })
                     .await?;
             }

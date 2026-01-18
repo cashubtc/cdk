@@ -613,7 +613,8 @@ where
                 quote_id,
                 payment_request,
                 payment_proof,
-                payment_method
+                payment_method,
+                saga_id
             FROM
                 transactions
             WHERE
@@ -651,7 +652,8 @@ where
                 quote_id,
                 payment_request,
                 payment_proof,
-                payment_method
+                payment_method,
+                saga_id
             FROM
                 transactions
             "#,
@@ -796,9 +798,9 @@ where
         query(
                r#"
    INSERT INTO transactions
-   (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof, payment_method)
+   (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof, payment_method, saga_id)
    VALUES
-   (:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof, :payment_method)
+   (:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof, :payment_method, :saga_id)
    ON CONFLICT(id) DO UPDATE SET
        mint_url = excluded.mint_url,
        direction = excluded.direction,
@@ -811,7 +813,8 @@ where
        quote_id = excluded.quote_id,
        payment_request = excluded.payment_request,
        payment_proof = excluded.payment_proof,
-       payment_method = excluded.payment_method
+       payment_method = excluded.payment_method,
+       saga_id = excluded.saga_id
    ;
            "#,
            )?
@@ -832,6 +835,7 @@ where
            .bind("payment_request", transaction.payment_request)
            .bind("payment_proof", transaction.payment_proof)
            .bind("payment_method", transaction.payment_method.map(|pm| pm.to_string()))
+           .bind("saga_id", transaction.saga_id)
            .execute(&*conn)
            .await?;
 
@@ -1875,7 +1879,8 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             quote_id,
             payment_request,
             payment_proof,
-            payment_method
+            payment_method,
+            saga_id
         ) = row
     );
 
@@ -1905,5 +1910,6 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             .map(|v| PaymentMethod::from_str(&v))
             .transpose()
             .map_err(Error::from)?,
+        saga_id: column_as_nullable_string!(saga_id),
     })
 }

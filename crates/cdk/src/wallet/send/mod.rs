@@ -203,127 +203,18 @@ impl Wallet {
         send_fee: Amount,
         memo: Option<SendMemo>,
     ) -> Result<Token, Error> {
-        use cdk_common::util::unix_time;
-        use cdk_common::wallet::{
-            OperationData, SendOperationData, SendSagaState, Transaction, TransactionDirection,
-            WalletSaga, WalletSagaState,
-        };
-
-        tracing::info!("Confirming prepared send for operation {}", operation_id);
-
-        let total_send_fee = swap_fee + send_fee;
-        let mut final_proofs_to_send = proofs_to_send.clone();
-
-        // Get active keyset ID
-        let active_keyset_id = self.fetch_active_keyset().await?.id;
-        let _keyset_fee_ppk = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
-
-        // Calculate total send amount
-        let total_send_amount = amount + send_fee;
-
-        // Update saga state to TokenCreated BEFORE making external calls
-        let memo_text = options.memo.as_ref().map(|m| m.memo.clone());
-        let updated_saga = WalletSaga::new(
+        // Delegate to SendSaga
+        let saga = SendSaga::from_prepared(
+            self,
             operation_id,
-            WalletSagaState::Send(SendSagaState::TokenCreated),
             amount,
-            self.mint_url.clone(),
-            self.unit.clone(),
-            OperationData::Send(SendOperationData {
-                amount,
-                memo: memo_text,
-                counter_start: None,
-                counter_end: None,
-                token: None,
-            }),
+            options,
+            proofs_to_swap,
+            proofs_to_send,
+            swap_fee,
+            send_fee,
         );
-
-        if !self.localstore.update_saga(updated_saga).await? {
-            return Err(Error::Custom(
-                "Saga version conflict during update".to_string(),
-            ));
-        }
-
-        // Swap proofs if necessary
-        if !proofs_to_swap.is_empty() {
-            let swap_amount = total_send_amount
-                .checked_sub(final_proofs_to_send.total_amount()?)
-                .unwrap_or(Amount::ZERO);
-
-            tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
-
-            if let Some(swapped_proofs) = self
-                .swap(
-                    Some(swap_amount),
-                    SplitTarget::None,
-                    proofs_to_swap,
-                    options.conditions.clone(),
-                    false,
-                )
-                .await?
-            {
-                final_proofs_to_send.extend(swapped_proofs);
-            }
-        }
-
-        // Check if sufficient proofs are available
-        if amount > final_proofs_to_send.total_amount()? {
-            // Revert the reserved proofs
-            let all_ys = final_proofs_to_send.ys()?;
-            self.localstore
-                .update_proofs_state(all_ys, cdk_common::State::Unspent)
-                .await?;
-            let _ = self.localstore.delete_saga(&operation_id).await;
-            return Err(Error::InsufficientFunds);
-        }
-
-        // Update proofs state to pending spent
-        self.localstore
-            .update_proofs_state(final_proofs_to_send.ys()?, cdk_common::State::PendingSpent)
-            .await?;
-
-        // Include token memo
-        let send_memo = options.memo.clone().or(memo);
-        let token_memo = send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
-
-        // Add transaction to store
-        self.localstore
-            .add_transaction(Transaction {
-                mint_url: self.mint_url.clone(),
-                direction: TransactionDirection::Outgoing,
-                amount,
-                fee: total_send_fee,
-                unit: self.unit.clone(),
-                ys: final_proofs_to_send.ys()?,
-                timestamp: unix_time(),
-                memo: token_memo.clone(),
-                metadata: options.metadata.clone(),
-                quote_id: None,
-                payment_request: None,
-                payment_proof: None,
-                payment_method: None,
-            })
-            .await?;
-
-        // Create token
-        let token = Token::new(
-            self.mint_url.clone(),
-            final_proofs_to_send,
-            token_memo,
-            self.unit.clone(),
-        );
-
-        // Delete saga record
-        if let Err(e) = self.localstore.delete_saga(&operation_id).await {
-            tracing::warn!(
-                "Failed to delete send saga {}: {}. Will be cleaned up on recovery.",
-                operation_id,
-                e
-            );
-        }
-
+        let (token, _saga) = saga.confirm(memo).await?;
         Ok(token)
     }
 
@@ -337,27 +228,117 @@ impl Wallet {
         proofs_to_swap: Proofs,
         proofs_to_send: Proofs,
     ) -> Result<(), Error> {
-        tracing::info!("Cancelling prepared send for operation {}", operation_id);
+        let saga = SendSaga::from_prepared(
+            self,
+            operation_id,
+            Amount::ZERO,           // Dummy
+            SendOptions::default(), // Dummy
+            proofs_to_swap,
+            proofs_to_send,
+            Amount::ZERO, // Dummy
+            Amount::ZERO, // Dummy
+        );
+        saga.cancel().await
+    }
 
-        // Collect all proof Ys
-        let mut all_ys = proofs_to_swap.ys()?;
-        all_ys.extend(proofs_to_send.ys()?);
+    /// Get all pending send operations
+    ///
+    /// Returns a list of sagas that have created tokens but haven't been claimed yet.
+    #[instrument(skip(self))]
+    pub async fn get_pending_sends(&self) -> Result<Vec<Uuid>, Error> {
+        // This is a bit inefficient as we fetch all incomplete sagas and filter
+        // Ideally we'd add a method to localstore to fetch by state
+        let incomplete = self.localstore.get_incomplete_sagas().await?;
+        Ok(incomplete
+            .into_iter()
+            .filter_map(|s| {
+                if let cdk_common::wallet::WalletSagaState::Send(
+                    cdk_common::wallet::SendSagaState::TokenCreated,
+                ) = s.state
+                {
+                    Some(s.id)
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
 
-        // Revert proof reservation
-        self.localstore
-            .update_proofs_state(all_ys, cdk_common::State::Unspent)
-            .await?;
+    /// Revoke a pending send operation
+    ///
+    /// Attempts to reclaim the funds by swapping the proofs back to the wallet.
+    /// If successful, the saga is deleted.
+    #[instrument(skip(self))]
+    pub async fn revoke_send(&self, operation_id: Uuid) -> Result<Amount, Error> {
+        let saga_record = self
+            .localstore
+            .get_saga(&operation_id)
+            .await?
+            .ok_or(Error::Custom("Saga not found".to_string()))?;
 
-        // Delete saga record
-        if let Err(e) = self.localstore.delete_saga(&operation_id).await {
-            tracing::warn!(
-                "Failed to delete send saga {}: {}. Will be cleaned up on recovery.",
-                operation_id,
-                e
-            );
+        // Reconstruct the saga
+        // We need to match on the state to create the correct typed saga
+        if let cdk_common::wallet::WalletSagaState::Send(
+            cdk_common::wallet::SendSagaState::TokenCreated,
+        ) = saga_record.state
+        {
+            if let cdk_common::wallet::OperationData::Send(data) = saga_record.data {
+                let proofs = data.proofs.ok_or(Error::Custom(
+                    "No proofs found in pending send saga".to_string(),
+                ))?;
+
+                let saga = SendSaga {
+                    wallet: self,
+                    compensations: crate::wallet::saga::new_compensations(),
+                    state_data: saga::state::TokenCreated {
+                        operation_id,
+                        proofs,
+                    },
+                };
+
+                return saga.revoke().await;
+            }
         }
 
-        Ok(())
+        Err(Error::Custom("Operation is not a pending send".to_string()))
+    }
+
+    /// Check status of a pending send operation
+    ///
+    /// Checks if the token has been claimed by the recipient.
+    /// If claimed, the saga is finalized (deleted).
+    /// Returns true if claimed, false if still pending.
+    #[instrument(skip(self))]
+    pub async fn check_send_status(&self, operation_id: Uuid) -> Result<bool, Error> {
+        let saga_record = self
+            .localstore
+            .get_saga(&operation_id)
+            .await?
+            .ok_or(Error::Custom("Saga not found".to_string()))?;
+
+        if let cdk_common::wallet::WalletSagaState::Send(
+            cdk_common::wallet::SendSagaState::TokenCreated,
+        ) = saga_record.state
+        {
+            if let cdk_common::wallet::OperationData::Send(data) = saga_record.data {
+                let proofs = data.proofs.ok_or(Error::Custom(
+                    "No proofs found in pending send saga".to_string(),
+                ))?;
+
+                let saga = SendSaga {
+                    wallet: self,
+                    compensations: crate::wallet::saga::new_compensations(),
+                    state_data: saga::state::TokenCreated {
+                        operation_id,
+                        proofs,
+                    },
+                };
+
+                return saga.check_status().await;
+            }
+        }
+
+        Err(Error::Custom("Operation is not a pending send".to_string()))
     }
 }
 

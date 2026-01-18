@@ -32,6 +32,7 @@ mod tests {
                 counter_start: None,
                 counter_end: None,
                 token: None,
+                proofs: None,
             }),
         )
     }
