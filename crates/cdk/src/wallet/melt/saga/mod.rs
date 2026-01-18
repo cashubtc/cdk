@@ -800,8 +800,10 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                     .await
             }
             PaymentMethod::Custom(_) => {
-                self.handle_failure().await;
-                return Err(Error::UnsupportedPaymentMethod);
+                self.wallet
+                    .client
+                    .post_melt(&quote_info.payment_method, request)
+                    .await
             }
         };
 
