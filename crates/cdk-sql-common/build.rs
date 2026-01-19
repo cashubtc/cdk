@@ -1,3 +1,5 @@
+//! Build script
+
 #![allow(clippy::unwrap_used)]
 
 use std::cmp::Ordering;

@@ -1,10 +1,14 @@
 //! # CDK Prometheus
 
+/// Error definitions
 pub mod error;
+/// Metrics definitions
 pub mod metrics;
+/// Server implementation
 pub mod server;
 
 #[cfg(feature = "system-metrics")]
+/// System metrics
 pub mod process;
 
 // Re-exports for convenience

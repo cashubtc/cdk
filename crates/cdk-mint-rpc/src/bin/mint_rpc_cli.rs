@@ -1,3 +1,5 @@
+//! Mint RPC CLI
+
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};

@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 //! Environment variables module
 //!
 //! This module contains all environment variable definitions and parsing logic

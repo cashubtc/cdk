@@ -1,3 +1,5 @@
+//! CDK CLI
+
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;

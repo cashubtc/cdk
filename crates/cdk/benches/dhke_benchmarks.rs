@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use cdk::dhke;
 use cdk::nuts::nut01::{PublicKey, SecretKey};
 use cdk::util::hex;

@@ -19,7 +19,7 @@ use ureq::Agent;
 use url::Url;
 
 #[derive(Debug, Clone)]
-pub struct CustomHttp {
+struct CustomHttp {
     agent: Agent,
 }
 
