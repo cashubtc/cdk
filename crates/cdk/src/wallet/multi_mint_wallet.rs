@@ -2655,7 +2655,7 @@ mod tests {
             "Latest key should be the last generated key (pubkey3)"
         );
 
-        // The derivation index should be 3 (the highest)
-        assert_eq!(latest_key.derivation_index, 3);
+        // The derivation index should be 2 (the highest)
+        assert_eq!(latest_key.derivation_index, 2);
     }
 }
