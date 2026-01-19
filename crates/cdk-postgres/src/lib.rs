@@ -1,3 +1,5 @@
+//! CDK Postgres
+
 use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
@@ -20,11 +22,15 @@ mod db;
 mod value;
 
 #[derive(Debug)]
+/// Postgres connection pool
 pub struct PgConnectionPool;
 
 #[derive(Clone)]
+/// SSL Mode
 pub enum SslMode {
+    /// No TLS
     NoTls(NoTls),
+    /// Native TLS
     NativeTls(postgres_native_tls::MakeTlsConnector),
 }
 const SSLMODE_VERIFY_FULL: &str = "sslmode=verify-full";
