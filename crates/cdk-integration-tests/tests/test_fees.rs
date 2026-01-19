@@ -28,7 +28,7 @@ async fn test_swap() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_temp_dir(), &invoice).await.unwrap();
@@ -89,7 +89,7 @@ async fn test_fake_melt_change_in_quote() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let bolt11 = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
 

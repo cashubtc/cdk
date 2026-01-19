@@ -212,7 +212,10 @@ impl Wallet {
         amount: Amount,
         description: Option<String>,
     ) -> Result<MintQuote, FfiError> {
-        let quote = self.inner.mint_quote(amount.into(), description).await?;
+        let quote = self
+            .inner
+            .mint_bolt11_quote(amount.into(), description)
+            .await?;
         Ok(quote.into())
     }
 
@@ -237,7 +240,7 @@ impl Wallet {
 
         let proofs = self
             .inner
-            .mint(&quote_id, amount_split_target.into(), conditions)
+            .mint(&quote_id, None, amount_split_target.into(), conditions)
             .await?;
         Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
@@ -324,9 +327,11 @@ impl Wallet {
         description: Option<String>,
         extra: Option<String>,
     ) -> Result<MintQuote, FfiError> {
+        let method: cdk::nuts::PaymentMethod = method.into();
+
         let quote = self
             .inner
-            .mint_quote_unified(amount.map(Into::into), method.into(), description, extra)
+            .mint_quote(method, amount.map(Into::into), description, extra)
             .await?;
         Ok(quote.into())
     }
@@ -364,7 +369,7 @@ impl Wallet {
 
         let proofs = self
             .inner
-            .mint_unified(
+            .mint(
                 &quote_id,
                 amount.map(Into::into),
                 amount_split_target.into(),

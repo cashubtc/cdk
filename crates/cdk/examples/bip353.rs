@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MintQuoteState};
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
@@ -60,7 +60,9 @@ async fn main() -> anyhow::Result<()> {
 
     // First, we need to fund the wallet
     println!("Requesting mint quote for {} sats...", initial_amount);
-    let mint_quote = wallet.mint_quote(initial_amount, None).await?;
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, Some(initial_amount), None, None)
+        .await?;
     println!(
         "Pay this invoice to fund the wallet: {}",
         mint_quote.request
@@ -75,19 +77,19 @@ async fn main() -> anyhow::Result<()> {
     let start = std::time::Instant::now();
 
     while start.elapsed() < timeout {
-        let status = wallet.mint_quote_state(&mint_quote.id).await?;
+        let status = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
 
-        if status.state == MintQuoteState::Paid {
+        if status.amount_paid >= initial_amount {
             break;
         }
 
-        println!("Quote state: {} (waiting...)", status.state);
+        println!("Amount paid: {} (waiting...)", status.amount_paid);
         sleep(Duration::from_secs(2)).await;
     }
 
     // Mint the tokens
     let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .mint(&mint_quote.id, None, SplitTarget::default(), None)
         .await?;
     let received_amount = proofs.total_amount()?;
     println!("Successfully minted {} sats", received_amount);

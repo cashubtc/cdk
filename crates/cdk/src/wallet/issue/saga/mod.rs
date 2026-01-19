@@ -218,76 +218,20 @@ impl<'a> MintSaga<'a, Initial> {
         })
     }
 
-    /// Prepare the mint operation for Bolt11.
+    /// Prepare the mint operation.
     ///
     /// This is the first step in the saga. It:
     /// 1. Validates the quote
     /// 2. Creates premint secrets (increments counter if needed)
     /// 3. Prepares the mint request
     #[instrument(skip_all)]
-    pub async fn prepare_bolt11(
-        self,
-        quote_id: &str,
-        amount_split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-    ) -> Result<MintSaga<'a, Prepared>, Error> {
-        tracing::info!(
-            "Preparing bolt11 mint for quote {} with operation {}",
-            quote_id,
-            self.state_data.operation_id
-        );
-
-        let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
-        let fee_and_amounts = self
-            .wallet
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
-
-        let quote_info = self
-            .wallet
-            .localstore
-            .get_mint_quote(quote_id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
-
-        if quote_info.payment_method != PaymentMethod::Known(KnownMethod::Bolt11) {
-            return Err(Error::UnsupportedPaymentMethod);
-        }
-
-        let amount = quote_info.amount_mintable();
-
-        self.prepare_common(
-            quote_id,
-            quote_info,
-            amount,
-            amount_split_target,
-            spending_conditions,
-            fee_and_amounts,
-            active_keyset_id,
-        )
-        .await
-    }
-
-    /// Prepare the mint operation for Bolt12.
-    ///
-    /// This is the first step in the saga. It:
-    /// 1. Validates the quote
-    /// 2. Creates premint secrets (increments counter if needed)
-    /// 3. Prepares the mint request
-    #[instrument(skip_all)]
-    pub async fn prepare_bolt12(
+    pub async fn prepare(
         self,
         quote_id: &str,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<MintSaga<'a, Prepared>, Error> {
-        tracing::info!(
-            "Preparing bolt12 mint for quote {} with operation {}",
-            quote_id,
-            self.state_data.operation_id
-        );
-
         let quote_info = self
             .wallet
             .localstore
@@ -295,82 +239,50 @@ impl<'a> MintSaga<'a, Initial> {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let (quote_info, amount) = match amount {
-            Some(amount) => (quote_info, amount),
+        tracing::info!(
+            "Preparing mint for quote {} with operation {} method {}",
+            quote_id,
+            self.state_data.operation_id,
+            quote_info.payment_method
+        );
+
+        let amount = match amount {
+            Some(amount) => amount,
             None => {
-                // If amount is not supplied, check the status of the quote
-                let state = self.wallet.mint_bolt12_quote_state(quote_id).await?;
+                if quote_info.payment_method.is_bolt12() {
+                    // If amount is not supplied, check the status of the quote
+                    let state = self.wallet.mint_bolt12_quote_state(quote_id).await?;
 
-                if state.amount_paid == Amount::ZERO {
-                    return Err(Error::UnpaidQuote);
+                    if state.amount_paid == Amount::ZERO {
+                        return Err(Error::UnpaidQuote);
+                    }
+                    state.amount_paid - state.amount_issued
+                } else {
+                    quote_info.amount_mintable()
                 }
-
-                let quote_info = self
-                    .wallet
-                    .localstore
-                    .get_mint_quote(quote_id)
-                    .await?
-                    .ok_or(Error::UnknownQuote)?;
-
-                (quote_info, state.amount_paid - state.amount_issued)
             }
         };
 
-        let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
-        let fee_and_amounts = self
-            .wallet
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
-
-        self.prepare_common(
-            quote_id,
-            quote_info,
-            amount,
-            amount_split_target,
-            spending_conditions,
-            fee_and_amounts,
-            active_keyset_id,
-        )
-        .await
-    }
-
-    /// Prepare the mint operation for Custom Payment Method.
-    ///
-    /// This is the first step in the saga. It:
-    /// 1. Validates the quote
-    /// 2. Creates premint secrets (increments counter if needed)
-    /// 3. Prepares the mint request
-    #[instrument(skip_all)]
-    pub async fn prepare_custom(
-        self,
-        quote_id: &str,
-        amount_split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-    ) -> Result<MintSaga<'a, Prepared>, Error> {
-        tracing::info!(
-            "Preparing custom mint for quote {} with operation {}",
-            quote_id,
-            self.state_data.operation_id
-        );
+        // Reload quote info in case it changed (though unlikely in this short span, good practice for consistency)
+        // Actually, we already have it. But let's follow the pattern if we want fresh state, or just use what we have.
+        // The original code re-fetched it in bolt12 prepare.
+        // Let's re-fetch if we did a network call (mint_bolt12_quote_state), otherwise use existing.
+        let quote_info =
+            if quote_info.payment_method.is_bolt12() && amount != quote_info.amount_mintable() {
+                self.wallet
+                    .localstore
+                    .get_mint_quote(quote_id)
+                    .await?
+                    .ok_or(Error::UnknownQuote)?
+            } else {
+                quote_info
+            };
 
         let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
         let fee_and_amounts = self
             .wallet
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
-
-        let quote_info = self
-            .wallet
-            .localstore
-            .get_mint_quote(quote_id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
-
-        if !quote_info.payment_method.is_custom() {
-            return Err(Error::UnsupportedPaymentMethod);
-        }
-
-        let amount = quote_info.amount_mintable();
 
         self.prepare_common(
             quote_id,
@@ -480,30 +392,14 @@ impl<'a> MintSaga<'a, Prepared> {
 
             let minted_amount = proofs.total_amount()?;
 
-            match payment_method {
-                PaymentMethod::Known(KnownMethod::Bolt11) => {
-                    wallet.localstore.remove_mint_quote(&quote_id).await?;
-                }
-                PaymentMethod::Known(KnownMethod::Bolt12) => {
-                    let mut quote_info = wallet
-                        .localstore
-                        .get_mint_quote(&quote_id)
-                        .await?
-                        .ok_or(Error::UnpaidQuote)?;
-                    quote_info.amount_issued += minted_amount;
-                    wallet.localstore.add_mint_quote(quote_info).await?;
-                }
-                PaymentMethod::Custom(_) => {
-                    let mut quote_info = wallet
-                        .localstore
-                        .get_mint_quote(&quote_id)
-                        .await?
-                        .ok_or(Error::UnpaidQuote)?;
-                    quote_info.state = cdk_common::MintQuoteState::Issued;
-                    quote_info.amount_issued = minted_amount;
-                    wallet.localstore.add_mint_quote(quote_info).await?;
-                }
+            let mut quote_info = quote_info;
+
+            if payment_method == PaymentMethod::Known(KnownMethod::Bolt11) {
+                quote_info.state = cdk_common::MintQuoteState::Issued;
             }
+
+            quote_info.amount_issued += minted_amount;
+            wallet.localstore.add_mint_quote(quote_info.clone()).await?;
 
             let proof_infos = proofs
                 .iter()

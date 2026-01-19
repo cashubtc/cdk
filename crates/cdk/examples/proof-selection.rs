@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_common::nut02::KeySetInfosMethods;
@@ -31,7 +31,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for amount in [64] {
         let amount = Amount::from(amount);
 
-        let quote = wallet.mint_quote(amount, None).await?;
+        let quote = wallet
+            .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
+            .await?;
         let proofs = wallet
             .wait_and_mint_quote(
                 quote,
