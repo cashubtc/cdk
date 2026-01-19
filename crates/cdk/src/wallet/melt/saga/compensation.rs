@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::wallet::saga::CompensatingAction;
 // Re-export shared compensation actions used by melt saga
-pub use crate::wallet::saga::RevertProofReservation;
+pub(crate) use crate::wallet::saga::RevertProofReservation;
 use crate::Error;
 
 /// Compensation action to release a melt quote reservation.

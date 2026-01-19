@@ -30,7 +30,7 @@ use crate::Error;
 /// order (LIFO) if the saga fails. Each action should be idempotent.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait CompensatingAction: Send + Sync {
+pub(crate) trait CompensatingAction: Send + Sync {
     /// Execute the compensating action
     async fn execute(&self) -> Result<(), Error>;
 
@@ -42,10 +42,10 @@ pub trait CompensatingAction: Send + Sync {
 ///
 /// Actions are stored in LIFO order (most recent first) and executed
 /// in that order during compensation.
-pub type Compensations = VecDeque<Box<dyn CompensatingAction>>;
+pub(crate) type Compensations = VecDeque<Box<dyn CompensatingAction>>;
 
 /// Create a new empty compensations queue
-pub fn new_compensations() -> Compensations {
+pub(crate) fn new_compensations() -> Compensations {
     VecDeque::new()
 }
 
@@ -53,7 +53,7 @@ pub fn new_compensations() -> Compensations {
 ///
 /// Actions are executed in LIFO order (most recent first).
 /// Errors during compensation are logged but don't stop the process.
-pub async fn execute_compensations(compensations: &mut Compensations) -> Result<(), Error> {
+pub(crate) async fn execute_compensations(compensations: &mut Compensations) -> Result<(), Error> {
     if compensations.is_empty() {
         return Ok(());
     }
@@ -77,12 +77,12 @@ pub async fn execute_compensations(compensations: &mut Compensations) -> Result<
 /// Clear all compensating actions from the queue.
 ///
 /// Called when an operation completes successfully.
-pub async fn clear_compensations(compensations: &mut Compensations) {
+pub(crate) async fn clear_compensations(compensations: &mut Compensations) {
     compensations.clear();
 }
 
 /// Add a compensating action to the front of the queue (LIFO order).
-pub async fn add_compensation(
+pub(crate) async fn add_compensation(
     compensations: &mut Compensations,
     action: Box<dyn CompensatingAction>,
 ) {
@@ -99,7 +99,7 @@ pub async fn add_compensation(
 /// It sets the proofs back to Unspent state and deletes the saga record.
 ///
 /// Used by: send, melt, and swap sagas.
-pub struct RevertProofReservation {
+pub(crate) struct RevertProofReservation {
     /// Database reference
     pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     /// Y values (public keys) of the reserved proofs

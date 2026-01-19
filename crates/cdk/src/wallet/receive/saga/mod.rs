@@ -37,16 +37,16 @@ use crate::wallet::saga::{
 };
 use crate::{Amount, Error, Wallet, SECP256K1};
 
-pub mod compensation;
-pub mod resume;
-pub mod state;
+pub(crate) mod compensation;
+pub(crate) mod resume;
+pub(crate) mod state;
 
 /// Saga pattern implementation for receive operations.
 ///
 /// Uses the typestate pattern to enforce valid state transitions at compile-time.
 /// Each state (Initial, Prepared, Finalized) is a distinct type, and operations
 /// are only available on the appropriate type.
-pub struct ReceiveSaga<'a, S> {
+pub(crate) struct ReceiveSaga<'a, S> {
     /// Wallet reference
     wallet: &'a Wallet,
     /// Compensating actions in LIFO order (most recent first)

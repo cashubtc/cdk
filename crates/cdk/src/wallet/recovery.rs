@@ -214,7 +214,7 @@ impl Wallet {
                         Some(finalized) => {
                             use cdk_common::MeltQuoteState;
                             if finalized.state() == MeltQuoteState::Paid {
-                                 RecoveryAction::Recovered
+                                RecoveryAction::Recovered
                             } else {
                                 RecoveryAction::Compensated
                             }
@@ -505,12 +505,12 @@ impl Wallet {
 mod tests {
     use std::sync::Arc;
 
+    use cdk_common::nuts::{MeltQuoteBolt11Response, MeltQuoteState, State};
     use cdk_common::wallet::{
-        IssueSagaState, MeltOperationData, MeltSagaState, MintOperationData,
-        OperationData, ReceiveOperationData, ReceiveSagaState, WalletSaga, WalletSagaState,
+        IssueSagaState, MeltOperationData, MeltSagaState, MintOperationData, OperationData,
+        ReceiveOperationData, ReceiveSagaState, WalletSaga, WalletSagaState,
     };
     use cdk_common::Amount;
-    use cdk_common::nuts::{MeltQuoteBolt11Response, State, MeltQuoteState};
 
     use crate::wallet::test_utils::*;
 
