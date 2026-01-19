@@ -8,6 +8,8 @@
 
 pub mod task;
 
+#[cfg(feature = "auth")]
+pub mod auth;
 pub mod common;
 pub mod database;
 pub mod error;

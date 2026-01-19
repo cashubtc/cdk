@@ -1,0 +1,34 @@
+[package]
+name = "cdk-supabase"
+version.workspace = true
+edition.workspace = true
+authors = ["CDK Developers"]
+description = "Supabase storage backend for CDK"
+license.workspace = true
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version.workspace = true
+
+[features]
+default = ["wallet"]
+wallet = ["cdk-common/wallet"]
+
+[dependencies]
+async-trait.workspace = true
+cdk-common = { workspace = true, features = ["test", "auth"] }
+bitcoin.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+lightning-invoice.workspace = true
+uuid.workspace = true
+reqwest = { workspace = true }
+url.workspace = true
+once_cell.workspace = true
+hex = "0.4"
+
+
+[lints]
+workspace = true
