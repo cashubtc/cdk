@@ -1333,7 +1333,7 @@ impl MultiMintWallet {
         source_balance: Amount,
     ) -> Result<(MintQuote, crate::wallet::types::MeltQuote), Error> {
         // Step 1: Create mint quote at target mint for the exact amount we want to receive
-        let mint_quote = target_wallet.mint_quote(amount, None).await?;
+        let mint_quote = target_wallet.mint_bolt11_quote(amount, None).await?;
 
         // Step 2: Create melt quote at source mint for the invoice
         let melt_quote = source_wallet
@@ -1362,7 +1362,9 @@ impl MultiMintWallet {
 
         // Step 1: Create melt quote for full balance to discover fees
         // We need to create a dummy mint quote first to get an invoice
-        let dummy_mint_quote = target_wallet.mint_quote(source_balance, None).await?;
+        let dummy_mint_quote = target_wallet
+            .mint_bolt11_quote(source_balance, None)
+            .await?;
         let probe_melt_quote = source_wallet
             .melt_quote(dummy_mint_quote.request.clone(), None)
             .await?;
@@ -1377,7 +1379,9 @@ impl MultiMintWallet {
         }
 
         // Step 3: Create final mint quote for the net amount
-        let final_mint_quote = target_wallet.mint_quote(receive_amount, None).await?;
+        let final_mint_quote = target_wallet
+            .mint_bolt11_quote(receive_amount, None)
+            .await?;
 
         // Step 4: Create final melt quote with the new invoice
         let final_melt_quote = source_wallet
@@ -1486,6 +1490,7 @@ impl MultiMintWallet {
                             target_wallet
                                 .mint(
                                     &final_mint_quote.id,
+                                    None,
                                     crate::amount::SplitTarget::default(),
                                     None,
                                 )
@@ -1606,7 +1611,7 @@ impl MultiMintWallet {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet.mint_quote(amount, description).await
+        wallet.mint_bolt11_quote(amount, description).await
     }
 
     /// Check a specific mint quote status
@@ -1650,7 +1655,7 @@ impl MultiMintWallet {
         })?;
 
         wallet
-            .mint(quote_id, amount_split_target, spending_conditions)
+            .mint(quote_id, None, amount_split_target, spending_conditions)
             .await
     }
 
@@ -1811,7 +1816,7 @@ impl MultiMintWallet {
             mint_url: active_mint.to_string(),
         })?;
 
-        wallet.mint(quote_id, split_target, None).await
+        wallet.mint(quote_id, None, split_target, None).await
     }
 
     /// Create a stream that continuously polls NpubCash and yields proofs as payments arrive

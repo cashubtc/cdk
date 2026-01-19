@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::{ReceiveOptions, SendOptions, Wallet};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
@@ -31,7 +31,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 1: Mint proofs in the sender wallet
     println!("Creating mint quote for {} sats...", amount);
-    let quote = sender_wallet.mint_quote(amount, None).await?;
+    let quote = sender_wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
+        .await?;
     println!("Mint quote created. Invoice: {}", quote.request);
 
     // Wait for the quote to be paid and mint the proofs

@@ -36,7 +36,7 @@ async fn test_async_melt_returns_pending() {
     .expect("failed to create new wallet");
 
     // Step 1: Mint some tokens
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
@@ -102,7 +102,7 @@ async fn test_sync_melt_completes_fully() {
     .expect("failed to create new wallet");
 
     // Step 1: Mint some tokens
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams

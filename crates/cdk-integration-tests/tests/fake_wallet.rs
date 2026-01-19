@@ -45,7 +45,7 @@ async fn test_fake_tokens_pending() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -98,7 +98,7 @@ async fn test_fake_melt_payment_fail() {
     )
     .expect("Failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -167,7 +167,7 @@ async fn test_fake_melt_payment_fail_and_check() {
     )
     .expect("Failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -219,7 +219,7 @@ async fn test_fake_melt_payment_return_fail_status() {
     )
     .expect("Failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -304,7 +304,7 @@ async fn test_fake_melt_payment_error_unknown() {
     )
     .unwrap();
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -377,7 +377,7 @@ async fn test_fake_melt_payment_err_paid() {
     )
     .expect("Failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -436,7 +436,7 @@ async fn test_fake_melt_change_in_quote() {
     )
     .expect("Failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -513,7 +513,7 @@ async fn test_fake_mint_with_witness() {
         None,
     )
     .expect("failed to create new wallet");
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -540,7 +540,7 @@ async fn test_fake_mint_without_witness() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut payment_streams = wallet.payment_stream(&mint_quote);
 
@@ -592,7 +592,7 @@ async fn test_fake_mint_with_wrong_witness() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut payment_streams = wallet.payment_stream(&mint_quote);
 
@@ -650,7 +650,7 @@ async fn test_fake_mint_inflated() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut payment_streams = wallet.payment_stream(&mint_quote);
 
@@ -723,7 +723,7 @@ async fn test_fake_mint_multiple_units() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut payment_streams = wallet.payment_stream(&mint_quote);
 
@@ -823,7 +823,7 @@ async fn test_fake_mint_multiple_unit_swap() {
 
     wallet.refresh_keysets().await.unwrap();
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -843,7 +843,10 @@ async fn test_fake_mint_multiple_unit_swap() {
     .expect("failed to create usd wallet");
     wallet_usd.refresh_keysets().await.unwrap();
 
-    let mint_quote = wallet_usd.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet_usd
+        .mint_bolt11_quote(100.into(), None)
+        .await
+        .unwrap();
 
     let mut proof_streams =
         wallet_usd.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
@@ -948,7 +951,7 @@ async fn test_fake_mint_multiple_unit_melt() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -969,7 +972,10 @@ async fn test_fake_mint_multiple_unit_melt() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet_usd.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet_usd
+        .mint_bolt11_quote(100.into(), None)
+        .await
+        .unwrap();
     println!("Minted quote usd");
 
     let mut proof_streams =
@@ -1085,7 +1091,7 @@ async fn test_fake_mint_input_output_mismatch() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -1144,7 +1150,7 @@ async fn test_fake_mint_swap_inflated() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
@@ -1194,7 +1200,7 @@ async fn test_fake_mint_swap_spend_after_fail() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -1281,7 +1287,7 @@ async fn test_fake_mint_melt_spend_after_fail() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -1369,7 +1375,7 @@ async fn test_fake_mint_duplicate_proofs_swap() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -1450,7 +1456,7 @@ async fn test_fake_mint_duplicate_proofs_melt() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -1503,7 +1509,7 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
     .expect("failed to create new wallet");
 
     // Mint 100 sats
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
     let _roof_streams = wallet
         .wait_and_mint_quote(
             mint_quote.clone(),
@@ -1590,7 +1596,7 @@ async fn test_concurrent_melt_same_invoice() {
 
     // Mint proofs for all wallets
     for (i, wallet) in wallets.iter().enumerate() {
-        let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+        let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
         let mut proof_streams =
             wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
         proof_streams
@@ -1684,7 +1690,7 @@ async fn test_wallet_proof_recovery_after_failed_swap() {
     .expect("failed to create new wallet");
 
     // Mint 100 sats
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
     let initial_proofs = proof_streams
         .next()
@@ -1770,7 +1776,10 @@ async fn test_melt_proofs_external() {
     )
     .expect("failed to create sender wallet");
 
-    let mint_quote = wallet_sender.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet_sender
+        .mint_bolt11_quote(100.into(), None)
+        .await
+        .unwrap();
 
     let mut proof_streams =
         wallet_sender.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
@@ -1865,7 +1874,7 @@ async fn test_melt_with_swap_for_exact_amount() {
     .expect("failed to create new wallet");
 
     // Mint 100 sats - this will give us proofs in standard denominations
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -1945,7 +1954,7 @@ async fn test_melt_exact_proofs_no_swap_needed() {
     .expect("failed to create new wallet");
 
     // Mint a larger amount to have more denomination options
-    let mint_quote = wallet.mint_quote(1000.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(1000.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
@@ -1998,7 +2007,7 @@ async fn test_check_all_mint_quotes_bolt11() {
     .expect("failed to create new wallet");
 
     // Create first mint quote and pay it (using proof_stream triggers fake wallet payment)
-    let mint_quote_1 = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote_1 = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     // Wait for the payment to be registered (fake wallet auto-pays)
     let mut payment_stream_1 = wallet.payment_stream(&mint_quote_1);
@@ -2009,7 +2018,7 @@ async fn test_check_all_mint_quotes_bolt11() {
         .expect("no error");
 
     // Create second mint quote and pay it
-    let mint_quote_2 = wallet.mint_quote(50.into(), None).await.unwrap();
+    let mint_quote_2 = wallet.mint_bolt11_quote(50.into(), None).await.unwrap();
 
     let mut payment_stream_2 = wallet.payment_stream(&mint_quote_2);
     payment_stream_2
@@ -2054,10 +2063,10 @@ async fn test_get_unissued_mint_quotes_wallet() {
     .expect("failed to create new wallet");
 
     // Create a quote but don't pay it (stays unpaid)
-    let unpaid_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let unpaid_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     // Create another quote and pay it but don't mint
-    let paid_quote = wallet.mint_quote(50.into(), None).await.unwrap();
+    let paid_quote = wallet.mint_bolt11_quote(50.into(), None).await.unwrap();
     let mut payment_stream = wallet.payment_stream(&paid_quote);
     payment_stream
         .next()
@@ -2066,7 +2075,7 @@ async fn test_get_unissued_mint_quotes_wallet() {
         .expect("no error");
 
     // Create a third quote and fully mint it
-    let minted_quote = wallet.mint_quote(25.into(), None).await.unwrap();
+    let minted_quote = wallet.mint_bolt11_quote(25.into(), None).await.unwrap();
     let mut proof_stream = wallet.proof_stream(minted_quote.clone(), SplitTarget::default(), None);
     proof_stream
         .next()
@@ -2118,7 +2127,7 @@ async fn test_mint_quote_state_updates_after_minting() {
     .expect("failed to create new wallet");
 
     let mint_amount = Amount::from(100);
-    let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(mint_amount, None).await.unwrap();
 
     // Get the quote from localstore before minting
     let quote_before = wallet

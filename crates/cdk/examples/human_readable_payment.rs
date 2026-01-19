@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
@@ -71,7 +71,9 @@ async fn main() -> anyhow::Result<()> {
 
     // First, we need to fund the wallet
     println!("Requesting mint quote for {} sats...", initial_amount);
-    let mint_quote = wallet.mint_quote(initial_amount, None).await?;
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, Some(initial_amount), None, None)
+        .await?;
     println!(
         "Pay this invoice to fund the wallet:\n{}",
         mint_quote.request

@@ -415,7 +415,7 @@ pub async fn fund_wallet(
     split_target: Option<SplitTarget>,
 ) -> Result<Amount> {
     let desired_amount = Amount::from(amount);
-    let quote = wallet.mint_quote(desired_amount, None).await?;
+    let quote = wallet.mint_bolt11_quote(desired_amount, None).await?;
 
     Ok(wallet
         .proof_stream(quote, split_target.unwrap_or_default(), None)

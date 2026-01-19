@@ -45,7 +45,7 @@ async fn test_internal_payment() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
 
     ln_client
         .pay_invoice(mint_quote.request.clone())
@@ -73,7 +73,7 @@ async fn test_internal_payment() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet_2.mint_quote(10.into(), None).await.unwrap();
+    let mint_quote = wallet_2.mint_bolt11_quote(10.into(), None).await.unwrap();
 
     let melt = wallet
         .melt_quote(mint_quote.request.clone(), None)
@@ -155,7 +155,7 @@ async fn test_websocket_connection() {
     .expect("failed to create new wallet");
 
     // Create a small mint quote to test notifications
-    let mint_quote = wallet.mint_quote(10.into(), None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(10.into(), None).await.unwrap();
 
     // Subscribe to notifications for this quote
     let mut subscription = wallet
@@ -231,7 +231,7 @@ async fn test_multimint_melt() {
     let mint_amount = Amount::from(100);
 
     // Fund the wallets
-    let quote = wallet1.mint_quote(mint_amount, None).await.unwrap();
+    let quote = wallet1.mint_bolt11_quote(mint_amount, None).await.unwrap();
     ln_client
         .pay_invoice(quote.request.clone())
         .await
@@ -247,7 +247,7 @@ async fn test_multimint_melt() {
         .await
         .expect("payment");
 
-    let quote = wallet2.mint_quote(mint_amount, None).await.unwrap();
+    let quote = wallet2.mint_bolt11_quote(mint_amount, None).await.unwrap();
     ln_client
         .pay_invoice(quote.request.clone())
         .await
@@ -317,7 +317,7 @@ async fn test_cached_mint() {
 
     let mint_amount = Amount::from(100);
 
-    let quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let quote = wallet.mint_bolt11_quote(mint_amount, None).await.unwrap();
     ln_client
         .pay_invoice(quote.request.clone())
         .await
@@ -382,7 +382,7 @@ async fn test_regtest_melt_amountless() {
 
     let mint_amount = Amount::from(100);
 
-    let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(mint_amount, None).await.unwrap();
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
@@ -431,7 +431,7 @@ async fn test_attempt_to_mint_unpaid() {
 
     let mint_amount = Amount::from(100);
 
-    let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(mint_amount, None).await.unwrap();
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
@@ -450,7 +450,7 @@ async fn test_attempt_to_mint_unpaid() {
         }
     }
 
-    let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let mint_quote = wallet.mint_bolt11_quote(mint_amount, None).await.unwrap();
 
     let state = wallet.mint_quote_state(&mint_quote.id).await.unwrap();
 
