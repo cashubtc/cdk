@@ -63,9 +63,6 @@ pub struct WalletSupabaseDatabase {
 #[uniffi::export]
 impl WalletSupabaseDatabase {
     /// Create a new WalletSupabaseDatabase with API key only (legacy behavior)
-    ///
-    /// The API key will be used for both `apikey` and `Authorization` headers.
-    /// Use [`with_jwt`] if you need separate JWT authentication.
     #[uniffi::constructor]
     pub fn new(url: String, api_key: String) -> Result<Arc<Self>, FfiError> {
         let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
@@ -75,39 +72,7 @@ impl WalletSupabaseDatabase {
         Ok(Arc::new(WalletSupabaseDatabase { inner }))
     }
 
-    /// Create a new WalletSupabaseDatabase with separate API key and JWT token
-    ///
-    /// - `api_key`: The Supabase project API key (used in `apikey` header)
-    /// - `jwt_token`: Optional JWT token for user authentication (used in `Authorization: Bearer` header)
-    ///
-    /// If `jwt_token` is None, the `api_key` will be used for the Authorization header.
-    ///
-    /// **Recommendation**: For automatic token synchronization with auth wallets,
-    /// use `new()` without a JWT token, then call `wallet.set_supabase_database(db)`.
-    /// This ensures tokens are automatically kept in sync when calling `set_cat()` or
-    /// `refresh_access_token()`.
-    #[uniffi::constructor]
-    pub fn with_jwt(
-        url: String,
-        api_key: String,
-        jwt_token: Option<String>,
-    ) -> Result<Arc<Self>, FfiError> {
-        let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
-            error_message: e.to_string(),
-        })?;
-        let inner = SupabaseWalletDatabase::with_jwt(url, api_key, jwt_token);
-        Ok(Arc::new(WalletSupabaseDatabase { inner }))
-    }
-
     /// Create a new WalletSupabaseDatabase with OIDC client for automatic token refresh
-    ///
-    /// - `url`: The Supabase project URL
-    /// - `api_key`: The Supabase project API key (used in `apikey` header)
-    /// - `openid_discovery`: The OpenID Connect discovery URL (e.g., `https://auth.example.com/.well-known/openid-configuration`)
-    /// - `client_id`: Optional client ID for the OIDC client
-    ///
-    /// When an OIDC client is configured, the database can automatically refresh
-    /// the JWT token when it expires using the stored refresh token.
     #[uniffi::constructor]
     pub fn with_oidc(
         url: String,
@@ -127,14 +92,6 @@ impl WalletSupabaseDatabase {
 #[uniffi::export(async_runtime = "tokio")]
 impl WalletSupabaseDatabase {
     /// Set or update the JWT token for authentication
-    ///
-    /// This token will be used in the `Authorization: Bearer` header for all subsequent requests.
-    /// Pass `None` to clear the JWT token and fall back to using the API key.
-    ///
-    /// **Note**: If you've registered this database with `wallet.set_supabase_database()`,
-    /// tokens are automatically synchronized when calling `wallet.set_cat()` or
-    /// `wallet.refresh_access_token()`. Manual calls to this method are only needed
-    /// if you're not using automatic synchronization.
     pub async fn set_jwt_token(&self, token: Option<String>) {
         self.inner.set_jwt_token(token).await;
     }
@@ -145,20 +102,11 @@ impl WalletSupabaseDatabase {
     }
 
     /// Set the refresh token for automatic token refresh
-    ///
-    /// When both an OIDC client and refresh token are set, the database can
-    /// automatically refresh the JWT token when it expires.
-    ///
-    /// **Note**: If you've registered this database with `wallet.set_supabase_database()`,
-    /// refresh tokens are automatically synchronized when calling `wallet.set_refresh_token()`.
     pub async fn set_refresh_token(&self, token: Option<String>) {
         self.inner.set_refresh_token(token).await;
     }
 
     /// Set the token expiration time (Unix timestamp in seconds)
-    ///
-    /// When set, the database will automatically attempt to refresh the token
-    /// when it's about to expire (within 60 seconds of expiration).
     pub async fn set_token_expiration(&self, expiration: Option<u64>) {
         self.inner.set_token_expiration(expiration).await;
     }

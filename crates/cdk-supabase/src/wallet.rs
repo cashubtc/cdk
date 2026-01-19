@@ -49,31 +49,11 @@ pub struct SupabaseWalletDatabase {
 impl SupabaseWalletDatabase {
     /// Create a new SupabaseWalletDatabase with API key only (legacy behavior)
     ///
-    /// The API key will be used for both `apikey` and `Authorization` headers.
-    /// Use [`with_jwt`] if you need separate JWT authentication.
     pub fn new(url: Url, api_key: String) -> Self {
         Self {
             url,
             api_key,
             jwt_token: Arc::new(RwLock::new(None)),
-            refresh_token: Arc::new(RwLock::new(None)),
-            token_expiration: Arc::new(RwLock::new(None)),
-            oidc_client: Arc::new(RwLock::new(None)),
-            client: Client::new(),
-        }
-    }
-
-    /// Create a new SupabaseWalletDatabase with separate API key and JWT token
-    ///
-    /// - `api_key`: The Supabase project API key (used in `apikey` header)
-    /// - `jwt_token`: Optional JWT token for user authentication (used in `Authorization: Bearer` header)
-    ///
-    /// If `jwt_token` is None, the `api_key` will be used for the Authorization header.
-    pub fn with_jwt(url: Url, api_key: String, jwt_token: Option<String>) -> Self {
-        Self {
-            url,
-            api_key,
-            jwt_token: Arc::new(RwLock::new(jwt_token)),
             refresh_token: Arc::new(RwLock::new(None)),
             token_expiration: Arc::new(RwLock::new(None)),
             oidc_client: Arc::new(RwLock::new(None)),
@@ -95,9 +75,6 @@ impl SupabaseWalletDatabase {
     }
 
     /// Set or update the JWT token for authentication
-    ///
-    /// This token will be used in the `Authorization: Bearer` header.
-    /// Pass `None` to clear the JWT token and fall back to using the API key.
     pub async fn set_jwt_token(&self, token: Option<String>) {
         let mut jwt = self.jwt_token.write().await;
         *jwt = token;
@@ -116,13 +93,6 @@ impl SupabaseWalletDatabase {
     }
 
     /// Refresh the access token using the stored refresh token
-    ///
-    /// # Panics
-    ///
-    /// This function will never panic in practice. The `expect` call on
-    /// `SystemTime::now().duration_since(UNIX_EPOCH)` can only fail if the
-    /// system clock is set before January 1, 1970, which is not possible
-    /// on any reasonable system.
     pub async fn refresh_access_token(&self) -> Result<(), Error> {
         let oidc_client = self.oidc_client.read().await;
 
