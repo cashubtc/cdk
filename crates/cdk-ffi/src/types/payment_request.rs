@@ -300,18 +300,6 @@ pub struct PaymentRequestPayload {
     inner: cdk::nuts::PaymentRequestPayload,
 }
 
-impl PaymentRequestPayload {
-    /// Create from inner CDK type
-    pub(crate) fn from_inner(inner: cdk::nuts::PaymentRequestPayload) -> Self {
-        Self { inner }
-    }
-
-    /// Get inner reference
-    pub(crate) fn inner(&self) -> &cdk::nuts::PaymentRequestPayload {
-        &self.inner
-    }
-}
-
 #[uniffi::export]
 impl PaymentRequestPayload {
     /// Decode PaymentRequestPayload from JSON string
@@ -372,7 +360,7 @@ mod tests {
             proofs: proofs.clone(),
         };
 
-        let payload = PaymentRequestPayload::from_inner(inner);
+        let payload = PaymentRequestPayload { inner };
 
         assert_eq!(payload.id(), Some("test-id".to_string()));
         assert_eq!(payload.memo(), Some("test-memo".to_string()));
@@ -395,7 +383,7 @@ mod tests {
             proofs: vec![],
         };
 
-        let payload = PaymentRequestPayload::from_inner(inner);
+        let payload = PaymentRequestPayload { inner };
 
         let json = payload.to_string().unwrap();
         let decoded = PaymentRequestPayload::from_string(json).unwrap();
