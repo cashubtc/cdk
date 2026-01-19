@@ -219,5 +219,60 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
-    // Tests will be moved here from recovery.rs
+    use cdk_common::nuts::{CurrencyUnit, State};
+    use cdk_common::wallet::{
+        OperationData, SendOperationData, SendSagaState, WalletSaga, WalletSagaState,
+    };
+    use cdk_common::Amount;
+
+    use crate::wallet::test_utils::*;
+
+    #[tokio::test]
+    async fn test_recover_send_proofs_reserved() {
+        // Test that send saga in ProofsReserved state gets compensated
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        // Create and store proofs, then reserve them
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Create saga in ProofsReserved state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Send(SendSagaState::ProofsReserved),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Send(SendOperationData {
+                amount: Amount::from(100),
+                memo: None,
+                counter_start: None,
+                counter_end: None,
+                token: None,
+                proofs: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Run recovery
+        let wallet = create_test_wallet(db.clone()).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        assert_eq!(report.compensated, 1);
+
+        // Verify proofs are released
+        let proofs = db
+            .get_proofs(None, None, Some(vec![State::Unspent]), None)
+            .await
+            .unwrap();
+        assert_eq!(proofs.len(), 1);
+
+        // Verify saga is deleted
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
 }
