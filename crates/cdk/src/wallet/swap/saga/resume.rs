@@ -335,9 +335,8 @@ mod tests {
 
         // Mock: mint is unreachable
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_check_state_response(Err(crate::Error::Custom(
-            "Connection refused".to_string(),
-        )));
+        mock_client
+            .set_check_state_response(Err(crate::Error::Custom("Connection refused".to_string())));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();

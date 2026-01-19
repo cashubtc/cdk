@@ -34,16 +34,16 @@ use crate::util::unix_time;
 use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
-pub mod compensation;
-pub mod resume;
-pub mod state;
+pub(crate) mod compensation;
+pub(crate) mod resume;
+pub(crate) mod state;
 
 /// Saga pattern implementation for melt operations.
 ///
 /// Uses the typestate pattern to enforce valid state transitions at compile-time.
 /// Each state (Initial, Prepared, Confirmed) is a distinct type, and operations
 /// are only available on the appropriate type.
-pub struct MeltSaga<'a, S> {
+pub(crate) struct MeltSaga<'a, S> {
     /// Wallet reference
     wallet: &'a Wallet,
     /// Compensating actions in LIFO order (most recent first)

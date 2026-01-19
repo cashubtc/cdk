@@ -35,15 +35,15 @@ use crate::wallet::saga::{
 };
 use crate::{Amount, Error, Wallet};
 
-pub mod resume;
-pub mod state;
+pub(crate) mod resume;
+pub(crate) mod state;
 
 /// Saga pattern implementation for swap operations.
 ///
 /// Uses the typestate pattern to enforce valid state transitions at compile-time.
 /// Each state (Initial, Prepared, Finalized) is a distinct type, and operations
 /// are only available on the appropriate type.
-pub struct SwapSaga<'a, S> {
+pub(crate) struct SwapSaga<'a, S> {
     /// Wallet reference
     wallet: &'a Wallet,
     /// Compensating actions in LIFO order (most recent first)
