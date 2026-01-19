@@ -11,6 +11,7 @@ resolver = "2"
 unsafe_code = "forbid"
 # unreachable_pub = "warn"
 missing_debug_implementations = "warn"
+missing_docs = "warn"
 
 [workspace.lints.clippy]
 # pedantic = { level = "warn", priority = -1 }
@@ -27,7 +28,6 @@ use_debug = "warn"
 large_enum_variant = "warn"
 
 [workspace.lints.rustdoc]
-missing_docs = "warn"
 bare_urls = "warn"
 
 [workspace.package]
