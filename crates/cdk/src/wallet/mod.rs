@@ -63,6 +63,7 @@ mod send;
 mod streams;
 pub mod subscription;
 mod swap;
+pub mod test_utils;
 mod transactions;
 pub mod util;
 

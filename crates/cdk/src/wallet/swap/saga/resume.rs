@@ -179,5 +179,179 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
-    // Tests will be moved here from recovery.rs
+    use std::sync::Arc;
+
+    use cdk_common::nuts::{CheckStateResponse, CurrencyUnit, ProofState, State};
+    use cdk_common::wallet::{
+        OperationData, SwapOperationData, SwapSagaState, WalletSaga, WalletSagaState,
+    };
+    use cdk_common::Amount;
+
+    use crate::wallet::test_utils::*;
+
+    #[tokio::test]
+    async fn test_recover_swap_proofs_reserved() {
+        // Test that swap saga in ProofsReserved state gets compensated:
+        // - Reserved proofs are released back to Unspent
+        // - Saga record is deleted
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        // Create and store proofs, then reserve them
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Create saga in ProofsReserved state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Swap(SwapSagaState::ProofsReserved),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Swap(SwapOperationData {
+                input_amount: Amount::from(100),
+                output_amount: Amount::from(90),
+                counter_start: Some(0),
+                counter_end: Some(10),
+                blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Create wallet and run recovery
+        let wallet = create_test_wallet(db.clone()).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        // Verify compensation occurred
+        assert_eq!(report.compensated, 1);
+        assert_eq!(report.recovered, 0);
+        assert_eq!(report.failed, 0);
+
+        // Verify proofs are released (back to Unspent)
+        let proofs = db
+            .get_proofs(None, None, Some(vec![State::Unspent]), None)
+            .await
+            .unwrap();
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(proofs[0].y, proof_y);
+
+        // Verify saga is deleted
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_swap_requested_proofs_not_spent() {
+        // When proofs are NOT spent, the swap failed - should compensate
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        // Create and reserve proofs
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Create saga in SwapRequested state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Swap(SwapSagaState::SwapRequested),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Swap(SwapOperationData {
+                input_amount: Amount::from(100),
+                output_amount: Amount::from(90),
+                counter_start: Some(0),
+                counter_end: Some(10),
+                blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Mock: proofs are NOT spent (swap failed)
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState {
+                y: proof_y,
+                state: State::Unspent, // NOT spent - swap failed
+                witness: None,
+            }],
+        }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        // Should compensate (proofs not spent means swap failed)
+        assert_eq!(report.compensated, 1);
+        assert_eq!(report.recovered, 0);
+
+        // Proofs should be released back to Unspent
+        let proofs = db
+            .get_proofs(None, None, Some(vec![State::Unspent]), None)
+            .await
+            .unwrap();
+        assert_eq!(proofs.len(), 1);
+
+        // Saga should be deleted
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_swap_requested_mint_unreachable() {
+        // When mint is unreachable, should skip (retry later)
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        // Create and reserve proofs
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Create saga in SwapRequested state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Swap(SwapSagaState::SwapRequested),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Swap(SwapOperationData {
+                input_amount: Amount::from(100),
+                output_amount: Amount::from(90),
+                counter_start: Some(0),
+                counter_end: Some(10),
+                blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Mock: mint is unreachable
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_check_state_response(Err(crate::Error::Custom(
+            "Connection refused".to_string(),
+        )));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        // Should skip (mint unreachable, retry later)
+        assert_eq!(report.skipped, 1);
+        assert_eq!(report.compensated, 0);
+        assert_eq!(report.recovered, 0);
+
+        // Proofs should still be reserved
+        let reserved = db.get_reserved_proofs(&saga_id).await.unwrap();
+        assert_eq!(reserved.len(), 1);
+
+        // Saga should still exist
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+    }
 }
