@@ -27,17 +27,17 @@ use cdk_common::wallet::{
 use cdk_common::Id;
 use tracing::instrument;
 
-use self::compensation::RevertProofReservation;
 use self::state::{Initial, Prepared, TokenCreated};
 use super::{split_proofs_for_send, SendMemo, SendOptions};
 use crate::amount::SplitTarget;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{Proofs, State, Token};
-use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
+use crate::wallet::saga::{
+    add_compensation, new_compensations, Compensations, RevertProofReservation,
+};
 use crate::wallet::SendKind;
 use crate::{Amount, Error, Wallet};
 
-pub mod compensation;
 pub mod resume;
 pub mod state;
 
