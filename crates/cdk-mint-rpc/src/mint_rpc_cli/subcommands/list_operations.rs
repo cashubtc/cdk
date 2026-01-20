@@ -96,11 +96,7 @@ pub async fn list_operations(
             Some(f) => f.to_string(),
             None => "-".to_string(),
         };
-        let payment_method = op
-            .payment_method
-            .as_ref()
-            .map(|s| s.as_str())
-            .unwrap_or("-");
+        let payment_method = op.payment_method.as_deref().unwrap_or("-");
         println!(
             "{:<36} {:<6} {:<6} {:>10} {:>10} {:>8} {:>12} {:>12} {:>10} {:<12}",
             op.operation_id,

@@ -92,7 +92,7 @@ pub async fn list_proofs(
         } else {
             p.keyset_id.clone()
         };
-        let quote_id = p.quote_id.as_ref().map(|s| s.as_str()).unwrap_or("-");
+        let quote_id = p.quote_id.as_deref().unwrap_or("-");
         println!(
             "{:>10} {:<18} {:<10} {:<10} {:<36} {:>12} {:<36}",
             p.amount,

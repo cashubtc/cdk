@@ -90,7 +90,7 @@ pub async fn list_blind_signatures(
             Some(t) => t.to_string(),
             None => "-".to_string(),
         };
-        let quote_id = s.quote_id.as_ref().map(|s| s.as_str()).unwrap_or("-");
+        let quote_id = s.quote_id.as_deref().unwrap_or("-");
         println!(
             "{:>10} {:<18} {:<10} {:<36} {:>12} {:>12} {:<36}",
             s.amount,

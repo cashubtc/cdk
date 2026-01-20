@@ -20,7 +20,7 @@ use super::server::MintRPCServer;
 use super::utils::{
     effective_limit, melt_quote_to_proto, parse_keyset_ids, parse_melt_quote_states,
     parse_mint_quote_states, parse_proof_states, validate_operations, validate_pagination,
-    validate_units_against_mint, MintBalances,
+    validate_units_against_mint, MintBalances, ValidateUnitsResult,
 };
 
 #[tonic::async_trait]
@@ -39,7 +39,8 @@ impl CdkMintReporting for MintRPCServer {
 
         let balances = MintBalances::fetch(&self.mint())
             .await?
-            .aggregate_by_unit()?
+            .aggregate_by_unit()
+            .ok_or_else(|| Status::internal("Overflow during balance aggregation"))?
             .to_balances(unit_filter.as_ref());
 
         Ok(Response::new(GetBalancesResponse { balances }))
@@ -157,14 +158,31 @@ impl CdkMintReporting for MintRPCServer {
     ) -> Result<Response<ListMintQuotesResponse>, Status> {
         let request = request.into_inner();
         let mint = self.mint();
-        let states = parse_mint_quote_states(&request.states)?;
-        let units = validate_units_against_mint(&request.units, &mint)?;
+        let (states, invalid_states) = parse_mint_quote_states(&request.states);
+        if !invalid_states.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid mint quote state(s): {}. Valid states: unpaid, paid, issued, pending",
+                invalid_states.join(", ")
+            )));
+        }
+        let ValidateUnitsResult {
+            parsed: units,
+            invalid: invalid_units,
+            valid_units,
+        } = validate_units_against_mint(&request.units, &mint);
+        if !invalid_units.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid unit(s): {}. Valid units for this mint: {}",
+                invalid_units.join(", "),
+                valid_units.join(", ")
+            )));
+        }
 
-        validate_pagination(
-            request.index_offset,
-            request.num_max_quotes,
-            "num_max_quotes",
-        )?;
+        if !validate_pagination(request.index_offset, request.num_max_quotes) {
+            return Err(Status::invalid_argument(
+                "num_max_quotes is required when index_offset is provided",
+            ));
+        }
 
         let start_index = request.index_offset.max(0) as u64;
         let filter = MintQuoteFilter {
@@ -278,14 +296,31 @@ impl CdkMintReporting for MintRPCServer {
     ) -> Result<Response<ListMeltQuotesResponse>, Status> {
         let request = request.into_inner();
         let mint = self.mint();
-        let states = parse_melt_quote_states(&request.states)?;
-        let units = validate_units_against_mint(&request.units, &mint)?;
+        let (states, invalid_states) = parse_melt_quote_states(&request.states);
+        if !invalid_states.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid melt quote state(s): {}. Valid states: unpaid, pending, paid, unknown",
+                invalid_states.join(", ")
+            )));
+        }
+        let ValidateUnitsResult {
+            parsed: units,
+            invalid: invalid_units,
+            valid_units,
+        } = validate_units_against_mint(&request.units, &mint);
+        if !invalid_units.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid unit(s): {}. Valid units for this mint: {}",
+                invalid_units.join(", "),
+                valid_units.join(", ")
+            )));
+        }
 
-        validate_pagination(
-            request.index_offset,
-            request.num_max_quotes,
-            "num_max_quotes",
-        )?;
+        if !validate_pagination(request.index_offset, request.num_max_quotes) {
+            return Err(Status::invalid_argument(
+                "num_max_quotes is required when index_offset is provided",
+            ));
+        }
 
         let start_index = request.index_offset.max(0) as u64;
         let filter = MeltQuoteFilter {
@@ -346,16 +381,45 @@ impl CdkMintReporting for MintRPCServer {
     ) -> Result<Response<ListProofsResponse>, Status> {
         let request = request.into_inner();
         let mint = self.mint();
-        let states = parse_proof_states(&request.states)?;
-        let units = validate_units_against_mint(&request.units, &mint)?;
-        let keyset_ids = parse_keyset_ids(&request.keyset_ids)?;
-        let operations = validate_operations(&request.operations)?;
+        let (states, invalid_states) = parse_proof_states(&request.states);
+        if !invalid_states.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid proof state(s): {}. Valid states: unspent, spent, pending, reserved",
+                invalid_states.join(", ")
+            )));
+        }
+        let ValidateUnitsResult {
+            parsed: units,
+            invalid: invalid_units,
+            valid_units,
+        } = validate_units_against_mint(&request.units, &mint);
+        if !invalid_units.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid unit(s): {}. Valid units for this mint: {}",
+                invalid_units.join(", "),
+                valid_units.join(", ")
+            )));
+        }
+        let (keyset_ids, invalid_keysets) = parse_keyset_ids(&request.keyset_ids);
+        if !invalid_keysets.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid keyset ID(s): {}",
+                invalid_keysets.join(", ")
+            )));
+        }
+        let (operations, invalid_ops) = validate_operations(&request.operations);
+        if !invalid_ops.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid operation(s): {}. Valid operations: mint, melt, swap",
+                invalid_ops.join(", ")
+            )));
+        }
 
-        validate_pagination(
-            request.index_offset,
-            request.num_max_proofs,
-            "num_max_proofs",
-        )?;
+        if !validate_pagination(request.index_offset, request.num_max_proofs) {
+            return Err(Status::invalid_argument(
+                "num_max_proofs is required when index_offset is provided",
+            ));
+        }
 
         let start_index = request.index_offset.max(0) as u64;
         let filter = ProofFilter {
@@ -405,15 +469,38 @@ impl CdkMintReporting for MintRPCServer {
     ) -> Result<Response<ListBlindSignaturesResponse>, Status> {
         let request = request.into_inner();
         let mint = self.mint();
-        let units = validate_units_against_mint(&request.units, &mint)?;
-        let keyset_ids = parse_keyset_ids(&request.keyset_ids)?;
-        let operations = validate_operations(&request.operations)?;
+        let ValidateUnitsResult {
+            parsed: units,
+            invalid: invalid_units,
+            valid_units,
+        } = validate_units_against_mint(&request.units, &mint);
+        if !invalid_units.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid unit(s): {}. Valid units for this mint: {}",
+                invalid_units.join(", "),
+                valid_units.join(", ")
+            )));
+        }
+        let (keyset_ids, invalid_keysets) = parse_keyset_ids(&request.keyset_ids);
+        if !invalid_keysets.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid keyset ID(s): {}",
+                invalid_keysets.join(", ")
+            )));
+        }
+        let (operations, invalid_ops) = validate_operations(&request.operations);
+        if !invalid_ops.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid operation(s): {}. Valid operations: mint, melt, swap",
+                invalid_ops.join(", ")
+            )));
+        }
 
-        validate_pagination(
-            request.index_offset,
-            request.num_max_signatures,
-            "num_max_signatures",
-        )?;
+        if !validate_pagination(request.index_offset, request.num_max_signatures) {
+            return Err(Status::invalid_argument(
+                "num_max_signatures is required when index_offset is provided",
+            ));
+        }
 
         let start_index = request.index_offset.max(0) as u64;
         let filter = BlindSignatureFilter {
@@ -462,14 +549,31 @@ impl CdkMintReporting for MintRPCServer {
     ) -> Result<Response<ListOperationsResponse>, Status> {
         let request = request.into_inner();
         let mint = self.mint();
-        let units = validate_units_against_mint(&request.units, &mint)?;
-        let operations = validate_operations(&request.operations)?;
+        let ValidateUnitsResult {
+            parsed: units,
+            invalid: invalid_units,
+            valid_units,
+        } = validate_units_against_mint(&request.units, &mint);
+        if !invalid_units.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid unit(s): {}. Valid units for this mint: {}",
+                invalid_units.join(", "),
+                valid_units.join(", ")
+            )));
+        }
+        let (operations, invalid_ops) = validate_operations(&request.operations);
+        if !invalid_ops.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "Invalid operation(s): {}. Valid operations: mint, melt, swap",
+                invalid_ops.join(", ")
+            )));
+        }
 
-        validate_pagination(
-            request.index_offset,
-            request.num_max_operations,
-            "num_max_operations",
-        )?;
+        if !validate_pagination(request.index_offset, request.num_max_operations) {
+            return Err(Status::invalid_argument(
+                "num_max_operations is required when index_offset is provided",
+            ));
+        }
 
         let start_index = request.index_offset.max(0) as u64;
         let filter = OperationFilter {

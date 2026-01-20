@@ -69,12 +69,14 @@ impl MintBalances {
     }
 
     /// Aggregate balances by currency unit
-    pub fn aggregate_by_unit(&self) -> Result<UnitBalances, Status> {
+    ///
+    /// Returns None if an overflow occurs during aggregation.
+    pub fn aggregate_by_unit(&self) -> Option<UnitBalances> {
         let issued = self.aggregate_amounts_by_unit(&self.issued)?;
         let redeemed = self.aggregate_amounts_by_unit(&self.redeemed)?;
         let fees = self.aggregate_amounts_by_unit(&self.fees)?;
 
-        Ok(UnitBalances {
+        Some(UnitBalances {
             issued,
             redeemed,
             fees,
@@ -82,20 +84,20 @@ impl MintBalances {
     }
 
     /// Helper to aggregate a single amount map by unit
+    ///
+    /// Returns None if an overflow occurs.
     fn aggregate_amounts_by_unit(
         &self,
         amounts: &HashMap<Id, Amount>,
-    ) -> Result<HashMap<CurrencyUnit, Amount>, Status> {
+    ) -> Option<HashMap<CurrencyUnit, Amount>> {
         let mut by_unit: HashMap<CurrencyUnit, Amount> = HashMap::new();
         for (keyset_id, amount) in amounts {
             if let Some(unit) = self.keyset_units.get(keyset_id) {
                 let entry = by_unit.entry(unit.clone()).or_insert(Amount::ZERO);
-                *entry = entry
-                    .checked_add(*amount)
-                    .ok_or_else(|| Status::internal("Overflow".to_string()))?;
+                *entry = entry.checked_add(*amount)?;
             }
         }
-        Ok(by_unit)
+        Some(by_unit)
     }
 }
 
@@ -176,17 +178,20 @@ pub fn melt_quote_to_proto(quote: &MintMeltQuote) -> MeltQuote {
     }
 }
 
+/// Result of validating units against mint configuration
+pub struct ValidateUnitsResult {
+    /// Successfully parsed currency units
+    pub parsed: Vec<CurrencyUnit>,
+    /// Invalid unit strings that weren't recognized
+    pub invalid: Vec<String>,
+    /// Valid units configured in the mint (for error messages)
+    pub valid_units: Vec<String>,
+}
+
 /// Validates unit strings against the mint's actual configured units
 ///
-/// Returns an error if any unit is not configured in the mint's keysets.
-pub fn validate_units_against_mint(
-    units: &[String],
-    mint: &Mint,
-) -> Result<Vec<CurrencyUnit>, Status> {
-    if units.is_empty() {
-        return Ok(Vec::new());
-    }
-
+/// Returns parsed units, invalid unit strings, and the list of valid units for error messages.
+pub fn validate_units_against_mint(units: &[String], mint: &Mint) -> ValidateUnitsResult {
     let valid_units: HashSet<String> = mint
         .keyset_infos()
         .into_iter()
@@ -194,156 +199,112 @@ pub fn validate_units_against_mint(
         .map(|info| info.unit.to_string().to_lowercase())
         .collect();
 
+    if units.is_empty() {
+        return ValidateUnitsResult {
+            parsed: Vec::new(),
+            invalid: Vec::new(),
+            valid_units: valid_units.into_iter().collect(),
+        };
+    }
+
     let mut parsed = Vec::new();
     let mut invalid = Vec::new();
 
     for u in units {
         if valid_units.contains(&u.to_lowercase()) {
-            parsed.push(
-                CurrencyUnit::from_str(u).map_err(|_| {
-                    Status::internal(format!("Failed to parse validated unit: {}", u))
-                })?,
-            );
+            if let Ok(unit) = CurrencyUnit::from_str(u) {
+                parsed.push(unit);
+            }
         } else {
-            invalid.push(u.as_str());
+            invalid.push(u.clone());
         }
     }
 
-    if !invalid.is_empty() {
-        let valid_list: Vec<_> = valid_units.into_iter().collect();
-        return Err(Status::invalid_argument(format!(
-            "Invalid unit(s): {}. Valid units for this mint: {}",
-            invalid.join(", "),
-            valid_list.join(", ")
-        )));
+    ValidateUnitsResult {
+        parsed,
+        invalid,
+        valid_units: valid_units.into_iter().collect(),
     }
-
-    Ok(parsed)
 }
 
-/// Validates and parses mint quote state strings
-pub fn parse_mint_quote_states(states: &[String]) -> Result<Vec<MintQuoteState>, Status> {
+/// Validates and parses mint quote state strings, returns parsed states and any invalid ones
+pub fn parse_mint_quote_states(states: &[String]) -> (Vec<MintQuoteState>, Vec<String>) {
     let mut parsed = Vec::new();
     let mut invalid = Vec::new();
 
     for s in states {
         match MintQuoteState::from_str(s) {
             Ok(state) => parsed.push(state),
-            Err(_) => invalid.push(s.as_str()),
+            Err(_) => invalid.push(s.clone()),
         }
     }
 
-    if !invalid.is_empty() {
-        return Err(Status::invalid_argument(format!(
-            "Invalid mint quote state(s): {}. Valid states: unpaid, paid, issued, pending",
-            invalid.join(", ")
-        )));
-    }
-
-    Ok(parsed)
+    (parsed, invalid)
 }
 
-/// Validates and parses melt quote state strings
-pub fn parse_melt_quote_states(states: &[String]) -> Result<Vec<MeltQuoteState>, Status> {
+/// Validates and parses melt quote state strings, returns parsed states and any invalid ones
+pub fn parse_melt_quote_states(states: &[String]) -> (Vec<MeltQuoteState>, Vec<String>) {
     let mut parsed = Vec::new();
     let mut invalid = Vec::new();
 
     for s in states {
         match MeltQuoteState::from_str(s) {
             Ok(state) => parsed.push(state),
-            Err(_) => invalid.push(s.as_str()),
+            Err(_) => invalid.push(s.clone()),
         }
     }
 
-    if !invalid.is_empty() {
-        return Err(Status::invalid_argument(format!(
-            "Invalid melt quote state(s): {}. Valid states: unpaid, pending, paid, unknown",
-            invalid.join(", ")
-        )));
-    }
-
-    Ok(parsed)
+    (parsed, invalid)
 }
 
-/// Validates and parses proof state strings
-pub fn parse_proof_states(states: &[String]) -> Result<Vec<State>, Status> {
+/// Validates and parses proof state strings, returns parsed states and any invalid ones
+pub fn parse_proof_states(states: &[String]) -> (Vec<State>, Vec<String>) {
     let mut parsed = Vec::new();
     let mut invalid = Vec::new();
 
     for s in states {
         match State::from_str(s) {
             Ok(state) => parsed.push(state),
-            Err(_) => invalid.push(s.as_str()),
+            Err(_) => invalid.push(s.clone()),
         }
     }
 
-    if !invalid.is_empty() {
-        return Err(Status::invalid_argument(format!(
-            "Invalid proof state(s): {}. Valid states: unspent, spent, pending, reserved",
-            invalid.join(", ")
-        )));
-    }
-
-    Ok(parsed)
+    (parsed, invalid)
 }
 
-/// Validates and parses keyset ID strings
-pub fn parse_keyset_ids(ids: &[String]) -> Result<Vec<Id>, Status> {
+/// Validates and parses keyset ID strings, returns parsed IDs and any invalid ones
+pub fn parse_keyset_ids(ids: &[String]) -> (Vec<Id>, Vec<String>) {
     let mut parsed = Vec::with_capacity(ids.len());
     let mut invalid = Vec::new();
 
     for id in ids {
         match Id::from_str(id) {
             Ok(keyset_id) => parsed.push(keyset_id),
-            Err(_) => invalid.push(id.as_str()),
+            Err(_) => invalid.push(id.clone()),
         }
     }
 
-    if !invalid.is_empty() {
-        return Err(Status::invalid_argument(format!(
-            "Invalid keyset ID(s): {}",
-            invalid.join(", ")
-        )));
-    }
-
-    Ok(parsed)
+    (parsed, invalid)
 }
 
-/// Validates and parses operation kind strings
-pub fn validate_operations(operations: &[String]) -> Result<Vec<String>, Status> {
+/// Validates operation kind strings, returns invalid ones if any
+pub fn validate_operations(operations: &[String]) -> (Vec<String>, Vec<String>) {
     let mut invalid = Vec::new();
 
     for op in operations {
         if OperationKind::from_str(op).is_err() {
-            invalid.push(op.as_str());
+            invalid.push(op.clone());
         }
     }
 
-    if !invalid.is_empty() {
-        return Err(Status::invalid_argument(format!(
-            "Invalid operation(s): {}. Valid operations: mint, melt, swap",
-            invalid.join(", ")
-        )));
-    }
-
-    Ok(operations.to_vec())
+    (operations.to_vec(), invalid)
 }
 
 /// Validates pagination parameters
 ///
-/// Returns error if index_offset is provided without a limit (num_max).
-pub fn validate_pagination(
-    index_offset: i64,
-    num_max: i64,
-    field_name: &str,
-) -> Result<(), Status> {
-    if index_offset > 0 && num_max <= 0 {
-        return Err(Status::invalid_argument(format!(
-            "{} is required when index_offset is provided",
-            field_name
-        )));
-    }
-    Ok(())
+/// Returns `true` if valid, `false` if index_offset is provided without a limit (num_max).
+pub fn validate_pagination(index_offset: i64, num_max: i64) -> bool {
+    !(index_offset > 0 && num_max <= 0)
 }
 
 /// Returns the effective limit, defaulting to 100 if not specified
