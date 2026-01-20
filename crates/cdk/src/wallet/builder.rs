@@ -6,7 +6,7 @@ use cdk_common::database;
 use cdk_common::parking_lot::RwLock;
 #[cfg(feature = "auth")]
 use cdk_common::AuthToken;
-#[cfg(feature = "auth")]
+#[cfg(any(feature = "auth", feature = "npubcash"))]
 use tokio::sync::RwLock as TokioRwLock;
 
 use crate::cdk_database::WalletDatabase;
@@ -34,6 +34,16 @@ pub struct WalletBuilder {
     metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
 }
 
+impl std::fmt::Debug for WalletBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalletBuilder")
+            .field("mint_url", &self.mint_url)
+            .field("unit", &self.unit)
+            .field("target_proof_count", &self.target_proof_count)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for WalletBuilder {
     fn default() -> Self {
         Self {
@@ -45,7 +55,7 @@ impl Default for WalletBuilder {
             auth_wallet: None,
             seed: None,
             client: None,
-            metadata_cache_ttl: None,
+            metadata_cache_ttl: Some(Duration::from_secs(3600)),
             use_http_subscription: false,
             metadata_cache: None,
             metadata_caches: HashMap::new(),
@@ -66,6 +76,13 @@ impl WalletBuilder {
     }
 
     /// Set metadata_cache_ttl
+    ///
+    /// The TTL determines how often the wallet checks the mint for new keysets and information.
+    ///
+    /// If `None`, the cache will never expire and the wallet will use cached data indefinitely
+    /// (unless manually refreshed).
+    ///
+    /// The default value is 1 hour (3600 seconds).
     pub fn set_metadata_cache_ttl(mut self, metadata_cache_ttl: Option<Duration>) -> Self {
         self.metadata_cache_ttl = metadata_cache_ttl;
         self
@@ -153,10 +170,20 @@ impl WalletBuilder {
     }
 
     /// Set auth CAT (Clear Auth Token)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `mint_url` or `localstore` have not been set on the builder.
     #[cfg(feature = "auth")]
-    pub fn set_auth_cat(mut self, cat: String) -> Self {
-        let mint_url = self.mint_url.clone().expect("Mint URL required");
-        let localstore = self.localstore.clone().expect("Localstore required");
+    pub fn set_auth_cat(mut self, cat: String) -> Result<Self, Error> {
+        let mint_url = self
+            .mint_url
+            .clone()
+            .ok_or_else(|| Error::Custom("Mint URL required".to_string()))?;
+        let localstore = self
+            .localstore
+            .clone()
+            .ok_or_else(|| Error::Custom("Localstore required".to_string()))?;
 
         let metadata_cache = self.metadata_cache.clone().unwrap_or_else(|| {
             // Check if we already have a cache for this mint in the HashMap
@@ -176,7 +203,7 @@ impl WalletBuilder {
             HashMap::new(),
             None,
         ));
-        self
+        Ok(self)
     }
 
     /// Build the wallet
@@ -232,10 +259,23 @@ impl WalletBuilder {
             target_proof_count: self.target_proof_count.unwrap_or(3),
             #[cfg(feature = "auth")]
             auth_wallet: Arc::new(TokioRwLock::new(self.auth_wallet)),
+            #[cfg(feature = "npubcash")]
+            npubcash_client: Arc::new(TokioRwLock::new(None)),
             seed,
             client: client.clone(),
             subscription: SubscriptionManager::new(client, self.use_http_subscription),
             in_error_swap_reverted_proofs: Arc::new(false.into()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_ttl() {
+        let builder = WalletBuilder::default();
+        assert_eq!(builder.metadata_cache_ttl, Some(Duration::from_secs(3600)));
     }
 }

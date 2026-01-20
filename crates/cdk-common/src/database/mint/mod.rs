@@ -8,7 +8,9 @@ use cashu::Amount;
 
 use super::{DbTransactionFinalizer, Error};
 use crate::database::Acquired;
-use crate::mint::{self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation};
+use crate::mint::{
+    self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
+};
 use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof,
     Proofs, PublicKey, State,
@@ -243,9 +245,9 @@ pub struct OperationListResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeltRequestInfo {
     /// Total amount of all input proofs in the melt request
-    pub inputs_amount: Amount,
+    pub inputs_amount: Amount<CurrencyUnit>,
     /// Fee amount associated with the input proofs
-    pub inputs_fee: Amount,
+    pub inputs_fee: Amount<CurrencyUnit>,
     /// Blinded messages for change outputs
     pub change_outputs: Vec<BlindedMessage>,
 }
@@ -330,8 +332,8 @@ pub trait QuotesTransaction {
     async fn add_melt_request(
         &mut self,
         quote_id: &QuoteId,
-        inputs_amount: Amount,
-        inputs_fee: Amount,
+        inputs_amount: Amount<CurrencyUnit>,
+        inputs_fee: Amount<CurrencyUnit>,
     ) -> Result<(), Self::Err>;
 
     /// Add blinded_messages for a quote_id
@@ -541,19 +543,23 @@ pub trait ProofsTransaction {
         proof: Proofs,
         quote_id: Option<QuoteId>,
         operation: &Operation,
-    ) -> Result<(), Self::Err>;
-    /// Updates the proofs to a given states and return the previous states
-    async fn update_proofs_states(
+    ) -> Result<Acquired<ProofsWithState>, Self::Err>;
+
+    /// Updates the proofs to the given state in the database.
+    ///
+    /// Also updates the `state` field on the [`ProofsWithState`] wrapper to reflect
+    /// the new state after the database update succeeds.
+    async fn update_proofs_state(
         &mut self,
-        ys: &[PublicKey],
-        proofs_state: State,
-    ) -> Result<Vec<Option<State>>, Self::Err>;
+        proofs: &mut Acquired<ProofsWithState>,
+        new_state: State,
+    ) -> Result<(), Self::Err>;
 
     /// get proofs states
-    async fn get_proofs_states(
+    async fn get_proofs(
         &mut self,
         ys: &[PublicKey],
-    ) -> Result<Vec<Option<State>>, Self::Err>;
+    ) -> Result<Acquired<ProofsWithState>, Self::Err>;
 
     /// Remove [`Proofs`]
     async fn remove_proofs(
@@ -798,3 +804,6 @@ pub trait Database<Error>:
 
 /// Type alias for Mint Database
 pub type DynMintDatabase = std::sync::Arc<dyn Database<Error> + Send + Sync>;
+
+/// Type alias for Mint Transaction
+pub type DynMintTransaction = Box<dyn Transaction<Error> + Send + Sync>;

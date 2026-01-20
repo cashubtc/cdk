@@ -49,7 +49,11 @@ impl Melted {
         );
 
         let fee_paid = proofs_amount
-            .checked_sub(quote_amount + change_amount)
+            .checked_sub(
+                quote_amount
+                    .checked_add(change_amount)
+                    .ok_or(Error::AmountOverflow)?,
+            )
             .ok_or(Error::AmountOverflow)?;
 
         Ok(Self {
@@ -62,8 +66,15 @@ impl Melted {
     }
 
     /// Total amount melted
+    ///
+    /// # Panics
+    ///
+    /// Panics if the sum of `amount` and `fee_paid` overflows. This should not
+    /// happen as the fee is validated when calculated.
     pub fn total_amount(&self) -> Amount {
-        self.amount + self.fee_paid
+        self.amount
+            .checked_add(self.fee_paid)
+            .expect("We check when calc fee paid")
     }
 }
 

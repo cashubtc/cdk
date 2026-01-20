@@ -10,9 +10,9 @@ use super::Error;
 pub use crate::lightning_address::{LnurlPayInvoiceResponse, LnurlPayResponse};
 use crate::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeySet, KeysetResponse, MeltQuoteBolt11Request,
-    MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    MeltQuoteBolt11Response, MeltQuoteCustomRequest, MeltRequest, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest,
+    MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 #[cfg(feature = "auth")]
 use crate::wallet::AuthWallet;
@@ -66,23 +66,32 @@ pub trait MintConnector: Debug {
         quote_id: &str,
     ) -> Result<MintQuoteBolt11Response<String>, Error>;
     /// Mint Tokens [NUT-04]
-    async fn post_mint(&self, request: MintRequest<String>) -> Result<MintResponse, Error>;
+    async fn post_mint(
+        &self,
+        method: &PaymentMethod,
+        request: MintRequest<String>,
+    ) -> Result<MintResponse, Error>;
+
     /// Melt Quote [NUT-05]
     async fn post_melt_quote(
         &self,
         request: MeltQuoteBolt11Request,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+
     /// Melt Quote Status
     async fn get_melt_quote_status(
         &self,
         quote_id: &str,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+
     /// Melt [NUT-05]
     /// [Nut-08] Lightning fee return if outputs defined
     async fn post_melt(
         &self,
+        method: &PaymentMethod,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+
     /// Split Token [NUT-06]
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error>;
     /// Get Mint Info [NUT-06]
@@ -122,9 +131,17 @@ pub trait MintConnector: Debug {
         &self,
         quote_id: &str,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
-    /// Melt [NUT-23]
-    async fn post_melt_bolt12(
+
+    /// Mint Quote for Custom Payment Method
+    async fn post_mint_custom_quote(
         &self,
-        request: MeltRequest<String>,
+        method: &PaymentMethod,
+        request: MintQuoteCustomRequest,
+    ) -> Result<MintQuoteCustomResponse<String>, Error>;
+
+    /// Melt Quote for Custom Payment Method
+    async fn post_melt_custom_quote(
+        &self,
+        request: MeltQuoteCustomRequest,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
 }

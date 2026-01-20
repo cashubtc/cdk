@@ -22,6 +22,7 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, Signatory
 ///
 /// The private keys and the all key-related data is stored in memory, in the same process, but it
 /// is not accessible from the outside.
+#[allow(missing_debug_implementations)]
 pub struct DbSignatory {
     keysets: RwLock<HashMap<Id, (MintKeySetInfo, MintKeySet)>>,
     active_keysets: RwLock<HashMap<CurrencyUnit, Id>>,
@@ -34,6 +35,10 @@ pub struct DbSignatory {
 
 impl DbSignatory {
     /// Creates a new MemorySignatory instance
+    ///
+    /// # Panics
+    ///
+    /// Panics if the seed produces an invalid master key (should never happen with valid entropy).
     pub async fn new(
         localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
         seed: &[u8],
@@ -139,6 +144,7 @@ impl DbSignatory {
             &keyset_info.amounts,
             keyset_info.unit.clone(),
             keyset_info.derivation_path.clone(),
+            keyset_info.input_fee_ppk,
             keyset_info.final_expiry,
             keyset_info.id.get_version(),
         )
@@ -281,6 +287,7 @@ mod test {
             &[1, 2],
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
+            0,
             None,
             cdk_common::nut02::KeySetVersion::Version00,
         );
@@ -327,6 +334,7 @@ mod test {
             &[1, 2],
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
+            0,
             None,
             cdk_common::nut02::KeySetVersion::Version00,
         );

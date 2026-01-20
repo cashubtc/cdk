@@ -17,7 +17,7 @@ pub struct Mpp {
 }
 
 /// Mpp Method Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MppMethodSettings {
     /// Payment Method e.g. bolt11
@@ -65,6 +65,7 @@ impl<'de> Deserialize<'de> for Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nut00::KnownMethod;
     use crate::PaymentMethod;
 
     #[test]
@@ -73,14 +74,20 @@ mod tests {
         let array_json = r#"[{"method":"bolt11","unit":"sat"}]"#;
         let settings: Settings = serde_json::from_str(array_json).unwrap();
         assert_eq!(settings.methods.len(), 1);
-        assert_eq!(settings.methods[0].method, PaymentMethod::Bolt11);
+        assert_eq!(
+            settings.methods[0].method,
+            PaymentMethod::Known(KnownMethod::Bolt11)
+        );
         assert_eq!(settings.methods[0].unit, CurrencyUnit::Sat);
 
         // Test object format
         let object_json = r#"{"methods":[{"method":"bolt11","unit":"sat"}]}"#;
         let settings: Settings = serde_json::from_str(object_json).unwrap();
         assert_eq!(settings.methods.len(), 1);
-        assert_eq!(settings.methods[0].method, PaymentMethod::Bolt11);
+        assert_eq!(
+            settings.methods[0].method,
+            PaymentMethod::Known(KnownMethod::Bolt11)
+        );
         assert_eq!(settings.methods[0].unit, CurrencyUnit::Sat);
     }
 
@@ -88,7 +95,7 @@ mod tests {
     fn test_nut15_settings_serialization() {
         let settings = Settings {
             methods: vec![MppMethodSettings {
-                method: PaymentMethod::Bolt11,
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: CurrencyUnit::Sat,
             }],
         };
@@ -104,7 +111,7 @@ mod tests {
 
         let settings_with_data = Settings {
             methods: vec![MppMethodSettings {
-                method: PaymentMethod::Bolt11,
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: CurrencyUnit::Sat,
             }],
         };

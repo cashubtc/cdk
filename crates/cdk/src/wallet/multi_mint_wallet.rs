@@ -92,6 +92,15 @@ pub struct WalletConfig {
     pub auth_connector: Option<Arc<dyn super::auth::AuthMintConnector + Send + Sync>>,
     /// Target number of proofs to maintain at each denomination
     pub target_proof_count: Option<usize>,
+    /// Metadata cache TTL
+    ///
+    /// The TTL determines how often the wallet checks the mint for new keysets and information.
+    ///
+    /// If `None`, the cache will never expire and the wallet will use cached data indefinitely
+    /// (unless manually refreshed).
+    ///
+    /// The default value is 1 hour (3600 seconds).
+    pub metadata_cache_ttl: Option<std::time::Duration>,
 }
 
 impl WalletConfig {
@@ -122,6 +131,19 @@ impl WalletConfig {
     /// Set target proof count
     pub fn with_target_proof_count(mut self, count: usize) -> Self {
         self.target_proof_count = Some(count);
+        self
+    }
+
+    /// Set metadata cache TTL
+    ///
+    /// The TTL determines how often the wallet checks the mint for new keysets and information.
+    ///
+    /// If `None`, the cache will never expire and the wallet will use cached data indefinitely
+    /// (unless manually refreshed).
+    ///
+    /// The default value is 1 hour (3600 seconds).
+    pub fn with_metadata_cache_ttl(mut self, ttl: Option<std::time::Duration>) -> Self {
+        self.metadata_cache_ttl = ttl;
         self
     }
 }
@@ -186,6 +208,14 @@ pub struct MultiMintWallet {
     /// Shared Tor transport to be cloned into each TorHttpClient (if enabled)
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     shared_tor_transport: Option<TorAsync>,
+}
+
+impl std::fmt::Debug for MultiMintWallet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultiMintWallet")
+            .field("unit", &self.unit)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MultiMintWallet {
@@ -264,6 +294,15 @@ impl MultiMintWallet {
         Ok(wallet)
     }
 
+    /// Get a reference to the wallet seed
+    ///
+    /// This is used internally for key derivation operations.
+    #[inline(always)]
+    #[cfg(all(feature = "wallet", feature = "nostr"))]
+    pub(crate) fn seed(&self) -> &[u8; 64] {
+        &self.seed
+    }
+
     /// Adds a mint to this [MultiMintWallet]
     ///
     /// Creates a wallet for the specified mint using default or global settings.
@@ -329,6 +368,11 @@ impl MultiMintWallet {
                     wallet.set_client(connector);
                 }
 
+                // Update metadata cache TTL if provided
+                if let Some(ttl) = config.metadata_cache_ttl {
+                    wallet.set_metadata_cache_ttl(Some(ttl));
+                }
+
                 // TODO: Handle auth_connector if provided
                 #[cfg(feature = "auth")]
                 if let Some(_auth_connector) = config.auth_connector {
@@ -385,13 +429,17 @@ impl MultiMintWallet {
         if let Some(cfg) = config {
             if let Some(custom_connector) = &cfg.mint_connector {
                 // Use custom connector with WalletBuilder
-                let builder = WalletBuilder::new()
+                let mut builder = WalletBuilder::new()
                     .mint_url(mint_url.clone())
                     .unit(self.unit.clone())
                     .localstore(self.localstore.clone())
                     .seed(self.seed)
                     .target_proof_count(cfg.target_proof_count.unwrap_or(3))
                     .shared_client(custom_connector.clone());
+
+                if let Some(ttl) = cfg.metadata_cache_ttl {
+                    builder = builder.set_metadata_cache_ttl(Some(ttl));
+                }
 
                 // TODO: Handle auth_connector if provided
                 #[cfg(feature = "auth")]
@@ -407,6 +455,7 @@ impl MultiMintWallet {
 
         // Fall back to existing logic: proxy/Tor/default
         let target_proof_count = config.and_then(|c| c.target_proof_count).unwrap_or(3);
+        let metadata_cache_ttl = config.and_then(|c| c.metadata_cache_ttl);
 
         let wallet = if let Some(proxy_url) = &self.proxy_config {
             // Create wallet with proxy-configured client
@@ -426,14 +475,19 @@ impl MultiMintWallet {
                     crate::wallet::HttpClient::new(mint_url.clone())
                 }
             });
-            WalletBuilder::new()
+            let mut builder = WalletBuilder::new()
                 .mint_url(mint_url.clone())
                 .unit(self.unit.clone())
                 .localstore(self.localstore.clone())
                 .seed(self.seed)
                 .target_proof_count(target_proof_count)
-                .client(client)
-                .build()?
+                .client(client);
+
+            if let Some(ttl) = metadata_cache_ttl {
+                builder = builder.set_metadata_cache_ttl(Some(ttl));
+            }
+
+            builder.build()?
         } else {
             #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
             if let Some(tor) = &self.shared_tor_transport {
@@ -454,35 +508,48 @@ impl MultiMintWallet {
                     }
                 };
 
-                WalletBuilder::new()
+                let mut builder = WalletBuilder::new()
                     .mint_url(mint_url.clone())
                     .unit(self.unit.clone())
                     .localstore(self.localstore.clone())
                     .seed(self.seed)
                     .target_proof_count(target_proof_count)
-                    .client(client)
-                    .build()?
+                    .client(client);
+
+                if let Some(ttl) = metadata_cache_ttl {
+                    builder = builder.set_metadata_cache_ttl(Some(ttl));
+                }
+
+                builder.build()?
             } else {
                 // Create wallet with default client
-                Wallet::new(
+                let wallet = Wallet::new(
                     &mint_url.to_string(),
                     self.unit.clone(),
                     self.localstore.clone(),
                     self.seed,
                     Some(target_proof_count),
-                )?
+                )?;
+                if let Some(ttl) = metadata_cache_ttl {
+                    wallet.set_metadata_cache_ttl(Some(ttl));
+                }
+                wallet
             }
 
             #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
             {
                 // Create wallet with default client
-                Wallet::new(
+                let wallet = Wallet::new(
                     &mint_url.to_string(),
                     self.unit.clone(),
                     self.localstore.clone(),
                     self.seed,
                     Some(target_proof_count),
-                )?
+                )?;
+                if let Some(ttl) = metadata_cache_ttl {
+                    wallet.set_metadata_cache_ttl(Some(ttl));
+                }
+                wallet
             }
         };
 
@@ -985,7 +1052,7 @@ impl MultiMintWallet {
             .subscribe(super::WalletSubscription::Bolt11MintQuoteState(vec![
                 final_mint_quote.id.clone(),
             ]))
-            .await;
+            .await?;
 
         // Step 2: Melt from source wallet using the final melt quote
         let melted = source_wallet.melt(&final_melt_quote.id).await?;
@@ -1163,6 +1230,25 @@ impl MultiMintWallet {
         Ok(quote)
     }
 
+    /// Mint tokens at a specific mint
+    #[instrument(skip(self))]
+    pub async fn mint(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> Result<Proofs, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet
+            .mint(quote_id, amount_split_target, spending_conditions)
+            .await
+    }
+
     /// Check all mint quotes
     /// If quote is paid, wallet will mint
     #[instrument(skip(self))]
@@ -1188,25 +1274,177 @@ impl MultiMintWallet {
         Ok(total_amount)
     }
 
-    /// Mint a specific quote
+    /// Set the active mint for NpubCash integration
+    ///
+    /// This method sets the active mint for NpubCash in the key-value store.
+    /// Since all wallets share the same seed (and thus the same Nostr identity),
+    /// only one mint should be active for NpubCash at a time to avoid conflicts.
+    #[cfg(feature = "npubcash")]
     #[instrument(skip(self))]
-    pub async fn mint(
+    pub async fn set_active_npubcash_mint(&self, mint_url: MintUrl) -> Result<(), Error> {
+        use super::npubcash::{ACTIVE_MINT_KEY, NPUBCASH_KV_NAMESPACE};
+
+        self.localstore
+            .kv_write(
+                NPUBCASH_KV_NAMESPACE,
+                "",
+                ACTIVE_MINT_KEY,
+                mint_url.to_string().as_bytes(),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// Get the active mint for NpubCash integration
+    ///
+    /// Returns the currently active mint URL from the key-value store, if any.
+    #[cfg(feature = "npubcash")]
+    #[instrument(skip(self))]
+    pub async fn get_active_npubcash_mint(&self) -> Result<Option<MintUrl>, Error> {
+        use super::npubcash::{ACTIVE_MINT_KEY, NPUBCASH_KV_NAMESPACE};
+
+        let value = self
+            .localstore
+            .kv_read(NPUBCASH_KV_NAMESPACE, "", ACTIVE_MINT_KEY)
+            .await?;
+
+        match value {
+            Some(bytes) => {
+                let url_str = String::from_utf8(bytes)
+                    .map_err(|_| Error::Custom("Invalid UTF-8 in active mint URL".into()))?;
+                let mint_url = MintUrl::from_str(&url_str)?;
+                Ok(Some(mint_url))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Enable NpubCash integration on a specific mint
+    ///
+    /// This sets up NpubCash authentication and registers the mint URL with the
+    /// NpubCash server. It also sets this mint as the active NpubCash mint.
+    #[cfg(feature = "npubcash")]
+    #[instrument(skip(self))]
+    pub async fn enable_npubcash(
         &self,
-        mint_url: &MintUrl,
-        quote_id: &str,
-        conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, Error> {
+        mint_url: MintUrl,
+        npubcash_url: String,
+    ) -> Result<(), Error> {
         let wallets = self.wallets.read().await;
-        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+        let wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet
-            .mint(quote_id, SplitTarget::default(), conditions)
-            .await
+        wallet.enable_npubcash(npubcash_url).await?;
+        drop(wallets);
+
+        self.set_active_npubcash_mint(mint_url).await?;
+        Ok(())
+    }
+
+    /// Get the Nostr keys used for NpubCash authentication
+    ///
+    /// Since all wallets share the same seed, they all have the same Nostr identity.
+    /// This returns the keys from any wallet in the MultiMintWallet.
+    #[cfg(feature = "npubcash")]
+    pub async fn get_npubcash_keys(&self) -> Result<nostr_sdk::Keys, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.values().next().ok_or(Error::Custom(
+            "No wallets available to get NpubCash keys".into(),
+        ))?;
+        wallet.get_npubcash_keys()
+    }
+
+    /// Sync quotes from NpubCash for the active mint
+    ///
+    /// Fetches quotes from the NpubCash server and filters them to only return
+    /// quotes for the currently active mint.
+    #[cfg(feature = "npubcash")]
+    #[instrument(skip(self))]
+    pub async fn sync_npubcash_quotes(
+        &self,
+    ) -> Result<Vec<crate::wallet::types::MintQuote>, Error> {
+        let active_mint = self
+            .get_active_npubcash_mint()
+            .await?
+            .ok_or(Error::Custom("No active NpubCash mint set".into()))?;
+
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(&active_mint).ok_or(Error::UnknownMint {
+            mint_url: active_mint.to_string(),
+        })?;
+
+        let all_quotes = wallet.sync_npubcash_quotes().await?;
+
+        // Filter to only quotes for the active mint
+        let filtered_quotes: Vec<_> = all_quotes
+            .into_iter()
+            .filter(|q| q.mint_url == active_mint)
+            .collect();
+
+        Ok(filtered_quotes)
+    }
+
+    /// Mint ecash from a paid NpubCash quote
+    ///
+    /// This mints ecash from a quote on the active NpubCash mint.
+    #[cfg(feature = "npubcash")]
+    #[instrument(skip(self))]
+    pub async fn mint_npubcash_quote(
+        &self,
+        quote_id: &str,
+        split_target: SplitTarget,
+    ) -> Result<Proofs, Error> {
+        let active_mint = self
+            .get_active_npubcash_mint()
+            .await?
+            .ok_or(Error::Custom("No active NpubCash mint set".into()))?;
+
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(&active_mint).ok_or(Error::UnknownMint {
+            mint_url: active_mint.to_string(),
+        })?;
+
+        wallet.mint(quote_id, split_target, None).await
+    }
+
+    /// Create a stream that continuously polls NpubCash and yields proofs as payments arrive
+    ///
+    /// This provides a reactive way to handle incoming NpubCash payments. The stream will:
+    /// 1. Poll NpubCash for new paid quotes
+    /// 2. Automatically mint them using the active mint
+    /// 3. Yield the result (MintQuote, Proofs)
+    ///
+    /// # Arguments
+    ///
+    /// * `split_target` - How to split the minted proofs
+    /// * `spending_conditions` - Optional spending conditions for the minted proofs
+    /// * `poll_interval` - How often to check for new quotes
+    #[cfg(feature = "npubcash")]
+    pub fn npubcash_proof_stream(
+        &self,
+        split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+        poll_interval: std::time::Duration,
+    ) -> crate::wallet::streams::npubcash::NpubCashProofStream {
+        crate::wallet::streams::npubcash::NpubCashProofStream::new(
+            self.clone(),
+            poll_interval,
+            split_target,
+            spending_conditions,
+        )
     }
 
     /// Wait for a mint quote to be paid and automatically mint the proofs
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint URL where the quote was created
+    /// * `quote_id` - The quote ID to wait for
+    /// * `split_target` - How to split the minted proofs
+    /// * `spending_conditions` - Optional spending conditions for the minted proofs
+    /// * `timeout` - Maximum time to wait for the quote to be paid
     #[cfg(not(target_arch = "wasm32"))]
     #[instrument(skip(self))]
     pub async fn wait_for_mint_quote(
@@ -1214,8 +1452,8 @@ impl MultiMintWallet {
         mint_url: &MintUrl,
         quote_id: &str,
         split_target: SplitTarget,
-        conditions: Option<SpendingConditions>,
-        timeout_secs: u64,
+        spending_conditions: Option<SpendingConditions>,
+        timeout: std::time::Duration,
     ) -> Result<Proofs, Error> {
         let wallets = self.wallets.read().await;
         let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
@@ -1231,9 +1469,8 @@ impl MultiMintWallet {
             .ok_or(Error::UnknownQuote)?;
 
         // Wait for the quote to be paid and mint the proofs
-        let timeout_duration = tokio::time::Duration::from_secs(timeout_secs);
         wallet
-            .wait_and_mint_quote(quote, split_target, conditions, timeout_duration)
+            .wait_and_mint_quote(quote, split_target, spending_conditions, timeout)
             .await
     }
 
@@ -2267,5 +2504,12 @@ mod tests {
             redeem_fee: None,
         };
         assert!(token_data_no_memo.memo.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_wallet_config_metadata_ttl() {
+        let ttl = std::time::Duration::from_secs(12345);
+        let config = WalletConfig::new().with_metadata_cache_ttl(Some(ttl));
+        assert_eq!(config.metadata_cache_ttl, Some(ttl));
     }
 }

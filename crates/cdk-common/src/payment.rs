@@ -82,7 +82,7 @@ impl From<Infallible> for Error {
 }
 
 /// Payment identifier types
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "type", content = "value")]
 pub enum PaymentIdentifier {
     /// Label identifier
@@ -151,6 +151,21 @@ impl std::fmt::Display for PaymentIdentifier {
     }
 }
 
+impl std::fmt::Debug for PaymentIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PaymentIdentifier::PaymentHash(h) => write!(f, "PaymentHash({})", hex::encode(h)),
+            PaymentIdentifier::Bolt12PaymentHash(h) => {
+                write!(f, "Bolt12PaymentHash({})", hex::encode(h))
+            }
+            PaymentIdentifier::PaymentId(h) => write!(f, "PaymentId({})", hex::encode(h)),
+            PaymentIdentifier::Label(s) => write!(f, "Label({})", s),
+            PaymentIdentifier::OfferId(s) => write!(f, "OfferId({})", s),
+            PaymentIdentifier::CustomId(s) => write!(f, "CustomId({})", s),
+        }
+    }
+}
+
 /// Options for creating a BOLT11 incoming payment request
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Bolt11IncomingPaymentOptions {
@@ -173,6 +188,24 @@ pub struct Bolt12IncomingPaymentOptions {
     pub unix_expiry: Option<u64>,
 }
 
+/// Options for creating a custom incoming payment request
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CustomIncomingPaymentOptions {
+    /// Payment method name (e.g., "paypal", "venmo")
+    pub method: String,
+    /// Optional description for the payment request
+    pub description: Option<String>,
+    /// Amount for the payment request
+    pub amount: Amount,
+    /// Optional expiry time as Unix timestamp in seconds
+    pub unix_expiry: Option<u64>,
+    /// Extra payment-method-specific fields as JSON string
+    ///
+    /// These fields are passed through to the payment processor for
+    /// method-specific validation (e.g., ehash share).
+    pub extra_json: Option<String>,
+}
+
 /// Options for creating an incoming payment request
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IncomingPaymentOptions {
@@ -180,6 +213,8 @@ pub enum IncomingPaymentOptions {
     Bolt11(Bolt11IncomingPaymentOptions),
     /// BOLT12 payment request options
     Bolt12(Box<Bolt12IncomingPaymentOptions>),
+    /// Custom payment method options
+    Custom(Box<CustomIncomingPaymentOptions>),
 }
 
 /// Options for BOLT11 outgoing payments
@@ -208,6 +243,26 @@ pub struct Bolt12OutgoingPaymentOptions {
     pub melt_options: Option<MeltOptions>,
 }
 
+/// Options for custom outgoing payments
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CustomOutgoingPaymentOptions {
+    /// Payment method name
+    pub method: String,
+    /// Payment request string (method-specific format)
+    pub request: String,
+    /// Maximum fee amount allowed for the payment
+    pub max_fee_amount: Option<Amount>,
+    /// Optional timeout in seconds
+    pub timeout_secs: Option<u64>,
+    /// Melt options
+    pub melt_options: Option<MeltOptions>,
+    /// Extra payment-method-specific fields as JSON string
+    ///
+    /// These fields are passed through to the payment processor for
+    /// method-specific validation.
+    pub extra_json: Option<String>,
+}
+
 /// Options for creating an outgoing payment
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum OutgoingPaymentOptions {
@@ -215,18 +270,21 @@ pub enum OutgoingPaymentOptions {
     Bolt11(Box<Bolt11OutgoingPaymentOptions>),
     /// BOLT12 payment options
     Bolt12(Box<Bolt12OutgoingPaymentOptions>),
+    /// Custom payment method options
+    Custom(Box<CustomOutgoingPaymentOptions>),
 }
 
 impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
     type Error = Error;
 
     fn try_from(melt_quote: crate::mint::MeltQuote) -> Result<Self, Self::Error> {
-        match melt_quote.request {
+        let fee_reserve = melt_quote.fee_reserve();
+        match &melt_quote.request {
             MeltPaymentRequest::Bolt11 { bolt11 } => Ok(OutgoingPaymentOptions::Bolt11(Box::new(
                 Bolt11OutgoingPaymentOptions {
-                    max_fee_amount: Some(melt_quote.fee_reserve),
+                    max_fee_amount: Some(fee_reserve.to_owned().into()),
                     timeout_secs: None,
-                    bolt11,
+                    bolt11: bolt11.clone(),
                     melt_options: melt_quote.options,
                 },
             ))),
@@ -239,13 +297,23 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
 
                 Ok(OutgoingPaymentOptions::Bolt12(Box::new(
                     Bolt12OutgoingPaymentOptions {
-                        max_fee_amount: Some(melt_quote.fee_reserve),
+                        max_fee_amount: Some(fee_reserve.clone().into()),
                         timeout_secs: None,
-                        offer: *offer,
+                        offer: *offer.clone(),
                         melt_options,
                     },
                 )))
             }
+            MeltPaymentRequest::Custom { method, request } => Ok(OutgoingPaymentOptions::Custom(
+                Box::new(CustomOutgoingPaymentOptions {
+                    method: method.to_string(),
+                    request: request.to_string(),
+                    max_fee_amount: Some(melt_quote.fee_reserve().into()),
+                    timeout_secs: None,
+                    melt_options: melt_quote.options,
+                    extra_json: None,
+                }),
+            )),
         }
     }
 }
@@ -271,7 +339,7 @@ pub trait MintPayment {
     }
 
     /// Base Settings
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err>;
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err>;
 
     /// Create a new invoice
     async fn create_incoming_payment_request(
@@ -333,26 +401,30 @@ impl Default for Event {
         // The actual processing will filter these out
         Event::PaymentReceived(WaitPaymentResponse {
             payment_identifier: PaymentIdentifier::CustomId("default".to_string()),
-            payment_amount: Amount::from(0),
-            unit: CurrencyUnit::Msat,
+            payment_amount: Amount::new(0, CurrencyUnit::Msat),
             payment_id: "default".to_string(),
         })
     }
 }
 
 /// Wait any invoice response
-#[derive(Debug, Clone, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash)]
 pub struct WaitPaymentResponse {
     /// Request look up id
     /// Id that relates the quote and payment request
     pub payment_identifier: PaymentIdentifier,
-    /// Payment amount
-    pub payment_amount: Amount,
-    /// Unit
-    pub unit: CurrencyUnit,
+    /// Payment amount (typed with unit for compile-time safety)
+    pub payment_amount: Amount<CurrencyUnit>,
     /// Unique id of payment
     // Payment hash
     pub payment_id: String,
+}
+
+impl WaitPaymentResponse {
+    /// Get the currency unit
+    pub fn unit(&self) -> &CurrencyUnit {
+        self.payment_amount.unit()
+    }
 }
 
 /// Create incoming payment response
@@ -364,10 +436,16 @@ pub struct CreateIncomingPaymentResponse {
     pub request: String,
     /// Unix Expiry of Invoice
     pub expiry: Option<u64>,
+    /// Extra payment-method-specific fields
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data without nesting.
+    #[serde(flatten, default)]
+    pub extra_json: Option<serde_json::Value>,
 }
 
 /// Payment response
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct MakePaymentResponse {
     /// Payment hash
     pub payment_lookup_id: PaymentIdentifier,
@@ -375,51 +453,77 @@ pub struct MakePaymentResponse {
     pub payment_proof: Option<String>,
     /// Status
     pub status: MeltQuoteState,
-    /// Total Amount Spent
-    pub total_spent: Amount,
-    /// Unit of total spent
-    pub unit: CurrencyUnit,
+    /// Total Amount Spent (typed with unit for compile-time safety)
+    pub total_spent: Amount<CurrencyUnit>,
+}
+
+impl MakePaymentResponse {
+    /// Get the currency unit
+    pub fn unit(&self) -> &CurrencyUnit {
+        self.total_spent.unit()
+    }
 }
 
 /// Payment quote response
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct PaymentQuoteResponse {
     /// Request look up id
     pub request_lookup_id: Option<PaymentIdentifier>,
-    /// Amount
-    pub amount: Amount,
-    /// Fee required for melt
-    pub fee: Amount,
-    /// Currency unit of `amount` and `fee`
-    pub unit: CurrencyUnit,
+    /// Amount (typed with unit for compile-time safety)
+    pub amount: Amount<CurrencyUnit>,
+    /// Fee required for melt (typed with unit for compile-time safety)
+    pub fee: Amount<CurrencyUnit>,
     /// Status
     pub state: MeltQuoteState,
 }
 
-/// Ln backend settings
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Bolt11Settings {
-    /// MPP supported
-    pub mpp: bool,
-    /// Base unit of backend
-    pub unit: CurrencyUnit,
-    /// Invoice Description supported
-    pub invoice_description: bool,
-    /// Paying amountless invoices supported
-    pub amountless: bool,
-    /// Bolt12 supported
-    pub bolt12: bool,
-}
-
-impl TryFrom<Bolt11Settings> for Value {
-    type Error = crate::error::Error;
-
-    fn try_from(value: Bolt11Settings) -> Result<Self, Self::Error> {
-        serde_json::to_value(value).map_err(|err| err.into())
+impl PaymentQuoteResponse {
+    /// Get the currency unit
+    pub fn unit(&self) -> &CurrencyUnit {
+        self.amount.unit()
     }
 }
 
-impl TryFrom<Value> for Bolt11Settings {
+/// BOLT11 settings
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Bolt11Settings {
+    /// Multi-part payment (MPP) supported
+    pub mpp: bool,
+    /// Amountless invoice support
+    pub amountless: bool,
+    /// Invoice description supported
+    pub invoice_description: bool,
+}
+
+/// BOLT12 settings
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Bolt12Settings {
+    /// Amountless offer support
+    pub amountless: bool,
+}
+
+/// Payment processor settings response
+/// Mirrors the proto SettingsResponse structure
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsResponse {
+    /// Base unit of backend
+    pub unit: String,
+    /// BOLT11 settings (None if not supported)
+    pub bolt11: Option<Bolt11Settings>,
+    /// BOLT12 settings (None if not supported)
+    pub bolt12: Option<Bolt12Settings>,
+    /// Custom payment methods settings (method name -> settings data)
+    #[serde(default)]
+    pub custom: std::collections::HashMap<String, String>,
+}
+
+impl From<SettingsResponse> for Value {
+    fn from(value: SettingsResponse) -> Self {
+        serde_json::to_value(value).unwrap_or(Value::Null)
+    }
+}
+
+impl TryFrom<Value> for SettingsResponse {
     type Error = crate::error::Error;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
@@ -432,7 +536,7 @@ impl TryFrom<Value> for Bolt11Settings {
 /// This wrapper implements the Decorator pattern to collect metrics on all
 /// MintPayment trait methods. It wraps any existing MintPayment implementation
 /// and automatically records timing and operation metrics.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 #[cfg(feature = "prometheus")]
 pub struct MetricsMintPayment<T> {
     inner: T,
@@ -466,7 +570,7 @@ where
 {
     type Err = T::Err;
 
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
         let start = std::time::Instant::now();
         METRICS.inc_in_flight_requests("get_settings");
 
@@ -517,8 +621,8 @@ where
         let success = result.is_ok();
 
         if let Ok(ref quote) = result {
-            let amount: f64 = u64::from(quote.amount) as f64;
-            let fee: f64 = u64::from(quote.fee) as f64;
+            let amount: f64 = quote.amount.value() as f64;
+            let fee: f64 = quote.fee.value() as f64;
             METRICS.record_lightning_payment(amount, fee);
         }
 

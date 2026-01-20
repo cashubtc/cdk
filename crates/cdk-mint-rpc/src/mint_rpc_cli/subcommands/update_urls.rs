@@ -11,7 +11,7 @@ use crate::UpdateUrlRequest;
 /// This command adds a new URL to the mint's list of available endpoints.
 /// Multiple URLs allow clients to access the mint through different endpoints,
 /// providing redundancy and flexibility.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct AddUrlCommand {
     /// The URL to add to the mint's endpoints
     url: String,
@@ -41,7 +41,7 @@ pub async fn add_url(
 ///
 /// This command removes an existing URL from the mint's list of available endpoints.
 /// This can be used to retire endpoints that are no longer in use or available.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct RemoveUrlCommand {
     /// The URL to remove from the mint's endpoints
     url: String,

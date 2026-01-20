@@ -5,14 +5,14 @@
 use std::str::FromStr;
 
 use cdk_common::amount::amount_for_offer;
+use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::MeltQuote;
 use cdk_common::PaymentMethod;
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
-use crate::amount::to_unit;
 use crate::nuts::{CurrencyUnit, MeltOptions, MeltQuoteBolt11Response, MeltQuoteBolt12Request};
-use crate::{Error, Wallet};
+use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Melt Quote for BOLT12 offer
@@ -37,7 +37,9 @@ impl Wallet {
                 .map(|opt| opt.amount_msat())
                 .or_else(|| amount_for_offer(&offer, &CurrencyUnit::Msat).ok())
                 .ok_or(Error::AmountUndefined)?;
-            let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit)?;
+            let amount_quote_unit = Amount::new(amount_msat.into(), CurrencyUnit::Msat)
+                .convert_to(&self.unit)?
+                .into();
 
             if quote_res.amount != amount_quote_unit {
                 tracing::warn!(
@@ -58,12 +60,10 @@ impl Wallet {
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_preimage: quote_res.payment_preimage,
-            payment_method: PaymentMethod::Bolt12,
+            payment_method: PaymentMethod::Known(KnownMethod::Bolt12),
         };
 
-        let mut tx = self.localstore.begin_db_transaction().await?;
-        tx.add_melt_quote(quote.clone()).await?;
-        tx.commit().await?;
+        self.localstore.add_melt_quote(quote.clone()).await?;
 
         Ok(quote)
     }
@@ -76,28 +76,24 @@ impl Wallet {
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let response = self.client.get_melt_bolt12_quote_status(quote_id).await?;
 
-        let mut tx = self.localstore.begin_db_transaction().await?;
-
-        match tx.get_melt_quote(quote_id).await? {
+        match self.localstore.get_melt_quote(quote_id).await? {
             Some(quote) => {
                 let mut quote = quote;
 
                 if let Err(e) = self
-                    .add_transaction_for_pending_melt(&mut tx, &quote, &response)
+                    .add_transaction_for_pending_melt(&quote, &response)
                     .await
                 {
                     tracing::error!("Failed to add transaction for pending melt: {}", e);
                 }
 
                 quote.state = response.state;
-                tx.add_melt_quote(quote).await?;
+                self.localstore.add_melt_quote(quote).await?;
             }
             None => {
                 tracing::info!("Quote melt {} unknown", quote_id);
             }
         }
-
-        tx.commit().await?;
 
         Ok(response)
     }

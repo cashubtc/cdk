@@ -2,7 +2,7 @@
 //!
 //! This set is generic and checks the default and expected behaviour for a mint database
 //! implementation
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::missing_panics_doc)]
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -256,6 +256,9 @@ macro_rules! mint_db_test {
             get_blind_signatures_in_transaction,
             reject_duplicate_payment_ids,
             remove_spent_proofs_should_fail,
+            get_proofs_with_inconsistent_states_fails,
+            get_proofs_fails_when_some_not_found,
+            update_proofs_state_updates_proofs_with_state,
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

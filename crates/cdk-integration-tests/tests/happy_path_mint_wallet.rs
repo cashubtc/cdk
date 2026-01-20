@@ -21,8 +21,8 @@ use bip39::Mnemonic;
 use cashu::{MeltRequest, PreMintSecrets};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, State};
+use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
+use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, PaymentMethod, State};
 use cdk::wallet::{HttpClient, MintConnector, MultiMintWallet, Wallet};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
@@ -355,6 +355,112 @@ async fn test_restore() {
     }
 }
 
+/// Tests wallet restoration with a large number of proofs (3000)
+///
+/// This test verifies the restore process works correctly with many proofs,
+/// which is important for testing database performance (especially PostgreSQL)
+/// and ensuring the restore batching logic handles large proof sets:
+/// 1. Creates a wallet and mints 3000 sats as individual 1-sat proofs
+/// 2. Creates a new wallet instance with the same seed but empty storage
+/// 3. Restores the wallet state from the mint (requires ~30 restore batches)
+/// 4. Verifies all 3000 proofs are correctly restored
+/// 5. Swaps the proofs to ensure they're valid
+/// 6. Checks that the original proofs are now marked as spent
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_restore_large_proof_count() {
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        seed,
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_amount: u64 = 3000;
+    let batch_size: u64 = 999; // Keep under 1000 outputs per request
+
+    // Mint in batches to avoid exceeding the 1000 output limit per request
+    let mut total_proofs = 0usize;
+    let mut remaining = mint_amount;
+
+    while remaining > 0 {
+        let batch = remaining.min(batch_size);
+
+        let mint_quote = wallet.mint_quote(batch.into(), None).await.unwrap();
+
+        let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
+        pay_if_regtest(&get_test_temp_dir(), &invoice)
+            .await
+            .unwrap();
+
+        // Mint with SplitTarget::Value(1) to create individual 1-sat proofs
+        let proofs = wallet
+            .wait_and_mint_quote(
+                mint_quote.clone(),
+                SplitTarget::Value(1.into()),
+                None,
+                tokio::time::Duration::from_secs(120),
+            )
+            .await
+            .expect("payment");
+
+        total_proofs += proofs.len();
+        remaining -= batch;
+    }
+
+    assert_eq!(total_proofs, mint_amount as usize);
+    assert_eq!(wallet.total_balance().await.unwrap(), mint_amount.into());
+
+    let wallet_2 = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        seed,
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    assert_eq!(wallet_2.total_balance().await.unwrap(), 0.into());
+
+    let restored = wallet_2.restore().await.unwrap();
+    let proofs = wallet_2.get_unspent_proofs().await.unwrap();
+
+    assert_eq!(proofs.len(), mint_amount as usize);
+    assert_eq!(restored, mint_amount.into());
+
+    // Swap in batches to avoid exceeding the 1000 input limit per request
+    let mut total_fee = Amount::ZERO;
+    for batch in proofs.chunks(batch_size as usize) {
+        let batch_vec = batch.to_vec();
+        let batch_fee = wallet_2.get_proofs_fee(&batch_vec).await.unwrap().total;
+        total_fee += batch_fee;
+        wallet_2
+            .swap(None, SplitTarget::default(), batch.to_vec(), None, false)
+            .await
+            .unwrap();
+    }
+
+    // Since we have to do a swap we expect to restore amount - fee
+    assert_eq!(
+        wallet_2.total_balance().await.unwrap(),
+        Amount::from(mint_amount) - total_fee
+    );
+
+    let proofs = wallet.get_unspent_proofs().await.unwrap();
+
+    // Check proofs in batches to avoid large queries
+    for batch in proofs.chunks(100) {
+        let states = wallet.check_proofs_spent(batch.to_vec()).await.unwrap();
+        for state in states {
+            if state.state != State::Spent {
+                panic!("All proofs should be spent");
+            }
+        }
+    }
+}
+
 /// Tests that wallet restore correctly handles non-sequential counter values
 ///
 /// This test verifies that after restoring a wallet where there were gaps in the
@@ -406,13 +512,11 @@ async fn test_restore_with_counter_gap() {
     // This simulates failed operations or multi-device usage where counter values
     // were consumed but no signatures were obtained
     let gap_size = 50u32;
-    {
-        let mut tx = wallet.localstore.begin_db_transaction().await.unwrap();
-        tx.increment_keyset_counter(&keyset_id, gap_size)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-    }
+    wallet
+        .localstore
+        .increment_keyset_counter(&keyset_id, gap_size)
+        .await
+        .unwrap();
 
     // Mint second batch of proofs (uses counters after the gap)
     let mint_quote2 = wallet.mint_quote(100.into(), None).await.unwrap();
@@ -601,7 +705,13 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .unwrap();
 
     let _proofs = multi_mint_wallet
-        .wait_for_mint_quote(&mint_url, &mint_quote.id, SplitTarget::default(), None, 60)
+        .wait_for_mint_quote(
+            &mint_url,
+            &mint_quote.id,
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(60),
+        )
         .await
         .expect("mint failed");
 
@@ -708,7 +818,10 @@ async fn test_fake_melt_change_in_quote() {
         Some(premint_secrets.blinded_messages()),
     );
 
-    let melt_response = client.post_melt(melt_request).await.unwrap();
+    let melt_response = client
+        .post_melt(&PaymentMethod::Known(KnownMethod::Bolt11), melt_request)
+        .await
+        .unwrap();
 
     assert!(melt_response.change.is_some());
 

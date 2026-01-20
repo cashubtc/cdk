@@ -8,6 +8,7 @@ use cashu::{Amount, Id, SecretKey};
 use crate::database::mint::test::setup_keyset;
 use crate::database::mint::{Database, Error, KeysDatabase, Proof, QuoteId};
 use crate::mint::Operation;
+use crate::state::check_state_transition;
 
 /// Test get proofs by keyset id
 pub async fn get_proofs_by_keyset_id<DB>(db: DB)
@@ -217,7 +218,11 @@ where
 
     // Update to pending
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let _old_states = tx.update_proofs_states(&ys, State::Pending).await.unwrap();
+    let mut proofs = tx.get_proofs(&ys).await.unwrap();
+    check_state_transition(proofs.state, State::Pending).unwrap();
+    tx.update_proofs_state(&mut proofs, State::Pending)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Verify new state
@@ -227,14 +232,77 @@ where
 
     // Update to spent
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let old_states = tx.update_proofs_states(&ys, State::Spent).await.unwrap();
-    assert_eq!(old_states, vec![Some(State::Pending), Some(State::Pending)]);
+    let mut proofs = tx.get_proofs(&ys).await.unwrap();
+    check_state_transition(proofs.state, State::Spent).unwrap();
+    tx.update_proofs_state(&mut proofs, State::Spent)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Verify final state
     let states = db.get_proofs_states(&ys).await.unwrap();
     assert_eq!(states[0], Some(State::Spent));
     assert_eq!(states[1], Some(State::Spent));
+}
+
+/// Test that update_proofs_state updates the ProofsWithState.state field
+pub async fn update_proofs_state_updates_proofs_with_state<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use cashu::State;
+
+    let keyset_id = setup_keyset(&db).await;
+    let quote_id = QuoteId::new_uuid();
+
+    let proofs = vec![Proof {
+        amount: Amount::from(100),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+    }];
+
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    // Add proofs and verify initial state
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut proofs = tx
+        .add_proofs(
+            proofs.clone(),
+            Some(quote_id),
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await
+        .unwrap();
+    assert_eq!(proofs.state, State::Unspent);
+
+    // Update to Pending and verify ProofsWithState.state is updated
+    tx.update_proofs_state(&mut proofs, State::Pending)
+        .await
+        .unwrap();
+    assert_eq!(
+        proofs.state,
+        State::Pending,
+        "ProofsWithState.state should be updated to Pending after update_proofs_state"
+    );
+    tx.commit().await.unwrap();
+
+    // Get proofs again and update to Spent
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut proofs = tx.get_proofs(&ys).await.unwrap();
+    assert_eq!(proofs.state, State::Pending);
+
+    tx.update_proofs_state(&mut proofs, State::Spent)
+        .await
+        .unwrap();
+    assert_eq!(
+        proofs.state,
+        State::Spent,
+        "ProofsWithState.state should be updated to Spent after update_proofs_state"
+    );
+    tx.commit().await.unwrap();
 }
 
 /// Test removing proofs
@@ -346,14 +414,18 @@ where
 
     // First update to Pending (valid state transition)
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.update_proofs_states(&[ys[0], ys[1]], State::Pending)
+    let mut proofs = tx.get_proofs(&[ys[0], ys[1]]).await.unwrap();
+    check_state_transition(proofs.state, State::Pending).unwrap();
+    tx.update_proofs_state(&mut proofs, State::Pending)
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
     // Then mark some as spent
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.update_proofs_states(&[ys[0], ys[1]], State::Spent)
+    let mut proofs = tx.get_proofs(&[ys[0], ys[1]]).await.unwrap();
+    check_state_transition(proofs.state, State::Spent).unwrap();
+    tx.update_proofs_state(&mut proofs, State::Spent)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -770,26 +842,30 @@ where
 
     // Transition proofs to Pending state
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let _records = tx
-        .get_proof_ys_by_quote_id(&quote_id)
+    let mut records = tx.get_proofs(&ys).await.expect("valid records");
+    check_state_transition(records.state, State::Pending).unwrap();
+    tx.update_proofs_state(&mut records, State::Pending)
         .await
-        .expect("valid records");
-    tx.update_proofs_states(&ys, State::Pending).await.unwrap();
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Removing Pending proofs should also succeed
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let result = tx.remove_proofs(&[ys[0]], Some(quote_id.clone())).await;
-    assert!(result.is_ok(), "Removing Pending proof should succeed");
+    assert!(
+        result.is_ok(),
+        "Removing Pending proof should succeed: {:?}",
+        result,
+    );
     tx.rollback().await.unwrap(); // Rollback to keep proofs for next test
 
     // Now transition proofs to Spent state
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let _records = tx
-        .get_proof_ys_by_quote_id(&quote_id)
+    let mut records = tx.get_proofs(&ys).await.expect("valid records");
+    check_state_transition(records.state, State::Spent).unwrap();
+    tx.update_proofs_state(&mut records, State::Spent)
         .await
-        .expect("valid records");
-    tx.update_proofs_states(&ys, State::Spent).await.unwrap();
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Verify proofs are now in Spent state
@@ -826,4 +902,177 @@ where
         Some(State::Spent),
         "Second proof should still exist"
     );
+}
+
+/// Test that get_proofs fails when proofs have inconsistent states
+///
+/// This validates the database layer's responsibility to ensure all proofs
+/// returned by get_proofs share the same state. The mint never needs proofs
+/// with different states, so this is an invariant the database must enforce.
+pub async fn get_proofs_with_inconsistent_states_fails<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use cashu::State;
+
+    let keyset_id = setup_keyset(&db).await;
+    let quote_id = QuoteId::new_uuid();
+
+    // Create three proofs
+    let proofs = vec![
+        Proof {
+            amount: Amount::from(100),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+        Proof {
+            amount: Amount::from(200),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+        Proof {
+            amount: Amount::from(300),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+    ];
+
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    // Add all proofs (initial state is Unspent)
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(
+        proofs,
+        Some(quote_id),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Transition only the first two proofs to Pending state
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut first_two_proofs = tx.get_proofs(&ys[0..2]).await.unwrap();
+    check_state_transition(first_two_proofs.state, State::Pending).unwrap();
+    tx.update_proofs_state(&mut first_two_proofs, State::Pending)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // Verify the states are now inconsistent via get_proofs_states
+    let states = db.get_proofs_states(&ys).await.unwrap();
+    assert_eq!(
+        states[0],
+        Some(State::Pending),
+        "First proof should be Pending"
+    );
+    assert_eq!(
+        states[1],
+        Some(State::Pending),
+        "Second proof should be Pending"
+    );
+    assert_eq!(
+        states[2],
+        Some(State::Unspent),
+        "Third proof should be Unspent"
+    );
+
+    // Now try to get all three proofs via get_proofs - this should fail
+    // because the proofs have inconsistent states
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx.get_proofs(&ys).await;
+
+    assert!(
+        result.is_err(),
+        "get_proofs should fail when proofs have inconsistent states"
+    );
+
+    tx.rollback().await.unwrap();
+}
+
+/// Test that get_proofs fails when some requested proofs don't exist
+///
+/// This validates that the database returns an error when not all requested
+/// proofs are found, rather than silently returning a partial result.
+pub async fn get_proofs_fails_when_some_not_found<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+    let quote_id = QuoteId::new_uuid();
+
+    // Create two proofs that will be stored
+    let stored_proofs = vec![
+        Proof {
+            amount: Amount::from(100),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+        Proof {
+            amount: Amount::from(200),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+    ];
+
+    // Create a third proof that will NOT be stored
+    let non_existent_proof = Proof {
+        amount: Amount::from(300),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+    };
+
+    let stored_ys: Vec<_> = stored_proofs.iter().map(|p| p.y().unwrap()).collect();
+    let non_existent_y = non_existent_proof.y().unwrap();
+
+    // Add only the first two proofs
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(
+        stored_proofs,
+        Some(quote_id),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Verify the stored proofs exist
+    let states = db.get_proofs_states(&stored_ys).await.unwrap();
+    assert_eq!(states.len(), 2);
+    assert!(states[0].is_some(), "First proof should exist");
+    assert!(states[1].is_some(), "Second proof should exist");
+
+    // Verify the non-existent proof doesn't exist
+    let states = db.get_proofs_states(&[non_existent_y]).await.unwrap();
+    assert_eq!(states[0], None, "Third proof should not exist");
+
+    // Now try to get all three proofs (2 exist, 1 doesn't) - this should fail
+    let all_ys = vec![stored_ys[0], stored_ys[1], non_existent_y];
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx.get_proofs(&all_ys).await;
+
+    assert!(
+        result.is_err(),
+        "get_proofs should fail when some proofs don't exist (got 2 of 3)"
+    );
+
+    tx.rollback().await.unwrap();
 }

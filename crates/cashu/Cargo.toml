@@ -16,6 +16,7 @@ swagger = ["dep:utoipa"]
 mint = []
 wallet = []
 auth = ["dep:strum", "dep:strum_macros", "dep:regex"]
+nostr = ["dep:nostr-sdk"]
 bench = []
 
 [dependencies]
@@ -36,6 +37,7 @@ serde_with.workspace = true
 regex = { workspace = true, optional = true }
 strum = { workspace = true, optional = true }
 strum_macros = { workspace = true, optional = true }
+nostr-sdk = { workspace = true, optional = true }
 zeroize = "1"
 web-time.workspace = true
 
@@ -44,6 +46,27 @@ uuid = { workspace = true, features = ["js"], optional = true }
 
 [dev-dependencies]
 bip39.workspace = true
+nostr-sdk.workspace = true
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+
+[lints.clippy]
+# pedantic = { level = "warn", priority = -1 }
+# nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+clone_on_ref_ptr = "warn"
+# missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+missing_safety_doc = "warn"
+large_enum_variant = "warn"
+redundant_else = "warn"
+redundant_closure_for_method_calls = "warn"
+unneeded_field_pattern = "warn"
+use_debug = "warn"
+
+[lints.rustdoc]
+bare_urls = "warn"

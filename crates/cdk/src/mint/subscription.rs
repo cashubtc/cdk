@@ -12,8 +12,9 @@ use cdk_common::payment::DynMintPayment;
 use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
 use cdk_common::subscription::SubId;
 use cdk_common::{
-    Amount, BlindSignature, MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response,
-    MintQuoteBolt12Response, MintQuoteState, PaymentMethod, ProofState, PublicKey, QuoteId,
+    Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteState, ProofState, PublicKey,
+    QuoteId,
 };
 
 use super::Mint;
@@ -21,6 +22,7 @@ use crate::event::MintEvent;
 
 /// Mint subtopics
 #[derive(Clone)]
+#[allow(missing_debug_implementations)]
 pub struct MintPubSubSpec {
     db: DynMintDatabase,
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
@@ -55,71 +57,46 @@ impl MintPubSubSpec {
     ) -> Result<Vec<MintEvent<QuoteId>>, String> {
         let mut to_return = vec![];
         let mut public_keys: Vec<PublicKey> = Vec::new();
-        let mut melt_queries = Vec::new();
-        let mut mint_queries = Vec::new();
 
         for idx in request.iter() {
             match idx {
                 NotificationId::ProofState(pk) => public_keys.push(*pk),
-                NotificationId::MeltQuoteBolt11(uuid) => {
-                    melt_queries.push(self.db.get_melt_quote(uuid))
+                NotificationId::MeltQuoteBolt11(uuid) | NotificationId::MeltQuoteBolt12(uuid) => {
+                    // TODO: In the HTTP handler, we check with the LN backend if a payment is in a pending quote state to resolve stuck payments.
+                    // Implement similar logic here for WebSocket-only wallets.
+                    if let Some(melt_quote) = self
+                        .db
+                        .get_melt_quote(uuid)
+                        .await
+                        .map_err(|e| e.to_string())?
+                    {
+                        let melt_quote: MeltQuoteBolt11Response<_> = melt_quote.into();
+                        to_return.push(melt_quote.into());
+                    }
                 }
-                NotificationId::MintQuoteBolt11(uuid) => {
-                    mint_queries.push(self.get_mint_quote(uuid))
-                }
-                NotificationId::MintQuoteBolt12(uuid) => {
-                    mint_queries.push(self.get_mint_quote(uuid))
-                }
-                NotificationId::MeltQuoteBolt12(uuid) => {
-                    melt_queries.push(self.db.get_melt_quote(uuid))
+                NotificationId::MintQuoteBolt11(uuid) | NotificationId::MintQuoteBolt12(uuid) => {
+                    if let Some(mint_quote) =
+                        self.get_mint_quote(uuid).await.map_err(|e| e.to_string())?
+                    {
+                        let mint_quote = match idx {
+                            NotificationId::MintQuoteBolt11(_) => {
+                                let response: MintQuoteBolt11Response<QuoteId> = mint_quote.into();
+                                response.into()
+                            }
+                            NotificationId::MintQuoteBolt12(_) => match mint_quote.try_into() {
+                                Ok(response) => {
+                                    let response: MintQuoteBolt12Response<QuoteId> = response;
+                                    response.into()
+                                }
+                                Err(_) => continue,
+                            },
+                            _ => continue,
+                        };
+
+                        to_return.push(mint_quote);
+                    }
                 }
             }
-        }
-
-        if !melt_queries.is_empty() {
-            to_return.extend(
-                futures::future::try_join_all(melt_queries)
-                    .await
-                    .map(|quotes| {
-                        quotes
-                            .into_iter()
-                            .filter_map(|quote| quote.map(|x| x.into()))
-                            .map(|x: MeltQuoteBolt11Response<QuoteId>| x.into())
-                            .collect::<Vec<_>>()
-                    })
-                    .map_err(|e| e.to_string())?,
-            );
-        }
-
-        if !mint_queries.is_empty() {
-            to_return.extend(
-                futures::future::try_join_all(mint_queries)
-                    .await
-                    .map(|quotes| {
-                        quotes
-                            .into_iter()
-                            .filter_map(|quote| {
-                                quote.and_then(|mint_quotes| match mint_quotes.payment_method {
-                                    PaymentMethod::Bolt11 => {
-                                        let response: MintQuoteBolt11Response<QuoteId> =
-                                            mint_quotes.into();
-                                        Some(response.into())
-                                    }
-                                    PaymentMethod::Bolt12 => match mint_quotes.try_into() {
-                                        Ok(response) => {
-                                            let response: MintQuoteBolt12Response<QuoteId> =
-                                                response;
-                                            Some(response.into())
-                                        }
-                                        Err(_) => None,
-                                    },
-                                    PaymentMethod::Custom(_) => None,
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .map_err(|e| e.to_string())?,
-            );
         }
 
         if !public_keys.is_empty() {
@@ -172,6 +149,7 @@ impl Spec for MintPubSubSpec {
 }
 
 /// PubsubManager
+#[allow(missing_debug_implementations)]
 pub struct PubSubManager(Pubsub<MintPubSubSpec>);
 
 impl PubSubManager {
@@ -191,16 +169,16 @@ impl PubSubManager {
     }
 
     /// Helper function to publish even of a mint quote being paid
-    pub fn mint_quote_issue(&self, mint_quote: &MintQuote, total_issued: Amount) {
+    pub fn mint_quote_issue(&self, mint_quote: &MintQuote, total_issued: Amount<CurrencyUnit>) {
         match mint_quote.payment_method {
-            PaymentMethod::Bolt11 => {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
                 self.mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Issued);
             }
-            PaymentMethod::Bolt12 => {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
                 self.mint_quote_bolt12_status(
                     mint_quote.clone(),
-                    mint_quote.amount_paid(),
-                    total_issued,
+                    mint_quote.amount_paid().into(),
+                    total_issued.into(),
                 );
             }
             _ => {
@@ -210,16 +188,16 @@ impl PubSubManager {
     }
 
     /// Helper function to publish even of a mint quote being paid
-    pub fn mint_quote_payment(&self, mint_quote: &MintQuote, total_paid: Amount) {
+    pub fn mint_quote_payment(&self, mint_quote: &MintQuote, total_paid: Amount<CurrencyUnit>) {
         match mint_quote.payment_method {
-            PaymentMethod::Bolt11 => {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
                 self.mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
             }
-            PaymentMethod::Bolt12 => {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
                 self.mint_quote_bolt12_status(
                     mint_quote.clone(),
-                    total_paid,
-                    mint_quote.amount_issued(),
+                    total_paid.into(),
+                    mint_quote.amount_issued().into(),
                 );
             }
             _ => {

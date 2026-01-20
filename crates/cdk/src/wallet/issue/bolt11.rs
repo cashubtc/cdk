@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::wallet::{MintQuote, Transaction, TransactionDirection};
 use cdk_common::PaymentMethod;
@@ -59,7 +60,10 @@ impl Wallet {
             let settings = mint_info
                 .nuts
                 .nut04
-                .get_settings(&unit, &crate::nuts::PaymentMethod::Bolt11)
+                .get_settings(
+                    &unit,
+                    &crate::nuts::PaymentMethod::Known(KnownMethod::Bolt11),
+                )
                 .ok_or(Error::UnsupportedUnit)?;
 
             match settings.options {
@@ -82,7 +86,7 @@ impl Wallet {
         let quote = MintQuote::new(
             quote_res.quote,
             mint_url,
-            PaymentMethod::Bolt11,
+            PaymentMethod::Known(KnownMethod::Bolt11),
             Some(amount),
             unit,
             quote_res.request,
@@ -90,9 +94,7 @@ impl Wallet {
             Some(secret_key),
         );
 
-        let mut tx = self.localstore.begin_db_transaction().await?;
-        tx.add_mint_quote(quote.clone()).await?;
-        tx.commit().await?;
+        self.localstore.add_mint_quote(quote.clone()).await?;
 
         Ok(quote)
     }
@@ -105,21 +107,17 @@ impl Wallet {
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let response = self.client.get_mint_quote_status(quote_id).await?;
 
-        let mut tx = self.localstore.begin_db_transaction().await?;
-
-        match tx.get_mint_quote(quote_id).await? {
+        match self.localstore.get_mint_quote(quote_id).await? {
             Some(quote) => {
                 let mut quote = quote;
 
                 quote.state = response.state;
-                tx.add_mint_quote(quote).await?;
+                self.localstore.add_mint_quote(quote).await?;
             }
             None => {
                 tracing::info!("Quote mint {} unknown", quote_id);
             }
         }
-
-        tx.commit().await?;
 
         Ok(response)
     }
@@ -132,7 +130,7 @@ impl Wallet {
 
         for mint_quote in mint_quotes {
             match mint_quote.payment_method {
-                PaymentMethod::Bolt11 => {
+                PaymentMethod::Known(KnownMethod::Bolt11) => {
                     let mint_quote_response = self.mint_quote_state(&mint_quote.id).await?;
 
                     if mint_quote_response.state == MintQuoteState::Paid {
@@ -142,7 +140,7 @@ impl Wallet {
                         total_amount += proofs.total_amount()?;
                     }
                 }
-                PaymentMethod::Bolt12 => {
+                PaymentMethod::Known(KnownMethod::Bolt12) => {
                     let mint_quote_response = self.mint_bolt12_quote_state(&mint_quote.id).await?;
                     if mint_quote_response.amount_paid > mint_quote_response.amount_issued {
                         let proofs = self
@@ -229,13 +227,13 @@ impl Wallet {
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
-        let mut tx = self.localstore.begin_db_transaction().await?;
-        let quote_info = tx
+        let quote_info = self
+            .localstore
             .get_mint_quote(quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        if quote_info.payment_method != PaymentMethod::Bolt11 {
+        if quote_info.payment_method != PaymentMethod::Known(KnownMethod::Bolt11) {
             return Err(Error::UnsupportedPaymentMethod);
         }
 
@@ -248,13 +246,13 @@ impl Wallet {
 
         let unix_time = unix_time();
 
-        if quote_info.expiry > unix_time {
+        if quote_info.expiry < unix_time && quote_info.expiry != 0 {
             tracing::warn!("Attempting to mint with expired quote.");
         }
 
         let split_target = match amount_split_target {
             SplitTarget::None => {
-                self.determine_split_target_values(&mut tx, amount_mintable, &fee_and_amounts)
+                self.determine_split_target_values(amount_mintable, &fee_and_amounts)
                     .await?
             }
             s => s,
@@ -280,7 +278,8 @@ impl Wallet {
                 );
 
                 // Atomically get the counter range we need
-                let new_counter = tx
+                let new_counter = self
+                    .localstore
                     .increment_keyset_counter(&active_keyset_id, num_secrets)
                     .await?;
 
@@ -307,9 +306,10 @@ impl Wallet {
             request.sign(secret_key.clone())?;
         }
 
-        tx.commit().await?;
-
-        let mint_res = self.client.post_mint(request).await?;
+        let mint_res = self
+            .client
+            .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request)
+            .await?;
 
         let keys = self.load_keyset_keys(active_keyset_id).await?;
 
@@ -332,11 +332,12 @@ impl Wallet {
             &keys,
         )?;
 
-        // Start new transaction for post-mint operations
-        let mut tx = self.localstore.begin_db_transaction().await?;
+        // Update quote with issued amount
+        let mut quote_info = quote_info;
+        quote_info.state = MintQuoteState::Issued;
+        quote_info.amount_issued = proofs.total_amount()?;
 
-        // Remove filled quote from store
-        tx.remove_mint_quote(&quote_info.id).await?;
+        self.localstore.add_mint_quote(quote_info.clone()).await?;
 
         let proof_infos = proofs
             .iter()
@@ -351,27 +352,26 @@ impl Wallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        tx.update_proofs(proof_infos, vec![]).await?;
+        self.localstore.update_proofs(proof_infos, vec![]).await?;
 
         // Add transaction to store
-        tx.add_transaction(Transaction {
-            mint_url: self.mint_url.clone(),
-            direction: TransactionDirection::Incoming,
-            amount: proofs.total_amount()?,
-            fee: Amount::ZERO,
-            unit: self.unit.clone(),
-            ys: proofs.ys()?,
-            timestamp: unix_time,
-            memo: None,
-            metadata: HashMap::new(),
-            quote_id: Some(quote_id.to_string()),
-            payment_request: Some(quote_info.request),
-            payment_proof: None,
-            payment_method: Some(quote_info.payment_method),
-        })
-        .await?;
-
-        tx.commit().await?;
+        self.localstore
+            .add_transaction(Transaction {
+                mint_url: self.mint_url.clone(),
+                direction: TransactionDirection::Incoming,
+                amount: proofs.total_amount()?,
+                fee: Amount::ZERO,
+                unit: self.unit.clone(),
+                ys: proofs.ys()?,
+                timestamp: unix_time,
+                memo: None,
+                metadata: HashMap::new(),
+                quote_id: Some(quote_id.to_string()),
+                payment_request: Some(quote_info.request),
+                payment_proof: None,
+                payment_method: Some(quote_info.payment_method),
+            })
+            .await?;
 
         Ok(proofs)
     }

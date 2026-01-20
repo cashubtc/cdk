@@ -8,8 +8,12 @@ use std::{env, fs};
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use bip39::Mnemonic;
+use cashu::nut00::KnownMethod;
 use cashu::quote_id::QuoteId;
-use cashu::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+use cashu::{
+    MeltQuoteBolt12Request, MeltQuoteCustomRequest, MintQuoteBolt12Request,
+    MintQuoteBolt12Response, MintQuoteCustomRequest, MintQuoteCustomResponse,
+};
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
@@ -105,7 +109,11 @@ impl MintConnector for DirectMintConnection {
             .map(Into::into)
     }
 
-    async fn post_mint(&self, request: MintRequest<String>) -> Result<MintResponse, Error> {
+    async fn post_mint(
+        &self,
+        _method: &PaymentMethod,
+        request: MintRequest<String>,
+    ) -> Result<MintResponse, Error> {
         let request_id: MintRequest<QuoteId> = request.try_into().unwrap();
         self.mint.process_mint_request(request_id).await
     }
@@ -132,6 +140,7 @@ impl MintConnector for DirectMintConnection {
 
     async fn post_melt(
         &self,
+        _method: &PaymentMethod,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let request_uuid = request.try_into().unwrap();
@@ -211,12 +220,23 @@ impl MintConnector for DirectMintConnection {
             .await
             .map(Into::into)
     }
-    /// Melt [NUT-23]
-    async fn post_melt_bolt12(
+
+    /// Mint Quote for Custom Payment Method
+    async fn post_mint_custom_quote(
         &self,
-        _request: MeltRequest<String>,
+        _method: &PaymentMethod,
+        _request: MintQuoteCustomRequest,
+    ) -> Result<MintQuoteCustomResponse<String>, Error> {
+        // Custom payment methods not implemented in test mock
+        Err(Error::UnsupportedPaymentMethod)
+    }
+
+    /// Melt Quote for Custom Payment Method
+    async fn post_melt_custom_quote(
+        &self,
+        _request: MeltQuoteCustomRequest,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        // Implementation to be added later
+        // Custom payment methods not implemented in test mock
         Err(Error::UnsupportedPaymentMethod)
     }
 }
@@ -226,8 +246,11 @@ pub fn setup_tracing() {
 
     let h2_filter = "h2=warn";
     let hyper_filter = "hyper=warn";
+    let tokio_postgres = "tokio_postgres=warn";
 
-    let env_filter = EnvFilter::new(format!("{default_filter},{h2_filter},{hyper_filter}"));
+    let env_filter = EnvFilter::new(format!(
+        "{default_filter},{h2_filter},{hyper_filter},{tokio_postgres}"
+    ));
 
     // Ok if successful, Err if already initialized
     // Allows us to setup tracing at the start of several parallel tests
@@ -272,7 +295,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::Bolt11,
+            PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 10_000),
             Arc::new(ln_fake_backend),
         )

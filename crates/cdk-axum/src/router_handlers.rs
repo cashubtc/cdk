@@ -1,18 +1,14 @@
 use anyhow::Result;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{FromRequestParts, Json, Path, State};
-use axum::http::request::Parts;
+use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use cdk::error::{ErrorCode, ErrorResponse};
-use cdk::mint::QuoteId;
+use cdk::error::ErrorResponse;
 #[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
-    CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MintInfo,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
 use paste::paste;
@@ -22,46 +18,6 @@ use tracing::instrument;
 use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
-
-const PREFER_HEADER_KEY: &str = "Prefer";
-
-/// Header extractor for the Prefer header
-///
-/// This extractor checks for the `Prefer: respond-async` header
-/// to determine if the client wants asynchronous processing
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PreferHeader {
-    pub respond_async: bool,
-}
-
-impl<S> FromRequestParts<S> for PreferHeader
-where
-    S: Send + Sync,
-{
-    type Rejection = (StatusCode, String);
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        // Check for Prefer header
-        if let Some(prefer_value) = parts.headers.get(PREFER_HEADER_KEY) {
-            let value = prefer_value.to_str().map_err(|_| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "Invalid Prefer header value".to_string(),
-                )
-            })?;
-
-            // Check if it contains "respond-async"
-            let respond_async = value.to_lowercase().contains("respond-async");
-
-            return Ok(PreferHeader { respond_async });
-        }
-
-        // No Prefer header found - default to synchronous processing
-        Ok(PreferHeader {
-            respond_async: false,
-        })
-    }
-}
 
 /// Macro to add cache to endpoint
 #[macro_export]
@@ -144,12 +100,6 @@ macro_rules! post_cache_wrapper_with_prefer {
 }
 
 post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
-post_cache_wrapper!(post_mint_bolt11, MintRequest<QuoteId>, MintResponse);
-post_cache_wrapper_with_prefer!(
-    post_melt_bolt11,
-    MeltRequest<QuoteId>,
-    MeltQuoteBolt11Response<QuoteId>
-);
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     get,
@@ -216,89 +166,6 @@ pub(crate) async fn get_keysets(
     Ok(Json(state.mint.keysets()))
 }
 
-#[cfg_attr(feature = "swagger", utoipa::path(
-    post,
-    context_path = "/v1",
-    path = "/mint/quote/bolt11",
-    request_body(content = MintQuoteBolt11Request, description = "Request params", content_type = "application/json"),
-    responses(
-        (status = 200, description = "Successful response", body = MintQuoteBolt11Response<String>, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
-/// Request a quote for minting of new tokens
-///
-/// Request minting of new tokens. The mint responds with a Lightning invoice. This endpoint can be used for a Lightning invoice UX flow.
-#[instrument(skip_all, fields(amount = ?payload.amount))]
-pub(crate) async fn post_mint_bolt11_quote(
-    #[cfg(feature = "auth")] auth: AuthHeader,
-    State(state): State<MintState>,
-    Json(payload): Json<MintQuoteBolt11Request>,
-) -> Result<Json<MintQuoteBolt11Response<QuoteId>>, Response> {
-    #[cfg(feature = "auth")]
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
-        )
-        .await
-        .map_err(into_response)?;
-
-    let quote = state
-        .mint
-        .get_mint_quote(payload.into())
-        .await
-        .map_err(into_response)?;
-
-    Ok(Json(quote.try_into().map_err(into_response)?))
-}
-
-#[cfg_attr(feature = "swagger", utoipa::path(
-    get,
-    context_path = "/v1",
-    path = "/mint/quote/bolt11/{quote_id}",
-    params(
-        ("quote_id" = String, description = "The quote ID"),
-    ),
-    responses(
-        (status = 200, description = "Successful response", body = MintQuoteBolt11Response<String>, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
-/// Get mint quote by ID
-///
-/// Get mint quote state.
-#[instrument(skip_all, fields(quote_id = ?quote_id))]
-pub(crate) async fn get_check_mint_bolt11_quote(
-    #[cfg(feature = "auth")] auth: AuthHeader,
-    State(state): State<MintState>,
-    Path(quote_id): Path<QuoteId>,
-) -> Result<Json<MintQuoteBolt11Response<QuoteId>>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
-            )
-            .await
-            .map_err(into_response)?;
-    }
-
-    let quote = state
-        .mint
-        .check_mint_quote(&quote_id)
-        .await
-        .map_err(|err| {
-            tracing::error!("Could not check mint quote {}: {}", quote_id, err);
-            into_response(err)
-        })?;
-
-    Ok(Json(quote.try_into().map_err(into_response)?))
-}
-
 #[instrument(skip_all)]
 pub(crate) async fn ws_handler(
     #[cfg(feature = "auth")] auth: AuthHeader,
@@ -318,181 +185,6 @@ pub(crate) async fn ws_handler(
     }
 
     Ok(ws.on_upgrade(|ws| main_websocket(ws, state)))
-}
-
-/// Mint tokens by paying a BOLT11 Lightning invoice.
-///
-/// Requests the minting of tokens belonging to a paid payment request.
-///
-/// Call this endpoint after `POST /v1/mint/quote`.
-#[cfg_attr(feature = "swagger", utoipa::path(
-    post,
-    context_path = "/v1",
-    path = "/mint/bolt11",
-    request_body(content = MintRequest<String>, description = "Request params", content_type = "application/json"),
-    responses(
-        (status = 200, description = "Successful response", body = MintResponse, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
-#[instrument(skip_all, fields(quote_id = ?payload.quote))]
-pub(crate) async fn post_mint_bolt11(
-    #[cfg(feature = "auth")] auth: AuthHeader,
-    State(state): State<MintState>,
-    Json(payload): Json<MintRequest<QuoteId>>,
-) -> Result<Json<MintResponse>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
-            )
-            .await
-            .map_err(into_response)?;
-    }
-
-    let res = state
-        .mint
-        .process_mint_request(payload)
-        .await
-        .map_err(|err| {
-            tracing::error!("Could not process mint: {}", err);
-            into_response(err)
-        })?;
-
-    Ok(Json(res))
-}
-
-#[cfg_attr(feature = "swagger", utoipa::path(
-    post,
-    context_path = "/v1",
-    path = "/melt/quote/bolt11",
-    request_body(content = MeltQuoteBolt11Request, description = "Quote params", content_type = "application/json"),
-    responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
-#[instrument(skip_all)]
-/// Request a quote for melting tokens
-pub(crate) async fn post_melt_bolt11_quote(
-    #[cfg(feature = "auth")] auth: AuthHeader,
-    State(state): State<MintState>,
-    Json(payload): Json<MeltQuoteBolt11Request>,
-) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuoteBolt11),
-            )
-            .await
-            .map_err(into_response)?;
-    }
-
-    let quote = state
-        .mint
-        .get_melt_quote(payload.into())
-        .await
-        .map_err(into_response)?;
-
-    Ok(Json(quote))
-}
-
-#[cfg_attr(feature = "swagger", utoipa::path(
-    get,
-    context_path = "/v1",
-    path = "/melt/quote/bolt11/{quote_id}",
-    params(
-        ("quote_id" = String, description = "The quote ID"),
-    ),
-    responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
-/// Get melt quote by ID
-///
-/// Get melt quote state.
-#[instrument(skip_all, fields(quote_id = ?quote_id))]
-pub(crate) async fn get_check_melt_bolt11_quote(
-    #[cfg(feature = "auth")] auth: AuthHeader,
-    State(state): State<MintState>,
-    Path(quote_id): Path<QuoteId>,
-) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuoteBolt11),
-            )
-            .await
-            .map_err(into_response)?;
-    }
-
-    let quote = state
-        .mint
-        .check_melt_quote(&quote_id)
-        .await
-        .map_err(|err| {
-            tracing::error!("Could not check melt quote: {}", err);
-            into_response(err)
-        })?;
-
-    Ok(Json(quote))
-}
-
-#[cfg_attr(feature = "swagger", utoipa::path(
-    post,
-    context_path = "/v1",
-    path = "/melt/bolt11",
-    request_body(content = MeltRequest<String>, description = "Melt params", content_type = "application/json"),
-    responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
-/// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
-///
-/// Requests tokens to be destroyed and sent out via Lightning.
-#[instrument(skip_all)]
-pub(crate) async fn post_melt_bolt11(
-    #[cfg(feature = "auth")] auth: AuthHeader,
-    prefer: PreferHeader,
-    State(state): State<MintState>,
-    Json(payload): Json<MeltRequest<QuoteId>>,
-) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11),
-            )
-            .await
-            .map_err(into_response)?;
-    }
-
-    let res = if prefer.respond_async {
-        // Asynchronous processing - return immediately after setup
-        state
-            .mint
-            .melt_async(&payload)
-            .await
-            .map_err(into_response)?
-    } else {
-        // Synchronous processing - wait for completion
-        state.mint.melt(&payload).await.map_err(into_response)?
-    };
-
-    Ok(Json(res))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -649,38 +341,6 @@ where
     T: Into<ErrorResponse>,
 {
     let err_response: ErrorResponse = error.into();
-    let status_code = match err_response.code {
-        // Client errors (400 Bad Request)
-        ErrorCode::TokenAlreadySpent
-        | ErrorCode::TokenPending
-        | ErrorCode::QuoteNotPaid
-        | ErrorCode::QuoteExpired
-        | ErrorCode::QuotePending
-        | ErrorCode::KeysetNotFound
-        | ErrorCode::KeysetInactive
-        | ErrorCode::BlindedMessageAlreadySigned
-        | ErrorCode::UnsupportedUnit
-        | ErrorCode::TokensAlreadyIssued
-        | ErrorCode::MintingDisabled
-        | ErrorCode::InvoiceAlreadyPaid
-        | ErrorCode::TokenNotVerified
-        | ErrorCode::TransactionUnbalanced
-        | ErrorCode::AmountOutofLimitRange
-        | ErrorCode::WitnessMissingOrInvalid
-        | ErrorCode::DuplicateSignature
-        | ErrorCode::DuplicateInputs
-        | ErrorCode::DuplicateOutputs
-        | ErrorCode::MultipleUnits
-        | ErrorCode::UnitMismatch
-        | ErrorCode::ClearAuthRequired
-        | ErrorCode::BlindAuthRequired => StatusCode::BAD_REQUEST,
-
-        // Auth failures (401 Unauthorized)
-        ErrorCode::ClearAuthFailed | ErrorCode::BlindAuthFailed => StatusCode::UNAUTHORIZED,
-
-        // Lightning/payment errors and unknown errors (500 Internal Server Error)
-        ErrorCode::LightningError | ErrorCode::Unknown(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    };
-
-    (status_code, Json(err_response)).into_response()
+    // Per NUT-00 spec: "In case of an error, mints respond with the HTTP status code 400"
+    (StatusCode::BAD_REQUEST, Json(err_response)).into_response()
 }

@@ -19,9 +19,10 @@ use std::time::Duration;
 use bip39::Mnemonic;
 use cashu::ProofsMethods;
 use cdk::amount::{Amount, SplitTarget};
+use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{
     CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, MintRequest, Mpp,
-    NotificationPayload, PreMintSecrets,
+    NotificationPayload, PaymentMethod, PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
 use cdk_integration_tests::{get_mint_url_from_env, get_second_mint_url_from_env, get_test_client};
@@ -157,7 +158,8 @@ async fn test_websocket_connection() {
         .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![mint_quote
             .id
             .clone()]))
-        .await;
+        .await
+        .expect("failed to subscribe");
 
     // First check we get the unpaid state
     let msg = timeout(Duration::from_secs(10), subscription.recv())
@@ -317,6 +319,10 @@ async fn test_cached_mint() {
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
     let http_client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);
+
+    // Fetch mint info to populate cache support (NUT-19)
+    http_client.get_mint_info().await.unwrap();
+
     let premint_secrets = PreMintSecrets::random(
         active_keyset_id,
         100.into(),
@@ -337,8 +343,14 @@ async fn test_cached_mint() {
         .sign(secret_key.expect("Secret key on quote"))
         .unwrap();
 
-    let response = http_client.post_mint(request.clone()).await.unwrap();
-    let response1 = http_client.post_mint(request).await.unwrap();
+    let response = http_client
+        .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request.clone())
+        .await
+        .unwrap();
+    let response1 = http_client
+        .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request)
+        .await
+        .unwrap();
 
     assert!(response == response1);
 }

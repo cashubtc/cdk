@@ -92,18 +92,40 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
 
-        # Source for crane builds
-        src = builtins.path {
-          path = ./.;
-          name = "cdk-source";
+        # Source for crane builds - uses lib.fileset for efficient filtering
+        # This is much faster than nix-gitignore when large directories (like target/) exist
+        # because it uses a whitelist approach rather than scanning everything first
+        src = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.intersection
+            (lib.fileset.fromSource (lib.sources.cleanSource ./.))
+            (lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./Cargo.lock.msrv
+              ./README.md
+              ./.cargo
+              ./crates
+              ./fuzz
+            ]);
         };
 
         # Source for MSRV builds - uses Cargo.lock.msrv with MSRV-compatible deps
-        srcMsrv = pkgs.runCommand "cdk-source-msrv" { } ''
-          cp -r ${src} $out
-          chmod -R +w $out
-          cp $out/Cargo.lock.msrv $out/Cargo.lock
-        '';
+        # Use lib.fileset approach (same as src) but substitute Cargo.lock with Cargo.lock.msrv
+        # We include both lock files and use cargoLock override to point to MSRV version
+        srcMsrv = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.intersection
+            (lib.fileset.fromSource (lib.sources.cleanSource ./.))
+            (lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock.msrv
+              ./README.md
+              ./.cargo
+              ./crates
+              ./fuzz
+            ]);
+        };
 
         # Common args for all Crane builds
         commonCraneArgs = {
@@ -128,8 +150,10 @@
         };
 
         # Common args for MSRV builds - uses srcMsrv with pinned deps
+        # Override cargoLock to use Cargo.lock.msrv instead of Cargo.lock
         commonCraneArgsMsrv = commonCraneArgs // {
           src = srcMsrv;
+          cargoLock = ./Cargo.lock.msrv;
         };
 
         # Build ALL dependencies once - this is what gets cached by Cachix
@@ -146,11 +170,16 @@
           cargoExtraArgs = "--workspace";
         });
 
-        # Helper function to create clippy checks
-        mkClippy = name: cargoArgs: craneLib.cargoClippy (commonCraneArgs // {
-          pname = "cdk-clippy-${name}";
+        # Helper function to create combined clippy + test checks
+        # Runs both in a single derivation to share build artifacts
+        mkClippyAndTest = name: cargoArgs: craneLib.mkCargoDerivation (commonCraneArgs // {
+          pname = "cdk-check-${name}";
           cargoArtifacts = workspaceDeps;
-          cargoClippyExtraArgs = "${cargoArgs} -- -D warnings";
+          buildPhaseCargoCommand = ''
+            cargo clippy ${cargoArgs} -- -D warnings
+            cargo test ${cargoArgs}
+          '';
+          installPhaseCommand = "mkdir -p $out";
         });
 
         # Helper function to create example checks (compile only, no network access in sandbox)
@@ -268,9 +297,10 @@
         ];
 
         # ========================================
-        # Clippy check definitions - single source of truth
+        # Clippy + test check definitions - single source of truth
+        # These run both clippy and unit tests in a single derivation
         # ========================================
-        clippyChecks = {
+        clippyAndTestChecks = {
           # Core crate: cashu
           "cashu" = "-p cashu";
           "cashu-no-default" = "-p cashu --no-default-features";
@@ -321,33 +351,34 @@
           "cdk-mint-rpc" = "-p cdk-mint-rpc";
           "cdk-prometheus" = "-p cdk-prometheus";
           "cdk-ffi" = "-p cdk-ffi";
+          "cdk-npubcash" = "-p cdk-npubcash";
 
           # Binaries: cdk-cli
-          "bin-cdk-cli" = "--bin cdk-cli";
-          "bin-cdk-cli-sqlcipher" = "--bin cdk-cli --features sqlcipher";
-          "bin-cdk-cli-redb" = "--bin cdk-cli --features redb";
+          "cdk-cli" = "-p cdk-cli";
+          "cdk-cli-sqlcipher" = "-p cdk-cli --features sqlcipher";
+          "cdk-cli-redb" = "-p cdk-cli --features redb";
 
           # Binaries: cdk-mintd
-          "bin-cdk-mintd" = "--bin cdk-mintd";
-          "bin-cdk-mintd-redis" = "--bin cdk-mintd --features redis";
-          "bin-cdk-mintd-sqlcipher" = "--bin cdk-mintd --features sqlcipher";
-          "bin-cdk-mintd-lnd-sqlite" = "--bin cdk-mintd --no-default-features --features lnd,sqlite";
-          "bin-cdk-mintd-cln-postgres" = "--bin cdk-mintd --no-default-features --features cln,postgres";
-          "bin-cdk-mintd-lnbits-sqlite" = "--bin cdk-mintd --no-default-features --features lnbits,sqlite";
-          "bin-cdk-mintd-fakewallet-sqlite" = "--bin cdk-mintd --no-default-features --features fakewallet,sqlite";
-          "bin-cdk-mintd-grpc-processor-sqlite" = "--bin cdk-mintd --no-default-features --features grpc-processor,sqlite";
-          "bin-cdk-mintd-management-rpc-lnd-sqlite" = "--bin cdk-mintd --no-default-features --features management-rpc,lnd,sqlite";
-          "bin-cdk-mintd-cln-sqlite" = "--bin cdk-mintd --no-default-features --features cln,sqlite";
-          "bin-cdk-mintd-lnd-postgres" = "--bin cdk-mintd --no-default-features --features lnd,postgres";
-          "bin-cdk-mintd-lnbits-postgres" = "--bin cdk-mintd --no-default-features --features lnbits,postgres";
-          "bin-cdk-mintd-fakewallet-postgres" = "--bin cdk-mintd --no-default-features --features fakewallet,postgres";
-          "bin-cdk-mintd-grpc-processor-postgres" = "--bin cdk-mintd --no-default-features --features grpc-processor,postgres";
-          "bin-cdk-mintd-management-rpc-cln-postgres" = "--bin cdk-mintd --no-default-features --features management-rpc,cln,postgres";
-          "bin-cdk-mintd-auth-sqlite-fakewallet" = "--bin cdk-mintd --no-default-features --features auth,sqlite,fakewallet";
-          "bin-cdk-mintd-auth-postgres-lnd" = "--bin cdk-mintd --no-default-features --features auth,postgres,lnd";
+          "cdk-mintd" = "-p cdk-mintd";
+          "cdk-mintd-redis" = "-p cdk-mintd --features redis";
+          "cdk-mintd-sqlcipher" = "-p cdk-mintd --features sqlcipher";
+          "cdk-mintd-lnd-sqlite" = "-p cdk-mintd --no-default-features --features lnd,sqlite";
+          "cdk-mintd-cln-postgres" = "-p cdk-mintd --no-default-features --features cln,postgres";
+          "cdk-mintd-lnbits-sqlite" = "-p cdk-mintd --no-default-features --features lnbits,sqlite";
+          "cdk-mintd-fakewallet-sqlite" = "-p cdk-mintd --no-default-features --features fakewallet,sqlite";
+          "cdk-mintd-grpc-processor-sqlite" = "-p cdk-mintd --no-default-features --features grpc-processor,sqlite";
+          "cdk-mintd-management-rpc-lnd-sqlite" = "-p cdk-mintd --no-default-features --features management-rpc,lnd,sqlite";
+          "cdk-mintd-cln-sqlite" = "-p cdk-mintd --no-default-features --features cln,sqlite";
+          "cdk-mintd-lnd-postgres" = "-p cdk-mintd --no-default-features --features lnd,postgres";
+          "cdk-mintd-lnbits-postgres" = "-p cdk-mintd --no-default-features --features lnbits,postgres";
+          "cdk-mintd-fakewallet-postgres" = "-p cdk-mintd --no-default-features --features fakewallet,postgres";
+          "cdk-mintd-grpc-processor-postgres" = "-p cdk-mintd --no-default-features --features grpc-processor,postgres";
+          "cdk-mintd-management-rpc-cln-postgres" = "-p cdk-mintd --no-default-features --features management-rpc,cln,postgres";
+          "cdk-mintd-auth-sqlite-fakewallet" = "-p cdk-mintd --no-default-features --features auth,sqlite,fakewallet";
+          "cdk-mintd-auth-postgres-lnd" = "-p cdk-mintd --no-default-features --features auth,postgres,lnd";
 
-          # Binaries: cdk-mint-cli
-          "bin-cdk-mint-cli" = "--bin cdk-mint-cli";
+          # Binaries: cdk-mint-cli (binary name, package is cdk-mint-rpc)
+          "cdk-mint-cli" = "-p cdk-mint-rpc";
         };
 
         # ========================================
@@ -413,6 +444,7 @@
 
             cargo-outdated
             cargo-mutants
+            cargo-fuzz
 
             # Needed for github ci
             libz
@@ -512,8 +544,8 @@
         # Example packages (binaries that can be run outside sandbox with network access)
         // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExamplePackage name; }) exampleChecks));
         checks =
-          # Generate clippy checks from clippyChecks attrset
-          (builtins.mapAttrs (name: args: mkClippy name args) clippyChecks)
+          # Generate clippy + test checks from clippyAndTestChecks attrset
+          (builtins.mapAttrs (name: args: mkClippyAndTest name args) clippyAndTestChecks)
           # Generate MSRV build checks (prefixed with msrv-)
           // (builtins.listToAttrs (map (name: { name = "msrv-${name}"; value = mkMsrvBuild name msrvChecks.${name}; }) (builtins.attrNames msrvChecks)))
           # Generate WASM build checks (prefixed with wasm-)

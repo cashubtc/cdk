@@ -127,6 +127,66 @@ mutants-quick:
   echo "Running mutations on changed files since HEAD..."
   cargo mutants --in-diff HEAD -vV
 
+# Fuzzing Commands
+
+# Run fuzzing on a specific target
+# Usage: just fuzz <target> [duration] [jobs]
+# Example: just fuzz fuzz_token
+# Example: just fuzz fuzz_token 60
+# Example: just fuzz fuzz_token 60 4  (run for 60s on 4 cores)
+fuzz TARGET DURATION="0" JOBS="1":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running fuzzer on target: {{TARGET}} (jobs: {{JOBS}})"
+  cd fuzz
+  # Create corpus directory if it doesn't exist
+  mkdir -p "corpus/{{TARGET}}"
+  # Use seeds directory if it exists
+  SEEDS_DIR=""
+  if [ -d "seeds/{{TARGET}}" ]; then
+    SEEDS_DIR="seeds/{{TARGET}}"
+  fi
+  FORK_FLAG=""
+  if [ "{{JOBS}}" != "1" ]; then
+    FORK_FLAG="-fork={{JOBS}}"
+  fi
+  if [ "{{DURATION}}" = "0" ]; then
+    cargo fuzz run {{TARGET}} corpus/{{TARGET}} $SEEDS_DIR -- $FORK_FLAG
+  else
+    cargo fuzz run {{TARGET}} corpus/{{TARGET}} $SEEDS_DIR -- -max_total_time={{DURATION}} $FORK_FLAG
+  fi
+
+# List available fuzz targets
+fuzz-list:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Available fuzz targets:"
+  cd fuzz
+  cargo fuzz list
+
+# Run all fuzz targets for a short duration (useful for CI)
+# Usage: just fuzz-ci [duration] [jobs]
+# Example: just fuzz-ci 30 4  (run each target for 30s on 4 cores)
+fuzz-ci DURATION="30" JOBS="1":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running all fuzz targets for {{DURATION}} seconds each (jobs: {{JOBS}})..."
+  cd fuzz
+  FORK_FLAG=""
+  if [ "{{JOBS}}" != "1" ]; then
+    FORK_FLAG="-fork={{JOBS}}"
+  fi
+  for target in $(cargo fuzz list); do
+    echo "Fuzzing $target..."
+    mkdir -p "corpus/$target"
+    SEEDS_DIR=""
+    if [ -d "seeds/$target" ]; then
+      SEEDS_DIR="seeds/$target"
+    fi
+    cargo fuzz run "$target" "corpus/$target" $SEEDS_DIR -- -max_total_time={{DURATION}} $FORK_FLAG
+  done
+  echo "All fuzz targets completed!"
+
 # Run mutation tests only on changed code since HEAD
 mutants-diff:
   #!/usr/bin/env bash
@@ -477,16 +537,21 @@ check-docs:
     "-p cdk"
     "-p cdk-redb"
     "-p cdk-sqlite"
+    "-p cdk-postgres"
     "-p cdk-axum"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
+    "-p cdk-ldk-node"
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"
+    "-p cdk-npubcash"
+    "-p cdk-prometheus"
     "-p cdk-payment-processor"
     "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
+    "-p cdk-ffi"
   )
 
   for arg in "${args[@]}"; do
@@ -506,16 +571,21 @@ docs-strict:
     "-p cdk"
     "-p cdk-redb"
     "-p cdk-sqlite"
+    "-p cdk-postgres"
     "-p cdk-axum"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
+    "-p cdk-ldk-node"
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"
+    "-p cdk-npubcash"
+    "-p cdk-prometheus"
     "-p cdk-payment-processor"
     "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
+    "-p cdk-ffi"
   )
 
   for arg in "${args[@]}"; do

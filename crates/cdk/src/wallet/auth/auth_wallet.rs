@@ -286,9 +286,8 @@ impl AuthWallet {
     /// Get Auth Token
     #[instrument(skip(self))]
     pub async fn get_blind_auth_token(&self) -> Result<Option<BlindAuthToken>, Error> {
-        let mut tx = self.localstore.begin_db_transaction().await?;
-
-        let auth_proof = match tx
+        let auth_proof = match self
+            .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
                 Some(CurrencyUnit::Auth),
@@ -299,8 +298,9 @@ impl AuthWallet {
             .pop()
         {
             Some(proof) => {
-                tx.update_proofs(vec![], vec![proof.proof.y()?]).await?;
-                tx.commit().await?;
+                self.localstore
+                    .update_proofs(vec![], vec![proof.proof.y()?])
+                    .await?;
                 proof.proof.try_into()?
             }
             None => return Ok(None),
@@ -390,7 +390,7 @@ impl AuthWallet {
             keysets
                 .get(&active_keyset_id)
                 .map(|x| x.input_fee_ppk)
-                .unwrap_or_default(),
+                .unwrap_or(0),
             self.load_keyset_keys(active_keyset_id)
                 .await?
                 .iter()
@@ -416,7 +416,13 @@ impl AuthWallet {
 
         // Verify the signature DLEQ is valid
         {
-            assert!(mint_res.signatures.len() == premint_secrets.secrets.len());
+            if mint_res.signatures.len() != premint_secrets.secrets.len() {
+                return Err(Error::InvalidMintResponse(format!(
+                    "mint auth signatures ({}) does not match secrets sent ({})",
+                    mint_res.signatures.len(),
+                    premint_secrets.secrets.len()
+                )));
+            }
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
                 let keys = self.load_keyset_keys(sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
@@ -452,9 +458,7 @@ impl AuthWallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        let mut tx = self.localstore.begin_db_transaction().await?;
-        tx.update_proofs(proof_infos, vec![]).await?;
-        tx.commit().await?;
+        self.localstore.update_proofs(proof_infos, vec![]).await?;
 
         Ok(proofs)
     }
