@@ -8,6 +8,7 @@
 
 pub mod task;
 
+/// Authentication related types and utilities
 #[cfg(feature = "auth")]
 pub mod auth;
 pub mod common;
