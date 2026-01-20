@@ -166,12 +166,14 @@ impl SupabaseWalletDatabase {
             .unwrap_or_else(|| self.api_key.clone())
     }
 
+    /// Join the base URL with a path
     pub fn join_url(&self, path: &str) -> Result<Url, DatabaseError> {
         self.url
             .join(path)
             .map_err(|e| DatabaseError::Internal(e.to_string()))
     }
 
+    /// Begin a new database transaction
     pub async fn begin_db_transaction(
         &self,
     ) -> Result<Box<SupabaseWalletTransaction>, DatabaseError> {
@@ -799,6 +801,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     }
 }
 
+/// A transaction for the Supabase wallet database
 #[derive(Debug)]
 pub struct SupabaseWalletTransaction {
     database: SupabaseWalletDatabase,
