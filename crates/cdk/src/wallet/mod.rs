@@ -26,7 +26,7 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::nut17::Kind;
 use crate::nuts::{
-    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proof, Proofs,
+    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
@@ -169,6 +169,17 @@ impl From<WalletSubscription> for WalletParams {
             },
         }
     }
+}
+
+/// Amount that are recovered during restore operation
+#[derive(Debug, Hash, PartialEq, Eq, Default)]
+pub struct Restored {
+    /// Amount in the restore that has alreasy been spent
+    pub spent: Amount,
+    /// Amount restored that is unspent
+    pub unspent: Amount,
+    /// Amount restored that is pending
+    pub pending: Amount,
 }
 
 impl Wallet {
@@ -447,7 +458,7 @@ impl Wallet {
 
     /// Restore
     #[instrument(skip(self))]
-    pub async fn restore(&self) -> Result<Amount, Error> {
+    pub async fn restore(&self) -> Result<Restored, Error> {
         // Check that mint is in store of mints
         if self
             .localstore
@@ -460,7 +471,7 @@ impl Wallet {
 
         let keysets = self.load_mint_keysets().await?;
 
-        let mut restored_value = Amount::ZERO;
+        let mut restored_result = Restored::default();
 
         for keyset in keysets {
             let keys = self.load_keyset_keys(keyset.id).await?;
@@ -558,27 +569,40 @@ impl Wallet {
 
                 let states = self.check_proofs_spent(proofs.clone()).await?;
 
-                let unspent_proofs: Vec<Proof> = proofs
-                    .iter()
-                    .zip(states)
-                    .filter(|(_, state)| !state.state.eq(&State::Spent))
-                    .map(|(p, _)| p)
-                    .cloned()
-                    .collect();
-
-                restored_value += unspent_proofs.total_amount()?;
-
-                let unspent_proofs = unspent_proofs
+                let (unspent_proofs, updated_restored) = proofs
                     .into_iter()
-                    .map(|proof| {
-                        ProofInfo::new(
-                            proof,
-                            self.mint_url.clone(),
-                            State::Unspent,
-                            keyset.unit.clone(),
-                        )
+                    .zip(states)
+                    .filter_map(|(p, state)| {
+                        ProofInfo::new(p, self.mint_url.clone(), state.state, keyset.unit.clone())
+                            .ok()
                     })
-                    .collect::<Result<Vec<ProofInfo>, _>>()?;
+                    .try_fold(
+                        (Vec::new(), restored_result),
+                        |(mut proofs, mut restored_result), proof_info| {
+                            match proof_info.state {
+                                State::Spent => {
+                                    restored_result.spent += proof_info.proof.amount;
+                                    
+                                }
+                                State::Unspent =>  {
+                                    restored_result.unspent += proof_info.proof.amount;
+                            proofs.push(proof_info);
+                                    
+                                }
+                                State::Pending => {
+                                    restored_result.pending += proof_info.proof.amount;
+                            proofs.push(proof_info);
+                                    
+                                }
+                                _ => {
+                                    unreachable!("These states are unknown to the mint and cannot be returned")
+                                }
+                            }
+                            Ok::<(Vec<ProofInfo>, Restored), Error>((proofs, restored_result))
+                        },
+                    )?;
+
+                restored_result = updated_restored;
 
                 self.localstore
                     .update_proofs(unspent_proofs, vec![])
@@ -601,7 +625,7 @@ impl Wallet {
                 );
             }
         }
-        Ok(restored_value)
+        Ok(restored_result)
     }
 
     /// Verify all proofs in token have meet the required spend

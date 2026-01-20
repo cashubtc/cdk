@@ -336,7 +336,7 @@ async fn test_restore() {
         .await
         .unwrap();
 
-    assert_eq!(restored, 100.into());
+    assert_eq!(restored.unspent, 100.into());
 
     // Since we have to do a swap we expect to restore amount - fee
     assert_eq!(
@@ -428,7 +428,7 @@ async fn test_restore_large_proof_count() {
     let proofs = wallet_2.get_unspent_proofs().await.unwrap();
 
     assert_eq!(proofs.len(), mint_amount as usize);
-    assert_eq!(restored, mint_amount.into());
+    assert_eq!(restored.unspent, mint_amount.into());
 
     // Swap in batches to avoid exceeding the 1000 input limit per request
     let mut total_fee = Amount::ZERO;
@@ -551,7 +551,7 @@ async fn test_restore_with_counter_gap() {
 
     // Restore the wallet - this should find proofs at non-sequential counter positions
     let restored = wallet_restored.restore().await.unwrap();
-    assert_eq!(restored, 200.into());
+    assert_eq!(restored.unspent, 200.into());
 
     let proofs = wallet_restored.get_unspent_proofs().await.unwrap();
     assert!(!proofs.is_empty());
