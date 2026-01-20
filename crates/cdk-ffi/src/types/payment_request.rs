@@ -306,11 +306,6 @@ impl PaymentRequestPayload {
         Ok(Arc::new(PaymentRequestPayload { inner }))
     }
 
-    /// Encode PaymentRequestPayload to JSON string
-    pub fn to_string(&self) -> Result<String, FfiError> {
-        Ok(serde_json::to_string(&self.inner)?)
-    }
-
     /// Get the ID
     pub fn id(&self) -> Option<String> {
         self.inner.id.clone()
@@ -334,6 +329,16 @@ impl PaymentRequestPayload {
     /// Get the proofs
     pub fn proofs(&self) -> Vec<Proof> {
         self.inner.proofs.iter().map(|p| p.clone().into()).collect()
+    }
+}
+
+impl std::fmt::Display for PaymentRequestPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            serde_json::to_string(&self.inner).map_err(|_| std::fmt::Error::default())?
+        )
     }
 }
 
