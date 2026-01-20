@@ -831,8 +831,6 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         let item = KeysetCounterTable {
             keyset_id: keyset_id.to_string(),
             counter: new,
-            user_id: None,
-            opt_version: None,
             _extra: Default::default(),
         };
 
@@ -1008,8 +1006,6 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             secondary_namespace: secondary_namespace.to_string(),
             key: key.to_string(),
             value: hex::encode(value),
-            user_id: None,
-            opt_version: None,
             _extra: Default::default(),
         };
 
@@ -1059,14 +1055,8 @@ struct KVStoreTable {
     secondary_namespace: String,
     key: String,
     value: String, // hex encoded bytea
-    // Extra fields from other applications (ignored during deserialization)
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    user_id: Option<serde_json::Value>,
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    opt_version: Option<serde_json::Value>,
-    #[serde(flatten)]
+    /// Extra fields from other applications (captured during deserialization, ignored during serialization)
+    #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -1085,14 +1075,8 @@ struct MintTable {
     motd: Option<String>,
     mint_time: Option<i64>,
     tos_url: Option<String>,
-    // Extra fields from other applications (ignored during deserialization)
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    user_id: Option<serde_json::Value>,
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    opt_version: Option<serde_json::Value>,
-    #[serde(flatten)]
+    /// Extra fields from other applications (captured during deserialization, ignored during serialization)
+    #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -1118,8 +1102,6 @@ impl MintTable {
             motd: info.motd,
             mint_time: info.time.map(|t| t as i64),
             tos_url: info.tos_url,
-            user_id: None,
-            opt_version: None,
             _extra: Default::default(),
         })
     }
@@ -1186,14 +1168,8 @@ struct KeySetTable {
     input_fee_ppk: i64,
     final_expiry: Option<i64>,
     keyset_u32: Option<i64>,
-    // Extra fields from other applications (ignored during deserialization)
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    user_id: Option<serde_json::Value>,
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    opt_version: Option<serde_json::Value>,
-    #[serde(flatten)]
+    /// Extra fields from other applications (captured during deserialization, ignored during serialization)
+    #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -1207,8 +1183,6 @@ impl KeySetTable {
             input_fee_ppk: info.input_fee_ppk as i64,
             final_expiry: info.final_expiry.map(|v| v as i64),
             keyset_u32: Some(u32::from(info.id) as i64),
-            user_id: None,
-            opt_version: None,
             _extra: Default::default(),
         })
     }
@@ -1233,14 +1207,8 @@ struct KeyTable {
     id: String,
     keys: String, // json string
     keyset_u32: Option<i64>,
-    // Extra fields from other applications (ignored during deserialization)
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    user_id: Option<serde_json::Value>,
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    opt_version: Option<serde_json::Value>,
-    #[serde(flatten)]
+    /// Extra fields from other applications (captured during deserialization, ignored during serialization)
+    #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -1250,8 +1218,6 @@ impl KeyTable {
             id: keyset.id.to_string(),
             keys: serde_json::to_string(&keyset.keys)?,
             keyset_u32: Some(u32::from(keyset.id) as i64),
-            user_id: None,
-            opt_version: None,
             _extra: Default::default(),
         })
     }
@@ -1277,14 +1243,8 @@ struct MintQuoteTable {
     payment_method: String,
     amount_issued: i64,
     amount_paid: i64,
-    // Extra fields from other applications (ignored during deserialization)
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    user_id: Option<serde_json::Value>,
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    opt_version: Option<serde_json::Value>,
-    #[serde(flatten)]
+    /// Extra fields from other applications (captured during deserialization, ignored during serialization)
+    #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -1332,8 +1292,6 @@ impl TryFrom<MintQuote> for MintQuoteTable {
             payment_method: q.payment_method.to_string(),
             amount_issued: q.amount_issued.to_u64() as i64,
             amount_paid: q.amount_paid.to_u64() as i64,
-            user_id: None,
-            opt_version: None,
             _extra: Default::default(),
         })
     }
@@ -1350,14 +1308,8 @@ struct MeltQuoteTable {
     expiry: i64,
     payment_preimage: Option<String>,
     payment_method: String,
-    // Extra fields from other applications (ignored during deserialization)
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    user_id: Option<serde_json::Value>,
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    opt_version: Option<serde_json::Value>,
-    #[serde(flatten)]
+    /// Extra fields from other applications (captured during deserialization, ignored during serialization)
+    #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -1394,8 +1346,6 @@ impl TryFrom<wallet::MeltQuote> for MeltQuoteTable {
             expiry: q.expiry as i64,
             payment_preimage: q.payment_preimage,
             payment_method: q.payment_method.to_string(),
-            user_id: None,
-            opt_version: None,
             _extra: Default::default(),
         })
     }
@@ -1416,14 +1366,8 @@ struct ProofTable {
     dleq_e: Option<String>,
     dleq_s: Option<String>,
     dleq_r: Option<String>,
-    // Extra fields from other applications (ignored during deserialization)
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    user_id: Option<serde_json::Value>,
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    opt_version: Option<serde_json::Value>,
-    #[serde(flatten)]
+    /// Extra fields from other applications (captured during deserialization, ignored during serialization)
+    #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -1511,8 +1455,6 @@ impl TryFrom<ProofInfo> for ProofTable {
                 .dleq
                 .as_ref()
                 .map(|d| hex::encode(d.r.to_secret_bytes())),
-            user_id: None,
-            opt_version: None,
             _extra: Default::default(),
         })
     }
@@ -1522,13 +1464,8 @@ impl TryFrom<ProofInfo> for ProofTable {
 struct KeysetCounterTable {
     keyset_id: String,
     counter: u32,
-    // user_id is optional for serialization - if not set, Supabase uses DEFAULT get_current_user_id()
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    user_id: Option<String>,
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    opt_version: Option<serde_json::Value>,
-    #[serde(flatten)]
+    /// Extra fields from other applications (captured during deserialization, ignored during serialization)
+    #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -1548,14 +1485,8 @@ struct TransactionTable {
     payment_request: Option<String>,
     payment_proof: Option<String>,
     payment_method: Option<String>,
-    // Extra fields from other applications (ignored during deserialization)
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    user_id: Option<serde_json::Value>,
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    opt_version: Option<serde_json::Value>,
-    #[serde(flatten)]
+    /// Extra fields from other applications (captured during deserialization, ignored during serialization)
+    #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -1631,8 +1562,6 @@ impl TryFrom<Transaction> for TransactionTable {
             payment_request: t.payment_request,
             payment_proof: t.payment_proof,
             payment_method: t.payment_method.map(|p| p.to_string()),
-            user_id: None,
-            opt_version: None,
             _extra: Default::default(),
         })
     }
