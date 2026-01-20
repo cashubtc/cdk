@@ -115,7 +115,7 @@ impl SupabaseWalletDatabase {
                     if let Some(expires_in) = response.expires_in {
                         let expiration = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("SystemTime should be after UNIX_EPOCH")
+                            .map_err(|e| Error::Supabase(format!("SystemTime error: {}", e)))?
                             .as_secs()
                             + expires_in as u64;
                         self.set_token_expiration(Some(expiration)).await;
