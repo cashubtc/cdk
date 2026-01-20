@@ -5,6 +5,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::amount::{Amount, CurrencyUnit};
+use super::mint::MintUrl;
+use super::proof::Proof;
 use crate::error::FfiError;
 
 /// Transport type for payment request delivery
@@ -287,9 +289,106 @@ pub struct CreateRequestResult {
     pub nostr_wait_info: Option<Arc<NostrWaitInfo>>,
 }
 
+/// Payment Request Payload
+///
+/// Sent over Nostr or other transports.
+#[derive(uniffi::Object)]
+pub struct PaymentRequestPayload {
+    inner: cdk::nuts::PaymentRequestPayload,
+}
+
+#[uniffi::export]
+impl PaymentRequestPayload {
+    /// Decode PaymentRequestPayload from JSON string
+    #[uniffi::constructor]
+    pub fn from_string(json: String) -> Result<Arc<PaymentRequestPayload>, FfiError> {
+        let inner: cdk::nuts::PaymentRequestPayload = serde_json::from_str(&json)?;
+        Ok(Arc::new(PaymentRequestPayload { inner }))
+    }
+
+    /// Encode PaymentRequestPayload to JSON string
+    pub fn to_string(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(&self.inner)?)
+    }
+
+    /// Get the ID
+    pub fn id(&self) -> Option<String> {
+        self.inner.id.clone()
+    }
+
+    /// Get the memo
+    pub fn memo(&self) -> Option<String> {
+        self.inner.memo.clone()
+    }
+
+    /// Get the mint URL
+    pub fn mint(&self) -> MintUrl {
+        self.inner.mint.clone().into()
+    }
+
+    /// Get the currency unit
+    pub fn unit(&self) -> CurrencyUnit {
+        self.inner.unit.clone().into()
+    }
+
+    /// Get the proofs
+    pub fn proofs(&self) -> Vec<Proof> {
+        self.inner.proofs.iter().map(|p| p.clone().into()).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_payment_request_payload() {
+        use std::str::FromStr;
+        // Create a sample payload using inner types
+        let mint_url = cdk::mint_url::MintUrl::from_str("https://mint.example.com").unwrap();
+        let unit = cdk::nuts::CurrencyUnit::Sat;
+        let proofs = vec![];
+
+        let inner = cdk::nuts::PaymentRequestPayload {
+            id: Some("test-id".to_string()),
+            memo: Some("test-memo".to_string()),
+            mint: mint_url.clone(),
+            unit: unit.clone(),
+            proofs: proofs.clone(),
+        };
+
+        let payload = PaymentRequestPayload { inner };
+
+        assert_eq!(payload.id(), Some("test-id".to_string()));
+        assert_eq!(payload.memo(), Some("test-memo".to_string()));
+        assert_eq!(payload.mint().url, "https://mint.example.com");
+        assert!(matches!(payload.unit(), CurrencyUnit::Sat));
+        assert!(payload.proofs().is_empty());
+    }
+
+    #[test]
+    fn test_payment_request_payload_json() {
+        use std::str::FromStr;
+        let mint_url = cdk::mint_url::MintUrl::from_str("https://mint.example.com").unwrap();
+        let unit = cdk::nuts::CurrencyUnit::Sat;
+
+        let inner = cdk::nuts::PaymentRequestPayload {
+            id: Some("test-id".to_string()),
+            memo: Some("test-memo".to_string()),
+            mint: mint_url,
+            unit,
+            proofs: vec![],
+        };
+
+        let payload = PaymentRequestPayload { inner };
+
+        let json = payload.to_string().unwrap();
+        let decoded = PaymentRequestPayload::from_string(json).unwrap();
+
+        assert_eq!(decoded.id(), payload.id());
+        assert_eq!(decoded.memo(), payload.memo());
+        assert_eq!(decoded.mint().url, payload.mint().url);
+    }
 
     const PAYMENT_REQUEST: &str = "creqApWF0gaNhdGVub3N0cmFheKlucHJvZmlsZTFxeTI4d3VtbjhnaGo3dW45ZDNzaGp0bnl2OWtoMnVld2Q5aHN6OW1od2RlbjV0ZTB3ZmprY2N0ZTljdXJ4dmVuOWVlaHFjdHJ2NWhzenJ0aHdkZW41dGUwZGVoaHh0bnZkYWtxcWd5ZGFxeTdjdXJrNDM5eWtwdGt5c3Y3dWRoZGh1NjhzdWNtMjk1YWtxZWZkZWhrZjBkNDk1Y3d1bmw1YWeBgmFuYjE3YWloYjdhOTAxNzZhYQphdWNzYXRhbYF4Imh0dHBzOi8vbm9mZWVzLnRlc3RudXQuY2FzaHUuc3BhY2U=";
 
