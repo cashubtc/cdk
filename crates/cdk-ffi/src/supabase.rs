@@ -2,10 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdk_common::auth::oidc::OidcClient;
-use cdk_common::database::{
-    wallet::Database, DbTransactionFinalizer, Error as CdkDbError, KVStoreDatabase,
-    KVStoreTransaction,
-};
+use cdk_common::database::{wallet::Database, Error as CdkDbError, KVStoreDatabase};
 use cdk_supabase::SupabaseWalletDatabase;
 
 use crate::{
@@ -376,20 +373,8 @@ impl WalletDatabase for WalletSupabaseDatabase {
         key: String,
         value: Vec<u8>,
     ) -> Result<(), FfiError> {
-        let mut tx = self
-            .inner
-            .begin_db_transaction()
-            .await
-            .map_err(|e: CdkDbError| FfiError::Internal {
-                error_message: e.to_string(),
-            })?;
-        (*tx)
+        self.inner
             .kv_write(&primary_namespace, &secondary_namespace, &key, &value)
-            .await
-            .map_err(|e: CdkDbError| FfiError::Internal {
-                error_message: e.to_string(),
-            })?;
-        tx.commit()
             .await
             .map_err(|e: CdkDbError| FfiError::Internal {
                 error_message: e.to_string(),
@@ -403,20 +388,8 @@ impl WalletDatabase for WalletSupabaseDatabase {
         secondary_namespace: String,
         key: String,
     ) -> Result<(), FfiError> {
-        let mut tx = self
-            .inner
-            .begin_db_transaction()
-            .await
-            .map_err(|e: CdkDbError| FfiError::Internal {
-                error_message: e.to_string(),
-            })?;
-        (*tx)
+        self.inner
             .kv_remove(&primary_namespace, &secondary_namespace, &key)
-            .await
-            .map_err(|e: CdkDbError| FfiError::Internal {
-                error_message: e.to_string(),
-            })?;
-        tx.commit()
             .await
             .map_err(|e: CdkDbError| FfiError::Internal {
                 error_message: e.to_string(),

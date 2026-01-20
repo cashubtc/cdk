@@ -7,10 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use cdk_common::auth::oidc::OidcClient;
 use cdk_common::common::ProofInfo;
-use cdk_common::database::{
-    wallet::Database, DbTransactionFinalizer, Error as DatabaseError, KVStoreDatabase,
-    KVStoreTransaction,
-};
+use cdk_common::database::{wallet::Database, Error as DatabaseError, KVStoreDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{
     CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
@@ -23,6 +20,11 @@ use tokio::sync::RwLock;
 use url::Url;
 
 use crate::Error;
+
+/// URL-encode a value for use in query parameters
+fn url_encode(value: &str) -> String {
+    urlencoding::encode(value).into_owned()
+}
 
 /// Supabase wallet database implementation
 ///
@@ -173,13 +175,86 @@ impl SupabaseWalletDatabase {
             .map_err(|e| DatabaseError::Internal(e.to_string()))
     }
 
-    /// Begin a new database transaction
-    pub async fn begin_db_transaction(
-        &self,
-    ) -> Result<Box<SupabaseWalletTransaction>, DatabaseError> {
-        Ok(Box::new(SupabaseWalletTransaction {
-            database: self.clone(),
-        }))
+    /// Make a GET request and return the response text
+    async fn get_request(&self, path: &str) -> Result<(StatusCode, String), Error> {
+        let url = self.join_url(path)?;
+        let auth_bearer = self.get_auth_bearer().await;
+        let res = self
+            .client
+            .get(url)
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", auth_bearer))
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+
+        let status = res.status();
+        let text = res.text().await.map_err(Error::Reqwest)?;
+        Ok((status, text))
+    }
+
+    /// Make a POST request with JSON body
+    async fn post_request<T: Serialize>(&self, path: &str, body: &T) -> Result<StatusCode, Error> {
+        let url = self.join_url(path)?;
+        let auth_bearer = self.get_auth_bearer().await;
+        let res = self
+            .client
+            .post(url)
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", auth_bearer))
+            .header("Prefer", "resolution=merge-duplicates")
+            .json(body)
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+
+        Ok(res.status())
+    }
+
+    /// Make a PATCH request with JSON body
+    async fn patch_request<T: Serialize>(&self, path: &str, body: &T) -> Result<StatusCode, Error> {
+        let url = self.join_url(path)?;
+        let auth_bearer = self.get_auth_bearer().await;
+        let res = self
+            .client
+            .patch(url)
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", auth_bearer))
+            .json(body)
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+
+        Ok(res.status())
+    }
+
+    /// Make a DELETE request
+    async fn delete_request(&self, path: &str) -> Result<StatusCode, Error> {
+        let url = self.join_url(path)?;
+        let auth_bearer = self.get_auth_bearer().await;
+        let res = self
+            .client
+            .delete(url)
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", auth_bearer))
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+
+        Ok(res.status())
+    }
+
+    /// Parse a JSON response, returning None for empty responses
+    fn parse_response<T: serde::de::DeserializeOwned>(text: &str) -> Result<Option<Vec<T>>, Error> {
+        if text.trim().is_empty() || text.trim() == "[]" {
+            return Ok(None);
+        }
+        let items: Vec<T> = serde_json::from_str(text).map_err(Error::Serde)?;
+        if items.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(items))
+        }
     }
 }
 
@@ -193,44 +268,33 @@ impl KVStoreDatabase for SupabaseWalletDatabase {
         secondary_namespace: &str,
         key: &str,
     ) -> Result<Option<Vec<u8>>, Self::Err> {
-        let url = self.join_url(&format!(
+        let path = format!(
             "rest/v1/kv_store?primary_namespace=eq.{}&secondary_namespace=eq.{}&key=eq.{}",
-            primary_namespace, secondary_namespace, key
-        ))?;
+            url_encode(primary_namespace),
+            url_encode(secondary_namespace),
+            url_encode(key)
+        );
 
-        let auth_bearer = self.get_auth_bearer().await;
-        let res = self
-            .client
-            .get(url)
-            .header("apikey", &self.api_key)
-            .header("Authorization", format!("Bearer {}", auth_bearer))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let (status, text) = self.get_request(&path).await?;
 
-        if res.status() == StatusCode::NO_CONTENT {
+        if status == StatusCode::NO_CONTENT || !status.is_success() {
+            if !status.is_success() && status != StatusCode::NO_CONTENT {
+                return Err(DatabaseError::Internal(format!(
+                    "kv_read failed: HTTP {}",
+                    status
+                )));
+            }
             return Ok(None);
         }
 
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
+        if let Some(items) = Self::parse_response::<KVStoreTable>(&text)? {
+            if let Some(item) = items.into_iter().next() {
+                let bytes = hex::decode(item.value)
+                    .map_err(|_| DatabaseError::Internal("Invalid hex in kv_store".into()))?;
+                return Ok(Some(bytes));
+            }
         }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() || text.trim() == "[]" {
-            return Ok(None);
-        }
-        let items: Vec<KVStoreTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        if let Some(item) = items.into_iter().next() {
-            let bytes = hex::decode(item.value)
-                .map_err(|_| DatabaseError::Internal("Invalid hex in kv_store".into()))?;
-            Ok(Some(bytes))
-        } else {
-            Ok(None)
-        }
+        Ok(None)
     }
 
     async fn kv_list(
@@ -238,107 +302,68 @@ impl KVStoreDatabase for SupabaseWalletDatabase {
         primary_namespace: &str,
         secondary_namespace: &str,
     ) -> Result<Vec<String>, Self::Err> {
-        let url = self.join_url(&format!(
+        let path = format!(
             "rest/v1/kv_store?primary_namespace=eq.{}&secondary_namespace=eq.{}",
-            primary_namespace, secondary_namespace
-        ))?;
+            url_encode(primary_namespace),
+            url_encode(secondary_namespace)
+        );
 
-        let auth_bearer = self.get_auth_bearer().await;
-        let res = self
-            .client
-            .get(url)
-            .header("apikey", &self.api_key)
-            .header("Authorization", format!("Bearer {}", auth_bearer))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let (status, text) = self.get_request(&path).await?;
 
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "kv_list failed: HTTP {}",
+                status
+            )));
         }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() || text.trim() == "[]" {
-            return Ok(Vec::new());
+
+        if let Some(items) = Self::parse_response::<KVStoreTable>(&text)? {
+            Ok(items.into_iter().map(|i| i.key).collect())
+        } else {
+            Ok(Vec::new())
         }
-        let items: Vec<KVStoreTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        Ok(items.into_iter().map(|i| i.key).collect())
     }
 }
 #[async_trait]
 impl Database<DatabaseError> for SupabaseWalletDatabase {
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, DatabaseError> {
-        let url = self.join_url(&format!("rest/v1/mint?mint_url=eq.{}", mint_url))?;
-        let auth_bearer = self.get_auth_bearer().await;
-        let res = self
-            .client
-            .get(url)
-            .header("apikey", &self.api_key)
-            .header("Authorization", format!("Bearer {}", auth_bearer))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let path = format!(
+            "rest/v1/mint?mint_url=eq.{}",
+            url_encode(&mint_url.to_string())
+        );
+        let (status, text) = self.get_request(&path).await?;
 
-        if res.status() == StatusCode::NO_CONTENT {
+        if !status.is_success() {
             return Ok(None);
         }
 
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
+        if let Some(mints) = Self::parse_response::<MintTable>(&text)? {
+            if let Some(mint) = mints.into_iter().next() {
+                return Ok(Some(mint.try_into()?));
+            }
         }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() || text.trim() == "[]" {
-            return Ok(None);
-        }
-        let mints: Vec<MintTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        if let Some(mint) = mints.into_iter().next() {
-            Ok(Some(mint.try_into()?))
-        } else {
-            Ok(None)
-        }
+        Ok(None)
     }
 
     async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, DatabaseError> {
-        let url = self.join_url("rest/v1/mint")?;
-        let auth_bearer = self.get_auth_bearer().await;
-        let res = self
-            .client
-            .get(url)
-            .header("apikey", &self.api_key)
-            .header("Authorization", format!("Bearer {}", auth_bearer))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let (status, text) = self.get_request("rest/v1/mint").await?;
 
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_mints failed: HTTP {}",
+                status
+            )));
         }
 
-        let text = res.text().await.map_err(Error::Reqwest)?;
-
-        if text.trim().is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let mints: Vec<MintTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
         let mut map = HashMap::new();
-        for mint in mints {
-            map.insert(
-                MintUrl::from_str(&mint.mint_url)
-                    .map_err(|e| DatabaseError::Internal(e.to_string()))?,
-                Some(mint.try_into()?),
-            );
+        if let Some(mints) = Self::parse_response::<MintTable>(&text)? {
+            for mint in mints {
+                map.insert(
+                    MintUrl::from_str(&mint.mint_url)
+                        .map_err(|e| DatabaseError::Internal(e.to_string()))?,
+                    Some(mint.try_into()?),
+                );
+            }
         }
         Ok(map)
     }
@@ -347,157 +372,161 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         &self,
         mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, DatabaseError> {
-        let url = self.join_url(&format!("rest/v1/keyset?mint_url=eq.{}", mint_url))?;
-        let auth_bearer = self.get_auth_bearer().await;
-        let res = self
-            .client
-            .get(url)
-            .header("apikey", &self.api_key)
-            .header("Authorization", format!("Bearer {}", auth_bearer))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let path = format!(
+            "rest/v1/keyset?mint_url=eq.{}",
+            url_encode(&mint_url.to_string())
+        );
+        let (status, text) = self.get_request(&path).await?;
 
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_mint_keysets failed: HTTP {}",
+                status
+            )));
         }
 
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() {
-            return Ok(None);
+        if let Some(keysets) = Self::parse_response::<KeySetTable>(&text)? {
+            let result: Result<Vec<KeySetInfo>, _> =
+                keysets.into_iter().map(|ks| ks.try_into()).collect();
+            Ok(Some(result?))
+        } else {
+            Ok(None)
         }
-
-        let keysets: Vec<KeySetTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-
-        if keysets.is_empty() {
-            return Ok(None);
-        }
-
-        let mut result = Vec::new();
-        for ks in keysets {
-            result.push(ks.try_into()?);
-        }
-        Ok(Some(result))
     }
 
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.get_keyset_by_id(keyset_id).await
+        let path = format!(
+            "rest/v1/keyset?id=eq.{}",
+            url_encode(&keyset_id.to_string())
+        );
+        let (status, text) = self.get_request(&path).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_keyset_by_id failed: HTTP {}",
+                status
+            )));
+        }
+
+        if let Some(items) = Self::parse_response::<KeySetTable>(&text)? {
+            if let Some(item) = items.into_iter().next() {
+                return Ok(Some(item.try_into()?));
+            }
+        }
+        Ok(None)
     }
 
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.get_mint_quote(quote_id).await
+        let path = format!("rest/v1/mint_quote?id=eq.{}", url_encode(quote_id));
+        let (status, text) = self.get_request(&path).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_mint_quote failed: HTTP {}",
+                status
+            )));
+        }
+
+        if let Some(items) = Self::parse_response::<MintQuoteTable>(&text)? {
+            if let Some(item) = items.into_iter().next() {
+                return Ok(Some(item.try_into()?));
+            }
+        }
+        Ok(None)
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, DatabaseError> {
-        let url = self.join_url("rest/v1/mint_quote")?;
-        let auth_bearer = self.get_auth_bearer().await;
-        let res = self
-            .client
-            .get(url)
-            .header("apikey", &self.api_key)
-            .header("Authorization", format!("Bearer {}", auth_bearer))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let (status, text) = self.get_request("rest/v1/mint_quote").await?;
 
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_mint_quotes failed: HTTP {}",
+                status
+            )));
         }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() || text.trim() == "[]" {
-            return Ok(Vec::new());
+
+        if let Some(quotes) = Self::parse_response::<MintQuoteTable>(&text)? {
+            quotes.into_iter().map(|q| q.try_into()).collect()
+        } else {
+            Ok(Vec::new())
         }
-        let quotes: Vec<MintQuoteTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        let mut result = Vec::new();
-        for q in quotes {
-            result.push(q.try_into()?);
-        }
-        Ok(result)
     }
 
     async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, DatabaseError> {
-        let url = self.join_url("rest/v1/mint_quote?amount_issued=eq.0")?;
-        let auth_bearer = self.get_auth_bearer().await;
-        let res = self
-            .client
-            .get(url)
-            .header("apikey", &self.api_key)
-            .header("Authorization", format!("Bearer {}", auth_bearer))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let (status, text) = self
+            .get_request("rest/v1/mint_quote?amount_issued=eq.0")
+            .await?;
 
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_unissued_mint_quotes failed: HTTP {}",
+                status
+            )));
         }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() || text.trim() == "[]" {
-            return Ok(Vec::new());
+
+        if let Some(quotes) = Self::parse_response::<MintQuoteTable>(&text)? {
+            quotes.into_iter().map(|q| q.try_into()).collect()
+        } else {
+            Ok(Vec::new())
         }
-        let quotes: Vec<MintQuoteTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        let mut result = Vec::new();
-        for q in quotes {
-            result.push(q.try_into()?);
-        }
-        Ok(result)
     }
 
     async fn get_melt_quote(
         &self,
         quote_id: &str,
     ) -> Result<Option<wallet::MeltQuote>, DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.get_melt_quote(quote_id).await
+        let path = format!("rest/v1/melt_quote?id=eq.{}", url_encode(quote_id));
+        let (status, text) = self.get_request(&path).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_melt_quote failed: HTTP {}",
+                status
+            )));
+        }
+
+        if let Some(items) = Self::parse_response::<MeltQuoteTable>(&text)? {
+            if let Some(item) = items.into_iter().next() {
+                return Ok(Some(item.try_into()?));
+            }
+        }
+        Ok(None)
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, DatabaseError> {
-        let url = self.join_url("rest/v1/melt_quote")?;
-        let auth_bearer = self.get_auth_bearer().await;
-        let res = self
-            .client
-            .get(url)
-            .header("apikey", &self.api_key)
-            .header("Authorization", format!("Bearer {}", auth_bearer))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let (status, text) = self.get_request("rest/v1/melt_quote").await?;
 
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_melt_quotes failed: HTTP {}",
+                status
+            )));
         }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() || text.trim() == "[]" {
-            return Ok(Vec::new());
+
+        if let Some(quotes) = Self::parse_response::<MeltQuoteTable>(&text)? {
+            quotes.into_iter().map(|q| q.try_into()).collect()
+        } else {
+            Ok(Vec::new())
         }
-        let quotes: Vec<MeltQuoteTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        let mut result = Vec::new();
-        for q in quotes {
-            result.push(q.try_into()?);
-        }
-        Ok(result)
     }
 
     async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.get_keys(id).await
+        let path = format!("rest/v1/key?id=eq.{}", url_encode(&id.to_string()));
+        let (status, text) = self.get_request(&path).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_keys failed: HTTP {}",
+                status
+            )));
+        }
+
+        if let Some(items) = Self::parse_response::<KeyTable>(&text)? {
+            if let Some(item) = items.into_iter().next() {
+                return Ok(Some(item.try_into()?));
+            }
+        }
+        Ok(None)
     }
 
     async fn get_proofs(
@@ -507,43 +536,71 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.get_proofs(mint_url, unit, state, spending_conditions)
-            .await
+        let mut query = String::from("rest/v1/proof?select=*");
+        if let Some(url) = mint_url {
+            query.push_str(&format!("&mint_url=eq.{}", url_encode(&url.to_string())));
+        }
+        if let Some(u) = unit {
+            query.push_str(&format!("&unit=eq.{}", url_encode(&u.to_string())));
+        }
+        if let Some(states) = state {
+            let s_str: Vec<String> = states.iter().map(|s| s.to_string()).collect();
+            query.push_str(&format!("&state=in.({})", s_str.join(",")));
+        }
+
+        let (status, text) = self.get_request(&query).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_proofs failed: HTTP {}",
+                status
+            )));
+        }
+
+        let mut result = Vec::new();
+        if let Some(proofs) = Self::parse_response::<ProofTable>(&text)? {
+            for p in proofs {
+                result.push(p.try_into()?);
+            }
+        }
+
+        // Filter by spending conditions in memory if specified
+        if let Some(conds) = spending_conditions {
+            result.retain(|p: &ProofInfo| {
+                if let Some(sc) = &p.spending_condition {
+                    conds.contains(sc)
+                } else {
+                    false
+                }
+            });
+        }
+
+        Ok(result)
     }
 
     async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, DatabaseError> {
-        let ys_str: Vec<String> = ys.iter().map(|y| hex::encode(y.to_bytes())).collect();
-        let filter = format!("({},)", ys_str.join(","));
-
-        let url = self.join_url(&format!("rest/v1/proof?y=in.{}", filter))?;
-        let auth_bearer = self.get_auth_bearer().await;
-        let res = self
-            .client
-            .get(url)
-            .header("apikey", &self.api_key)
-            .header("Authorization", format!("Bearer {}", auth_bearer))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
-        }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() || text.trim() == "[]" {
+        if ys.is_empty() {
             return Ok(Vec::new());
         }
-        let proofs: Vec<ProofTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        let mut result = Vec::new();
-        for p in proofs {
-            result.push(p.try_into()?);
+
+        let ys_str: Vec<String> = ys.iter().map(|y| hex::encode(y.to_bytes())).collect();
+        let filter = format!("({})", ys_str.join(","));
+        let path = format!("rest/v1/proof?y=in.{}", filter);
+
+        let (status, text) = self.get_request(&path).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_proofs_by_ys failed: HTTP {}",
+                status
+            )));
         }
-        Ok(result)
+
+        if let Some(proofs) = Self::parse_response::<ProofTable>(&text)? {
+            proofs.into_iter().map(|p| p.try_into()).collect()
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     async fn get_balance(
@@ -552,6 +609,8 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
     ) -> Result<u64, DatabaseError> {
+        // Note: Ideally this would use a server-side SUM aggregation, but PostgREST
+        // doesn't support aggregate functions directly. We fetch all proofs and sum locally.
         let proofs = self.get_proofs(mint_url, unit, state, None).await?;
         Ok(proofs.iter().map(|p| p.proof.amount.to_u64()).sum())
     }
@@ -561,38 +620,20 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         transaction_id: TransactionId,
     ) -> Result<Option<Transaction>, DatabaseError> {
         let id_hex = transaction_id.to_string();
-        let url = self.join_url(&format!("rest/v1/transactions?id=eq.\\x{}", id_hex))?;
-        let auth_bearer = self.get_auth_bearer().await;
-        let res = self
-            .client
-            .get(url)
-            .header("apikey", &self.api_key)
-            .header("Authorization", format!("Bearer {}", auth_bearer))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let path = format!("rest/v1/transactions?id=eq.\\x{}", id_hex);
 
-        if res.status() == StatusCode::NO_CONTENT {
+        let (status, text) = self.get_request(&path).await?;
+
+        if !status.is_success() {
             return Ok(None);
         }
 
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
+        if let Some(txs) = Self::parse_response::<TransactionTable>(&text)? {
+            if let Some(t) = txs.into_iter().next() {
+                return Ok(Some(t.try_into()?));
+            }
         }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() || text.trim() == "[]" {
-            return Ok(None);
-        }
-        let txs: Vec<TransactionTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        if let Some(t) = txs.into_iter().next() {
-            Ok(Some(t.try_into()?))
-        } else {
-            Ok(None)
-        }
+        Ok(None)
     }
 
     async fn list_transactions(
@@ -603,43 +644,29 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     ) -> Result<Vec<Transaction>, DatabaseError> {
         let mut query = String::from("rest/v1/transactions?select=*");
         if let Some(url) = mint_url {
-            query.push_str(&format!("&mint_url=eq.{}", url));
+            query.push_str(&format!("&mint_url=eq.{}", url_encode(&url.to_string())));
         }
         if let Some(d) = direction {
-            query.push_str(&format!("&direction=eq.{}", d));
+            query.push_str(&format!("&direction=eq.{}", url_encode(&d.to_string())));
         }
         if let Some(u) = unit {
-            query.push_str(&format!("&unit=eq.{}", u));
+            query.push_str(&format!("&unit=eq.{}", url_encode(&u.to_string())));
         }
 
-        let url = self.join_url(&query)?;
-        let auth_bearer = self.get_auth_bearer().await;
-        let res = self
-            .client
-            .get(url)
-            .header("apikey", &self.api_key)
-            .header("Authorization", format!("Bearer {}", auth_bearer))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let (status, text) = self.get_request(&query).await?;
 
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "list_transactions failed: HTTP {}",
+                status
+            )));
         }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() || text.trim() == "[]" {
-            return Ok(Vec::new());
+
+        if let Some(txs) = Self::parse_response::<TransactionTable>(&text)? {
+            txs.into_iter().map(|t| t.try_into()).collect()
+        } else {
+            Ok(Vec::new())
         }
-        let txs: Vec<TransactionTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        let mut result = Vec::new();
-        for t in txs {
-            result.push(t.try_into()?);
-        }
-        Ok(result)
     }
 
     async fn update_proofs(
@@ -647,9 +674,43 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.update_proofs(added, removed_ys).await?;
-        tx.commit().await?;
+        // Add new proofs
+        if !added.is_empty() {
+            let items: Result<Vec<ProofTable>, DatabaseError> =
+                added.into_iter().map(|p| p.try_into()).collect();
+            let items = items?;
+
+            let status = self
+                .post_request("rest/v1/proof?on_conflict=y", &items)
+                .await?;
+
+            if !status.is_success() {
+                return Err(DatabaseError::Internal(format!(
+                    "update_proofs (add) failed: HTTP {}",
+                    status
+                )));
+            }
+        }
+
+        // Remove proofs by y values
+        if !removed_ys.is_empty() {
+            let ys_str: Vec<String> = removed_ys
+                .iter()
+                .map(|y| hex::encode(y.to_bytes()))
+                .collect();
+            let filter = format!("({})", ys_str.join(","));
+            let path = format!("rest/v1/proof?y=in.{}", filter);
+
+            let status = self.delete_request(&path).await?;
+
+            if !status.is_success() {
+                return Err(DatabaseError::Internal(format!(
+                    "update_proofs (remove) failed: HTTP {}",
+                    status
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -658,23 +719,53 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         ys: Vec<PublicKey>,
         state: State,
     ) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.update_proofs_state(ys, state).await?;
-        tx.commit().await?;
+        if ys.is_empty() {
+            return Ok(());
+        }
+
+        let ys_str: Vec<String> = ys.iter().map(|y| hex::encode(y.to_bytes())).collect();
+        let filter = format!("({})", ys_str.join(","));
+        let path = format!("rest/v1/proof?y=in.{}", filter);
+
+        let status = self
+            .patch_request(&path, &serde_json::json!({ "state": state.to_string() }))
+            .await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "update_proofs_state failed: HTTP {}",
+                status
+            )));
+        }
+
         Ok(())
     }
 
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.add_transaction(transaction).await?;
-        tx.commit().await?;
+        let item: TransactionTable = transaction.try_into()?;
+        let status = self.post_request("rest/v1/transactions", &item).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "add_transaction failed: HTTP {}",
+                status
+            )));
+        }
         Ok(())
     }
 
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.remove_transaction(transaction_id).await?;
-        tx.commit().await?;
+        let id_hex = transaction_id.to_string();
+        let path = format!("rest/v1/transactions?id=eq.\\x{}", id_hex);
+
+        let status = self.delete_request(&path).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "remove_transaction failed: HTTP {}",
+                status
+            )));
+        }
         Ok(())
     }
 
@@ -683,9 +774,29 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         old_mint_url: MintUrl,
         new_mint_url: MintUrl,
     ) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.update_mint_url(old_mint_url, new_mint_url).await?;
-        tx.commit().await?;
+        let old_encoded = url_encode(&old_mint_url.to_string());
+        let update_body = serde_json::json!({ "mint_url": new_mint_url.to_string() });
+
+        // Update mint_quote table
+        let path = format!("rest/v1/mint_quote?mint_url=eq.{}", old_encoded);
+        let status = self.patch_request(&path, &update_body).await?;
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "update_mint_url (mint_quote) failed: HTTP {}",
+                status
+            )));
+        }
+
+        // Update proof table
+        let path = format!("rest/v1/proof?mint_url=eq.{}", old_encoded);
+        let status = self.patch_request(&path, &update_body).await?;
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "update_mint_url (proof) failed: HTTP {}",
+                status
+            )));
+        }
+
         Ok(())
     }
 
@@ -694,127 +805,51 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         keyset_id: &Id,
         count: u32,
     ) -> Result<u32, DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        let res = tx.increment_keyset_counter(keyset_id, count).await?;
-        tx.commit().await?;
-        Ok(res)
+        // Get current counter value
+        let path = format!(
+            "rest/v1/keyset_counter?keyset_id=eq.{}",
+            url_encode(&keyset_id.to_string())
+        );
+        let (status, text) = self.get_request(&path).await?;
+
+        let current = if status.is_success() {
+            if let Some(items) = Self::parse_response::<KeysetCounterTable>(&text)? {
+                items.into_iter().next().map(|i| i.counter).unwrap_or(0)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        let new = current + count;
+
+        // Delete existing counter (if any)
+        let _ = self.delete_request(&path).await;
+
+        // Insert new counter
+        let item = KeysetCounterTable {
+            keyset_id: keyset_id.to_string(),
+            counter: new,
+            user_id: None,
+            opt_version: None,
+            _extra: Default::default(),
+        };
+
+        let status = self.post_request("rest/v1/keyset_counter", &item).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "increment_keyset_counter failed: HTTP {}",
+                status
+            )));
+        }
+
+        Ok(new)
     }
 
     async fn add_mint(
         &self,
-        mint_url: MintUrl,
-        mint_info: Option<MintInfo>,
-    ) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.add_mint(mint_url, mint_info).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.remove_mint(mint_url).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn add_mint_keysets(
-        &self,
-        mint_url: MintUrl,
-        keysets: Vec<KeySetInfo>,
-    ) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.add_mint_keysets(mint_url, keysets).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.add_mint_quote(quote).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.remove_mint_quote(quote_id).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.add_melt_quote(quote).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.remove_melt_quote(quote_id).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn add_keys(&self, keyset: KeySet) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.add_keys(keyset).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn remove_keys(&self, id: &Id) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        tx.remove_keys(id).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn kv_write(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-        value: &[u8],
-    ) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        (*tx)
-            .kv_write(primary_namespace, secondary_namespace, key, value)
-            .await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn kv_remove(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-    ) -> Result<(), DatabaseError> {
-        let mut tx = self.begin_db_transaction().await?;
-        (*tx)
-            .kv_remove(primary_namespace, secondary_namespace, key)
-            .await?;
-        tx.commit().await?;
-        Ok(())
-    }
-}
-
-/// A transaction for the Supabase wallet database
-#[derive(Debug)]
-pub struct SupabaseWalletTransaction {
-    database: SupabaseWalletDatabase,
-}
-
-impl SupabaseWalletTransaction {
-    /// Get the authorization token to use for requests
-    async fn get_auth_bearer(&self) -> String {
-        self.database.get_auth_bearer().await
-    }
-
-    async fn add_mint(
-        &mut self,
         mint_url: MintUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), DatabaseError> {
@@ -826,207 +861,35 @@ impl SupabaseWalletTransaction {
             },
         };
 
-        let url = self.database.join_url("rest/v1/mint")?;
-        let res = self
-            .database
-            .client
-            .post(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .header("Prefer", "resolution=merge-duplicates")
-            .json(&info_table)
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let status = self.post_request("rest/v1/mint", &info_table).await?;
 
-        let status = res.status();
         if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
             return Err(DatabaseError::Internal(format!(
-                "Failed to add mint: HTTP {}: {}",
-                status, body
+                "add_mint failed: HTTP {}",
+                status
             )));
         }
-
         Ok(())
     }
 
-    async fn remove_mint(&mut self, mint_url: MintUrl) -> Result<(), DatabaseError> {
-        let url = self
-            .database
-            .join_url(&format!("rest/v1/mint?mint_url=eq.{}", mint_url))?;
-        let res = self
-            .database
-            .client
-            .delete(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), DatabaseError> {
+        let path = format!(
+            "rest/v1/mint?mint_url=eq.{}",
+            url_encode(&mint_url.to_string())
+        );
+        let status = self.delete_request(&path).await?;
 
-        let status = res.status();
         if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
             return Err(DatabaseError::Internal(format!(
-                "Failed to remove mint: HTTP {}: {}",
-                status, body
+                "remove_mint failed: HTTP {}",
+                status
             )));
         }
         Ok(())
-    }
-
-    async fn update_mint_url(
-        &mut self,
-        old_mint_url: MintUrl,
-        new_mint_url: MintUrl,
-    ) -> Result<(), DatabaseError> {
-        let url = self
-            .database
-            .join_url(&format!("rest/v1/mint_quote?mint_url=eq.{}", old_mint_url))?;
-        let res = self
-            .database
-            .client
-            .patch(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .json(&serde_json::json!({ "mint_url": new_mint_url.to_string() }))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        if !res.status().is_success() {
-            let status = res.status();
-            let body = res.text().await.map_err(Error::Reqwest)?;
-            return Err(DatabaseError::Internal(format!(
-                "Failed to update mint url in mint_quote: HTTP {}: {}",
-                status, body
-            )));
-        }
-
-        let url = self
-            .database
-            .join_url(&format!("rest/v1/proof?mint_url=eq.{}", old_mint_url))?;
-        let res = self
-            .database
-            .client
-            .patch(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .json(&serde_json::json!({ "mint_url": new_mint_url.to_string() }))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        if !res.status().is_success() {
-            let status = res.status();
-            let body = res.text().await.map_err(Error::Reqwest)?;
-            return Err(DatabaseError::Internal(format!(
-                "Failed to update mint url in proof: HTTP {}: {}",
-                status, body
-            )));
-        }
-
-        Ok(())
-    }
-
-    async fn get_keyset_by_id(
-        &mut self,
-        keyset_id: &Id,
-    ) -> Result<Option<KeySetInfo>, DatabaseError> {
-        let url = self
-            .database
-            .join_url(&format!("rest/v1/keyset?id=eq.{}", keyset_id))?;
-        let res = self
-            .database
-            .client
-            .get(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        if res.status() == StatusCode::NO_CONTENT {
-            return Ok(None);
-        }
-
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
-        }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() || text.trim() == "[]" {
-            return Ok(None);
-        }
-        let items: Vec<KeySetTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        if let Some(item) = items.into_iter().next() {
-            Ok(Some(item.try_into()?))
-        } else {
-            Ok(None)
-        }
-    }
-
-    async fn get_keys(&mut self, id: &Id) -> Result<Option<Keys>, DatabaseError> {
-        let url = self
-            .database
-            .join_url(&format!("rest/v1/key?id=eq.{}", id))?;
-        let res = self
-            .database
-            .client
-            .get(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        if res.status() == StatusCode::NO_CONTENT {
-            return Ok(None);
-        }
-
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
-        }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() || text.trim() == "[]" {
-            return Ok(None);
-        }
-        let items: Vec<KeyTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        if let Some(item) = items.into_iter().next() {
-            Ok(Some(item.try_into()?))
-        } else {
-            Ok(None)
-        }
     }
 
     async fn add_mint_keysets(
-        &mut self,
+        &self,
         mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), DatabaseError> {
@@ -1040,643 +903,101 @@ impl SupabaseWalletTransaction {
             .collect();
         let items = items?;
 
-        let url = self.database.join_url("rest/v1/keyset?on_conflict=id")?;
-        let res = self
-            .database
-            .client
-            .post(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .header("Prefer", "resolution=merge-duplicates")
-            .json(&items)
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let status = self
+            .post_request("rest/v1/keyset?on_conflict=id", &items)
+            .await?;
 
-        let status = res.status();
         if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
             return Err(DatabaseError::Internal(format!(
-                "Failed to add mint keysets: HTTP {}: {}",
-                status, body
+                "add_mint_keysets failed: HTTP {}",
+                status
             )));
         }
-
         Ok(())
     }
 
-    async fn get_mint_quote(&mut self, quote_id: &str) -> Result<Option<MintQuote>, DatabaseError> {
-        let url = self
-            .database
-            .join_url(&format!("rest/v1/mint_quote?id=eq.{}", quote_id))?;
-        let res = self
-            .database
-            .client
-            .get(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
-        }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() {
-            return Ok(None);
-        }
-        let items: Vec<MintQuoteTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        if let Some(item) = items.into_iter().next() {
-            Ok(Some(item.try_into()?))
-        } else {
-            Ok(None)
-        }
-    }
-
-    async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<(), DatabaseError> {
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), DatabaseError> {
         let item: MintQuoteTable = quote.try_into()?;
-        let url = self.database.join_url("rest/v1/mint_quote")?;
-        let res = self
-            .database
-            .client
-            .post(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .header("Prefer", "resolution=merge-duplicates")
-            .json(&item)
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let status = self.post_request("rest/v1/mint_quote", &item).await?;
 
-        let status = res.status();
         if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
             return Err(DatabaseError::Internal(format!(
-                "Failed to add mint quote: HTTP {}: {}",
-                status, body
+                "add_mint_quote failed: HTTP {}",
+                status
             )));
         }
         Ok(())
     }
 
-    async fn remove_mint_quote(&mut self, quote_id: &str) -> Result<(), DatabaseError> {
-        let url = self
-            .database
-            .join_url(&format!("rest/v1/mint_quote?id=eq.{}", quote_id))?;
-        let res = self
-            .database
-            .client
-            .delete(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), DatabaseError> {
+        let path = format!("rest/v1/mint_quote?id=eq.{}", url_encode(quote_id));
+        let status = self.delete_request(&path).await?;
 
-        let status = res.status();
         if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
             return Err(DatabaseError::Internal(format!(
-                "Failed to remove mint quote: HTTP {}: {}",
-                status, body
+                "remove_mint_quote failed: HTTP {}",
+                status
             )));
         }
         Ok(())
     }
 
-    async fn get_melt_quote(
-        &mut self,
-        quote_id: &str,
-    ) -> Result<Option<wallet::MeltQuote>, DatabaseError> {
-        let url = self
-            .database
-            .join_url(&format!("rest/v1/melt_quote?id=eq.{}", quote_id))?;
-        let res = self
-            .database
-            .client
-            .get(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
-        }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() {
-            return Ok(None);
-        }
-        let items: Vec<MeltQuoteTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        if let Some(item) = items.into_iter().next() {
-            Ok(Some(item.try_into()?))
-        } else {
-            Ok(None)
-        }
-    }
-
-    async fn add_melt_quote(&mut self, quote: wallet::MeltQuote) -> Result<(), DatabaseError> {
+    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), DatabaseError> {
         let item: MeltQuoteTable = quote.try_into()?;
-        let url = self.database.join_url("rest/v1/melt_quote")?;
-        let res = self
-            .database
-            .client
-            .post(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .header("Prefer", "resolution=merge-duplicates")
-            .json(&item)
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let status = self.post_request("rest/v1/melt_quote", &item).await?;
 
-        let status = res.status();
         if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
             return Err(DatabaseError::Internal(format!(
-                "Failed to add melt quote: HTTP {}: {}",
-                status, body
+                "add_melt_quote failed: HTTP {}",
+                status
             )));
         }
         Ok(())
     }
 
-    async fn remove_melt_quote(&mut self, quote_id: &str) -> Result<(), DatabaseError> {
-        let url = self
-            .database
-            .join_url(&format!("rest/v1/melt_quote?id=eq.{}", quote_id))?;
-        let res = self
-            .database
-            .client
-            .delete(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), DatabaseError> {
+        let path = format!("rest/v1/melt_quote?id=eq.{}", url_encode(quote_id));
+        let status = self.delete_request(&path).await?;
 
-        let status = res.status();
         if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
             return Err(DatabaseError::Internal(format!(
-                "Failed to remove melt quote: HTTP {}: {}",
-                status, body
+                "remove_melt_quote failed: HTTP {}",
+                status
             )));
         }
         Ok(())
     }
 
-    async fn add_keys(&mut self, keyset: KeySet) -> Result<(), DatabaseError> {
+    async fn add_keys(&self, keyset: KeySet) -> Result<(), DatabaseError> {
         keyset.verify_id().map_err(DatabaseError::from)?;
         let item = KeyTable::from_keyset(&keyset)?;
 
-        let url = self.database.join_url("rest/v1/key")?;
-        let res = self
-            .database
-            .client
-            .post(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .header("Prefer", "resolution=merge-duplicates")
-            .json(&item)
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let status = self.post_request("rest/v1/key", &item).await?;
 
-        let status = res.status();
         if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
             return Err(DatabaseError::Internal(format!(
-                "Failed to add keys: HTTP {}: {}",
-                status, body
+                "add_keys failed: HTTP {}",
+                status
             )));
         }
         Ok(())
     }
 
-    async fn remove_keys(&mut self, id: &Id) -> Result<(), DatabaseError> {
-        let url = self
-            .database
-            .join_url(&format!("rest/v1/key?id=eq.{}", id))?;
-        let res = self
-            .database
-            .client
-            .delete(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+    async fn remove_keys(&self, id: &Id) -> Result<(), DatabaseError> {
+        let path = format!("rest/v1/key?id=eq.{}", url_encode(&id.to_string()));
+        let status = self.delete_request(&path).await?;
 
-        let status = res.status();
         if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
             return Err(DatabaseError::Internal(format!(
-                "Failed to remove keys: HTTP {}: {}",
-                status, body
+                "remove_keys failed: HTTP {}",
+                status
             )));
         }
         Ok(())
-    }
-
-    async fn get_proofs(
-        &mut self,
-        mint_url: Option<MintUrl>,
-        unit: Option<CurrencyUnit>,
-        state: Option<Vec<State>>,
-        spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Vec<ProofInfo>, DatabaseError> {
-        let mut query = String::from("rest/v1/proof?select=*");
-        if let Some(url) = mint_url {
-            query.push_str(&format!("&mint_url=eq.{}", url));
-        }
-        if let Some(u) = unit {
-            query.push_str(&format!("&unit=eq.{}", u));
-        }
-
-        if let Some(states) = state {
-            let s_str: Vec<String> = states.iter().map(|s| s.to_string()).collect();
-            query.push_str(&format!("&state=in.({})", s_str.join(",")));
-        }
-
-        let url = self.database.join_url(&query)?;
-        let res = self
-            .database
-            .client
-            .get(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
-        }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        let proofs: Vec<ProofTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        let mut result = Vec::new();
-        for p in proofs {
-            let info: ProofInfo = p.try_into()?;
-            if let Some(_conds) = &spending_conditions {
-                // memory filter
-                result.push(info);
-            } else {
-                result.push(info);
-            }
-        }
-
-        if let Some(conds) = spending_conditions {
-            result.retain(|p| {
-                if let Some(sc) = &p.spending_condition {
-                    conds.contains(sc)
-                } else {
-                    false
-                }
-            });
-        }
-
-        Ok(result)
-    }
-
-    async fn update_proofs(
-        &mut self,
-        added: Vec<ProofInfo>,
-        removed_ys: Vec<PublicKey>,
-    ) -> Result<(), DatabaseError> {
-        if !added.is_empty() {
-            let items: Result<Vec<ProofTable>, DatabaseError> =
-                added.into_iter().map(|p| p.try_into()).collect();
-            let items = items?;
-
-            let url = self.database.join_url("rest/v1/proof?on_conflict=y")?;
-
-            let res = self
-                .database
-                .client
-                .post(url)
-                .header("apikey", &self.database.api_key)
-                .header(
-                    "Authorization",
-                    format!("Bearer {}", self.get_auth_bearer().await),
-                )
-                .header("Prefer", "resolution=merge-duplicates")
-                .json(&items)
-                .send()
-                .await
-                .map_err(Error::Reqwest)?;
-
-            let status = res.status();
-            if !status.is_success() {
-                let body = res.text().await.map_err(Error::Reqwest)?;
-                return Err(DatabaseError::Internal(format!(
-                    "HTTP {}: {}",
-                    status, body
-                )));
-            }
-        }
-
-        if !removed_ys.is_empty() {
-            let ys_str: Vec<String> = removed_ys
-                .iter()
-                .map(|y| hex::encode(y.to_bytes()))
-                .collect();
-            let filter = format!("({},)", ys_str.join(","));
-            let url = self
-                .database
-                .join_url(&format!("rest/v1/proof?y=in.{}", filter))?;
-            self.database
-                .client
-                .delete(url)
-                .header("apikey", &self.database.api_key)
-                .header(
-                    "Authorization",
-                    format!("Bearer {}", self.get_auth_bearer().await),
-                )
-                .send()
-                .await
-                .map_err(Error::Reqwest)?
-                .error_for_status()
-                .map_err(Error::Reqwest)?;
-        }
-
-        Ok(())
-    }
-
-    async fn update_proofs_state(
-        &mut self,
-        ys: Vec<PublicKey>,
-        state: State,
-    ) -> Result<(), DatabaseError> {
-        if ys.is_empty() {
-            return Ok(());
-        }
-
-        let ys_str: Vec<String> = ys.iter().map(|y| hex::encode(y.to_bytes())).collect();
-        let filter = format!("({},)", ys_str.join(","));
-
-        let url = self
-            .database
-            .join_url(&format!("rest/v1/proof?y=in.{}", filter))?;
-        self.database
-            .client
-            .patch(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .json(&serde_json::json!({ "state": state.to_string() }))
-            .send()
-            .await
-            .map_err(Error::Reqwest)?
-            .error_for_status()
-            .map_err(Error::Reqwest)?;
-        Ok(())
-    }
-
-    async fn increment_keyset_counter(
-        &mut self,
-        keyset_id: &Id,
-        count: u32,
-    ) -> Result<u32, DatabaseError> {
-        // Get current counter value (RLS ensures we only see our own data)
-        let current = self.get_keyset_counter(keyset_id).await.unwrap_or(0);
-        let new = current + count;
-
-        // For upsert to work with composite primary key (keyset_id, user_id),
-        // we need to either:
-        // 1. Use DELETE + INSERT (safe with RLS)
-        // 2. Use RPC function
-        // We'll use DELETE + INSERT approach since RLS ensures we only affect our own rows
-
-        // First, try to delete existing counter (if any) - RLS ensures we only delete our own
-        let delete_url = self.database.join_url(&format!(
-            "rest/v1/keyset_counter?keyset_id=eq.{}",
-            keyset_id
-        ))?;
-        let _ = self
-            .database
-            .client
-            .delete(delete_url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        // Then insert new counter - user_id will be set by database DEFAULT from JWT
-        let item = KeysetCounterTable {
-            keyset_id: keyset_id.to_string(),
-            counter: new,
-            user_id: None, // Will be set by database DEFAULT from JWT's get_current_user_id()
-            opt_version: None,
-            _extra: Default::default(),
-        };
-
-        let insert_url = self.database.join_url("rest/v1/keyset_counter")?;
-        let res = self
-            .database
-            .client
-            .post(insert_url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .json(&item)
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        let status = res.status();
-        if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
-            return Err(DatabaseError::Internal(format!(
-                "Failed to increment keyset counter: HTTP {}: {}",
-                status, body
-            )));
-        }
-
-        Ok(new)
-    }
-
-    async fn add_transaction(&mut self, transaction: Transaction) -> Result<(), DatabaseError> {
-        let item: TransactionTable = transaction.try_into()?;
-        let url = self.database.join_url("rest/v1/transactions")?;
-        let res = self
-            .database
-            .client
-            .post(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .header("Prefer", "resolution=merge-duplicates")
-            .json(&item)
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        let status = res.status();
-        if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
-            return Err(DatabaseError::Internal(format!(
-                "Failed to add transaction: HTTP {}: {}",
-                status, body
-            )));
-        }
-        Ok(())
-    }
-
-    async fn remove_transaction(
-        &mut self,
-        transaction_id: TransactionId,
-    ) -> Result<(), DatabaseError> {
-        let id_hex = transaction_id.to_string();
-        let url = self
-            .database
-            .join_url(&format!("rest/v1/transactions?id=eq.\\x{}", id_hex))?;
-        let res = self
-            .database
-            .client
-            .delete(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        let status = res.status();
-        if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
-            return Err(DatabaseError::Internal(format!(
-                "Failed to remove transaction: HTTP {}: {}",
-                status, body
-            )));
-        }
-        Ok(())
-    }
-}
-
-impl SupabaseWalletTransaction {
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<u32, DatabaseError> {
-        let url = self.database.join_url(&format!(
-            "rest/v1/keyset_counter?keyset_id=eq.{}",
-            keyset_id
-        ))?;
-        let res = self
-            .database
-            .client
-            .get(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
-
-        if !res.status().is_success() {
-            return Err(Error::Reqwest(
-                res.error_for_status()
-                    .expect_err("Status was already checked"),
-            )
-            .into());
-        }
-        let text = res.text().await.map_err(Error::Reqwest)?;
-        if text.trim().is_empty() {
-            return Ok(0);
-        }
-        let items: Vec<KeysetCounterTable> = serde_json::from_str(&text).map_err(Error::Serde)?;
-        if let Some(item) = items.into_iter().next() {
-            Ok(item.counter)
-        } else {
-            Ok(0)
-        }
-    }
-}
-
-#[async_trait]
-impl cdk_common::database::KVStoreTransaction<DatabaseError> for SupabaseWalletTransaction {
-    async fn kv_read(
-        &mut self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-    ) -> Result<Option<Vec<u8>>, DatabaseError> {
-        self.database
-            .kv_read(primary_namespace, secondary_namespace, key)
-            .await
-    }
-
-    async fn kv_list(
-        &mut self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-    ) -> Result<Vec<String>, DatabaseError> {
-        self.database
-            .kv_list(primary_namespace, secondary_namespace)
-            .await
     }
 
     async fn kv_write(
-        &mut self,
+        &self,
         primary_namespace: &str,
         secondary_namespace: &str,
         key: &str,
@@ -1692,77 +1013,37 @@ impl cdk_common::database::KVStoreTransaction<DatabaseError> for SupabaseWalletT
             _extra: Default::default(),
         };
 
-        let url = self.database.join_url("rest/v1/kv_store")?;
-        let res = self
-            .database
-            .client
-            .post(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .header("Prefer", "resolution=merge-duplicates")
-            .json(&item)
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+        let status = self.post_request("rest/v1/kv_store", &item).await?;
 
-        let status = res.status();
         if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
             return Err(DatabaseError::Internal(format!(
-                "Failed to write to kv_store: HTTP {}: {}",
-                status, body
+                "kv_write failed: HTTP {}",
+                status
             )));
         }
         Ok(())
     }
 
     async fn kv_remove(
-        &mut self,
+        &self,
         primary_namespace: &str,
         secondary_namespace: &str,
         key: &str,
     ) -> Result<(), DatabaseError> {
-        let url = self.database.join_url(&format!(
+        let path = format!(
             "rest/v1/kv_store?primary_namespace=eq.{}&secondary_namespace=eq.{}&key=eq.{}",
-            primary_namespace, secondary_namespace, key
-        ))?;
-        let res = self
-            .database
-            .client
-            .delete(url)
-            .header("apikey", &self.database.api_key)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.get_auth_bearer().await),
-            )
-            .send()
-            .await
-            .map_err(Error::Reqwest)?;
+            url_encode(primary_namespace),
+            url_encode(secondary_namespace),
+            url_encode(key)
+        );
+        let status = self.delete_request(&path).await?;
 
-        let status = res.status();
         if !status.is_success() {
-            let body = res.text().await.map_err(Error::Reqwest)?;
             return Err(DatabaseError::Internal(format!(
-                "Failed to remove kv_store entry: HTTP {}: {}",
-                status, body
+                "kv_remove failed: HTTP {}",
+                status
             )));
         }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl DbTransactionFinalizer for SupabaseWalletTransaction {
-    type Err = DatabaseError;
-
-    async fn commit(self: Box<Self>) -> Result<(), Self::Err> {
-        Ok(())
-    }
-
-    async fn rollback(self: Box<Self>) -> Result<(), Self::Err> {
         Ok(())
     }
 }

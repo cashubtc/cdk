@@ -28,6 +28,7 @@ reqwest = { workspace = true }
 url.workspace = true
 once_cell.workspace = true
 hex = "0.4"
+urlencoding = "2.1"
 
 
 [lints]
