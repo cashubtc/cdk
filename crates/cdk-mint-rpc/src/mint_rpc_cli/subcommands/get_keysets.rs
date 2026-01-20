@@ -82,19 +82,24 @@ pub async fn get_keysets(
         );
         println!("{}", "-".repeat(146));
         for ks in keysets {
-            let valid_to = match ks.valid_to {
-                0 => "-".to_string(),
-                v => v.to_string(),
-            };
+            let valid_from = ks
+                .valid_from
+                .map(|v| v.to_string())
+                .unwrap_or("-".to_string());
+            let valid_to = ks
+                .valid_to
+                .map(|v| v.to_string())
+                .unwrap_or("-".to_string());
+            let index = ks.derivation_path_index.as_deref().unwrap_or("-");
             println!(
                 "{:<20} {:<10} {:<8} {:>12} {:>12} {:>8} {:>6} {:>15} {:>15} {:>15} {:>15}",
                 ks.id,
                 ks.unit,
                 ks.active,
-                ks.valid_from,
+                valid_from,
                 valid_to,
                 ks.input_fee_ppk,
-                ks.derivation_path_index,
+                index,
                 ks.total_balance.map(|b| b.to_string()).unwrap_or_default(),
                 ks.total_issued.map(|i| i.to_string()).unwrap_or_default(),
                 ks.total_redeemed.map(|r| r.to_string()).unwrap_or_default(),
@@ -110,19 +115,18 @@ pub async fn get_keysets(
         );
         println!("{}", "-".repeat(82));
         for ks in keysets {
-            let valid_to = match ks.valid_to {
-                0 => "-".to_string(),
-                v => v.to_string(),
-            };
+            let valid_from = ks
+                .valid_from
+                .map(|v| v.to_string())
+                .unwrap_or("-".to_string());
+            let valid_to = ks
+                .valid_to
+                .map(|v| v.to_string())
+                .unwrap_or("-".to_string());
+            let index = ks.derivation_path_index.as_deref().unwrap_or("-");
             println!(
                 "{:<20} {:<10} {:<8} {:>12} {:>12} {:>8} {:>6}",
-                ks.id,
-                ks.unit,
-                ks.active,
-                ks.valid_from,
-                valid_to,
-                ks.input_fee_ppk,
-                ks.derivation_path_index
+                ks.id, ks.unit, ks.active, valid_from, valid_to, ks.input_fee_ppk, index
             );
         }
     }

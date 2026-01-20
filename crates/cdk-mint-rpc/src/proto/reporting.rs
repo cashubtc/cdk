@@ -130,13 +130,13 @@ impl CdkMintReporting for MintRPCServer {
                     id: info.id.to_string(),
                     unit: info.unit.to_string(),
                     active: info.active,
-                    valid_from: info.valid_from,
-                    valid_to: info.final_expiry.unwrap_or(0),
+                    valid_from: match info.valid_from {
+                        0 => None,
+                        v => Some(v),
+                    },
+                    valid_to: info.final_expiry,
                     input_fee_ppk: info.input_fee_ppk,
-                    derivation_path_index: info
-                        .derivation_path_index
-                        .map(|idx| idx.to_string())
-                        .unwrap_or_default(),
+                    derivation_path_index: info.derivation_path_index.map(|idx| idx.to_string()),
                     amounts: info.amounts,
                     total_balance,
                     total_issued,

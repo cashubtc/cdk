@@ -32,10 +32,10 @@ message Keyset {
     string id = 1;
     string unit = 2;
     bool active = 3;
-    uint64 valid_from = 4;
-    uint64 valid_to = 5;
+    optional uint64 valid_from = 4;
+    optional uint64 valid_to = 5;
     uint64 input_fee_ppk = 6;
-    string derivation_path_index = 8;
+    optional string derivation_path_index = 8;
     repeated uint64 amounts = 9;
     optional uint64 total_balance = 10;
     optional uint64 total_issued = 11;
