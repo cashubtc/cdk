@@ -93,6 +93,7 @@ impl Wallet {
 
         self.swap(None, SplitTarget::default(), unspent, None, false)
             .await?;
+
         let _ = self
             .localstore
             .remove_transaction(transaction_id)
