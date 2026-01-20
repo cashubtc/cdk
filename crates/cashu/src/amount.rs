@@ -38,6 +38,9 @@ pub enum Error {
     /// Utf8 parse error
     #[error(transparent)]
     Utf8ParseError(#[from] std::string::FromUtf8Error),
+    /// Cannot represent amount with available denominations
+    #[error("Cannot represent amount {0} with available denominations (got {1})")]
+    CannotSplitAmount(u64, u64),
 }
 
 /// Amount can be any unit
@@ -193,8 +196,11 @@ impl Amount<()> {
     }
 
     /// Split into parts that are powers of two
-    pub fn split(&self, fee_and_amounts: &FeeAndAmounts) -> Vec<Self> {
-        fee_and_amounts
+    ///
+    /// Returns an error if the amount cannot be fully represented
+    /// with the available denominations.
+    pub fn split(&self, fee_and_amounts: &FeeAndAmounts) -> Result<Vec<Self>, Error> {
+        let parts: Vec<Self> = fee_and_amounts
             .amounts
             .iter()
             .rev()
@@ -204,7 +210,14 @@ impl Amount<()> {
                 }
                 (acc, total % amount)
             })
-            .0
+            .0;
+
+        let sum: u64 = parts.iter().map(|a| a.value).sum();
+        if sum != self.value {
+            return Err(Error::CannotSplitAmount(self.value, sum));
+        }
+
+        Ok(parts)
     }
 
     /// Split into parts that are powers of two by target
@@ -214,17 +227,17 @@ impl Amount<()> {
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Vec<Self>, Error> {
         let mut parts = match target {
-            SplitTarget::None => self.split(fee_and_amounts),
+            SplitTarget::None => self.split(fee_and_amounts)?,
             SplitTarget::Value(amount) => {
                 if self.le(amount) {
-                    return Ok(self.split(fee_and_amounts));
+                    return self.split(fee_and_amounts);
                 }
 
                 let mut parts_total = Amount::ZERO;
                 let mut parts = Vec::new();
 
                 // The powers of two that are need to create target value
-                let parts_of_value = amount.split(fee_and_amounts);
+                let parts_of_value = amount.split(fee_and_amounts)?;
 
                 while parts_total.lt(self) {
                     for part in parts_of_value.iter().copied() {
@@ -233,7 +246,7 @@ impl Amount<()> {
                         } else {
                             let amount_left =
                                 self.checked_sub(parts_total).ok_or(Error::AmountOverflow)?;
-                            parts.extend(amount_left.split(fee_and_amounts));
+                            parts.extend(amount_left.split(fee_and_amounts)?);
                         }
 
                         parts_total = Amount::try_sum(parts.clone().iter().copied())?;
@@ -258,7 +271,7 @@ impl Amount<()> {
                         let extra = self
                             .checked_sub(values_total)
                             .ok_or(Error::AmountOverflow)?;
-                        let mut extra_amount = extra.split(fee_and_amounts);
+                        let mut extra_amount = extra.split(fee_and_amounts)?;
                         let mut values = values.clone();
 
                         values.append(&mut extra_amount);
@@ -274,7 +287,7 @@ impl Amount<()> {
 
     /// Splits amount into powers of two while accounting for the swap fee
     pub fn split_with_fee(&self, fee_and_amounts: &FeeAndAmounts) -> Result<Vec<Self>, Error> {
-        let without_fee_amounts = self.split(fee_and_amounts);
+        let without_fee_amounts = self.split(fee_and_amounts)?;
         let total_fee_ppk = fee_and_amounts
             .fee
             .checked_mul(without_fee_amounts.len() as u64)
@@ -282,7 +295,7 @@ impl Amount<()> {
         let fee = Amount::from(total_fee_ppk.div_ceil(1000));
         let new_amount = self.checked_add(fee).ok_or(Error::AmountOverflow)?;
 
-        let split = new_amount.split(fee_and_amounts);
+        let split = new_amount.split(fee_and_amounts)?;
         let split_fee_ppk = (split.len() as u64)
             .checked_mul(fee_and_amounts.fee)
             .ok_or(Error::AmountOverflow)?;
@@ -681,24 +694,24 @@ mod tests {
         let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
 
         assert_eq!(
-            Amount::from(1).split(&fee_and_amounts),
+            Amount::from(1).split(&fee_and_amounts).unwrap(),
             vec![Amount::from(1)]
         );
         assert_eq!(
-            Amount::from(2).split(&fee_and_amounts),
+            Amount::from(2).split(&fee_and_amounts).unwrap(),
             vec![Amount::from(2)]
         );
         assert_eq!(
-            Amount::from(3).split(&fee_and_amounts),
+            Amount::from(3).split(&fee_and_amounts).unwrap(),
             vec![Amount::from(2), Amount::from(1)]
         );
         let amounts: Vec<Amount> = [8, 2, 1].iter().map(|a| Amount::from(*a)).collect();
-        assert_eq!(Amount::from(11).split(&fee_and_amounts), amounts);
+        assert_eq!(Amount::from(11).split(&fee_and_amounts).unwrap(), amounts);
         let amounts: Vec<Amount> = [128, 64, 32, 16, 8, 4, 2, 1]
             .iter()
             .map(|a| Amount::from(*a))
             .collect();
-        assert_eq!(Amount::from(255).split(&fee_and_amounts), amounts);
+        assert_eq!(Amount::from(255).split(&fee_and_amounts).unwrap(), amounts);
     }
 
     #[test]
@@ -1159,17 +1172,17 @@ mod tests {
         let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
 
         let amount = Amount::from(11);
-        let result = amount.split(&fee_and_amounts);
+        let result = amount.split(&fee_and_amounts).unwrap();
         assert!(!result.is_empty());
         assert_eq!(Amount::try_sum(result.iter().copied()).unwrap(), amount);
 
         let amount = Amount::from(255);
-        let result = amount.split(&fee_and_amounts);
+        let result = amount.split(&fee_and_amounts).unwrap();
         assert!(!result.is_empty());
         assert_eq!(Amount::try_sum(result.iter().copied()).unwrap(), amount);
 
         let amount = Amount::from(7);
-        let result = amount.split(&fee_and_amounts);
+        let result = amount.split(&fee_and_amounts).unwrap();
         assert_eq!(
             result,
             vec![Amount::from(4), Amount::from(2), Amount::from(1)]
@@ -1191,7 +1204,7 @@ mod tests {
         let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
 
         let amount = Amount::from(15);
-        let result = amount.split(&fee_and_amounts);
+        let result = amount.split(&fee_and_amounts).unwrap();
 
         assert_eq!(
             result,
@@ -1205,6 +1218,48 @@ mod tests {
 
         let total = Amount::try_sum(result.iter().copied()).unwrap();
         assert_eq!(total, amount);
+    }
+
+    /// Tests that split returns an error when the amount cannot be represented
+    /// with the available denominations.
+    #[test]
+    fn test_split_cannot_represent_amount() {
+        // Only denomination 32 available - the split algorithm can only use each denomination once
+        let fee_and_amounts: FeeAndAmounts = (0, vec![32]).into();
+
+        // 100 cannot be exactly represented: 100 >= 32, push(32), 100 % 32 = 4, result = [32]
+        let amount = Amount::from(100);
+        let result = amount.split(&fee_and_amounts);
+        assert!(result.is_err());
+        match result {
+            Err(Error::CannotSplitAmount(requested, got)) => {
+                assert_eq!(requested, 100);
+                assert_eq!(got, 32); // Only one 32 can be taken
+            }
+            _ => panic!("Expected CannotSplitAmount error"),
+        }
+
+        // 32 can be exactly represented
+        let amount = Amount::from(32);
+        let result = amount.split(&fee_and_amounts);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![Amount::from(32)]);
+
+        // Missing denominations: only have 32 and 64, trying to split 100
+        // 100 >= 64, push(64), 100 % 64 = 36
+        // 36 >= 32, push(32), 36 % 32 = 4
+        // Result: [64, 32] = 96, missing 4
+        let fee_and_amounts: FeeAndAmounts = (0, vec![32, 64]).into();
+        let amount = Amount::from(100);
+        let result = amount.split(&fee_and_amounts);
+        assert!(result.is_err());
+        match result {
+            Err(Error::CannotSplitAmount(requested, got)) => {
+                assert_eq!(requested, 100);
+                assert_eq!(got, 96);
+            }
+            _ => panic!("Expected CannotSplitAmount error"),
+        }
     }
 
     /// Tests that From<u64> correctly converts values to Amount.

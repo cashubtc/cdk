@@ -174,7 +174,7 @@ impl From<WalletSubscription> for WalletParams {
 /// Amount that are recovered during restore operation
 #[derive(Debug, Hash, PartialEq, Eq, Default)]
 pub struct Restored {
-    /// Amount in the restore that has alreasy been spent
+    /// Amount in the restore that has already been spent
     pub spent: Amount,
     /// Amount restored that is unspent
     pub unspent: Amount,
@@ -582,17 +582,14 @@ impl Wallet {
                             match proof_info.state {
                                 State::Spent => {
                                     restored_result.spent += proof_info.proof.amount;
-                                    
                                 }
                                 State::Unspent =>  {
                                     restored_result.unspent += proof_info.proof.amount;
-                            proofs.push(proof_info);
-                                    
+                                    proofs.push(proof_info);
                                 }
                                 State::Pending => {
                                     restored_result.pending += proof_info.proof.amount;
-                            proofs.push(proof_info);
-                                    
+                                    proofs.push(proof_info);
                                 }
                                 _ => {
                                     unreachable!("These states are unknown to the mint and cannot be returned")
