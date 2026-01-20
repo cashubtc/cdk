@@ -10,7 +10,7 @@ use crate::UpdateTosUrlRequest;
 ///
 /// This command sets a new terms of service URL for the mint, which is used to
 /// provide the location of the terms of service for the mint.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct UpdateTosUrlCommand {
     /// The URL to the mint's terms of service
     name: String,

@@ -13,7 +13,7 @@ use crate::ListQuotesRequest;
 /// by states and units. Supports pagination through offset and limit parameters, and can
 /// display results in reverse chronological order. Melt quotes represent requests to redeem
 /// tokens in exchange for external payments.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct ListMeltQuotesCommand {
     /// Offset for pagination
     #[arg(long, default_value = "0")]

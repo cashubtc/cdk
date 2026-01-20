@@ -163,9 +163,9 @@ pub fn melt_quote_to_proto(quote: &MintMeltQuote) -> MeltQuote {
     MeltQuote {
         id: quote.id.to_string(),
         unit: quote.unit.to_string(),
-        amount: quote.amount.into(),
+        amount: quote.amount().value(),
         request: quote.request.to_string(),
-        fee_reserve: quote.fee_reserve.into(),
+        fee_reserve: quote.fee_reserve().value(),
         state: quote.state.to_string(),
         payment_preimage: quote.payment_preimage.clone(),
         request_lookup_id: quote.request_lookup_id.as_ref().map(|r| r.to_string()),

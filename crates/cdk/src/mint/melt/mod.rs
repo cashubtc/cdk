@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-use cdk_common::amount::amount_for_offer;
 use cdk_common::database::mint::{MeltQuoteFilter, MeltQuoteListResult};
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;

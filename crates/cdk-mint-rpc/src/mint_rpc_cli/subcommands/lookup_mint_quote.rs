@@ -12,7 +12,7 @@ use crate::LookupQuoteRequest;
 /// Mint quotes represent requests to mint tokens in exchange for external payments.
 /// The command displays comprehensive quote details including state, amounts, payment
 /// information, payment history, and token issuance records.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct LookupMintQuoteCommand {
     /// The quote ID to look up
     quote_id: String,

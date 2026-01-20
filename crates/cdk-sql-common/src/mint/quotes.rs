@@ -3,7 +3,9 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::database::mint::LockedMeltQuotes;
+use cdk_common::database::mint::{
+    LockedMeltQuotes, MeltQuoteFilter, MeltQuoteListResult, MintQuoteFilter, MintQuoteListResult,
+};
 use cdk_common::database::{
     self, Acquired, ConversionError, Error, MintQuotesDatabase, MintQuotesTransaction,
 };
@@ -15,12 +17,18 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::state::check_melt_quote_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    Amount, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, PaymentMethod, PublicKey,
+    Amount, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, PaymentMethod,
+    PublicKey,
 };
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
+
+use super::filters::{
+    apply_pagination_peek_ahead, bind_date_range, bind_units, build_pagination_clause,
+    build_where_clause, order_direction,
+};
 
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::database::DatabaseExecutor;
@@ -664,7 +672,7 @@ where
             let inputs_amount: u64 = column_as_number!(row[0].clone());
             let inputs_fee: u64 = column_as_number!(row[1].clone());
             let unit_str = column_as_string!(&row[2]);
-            let unit = CurrencyUnit::from_str(&unit_str)?;
+            let unit = CurrencyUnit::from_str(&unit_str).map_err(Error::from)?;
 
             // Get blinded messages from blind_signature table where c IS NULL
             let blinded_messages_rows = query(
@@ -1141,5 +1149,138 @@ where
         .into_iter()
         .map(sql_row_to_melt_quote)
         .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn list_mint_quotes_filtered(
+        &self,
+        filter: MintQuoteFilter,
+    ) -> Result<MintQuoteListResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        // Build dynamic WHERE clauses
+        let mut where_clauses: Vec<String> = Vec::new();
+
+        if filter.creation_date_start.is_some() {
+            where_clauses.push("created_time >= :creation_date_start".into());
+        }
+        if filter.creation_date_end.is_some() {
+            where_clauses.push("created_time <= :creation_date_end".into());
+        }
+        if !filter.units.is_empty() {
+            where_clauses.push("unit IN (:units)".into());
+        }
+
+        // State filter - computed from amount_paid and amount_issued (mint-quote specific)
+        if !filter.states.is_empty() {
+            let state_conditions: Vec<&str> = filter
+                .states
+                .iter()
+                .map(|state| match state {
+                    MintQuoteState::Unpaid => "(amount_paid = 0 AND amount_issued = 0)",
+                    MintQuoteState::Paid => "(amount_paid > amount_issued)",
+                    MintQuoteState::Issued => {
+                        "(amount_paid <= amount_issued AND NOT (amount_paid = 0 AND amount_issued = 0))"
+                    }
+                })
+                .collect();
+            where_clauses.push(format!("({})", state_conditions.join(" OR ")));
+        }
+
+        let where_clause = build_where_clause(&where_clauses);
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
+
+        let query_str = format!(
+            r#"
+            SELECT id, amount, unit, request, expiry, request_lookup_id,
+                   pubkey, created_time, amount_paid, amount_issued,
+                   payment_method, request_lookup_id_kind
+            FROM mint_quote
+            {where_clause}
+            ORDER BY created_time {order}
+            {limit_clause}
+            "#,
+            where_clause = where_clause,
+            order = order_direction(filter.reversed),
+            limit_clause = limit_clause,
+        );
+
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_units(stmt, &filter.units);
+
+        let mut quotes = stmt
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let has_more = apply_pagination_peek_ahead(&mut quotes, requested_limit);
+
+        Ok(MintQuoteListResult { quotes, has_more })
+    }
+
+    async fn list_melt_quotes_filtered(
+        &self,
+        filter: MeltQuoteFilter,
+    ) -> Result<MeltQuoteListResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        // Build dynamic WHERE clauses
+        let mut where_clauses: Vec<String> = Vec::new();
+
+        if filter.creation_date_start.is_some() {
+            where_clauses.push("created_time >= :creation_date_start".into());
+        }
+        if filter.creation_date_end.is_some() {
+            where_clauses.push("created_time <= :creation_date_end".into());
+        }
+        if !filter.units.is_empty() {
+            where_clauses.push("unit IN (:units)".into());
+        }
+        if !filter.states.is_empty() {
+            where_clauses.push("state IN (:states)".into());
+        }
+
+        let where_clause = build_where_clause(&where_clauses);
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
+
+        let query_str = format!(
+            r#"
+            SELECT id, unit, amount, request, fee_reserve, expiry, state,
+                   payment_preimage, request_lookup_id, created_time, paid_time,
+                   payment_method, options, request_lookup_id_kind
+            FROM melt_quote
+            {where_clause}
+            ORDER BY created_time {order}
+            {limit_clause}
+            "#,
+            where_clause = where_clause,
+            order = order_direction(filter.reversed),
+            limit_clause = limit_clause,
+        );
+
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_units(stmt, &filter.units);
+        let stmt = if !filter.states.is_empty() {
+            stmt.bind_vec(
+                "states",
+                filter.states.iter().map(|s| s.to_string()).collect(),
+            )
+        } else {
+            stmt
+        };
+
+        let mut quotes = stmt
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(sql_row_to_melt_quote)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let has_more = apply_pagination_peek_ahead(&mut quotes, requested_limit);
+
+        Ok(MeltQuoteListResult { quotes, has_more })
     }
 }

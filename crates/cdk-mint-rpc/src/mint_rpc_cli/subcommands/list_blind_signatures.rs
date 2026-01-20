@@ -12,7 +12,7 @@ use crate::ListBlindSignaturesRequest;
 /// This command retrieves blind signature information from the mint with optional filtering
 /// by units, keyset IDs, and operation kinds. Supports pagination through offset and limit
 /// parameters, and can display results in reverse chronological order.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct ListBlindSignaturesCommand {
     /// Offset for pagination
     #[arg(long, default_value = "0")]

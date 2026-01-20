@@ -13,7 +13,7 @@ use crate::ListProofsRequest;
 /// units, keyset IDs, and operation kinds. Supports pagination through offset and limit
 /// parameters, and can display results in reverse chronological order. Proofs represent
 /// individual tokens or token fragments that have been minted and can be spent.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct ListProofsCommand {
     /// Offset for pagination
     #[arg(long, default_value = "0")]

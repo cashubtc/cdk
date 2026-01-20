@@ -13,7 +13,7 @@ use crate::ListQuotesRequest;
 /// by states and units. Supports pagination through offset and limit parameters, and can
 /// display results in reverse chronological order. Mint quotes represent requests to mint
 /// tokens in exchange for external payments.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct ListMintQuotesCommand {
     /// Offset for pagination
     #[arg(long, default_value = "0")]

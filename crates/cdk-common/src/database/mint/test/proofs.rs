@@ -485,7 +485,10 @@ where
 
     // Update states to Spent
     let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
-    tx.update_proofs_states(&ys, State::Spent).await.unwrap();
+    let mut acquired_proofs = tx.get_proofs(&ys).await.unwrap();
+    tx.update_proofs_state(&mut acquired_proofs, State::Spent)
+        .await
+        .unwrap();
 
     // Add completed operation with fee breakdown
     let mut fee_by_keyset = std::collections::HashMap::new();

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
+use cdk_common::database::mint::{ProofFilter, ProofListResult, ProofRecord};
 use cdk_common::database::{self, Acquired, Error, MintProofsDatabase};
 use cdk_common::mint::{Operation, ProofsWithState};
 use cdk_common::nut00::ProofsMethods;
@@ -12,6 +13,10 @@ use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
 use cdk_common::{Amount, Id, Proof, Proofs, PublicKey, State};
 
+use super::filters::{
+    apply_pagination_peek_ahead, bind_date_range, bind_keyset_ids, bind_operations, bind_units,
+    build_pagination_clause, build_where_clause, order_direction,
+};
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::database::DatabaseExecutor;
 use crate::pool::DatabasePool;
@@ -94,6 +99,27 @@ pub(super) fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, St
         },
         state,
     ))
+}
+
+pub(super) fn sql_row_to_proof_record(row: Vec<Column>) -> Result<ProofRecord, Error> {
+    unpack_into!(
+        let (
+            amount, keyset_id, state, quote_id, created_time, operation_kind, operation_id
+        ) = row
+    );
+
+    let amount: u64 = column_as_number!(amount);
+    let created_time: u64 = column_as_number!(created_time);
+
+    Ok(ProofRecord {
+        amount: Amount::from(amount),
+        keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
+        state: column_as_string!(state, State::from_str),
+        quote_id: column_as_nullable_string!(quote_id),
+        created_time,
+        operation_kind: column_as_nullable_string!(operation_kind),
+        operation_id: column_as_nullable_string!(operation_id),
+    })
 }
 
 pub(super) fn sql_row_to_hashmap_amount(row: Vec<Column>) -> Result<(Id, Amount), Error> {
@@ -454,7 +480,7 @@ where
         quote_id: &QuoteId,
     ) -> Result<Vec<PublicKey>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
+        let proofs = query(
             r#"
             SELECT
                 amount,
@@ -473,8 +499,8 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_proof)
-        .collect::<Result<Vec<Proof>, _>>()?
-        .ys()?)
+        .collect::<Result<Vec<Proof>, _>>()?;
+        Ok(proofs.ys().map_err(Error::from)?)
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
@@ -536,6 +562,25 @@ where
         .collect()
     }
 
+    /// Get total fees collected by keyset id
+    async fn get_total_fees_collected(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                keyset_id,
+                fee_collected as amount
+            FROM
+                keyset_amounts
+        "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_hashmap_amount)
+        .collect()
+    }
+
     async fn get_proof_ys_by_operation_id(
         &self,
         operation_id: &uuid::Uuid,
@@ -563,5 +608,84 @@ where
             ))
         })
         .collect::<Result<Vec<_>, _>>()
+    }
+
+    async fn list_proofs_filtered(
+        &self,
+        filter: ProofFilter,
+    ) -> Result<ProofListResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        // Build dynamic WHERE clauses
+        let mut where_clauses: Vec<String> = Vec::new();
+        let needs_keyset_join = !filter.units.is_empty();
+
+        if filter.creation_date_start.is_some() {
+            where_clauses.push("p.created_time >= :creation_date_start".into());
+        }
+        if filter.creation_date_end.is_some() {
+            where_clauses.push("p.created_time <= :creation_date_end".into());
+        }
+        if !filter.states.is_empty() {
+            where_clauses.push("p.state IN (:states)".into());
+        }
+        if !filter.keyset_ids.is_empty() {
+            where_clauses.push("p.keyset_id IN (:keyset_ids)".into());
+        }
+        if !filter.units.is_empty() {
+            where_clauses.push("k.unit IN (:units)".into());
+        }
+        if !filter.operations.is_empty() {
+            where_clauses.push("p.operation_kind IN (:operations)".into());
+        }
+
+        let where_clause = build_where_clause(&where_clauses);
+        let join_clause = if needs_keyset_join {
+            "JOIN keyset k ON p.keyset_id = k.id"
+        } else {
+            ""
+        };
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
+
+        let query_str = format!(
+            r#"
+            SELECT p.amount, p.keyset_id, p.state, p.quote_id, p.created_time,
+                   p.operation_kind, p.operation_id
+            FROM proof p
+            {join_clause}
+            {where_clause}
+            ORDER BY p.created_time {order}
+            {limit_clause}
+            "#,
+            join_clause = join_clause,
+            where_clause = where_clause,
+            order = order_direction(filter.reversed),
+            limit_clause = limit_clause,
+        );
+
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_units(stmt, &filter.units);
+        let stmt = bind_keyset_ids(stmt, &filter.keyset_ids);
+        let stmt = bind_operations(stmt, &filter.operations);
+        let stmt = if !filter.states.is_empty() {
+            stmt.bind_vec(
+                "states",
+                filter.states.iter().map(|s| s.to_string()).collect(),
+            )
+        } else {
+            stmt
+        };
+
+        let mut proofs = stmt
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(sql_row_to_proof_record)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let has_more = apply_pagination_peek_ahead(&mut proofs, requested_limit);
+
+        Ok(ProofListResult { proofs, has_more })
     }
 }

@@ -10,7 +10,7 @@ use crate::GetBalancesRequest;
 ///
 /// This command retrieves balance information from the mint by unit,
 /// issued amounts, redeemed amounts, and fees collected.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct GetBalancesCommand {
     /// Filter by unit (e.g., "sat", "usd")
     #[arg(short, long)]

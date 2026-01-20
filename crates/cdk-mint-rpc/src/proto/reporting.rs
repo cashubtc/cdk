@@ -187,16 +187,16 @@ impl CdkMintReporting for MintRPCServer {
             .iter()
             .map(|quote| MintQuoteSummary {
                 id: quote.id.to_string(),
-                amount: quote.amount.map(|a| a.into()),
+                amount: quote.amount.as_ref().map(|a| a.value()),
                 unit: quote.unit.to_string(),
                 request: quote.request.clone(),
                 state: quote.state().to_string(),
                 request_lookup_id: Some(quote.request_lookup_id.to_string()),
                 request_lookup_id_kind: quote.request_lookup_id.kind().to_string(),
-                pubkey: quote.pubkey.map(|pk| pk.to_string()),
+                pubkey: quote.pubkey.as_ref().map(|pk| pk.to_string()),
                 created_time: quote.created_time,
-                amount_paid: quote.amount_paid().into(),
-                amount_issued: quote.amount_issued().into(),
+                amount_paid: quote.amount_paid().value(),
+                amount_issued: quote.amount_issued().value(),
                 payment_method: quote.payment_method.to_string(),
             })
             .collect();
@@ -232,7 +232,7 @@ impl CdkMintReporting for MintRPCServer {
             .payments
             .iter()
             .map(|p| MintQuotePayment {
-                amount: p.amount.into(),
+                amount: p.amount.value(),
                 time: p.time,
                 payment_id: p.payment_id.clone(),
             })
@@ -242,25 +242,25 @@ impl CdkMintReporting for MintRPCServer {
             .issuance
             .iter()
             .map(|i| MintQuoteIssuance {
-                amount: i.amount.into(),
+                amount: i.amount.value(),
                 time: i.time,
             })
             .collect();
 
         let proto_quote = MintQuoteDetail {
             id: quote.id.to_string(),
-            amount: quote.amount.map(|a| a.into()),
+            amount: quote.amount.as_ref().map(|a| a.value()),
             unit: quote.unit.to_string(),
             request: quote.request.clone(),
             state: quote.state().to_string(),
             request_lookup_id: Some(quote.request_lookup_id.to_string()),
             request_lookup_id_kind: quote.request_lookup_id.kind().to_string(),
-            pubkey: quote.pubkey.map(|pk| pk.to_string()),
+            pubkey: quote.pubkey.as_ref().map(|pk| pk.to_string()),
             created_time: quote.created_time,
             payments,
             issuances,
-            amount_paid: quote.amount_paid().into(),
-            amount_issued: quote.amount_issued().into(),
+            amount_paid: quote.amount_paid().value(),
+            amount_issued: quote.amount_issued().value(),
             payment_method: quote.payment_method.to_string(),
         };
 

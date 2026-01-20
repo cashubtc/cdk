@@ -11,7 +11,7 @@ use crate::GetKeysetsRequest;
 /// This command retrieves keyset information from the mint, including keyset IDs, units,
 /// and active status. The results can be filtered by units and various display options
 /// can be configured to include or exclude specific types of keysets.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct GetKeysetsCommand {
     /// Filter by units (comma-separated, e.g., "sat,usd")
     #[arg(short, long)]

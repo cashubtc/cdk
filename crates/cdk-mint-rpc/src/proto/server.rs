@@ -163,7 +163,7 @@ impl MintRPCServer {
         Ok(())
     }
 
-    // Returns the Mint instance
+    /// Returns the Mint instance
     pub fn mint(&self) -> Arc<Mint> {
         Arc::clone(&self.mint)
     }
