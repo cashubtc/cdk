@@ -51,7 +51,9 @@ jobs:
       - name: Install and Verify
         run: |
           # Copy generated bindings to cdk-python source
-          cp cdk/target/bindings/python/cdk.py cdk-python/src/cdk/
+          # Note: UniFFI generates snake_case file based on crate/lib name (cdk_ffi.py)
+          # We rename it to cdk.py as expected by the python package
+          cp cdk/target/bindings/python/cdk_ffi.py cdk-python/src/cdk/cdk.py
           cp cdk/target/bindings/python/libcdk_ffi.so cdk-python/src/cdk/
           
           # Install and Test
