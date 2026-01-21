@@ -62,4 +62,4 @@ jobs:
           cd cdk-flutter/rust
           # Check ensures that the rust code compiles against the local CDK
           # Use CDK's flake for Rust environment
-          nix develop ../../../cdk --command cargo check
+          nix develop ../../cdk --command cargo check
