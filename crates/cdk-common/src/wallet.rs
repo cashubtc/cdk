@@ -376,6 +376,7 @@ impl TryFrom<Proofs> for TransactionId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Public key generated for proof signing
 pub struct P2PKSigningKey {
     /// Public key
     pub pubkey: PublicKey,
