@@ -240,7 +240,7 @@ impl Wallet {
 
         let proofs = self
             .inner
-            .mint(&quote_id, None, amount_split_target.into(), conditions)
+            .mint(&quote_id, amount_split_target.into(), conditions)
             .await?;
         Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
@@ -305,7 +305,12 @@ impl Wallet {
     ) -> Result<MintQuote, FfiError> {
         let quote = self
             .inner
-            .mint_bolt12_quote(amount.map(Into::into), description)
+            .mint_quote(
+                cdk::nuts::PaymentMethod::Known(cdk::nuts::nut00::KnownMethod::Bolt12),
+                amount.map(Into::into),
+                description,
+                None,
+            )
             .await?;
         Ok(quote.into())
     }
@@ -336,32 +341,9 @@ impl Wallet {
         Ok(quote.into())
     }
 
-    /// Mint tokens using bolt12
-    pub async fn mint_bolt12(
-        &self,
-        quote_id: String,
-        amount: Option<Amount>,
-        amount_split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, FfiError> {
-        let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
-
-        let proofs = self
-            .inner
-            .mint_bolt12(
-                &quote_id,
-                amount.map(Into::into),
-                amount_split_target.into(),
-                conditions,
-            )
-            .await?;
-
-        Ok(proofs.into_iter().map(|p| p.into()).collect())
-    }
     pub async fn mint_unified(
         &self,
         quote_id: String,
-        amount: Option<Amount>,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, FfiError> {
@@ -369,12 +351,7 @@ impl Wallet {
 
         let proofs = self
             .inner
-            .mint(
-                &quote_id,
-                amount.map(Into::into),
-                amount_split_target.into(),
-                conditions,
-            )
+            .mint(&quote_id, amount_split_target.into(), conditions)
             .await?;
 
         Ok(proofs.into_iter().map(|p| p.into()).collect())

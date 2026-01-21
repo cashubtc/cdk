@@ -77,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
     let start = std::time::Instant::now();
 
     while start.elapsed() < timeout {
-        let status = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
+        let status = wallet.mint_quote_state(&mint_quote.id).await?;
 
         if status.amount_paid >= initial_amount {
             break;
@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Mint the tokens
     let proofs = wallet
-        .mint(&mint_quote.id, None, SplitTarget::default(), None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
     let received_amount = proofs.total_amount()?;
     println!("Successfully minted {} sats", received_amount);

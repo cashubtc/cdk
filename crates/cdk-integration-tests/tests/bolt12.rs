@@ -70,7 +70,7 @@ async fn test_regtest_bolt12_mint() {
     let mint_amount = Amount::from(100);
 
     let mint_quote = wallet
-        .mint_bolt12_quote(Some(mint_amount), None)
+        .mint_quote(PaymentMethod::BOLT12, Some(mint_amount), None, None)
         .await
         .unwrap();
 
@@ -117,7 +117,9 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
         .use_http_subscription()
         .build()?;
 
-    let mint_quote = wallet.mint_bolt12_quote(None, None).await?;
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, None, None, None)
+        .await?;
 
     let work_dir = get_test_temp_dir();
     let cln_one_dir = get_cln_dir(&work_dir, "one");
@@ -188,7 +190,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
     let cln_client = create_cln_client_with_retry(cln_one_dir.clone()).await?;
     // First wallet payment
     let quote_one = wallet_one
-        .mint_bolt12_quote(Some(10_000.into()), None)
+        .mint_quote(PaymentMethod::BOLT12, Some(10_000.into()), None, None)
         .await?;
     cln_client
         .pay_bolt12_offer(None, quote_one.request.clone())
@@ -207,7 +209,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
 
     // Second wallet payment
     let quote_two = wallet_two
-        .mint_bolt12_quote(Some(15_000.into()), None)
+        .mint_quote(PaymentMethod::BOLT12, Some(15_000.into()), None, None)
         .await?;
     cln_client
         .pay_bolt12_offer(None, quote_two.request.clone())
@@ -285,7 +287,9 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
     let mint_amount = Amount::from(20_000);
 
     // Create a single-use BOLT12 quote
-    let mint_quote = wallet.mint_bolt12_quote(Some(mint_amount), None).await?;
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, Some(mint_amount), None, None)
+        .await?;
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
     // Pay the quote
@@ -340,9 +344,11 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
     )?;
 
     // Create a single-use BOLT12 quote
-    let mint_quote = wallet.mint_bolt12_quote(None, None).await?;
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, None, None, None)
+        .await?;
 
-    let state = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
+    let state = wallet.mint_quote_state(&mint_quote.id).await?;
 
     assert_eq!(state.amount_paid, Amount::ZERO);
     assert_eq!(state.amount_issued, Amount::ZERO);
@@ -363,7 +369,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         .await?
         .unwrap();
 
-    let state = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
+    let state = wallet.mint_quote_state(&mint_quote.id).await?;
 
     assert_eq!(payment, state.amount_paid);
     assert_eq!(state.amount_paid, (pay_amount_msats / 1_000).into());
@@ -432,14 +438,14 @@ async fn test_attempt_to_mint_unpaid() {
     let mint_amount = Amount::from(100);
 
     let mint_quote = wallet
-        .mint_bolt12_quote(Some(mint_amount), None)
+        .mint_quote(PaymentMethod::BOLT12, Some(mint_amount), None, None)
         .await
         .unwrap();
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
     let proofs = wallet
-        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await;
 
     match proofs {
@@ -454,19 +460,16 @@ async fn test_attempt_to_mint_unpaid() {
     }
 
     let mint_quote = wallet
-        .mint_bolt12_quote(Some(mint_amount), None)
+        .mint_quote(PaymentMethod::BOLT12, Some(mint_amount), None, None)
         .await
         .unwrap();
 
-    let state = wallet
-        .mint_bolt12_quote_state(&mint_quote.id)
-        .await
-        .unwrap();
+    let state = wallet.mint_quote_state(&mint_quote.id).await.unwrap();
 
     assert!(state.amount_paid == Amount::ZERO);
 
     let proofs = wallet
-        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await;
 
     match proofs {
@@ -500,7 +503,9 @@ async fn test_check_all_mint_quotes_bolt12() -> Result<()> {
     let mint_amount = Amount::from(100);
 
     // Create a Bolt12 quote
-    let mint_quote = wallet.mint_bolt12_quote(Some(mint_amount), None).await?;
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, Some(mint_amount), None, None)
+        .await?;
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
@@ -567,10 +572,12 @@ async fn test_bolt12_quote_amount_issued_tracking() -> Result<()> {
     )?;
 
     // Create an open-ended Bolt12 quote (no amount specified)
-    let mint_quote = wallet.mint_bolt12_quote(None, None).await?;
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, None, None, None)
+        .await?;
 
     // Verify initial state
-    let state_before = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
+    let state_before = wallet.mint_quote_state(&mint_quote.id).await?;
     assert_eq!(state_before.amount_paid, Amount::ZERO);
     assert_eq!(state_before.amount_issued, Amount::ZERO);
 
@@ -590,7 +597,7 @@ async fn test_bolt12_quote_amount_issued_tracking() -> Result<()> {
         .expect("Should receive payment notification");
 
     // Check state after payment but before minting
-    let state_after_payment = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
+    let state_after_payment = wallet.mint_quote_state(&mint_quote.id).await?;
     assert_eq!(
         state_after_payment.amount_paid,
         Amount::from(pay_amount_msats / 1000)
@@ -603,14 +610,14 @@ async fn test_bolt12_quote_amount_issued_tracking() -> Result<()> {
 
     // Now mint the tokens
     let proofs = wallet
-        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
     let minted_amount = proofs.total_amount()?;
     assert_eq!(minted_amount, payment);
 
     // Check state after minting
-    let state_after_mint = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
+    let state_after_mint = wallet.mint_quote_state(&mint_quote.id).await?;
     assert_eq!(
         state_after_mint.amount_issued, minted_amount,
         "amount_issued should be updated after minting"

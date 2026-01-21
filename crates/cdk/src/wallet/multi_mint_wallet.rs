@@ -1490,7 +1490,6 @@ impl MultiMintWallet {
                             target_wallet
                                 .mint(
                                     &final_mint_quote.id,
-                                    None,
                                     crate::amount::SplitTarget::default(),
                                     None,
                                 )
@@ -1655,7 +1654,7 @@ impl MultiMintWallet {
         })?;
 
         wallet
-            .mint(quote_id, None, amount_split_target, spending_conditions)
+            .mint(quote_id, amount_split_target, spending_conditions)
             .await
     }
 
@@ -1816,7 +1815,7 @@ impl MultiMintWallet {
             mint_url: active_mint.to_string(),
         })?;
 
-        wallet.mint(quote_id, None, split_target, None).await
+        wallet.mint(quote_id, split_target, None).await
     }
 
     /// Create a stream that continuously polls NpubCash and yields proofs as payments arrive
