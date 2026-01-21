@@ -85,7 +85,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Queries the mint for signatures on those messages
     // 3. Reconstructs and stores unspent proofs
     let restored_amount = restored_wallet.restore().await?;
-    println!("Restored {} sats from mint", restored_amount);
+    println!("Restored {} sats from mint", restored_amount.unspent);
+    println!(
+        "Restored {} pending sats from mint",
+        restored_amount.pending
+    );
+    println!("Restored {} spent sats from mint", restored_amount.spent);
 
     // Verify final balance
     let final_balance = restored_wallet.total_balance().await?;
