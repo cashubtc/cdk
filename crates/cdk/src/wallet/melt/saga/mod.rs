@@ -16,12 +16,11 @@ use std::collections::HashMap;
 
 use cdk_common::amount::SplitTarget;
 use cdk_common::dhke::construct_proofs;
-use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::{
     MeltOperationData, MeltQuote, MeltSagaState, OperationData, Transaction, TransactionDirection,
     WalletSaga, WalletSagaState,
 };
-use cdk_common::{MeltQuoteState, PaymentMethod};
+use cdk_common::MeltQuoteState;
 use tracing::instrument;
 
 use self::compensation::{ReleaseMeltQuote, RevertProofReservation};
@@ -64,30 +63,8 @@ impl<'a> MeltSaga<'a, Initial> {
         }
     }
 
-    /// Prepare the melt operation by selecting and reserving proofs.
-    ///
-    /// This is the first step in the saga. It:
-    /// 1. Loads the quote from the database
-    /// 2. Selects proofs for the required amount
-    /// 3. Reserves the selected proofs (sets state to Reserved)
-    /// 4. Determines if a swap is needed
-    ///
-    /// # Compensation
-    ///
-    /// Registers a compensation action that will revert proof reservation
-    /// if later steps fail.
-    #[instrument(skip_all)]
-    pub async fn prepare(
-        mut self,
-        quote_id: &str,
-        _metadata: HashMap<String, String>,
-    ) -> Result<MeltSaga<'a, Prepared>, Error> {
-        tracing::info!(
-            "Preparing melt for quote {} with operation {}",
-            quote_id,
-            self.state_data.operation_id
-        );
-
+    /// Initialize melt operation (common steps for prepare methods)
+    async fn initialize_melt(&mut self, quote_id: &str) -> Result<MeltQuote, Error> {
         let quote_info = self
             .wallet
             .localstore
@@ -115,6 +92,35 @@ impl<'a> MeltSaga<'a, Initial> {
             }),
         )
         .await;
+
+        Ok(quote_info)
+    }
+
+    /// Prepare the melt operation by selecting and reserving proofs.
+    ///
+    /// This is the first step in the saga. It:
+    /// 1. Loads the quote from the database
+    /// 2. Selects proofs for the required amount
+    /// 3. Reserves the selected proofs (sets state to Reserved)
+    /// 4. Determines if a swap is needed
+    ///
+    /// # Compensation
+    ///
+    /// Registers a compensation action that will revert proof reservation
+    /// if later steps fail.
+    #[instrument(skip_all)]
+    pub async fn prepare(
+        mut self,
+        quote_id: &str,
+        _metadata: HashMap<String, String>,
+    ) -> Result<MeltSaga<'a, Prepared>, Error> {
+        tracing::info!(
+            "Preparing melt for quote {} with operation {}",
+            quote_id,
+            self.state_data.operation_id
+        );
+
+        let quote_info = self.initialize_melt(quote_id).await?;
 
         let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
 
@@ -338,17 +344,7 @@ impl<'a> MeltSaga<'a, Initial> {
             self.state_data.operation_id
         );
 
-        let quote_info = self
-            .wallet
-            .localstore
-            .get_melt_quote(quote_id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
-
-        ensure_cdk!(
-            quote_info.expiry.gt(&unix_time()),
-            Error::ExpiredQuote(quote_info.expiry, unix_time())
-        );
+        let quote_info = self.initialize_melt(quote_id).await?;
 
         // Validate proofs are sufficient
         let proofs_total = proofs.total_amount()?;
@@ -356,22 +352,6 @@ impl<'a> MeltSaga<'a, Initial> {
         if proofs_total < inputs_needed {
             return Err(Error::InsufficientFunds);
         }
-
-        // Reserve the quote to prevent concurrent operations from using it
-        self.wallet
-            .localstore
-            .reserve_melt_quote(quote_id, &self.state_data.operation_id)
-            .await?;
-
-        // Register compensation to release quote on failure
-        add_compensation(
-            &mut self.compensations,
-            Box::new(ReleaseMeltQuote {
-                localstore: self.wallet.localstore.clone(),
-                operation_id: self.state_data.operation_id,
-            }),
-        )
-        .await;
 
         let operation_id = self.state_data.operation_id;
         let proof_ys = proofs.ys()?;
@@ -786,26 +766,11 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             Some(self.state_data.premint_secrets.blinded_messages()),
         );
 
-        let melt_result = match quote_info.payment_method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => {
-                self.wallet
-                    .client
-                    .post_melt(&quote_info.payment_method, request)
-                    .await
-            }
-            PaymentMethod::Known(KnownMethod::Bolt12) => {
-                self.wallet
-                    .client
-                    .post_melt(&quote_info.payment_method, request)
-                    .await
-            }
-            PaymentMethod::Custom(_) => {
-                self.wallet
-                    .client
-                    .post_melt(&quote_info.payment_method, request)
-                    .await
-            }
-        };
+        let melt_result = self
+            .wallet
+            .client
+            .post_melt(&quote_info.payment_method, request)
+            .await;
 
         let melt_response = match melt_result {
             Ok(response) => response,
