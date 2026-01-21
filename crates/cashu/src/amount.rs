@@ -1262,6 +1262,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_split_amount_exceeds_keyset_capacity() {
+        // Keyset with denominations 2^0 to 2^31
+        let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
+
+        // Attempt to split 2^63 (way larger than sum of keyset)
+        let amount = Amount::from(2u64.pow(63));
+        let result = amount.split(&fee_and_amounts);
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::CannotSplitAmount(requested, got)) => {
+                assert_eq!(requested, 2u64.pow(63));
+                // The algorithm greedily takes 2^31, and since 2^63 % 2^31 == 0, it stops there.
+                // So "got" should be 2^31.
+                assert_eq!(got, 2u64.pow(31));
+            }
+            _ => panic!("Expected CannotSplitAmount error, got {:?}", result),
+        }
+    }
+
     /// Tests that From<u64> correctly converts values to Amount.
     ///
     /// This conversion is used throughout the codebase including in loops and split operations.
