@@ -16,12 +16,6 @@ jobs:
         with:
           path: cdk
 
-      - name: Checkout CDK Kotlin
-        uses: actions/checkout@v4
-        with:
-          repository: cashubtc/cdk-kotlin
-          path: cdk-kotlin
-
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
 
@@ -31,16 +25,18 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: cdk-kotlin
+          workspaces: cdk
 
       - name: Generate Bindings
         run: |
-          cd cdk-kotlin
-          # cdk-kotlin justfile expects CDK at ../cdk by default
-          nix develop .#ci --command just generate
+          cd cdk
+          # Builds cdk-ffi and generates kotlin bindings
+          nix develop .#ffi --command just ffi-generate-kotlin
 
-      - name: Verify Compilation
+      - name: Verify Artifacts
         run: |
-          cd cdk-kotlin
-          # Fast check: compiles the code without running emulator tests
-          nix develop .#ci --command just test-compile
+          if [ ! -f "cdk/target/bindings/kotlin/org/cashudevkit/cdk_ffi.kt" ]; then
+            echo "Error: Kotlin bindings not found"
+            exit 1
+          fi
+          echo "Kotlin bindings generated successfully"

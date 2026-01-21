@@ -16,12 +16,6 @@ jobs:
         with:
           path: cdk
 
-      - name: Checkout CDK Python
-        uses: actions/checkout@v4
-        with:
-          repository: cashubtc/cdk-python
-          path: cdk-python
-
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
 
@@ -33,32 +27,9 @@ jobs:
         with:
           workspaces: cdk
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Install uv
-        run: pip install uv
-
-      - name: Generate Bindings
+      - name: Generate and Test
         run: |
           cd cdk
-          # Builds cdk-ffi and generates python bindings to target/bindings/python
-          # using the 'ffi' devShell from cdk's flake
-          nix develop .#ffi --command just ffi-generate-python
-
-      - name: Install and Verify
-        run: |
-          # Copy generated bindings to cdk-python source
-          # Note: UniFFI generates snake_case file based on crate/lib name (cdk_ffi.py)
-          # We rename it to cdk.py as expected by the python package
-          cp cdk/target/bindings/python/cdk_ffi.py cdk-python/src/cdk/cdk.py
-          cp cdk/target/bindings/python/libcdk_ffi.so cdk-python/src/cdk/
-          
-          # Install and Test
-          cd cdk-python
-          uv venv
-          source .venv/bin/activate
-          uv pip install -e .[dev]
-          pytest
+          # Builds cdk-ffi, generates python bindings, and runs internal integration tests
+          # using the 'ffi' devShell from cdk's flake which has python3 installed
+          nix develop .#ffi --command just ffi-test

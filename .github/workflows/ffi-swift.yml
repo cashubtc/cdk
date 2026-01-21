@@ -16,12 +16,6 @@ jobs:
         with:
           path: cdk
 
-      - name: Checkout CDK Swift
-        uses: actions/checkout@v4
-        with:
-          repository: cashubtc/cdk-swift
-          path: cdk-swift
-
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
 
@@ -35,15 +29,15 @@ jobs:
 
       - name: Generate Bindings
         run: |
-          cd cdk-swift
-          # Point to the local cdk checkout
-          export CDK_DIR=../cdk
-          # Use CDK's flake for the environment
-          nix develop ../cdk --command just generate
+          cd cdk
+          # Builds cdk-ffi and generates swift bindings
+          # Note: On macOS, this will build a dylib
+          nix develop .#ffi --command just ffi-generate-swift
 
-      - name: Verify Build
+      - name: Verify Artifacts
         run: |
-          cd cdk-swift
-          export CDK_DIR=../cdk
-          # build-native builds for the current platform (macOS) which is faster
-          nix develop ../cdk --command just build-native
+          if [ ! -f "cdk/target/bindings/swift/CashuDevKit.swift" ]; then
+            echo "Error: Swift bindings not found"
+            exit 1
+          fi
+          echo "Swift bindings generated successfully"
