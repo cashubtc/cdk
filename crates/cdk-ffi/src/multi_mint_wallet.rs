@@ -286,10 +286,10 @@ impl MultiMintWallet {
     }
 
     /// Restore wallets for a specific mint
-    pub async fn restore(&self, mint_url: MintUrl) -> Result<Amount, FfiError> {
+    pub async fn restore(&self, mint_url: MintUrl) -> Result<Restored, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
-        let amount = self.inner.restore(&cdk_mint_url).await?;
-        Ok(amount.into())
+        let restored = self.inner.restore(&cdk_mint_url).await?;
+        Ok(restored.into())
     }
 
     /// Prepare a send operation from a specific mint

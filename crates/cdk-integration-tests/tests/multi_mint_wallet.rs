@@ -576,7 +576,7 @@ async fn test_multi_mint_wallet_restore() {
 
     // Restore from mint
     let restored = wallet2.restore(&mint_url).await.unwrap();
-    assert_eq!(restored, 100.into(), "Should restore 100 sats");
+    assert_eq!(restored.unspent, 100.into(), "Should restore 100 sats");
 }
 
 /// Test melt_with_mint() with explicit mint selection

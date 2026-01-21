@@ -307,7 +307,7 @@ impl Wallet {
 
         // Select proofs with the optimal amounts (only split once, not per keyset)
         if let Some(fee_and_amounts) = fee_and_amounts {
-            for optimal_amount in amount.split(fee_and_amounts) {
+            for optimal_amount in amount.split(fee_and_amounts)? {
                 if !select_proof(&proofs, optimal_amount, true) {
                     // Add the remaining amount to the remaining amounts because proof with the optimal amount was not found
                     remaining_amounts.push(optimal_amount);

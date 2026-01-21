@@ -173,7 +173,7 @@ impl Wallet {
                 .await?;
             (send_split, send_fee)
         } else {
-            let send_split = amount.split(&fee_and_amounts);
+            let send_split = amount.split(&fee_and_amounts)?;
             let send_fee = crate::fees::ProofsFeeBreakdown {
                 total: Amount::ZERO,
                 per_keyset: std::collections::HashMap::new(),

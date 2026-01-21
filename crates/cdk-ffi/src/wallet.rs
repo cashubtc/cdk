@@ -138,9 +138,9 @@ impl Wallet {
     }
 
     /// Restore wallet from seed
-    pub async fn restore(&self) -> Result<Amount, FfiError> {
-        let amount = self.inner.restore().await?;
-        Ok(amount.into())
+    pub async fn restore(&self) -> Result<Restored, FfiError> {
+        let restored = self.inner.restore().await?;
+        Ok(restored.into())
     }
 
     /// Verify token DLEQ proofs

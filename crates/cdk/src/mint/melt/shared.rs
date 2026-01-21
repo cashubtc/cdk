@@ -233,7 +233,7 @@ pub async fn process_melt_change(
     let fee_and_amounts = get_keyset_fee_and_amounts(&mint.keysets, &change_outputs);
 
     // Split change into denominations
-    let mut amounts: Vec<Amount> = change_target.split(&fee_and_amounts);
+    let mut amounts: Vec<Amount> = change_target.split(&fee_and_amounts)?;
 
     if change_outputs.len() < amounts.len() {
         tracing::debug!(

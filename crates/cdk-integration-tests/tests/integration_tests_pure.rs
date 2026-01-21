@@ -317,28 +317,24 @@ async fn test_attempt_to_swap_by_overflowing() {
 
     let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
     let keyset_id = keys.id;
-    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
-    let pre_mint_amount = PreMintSecrets::random(
+    let pre_mint_amount = PreMintSecrets::from_secrets(
         keyset_id,
-        amount.into(),
-        &SplitTarget::default(),
-        &fee_and_amounts,
+        vec![amount.into()],
+        vec![cashu::secret::Secret::generate()],
     )
     .unwrap();
-    let pre_mint_amount_two = PreMintSecrets::random(
+    let pre_mint_amount_two = PreMintSecrets::from_secrets(
         keyset_id,
-        amount.into(),
-        &SplitTarget::default(),
-        &fee_and_amounts,
+        vec![amount.into()],
+        vec![cashu::secret::Secret::generate()],
     )
     .unwrap();
 
-    let mut pre_mint = PreMintSecrets::random(
+    let mut pre_mint = PreMintSecrets::from_secrets(
         keyset_id,
-        1.into(),
-        &SplitTarget::default(),
-        &fee_and_amounts,
+        vec![1.into()],
+        vec![cashu::secret::Secret::generate()],
     )
     .unwrap();
 

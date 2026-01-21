@@ -1248,33 +1248,29 @@ async fn test_swap_amount_overflow_protection() {
         .expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint).await;
-    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     // Try to create outputs that would overflow
     // 2^63 + 2^63 + small amount would overflow u64
     let large_amount = 2_u64.pow(63);
 
-    let pre_mint1 = PreMintSecrets::random(
+    let pre_mint1 = PreMintSecrets::from_secrets(
         keyset_id,
-        large_amount.into(),
-        &SplitTarget::default(),
-        &fee_and_amounts,
+        vec![large_amount.into()],
+        vec![cashu::secret::Secret::generate()],
     )
     .expect("Failed to create pre_mint1");
 
-    let pre_mint2 = PreMintSecrets::random(
+    let pre_mint2 = PreMintSecrets::from_secrets(
         keyset_id,
-        large_amount.into(),
-        &SplitTarget::default(),
-        &fee_and_amounts,
+        vec![large_amount.into()],
+        vec![cashu::secret::Secret::generate()],
     )
     .expect("Failed to create pre_mint2");
 
-    let mut combined_pre_mint = PreMintSecrets::random(
+    let mut combined_pre_mint = PreMintSecrets::from_secrets(
         keyset_id,
-        1.into(),
-        &SplitTarget::default(),
-        &fee_and_amounts,
+        vec![1.into()],
+        vec![cashu::secret::Secret::generate()],
     )
     .expect("Failed to create combined_pre_mint");
 
