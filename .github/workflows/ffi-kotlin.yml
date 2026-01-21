@@ -22,26 +22,25 @@ jobs:
           repository: cashubtc/cdk-kotlin
           path: cdk-kotlin
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
 
-      - name: Install Just
-        uses: extractions/setup-just@v1
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          workspaces: cdk-kotlin
 
       - name: Generate Bindings
         run: |
           cd cdk-kotlin
           # cdk-kotlin justfile expects CDK at ../cdk by default
-          just generate
+          nix develop .#ci --command just generate
 
       - name: Verify Compilation
         run: |
           cd cdk-kotlin
           # Fast check: compiles the code without running emulator tests
-          just test-compile
+          nix develop .#ci --command just test-compile

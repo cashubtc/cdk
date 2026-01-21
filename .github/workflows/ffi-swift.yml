@@ -22,22 +22,28 @@ jobs:
           repository: cashubtc/cdk-swift
           path: cdk-swift
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
 
-      - name: Install Just
-        uses: extractions/setup-just@v1
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cdk
 
       - name: Generate Bindings
         run: |
           cd cdk-swift
           # Point to the local cdk checkout
           export CDK_DIR=../cdk
-          just generate
+          # Use CDK's flake for the environment
+          nix develop ../cdk --command just generate
 
       - name: Verify Build
         run: |
           cd cdk-swift
           export CDK_DIR=../cdk
           # build-native builds for the current platform (macOS) which is faster
-          just build-native
+          nix develop ../cdk --command just build-native

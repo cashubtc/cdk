@@ -22,11 +22,16 @@ jobs:
           repository: cashubtc/cdk-python
           path: cdk-python
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
 
-      - name: Install Just
-        uses: extractions/setup-just@v1
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cdk
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -40,7 +45,8 @@ jobs:
         run: |
           cd cdk
           # Builds cdk-ffi and generates python bindings to target/bindings/python
-          just ffi-generate-python
+          # using the 'ffi' devShell from cdk's flake
+          nix develop .#ffi --command just ffi-generate-python
 
       - name: Install and Verify
         run: |
