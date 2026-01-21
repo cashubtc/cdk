@@ -657,4 +657,49 @@ impl Wallet {
             }
         }
     }
+
+    /// Update the state of a melt quote
+    pub(crate) async fn update_melt_quote_state(
+        &self,
+        quote: &mut MeltQuote,
+        response: MeltQuoteBolt11Response<String>,
+    ) -> Result<(), Error> {
+        if let Err(e) = self
+            .add_transaction_for_pending_melt(quote, &response)
+            .await
+        {
+            tracing::error!("Failed to add transaction for pending melt: {}", e);
+        }
+
+        quote.state = response.state;
+        self.localstore.add_melt_quote(quote.clone()).await?;
+        Ok(())
+    }
+
+    /// Check melt quote status
+    #[instrument(skip(self, quote_id))]
+    pub async fn check_melt_quote_status(&self, quote_id: &str) -> Result<MeltQuote, Error> {
+        let mut quote = self
+            .localstore
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        let response = match &quote.payment_method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                self.client.get_melt_quote_status(quote_id).await?
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                self.client.get_melt_bolt12_quote_status(quote_id).await?
+            }
+            // For custom methods, we fall back to the standard status endpoint
+            // or we might need specific handling if the connector supports it.
+            // Currently using the standard one as a best guess.
+            PaymentMethod::Custom(_) => self.client.get_melt_quote_status(quote_id).await?,
+        };
+
+        self.update_melt_quote_state(&mut quote, response).await?;
+
+        Ok(quote)
+    }
 }

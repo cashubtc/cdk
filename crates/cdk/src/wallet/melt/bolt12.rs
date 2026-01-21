@@ -51,6 +51,7 @@ impl Wallet {
             }
         }
 
+        // Construct MeltQuote from response
         let quote = MeltQuote {
             id: quote_res.quote,
             amount: quote_res.amount,
@@ -77,23 +78,11 @@ impl Wallet {
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let response = self.client.get_melt_bolt12_quote_status(quote_id).await?;
 
-        match self.localstore.get_melt_quote(quote_id).await? {
-            Some(quote) => {
-                let mut quote = quote;
-
-                if let Err(e) = self
-                    .add_transaction_for_pending_melt(&quote, &response)
-                    .await
-                {
-                    tracing::error!("Failed to add transaction for pending melt: {}", e);
-                }
-
-                quote.state = response.state;
-                self.localstore.add_melt_quote(quote).await?;
-            }
-            None => {
-                tracing::info!("Quote melt {} unknown", quote_id);
-            }
+        if let Some(mut quote) = self.localstore.get_melt_quote(quote_id).await? {
+            self.update_melt_quote_state(&mut quote, response.clone())
+                .await?;
+        } else {
+            tracing::info!("Quote melt {} unknown", quote_id);
         }
 
         Ok(response)

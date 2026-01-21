@@ -31,10 +31,14 @@ impl Wallet {
         };
         let quote_res = self.client.post_melt_custom_quote(quote_request).await?;
 
+        // Construct MeltQuote from custom response
+        // Use response's request if present, otherwise fallback to input request
+        let quote_request_str = quote_res.request.unwrap_or(request);
+
         let quote = MeltQuote {
             id: quote_res.quote,
             amount: quote_res.amount,
-            request,
+            request: quote_request_str,
             unit: self.unit.clone(),
             fee_reserve: quote_res.fee_reserve,
             state: quote_res.state,
@@ -43,6 +47,7 @@ impl Wallet {
             payment_method: PaymentMethod::Custom(method.to_string()),
             used_by_operation: None,
         };
+
         self.localstore.add_melt_quote(quote.clone()).await?;
 
         Ok(quote)
