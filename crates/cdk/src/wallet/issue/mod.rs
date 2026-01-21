@@ -13,8 +13,7 @@ use tracing::instrument;
 
 use crate::amount::SplitTarget;
 use crate::nuts::{
-    MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteBolt12Response,
-    MintQuoteCustomRequest, Proofs, SecretKey, SpendingConditions,
+    MintQuoteBolt11Request, MintQuoteCustomRequest, Proofs, SecretKey, SpendingConditions,
 };
 use crate::util::unix_time;
 use crate::wallet::{MintQuote, MintQuoteState};
@@ -122,60 +121,55 @@ impl Wallet {
             .await
     }
 
-    /// Mint Bolt12 Quote
-    pub async fn mint_bolt12_quote(
-        &self,
-        amount: Option<Amount>,
-        description: Option<String>,
-    ) -> Result<MintQuote, Error> {
-        self.mint_quote(PaymentMethod::BOLT12, amount, description, None)
-            .await
+    async fn check_state(&self, mint_quote: &mut MintQuote) -> Result<(), Error> {
+        match mint_quote.payment_method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                let mint_quote_response = self.client.get_mint_quote_status(&mint_quote.id).await?;
+                mint_quote.state = mint_quote_response.state;
+
+                match mint_quote_response.state {
+                    MintQuoteState::Paid => {
+                        mint_quote.amount_paid = mint_quote.amount.unwrap_or_default();
+                    }
+                    MintQuoteState::Issued => {
+                        mint_quote.amount_paid = mint_quote.amount.unwrap_or_default();
+                        mint_quote.amount_issued = mint_quote.amount.unwrap_or_default();
+                    }
+                    MintQuoteState::Unpaid => (),
+                }
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                let mint_quote_response = self
+                    .client
+                    .get_mint_quote_bolt12_status(&mint_quote.id)
+                    .await?;
+
+                mint_quote.amount_issued = mint_quote_response.amount_issued;
+                mint_quote.amount_paid = mint_quote_response.amount_paid;
+            }
+            PaymentMethod::Custom(ref _method) => {
+                tracing::warn!("We cannot check unknown types");
+                return Err(Error::UnsupportedPaymentMethod);
+            }
+        }
+
+        Ok(())
     }
 
     /// Check mint quote status
     #[instrument(skip(self, quote_id))]
-    pub async fn mint_quote_state(
-        &self,
-        quote_id: &str,
-    ) -> Result<MintQuoteBolt11Response<String>, Error> {
-        let response = self.client.get_mint_quote_status(quote_id).await?;
+    pub async fn mint_quote_state(&self, quote_id: &str) -> Result<MintQuote, Error> {
+        let mut mint_quote = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
-        match self.localstore.get_mint_quote(quote_id).await? {
-            Some(quote) => {
-                let mut quote = quote;
-                quote.state = response.state;
-                self.localstore.add_mint_quote(quote).await?;
-            }
-            None => {
-                tracing::info!("Quote mint {} unknown", quote_id);
-            }
-        }
+        self.check_state(&mut mint_quote).await?;
 
-        Ok(response)
-    }
+        self.localstore.add_mint_quote(mint_quote.clone()).await?;
 
-    /// Check mint bolt12 quote status
-    #[instrument(skip(self, quote_id))]
-    pub async fn mint_bolt12_quote_state(
-        &self,
-        quote_id: &str,
-    ) -> Result<MintQuoteBolt12Response<String>, Error> {
-        let response = self.client.get_mint_quote_bolt12_status(quote_id).await?;
-
-        match self.localstore.get_mint_quote(quote_id).await? {
-            Some(quote) => {
-                let mut quote = quote;
-                quote.amount_issued = response.amount_issued;
-                quote.amount_paid = response.amount_paid;
-
-                self.localstore.add_mint_quote(quote).await?;
-            }
-            None => {
-                tracing::info!("Quote mint {} unknown", quote_id);
-            }
-        }
-
-        Ok(response)
+        Ok(mint_quote)
     }
 
     /// Check status of pending mint quotes
@@ -185,29 +179,21 @@ impl Wallet {
         let mut total_amount = Amount::ZERO;
 
         for mint_quote in mint_quotes {
-            match mint_quote.payment_method {
-                PaymentMethod::Known(KnownMethod::Bolt11) => {
-                    let mint_quote_response = self.mint_quote_state(&mint_quote.id).await?;
+            let mint_quote = match self.mint_quote_state(&mint_quote.id).await {
+                Ok(q) => q,
+                Err(err) => {
+                    tracing::warn!("Could not check quote state: {}", err);
+                    continue;
+                }
+            };
 
-                    if mint_quote_response.state == MintQuoteState::Paid {
-                        let proofs = self
-                            .mint(&mint_quote.id, None, SplitTarget::default(), None)
-                            .await?;
-                        total_amount += proofs.total_amount()?;
-                    }
-                }
-                PaymentMethod::Known(KnownMethod::Bolt12) => {
-                    let mint_quote_response = self.mint_bolt12_quote_state(&mint_quote.id).await?;
-                    if mint_quote_response.amount_paid > mint_quote_response.amount_issued {
-                        let proofs = self
-                            .mint(&mint_quote.id, None, SplitTarget::default(), None)
-                            .await?;
-                        total_amount += proofs.total_amount()?;
-                    }
-                }
-                PaymentMethod::Custom(_) => {
-                    tracing::warn!("We cannot check unknown types");
-                }
+            let amount_mintable = mint_quote.amount_mintable();
+
+            if amount_mintable > Amount::ZERO {
+                let proofs = self
+                    .mint(&mint_quote.id, SplitTarget::default(), None)
+                    .await?;
+                total_amount += proofs.total_amount()?;
             }
         }
         Ok(total_amount)
@@ -244,7 +230,6 @@ impl Wallet {
     pub async fn mint(
         &self,
         quote_id: &str,
-        amount: Option<Amount>,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
@@ -252,35 +237,10 @@ impl Wallet {
 
         let saga = MintSaga::new(self);
         let saga = saga
-            .prepare(quote_id, amount, amount_split_target, spending_conditions)
+            .prepare(quote_id, amount_split_target, spending_conditions)
             .await?;
         let saga = saga.execute().await?;
 
         Ok(saga.into_proofs())
-    }
-
-    /// Mint Bolt12 (Legacy Wrapper)
-    #[instrument(skip(self))]
-    pub async fn mint_bolt12(
-        &self,
-        quote_id: &str,
-        amount: Option<Amount>,
-        amount_split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, Error> {
-        self.mint(quote_id, amount, amount_split_target, spending_conditions)
-            .await
-    }
-
-    /// Mint Custom (Legacy Wrapper)
-    #[instrument(skip(self))]
-    pub async fn mint_custom(
-        &self,
-        quote_id: &str,
-        amount_split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, Error> {
-        self.mint(quote_id, None, amount_split_target, spending_conditions)
-            .await
     }
 }

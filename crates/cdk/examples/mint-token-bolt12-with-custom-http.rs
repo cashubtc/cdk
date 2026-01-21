@@ -8,7 +8,7 @@ use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{BaseHttpClient, HttpTransport, SendOptions, WalletBuilder};
 use cdk::{Amount, StreamExt};
 use cdk_common::mint_url::MintUrl;
-use cdk_common::AuthToken;
+use cdk_common::{AuthToken, PaymentMethod};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 use serde::de::DeserializeOwned;
@@ -130,9 +130,15 @@ async fn main() -> Result<(), Error> {
         .build()?;
 
     let quotes = vec![
-        wallet.mint_bolt12_quote(None, None).await?,
-        wallet.mint_bolt12_quote(None, None).await?,
-        wallet.mint_bolt12_quote(None, None).await?,
+        wallet
+            .mint_quote(PaymentMethod::BOLT12, None, None, None)
+            .await?,
+        wallet
+            .mint_quote(PaymentMethod::BOLT12, None, None, None)
+            .await?,
+        wallet
+            .mint_quote(PaymentMethod::BOLT12, None, None, None)
+            .await?,
     ];
 
     let mut stream = wallet.mints_proof_stream(quotes, Default::default(), None);

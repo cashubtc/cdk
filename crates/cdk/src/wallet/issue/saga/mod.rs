@@ -228,7 +228,6 @@ impl<'a> MintSaga<'a, Initial> {
     pub async fn prepare(
         self,
         quote_id: &str,
-        amount: Option<Amount>,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<MintSaga<'a, Prepared>, Error> {
@@ -246,22 +245,7 @@ impl<'a> MintSaga<'a, Initial> {
             quote_info.payment_method
         );
 
-        let amount = match amount {
-            Some(amount) => amount,
-            None => {
-                if quote_info.payment_method.is_bolt12() {
-                    // If amount is not supplied, check the status of the quote
-                    let state = self.wallet.mint_bolt12_quote_state(quote_id).await?;
-
-                    if state.amount_paid == Amount::ZERO {
-                        return Err(Error::UnpaidQuote);
-                    }
-                    state.amount_paid - state.amount_issued
-                } else {
-                    quote_info.amount_mintable()
-                }
-            }
-        };
+        let amount = quote_info.amount_mintable();
 
         // Reload quote info in case it changed (though unlikely in this short span, good practice for consistency)
         // Actually, we already have it. But let's follow the pattern if we want fresh state, or just use what we have.

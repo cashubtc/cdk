@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use cdk::error::Error;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::{SendOptions, Wallet};
 use cdk::{Amount, StreamExt};
 use cdk_sqlite::wallet::memory;
@@ -35,9 +35,15 @@ async fn main() -> Result<(), Error> {
     let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
 
     let quotes = vec![
-        wallet.mint_bolt12_quote(None, None).await?,
-        wallet.mint_bolt12_quote(None, None).await?,
-        wallet.mint_bolt12_quote(None, None).await?,
+        wallet
+            .mint_quote(PaymentMethod::BOLT12, None, None, None)
+            .await?,
+        wallet
+            .mint_quote(PaymentMethod::BOLT12, None, None, None)
+            .await?,
+        wallet
+            .mint_quote(PaymentMethod::BOLT12, None, None, None)
+            .await?,
     ];
 
     let mut stream = wallet.mints_proof_stream(quotes, Default::default(), None);

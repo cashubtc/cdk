@@ -81,7 +81,12 @@ pub async fn mint(
                         .map_or("none".to_string(), |b| b.to_string())
                 );
                 let quote = wallet
-                    .mint_bolt12_quote(amount.map(|a| a.into()), description)
+                    .mint_quote(
+                        payment_method.clone(),
+                        amount.map(|a| a.into()),
+                        description,
+                        None,
+                    )
                     .await?;
 
                 println!(

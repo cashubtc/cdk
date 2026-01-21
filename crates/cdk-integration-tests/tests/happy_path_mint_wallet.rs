@@ -700,7 +700,7 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .expect("failed to add mint");
 
     let mint_quote = multi_mint_wallet
-        .mint_bolt11_quote(&mint_url, 100.into(), None)
+        .mint_quote(&mint_url, 100.into(), None)
         .await
         .unwrap();
 
