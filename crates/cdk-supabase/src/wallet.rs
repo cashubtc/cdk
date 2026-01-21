@@ -179,9 +179,12 @@ impl SupabaseWalletDatabase {
     async fn get_request(&self, path: &str) -> Result<(StatusCode, String), Error> {
         let url = self.join_url(path)?;
         let auth_bearer = self.get_auth_bearer().await;
+
+        tracing::debug!(method = "GET", url = %url, "Supabase request");
+
         let res = self
             .client
-            .get(url)
+            .get(url.clone())
             .header("apikey", &self.api_key)
             .header("Authorization", format!("Bearer {}", auth_bearer))
             .send()
@@ -190,16 +193,26 @@ impl SupabaseWalletDatabase {
 
         let status = res.status();
         let text = res.text().await.map_err(Error::Reqwest)?;
+
+        tracing::debug!(method = "GET", url = %url, status = %status, response = %text, "Supabase response");
+
         Ok((status, text))
     }
 
     /// Make a POST request with JSON body
-    async fn post_request<T: Serialize>(&self, path: &str, body: &T) -> Result<StatusCode, Error> {
+    async fn post_request<T: Serialize + Debug>(
+        &self,
+        path: &str,
+        body: &T,
+    ) -> Result<(StatusCode, String), Error> {
         let url = self.join_url(path)?;
         let auth_bearer = self.get_auth_bearer().await;
+
+        tracing::debug!(method = "POST", url = %url, body = ?body, "Supabase request");
+
         let res = self
             .client
-            .post(url)
+            .post(url.clone())
             .header("apikey", &self.api_key)
             .header("Authorization", format!("Bearer {}", auth_bearer))
             .header("Prefer", "resolution=merge-duplicates")
@@ -208,16 +221,28 @@ impl SupabaseWalletDatabase {
             .await
             .map_err(Error::Reqwest)?;
 
-        Ok(res.status())
+        let status = res.status();
+        let text = res.text().await.map_err(Error::Reqwest)?;
+
+        tracing::debug!(method = "POST", url = %url, status = %status, response = %text, "Supabase response");
+
+        Ok((status, text))
     }
 
     /// Make a PATCH request with JSON body
-    async fn patch_request<T: Serialize>(&self, path: &str, body: &T) -> Result<StatusCode, Error> {
+    async fn patch_request<T: Serialize + Debug>(
+        &self,
+        path: &str,
+        body: &T,
+    ) -> Result<(StatusCode, String), Error> {
         let url = self.join_url(path)?;
         let auth_bearer = self.get_auth_bearer().await;
+
+        tracing::debug!(method = "PATCH", url = %url, body = ?body, "Supabase request");
+
         let res = self
             .client
-            .patch(url)
+            .patch(url.clone())
             .header("apikey", &self.api_key)
             .header("Authorization", format!("Bearer {}", auth_bearer))
             .json(body)
@@ -225,23 +250,36 @@ impl SupabaseWalletDatabase {
             .await
             .map_err(Error::Reqwest)?;
 
-        Ok(res.status())
+        let status = res.status();
+        let text = res.text().await.map_err(Error::Reqwest)?;
+
+        tracing::debug!(method = "PATCH", url = %url, status = %status, response = %text, "Supabase response");
+
+        Ok((status, text))
     }
 
     /// Make a DELETE request
-    async fn delete_request(&self, path: &str) -> Result<StatusCode, Error> {
+    async fn delete_request(&self, path: &str) -> Result<(StatusCode, String), Error> {
         let url = self.join_url(path)?;
         let auth_bearer = self.get_auth_bearer().await;
+
+        tracing::debug!(method = "DELETE", url = %url, "Supabase request");
+
         let res = self
             .client
-            .delete(url)
+            .delete(url.clone())
             .header("apikey", &self.api_key)
             .header("Authorization", format!("Bearer {}", auth_bearer))
             .send()
             .await
             .map_err(Error::Reqwest)?;
 
-        Ok(res.status())
+        let status = res.status();
+        let text = res.text().await.map_err(Error::Reqwest)?;
+
+        tracing::debug!(method = "DELETE", url = %url, status = %status, response = %text, "Supabase response");
+
+        Ok((status, text))
     }
 
     /// Parse a JSON response, returning None for empty responses
@@ -680,14 +718,14 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
                 added.into_iter().map(|p| p.try_into()).collect();
             let items = items?;
 
-            let status = self
+            let (status, response_text) = self
                 .post_request("rest/v1/proof?on_conflict=y", &items)
                 .await?;
 
             if !status.is_success() {
                 return Err(DatabaseError::Internal(format!(
-                    "update_proofs (add) failed: HTTP {}",
-                    status
+                    "update_proofs (add) failed: HTTP {} - {}",
+                    status, response_text
                 )));
             }
         }
@@ -701,12 +739,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             let filter = format!("({})", ys_str.join(","));
             let path = format!("rest/v1/proof?y=in.{}", filter);
 
-            let status = self.delete_request(&path).await?;
+            let (status, response_text) = self.delete_request(&path).await?;
 
             if !status.is_success() {
                 return Err(DatabaseError::Internal(format!(
-                    "update_proofs (remove) failed: HTTP {}",
-                    status
+                    "update_proofs (remove) failed: HTTP {} - {}",
+                    status, response_text
                 )));
             }
         }
@@ -727,14 +765,14 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         let filter = format!("({})", ys_str.join(","));
         let path = format!("rest/v1/proof?y=in.{}", filter);
 
-        let status = self
+        let (status, response_text) = self
             .patch_request(&path, &serde_json::json!({ "state": state.to_string() }))
             .await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "update_proofs_state failed: HTTP {}",
-                status
+                "update_proofs_state failed: HTTP {} - {}",
+                status, response_text
             )));
         }
 
@@ -743,12 +781,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), DatabaseError> {
         let item: TransactionTable = transaction.try_into()?;
-        let status = self.post_request("rest/v1/transactions", &item).await?;
+        let (status, response_text) = self.post_request("rest/v1/transactions", &item).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "add_transaction failed: HTTP {}",
-                status
+                "add_transaction failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())
@@ -758,12 +796,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         let id_hex = transaction_id.to_string();
         let path = format!("rest/v1/transactions?id=eq.\\x{}", id_hex);
 
-        let status = self.delete_request(&path).await?;
+        let (status, response_text) = self.delete_request(&path).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "remove_transaction failed: HTTP {}",
-                status
+                "remove_transaction failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())
@@ -779,21 +817,21 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
         // Update mint_quote table
         let path = format!("rest/v1/mint_quote?mint_url=eq.{}", old_encoded);
-        let status = self.patch_request(&path, &update_body).await?;
+        let (status, response_text) = self.patch_request(&path, &update_body).await?;
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "update_mint_url (mint_quote) failed: HTTP {}",
-                status
+                "update_mint_url (mint_quote) failed: HTTP {} - {}",
+                status, response_text
             )));
         }
 
         // Update proof table
         let path = format!("rest/v1/proof?mint_url=eq.{}", old_encoded);
-        let status = self.patch_request(&path, &update_body).await?;
+        let (status, response_text) = self.patch_request(&path, &update_body).await?;
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "update_mint_url (proof) failed: HTTP {}",
-                status
+                "update_mint_url (proof) failed: HTTP {} - {}",
+                status, response_text
             )));
         }
 
@@ -805,15 +843,60 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         keyset_id: &Id,
         count: u32,
     ) -> Result<u32, DatabaseError> {
-        // Get current counter value
+        // Use Supabase RPC for atomic increment
+        // This calls the increment_keyset_counter PostgreSQL function
+        let rpc_body = serde_json::json!({
+            "p_keyset_id": keyset_id.to_string(),
+            "p_increment": count as i32
+        });
+
+        let url = self.join_url("rest/v1/rpc/increment_keyset_counter")?;
+        let auth_bearer = self.get_auth_bearer().await;
+
+        let res = self
+            .client
+            .post(url)
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", auth_bearer))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&rpc_body)
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+
+        let status = res.status();
+        let text = res.text().await.map_err(Error::Reqwest)?;
+
+        if status.is_success() {
+            // RPC returns the new counter value directly
+            let new_counter: i32 = serde_json::from_str(&text).map_err(|e| {
+                DatabaseError::Internal(format!(
+                    "Failed to parse counter response '{}': {}",
+                    text, e
+                ))
+            })?;
+            return Ok(new_counter as u32);
+        }
+
+        // If RPC fails (e.g., function doesn't exist), fall back to upsert approach
+        // This provides backwards compatibility with databases that haven't run migration 002
+        tracing::warn!(
+            "RPC increment_keyset_counter failed (HTTP {}), falling back to upsert: {}",
+            status,
+            text
+        );
+
+        // Fallback: Use upsert with on_conflict
+        // Note: This is not perfectly atomic but better than DELETE + INSERT
         let path = format!(
             "rest/v1/keyset_counter?keyset_id=eq.{}",
             url_encode(&keyset_id.to_string())
         );
-        let (status, text) = self.get_request(&path).await?;
+        let (get_status, get_text) = self.get_request(&path).await?;
 
-        let current = if status.is_success() {
-            if let Some(items) = Self::parse_response::<KeysetCounterTable>(&text)? {
+        let current = if get_status.is_success() {
+            if let Some(items) = Self::parse_response::<KeysetCounterTable>(&get_text)? {
                 items.into_iter().next().map(|i| i.counter).unwrap_or(0)
             } else {
                 0
@@ -824,22 +907,21 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
         let new = current + count;
 
-        // Delete existing counter (if any)
-        let _ = self.delete_request(&path).await;
-
-        // Insert new counter
+        // Use upsert (POST with on_conflict)
         let item = KeysetCounterTable {
             keyset_id: keyset_id.to_string(),
             counter: new,
             _extra: Default::default(),
         };
 
-        let status = self.post_request("rest/v1/keyset_counter", &item).await?;
+        let (upsert_status, response_text) = self
+            .post_request("rest/v1/keyset_counter?on_conflict=keyset_id", &item)
+            .await?;
 
-        if !status.is_success() {
+        if !upsert_status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "increment_keyset_counter failed: HTTP {}",
-                status
+                "increment_keyset_counter failed: HTTP {} - {}",
+                upsert_status, response_text
             )));
         }
 
@@ -859,12 +941,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             },
         };
 
-        let status = self.post_request("rest/v1/mint", &info_table).await?;
+        let (status, response_text) = self.post_request("rest/v1/mint", &info_table).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "add_mint failed: HTTP {}",
-                status
+                "add_mint failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())
