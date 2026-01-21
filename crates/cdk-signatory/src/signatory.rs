@@ -42,7 +42,7 @@ impl From<CurrencyUnit> for KeysetIdentifier {
 pub struct RotateKeyArguments {
     /// Unit
     pub unit: CurrencyUnit,
-    /// Max order
+    /// List of amounts to support
     pub amounts: Vec<u64>,
     /// Input fee
     pub input_fee_ppk: u64,

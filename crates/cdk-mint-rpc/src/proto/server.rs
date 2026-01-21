@@ -745,11 +745,7 @@ impl CdkMint for MintRPCServer {
         let unit = CurrencyUnit::from_str(&request.unit)
             .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
 
-        let amounts = if request.amounts.is_empty() {
-            return Err(Status::invalid_argument("amounts cannot be empty"));
-        } else {
-            request.amounts
-        };
+        let amounts = request.amounts;
 
         let keyset_info = self
             .mint

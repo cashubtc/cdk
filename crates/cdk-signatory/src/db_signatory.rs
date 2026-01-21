@@ -225,7 +225,7 @@ impl Signatory for DbSignatory {
     /// Generate new keyset
     #[tracing::instrument(skip(self))]
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
-        let path_index = if let Some(current_keyset_id) =
+        let (path_index, amounts) = if let Some(current_keyset_id) =
             self.localstore.get_active_keyset_id(&args.unit).await?
         {
             let keyset_info = self
@@ -234,9 +234,12 @@ impl Signatory for DbSignatory {
                 .await?
                 .ok_or(Error::UnknownKeySet)?;
 
-            keyset_info.derivation_path_index.unwrap_or(1) + 1
+            (
+                keyset_info.derivation_path_index.unwrap_or(1) + 1,
+                keyset_info.amounts,
+            )
         } else {
-            1
+            (1, vec![])
         };
 
         let derivation_path = match self.custom_paths.get(&args.unit) {
@@ -245,13 +248,22 @@ impl Signatory for DbSignatory {
                 .ok_or(Error::UnsupportedUnit)?,
         };
 
+        let amounts = if args.amounts.is_empty() {
+            if amounts.is_empty() {
+                return Err(Error::Custom("Amounts cannot be empty".to_string()));
+            }
+            amounts
+        } else {
+            args.amounts
+        };
+
         let (keyset, info) = create_new_keyset(
             &self.secp_ctx,
             self.xpriv,
             derivation_path,
             Some(path_index),
             args.unit.clone(),
-            &args.amounts,
+            &amounts,
             args.input_fee_ppk,
             // TODO: add and connect settings for this
             None,
