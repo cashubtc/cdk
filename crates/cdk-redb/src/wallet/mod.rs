@@ -816,10 +816,32 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             let mut table = write_txn
                 .open_table(MINT_QUOTES_TABLE)
                 .map_err(Error::from)?;
+
+            // Check for existing quote and version match
+            let existing_quote_json = table
+                .get(quote.id.as_str())
+                .map_err(Error::from)?
+                .map(|v| v.value().to_string());
+
+            let mut quote_to_save = quote.clone();
+
+            if let Some(json) = existing_quote_json {
+                let existing_quote: MintQuote = serde_json::from_str(&json).map_err(Error::from)?;
+
+                if existing_quote.version != quote.version {
+                    return Err(database::Error::ConcurrentUpdate);
+                }
+
+                // Increment version for update
+                quote_to_save.version = quote.version.wrapping_add(1);
+            }
+
             table
                 .insert(
-                    quote.id.as_str(),
-                    serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
+                    quote_to_save.id.as_str(),
+                    serde_json::to_string(&quote_to_save)
+                        .map_err(Error::from)?
+                        .as_str(),
                 )
                 .map_err(Error::from)?;
         }
@@ -847,10 +869,33 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             let mut table = write_txn
                 .open_table(MELT_QUOTES_TABLE)
                 .map_err(Error::from)?;
+
+            // Check for existing quote and version match
+            let existing_quote_json = table
+                .get(quote.id.as_str())
+                .map_err(Error::from)?
+                .map(|v| v.value().to_string());
+
+            let mut quote_to_save = quote.clone();
+
+            if let Some(json) = existing_quote_json {
+                let existing_quote: wallet::MeltQuote =
+                    serde_json::from_str(&json).map_err(Error::from)?;
+
+                if existing_quote.version != quote.version {
+                    return Err(database::Error::ConcurrentUpdate);
+                }
+
+                // Increment version for update
+                quote_to_save.version = quote.version.wrapping_add(1);
+            }
+
             table
                 .insert(
-                    quote.id.as_str(),
-                    serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
+                    quote_to_save.id.as_str(),
+                    serde_json::to_string(&quote_to_save)
+                        .map_err(Error::from)?
+                        .as_str(),
                 )
                 .map_err(Error::from)?;
         }

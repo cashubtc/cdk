@@ -65,6 +65,9 @@ pub struct MintQuote {
     /// Operation ID that has reserved this quote (for saga pattern)
     #[serde(default)]
     pub used_by_operation: Option<String>,
+    /// Version for optimistic locking
+    #[serde(default)]
+    pub version: u32,
 }
 
 /// Melt Quote Info
@@ -91,6 +94,9 @@ pub struct MeltQuote {
     /// Operation ID that has reserved this quote (for saga pattern)
     #[serde(default)]
     pub used_by_operation: Option<String>,
+    /// Version for optimistic locking
+    #[serde(default)]
+    pub version: u32,
 }
 
 impl MintQuote {
@@ -119,6 +125,7 @@ impl MintQuote {
             amount_issued: Amount::ZERO,
             amount_paid: Amount::ZERO,
             used_by_operation: None,
+            version: 0,
         }
     }
 

@@ -132,6 +132,7 @@ fn test_melt_quote() -> MeltQuote {
         payment_preimage: None,
         payment_method: cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         used_by_operation: None,
+        version: 0,
     }
 }
 

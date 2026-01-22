@@ -39,3 +39,7 @@ CREATE INDEX IF NOT EXISTS mint_quote_used_by_operation_index ON mint_quote(used
 -- Add saga_id to transactions to link persistent history with lifecycle state
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS saga_id TEXT;
 CREATE INDEX IF NOT EXISTS transactions_saga_id_index ON transactions(saga_id);
+
+-- Add version column to quotes for optimistic locking
+ALTER TABLE melt_quote ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE mint_quote ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0;
