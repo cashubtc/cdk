@@ -364,7 +364,13 @@ impl Wallet {
                     );
                     *auth_wallet = Some(new_auth_wallet.clone());
 
-                    self.client.set_auth_wallet(Some(new_auth_wallet)).await;
+                    self.client
+                        .set_auth_wallet(Some(new_auth_wallet.clone()))
+                        .await;
+
+                    if let Err(e) = new_auth_wallet.refresh_keysets().await {
+                        tracing::error!("Could not fetch auth keysets: {}", e);
+                    }
                 }
             }
         }
