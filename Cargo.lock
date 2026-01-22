@@ -1729,8 +1729,10 @@ name = "cdk-supabase"
 version = "0.14.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bitcoin 0.32.8",
  "cdk-common",
+ "cdk-sql-common",
  "hex",
  "lightning-invoice 0.34.0",
  "once_cell",
