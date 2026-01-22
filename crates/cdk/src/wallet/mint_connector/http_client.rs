@@ -3,7 +3,10 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
-use cdk_common::{nut19, MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+use cdk_common::{
+    nut19, MeltQuoteBolt12Request, MeltQuoteCustomResponse, MintQuoteBolt12Request,
+    MintQuoteBolt12Response,
+};
 #[cfg(feature = "auth")]
 use cdk_common::{Method, ProtectedEndpoint, RoutePath};
 use serde::de::DeserializeOwned;
@@ -622,12 +625,34 @@ where
         self.transport.http_post(url, auth_token, &request).await
     }
 
+    /// Mint Quote Status for Custom Payment Method
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_quote_custom_status(
+        &self,
+        method: &str,
+        quote_id: &str,
+    ) -> Result<MintQuoteCustomResponse<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", method, quote_id])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Get, RoutePath::MintQuote(method.to_string()))
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+
+        self.transport.http_get(url, auth_token).await
+    }
+
     /// Melt Quote for Custom Payment Method
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_melt_custom_quote(
         &self,
         request: MeltQuoteCustomRequest,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+    ) -> Result<MeltQuoteCustomResponse<String>, Error> {
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", &request.method])?;
@@ -641,6 +666,28 @@ where
         let auth_token = None;
 
         self.transport.http_post(url, auth_token, &request).await
+    }
+
+    /// Melt Quote Status for Custom Payment Method
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_melt_quote_custom_status(
+        &self,
+        method: &str,
+        quote_id: &str,
+    ) -> Result<MeltQuoteCustomResponse<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "melt", "quote", method, quote_id])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Get, RoutePath::MeltQuote(method.to_string()))
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+
+        self.transport.http_get(url, auth_token).await
     }
 }
 
