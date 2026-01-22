@@ -247,8 +247,16 @@ impl<'a> SwapSaga<'a, Prepared> {
         {
             Ok(response) => response,
             Err(err) => {
-                tracing::error!("Swap failed: {}", err);
-                execute_compensations(&mut self.compensations).await?;
+                if err.is_definitive_failure() {
+                    tracing::error!("Swap failed (definitive): {}", err);
+                    execute_compensations(&mut self.compensations).await?;
+                } else {
+                    tracing::warn!(
+                        "Swap failed (ambiguous): {}. Leaving saga {} for recovery.",
+                        err,
+                        self.state_data.operation_id
+                    );
+                }
                 return Err(err);
             }
         };

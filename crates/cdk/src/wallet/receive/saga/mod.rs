@@ -339,8 +339,16 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         let swap_response = match self.wallet.client.post_swap(pre_swap.swap_request).await {
             Ok(response) => response,
             Err(err) => {
-                tracing::error!("Failed to post swap request: {}", err);
-                execute_compensations(&mut self.compensations).await?;
+                if err.is_definitive_failure() {
+                    tracing::error!("Failed to post swap request (definitive): {}", err);
+                    execute_compensations(&mut self.compensations).await?;
+                } else {
+                    tracing::warn!(
+                        "Failed to post swap request (ambiguous): {}. Leaving saga {} for recovery.",
+                        err,
+                        self.state_data.operation_id
+                    );
+                }
                 return Err(err);
             }
         };
