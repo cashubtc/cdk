@@ -1,0 +1,264 @@
+syntax = "proto3";
+
+package cdk_mint_reporting_rpc;
+
+service CdkMintReporting {
+    rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {}
+    rpc GetBalances(GetBalancesRequest) returns (GetBalancesResponse) {}
+    rpc GetKeysets(GetKeysetsRequest) returns (GetKeysetsResponse) {}
+    rpc ListMintQuotes(ListQuotesRequest) returns (ListMintQuotesResponse) {}
+    rpc LookupMintQuote(LookupQuoteRequest) returns (LookupMintQuoteResponse) {}
+    rpc ListMeltQuotes(ListQuotesRequest) returns (ListMeltQuotesResponse) {}
+    rpc LookupMeltQuote(LookupQuoteRequest) returns (LookupMeltQuoteResponse) {}
+    rpc ListProofs(ListProofsRequest) returns (ListProofsResponse) {}
+    rpc ListBlindSignatures(ListBlindSignaturesRequest) returns (ListBlindSignaturesResponse) {}
+    rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse) {}
+}
+
+message ContactInfo {
+    string method = 1;
+    string info = 2;
+}
+
+message Balance {
+    string unit = 1;
+    uint64 total_balance = 2;
+    uint64 total_issued = 3;
+    uint64 total_redeemed = 4;
+    uint64 total_fees_collected = 5;
+}
+
+message Keyset {
+    string id = 1;
+    string unit = 2;
+    bool active = 3;
+    optional uint64 valid_from = 4;
+    optional uint64 valid_to = 5;
+    uint64 input_fee_ppk = 6;
+    optional string derivation_path_index = 8;
+    repeated uint64 amounts = 9;
+    optional uint64 total_balance = 10;
+    optional uint64 total_issued = 11;
+    optional uint64 total_redeemed = 12;
+    optional uint64 total_fees_collected = 13;
+}
+
+message MintQuoteSummary {
+    string id = 1;
+    optional uint64 amount = 2;
+    string unit = 3;
+    string request = 4;
+    string state = 5; 
+    optional string request_lookup_id = 6;
+    optional string pubkey = 7;
+    uint64 created_time = 8;
+    uint64 amount_paid = 9;
+    uint64 amount_issued = 10;
+    string payment_method = 11;
+    string request_lookup_id_kind = 12;
+}
+
+message MintQuotePayment {
+    uint64 amount = 1;
+    uint64 time = 2;
+    string payment_id = 3;
+}
+
+message MintQuoteIssuance {
+    uint64 amount = 1;
+    uint64 time = 2;
+}
+
+message MintQuoteDetail {
+    string id = 1;
+    optional uint64 amount = 2;
+    string unit = 3;
+    string request = 4;
+    string state = 5; 
+    optional string request_lookup_id = 6;
+    optional string pubkey = 7;
+    uint64 created_time = 8;
+    repeated MintQuotePayment payments = 9;
+    repeated MintQuoteIssuance issuances = 10;
+    uint64 amount_paid = 11;
+    uint64 amount_issued = 12;
+    string payment_method = 13;
+    string request_lookup_id_kind = 14;
+}
+
+message MeltOptions {
+    oneof options {
+        MppOptions mpp = 1;
+        AmountlessOptions amountless = 2;
+    }
+}
+
+message MppOptions {
+    uint64 amount = 1;
+}
+
+message AmountlessOptions {
+    uint64 amount_msat = 1;
+}
+
+message MeltQuote {
+    string id = 1;
+    string unit = 2;
+    uint64 amount = 3;
+    string request = 4;
+    uint64 fee_reserve = 5;
+    string state = 6;
+    optional string payment_preimage = 7;
+    optional string request_lookup_id = 8;
+    uint64 created_time = 9;
+    optional uint64 paid_time = 10;
+    string payment_method = 11;
+    optional MeltOptions options = 12;
+}
+
+message Proof {
+    uint64 amount = 1;
+    string keyset_id = 2;
+    string state = 3;
+    optional string quote_id = 4;
+    uint64 created_time = 5;
+    string operation_kind = 6;
+    string operation_id = 7;
+}
+
+message BlindSignature {
+    uint64 amount = 1;
+    string keyset_id = 2;
+    optional string quote_id = 3;
+    uint64 created_time = 4;
+    optional uint64 signed_time = 5;
+    string operation_kind = 6;
+    string operation_id = 7;
+}
+
+message Operations {
+    string operation_id = 1;
+    string operation_kind = 2;
+    uint64 completed_time = 3;
+    uint64 total_issued = 4;
+    uint64 total_redeemed = 5;
+    uint64 fee_collected = 6;
+    optional uint64 payment_amount = 7;
+    optional uint64 payment_fee = 8;
+    optional string payment_method = 9;
+    string unit = 10;
+}
+
+message GetBalancesRequest {
+    optional string unit = 1;
+}
+
+message GetBalancesResponse {
+    repeated Balance balances = 1;
+}
+
+message GetInfoRequest {
+}
+
+message GetInfoResponse {
+    optional string name = 1;
+    optional string version = 2;
+    optional string description = 3;
+    optional string long_description = 4;
+    repeated ContactInfo contact = 5;
+    optional string motd = 6;
+    optional string icon_url = 7;
+    repeated string urls = 8;
+    optional string tos_url = 9;
+}
+
+message GetKeysetsRequest {
+    repeated string units = 1;
+    optional bool exclude_inactive = 2;
+    optional bool include_auth = 3;
+    optional bool include_balances = 4;
+}
+
+message GetKeysetsResponse {
+    repeated Keyset keysets = 1;
+}
+
+message ListQuotesRequest {
+    int64 index_offset = 1;
+    int64 num_max_quotes = 2;
+    bool reversed = 3;
+    optional int64 creation_date_start = 4;
+    optional int64 creation_date_end = 5;
+    repeated string states = 6;
+    repeated string units = 7;
+}
+
+message ListMintQuotesResponse {
+    repeated MintQuoteSummary quotes = 1;
+    bool has_more = 2;
+}
+
+message LookupQuoteRequest {
+    string quote_id = 1;
+}
+
+message LookupMintQuoteResponse {
+    MintQuoteDetail quote = 1;
+}
+
+message ListMeltQuotesResponse {
+    repeated MeltQuote quotes = 1;
+    bool has_more = 2;
+}
+
+message LookupMeltQuoteResponse {
+    MeltQuote quote = 1;
+}
+
+message ListProofsRequest {
+    int64 index_offset = 1;
+    int64 num_max_proofs = 2;
+    bool reversed = 3;
+    optional int64 creation_date_start = 4;
+    optional int64 creation_date_end = 5;
+    repeated string states = 6;
+    repeated string units = 7;
+    repeated string keyset_ids = 8;
+    repeated string operations = 9;
+}
+
+message ListProofsResponse {
+    repeated Proof proofs = 1;
+    bool has_more = 2;
+}
+
+message ListBlindSignaturesRequest {
+    int64 index_offset = 1;
+    int64 num_max_signatures = 2;
+    bool reversed = 3;
+    optional int64 creation_date_start = 4;
+    optional int64 creation_date_end = 5;
+    repeated string units = 6;
+    repeated string keyset_ids = 7;
+    repeated string operations = 8;
+}
+
+message ListBlindSignaturesResponse {
+    repeated BlindSignature signatures = 1;
+    bool has_more = 2;
+}
+
+message ListOperationsRequest {
+    int64 index_offset = 1;
+    int64 num_max_operations = 2;
+    bool reversed = 3;
+    optional int64 creation_date_start = 4;
+    optional int64 creation_date_end = 5;
+    repeated string units = 6;
+    repeated string operations = 7;
+}
+
+message ListOperationsResponse {
+    repeated Operations operations = 1;
+    bool has_more = 2;
+}

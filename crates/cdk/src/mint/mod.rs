@@ -1043,6 +1043,27 @@ impl Mint {
 
         total_redeemed
     }
+
+    /// Total fees collected for keyset
+    #[instrument(skip_all)]
+    pub async fn total_fees(&self) -> Result<HashMap<Id, Amount>, Error> {
+        #[cfg(feature = "prometheus")]
+        global::inc_in_flight_requests("total_fees");
+
+        let total_fees = async {
+            let mut total_fees = self.localstore.get_total_fees_collected().await?;
+            for keyset in self.keysets().keysets {
+                total_fees.entry(keyset.id).or_default();
+            }
+            Ok(total_fees)
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        global::dec_in_flight_requests("total_fees");
+
+        total_fees
+    }
 }
 
 #[cfg(test)]

@@ -3,7 +3,8 @@
 #![allow(clippy::unwrap_used)]
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("cargo:rerun-if-changed=src/proto/cdk-mint-rpc.proto");
+    println!("cargo:rerun-if-changed=src/proto/management.proto");
+    println!("cargo:rerun-if-changed=src/proto/reporting.proto");
 
     // Tell cargo to tell rustc to allow missing docs in generated code
     println!("cargo:rustc-env=RUSTDOC_ARGS=--allow-missing-docs");
@@ -13,7 +14,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .protoc_arg("--experimental_allow_proto3_optional")
         .type_attribute(".", "#[allow(missing_docs)]")
         .field_attribute(".", "#[allow(missing_docs)]")
-        .compile_protos(&["src/proto/cdk-mint-rpc.proto"], &["src/proto"])?;
+        .compile_protos(
+            &["src/proto/management.proto", "src/proto/reporting.proto"],
+            &["src/proto"],
+        )?;
 
     Ok(())
 }

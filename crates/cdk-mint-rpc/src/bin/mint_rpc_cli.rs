@@ -3,12 +3,11 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use cdk_mint_rpc::cdk_mint_client::CdkMintClient;
+use cdk_mint_rpc::cdk_mint_management_client::CdkMintManagementClient;
+use cdk_mint_rpc::cdk_mint_reporting_client::CdkMintReportingClient;
 use cdk_mint_rpc::mint_rpc_cli::subcommands;
-use cdk_mint_rpc::GetInfoRequest;
 use clap::{Parser, Subcommand};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
-use tonic::Request;
 use tracing_subscriber::EnvFilter;
 
 /// Common CLI arguments for CDK binaries
@@ -69,8 +68,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Get info
-    GetInfo,
     /// Update motd
     UpdateMotd(subcommands::UpdateMotdCommand),
     /// Update short description
@@ -81,6 +78,8 @@ enum Commands {
     UpdateName(subcommands::UpdateNameCommand),
     /// Update icon url
     UpdateIconUrl(subcommands::UpdateIconUrlCommand),
+    /// Update terms of service url
+    UpdateTosUrl(subcommands::UpdateTosUrlCommand),
     /// Add Url
     AddUrl(subcommands::AddUrlCommand),
     /// Remove Url
@@ -101,6 +100,26 @@ enum Commands {
     UpdateNut04QuoteState(subcommands::UpdateNut04QuoteCommand),
     /// Rotate next keyset
     RotateNextKeyset(subcommands::RotateNextKeysetCommand),
+    /// Get info
+    GetInfo,
+    /// Get balances
+    GetBalances(subcommands::GetBalancesCommand),
+    /// Get keysets
+    GetKeysets(subcommands::GetKeysetsCommand),
+    /// List mint quotes
+    ListMintQuotes(subcommands::ListMintQuotesCommand),
+    /// Lookup a mint quote by ID
+    LookupMintQuote(subcommands::LookupMintQuoteCommand),
+    /// List melt quotes
+    ListMeltQuotes(subcommands::ListMeltQuotesCommand),
+    /// Lookup a melt quote by ID
+    LookupMeltQuote(subcommands::LookupMeltQuoteCommand),
+    /// List proofs
+    ListProofs(subcommands::ListProofsCommand),
+    /// List blind signatures
+    ListBlindSignatures(subcommands::ListBlindSignaturesCommand),
+    /// List operations
+    ListOperations(subcommands::ListOperationsCommand),
 }
 
 #[tokio::main]
@@ -150,85 +169,89 @@ async fn main() -> Result<()> {
             .await?
     };
 
-    let mut client = CdkMintClient::new(channel);
+    let mut management_client = CdkMintManagementClient::new(channel.clone());
+    let mut reporting_client = CdkMintReportingClient::new(channel);
 
     match cli.command {
-        Commands::GetInfo => {
-            let response = client.get_info(Request::new(GetInfoRequest {})).await?;
-            let info = response.into_inner();
-            println!(
-                "name:             {}",
-                info.name.unwrap_or("None".to_string())
-            );
-            println!(
-                "version:          {}",
-                info.version.unwrap_or("None".to_string())
-            );
-            println!(
-                "description:      {}",
-                info.description.unwrap_or("None".to_string())
-            );
-            println!(
-                "long description: {}",
-                info.long_description.unwrap_or("None".to_string())
-            );
-            println!("motd: {}", info.motd.unwrap_or("None".to_string()));
-            println!("icon_url: {}", info.icon_url.unwrap_or("None".to_string()));
-
-            for url in info.urls {
-                println!("mint_url: {url}");
-            }
-
-            for contact in info.contact {
-                println!("method: {}, info: {}", contact.method, contact.info);
-            }
-            println!("total issued:     {} sat", info.total_issued);
-            println!("total redeemed:   {} sat", info.total_redeemed);
-        }
         Commands::UpdateMotd(sub_command_args) => {
-            subcommands::update_motd(&mut client, &sub_command_args).await?;
+            subcommands::update_motd(&mut management_client, &sub_command_args).await?;
         }
         Commands::UpdateShortDescription(sub_command_args) => {
-            subcommands::update_short_description(&mut client, &sub_command_args).await?;
+            subcommands::update_short_description(&mut management_client, &sub_command_args)
+                .await?;
         }
         Commands::UpdateLongDescription(sub_command_args) => {
-            subcommands::update_long_description(&mut client, &sub_command_args).await?;
+            subcommands::update_long_description(&mut management_client, &sub_command_args).await?;
         }
         Commands::UpdateName(sub_command_args) => {
-            subcommands::update_name(&mut client, &sub_command_args).await?;
+            subcommands::update_name(&mut management_client, &sub_command_args).await?;
         }
         Commands::UpdateIconUrl(sub_command_args) => {
-            subcommands::update_icon_url(&mut client, &sub_command_args).await?;
+            subcommands::update_icon_url(&mut management_client, &sub_command_args).await?;
+        }
+        Commands::UpdateTosUrl(sub_command_args) => {
+            subcommands::update_tos_url(&mut management_client, &sub_command_args).await?;
         }
         Commands::AddUrl(sub_command_args) => {
-            subcommands::add_url(&mut client, &sub_command_args).await?;
+            subcommands::add_url(&mut management_client, &sub_command_args).await?;
         }
         Commands::RemoveUrl(sub_command_args) => {
-            subcommands::remove_url(&mut client, &sub_command_args).await?;
+            subcommands::remove_url(&mut management_client, &sub_command_args).await?;
         }
         Commands::AddContact(sub_command_args) => {
-            subcommands::add_contact(&mut client, &sub_command_args).await?;
+            subcommands::add_contact(&mut management_client, &sub_command_args).await?;
         }
         Commands::RemoveContact(sub_command_args) => {
-            subcommands::remove_contact(&mut client, &sub_command_args).await?;
+            subcommands::remove_contact(&mut management_client, &sub_command_args).await?;
         }
         Commands::UpdateNut04(sub_command_args) => {
-            subcommands::update_nut04(&mut client, &sub_command_args).await?;
+            subcommands::update_nut04(&mut management_client, &sub_command_args).await?;
         }
         Commands::UpdateNut05(sub_command_args) => {
-            subcommands::update_nut05(&mut client, &sub_command_args).await?;
+            subcommands::update_nut05(&mut management_client, &sub_command_args).await?;
         }
         Commands::GetQuoteTtl => {
-            subcommands::get_quote_ttl(&mut client).await?;
+            subcommands::get_quote_ttl(&mut management_client).await?;
         }
         Commands::UpdateQuoteTtl(sub_command_args) => {
-            subcommands::update_quote_ttl(&mut client, &sub_command_args).await?;
+            subcommands::update_quote_ttl(&mut management_client, &sub_command_args).await?;
         }
         Commands::UpdateNut04QuoteState(sub_command_args) => {
-            subcommands::update_nut04_quote_state(&mut client, &sub_command_args).await?;
+            subcommands::update_nut04_quote_state(&mut management_client, &sub_command_args)
+                .await?;
         }
         Commands::RotateNextKeyset(sub_command_args) => {
-            subcommands::rotate_next_keyset(&mut client, &sub_command_args).await?;
+            subcommands::rotate_next_keyset(&mut management_client, &sub_command_args).await?;
+        }
+        Commands::GetInfo => {
+            subcommands::get_info(&mut reporting_client).await?;
+        }
+        Commands::GetBalances(sub_command_args) => {
+            subcommands::get_balances(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::GetKeysets(sub_command_args) => {
+            subcommands::get_keysets(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::ListMintQuotes(sub_command_args) => {
+            subcommands::list_mint_quotes(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::LookupMintQuote(sub_command_args) => {
+            subcommands::lookup_mint_quote(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::ListMeltQuotes(sub_command_args) => {
+            subcommands::list_melt_quotes(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::LookupMeltQuote(sub_command_args) => {
+            subcommands::lookup_melt_quote(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::ListProofs(sub_command_args) => {
+            subcommands::list_proofs(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::ListBlindSignatures(sub_command_args) => {
+            subcommands::list_blind_signatures(&mut reporting_client, &sub_command_args).await?;
+        }
+        Commands::ListOperations(sub_command_args) => {
+            subcommands::list_operations(&mut reporting_client, &sub_command_args).await?;
         }
     }
 

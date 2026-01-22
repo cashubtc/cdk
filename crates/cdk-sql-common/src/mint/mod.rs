@@ -20,7 +20,9 @@ use crate::pool::{DatabasePool, Pool, PooledResource};
 
 #[cfg(feature = "auth")]
 mod auth;
+mod backup;
 mod completed_operations;
+mod filters;
 mod keys;
 mod keyvalue;
 mod proofs;

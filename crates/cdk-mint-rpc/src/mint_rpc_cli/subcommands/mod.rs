@@ -1,3 +1,23 @@
+/// Module for getting the mint's balances
+mod get_balances;
+/// Module for getting the mint's info
+mod get_info;
+/// Module for getting the mint's keysets
+mod get_keysets;
+/// Module for listing blind signatures
+mod list_blind_signatures;
+/// Module for listing melt quotes
+mod list_melt_quotes;
+/// Module for listing mint quotes
+mod list_mint_quotes;
+/// Module for listing operations
+mod list_operations;
+/// Module for listing proofs
+mod list_proofs;
+/// Module for looking up a melt quote
+mod lookup_melt_quote;
+/// Module for looking up a mint quote
+mod lookup_mint_quote;
 /// Module for rotating to the next keyset
 mod rotate_next_keyset;
 /// Module for updating mint contact information
@@ -18,11 +38,23 @@ mod update_nut04_quote;
 mod update_nut05;
 /// Module for updating the mint's short description
 mod update_short_description;
+/// Module for updating the mint's terms of service URL
+mod update_tos_url;
 /// Module for updating quote time-to-live settings
 mod update_ttl;
 /// Module for managing mint URLs
 mod update_urls;
 
+pub use get_balances::{get_balances, GetBalancesCommand};
+pub use get_info::get_info;
+pub use get_keysets::{get_keysets, GetKeysetsCommand};
+pub use list_blind_signatures::{list_blind_signatures, ListBlindSignaturesCommand};
+pub use list_melt_quotes::{list_melt_quotes, ListMeltQuotesCommand};
+pub use list_mint_quotes::{list_mint_quotes, ListMintQuotesCommand};
+pub use list_operations::{list_operations, ListOperationsCommand};
+pub use list_proofs::{list_proofs, ListProofsCommand};
+pub use lookup_melt_quote::{lookup_melt_quote, LookupMeltQuoteCommand};
+pub use lookup_mint_quote::{lookup_mint_quote, LookupMintQuoteCommand};
 pub use rotate_next_keyset::{rotate_next_keyset, RotateNextKeysetCommand};
 pub use update_contact::{add_contact, remove_contact, AddContactCommand, RemoveContactCommand};
 pub use update_icon_url::{update_icon_url, UpdateIconUrlCommand};
@@ -33,5 +65,6 @@ pub use update_nut04::{update_nut04, UpdateNut04Command};
 pub use update_nut04_quote::{update_nut04_quote_state, UpdateNut04QuoteCommand};
 pub use update_nut05::{update_nut05, UpdateNut05Command};
 pub use update_short_description::{update_short_description, UpdateShortDescriptionCommand};
+pub use update_tos_url::{update_tos_url, UpdateTosUrlCommand};
 pub use update_ttl::{get_quote_ttl, update_quote_ttl, UpdateQuoteTtlCommand};
 pub use update_urls::{add_url, remove_url, AddUrlCommand, RemoveUrlCommand};

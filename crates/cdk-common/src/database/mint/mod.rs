@@ -12,8 +12,8 @@ use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
 };
 use crate::nuts::{
-    BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
-    State,
+    BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof,
+    Proofs, PublicKey, State,
 };
 use crate::payment::PaymentIdentifier;
 
@@ -31,6 +31,215 @@ pub use super::kvstore::{
     validate_kvstore_params, validate_kvstore_string, KVStore, KVStoreDatabase, KVStoreTransaction,
     KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
 };
+
+/// Filter parameters for listing mint quotes
+#[derive(Debug, Clone, Default)]
+pub struct MintQuoteFilter {
+    /// Filter quotes created on or after this Unix timestamp
+    pub creation_date_start: Option<u64>,
+    /// Filter quotes created on or before this Unix timestamp
+    pub creation_date_end: Option<u64>,
+    /// Filter by quote states (computed from amount_paid/amount_issued)
+    pub states: Vec<MintQuoteState>,
+    /// Filter by currency units
+    pub units: Vec<CurrencyUnit>,
+    /// Maximum number of quotes to return
+    pub limit: Option<u64>,
+    /// Number of quotes to skip (for pagination)
+    pub offset: u64,
+    /// If true, sort by created_time DESC; otherwise ASC
+    pub reversed: bool,
+}
+
+/// Result of a paginated mint quotes query
+#[derive(Debug, Clone)]
+pub struct MintQuoteListResult {
+    /// The filtered and paginated quotes
+    pub quotes: Vec<MintMintQuote>,
+    /// Whether there are more results after this page
+    pub has_more: bool,
+}
+
+/// Filter parameters for listing melt quotes
+#[derive(Debug, Clone, Default)]
+pub struct MeltQuoteFilter {
+    /// Filter quotes created on or after this Unix timestamp
+    pub creation_date_start: Option<u64>,
+    /// Filter quotes created on or before this Unix timestamp
+    pub creation_date_end: Option<u64>,
+    /// Filter by quote states (stored directly in DB)
+    pub states: Vec<MeltQuoteState>,
+    /// Filter by currency units
+    pub units: Vec<CurrencyUnit>,
+    /// Maximum number of quotes to return
+    pub limit: Option<u64>,
+    /// Number of quotes to skip (for pagination)
+    pub offset: u64,
+    /// If true, sort by created_time DESC; otherwise ASC
+    pub reversed: bool,
+}
+
+/// Result of a paginated melt quotes query
+#[derive(Debug, Clone)]
+pub struct MeltQuoteListResult {
+    /// The filtered and paginated quotes
+    pub quotes: Vec<MeltQuote>,
+    /// Whether there are more results after this page
+    pub has_more: bool,
+}
+
+/// Filter parameters for listing proofs
+#[derive(Debug, Clone, Default)]
+pub struct ProofFilter {
+    /// Filter proofs created on or after this Unix timestamp
+    pub creation_date_start: Option<u64>,
+    /// Filter proofs created on or before this Unix timestamp
+    pub creation_date_end: Option<u64>,
+    /// Filter by proof states
+    pub states: Vec<State>,
+    /// Filter by currency units (requires JOIN to keyset table)
+    pub units: Vec<CurrencyUnit>,
+    /// Filter by specific keyset IDs
+    pub keyset_ids: Vec<Id>,
+    /// Filter by operation kinds (e.g., "mint", "melt", "swap")
+    pub operations: Vec<String>,
+    /// Maximum number of proofs to return
+    pub limit: Option<u64>,
+    /// Number of proofs to skip (for pagination)
+    pub offset: u64,
+    /// If true, sort by created_time DESC; otherwise ASC
+    pub reversed: bool,
+}
+
+/// Proof record returned from filtered query (excludes sensitive data)
+#[derive(Debug, Clone)]
+pub struct ProofRecord {
+    /// Proof amount
+    pub amount: Amount,
+    /// Keyset ID
+    pub keyset_id: Id,
+    /// Proof state
+    pub state: State,
+    /// Associated quote ID (if any)
+    pub quote_id: Option<String>,
+    /// Creation timestamp
+    pub created_time: u64,
+    /// Operation kind (mint, melt, swap)
+    pub operation_kind: Option<String>,
+    /// Operation ID (UUID)
+    pub operation_id: Option<String>,
+}
+
+/// Result of a paginated proofs query
+#[derive(Debug, Clone)]
+pub struct ProofListResult {
+    /// The filtered and paginated proofs
+    pub proofs: Vec<ProofRecord>,
+    /// Whether there are more results after this page
+    pub has_more: bool,
+}
+
+/// Filter parameters for listing blind signatures
+#[derive(Debug, Clone, Default)]
+pub struct BlindSignatureFilter {
+    /// Filter signatures created on or after this Unix timestamp
+    pub creation_date_start: Option<u64>,
+    /// Filter signatures created on or before this Unix timestamp
+    pub creation_date_end: Option<u64>,
+    /// Filter by currency units (requires JOIN to keyset table)
+    pub units: Vec<CurrencyUnit>,
+    /// Filter by specific keyset IDs
+    pub keyset_ids: Vec<Id>,
+    /// Filter by operation kinds (e.g., "mint", "melt", "swap")
+    pub operations: Vec<String>,
+    /// Maximum number of signatures to return
+    pub limit: Option<u64>,
+    /// Number of signatures to skip (for pagination)
+    pub offset: u64,
+    /// If true, sort by created_time DESC; otherwise ASC
+    pub reversed: bool,
+}
+
+/// Blind signature record returned from filtered query (excludes cryptographic data)
+#[derive(Debug, Clone)]
+pub struct BlindSignatureRecord {
+    /// Signature amount
+    pub amount: Amount,
+    /// Keyset ID
+    pub keyset_id: Id,
+    /// Associated quote ID (if any)
+    pub quote_id: Option<String>,
+    /// Creation timestamp (when blinded message was received)
+    pub created_time: u64,
+    /// Signed timestamp (when signature was issued, None if pending)
+    pub signed_time: Option<u64>,
+    /// Operation kind (mint, melt, swap)
+    pub operation_kind: Option<String>,
+    /// Operation ID (UUID)
+    pub operation_id: Option<String>,
+}
+
+/// Result of a paginated blind signatures query
+#[derive(Debug, Clone)]
+pub struct BlindSignatureListResult {
+    /// The filtered and paginated signatures
+    pub signatures: Vec<BlindSignatureRecord>,
+    /// Whether there are more results after this page
+    pub has_more: bool,
+}
+
+/// Filter parameters for listing completed operations
+#[derive(Debug, Clone, Default)]
+pub struct OperationFilter {
+    /// Filter operations completed on or after this Unix timestamp
+    pub creation_date_start: Option<u64>,
+    /// Filter operations completed on or before this Unix timestamp
+    pub creation_date_end: Option<u64>,
+    /// Filter by currency units (derived via JOIN to proof → keyset)
+    pub units: Vec<CurrencyUnit>,
+    /// Filter by operation kinds (e.g., "mint", "melt", "swap")
+    pub operations: Vec<String>,
+    /// Maximum number of operations to return
+    pub limit: Option<u64>,
+    /// Number of operations to skip (for pagination)
+    pub offset: u64,
+    /// If true, sort by completed_at DESC; otherwise ASC
+    pub reversed: bool,
+}
+
+/// Operation record returned from filtered query
+#[derive(Debug, Clone)]
+pub struct OperationRecord {
+    /// Operation ID (UUID)
+    pub operation_id: String,
+    /// Operation kind (mint, melt, swap)
+    pub operation_kind: String,
+    /// Completion timestamp
+    pub completed_time: u64,
+    /// Total amount issued
+    pub total_issued: Amount,
+    /// Total amount redeemed
+    pub total_redeemed: Amount,
+    /// Fee collected
+    pub fee_collected: Amount,
+    /// Payment amount (for melt operations)
+    pub payment_amount: Option<Amount>,
+    /// Payment fee (for melt operations)
+    pub payment_fee: Option<Amount>,
+    /// Payment method
+    pub payment_method: Option<String>,
+    /// Currency unit (derived from keyset via proof)
+    pub unit: Option<String>,
+}
+
+/// Result of a paginated operations query
+#[derive(Debug, Clone)]
+pub struct OperationListResult {
+    /// The filtered and paginated operations
+    pub operations: Vec<OperationRecord>,
+    /// Whether there are more results after this page
+    pub has_more: bool,
+}
 
 /// Information about a melt request stored in the database
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +262,30 @@ pub struct LockedMeltQuotes {
     pub target: Option<Acquired<MeltQuote>>,
     /// All quotes sharing the same `request_lookup_id` (including the target)
     pub all_related: Vec<Acquired<MeltQuote>>,
+}
+
+/// Database backup format
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackupFormat {
+    /// SQLite binary format (using VACUUM INTO)
+    Sqlite,
+    /// SQL text dump format
+    Sql,
+}
+
+/// Result of a database backup operation
+#[derive(Debug, Clone)]
+pub struct BackupResult {
+    /// The backup data bytes
+    pub data: Vec<u8>,
+    /// Format of the backup
+    pub format: BackupFormat,
+    /// SHA256 checksum of the data (hex encoded)
+    pub checksum: String,
+    /// Unix timestamp when backup was created
+    pub created_at: u64,
+    /// Database engine identifier (e.g., "sqlite", "postgres")
+    pub database_engine: String,
 }
 
 /// KeysDatabaseWriter
@@ -275,6 +508,12 @@ pub trait QuotesDatabase {
     ) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Get Mint Quotes
     async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;
+
+    /// List mint quotes with filtering and pagination at the database level
+    async fn list_mint_quotes_filtered(
+        &self,
+        filter: MintQuoteFilter,
+    ) -> Result<MintQuoteListResult, Self::Err>;
     /// Get [`mint::MeltQuote`]
     async fn get_melt_quote(
         &self,
@@ -282,6 +521,11 @@ pub trait QuotesDatabase {
     ) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Get all [`mint::MeltQuote`]s
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
+    /// List melt quotes with filtering and pagination at the database level
+    async fn list_melt_quotes_filtered(
+        &self,
+        filter: MeltQuoteFilter,
+    ) -> Result<MeltQuoteListResult, Self::Err>;
 }
 
 /// Mint Proof Transaction trait
@@ -362,11 +606,21 @@ pub trait ProofsDatabase {
     /// Get total proofs redeemed by keyset id
     async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
 
+    /// Get total fees collected by keyset id
+    async fn get_total_fees_collected(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
+
     /// Get proof ys by operation id
     async fn get_proof_ys_by_operation_id(
         &self,
         operation_id: &uuid::Uuid,
     ) -> Result<Vec<PublicKey>, Self::Err>;
+
+    /// List proofs with filtering and pagination at the database level
+    ///
+    /// This method performs filtering, sorting, and pagination in SQL for efficiency.
+    /// When filtering by units, a JOIN to the keyset table is performed.
+    async fn list_proofs_filtered(&self, filter: ProofFilter)
+        -> Result<ProofListResult, Self::Err>;
 }
 
 #[async_trait]
@@ -422,6 +676,12 @@ pub trait SignaturesDatabase {
         &self,
         operation_id: &uuid::Uuid,
     ) -> Result<Vec<PublicKey>, Self::Err>;
+
+    /// List blind signatures with filtering and pagination at the database level
+    async fn list_blind_signatures_filtered(
+        &self,
+        filter: BlindSignatureFilter,
+    ) -> Result<BlindSignatureListResult, Self::Err>;
 }
 
 #[async_trait]
@@ -497,6 +757,22 @@ pub trait CompletedOperationsDatabase {
 
     /// Get all completed operations
     async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err>;
+
+    /// List completed operations with filtering and pagination at the database level
+    async fn list_operations_filtered(
+        &self,
+        filter: OperationFilter,
+    ) -> Result<OperationListResult, Self::Err>;
+}
+
+#[async_trait]
+/// Database backup trait
+pub trait BackupDatabase {
+    /// Backup Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Create a backup of the database
+    async fn create_backup(&self, format: BackupFormat) -> Result<BackupResult, Self::Err>;
 }
 
 /// Base database writer
@@ -520,6 +796,7 @@ pub trait Database<Error>:
     + SignaturesDatabase<Err = Error>
     + SagaDatabase<Err = Error>
     + CompletedOperationsDatabase<Err = Error>
+    + BackupDatabase<Err = Error>
 {
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;

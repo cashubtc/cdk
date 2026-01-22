@@ -218,6 +218,7 @@ macro_rules! mint_db_test {
             get_blind_signatures_for_keyset,
             get_blind_signatures_for_quote,
             get_total_issued,
+            get_total_fees_collected,
             get_nonexistent_blind_signatures,
             add_duplicate_blind_signatures,
             add_and_get_keyset_info,

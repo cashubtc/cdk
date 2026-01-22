@@ -1,3 +1,4 @@
+use cdk_common::database::mint::{MintQuoteFilter, MintQuoteListResult};
 use cdk_common::database::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::nut00::KnownMethod;
@@ -413,6 +414,43 @@ impl Mint {
         {
             METRICS.dec_in_flight_requests("mint_quotes");
             METRICS.record_mint_operation("mint_quotes", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
+            }
+        }
+
+        result
+    }
+
+    /// Lists mint quotes with filtering and pagination
+    ///
+    /// This method performs filtering at the database level for efficiency.
+    /// Use this instead of `mint_quotes` when you need filtered/paginated results.
+    ///
+    /// # Arguments
+    /// * `filter` - Filter parameters including date range, states, units, and pagination
+    ///
+    /// # Returns
+    /// * `MintQuoteListResult` - Filtered quotes
+    /// * `Error` if database access fails
+    #[instrument(skip_all)]
+    pub async fn list_mint_quotes_filtered(
+        &self,
+        filter: MintQuoteFilter,
+    ) -> Result<MintQuoteListResult, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("list_mint_quotes_filtered");
+
+        let result = async {
+            let result = self.localstore.list_mint_quotes_filtered(filter).await?;
+            Ok(result)
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("list_mint_quotes_filtered");
+            METRICS.record_mint_operation("list_mint_quotes_filtered", result.is_ok());
             if result.is_err() {
                 METRICS.record_error();
             }
