@@ -129,12 +129,26 @@ where
     ) -> Result<(), Err>;
 
     /// Add mint quote to storage
+    ///
+    /// This method performs an "upsert" with optimistic locking:
+    /// - If the quote does not exist, it is inserted.
+    /// - If the quote exists, it is updated ONLY if the version matches the one in the DB.
+    ///
+    /// On update, the version is incremented.
+    /// Returns `Err(ConcurrentUpdate)` if the version does not match.
     async fn add_mint_quote(&self, quote: WalletMintQuote) -> Result<(), Err>;
 
     /// Remove mint quote from storage
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Err>;
 
     /// Add melt quote to storage
+    ///
+    /// This method performs an "upsert" with optimistic locking:
+    /// - If the quote does not exist, it is inserted.
+    /// - If the quote exists, it is updated ONLY if the version matches the one in the DB.
+    ///
+    /// On update, the version is incremented.
+    /// Returns `Err(ConcurrentUpdate)` if the version does not match.
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Err>;
 
     /// Remove melt quote from storage

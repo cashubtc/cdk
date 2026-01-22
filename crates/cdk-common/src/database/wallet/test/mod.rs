@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cashu::nut00::KnownMethod;
 use cashu::secret::Secret;
-use cashu::{Amount, CurrencyUnit, SecretKey};
+use cashu::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
 
 use super::*;
 use crate::common::ProofInfo;
@@ -494,6 +494,86 @@ where
 
     let retrieved = db.get_melt_quote(&quote.id).await.unwrap();
     assert!(retrieved.is_none());
+}
+
+/// Test mint quote optimistic locking
+pub async fn add_mint_quote_optimistic_locking<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let quote = test_mint_quote(mint_url);
+
+    // 1. Initial add (insert)
+    db.add_mint_quote(quote.clone()).await.unwrap();
+
+    let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 0);
+
+    // 2. Update (version 0 -> 1)
+    let mut quote_update_1 = quote.clone();
+    quote_update_1.state = MintQuoteState::Issued; // Change something
+    db.add_mint_quote(quote_update_1.clone()).await.unwrap();
+
+    let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert_eq!(retrieved.state, MintQuoteState::Issued);
+
+    // 3. Stale update (using version 0) - should fail
+    // quote_update_1 still has version 0
+    let mut stale_quote = quote_update_1.clone();
+    stale_quote.amount = Some(Amount::from(999));
+
+    let result = db.add_mint_quote(stale_quote).await;
+    assert!(matches!(
+        result,
+        Err(crate::database::Error::ConcurrentUpdate)
+    ));
+
+    // Verify DB wasn't changed
+    let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert_eq!(retrieved.state, MintQuoteState::Issued);
+    assert_ne!(retrieved.amount, Some(Amount::from(999)));
+}
+
+/// Test melt quote optimistic locking
+pub async fn add_melt_quote_optimistic_locking<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let quote = test_melt_quote();
+
+    // 1. Initial add (insert)
+    db.add_melt_quote(quote.clone()).await.unwrap();
+
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 0);
+
+    // 2. Update (version 0 -> 1)
+    let mut quote_update_1 = quote.clone();
+    quote_update_1.state = MeltQuoteState::Paid;
+    db.add_melt_quote(quote_update_1.clone()).await.unwrap();
+
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert_eq!(retrieved.state, MeltQuoteState::Paid);
+
+    // 3. Stale update (using version 0) - should fail
+    let mut stale_quote = quote_update_1.clone();
+    stale_quote.amount = Amount::from(999);
+
+    let result = db.add_melt_quote(stale_quote).await;
+    assert!(matches!(
+        result,
+        Err(crate::database::Error::ConcurrentUpdate)
+    ));
+
+    // Verify DB wasn't changed
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert_eq!(retrieved.state, MeltQuoteState::Paid);
+    assert_ne!(retrieved.amount, Amount::from(999));
 }
 
 // =============================================================================
@@ -1355,6 +1435,8 @@ macro_rules! wallet_db_test {
             add_and_get_melt_quote,
             get_melt_quote_in_transaction,
             remove_melt_quote,
+            add_mint_quote_optimistic_locking,
+            add_melt_quote_optimistic_locking,
             add_and_get_proofs,
             get_proofs_in_transaction,
             update_proofs,
