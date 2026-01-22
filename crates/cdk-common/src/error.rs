@@ -447,6 +447,195 @@ pub enum Error {
     Payment(#[from] crate::payment::Error),
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_definitive_failure() {
+        // Test definitive failures
+        assert!(Error::AmountOverflow.is_definitive_failure());
+        assert!(Error::TokenAlreadySpent.is_definitive_failure());
+        assert!(Error::MintingDisabled.is_definitive_failure());
+
+        // Test HTTP client errors (4xx) - simulated
+        assert!(Error::HttpError(Some(400), "Bad Request".to_string()).is_definitive_failure());
+        assert!(Error::HttpError(Some(404), "Not Found".to_string()).is_definitive_failure());
+        assert!(
+            Error::HttpError(Some(429), "Too Many Requests".to_string()).is_definitive_failure()
+        );
+
+        // Test ambiguous failures
+        assert!(!Error::Timeout.is_definitive_failure());
+        assert!(!Error::Internal.is_definitive_failure());
+        assert!(!Error::ConcurrentUpdate.is_definitive_failure());
+
+        // Test HTTP server errors (5xx)
+        assert!(
+            !Error::HttpError(Some(500), "Internal Server Error".to_string())
+                .is_definitive_failure()
+        );
+        assert!(!Error::HttpError(Some(502), "Bad Gateway".to_string()).is_definitive_failure());
+        assert!(
+            !Error::HttpError(Some(503), "Service Unavailable".to_string()).is_definitive_failure()
+        );
+
+        // Test HTTP network errors (no status)
+        assert!(!Error::HttpError(None, "Connection refused".to_string()).is_definitive_failure());
+    }
+}
+
+impl Error {
+    /// Check if the error is a definitive failure
+    ///
+    /// A definitive failure means the mint definitely rejected the request
+    /// and did not update its state. In these cases, it is safe to revert
+    /// the transaction locally.
+    ///
+    /// If false, the failure is ambiguous (e.g. timeout, network error, 500)
+    /// and the transaction state at the mint is unknown.
+    pub fn is_definitive_failure(&self) -> bool {
+        match self {
+            // Logic/Validation Errors (Safe to revert)
+            Self::AmountKey
+            | Self::KeysetUnknown(_)
+            | Self::UnsupportedUnit
+            | Self::InvoiceAmountUndefined
+            | Self::SplitValuesGreater
+            | Self::AmountOverflow
+            | Self::OverIssue
+            | Self::SignatureMissingOrInvalid
+            | Self::AmountLessNotAllowed
+            | Self::InternalMultiPartMeltQuote
+            | Self::MppUnitMethodNotSupported(_, _)
+            | Self::AmountlessInvoiceNotSupported(_, _)
+            | Self::DuplicatePaymentId
+            | Self::PubkeyRequired
+            | Self::InvalidPaymentMethod
+            | Self::UnsupportedPaymentMethod
+            | Self::InvalidInvoice
+            | Self::MintingDisabled
+            | Self::UnknownQuote
+            | Self::ExpiredQuote(_, _)
+            | Self::AmountOutofLimitRange(_, _, _)
+            | Self::UnpaidQuote
+            | Self::PendingQuote
+            | Self::IssuedQuote
+            | Self::PaidQuote
+            | Self::MeltingDisabled
+            | Self::UnknownKeySet
+            | Self::BlindedMessageAlreadySigned
+            | Self::InactiveKeyset
+            | Self::TransactionUnbalanced(_, _, _)
+            | Self::DuplicateInputs
+            | Self::DuplicateOutputs
+            | Self::MultipleUnits
+            | Self::UnitMismatch
+            | Self::SigAllUsedInMelt
+            | Self::TokenAlreadySpent
+            | Self::TokenPending
+            | Self::P2PKConditionsNotMet(_)
+            | Self::DuplicateSignatureError
+            | Self::LocktimeNotProvided
+            | Self::InvalidSpendConditions(_)
+            | Self::IncorrectWallet(_)
+            | Self::MaxFeeExceeded
+            | Self::DleqProofNotProvided
+            | Self::IncorrectMint
+            | Self::MultiMintTokenNotSupported
+            | Self::PreimageNotProvided
+            | Self::MultiMintCurrencyUnitMismatch { .. }
+            | Self::UnknownMint { .. }
+            | Self::UnexpectedProofState
+            | Self::NoActiveKeyset
+            | Self::IncorrectQuoteAmount
+            | Self::InvoiceDescriptionUnsupported
+            | Self::InvalidTransactionDirection
+            | Self::InvalidTransactionId
+            | Self::InvalidOperationKind
+            | Self::InvalidOperationState
+            | Self::OperationNotFound
+            | Self::KVStoreInvalidKey(_) => true,
+
+            // HTTP Errors
+            Self::HttpError(Some(status), _) => {
+                // Client errors (400-499) are definitive failures
+                // Server errors (500-599) are ambiguous
+                (400..500).contains(status)
+            }
+
+            // Ambiguous Errors (Unsafe to revert)
+            Self::Timeout
+            | Self::Internal
+            | Self::UnknownPaymentState
+            | Self::CouldNotGetMintInfo
+            | Self::UnknownErrorResponse(_)
+            | Self::InvalidMintResponse(_)
+            | Self::ConcurrentUpdate
+            | Self::SendError(_)
+            | Self::RecvError(_)
+            | Self::TransferTimeout { .. } => false,
+
+            // Network/IO/Parsing Errors (Usually ambiguous as they could happen reading response)
+            Self::HttpError(None, _) // No status code means network error
+            | Self::SerdeJsonError(_) // Could be malformed success response
+            | Self::Database(_)
+            | Self::Custom(_) => false,
+
+            // Auth Errors (Generally definitive if rejected)
+            Self::ClearAuthRequired
+            | Self::BlindAuthRequired
+            | Self::ClearAuthFailed
+            | Self::BlindAuthFailed
+            | Self::InsufficientBlindAuthTokens
+            | Self::AuthSettingsUndefined
+            | Self::AuthLocalstoreUndefined
+            | Self::OidcNotSet => true,
+
+            // External conversions - check specifically
+            Self::Invoice(_) => true, // Parsing error
+            Self::Bip32(_) => true, // Key derivation error
+            Self::ParseInt(_) => true,
+            Self::UrlParseError(_) => true,
+            Self::Utf8ParseError(_) => true,
+            Self::Base64Error(_) => true,
+            Self::HexError(_) => true,
+            #[cfg(feature = "mint")]
+            Self::Uuid(_) => true,
+            Self::CashuUrl(_) => true,
+            Self::Secret(_) => true,
+            Self::AmountError(_) => true,
+            Self::DHKE(_) => true, // Crypto errors
+            Self::NUT00(_) => true,
+            Self::NUT01(_) => true,
+            Self::NUT02(_) => true,
+            Self::NUT03(_) => true,
+            Self::NUT04(_) => true,
+            Self::NUT05(_) => true,
+            Self::NUT11(_) => true,
+            Self::NUT12(_) => true,
+            #[cfg(feature = "wallet")]
+            Self::NUT13(_) => true,
+            Self::NUT14(_) => true,
+            Self::NUT18(_) => true,
+            Self::NUT20(_) => true,
+            #[cfg(feature = "auth")]
+            Self::NUT21(_) => true,
+            #[cfg(feature = "auth")]
+            Self::NUT22(_) => true,
+            Self::NUT23(_) => true,
+            #[cfg(feature = "mint")]
+            Self::QuoteId(_) => true,
+            Self::TryFromSliceError(_) => true,
+            #[cfg(feature = "mint")]
+            Self::Payment(_) => false, // Payment errors could be ambiguous? assume ambiguous to be safe
+
+            // Catch-all
+            _ => false,
+        }
+    }
+}
+
 /// CDK Error Response
 ///
 /// See NUT definition in [00](https://github.com/cashubtc/nuts/blob/main/00.md)

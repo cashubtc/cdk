@@ -10,9 +10,9 @@ use cdk_common::mint_url::MintUrl;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::{
     CheckStateResponse, CurrencyUnit, Id, KeysetResponse, MeltQuoteBolt11Response,
-    MeltQuoteCustomRequest, MintQuoteBolt11Request, MintQuoteBolt11Response,
-    MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest, MintResponse, Proof,
-    RestoreResponse, SwapRequest, SwapResponse,
+    MeltQuoteCustomRequest, MeltQuoteCustomResponse, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest,
+    MintResponse, Proof, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{MeltQuote, MintQuote};
@@ -73,6 +73,7 @@ pub fn test_melt_quote() -> MeltQuote {
         payment_preimage: None,
         payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
         used_by_operation: None,
+        version: 0,
     }
 }
 
@@ -270,6 +271,22 @@ impl MintConnector for MockMintConnector {
     #[cfg(feature = "auth")]
     async fn set_auth_wallet(&self, _wallet: Option<crate::wallet::AuthWallet>) {}
 
+    async fn get_mint_quote_custom_status(
+        &self,
+        _method: &str,
+        _quote_id: &str,
+    ) -> Result<MintQuoteCustomResponse<String>, Error> {
+        unimplemented!()
+    }
+
+    async fn get_melt_quote_custom_status(
+        &self,
+        _method: &str,
+        _quote_id: &str,
+    ) -> Result<MeltQuoteCustomResponse<String>, Error> {
+        unimplemented!()
+    }
+
     async fn post_mint_bolt12_quote(
         &self,
         _request: MintQuoteBolt12Request,
@@ -309,7 +326,7 @@ impl MintConnector for MockMintConnector {
     async fn post_melt_custom_quote(
         &self,
         _request: MeltQuoteCustomRequest,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+    ) -> Result<MeltQuoteCustomResponse<String>, Error> {
         unimplemented!()
     }
 }
