@@ -153,6 +153,20 @@ impl From<cdk::nuts::MintQuoteBolt11Response<String>> for MintQuoteBolt11Respons
     }
 }
 
+impl From<cdk::wallet::MintQuote> for MintQuoteBolt11Response {
+    fn from(quote: cdk::wallet::MintQuote) -> Self {
+        Self {
+            quote: quote.id,
+            request: quote.request,
+            state: quote.state.into(),
+            expiry: Some(quote.expiry),
+            amount: quote.amount.map(Into::into),
+            unit: Some(quote.unit.into()),
+            pubkey: quote.secret_key.map(|sk| sk.public_key().to_string()),
+        }
+    }
+}
+
 /// FFI-compatible MintQuoteCustomResponse
 ///
 /// This is a unified response type for custom payment methods that includes
