@@ -41,7 +41,7 @@ use cdk_common::BlindedMessage;
 use tracing::instrument;
 
 use crate::dhke::construct_proofs;
-use crate::nuts::{CheckStateRequest, PreMintSecrets, RestoreRequest, State};
+use crate::nuts::{CheckStateRequest, PreMintSecrets, Proofs, RestoreRequest, State, SwapRequest};
 use crate::types::ProofInfo;
 use crate::{Error, Wallet};
 
@@ -118,6 +118,28 @@ pub trait RecoveryHelpers {
         counter_start: Option<u32>,
         counter_end: Option<u32>,
     ) -> Result<Option<Vec<ProofInfo>>, Error>;
+
+    /// Attempt to replay a swap request using stored data.
+    ///
+    /// This leverages NUT-19 caching: if the mint has a cached response for the
+    /// exact request, it will return the signatures immediately. This also works
+    /// if the swap wasn't actually executed yet (inputs not spent).
+    ///
+    /// Works for both Swap and Receive sagas since both use `post_swap`.
+    ///
+    /// Returns:
+    /// - `Ok(Some(proofs))` if replay succeeded and we got signatures
+    /// - `Ok(None)` if replay failed (fall back to other recovery methods)
+    /// - `Err` only for unrecoverable errors
+    async fn try_replay_swap_request(
+        &self,
+        saga_id: &uuid::Uuid,
+        saga_type: &str,
+        blinded_messages: Option<&[BlindedMessage]>,
+        counter_start: Option<u32>,
+        counter_end: Option<u32>,
+        input_proofs: &[ProofInfo],
+    ) -> Result<Option<Vec<ProofInfo>>, Error>;
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -164,6 +186,112 @@ impl RecoveryHelpers for Wallet {
 
         self.recover_outputs_from_blinded_messages(saga_id, saga_type, params)
             .await
+    }
+
+    /// Attempt to replay a swap request using stored data.
+    async fn try_replay_swap_request(
+        &self,
+        saga_id: &uuid::Uuid,
+        saga_type: &str,
+        blinded_messages: Option<&[BlindedMessage]>,
+        counter_start: Option<u32>,
+        counter_end: Option<u32>,
+        input_proofs: &[ProofInfo],
+    ) -> Result<Option<Vec<ProofInfo>>, Error> {
+        // We need blinded messages to reconstruct the request
+        let blinded_messages = match blinded_messages {
+            Some(bm) if !bm.is_empty() => bm,
+            _ => {
+                tracing::debug!(
+                    "{} saga {} - no blinded messages stored, cannot replay",
+                    saga_type,
+                    saga_id
+                );
+                return Ok(None);
+            }
+        };
+
+        // We need counter range to re-derive secrets
+        let (counter_start, counter_end) = match (counter_start, counter_end) {
+            (Some(start), Some(end)) => (start, end),
+            _ => {
+                tracing::debug!(
+                    "{} saga {} - no counter range stored, cannot replay",
+                    saga_type,
+                    saga_id
+                );
+                return Ok(None);
+            }
+        };
+
+        // Extract input proofs
+        let inputs: Proofs = input_proofs.iter().map(|pi| pi.proof.clone()).collect();
+
+        if inputs.is_empty() {
+            tracing::debug!(
+                "{} saga {} - no input proofs available, cannot replay",
+                saga_type,
+                saga_id
+            );
+            return Ok(None);
+        }
+
+        // Reconstruct the swap request
+        let swap_request = SwapRequest::new(inputs, blinded_messages.to_vec());
+
+        tracing::info!(
+            "{} saga {} - attempting replay of post_swap request",
+            saga_type,
+            saga_id
+        );
+
+        // Attempt the replay
+        let swap_response = match self.client.post_swap(swap_request).await {
+            Ok(response) => response,
+            Err(e) => {
+                tracing::info!(
+                    "{} saga {} - replay failed ({}), falling back to other recovery",
+                    saga_type,
+                    saga_id,
+                    e
+                );
+                return Ok(None);
+            }
+        };
+
+        // Replay succeeded - construct proofs from signatures
+        tracing::info!(
+            "{} saga {} - replay succeeded, got {} signatures",
+            saga_type,
+            saga_id,
+            swap_response.signatures.len()
+        );
+
+        // Get keyset ID from the first blinded message
+        let keyset_id = blinded_messages[0].keyset_id;
+
+        // Re-derive premint secrets
+        let premint_secrets =
+            PreMintSecrets::restore_batch(keyset_id, &self.seed, counter_start, counter_end)?;
+
+        // Load keyset keys
+        let keys = self.load_keyset_keys(keyset_id).await?;
+
+        // Construct proofs
+        let proofs = construct_proofs(
+            swap_response.signatures,
+            premint_secrets.rs(),
+            premint_secrets.secrets(),
+            &keys,
+        )?;
+
+        // Convert to ProofInfo
+        let proof_infos: Vec<ProofInfo> = proofs
+            .into_iter()
+            .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Some(proof_infos))
     }
 }
 
