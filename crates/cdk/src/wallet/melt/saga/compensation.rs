@@ -93,6 +93,7 @@ mod tests {
             payment_preimage: None,
             payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             used_by_operation: None,
+            version: 0,
         }
     }
 
