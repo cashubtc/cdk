@@ -160,7 +160,7 @@ pub enum Error {
     /// Amount is outside of allowed range
     #[error("Amount must be between `{0}` and `{1}` is `{2}`")]
     AmountOutofLimitRange(Amount, Amount, Amount),
-    /// Quote is not paiud
+    /// Quote is not paid
     #[error("Quote not paid")]
     UnpaidQuote,
     /// Quote is pending
@@ -176,7 +176,7 @@ pub enum Error {
     #[error("Payment state is unknown")]
     UnknownPaymentState,
     /// Melting is disabled
-    #[error("Minting is disabled")]
+    #[error("Melting is disabled")]
     MeltingDisabled,
     /// Unknown Keyset
     #[error("Unknown Keyset")]
