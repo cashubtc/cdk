@@ -8,7 +8,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-env=RUSTDOC_ARGS=--allow-missing-docs");
 
     // Configure tonic build to generate code with documentation
-    tonic_build::configure()
+    // Disable transport codegen since cdk-lnd uses a custom hyper-based client
+    tonic_prost_build::configure()
+        .build_transport(false)
         .protoc_arg("--experimental_allow_proto3_optional")
         .type_attribute(".", "#[allow(missing_docs)]")
         .field_attribute(".", "#[allow(missing_docs)]")

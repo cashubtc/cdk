@@ -109,9 +109,10 @@ web-time = "1.1.0"
 rand = "0.9.1"
 regex = "1"
 home = "0.5.5"
-tonic = { version = "0.13.1", features = ["tls-ring", "codegen", "prost", "transport"], default-features = false }
-prost = "0.13.1"
-tonic-build = "0.13.1"
+tonic = { version = "0.14.2", default-features = false }
+tonic-prost = "0.14.2"
+tonic-prost-build = "0.14.2"
+prost = "0.14"
 strum = "0.27.1"
 strum_macros = "0.27.1"
 rustls = { version = "0.23.27", default-features = false, features = ["ring"] }
