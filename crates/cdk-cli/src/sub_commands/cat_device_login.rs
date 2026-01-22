@@ -82,20 +82,18 @@ async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
     let device_auth_url = oidc_config.device_authorization_endpoint;
 
     // Make the device code request
-    let client = reqwest::Client::new();
-    let device_code_response = client
-        .post(device_auth_url)
-        .form(&[
-            ("client_id", client_id.clone().as_str()),
-            ("scope", "openid offline_access"),
-        ])
-        .send()
+    let params: String = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("client_id", &client_id)
+        .append_pair("scope", "openid offline_access")
+        .finish();
+    let device_code_response = bitreq::post(device_auth_url)
+        .with_body(params)
+        .send_async()
         .await
         .expect("Failed to send device code request");
 
     let device_code_data: serde_json::Value = device_code_response
         .json()
-        .await
         .expect("Failed to parse device code response");
 
     let device_code = device_code_data["device_code"]
@@ -129,21 +127,20 @@ async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
     loop {
         sleep(Duration::from_secs(interval)).await;
 
-        let token_response = client
-            .post(&token_url)
-            .form(&[
-                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-                ("device_code", device_code),
-                ("client_id", client_id.clone().as_str()),
-            ])
-            .send()
+        let params: String = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
+            .append_pair("device_code", device_code)
+            .append_pair("client_id", &client_id)
+            .finish();
+        let token_response = bitreq::post(&token_url)
+            .with_body(params)
+            .send_async()
             .await
             .expect("Failed to send token request");
 
-        if token_response.status().is_success() {
+        if token_response.status_code == 200 {
             let token_data: serde_json::Value = token_response
                 .json()
-                .await
                 .expect("Failed to parse token response");
 
             let access_token = token_data["access_token"]
@@ -160,7 +157,6 @@ async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
         } else {
             let error_data: serde_json::Value = token_response
                 .json()
-                .await
                 .expect("Failed to parse error response");
 
             let error = error_data["error"].as_str().unwrap_or("unknown_error");

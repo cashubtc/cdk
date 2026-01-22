@@ -15,7 +15,6 @@ use nostr_sdk::nips::nip19::Nip19Profile;
 use nostr_sdk::prelude::*;
 #[cfg(feature = "nostr")]
 use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32};
-use reqwest::Client;
 
 use crate::error::Error;
 use crate::mint_url::MintUrl;
@@ -164,22 +163,19 @@ impl Wallet {
                 }
 
                 TransportType::HttpPost => {
-                    let client = Client::new();
-
-                    let res = client
-                        .post(transport.target.clone())
-                        .json(&payload)
-                        .send()
+                    let response = bitreq::post(transport.target.clone())
+                        .with_body(serde_json::to_string(&payload).map_err(Error::SerdeJsonError)?)
+                        .send_async()
                         .await
                         .map_err(|e| Error::HttpError(None, e.to_string()))?;
 
-                    let status = res.status();
-                    if status.is_success() {
+                    if response.status_code == 200 {
                         println!("Successfully posted payment");
                         Ok(())
                     } else {
-                        let body = res.text().await.unwrap_or_default();
-                        Err(Error::HttpError(Some(status.as_u16()), body))
+                        let body = serde_json::from_slice(response.as_bytes())
+                            .map_err(Error::SerdeJsonError)?;
+                        Err(Error::HttpError(Some(response.status_code as u16), body))
                     }
                 }
                 TransportType::InBand => {

@@ -953,6 +953,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitreq"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bf88316bfce42d7db313826acfa4325857c085e26f163c3e8c1cfb38fef4007"
+dependencies = [
+ "base64 0.22.1",
+ "rustls 0.21.12",
+ "rustls-webpki 0.101.7",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls 0.24.1",
+ "webpki-roots 0.25.4",
+]
+
+[[package]]
 name = "bitvec"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1160,9 +1176,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.53"
+version = "1.2.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "755d2fce177175ffca841e9a06afdb2c4ab0f593d53b4dee48147dfaade85932"
+checksum = "6354c81bbfd62d9cfa9cb3c773c2b7b2a3a482d569de977fd0e961f6e7c00583"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1181,6 +1197,7 @@ dependencies = [
  "async-trait",
  "bip39",
  "bitcoin 0.32.8",
+ "bitreq",
  "cbor-diag",
  "cdk-common",
  "cdk-fake-wallet",
@@ -1202,7 +1219,6 @@ dependencies = [
  "nostr-sdk",
  "rand 0.9.2",
  "regex",
- "reqwest",
  "ring 0.17.14",
  "rustls 0.23.36",
  "serde",
@@ -1254,6 +1270,7 @@ dependencies = [
  "anyhow",
  "bip39",
  "bitcoin 0.32.8",
+ "bitreq",
  "cdk",
  "cdk-common",
  "cdk-redb",
@@ -1262,7 +1279,6 @@ dependencies = [
  "home",
  "lightning 0.2.0",
  "nostr-sdk",
- "reqwest",
  "serde",
  "serde_json",
  "serde_with",
@@ -1330,11 +1346,11 @@ version = "0.14.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
+ "bitreq",
  "cdk-common",
  "futures",
  "lightning 0.2.0",
  "lightning-invoice 0.34.0",
- "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1381,6 +1397,7 @@ dependencies = [
  "axum 0.8.8",
  "bip39",
  "bitcoin 0.32.8",
+ "bitreq",
  "cashu",
  "cdk",
  "cdk-axum",
@@ -1401,7 +1418,6 @@ dependencies = [
  "ln-regtest-rs",
  "once_cell",
  "rand 0.9.2",
- "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -1411,6 +1427,7 @@ dependencies = [
  "tower-service",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "web-time",
 ]
@@ -1428,7 +1445,6 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
- "serde_urlencoded",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -1436,6 +1452,7 @@ dependencies = [
  "tower 0.5.3",
  "tower-http",
  "tracing",
+ "url",
  "urlencoding",
 ]
 
@@ -1549,13 +1566,13 @@ version = "0.14.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "bitreq",
  "cashu",
  "cdk",
  "cdk-common",
  "cdk-sqlite",
  "chrono",
  "nostr-sdk",
- "reqwest",
  "rustls 0.23.36",
  "serde",
  "serde_json",
@@ -1631,10 +1648,10 @@ name = "cdk-prometheus"
 version = "0.14.0"
 dependencies = [
  "anyhow",
+ "bitreq",
  "futures",
  "once_cell",
  "prometheus",
- "reqwest",
  "serde",
  "serde_json",
  "sysinfo",
@@ -3618,7 +3635,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.1",
+ "socket2 0.6.2",
  "tokio",
  "tower-service",
  "tracing",
@@ -5636,7 +5653,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.36",
- "socket2 0.6.1",
+ "socket2 0.6.2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -5673,16 +5690,16 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.1",
+ "socket2 0.6.2",
  "tracing",
  "windows-sys 0.60.2",
 ]
 
 [[package]]
 name = "quote"
-version = "1.0.43"
+version = "1.0.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc74d9a594b72ae6656596548f56f667211f8a97b3d4c3d467150794690dc40a"
+checksum = "21b2ebcf727b7760c461f091f9f0f539b77b8e87f2fd88131e7f1b433b3cece4"
 dependencies = [
  "proc-macro2",
 ]
@@ -6763,9 +6780,9 @@ dependencies = [
 
 [[package]]
 name = "socket2"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17129e116933cf371d018bb80ae557e889637989d8638274fb25622827b03881"
+checksum = "86f4aa3ad99f2088c990dfa82d367e19cb29268ed67c574d10d0a4bfe71f07e0"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
@@ -7245,7 +7262,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2 0.6.1",
+ "socket2 0.6.2",
  "tokio-macros",
  "windows-sys 0.61.2",
 ]
@@ -7301,7 +7318,7 @@ dependencies = [
  "postgres-protocol",
  "postgres-types",
  "rand 0.9.2",
- "socket2 0.6.1",
+ "socket2 0.6.2",
  "tokio",
  "tokio-util",
  "whoami",
@@ -7547,7 +7564,7 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
- "socket2 0.6.1",
+ "socket2 0.6.2",
  "sync_wrapper 1.0.2",
  "tokio",
  "tokio-rustls 0.26.4",

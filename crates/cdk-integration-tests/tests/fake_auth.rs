@@ -764,28 +764,22 @@ async fn get_access_token(mint_info: &MintInfo) -> (String, String) {
         .expect("Failed to get OIDC config")
         .token_endpoint;
 
-    // Create the request parameters
-    let (user, password) = get_oidc_credentials();
-    let params = [
-        ("grant_type", "password"),
-        ("client_id", "cashu-client"),
-        ("username", &user),
-        ("password", &password),
-    ];
-
     // Make the token request directly
-    let client = reqwest::Client::new();
-    let response = client
-        .post(token_url)
-        .form(&params)
-        .send()
+    let (user, password) = get_oidc_credentials();
+    let params: String = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("grant_type", "password")
+        .append_pair("client_id", "cashu-client")
+        .append_pair("username", &user)
+        .append_pair("password", &password)
+        .finish();
+    let response = bitreq::post(token_url)
+        .with_body(params)
+        .send_async()
         .await
         .expect("Failed to send token request");
 
-    let token_response: serde_json::Value = response
-        .json()
-        .await
-        .expect("Failed to parse token response");
+    let token_response: serde_json::Value =
+        response.json().expect("Failed to parse token response");
 
     let access_token = token_response["access_token"]
         .as_str()
@@ -822,33 +816,28 @@ async fn get_custom_access_token(
         .map_err(|_| Error::Custom("Failed to get OIDC config".to_string()))?
         .token_endpoint;
 
-    // Create the request parameters
-    let params = [
-        ("grant_type", "password"),
-        ("client_id", "cashu-client"),
-        ("username", username),
-        ("password", password),
-    ];
-
     // Make the token request directly
-    let client = reqwest::Client::new();
-    let response = client
-        .post(token_url)
-        .form(&params)
-        .send()
+    let params: String = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("grant_type", "password")
+        .append_pair("client_id", "cashu-client")
+        .append_pair("username", username)
+        .append_pair("password", password)
+        .finish();
+    let response = bitreq::post(token_url)
+        .with_body(params)
+        .send_async()
         .await
         .map_err(|_| Error::Custom("Failed to send token request".to_string()))?;
 
-    if !response.status().is_success() {
+    if response.status_code != 200 {
         return Err(Error::Custom(format!(
             "Token request failed with status: {}",
-            response.status()
+            response.status_code
         )));
     }
 
     let token_response: serde_json::Value = response
         .json()
-        .await
         .map_err(|_| Error::Custom("Failed to parse token response".to_string()))?;
 
     let access_token = token_response["access_token"]

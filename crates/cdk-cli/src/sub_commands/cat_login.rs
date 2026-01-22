@@ -85,28 +85,22 @@ async fn get_access_token(mint_info: &MintInfo, user: &str, password: &str) -> (
         .expect("Failed to get OIDC config")
         .token_endpoint;
 
-    // Create the request parameters
-    let params = [
-        ("grant_type", "password"),
-        ("client_id", &client_id),
-        ("scope", "openid offline_access"),
-        ("username", user),
-        ("password", password),
-    ];
-
     // Make the token request directly
-    let client = reqwest::Client::new();
-    let response = client
-        .post(token_url)
-        .form(&params)
-        .send()
+    let params: String = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("grant_type", "password")
+        .append_pair("client_id", &client_id)
+        .append_pair("scope", "openid offline_access")
+        .append_pair("username", user)
+        .append_pair("password", password)
+        .finish();
+    let response = bitreq::post(token_url)
+        .with_body(params)
+        .send_async()
         .await
         .expect("Failed to send token request");
 
-    let token_response: serde_json::Value = response
-        .json()
-        .await
-        .expect("Failed to parse token response");
+    let token_response: serde_json::Value =
+        response.json().expect("Failed to parse token response");
 
     let access_token = token_response["access_token"]
         .as_str()

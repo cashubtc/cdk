@@ -143,11 +143,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Request an invoice via LNURL-pay
 async fn request_invoice(npub: &str, amount_msats: u64) -> Result<(), Box<dyn std::error::Error>> {
-    let http_client = reqwest::Client::new();
-
     let lnurlp_url = format!("{}/.well-known/lnurlp/{}", NPUBCASH_URL, npub);
-    let lnurlp_response: serde_json::Value =
-        http_client.get(&lnurlp_url).send().await?.json().await?;
+    let lnurlp_response: serde_json::Value = bitreq::get(&lnurlp_url).send_async().await?.json()?;
 
     let callback = lnurlp_response["callback"]
         .as_str()
@@ -155,7 +152,7 @@ async fn request_invoice(npub: &str, amount_msats: u64) -> Result<(), Box<dyn st
 
     let invoice_url = format!("{}?amount={}", callback, amount_msats);
     let invoice_response: serde_json::Value =
-        http_client.get(&invoice_url).send().await?.json().await?;
+        bitreq::get(&invoice_url).send_async().await?.json()?;
 
     let pr = invoice_response["pr"]
         .as_str()

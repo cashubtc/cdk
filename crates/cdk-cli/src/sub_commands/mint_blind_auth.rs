@@ -163,25 +163,25 @@ async fn refresh_access_token(
     // Get the token endpoint from the OIDC configuration
     let token_url = oidc_client.get_oidc_config().await?.token_endpoint;
 
-    // Create the request parameters for token refresh
-    let params = [
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
-        ("client_id", "cashu-client"), // Using default client ID
-    ];
-
     // Make the token refresh request
-    let client = reqwest::Client::new();
-    let response = client.post(token_url).form(&params).send().await?;
+    let params: String = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("grant_type", "refresh_token")
+        .append_pair("refresh_token", refresh_token)
+        .append_pair("client_id", "cashu-client")
+        .finish();
+    let response = bitreq::post(token_url)
+        .with_body(params)
+        .send_async()
+        .await?;
 
-    if !response.status().is_success() {
+    if response.status_code != 200 {
         return Err(anyhow::anyhow!(
             "Token refresh failed with status: {}",
-            response.status()
+            response.status_code
         ));
     }
 
-    let token_response: serde_json::Value = response.json().await?;
+    let token_response: serde_json::Value = response.json()?;
 
     let access_token = token_response["access_token"]
         .as_str()

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use reqwest::Client as HttpClient;
+use bitreq::Response;
 use tracing::instrument;
 
 use crate::auth::JwtAuthProvider;
@@ -17,7 +17,6 @@ const THROTTLE_DELAY_MS: u64 = 200;
 pub struct NpubCashClient {
     base_url: String,
     auth_provider: Arc<JwtAuthProvider>,
-    http_client: HttpClient,
 }
 
 impl std::fmt::Debug for NpubCashClient {
@@ -40,7 +39,6 @@ impl NpubCashClient {
         Self {
             base_url,
             auth_provider,
-            http_client: HttpClient::new(),
         }
     }
 
@@ -186,34 +184,31 @@ impl NpubCashClient {
         let auth_header = self.auth_provider.get_nip98_auth_header(&url, "PATCH")?;
 
         // Send PATCH request
-        let response = self
-            .http_client
-            .patch(&url)
-            .header("Authorization", auth_header)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .header("User-Agent", "cdk-npubcash/0.13.0")
-            .json(&payload)
-            .send()
+        let response = bitreq::patch(&url)
+            .with_header("Authorization", auth_header)
+            .with_header("Content-Type", "application/json")
+            .with_header("Accept", "application/json")
+            .with_header("User-Agent", "cdk-npubcash/0.13.0")
+            .with_json(&payload)?
+            .send_async()
             .await?;
 
-        let status = response.status();
+        let status = response.status_code;
+        let response_text = response.as_str().unwrap_or_default();
 
         // Handle error responses
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
+        if status != 200 {
             return Err(Error::Api {
-                message: error_text,
-                status: status.as_u16(),
+                message: response_text.to_owned(),
+                status: status as u16,
             });
         }
 
         // Get response text for debugging
-        let response_text = response.text().await?;
         tracing::debug!("set_mint_url response: {}", response_text);
 
         // Parse JSON response
-        serde_json::from_str(&response_text).map_err(|e| {
+        serde_json::from_str(response_text).map_err(|e| {
             tracing::error!("Failed to parse response: {} - Body: {}", e, response_text);
             Error::Custom(format!("JSON parse error: {e}"))
         })
@@ -257,44 +252,42 @@ impl NpubCashClient {
 
         // Send the HTTP request with authentication headers
         tracing::debug!("Making {} request to {}", method, url);
-        let response = self
-            .http_client
-            .get(url)
-            .header("Authorization", auth_token)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .header("User-Agent", "cdk-npubcash/0.13.0")
-            .send()
+        let response = bitreq::get(url)
+            .with_header("Authorization", auth_token)
+            .with_header("Content-Type", "application/json")
+            .with_header("Accept", "application/json")
+            .with_header("User-Agent", "cdk-npubcash/0.13.0")
+            .send_async()
             .await?;
 
-        tracing::debug!("Response status: {}", response.status());
+        tracing::debug!("Response status: {}", response.status_code);
 
         // Parse and return the JSON response
         self.parse_response(response).await
     }
 
     /// Parse the HTTP response and deserialize the JSON body
-    async fn parse_response<T>(&self, response: reqwest::Response) -> Result<T>
+    async fn parse_response<T>(&self, response: Response) -> Result<T>
     where
         T: serde::de::DeserializeOwned,
     {
-        let status = response.status();
+        let status = response.status_code;
 
         // Get the response text
-        let response_text = response.text().await?;
+        let response_text = response.as_str().unwrap_or_default();
 
         // Handle error status codes
-        if !status.is_success() {
+        if status != 200 {
             tracing::debug!("Error response ({}): {}", status, response_text);
             return Err(Error::Api {
-                message: response_text,
-                status: status.as_u16(),
+                message: response_text.to_owned(),
+                status: status as u16,
             });
         }
 
         // Parse successful JSON response
         tracing::debug!("Response body: {}", response_text);
-        let data = serde_json::from_str::<T>(&response_text).map_err(|e| {
+        let data = serde_json::from_str::<T>(response_text).map_err(|e| {
             tracing::error!("JSON parse error: {} - Body: {}", e, response_text);
             Error::Custom(format!("JSON parse error: {e}"))
         })?;

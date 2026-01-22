@@ -461,6 +461,12 @@ impl ErrorResponse {
     }
 
     /// Error response from json
+    pub fn from_slice(json: &[u8]) -> Result<Self, serde_json::Error> {
+        let value: Value = serde_json::from_slice(json)?;
+        Self::from_value(value)
+    }
+
+    /// Error response from json
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let value: Value = serde_json::from_str(json)?;
 

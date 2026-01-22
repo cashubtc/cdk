@@ -13,7 +13,7 @@ async-trait = { workspace = true }
 cashu = { workspace = true }
 cdk-common = { workspace = true, features = ["wallet"] }
 nostr-sdk = { workspace = true }
-reqwest = { workspace = true }
+bitreq = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

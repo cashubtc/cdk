@@ -227,8 +227,13 @@ pub async fn post_send_onchain(
     State(_state): State<AppState>,
     Form(form): Form<SendOnchainActionForm>,
 ) -> Result<Response, StatusCode> {
-    let encoded_form =
-        serde_urlencoded::to_string(&form).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("address", &form.address);
+    if let Some(amount) = form.amount_sat {
+        serializer.append_pair("amount_sat", &amount.to_string());
+    }
+    serializer.append_pair("send_action", &form.send_action);
+    let encoded_form = serializer.finish();
 
     Response::builder()
         .status(StatusCode::FOUND)

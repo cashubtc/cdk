@@ -1,12 +1,13 @@
 //! Open Id Connect
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use bitreq::{Client, RequestExt};
 use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet};
 use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
-use reqwest::Client;
 use serde::Deserialize;
 #[cfg(feature = "wallet")]
 use serde::Serialize;
@@ -19,7 +20,7 @@ use tracing::instrument;
 pub enum Error {
     /// From Reqwest error
     #[error(transparent)]
-    Reqwest(#[from] reqwest::Error),
+    Reqwest(#[from] bitreq::Error),
     /// From Reqwest error
     #[error(transparent)]
     Jwt(#[from] jsonwebtoken::errors::Error),
@@ -54,7 +55,7 @@ pub struct OidcConfig {
 }
 
 /// Http Client
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OidcClient {
     client: Client,
     openid_discovery: String,
@@ -63,11 +64,30 @@ pub struct OidcClient {
     jwks_set: Arc<RwLock<Option<JwkSet>>>,
 }
 
+impl Debug for OidcClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "OidcClient({:?}): {}",
+            self.client_id, self.openid_discovery
+        )
+    }
+}
+
 #[cfg(feature = "wallet")]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GrantType {
     RefreshToken,
+}
+
+#[cfg(feature = "wallet")]
+impl GrantType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            GrantType::RefreshToken => "refresh_token",
+        }
+    }
 }
 
 #[cfg(feature = "wallet")]
@@ -91,7 +111,7 @@ impl OidcClient {
     /// Create new [`OidcClient`]
     pub fn new(openid_discovery: String, client_id: Option<String>) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::new(10),
             openid_discovery,
             client_id,
             oidc_config: Arc::new(RwLock::new(None)),
@@ -103,13 +123,10 @@ impl OidcClient {
     #[instrument(skip(self))]
     pub async fn get_oidc_config(&self) -> Result<OidcConfig, Error> {
         tracing::debug!("Getting oidc config");
-        let oidc_config = self
-            .client
-            .get(&self.openid_discovery)
-            .send()
+        let oidc_config = bitreq::get(&self.openid_discovery)
+            .send_async_with_client(&self.client)
             .await?
-            .json::<OidcConfig>()
-            .await?;
+            .json::<OidcConfig>()?;
 
         let mut current_config = self.oidc_config.write().await;
 
@@ -122,13 +139,10 @@ impl OidcClient {
     #[instrument(skip(self))]
     pub async fn get_jwkset(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
         tracing::debug!("Getting jwks set");
-        let jwks_set = self
-            .client
-            .get(jwks_uri)
-            .send()
+        let jwks_set = bitreq::get(jwks_uri)
+            .send_async_with_client(&self.client)
             .await?
-            .json::<JwkSet>()
-            .await?;
+            .json::<JwkSet>()?;
 
         let mut current_set = self.jwks_set.write().await;
 
@@ -248,14 +262,17 @@ impl OidcClient {
             refresh_token,
         };
 
-        let response = self
-            .client
-            .post(token_url)
-            .form(&request)
-            .send()
+        let body = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("grant_type", request.grant_type.as_str())
+            .append_pair("client_id", &request.client_id)
+            .append_pair("refresh_token", &request.refresh_token)
+            .finish();
+
+        let response = bitreq::post(token_url)
+            .with_body(body)
+            .send_async_with_client(&self.client)
             .await?
-            .json::<TokenResponse>()
-            .await?;
+            .json::<TokenResponse>()?;
 
         Ok(response)
     }
