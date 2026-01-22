@@ -208,23 +208,6 @@ impl SupabaseWalletDatabase {
     }
 
     /// Call a Supabase RPC function with JSON parameters
-    ///
-    /// This allows calling any custom PostgreSQL function exposed via Supabase's PostgREST API.
-    ///
-    /// # Arguments
-    /// * `function_name` - The name of the RPC function to call (e.g., "my_function")
-    /// * `params_json` - JSON string containing the function parameters (e.g., `{"arg1": "value"}`).
-    ///   For functions with no parameters, pass an empty string `""` or `"{}"`.
-    ///
-    /// # Returns
-    /// The raw JSON response from Supabase as a string
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - The params_json is not valid JSON (unless empty)
-    /// - The HTTP request fails
-    /// - The RPC function returns an error status
-    /// ```
     pub async fn call_rpc(&self, function_name: &str, params_json: &str) -> Result<String, Error> {
         // Parse the JSON to validate it and convert to Value for sending
         // Treat empty string as empty object for convenience
@@ -413,6 +396,50 @@ impl SupabaseWalletDatabase {
         } else {
             Ok(Some(items))
         }
+    }
+
+    /// Fallback non-atomic update_proofs implementation
+    ///
+    /// Used when the atomic RPC function `update_proofs_atomic` is not available
+    /// (e.g., migration 003 has not been applied yet).
+    ///
+    /// **Warning**: This is not atomic - if adding succeeds but removing fails,
+    /// the database will be left in an inconsistent state.
+    async fn update_proofs_fallback(
+        &self,
+        proofs_json: Vec<serde_json::Value>,
+        ys_to_remove: Vec<String>,
+    ) -> Result<(), DatabaseError> {
+        // Add new proofs
+        if !proofs_json.is_empty() {
+            let (status, response_text) = self
+                .post_request("rest/v1/proof?on_conflict=y", &proofs_json)
+                .await?;
+
+            if !status.is_success() {
+                return Err(DatabaseError::Internal(format!(
+                    "update_proofs (add) failed: HTTP {} - {}",
+                    status, response_text
+                )));
+            }
+        }
+
+        // Remove proofs by y values
+        if !ys_to_remove.is_empty() {
+            let filter = format!("({})", ys_to_remove.join(","));
+            let path = format!("rest/v1/proof?y=in.{}", filter);
+
+            let (status, response_text) = self.delete_request(&path).await?;
+
+            if !status.is_success() {
+                return Err(DatabaseError::Internal(format!(
+                    "update_proofs (remove) failed: HTTP {} - {}",
+                    status, response_text
+                )));
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -922,44 +949,78 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), DatabaseError> {
-        // Add new proofs
-        if !added.is_empty() {
-            let items: Result<Vec<ProofTable>, DatabaseError> =
-                added.into_iter().map(|p| p.try_into()).collect();
-            let items = items?;
-
-            let (status, response_text) = self
-                .post_request("rest/v1/proof?on_conflict=y", &items)
-                .await?;
-
-            if !status.is_success() {
-                return Err(DatabaseError::Internal(format!(
-                    "update_proofs (add) failed: HTTP {} - {}",
-                    status, response_text
-                )));
-            }
+        // If nothing to do, return early
+        if added.is_empty() && removed_ys.is_empty() {
+            return Ok(());
         }
 
-        // Remove proofs by y values
-        if !removed_ys.is_empty() {
-            let ys_str: Vec<String> = removed_ys
-                .iter()
-                .map(|y| hex::encode(y.to_bytes()))
-                .collect();
-            let filter = format!("({})", ys_str.join(","));
-            let path = format!("rest/v1/proof?y=in.{}", filter);
+        // Convert proofs to table format for the RPC call
+        let proofs_json: Vec<serde_json::Value> = added
+            .into_iter()
+            .map(|p| {
+                let table: ProofTable = p.try_into()?;
+                serde_json::to_value(&table).map_err(DatabaseError::from)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
-            let (status, response_text) = self.delete_request(&path).await?;
+        // Convert Y values to hex strings
+        let ys_json: Vec<String> = removed_ys
+            .iter()
+            .map(|y| hex::encode(y.to_bytes()))
+            .collect();
 
-            if !status.is_success() {
-                return Err(DatabaseError::Internal(format!(
-                    "update_proofs (remove) failed: HTTP {} - {}",
-                    status, response_text
-                )));
-            }
+        // Try atomic RPC first
+        let rpc_body = serde_json::json!({
+            "p_proofs_to_add": proofs_json,
+            "p_ys_to_remove": ys_json
+        });
+
+        let url = self.join_url("rest/v1/rpc/update_proofs_atomic")?;
+        let auth_bearer = self.get_auth_bearer().await;
+
+        tracing::debug!(
+            method = "POST",
+            url = %url,
+            proofs_count = proofs_json.len(),
+            remove_count = ys_json.len(),
+            "Supabase atomic update_proofs RPC"
+        );
+
+        let res = self
+            .client
+            .post(url.clone())
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", auth_bearer))
+            .header("Content-Type", "application/json")
+            .json(&rpc_body)
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+
+        let status = res.status();
+        let text = res.text().await.map_err(Error::Reqwest)?;
+
+        tracing::debug!(
+            method = "POST",
+            url = %url,
+            status = %status,
+            response = %text,
+            "Supabase atomic update_proofs response"
+        );
+
+        if status.is_success() {
+            return Ok(());
         }
 
-        Ok(())
+        // If RPC fails (e.g., function doesn't exist), fall back to non-atomic approach
+        // This provides backwards compatibility with databases that haven't run migration 003
+        tracing::warn!(
+            "RPC update_proofs_atomic failed (HTTP {}), falling back to non-atomic approach: {}",
+            status,
+            text
+        );
+
+        self.update_proofs_fallback(proofs_json, ys_json).await
     }
 
     async fn update_proofs_state(
