@@ -634,6 +634,8 @@ impl MintMetadataCache {
             new_metadata.auth_status.is_populated = true;
             new_metadata.auth_status.updated_at = Instant::now();
             new_metadata.auth_status.version += 1;
+            // Increment main version to trigger database sync
+            new_metadata.status.version += 1;
         }
 
         tracing::info!(
