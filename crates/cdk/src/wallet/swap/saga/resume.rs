@@ -3,6 +3,13 @@
 //! This module handles resuming incomplete swap sagas that were interrupted
 //! by a crash. It determines the actual state by querying the mint and
 //! either completes the operation or compensates.
+//!
+//! # Recovery Strategy
+//!
+//! For `SwapRequested` state, we use a replay-first strategy:
+//! 1. **Replay**: Attempt to replay the original `post_swap` request.
+//!    If the mint cached the response (NUT-19), we get signatures immediately.
+//! 2. **Fallback**: If replay fails, check if inputs are spent and use `/restore`.
 
 use cdk_common::wallet::{OperationData, SwapOperationData, SwapSagaState, WalletSaga};
 use tracing::instrument;
@@ -67,6 +74,10 @@ impl Wallet {
     }
 
     /// Check mint and either complete swap or compensate.
+    ///
+    /// Uses a replay-first strategy:
+    /// 1. Try to replay the original swap request (leverages NUT-19 caching)
+    /// 2. If replay fails, fall back to checking proof states and /restore
     async fn recover_or_compensate_swap(
         &self,
         saga_id: &uuid::Uuid,
@@ -85,12 +96,32 @@ impl Wallet {
             return Ok(RecoveryAction::Recovered);
         }
 
-        // Check proof states with the mint using the recovery helper
+        // Step 1: Try to replay the swap request
+        // This leverages NUT-19 caching or completes the swap if inputs weren't spent
+        if let Some(new_proofs) = self
+            .try_replay_swap_request(
+                saga_id,
+                "Swap",
+                data.blinded_messages.as_deref(),
+                data.counter_start,
+                data.counter_end,
+                &reserved_proofs,
+            )
+            .await?
+        {
+            // Replay succeeded - save proofs and clean up
+            let input_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
+            self.localstore.update_proofs(new_proofs, input_ys).await?;
+            self.localstore.delete_saga(saga_id).await?;
+            return Ok(RecoveryAction::Recovered);
+        }
+
+        // Step 2: Replay failed, fall back to checking proof states
         match self.are_proofs_spent(&reserved_proofs).await {
             Ok(true) => {
-                // Input proofs are spent - swap succeeded, recover outputs
+                // Input proofs are spent - swap succeeded, recover outputs via /restore
                 tracing::info!(
-                    "Swap saga {} - input proofs spent, recovering outputs",
+                    "Swap saga {} - input proofs spent, recovering outputs via /restore",
                     saga_id
                 );
                 self.complete_swap_from_restore(saga_id, data, &reserved_proofs)
