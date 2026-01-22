@@ -188,7 +188,7 @@ impl<'a> MintSaga<'a, Initial> {
             }),
         );
 
-        self.wallet.localstore.add_saga(saga).await?;
+        self.wallet.localstore.add_saga(saga.clone()).await?;
 
         // Register compensation (deletes saga on failure)
         add_compensation(
@@ -209,11 +209,11 @@ impl<'a> MintSaga<'a, Initial> {
                 operation_id: self.state_data.operation_id,
                 quote_id: quote_id.to_string(),
                 quote_info: quote_info.clone(),
-                amount,
                 active_keyset_id,
                 premint_secrets,
                 mint_request: request,
                 payment_method: quote_info.payment_method.clone(),
+                saga,
             },
         })
     }
@@ -290,11 +290,11 @@ impl<'a> MintSaga<'a, Prepared> {
             operation_id,
             quote_id,
             quote_info,
-            amount,
             active_keyset_id,
             premint_secrets,
             mint_request,
             payment_method,
+            saga,
         } = state_data;
 
         tracing::info!(
@@ -315,20 +315,13 @@ impl<'a> MintSaga<'a, Prepared> {
             // Update saga state to MintRequested BEFORE making the mint call
             // This is write-ahead logging - if we crash after this, recovery knows
             // the mint request may have been sent
-            let updated_saga = WalletSaga::new(
-                operation_id,
-                WalletSagaState::Issue(IssueSagaState::MintRequested),
-                amount,
-                wallet.mint_url.clone(),
-                wallet.unit.clone(),
-                OperationData::Mint(MintOperationData {
-                    quote_id: quote_id.clone(),
-                    amount,
-                    counter_start: Some(counter_start),
-                    counter_end: Some(counter_end),
-                    blinded_messages: Some(mint_request.outputs.clone()),
-                }),
-            );
+            let mut updated_saga = saga.clone();
+            updated_saga.update_state(WalletSagaState::Issue(IssueSagaState::MintRequested));
+            if let OperationData::Mint(ref mut data) = updated_saga.data {
+                data.counter_start = Some(counter_start);
+                data.counter_end = Some(counter_end);
+                data.blinded_messages = Some(mint_request.outputs.clone());
+            }
 
             if !wallet.localstore.update_saga(updated_saga).await? {
                 return Err(Error::Custom(

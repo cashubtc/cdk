@@ -17,10 +17,11 @@
 //! Note: `PaymentPending` is a persistence state in `WalletSaga`, not a typestate.
 //! When payment is pending, the saga returns an error and recovery handles it later.
 
+use cdk_common::wallet::WalletSaga;
 use cdk_common::MeltQuoteState;
 use uuid::Uuid;
 
-use crate::nuts::{BlindedMessage, PreMintSecrets, Proofs};
+use crate::nuts::{PreMintSecrets, Proofs};
 use crate::wallet::MeltQuote;
 use crate::Amount;
 
@@ -52,6 +53,8 @@ pub struct Prepared {
     pub input_fee: Amount,
     /// Input fee if swap is skipped (on all proofs directly)
     pub input_fee_without_swap: Amount,
+    /// The persisted saga for optimistic locking
+    pub saga: WalletSaga,
 }
 
 /// MeltRequested state - melt request has been built and is ready to send.
@@ -67,14 +70,8 @@ pub struct MeltRequested {
     pub final_proofs: Proofs,
     /// Pre-mint secrets for change
     pub premint_secrets: PreMintSecrets,
-    /// Counter start for recovery
-    pub counter_start: u32,
-    /// Counter end for recovery
-    pub counter_end: u32,
-    /// Change amount (if any)
-    pub change_amount: Amount,
-    /// Blinded messages for change (for recovery)
-    pub change_blinded_messages: Option<Vec<BlindedMessage>>,
+    /// The persisted saga for optimistic locking (contains recovery data)
+    pub saga: WalletSaga,
 }
 
 /// Finalized state - melt completed successfully.

@@ -8,6 +8,7 @@ use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::util::hex;
 use cashu::{nut00, BlindedMessage, PaymentMethod, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::mint_url::MintUrl;
 use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
@@ -227,7 +228,7 @@ pub struct Transaction {
     pub payment_method: Option<PaymentMethod>,
     /// Saga ID if this transaction was part of a saga
     #[serde(default)]
-    pub saga_id: Option<String>,
+    pub saga_id: Option<Uuid>,
 }
 
 impl Transaction {

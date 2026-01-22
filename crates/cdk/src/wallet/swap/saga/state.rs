@@ -4,6 +4,7 @@
 //! of the swap operation. The type state pattern ensures that only valid
 //! operations are available at each stage.
 
+use cdk_common::wallet::WalletSaga;
 use uuid::Uuid;
 
 use crate::amount::SplitTarget;
@@ -31,20 +32,14 @@ pub struct Prepared {
     pub amount: Option<Amount>,
     /// Amount split target for output proofs
     pub amount_split_target: SplitTarget,
-    /// Input proofs (already reserved)
-    pub input_proofs: Proofs,
     /// Y values of input proofs (for cleanup)
     pub input_ys: Vec<PublicKey>,
     /// Spending conditions for output proofs
     pub spending_conditions: Option<SpendingConditions>,
     /// Pre-swap data (request and secrets)
     pub pre_swap: PreSwap,
-    /// Fee paid for the swap
-    pub fee: Amount,
-    /// Counter start (for recovery)
-    pub counter_start: u32,
-    /// Counter end (for recovery)
-    pub counter_end: u32,
+    /// The persisted saga for optimistic locking (contains recovery data)
+    pub saga: WalletSaga,
 }
 
 /// Finalized state - swap completed successfully.

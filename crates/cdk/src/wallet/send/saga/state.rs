@@ -4,6 +4,7 @@
 //! of the send operation. The type state pattern ensures that only valid
 //! operations are available at each stage.
 
+use cdk_common::wallet::WalletSaga;
 use uuid::Uuid;
 
 use crate::nuts::Proofs;
@@ -39,6 +40,8 @@ pub struct Prepared {
     pub proofs_to_send: Proofs,
     /// Fee the recipient will pay to redeem the token
     pub send_fee: Amount,
+    /// The persisted saga for optimistic locking
+    pub saga: WalletSaga,
 }
 
 /// Token created state - the send has been confirmed and the token generated.
@@ -52,4 +55,6 @@ pub struct TokenCreated {
     pub operation_id: Uuid,
     /// Proofs included in the token (needed for revocation/checking status)
     pub proofs: Proofs,
+    /// The persisted saga for optimistic locking
+    pub saga: WalletSaga,
 }
