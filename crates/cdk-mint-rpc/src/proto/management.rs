@@ -457,7 +457,7 @@ impl CdkMintManagement for MintRPCServer {
             .map_err(|_| Status::invalid_argument("Invalid quote state".to_string()))?;
 
         let mint_quote = self
-            .mint
+            .mint()
             .localstore()
             .get_mint_quote(&quote_id)
             .await
@@ -467,16 +467,17 @@ impl CdkMintManagement for MintRPCServer {
         match state {
             MintQuoteState::Paid => {
                 // Create a dummy payment response
+                let payment_amount = mint_quote
+                    .amount
+                    .clone()
+                    .unwrap_or_else(|| mint_quote.amount_paid());
                 let response = WaitPaymentResponse {
                     payment_id: mint_quote.request_lookup_id.to_string(),
-                    payment_amount: mint_quote.clone().amount.unwrap_or(cdk::Amount::new(
-                        mint_quote.amount_paid().value(),
-                        mint_quote.unit.clone(),
-                    )),
+                    payment_amount,
                     payment_identifier: mint_quote.request_lookup_id.clone(),
                 };
 
-                let localstore = self.mint.localstore();
+                let localstore = self.mint().localstore();
                 let mut tx = localstore
                     .begin_transaction()
                     .await
@@ -493,7 +494,7 @@ impl CdkMintManagement for MintRPCServer {
                         "Quote not found in transaction".to_string(),
                     ))?;
 
-                self.mint
+                self.mint()
                     .pay_mint_quote(&mut tx, &mut mint_quote, response)
                     .await
                     .map_err(|_| Status::internal("Could not process payment".to_string()))?;
@@ -512,16 +513,16 @@ impl CdkMintManagement for MintRPCServer {
                     mint_quote.expiry,                    // expiry
                     mint_quote.request_lookup_id.clone(), // request_lookup_id
                     mint_quote.pubkey,                    // pubkey
-                    mint_quote.amount_issued(),           // amount_issued
                     mint_quote.amount_paid(),             // amount_paid
-                    mint_quote.payment_method.clone(),    // method
-                    0,                                    // created_at
-                    vec![],                               // blinded_messages
-                    vec![],                               // payment_ids
+                    mint_quote.amount_issued(),           // amount_issued
+                    mint_quote.payment_method.clone(),    // payment_method
+                    0,                                    // created_time
+                    vec![],                               // payments
+                    vec![],                               // issuance
                     None,                                 // extra_json
                 );
 
-                let mint_store = self.mint.localstore();
+                let mint_store = self.mint().localstore();
                 let mut tx = mint_store
                     .begin_transaction()
                     .await
@@ -536,7 +537,7 @@ impl CdkMintManagement for MintRPCServer {
         }
 
         let mint_quote = self
-            .mint
+            .mint()
             .localstore()
             .get_mint_quote(&quote_id)
             .await
