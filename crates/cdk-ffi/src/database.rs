@@ -4,10 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdk_common::database::{
-    KVStoreDatabase as CdkKVStoreDatabase, WalletDatabase as CdkWalletDatabase,
+    wallet::Database as CdkWalletDatabase, KVStoreDatabase as CdkKVStoreDatabase,
 };
-use cdk_sql_common::pool::DatabasePool;
-use cdk_sql_common::SQLWalletDatabase;
 
 use crate::error::FfiError;
 #[cfg(feature = "postgres")]
@@ -765,28 +763,79 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     }
 }
 
-pub(crate) struct FfiWalletSQLDatabase<RM>
+/// Generic FFI wrapper for any database implementing CDK's wallet database traits.
+///
+/// This wrapper converts between CDK types and FFI types, allowing any database
+/// backend (SQLite, Postgres, Supabase, etc.) to be exposed through the FFI layer.
+pub(crate) struct FfiWalletDatabaseWrapper<T, E>
 where
-    RM: DatabasePool + 'static,
+    T: CdkWalletDatabase<E> + CdkKVStoreDatabase<Err = E> + Send + Sync + 'static,
+    E: std::error::Error
+        + Send
+        + Sync
+        + Into<cdk_common::database::Error>
+        + From<cdk_common::database::Error>
+        + 'static,
 {
-    inner: SQLWalletDatabase<RM>,
+    inner: T,
+    _phantom: std::marker::PhantomData<E>,
 }
 
-impl<RM> FfiWalletSQLDatabase<RM>
+impl<T, E> std::fmt::Debug for FfiWalletDatabaseWrapper<T, E>
 where
-    RM: DatabasePool + 'static,
+    T: CdkWalletDatabase<E> + CdkKVStoreDatabase<Err = E> + std::fmt::Debug + Send + Sync + 'static,
+    E: std::error::Error
+        + Send
+        + Sync
+        + Into<cdk_common::database::Error>
+        + From<cdk_common::database::Error>
+        + 'static,
 {
-    /// Creates a new instance
-    pub fn new(inner: SQLWalletDatabase<RM>) -> Arc<Self> {
-        Arc::new(Self { inner })
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FfiWalletDatabaseWrapper")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<T, E> FfiWalletDatabaseWrapper<T, E>
+where
+    T: CdkWalletDatabase<E> + CdkKVStoreDatabase<Err = E> + Send + Sync + 'static,
+    E: std::error::Error
+        + Send
+        + Sync
+        + Into<cdk_common::database::Error>
+        + From<cdk_common::database::Error>
+        + 'static,
+{
+    /// Creates a new instance wrapping the given database
+    pub fn new(inner: T) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            _phantom: std::marker::PhantomData,
+        })
+    }
+
+    /// Returns a reference to the inner database
+    ///
+    /// This is useful for accessing database-specific methods that are not part
+    /// of the standard WalletDatabase trait (e.g., Supabase JWT token management).
+    pub fn inner(&self) -> &T {
+        &self.inner
     }
 }
 
 // Implement WalletDatabase trait - all read and write methods
 #[async_trait::async_trait]
-impl<RM> WalletDatabase for FfiWalletSQLDatabase<RM>
+impl<T, E> WalletDatabase for FfiWalletDatabaseWrapper<T, E>
 where
-    RM: DatabasePool + 'static,
+    T: CdkWalletDatabase<E> + CdkKVStoreDatabase<Err = E> + Send + Sync + 'static,
+    E: std::error::Error
+        + Send
+        + Sync
+        + Into<cdk_common::database::Error>
+        + From<cdk_common::database::Error>
+        + 'static,
 {
     // ========== Read methods ==========
 
@@ -1194,8 +1243,8 @@ where
     }
 }
 
-/// Macro to implement WalletDatabase for wrapper types that delegate to an inner FfiWalletSQLDatabase.
-/// This eliminates duplication between SQLite and Postgres FFI implementations.
+/// Macro to implement WalletDatabase for wrapper types that delegate to an inner FfiWalletDatabaseWrapper.
+/// This eliminates duplication between SQLite, Postgres, Supabase, and other FFI implementations.
 ///
 /// Requirements: The following types must be in scope where this macro is invoked:
 /// - WalletDatabase, FfiError, PublicKey, ProofInfo, MintUrl, MintInfo, KeySetInfo, Id,
