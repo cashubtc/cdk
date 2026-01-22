@@ -99,6 +99,37 @@ impl WalletSupabaseDatabase {
                 error_message: e.to_string(),
             })
     }
+
+    /// Call a Supabase RPC function
+    ///
+    /// This allows calling any custom PostgreSQL function exposed via Supabase's PostgREST API.
+    ///
+    /// # Arguments
+    /// * `function_name` - The name of the RPC function to call (e.g., "my_function")
+    /// * `params_json` - JSON string containing the function parameters (e.g., `{"arg1": "value"}`)
+    ///
+    /// # Returns
+    /// The raw JSON response from Supabase as a string
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The params_json is not valid JSON
+    /// - The HTTP request fails
+    /// - The RPC function returns an error status
+    /// ```
+    pub async fn call_rpc(
+        &self,
+        function_name: String,
+        params_json: String,
+    ) -> Result<String, FfiError> {
+        self.inner
+            .inner()
+            .call_rpc(&function_name, &params_json)
+            .await
+            .map_err(|e| FfiError::Internal {
+                error_message: e.to_string(),
+            })
+    }
 }
 
 // Use macro to implement WalletDatabase trait - delegates all methods to inner

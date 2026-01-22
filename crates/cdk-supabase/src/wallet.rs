@@ -207,6 +207,61 @@ impl SupabaseWalletDatabase {
         self.jwt_token.read().await.clone()
     }
 
+    /// Call a Supabase RPC function with JSON parameters
+    ///
+    /// This allows calling any custom PostgreSQL function exposed via Supabase's PostgREST API.
+    ///
+    /// # Arguments
+    /// * `function_name` - The name of the RPC function to call (e.g., "my_function")
+    /// * `params_json` - JSON string containing the function parameters (e.g., `{"arg1": "value"}`).
+    ///   For functions with no parameters, pass an empty string `""` or `"{}"`.
+    ///
+    /// # Returns
+    /// The raw JSON response from Supabase as a string
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The params_json is not valid JSON (unless empty)
+    /// - The HTTP request fails
+    /// - The RPC function returns an error status
+    /// ```
+    pub async fn call_rpc(&self, function_name: &str, params_json: &str) -> Result<String, Error> {
+        // Parse the JSON to validate it and convert to Value for sending
+        // Treat empty string as empty object for convenience
+        let params: serde_json::Value = if params_json.trim().is_empty() {
+            serde_json::Value::Object(serde_json::Map::new())
+        } else {
+            serde_json::from_str(params_json).map_err(Error::Serde)?
+        };
+
+        let path = format!("rest/v1/rpc/{}", function_name);
+        let url = self.join_url(&path)?;
+        let auth_bearer = self.get_auth_bearer().await;
+
+        let res = self
+            .client
+            .post(url.clone())
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", auth_bearer))
+            .header("Content-Type", "application/json")
+            .json(&params)
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+
+        let status = res.status();
+        let text = res.text().await.map_err(Error::Reqwest)?;
+
+        if !status.is_success() {
+            return Err(Error::Supabase(format!(
+                "RPC '{}' failed: HTTP {} - {}",
+                function_name, status, text
+            )));
+        }
+
+        Ok(text)
+    }
+
     /// Get the authorization token to use for requests
     ///
     /// Returns the JWT token if set, otherwise falls back to the API key.
