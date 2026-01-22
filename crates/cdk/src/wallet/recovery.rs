@@ -989,7 +989,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recover_melt_requested_quote_pending() {
-        // When melt quote is still pending, should skip
+        // When melt quote payment is still in progress (Pending), should skip
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -1026,7 +1026,76 @@ mod tests {
         );
         db.add_saga(saga).await.unwrap();
 
-        // Mock: quote is Unpaid (Pending)
+        // Mock: quote payment is in progress (Pending state)
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+            quote: quote_id.clone(),
+            amount: Amount::from(100),
+            fee_reserve: Amount::from(10),
+            state: MeltQuoteState::Pending,
+            expiry: 9999999999,
+            payment_preimage: None,
+            change: None,
+            request: None,
+            unit: None,
+        }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        // Should skip (payment still in progress)
+        assert_eq!(report.skipped, 1);
+        assert_eq!(report.compensated, 0);
+        assert_eq!(report.recovered, 0);
+
+        // Proofs should still be reserved
+        let reserved = db.get_reserved_proofs(&saga_id).await.unwrap();
+        assert_eq!(reserved.len(), 1);
+
+        // Saga should still exist
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_recover_melt_requested_quote_unpaid() {
+        // When melt quote is Unpaid (payment was never initiated), should compensate
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        // Create and reserve proofs
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Create a melt quote
+        let mut quote = test_melt_quote();
+        quote.used_by_operation = Some(saga_id.to_string());
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        // Create saga in MeltRequested state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Melt(MeltSagaState::MeltRequested),
+            Amount::from(100),
+            mint_url.clone(),
+            cdk_common::nuts::CurrencyUnit::Sat,
+            OperationData::Melt(MeltOperationData {
+                quote_id: quote_id.clone(),
+                amount: Amount::from(100),
+                fee_reserve: Amount::from(10),
+                counter_start: None,
+                counter_end: None,
+                change_amount: None,
+                change_blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Mock: quote is Unpaid (payment was never initiated or was rolled back)
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id.clone(),
@@ -1043,16 +1112,23 @@ mod tests {
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
 
-        // Should skip (still pending)
-        assert_eq!(report.skipped, 1);
-        assert_eq!(report.compensated, 0);
+        // Should compensate (payment was never initiated, safe to release proofs)
+        assert_eq!(report.compensated, 1);
+        assert_eq!(report.skipped, 0);
         assert_eq!(report.recovered, 0);
 
-        // Proofs should still be reserved
-        let reserved = db.get_reserved_proofs(&saga_id).await.unwrap();
-        assert_eq!(reserved.len(), 1);
+        // Proofs should be released back to Unspent
+        let proofs = db
+            .get_proofs(None, None, Some(vec![State::Unspent]), None)
+            .await
+            .unwrap();
+        assert_eq!(proofs.len(), 1);
 
-        // Saga should still exist
-        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+        // Melt quote reservation should be released
+        let retrieved_quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
+        assert!(retrieved_quote.used_by_operation.is_none());
+
+        // Saga should be deleted
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
     }
 }
