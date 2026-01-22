@@ -33,6 +33,27 @@ fn url_encode(value: &str) -> String {
     urlencoding::encode(value).into_owned()
 }
 
+/// Decode JWT expiration from token string (without verification)
+fn decode_jwt_expiry(token: &str) -> Option<u64> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let payload_part = parts[1];
+
+    use base64::{engine::general_purpose, Engine as _};
+
+    let decoded = general_purpose::URL_SAFE_NO_PAD.decode(payload_part).ok()?;
+
+    #[derive(Deserialize)]
+    struct Claims {
+        exp: Option<u64>,
+    }
+
+    let claims: Claims = serde_json::from_slice(&decoded).ok()?;
+    claims.exp
+}
+
 /// Supabase wallet database implementation
 ///
 /// This database uses two types of authentication:
@@ -118,7 +139,15 @@ impl SupabaseWalletDatabase {
     /// Set or update the JWT token for authentication
     pub async fn set_jwt_token(&self, token: Option<String>) {
         let mut jwt = self.jwt_token.write().await;
-        *jwt = token;
+        *jwt = token.clone();
+
+        let mut expiration = self.token_expiration.write().await;
+
+        if let Some(t) = token {
+            *expiration = decode_jwt_expiry(&t);
+        } else {
+            *expiration = None;
+        }
     }
 
     /// Set refresh token
