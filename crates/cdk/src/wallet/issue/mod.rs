@@ -121,6 +121,7 @@ impl Wallet {
             .await
     }
 
+    /// Checks the state of a mint quote with the mint
     async fn check_state(&self, mint_quote: &mut MintQuote) -> Result<(), Error> {
         match mint_quote.payment_method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
@@ -167,7 +168,38 @@ impl Wallet {
 
         self.check_state(&mut mint_quote).await?;
 
-        self.localstore.add_mint_quote(mint_quote.clone()).await?;
+        match self.localstore.add_mint_quote(mint_quote.clone()).await {
+            Ok(_) => (),
+            Err(e) => {
+                let is_concurrent = matches!(e, cdk_common::database::Error::ConcurrentUpdate);
+                if is_concurrent {
+                    tracing::debug!(
+                        "Concurrent update detected for mint quote {}, retrying",
+                        quote_id
+                    );
+                    let mut fresh_quote = self
+                        .localstore
+                        .get_mint_quote(quote_id)
+                        .await?
+                        .ok_or(Error::UnknownQuote)?;
+
+                    self.check_state(&mut fresh_quote).await?;
+
+                    match self.localstore.add_mint_quote(fresh_quote.clone()).await {
+                        Ok(_) => (),
+                        Err(e) => {
+                            if matches!(e, cdk_common::database::Error::ConcurrentUpdate) {
+                                return Err(Error::ConcurrentUpdate);
+                            }
+                            return Err(Error::Database(e));
+                        }
+                    }
+                    mint_quote = fresh_quote;
+                } else {
+                    return Err(Error::Database(e));
+                }
+            }
+        }
 
         Ok(mint_quote)
     }

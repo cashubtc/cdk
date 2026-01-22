@@ -178,6 +178,7 @@ mod tests {
                 amount_issued: Amount::from(0),
                 amount_paid: Amount::from(0),
                 used_by_operation: None,
+                version: 0,
             };
 
             // Store the quote
@@ -317,6 +318,7 @@ mod tests {
             amount_issued: Amount::from(100),
             amount_paid: Amount::from(100),
             used_by_operation: None,
+            version: 0,
         };
 
         // Quote 2: Paid but not yet issued (should be returned - has pending balance)
@@ -333,6 +335,7 @@ mod tests {
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(100),
             used_by_operation: None,
+            version: 0,
         };
 
         // Quote 3: Bolt12 quote with no balance (should be returned - bolt12 is reusable)
@@ -349,6 +352,7 @@ mod tests {
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(0),
             used_by_operation: None,
+            version: 0,
         };
 
         // Quote 4: Unpaid bolt11 quote (should be returned - wallet needs to check with mint)
@@ -365,6 +369,7 @@ mod tests {
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(0),
             used_by_operation: None,
+            version: 0,
         };
 
         // Add all quotes to the database

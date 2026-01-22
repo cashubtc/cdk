@@ -63,6 +63,7 @@ impl Wallet {
             payment_preimage: quote_res.payment_preimage,
             payment_method: PaymentMethod::Known(KnownMethod::Bolt12),
             used_by_operation: None,
+            version: 0,
         };
 
         self.localstore.add_melt_quote(quote.clone()).await?;

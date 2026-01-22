@@ -325,6 +325,9 @@ pub enum Error {
     /// KV Store invalid key or namespace
     #[error("Invalid KV store key or namespace: {0}")]
     KVStoreInvalidKey(String),
+    /// Concurrent update detected
+    #[error("Concurrent update detected")]
+    ConcurrentUpdate,
     /// Invalid response from mint
     #[error("Invalid mint response: {0}")]
     InvalidMintResponse(String),
@@ -736,6 +739,10 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::Unknown(50000),
                 detail: err.to_string(),
             },
+            Error::ConcurrentUpdate => ErrorResponse {
+                code: ErrorCode::ConcurrentUpdate,
+                detail: err.to_string(),
+            },
 
             // Fallback for any remaining errors - use Unknown(99999) instead of TokenNotVerified
             _ => ErrorResponse {
@@ -756,6 +763,7 @@ impl From<crate::database::Error> for Error {
                 crate::state::Error::AlreadyPaid => Self::RequestAlreadyPaid,
                 state => Self::Database(crate::database::Error::InvalidStateTransition(state)),
             },
+            crate::database::Error::ConcurrentUpdate => Self::ConcurrentUpdate,
             db_error => Self::Database(db_error),
         }
     }
@@ -764,7 +772,10 @@ impl From<crate::database::Error> for Error {
 #[cfg(not(feature = "mint"))]
 impl From<crate::database::Error> for Error {
     fn from(db_error: crate::database::Error) -> Self {
-        Self::Database(db_error)
+        match db_error {
+            crate::database::Error::ConcurrentUpdate => Self::ConcurrentUpdate,
+            db_error => Self::Database(db_error),
+        }
     }
 }
 
@@ -893,6 +904,9 @@ pub enum ErrorCode {
     /// BAT mint rate limit exceeded (31004)
     BatRateLimitExceeded,
 
+    /// Concurrent update detected
+    ConcurrentUpdate,
+
     /// Unknown error code
     Unknown(u16),
 }
@@ -982,6 +996,7 @@ impl ErrorCode {
             Self::BlindAuthFailed => 31002,
             Self::BatMintMaxExceeded => 31003,
             Self::BatRateLimitExceeded => 31004,
+            Self::ConcurrentUpdate => 50000,
             Self::Unknown(code) => *code,
         }
     }

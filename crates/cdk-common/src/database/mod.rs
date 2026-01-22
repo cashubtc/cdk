@@ -213,6 +213,10 @@ pub enum Error {
     /// KV Store invalid key or namespace
     #[error("Invalid KV store key or namespace: {0}")]
     KVStoreInvalidKey(String),
+
+    /// Concurrent update detected
+    #[error("Concurrent update detected")]
+    ConcurrentUpdate,
 }
 
 #[cfg(feature = "mint")]

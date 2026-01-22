@@ -33,6 +33,9 @@ pub struct MintQuote {
     pub secret_key: Option<String>,
     /// Operation ID that reserved this quote
     pub used_by_operation: Option<String>,
+    /// Version for optimistic locking
+    #[serde(default)]
+    pub version: u32,
 }
 
 impl From<cdk::wallet::MintQuote> for MintQuote {
@@ -50,6 +53,7 @@ impl From<cdk::wallet::MintQuote> for MintQuote {
             payment_method: quote.payment_method.into(),
             secret_key: quote.secret_key.map(|sk| sk.to_secret_hex()),
             used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
+            version: quote.version,
         }
     }
 }
@@ -77,6 +81,7 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             payment_method: quote.payment_method.into(),
             secret_key,
             used_by_operation: quote.used_by_operation,
+            version: quote.version,
         })
     }
 }
@@ -339,6 +344,9 @@ pub struct MeltQuote {
     pub payment_method: PaymentMethod,
     /// Operation ID that reserved this quote
     pub used_by_operation: Option<String>,
+    /// Version for optimistic locking
+    #[serde(default)]
+    pub version: u32,
 }
 
 impl From<cdk::wallet::MeltQuote> for MeltQuote {
@@ -354,6 +362,7 @@ impl From<cdk::wallet::MeltQuote> for MeltQuote {
             payment_preimage: quote.payment_preimage.clone(),
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
+            version: quote.version,
         }
     }
 }
@@ -373,6 +382,7 @@ impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
             payment_preimage: quote.payment_preimage,
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation,
+            version: quote.version,
         })
     }
 }

@@ -166,6 +166,7 @@ impl From<Quote> for MintQuote {
             },
             // REVIEW: Where does this get set when using npubcash with saga
             used_by_operation: None,
+            version: 0,
         }
     }
 }

@@ -672,8 +672,40 @@ impl Wallet {
         }
 
         quote.state = response.state;
-        self.localstore.add_melt_quote(quote.clone()).await?;
-        Ok(())
+
+        match self.localstore.add_melt_quote(quote.clone()).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if matches!(e, cdk_common::database::Error::ConcurrentUpdate) {
+                    tracing::debug!(
+                        "Concurrent update detected for melt quote {}, retrying",
+                        quote.id
+                    );
+                    let mut fresh_quote = self
+                        .localstore
+                        .get_melt_quote(&quote.id)
+                        .await?
+                        .ok_or(Error::UnknownQuote)?;
+
+                    fresh_quote.state = response.state;
+
+                    match self.localstore.add_melt_quote(fresh_quote.clone()).await {
+                        Ok(_) => (),
+                        Err(e) => {
+                            if matches!(e, cdk_common::database::Error::ConcurrentUpdate) {
+                                return Err(Error::ConcurrentUpdate);
+                            }
+                            return Err(Error::Database(e));
+                        }
+                    }
+
+                    *quote = fresh_quote;
+                    Ok(())
+                } else {
+                    Err(Error::Database(e))
+                }
+            }
+        }
     }
 
     /// Check melt quote status

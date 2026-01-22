@@ -159,7 +159,8 @@ where
                   expiry,
                   payment_preimage,
                   payment_method,
-                  used_by_operation
+                  used_by_operation,
+                  version
               FROM
                   melt_quote
               "#,
@@ -314,7 +315,8 @@ where
                 payment_method,
                 amount_issued,
                 amount_paid,
-                used_by_operation
+                used_by_operation,
+                version
             FROM
                 mint_quote
             WHERE
@@ -345,7 +347,8 @@ where
                 payment_method,
                 amount_issued,
                 amount_paid,
-                used_by_operation
+                used_by_operation,
+                version
             FROM
                 mint_quote
             "#,
@@ -374,7 +377,8 @@ where
                 payment_method,
                 amount_issued,
                 amount_paid,
-                used_by_operation
+                used_by_operation,
+                version
             FROM
                 mint_quote
             WHERE
@@ -408,7 +412,8 @@ where
                 expiry,
                 payment_preimage,
                 payment_method,
-                used_by_operation
+                used_by_operation,
+                version
             FROM
                 melt_quote
             WHERE
@@ -1057,12 +1062,15 @@ where
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        query(
+        let expected_version = quote.version;
+        let new_version = expected_version.wrapping_add(1);
+
+        let rows_affected = query(
                 r#"
     INSERT INTO mint_quote
-    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid)
+    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, version)
     VALUES
-    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid)
+    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :version)
     ON CONFLICT(id) DO UPDATE SET
         mint_url = excluded.mint_url,
         amount = excluded.amount,
@@ -1073,7 +1081,9 @@ where
         secret_key = excluded.secret_key,
         payment_method = excluded.payment_method,
         amount_issued = excluded.amount_issued,
-        amount_paid = excluded.amount_paid
+        amount_paid = excluded.amount_paid,
+        version = :new_version
+    WHERE mint_quote.version = :expected_version
     ;
             "#,
             )?
@@ -1088,7 +1098,14 @@ where
             .bind("payment_method", quote.payment_method.to_string())
             .bind("amount_issued", quote.amount_issued.to_i64())
             .bind("amount_paid", quote.amount_paid.to_i64())
+            .bind("version", quote.version as i64)
+            .bind("new_version", new_version as i64)
+            .bind("expected_version", expected_version as i64)
             .execute(&*conn).await?;
+
+        if rows_affected == 0 {
+            return Err(database::Error::ConcurrentUpdate);
+        }
 
         Ok(())
     }
@@ -1109,12 +1126,15 @@ where
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        query(
+        let expected_version = quote.version;
+        let new_version = expected_version.wrapping_add(1);
+
+        let rows_affected = query(
             r#"
  INSERT INTO melt_quote
- (id, unit, amount, request, fee_reserve, state, expiry, payment_method)
+ (id, unit, amount, request, fee_reserve, state, expiry, payment_method, version)
  VALUES
- (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method)
+ (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method, :version)
  ON CONFLICT(id) DO UPDATE SET
      unit = excluded.unit,
      amount = excluded.amount,
@@ -1122,7 +1142,9 @@ where
      fee_reserve = excluded.fee_reserve,
      state = excluded.state,
      expiry = excluded.expiry,
-     payment_method = excluded.payment_method
+     payment_method = excluded.payment_method,
+     version = :new_version
+ WHERE melt_quote.version = :expected_version
  ;
          "#,
         )?
@@ -1134,8 +1156,15 @@ where
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
         .bind("payment_method", quote.payment_method.to_string())
+        .bind("version", quote.version as i64)
+        .bind("new_version", new_version as i64)
+        .bind("expected_version", expected_version as i64)
         .execute(&*conn)
         .await?;
+
+        if rows_affected == 0 {
+            return Err(database::Error::ConcurrentUpdate);
+        }
 
         Ok(())
     }
@@ -1666,7 +1695,8 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
             row_method,
             row_amount_minted,
             row_amount_paid,
-            used_by_operation
+            used_by_operation,
+            version
         ) = row
     );
 
@@ -1674,6 +1704,8 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
 
     let amount_paid: u64 = column_as_number!(row_amount_paid);
     let amount_minted: u64 = column_as_number!(row_amount_minted);
+    let expiry_val: u64 = column_as_number!(expiry);
+    let version_val: u32 = column_as_number!(version);
     let payment_method =
         PaymentMethod::from_str(&column_as_string!(row_method)).map_err(Error::from)?;
 
@@ -1684,14 +1716,13 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         request: column_as_string!(request),
         state: column_as_string!(state, MintQuoteState::from_str),
-        expiry: column_as_number!(expiry),
-        secret_key: column_as_nullable_string!(secret_key)
-            .map(|v| SecretKey::from_str(&v))
-            .transpose()?,
+        expiry: expiry_val,
+        secret_key: column_as_nullable_string!(secret_key, |s| SecretKey::from_str(&s).ok()),
         payment_method,
-        amount_issued: amount_minted.into(),
-        amount_paid: amount_paid.into(),
+        amount_issued: Amount::from(amount_minted),
+        amount_paid: Amount::from(amount_paid),
         used_by_operation: column_as_nullable_string!(used_by_operation),
+        version: version_val,
     })
 }
 
@@ -1707,27 +1738,31 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
             expiry,
             payment_preimage,
             row_method,
-            used_by_operation
+            used_by_operation,
+            version
         ) = row
     );
-
-    let amount: u64 = column_as_number!(amount);
-    let fee_reserve: u64 = column_as_number!(fee_reserve);
 
     let payment_method =
         PaymentMethod::from_str(&column_as_string!(row_method)).map_err(Error::from)?;
 
+    let amount_val: u64 = column_as_number!(amount);
+    let fee_reserve_val: u64 = column_as_number!(fee_reserve);
+    let expiry_val: u64 = column_as_number!(expiry);
+    let version_val: u32 = column_as_number!(version);
+
     Ok(wallet::MeltQuote {
         id: column_as_string!(id),
-        amount: Amount::from(amount),
         unit: column_as_string!(unit, CurrencyUnit::from_str),
+        amount: Amount::from(amount_val),
         request: column_as_string!(request),
-        fee_reserve: Amount::from(fee_reserve),
+        fee_reserve: Amount::from(fee_reserve_val),
         state: column_as_string!(state, MeltQuoteState::from_str),
-        expiry: column_as_number!(expiry),
+        expiry: expiry_val,
         payment_preimage: column_as_nullable_string!(payment_preimage),
         payment_method,
         used_by_operation: column_as_nullable_string!(used_by_operation),
+        version: version_val,
     })
 }
 
