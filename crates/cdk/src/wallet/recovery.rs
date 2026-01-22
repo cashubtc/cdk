@@ -290,14 +290,25 @@ impl Wallet {
         let restore_response = match self.client.post_restore(restore_request).await {
             Ok(response) => response,
             Err(e) => {
-                tracing::warn!(
-                    "{} saga {} - failed to restore from mint: {}. \
-                     Run wallet.restore() to recover any missing proofs.",
-                    saga_type,
-                    saga_id,
-                    e
-                );
-                return Ok(None);
+                if e.is_definitive_failure() {
+                    tracing::warn!(
+                        "{} saga {} - failed to restore from mint (definitive): {}. \
+                         Run wallet.restore() to recover any missing proofs.",
+                        saga_type,
+                        saga_id,
+                        e
+                    );
+                    return Ok(None);
+                } else {
+                    tracing::warn!(
+                        "{} saga {} - failed to restore from mint (ambiguous): {}. \
+                         Skipping recovery to retry later.",
+                        saga_type,
+                        saga_id,
+                        e
+                    );
+                    return Err(e);
+                }
             }
         };
 
