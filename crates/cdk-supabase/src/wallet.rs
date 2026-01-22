@@ -14,12 +14,19 @@ use cdk_common::nuts::{
 };
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
+use cdk_sql_common::database::DatabaseExecutor;
+use cdk_sql_common::stmt::{Column, Statement};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use url::Url;
 
 use crate::Error;
+
+#[rustfmt::skip]
+mod migrations {
+    include!(concat!(env!("OUT_DIR"), "/migrations_supabase.rs"));
+}
 
 /// URL-encode a value for use in query parameters
 fn url_encode(value: &str) -> String {
@@ -51,8 +58,9 @@ pub struct SupabaseWalletDatabase {
 impl SupabaseWalletDatabase {
     /// Create a new SupabaseWalletDatabase with API key only (legacy behavior)
     ///
-    pub fn new(url: Url, api_key: String) -> Self {
-        Self {
+    /// This will automatically run migrations.
+    pub async fn new(url: Url, api_key: String) -> Result<Self, Error> {
+        let db = Self {
             url,
             api_key,
             jwt_token: Arc::new(RwLock::new(None)),
@@ -60,12 +68,22 @@ impl SupabaseWalletDatabase {
             token_expiration: Arc::new(RwLock::new(None)),
             oidc_client: Arc::new(RwLock::new(None)),
             client: Client::new(),
-        }
+        };
+
+        db.migrate().await?;
+
+        Ok(db)
     }
 
     /// Create a new SupabaseWalletDatabase with OIDC client for auth
-    pub fn with_oidc(url: Url, api_key: String, oidc_client: OidcClient) -> Self {
-        Self {
+    ///
+    /// This will automatically run migrations.
+    pub async fn with_oidc(
+        url: Url,
+        api_key: String,
+        oidc_client: OidcClient,
+    ) -> Result<Self, Error> {
+        let db = Self {
             url,
             api_key,
             jwt_token: Arc::new(RwLock::new(None)),
@@ -73,6 +91,27 @@ impl SupabaseWalletDatabase {
             token_expiration: Arc::new(RwLock::new(None)),
             oidc_client: Arc::new(RwLock::new(Some(oidc_client))),
             client: Client::new(),
+        };
+
+        db.migrate().await?;
+
+        Ok(db)
+    }
+
+    /// Run database migrations
+    pub async fn migrate(&self) -> Result<(), Error> {
+        // We use cdk_sql_common::migrate but we need to implement DatabaseExecutor
+        // for SupabaseWalletDatabase which uses the exec_sql RPC.
+        match cdk_sql_common::migrate(self, "supabase", migrations::MIGRATIONS).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // If it fails because the exec_sql function doesn't exist, we should give a helpful error
+                let err_str = e.to_string();
+                if err_str.contains("404") || err_str.contains("exec_sql") {
+                    tracing::error!("Supabase migrations failed: exec_sql RPC function not found. You must run 001_initial_schema.sql manually once.");
+                }
+                Err(e.into())
+            }
         }
     }
 
@@ -86,12 +125,6 @@ impl SupabaseWalletDatabase {
     pub async fn set_refresh_token(&self, token: Option<String>) {
         let mut refresh = self.refresh_token.write().await;
         *refresh = token;
-    }
-
-    /// Set token expiration
-    pub async fn set_token_expiration(&self, expiration: Option<u64>) {
-        let mut exp = self.token_expiration.write().await;
-        *exp = expiration;
     }
 
     /// Refresh the access token using the stored refresh token
@@ -120,7 +153,8 @@ impl SupabaseWalletDatabase {
                             .map_err(|e| Error::Supabase(format!("SystemTime error: {}", e)))?
                             .as_secs()
                             + expires_in as u64;
-                        self.set_token_expiration(Some(expiration)).await;
+                        let mut exp = self.token_expiration.write().await;
+                        *exp = Some(expiration);
                     }
 
                     return Ok(());
@@ -293,6 +327,96 @@ impl SupabaseWalletDatabase {
         } else {
             Ok(Some(items))
         }
+    }
+}
+
+#[async_trait]
+impl DatabaseExecutor for SupabaseWalletDatabase {
+    fn name() -> &'static str {
+        "supabase"
+    }
+
+    async fn execute(&self, statement: Statement) -> Result<usize, DatabaseError> {
+        let (sql, params) = statement.to_sql()?;
+
+        // Special case for migrations table interactions to avoid needing a complex exec_sql with params
+        if sql.contains("INSERT INTO migrations") {
+            let name = params
+                .first()
+                .and_then(|v| match v {
+                    cdk_sql_common::value::Value::Text(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+
+            let body = serde_json::json!({ "name": name });
+            let (status, text) = self.post_request("rest/v1/migrations", &body).await?;
+            if !status.is_success() {
+                return Err(DatabaseError::Database(Box::new(std::io::Error::other(
+                    format!("Failed to insert migration: {} - {}", status, text),
+                ))));
+            }
+            return Ok(1);
+        }
+
+        // For everything else, use exec_sql RPC
+        let body = serde_json::json!({ "query": sql });
+        let (status, text) = self.post_request("rest/v1/rpc/exec_sql", &body).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Database(Box::new(std::io::Error::other(
+                format!("Supabase RPC exec_sql failed: {} - {}", status, text),
+            ))));
+        }
+
+        Ok(0)
+    }
+
+    async fn fetch_one(&self, _statement: Statement) -> Result<Option<Vec<Column>>, DatabaseError> {
+        Err(DatabaseError::Database(Box::new(std::io::Error::other(
+            "fetch_one not implemented for Supabase executor",
+        ))))
+    }
+
+    async fn fetch_all(&self, _statement: Statement) -> Result<Vec<Vec<Column>>, DatabaseError> {
+        Err(DatabaseError::Database(Box::new(std::io::Error::other(
+            "fetch_all not implemented for Supabase executor",
+        ))))
+    }
+
+    async fn pluck(&self, statement: Statement) -> Result<Option<Column>, DatabaseError> {
+        let (sql, params) = statement.to_sql()?;
+
+        // Special case for checking migrations
+        if sql.contains("SELECT name FROM migrations") {
+            let name = params
+                .first()
+                .and_then(|v| match v {
+                    cdk_sql_common::value::Value::Text(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+
+            let path = format!("rest/v1/migrations?name=eq.{}", url_encode(&name));
+            let (status, text) = self.get_request(&path).await?;
+
+            if status.is_success() {
+                if let Ok(Some(items)) = Self::parse_response::<serde_json::Value>(&text) {
+                    if !items.is_empty() {
+                        return Ok(Some(Column::Text(name)));
+                    }
+                }
+            }
+            return Ok(None);
+        }
+
+        Err(DatabaseError::Database(Box::new(std::io::Error::other(
+            "pluck not implemented for Supabase executor",
+        ))))
+    }
+
+    async fn batch(&self, statement: Statement) -> Result<(), DatabaseError> {
+        self.execute(statement).await.map(|_| ())
     }
 }
 
@@ -853,9 +977,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         let url = self.join_url("rest/v1/rpc/increment_keyset_counter")?;
         let auth_bearer = self.get_auth_bearer().await;
 
+        tracing::debug!(method = "POST", url = %url, body = ?rpc_body, "Supabase RPC request");
+
         let res = self
             .client
-            .post(url)
+            .post(url.clone())
             .header("apikey", &self.api_key)
             .header("Authorization", format!("Bearer {}", auth_bearer))
             .header("Content-Type", "application/json")
@@ -867,6 +993,8 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
         let status = res.status();
         let text = res.text().await.map_err(Error::Reqwest)?;
+
+        tracing::debug!(method = "POST", url = %url, status = %status, response = %text, "Supabase RPC response");
 
         if status.is_success() {
             // RPC returns the new counter value directly
@@ -957,12 +1085,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             "rest/v1/mint?mint_url=eq.{}",
             url_encode(&mint_url.to_string())
         );
-        let status = self.delete_request(&path).await?;
+        let (status, response_text) = self.delete_request(&path).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "remove_mint failed: HTTP {}",
-                status
+                "remove_mint failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())
@@ -983,14 +1111,14 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             .collect();
         let items = items?;
 
-        let status = self
+        let (status, response_text) = self
             .post_request("rest/v1/keyset?on_conflict=id", &items)
             .await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "add_mint_keysets failed: HTTP {}",
-                status
+                "add_mint_keysets failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())
@@ -998,12 +1126,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), DatabaseError> {
         let item: MintQuoteTable = quote.try_into()?;
-        let status = self.post_request("rest/v1/mint_quote", &item).await?;
+        let (status, response_text) = self.post_request("rest/v1/mint_quote", &item).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "add_mint_quote failed: HTTP {}",
-                status
+                "add_mint_quote failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())
@@ -1011,12 +1139,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), DatabaseError> {
         let path = format!("rest/v1/mint_quote?id=eq.{}", url_encode(quote_id));
-        let status = self.delete_request(&path).await?;
+        let (status, response_text) = self.delete_request(&path).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "remove_mint_quote failed: HTTP {}",
-                status
+                "remove_mint_quote failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())
@@ -1024,12 +1152,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), DatabaseError> {
         let item: MeltQuoteTable = quote.try_into()?;
-        let status = self.post_request("rest/v1/melt_quote", &item).await?;
+        let (status, response_text) = self.post_request("rest/v1/melt_quote", &item).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "add_melt_quote failed: HTTP {}",
-                status
+                "add_melt_quote failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())
@@ -1037,12 +1165,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), DatabaseError> {
         let path = format!("rest/v1/melt_quote?id=eq.{}", url_encode(quote_id));
-        let status = self.delete_request(&path).await?;
+        let (status, response_text) = self.delete_request(&path).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "remove_melt_quote failed: HTTP {}",
-                status
+                "remove_melt_quote failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())
@@ -1052,12 +1180,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         keyset.verify_id().map_err(DatabaseError::from)?;
         let item = KeyTable::from_keyset(&keyset)?;
 
-        let status = self.post_request("rest/v1/key", &item).await?;
+        let (status, response_text) = self.post_request("rest/v1/key", &item).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "add_keys failed: HTTP {}",
-                status
+                "add_keys failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())
@@ -1065,12 +1193,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn remove_keys(&self, id: &Id) -> Result<(), DatabaseError> {
         let path = format!("rest/v1/key?id=eq.{}", url_encode(&id.to_string()));
-        let status = self.delete_request(&path).await?;
+        let (status, response_text) = self.delete_request(&path).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "remove_keys failed: HTTP {}",
-                status
+                "remove_keys failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())
@@ -1091,12 +1219,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             _extra: Default::default(),
         };
 
-        let status = self.post_request("rest/v1/kv_store", &item).await?;
+        let (status, response_text) = self.post_request("rest/v1/kv_store", &item).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "kv_write failed: HTTP {}",
-                status
+                "kv_write failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())
@@ -1114,12 +1242,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             url_encode(secondary_namespace),
             url_encode(key)
         );
-        let status = self.delete_request(&path).await?;
+        let (status, response_text) = self.delete_request(&path).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "kv_remove failed: HTTP {}",
-                status
+                "kv_remove failed: HTTP {} - {}",
+                status, response_text
             )));
         }
         Ok(())

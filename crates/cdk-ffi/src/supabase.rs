@@ -57,21 +57,25 @@ pub struct WalletSupabaseDatabase {
     inner: SupabaseWalletDatabase,
 }
 
-#[uniffi::export]
+#[uniffi::export(async_runtime = "tokio")]
 impl WalletSupabaseDatabase {
     /// Create a new WalletSupabaseDatabase with API key only (legacy behavior)
     #[uniffi::constructor]
-    pub fn new(url: String, api_key: String) -> Result<Arc<Self>, FfiError> {
+    pub async fn new(url: String, api_key: String) -> Result<Arc<Self>, FfiError> {
         let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
             error_message: e.to_string(),
         })?;
-        let inner = SupabaseWalletDatabase::new(url, api_key);
+        let inner = SupabaseWalletDatabase::new(url, api_key)
+            .await
+            .map_err(|e| FfiError::Internal {
+                error_message: e.to_string(),
+            })?;
         Ok(Arc::new(WalletSupabaseDatabase { inner }))
     }
 
     /// Create a new WalletSupabaseDatabase with OIDC client for automatic token refresh
     #[uniffi::constructor]
-    pub fn with_oidc(
+    pub async fn with_oidc(
         url: String,
         api_key: String,
         openid_discovery: String,
@@ -81,13 +85,14 @@ impl WalletSupabaseDatabase {
             error_message: e.to_string(),
         })?;
         let oidc_client = OidcClient::new(openid_discovery, client_id);
-        let inner = SupabaseWalletDatabase::with_oidc(url, api_key, oidc_client);
+        let inner = SupabaseWalletDatabase::with_oidc(url, api_key, oidc_client)
+            .await
+            .map_err(|e| FfiError::Internal {
+                error_message: e.to_string(),
+            })?;
         Ok(Arc::new(WalletSupabaseDatabase { inner }))
     }
-}
 
-#[uniffi::export(async_runtime = "tokio")]
-impl WalletSupabaseDatabase {
     /// Set or update the JWT token for authentication
     pub async fn set_jwt_token(&self, token: Option<String>) {
         self.inner.set_jwt_token(token).await;
@@ -101,11 +106,6 @@ impl WalletSupabaseDatabase {
     /// Set the refresh token for automatic token refresh
     pub async fn set_refresh_token(&self, token: Option<String>) {
         self.inner.set_refresh_token(token).await;
-    }
-
-    /// Set the token expiration time (Unix timestamp in seconds)
-    pub async fn set_token_expiration(&self, expiration: Option<u64>) {
-        self.inner.set_token_expiration(expiration).await;
     }
 
     /// Refresh the access token using the stored refresh token

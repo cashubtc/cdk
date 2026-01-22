@@ -4,6 +4,31 @@
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+-- Migrations Table
+-- Tracks applied migrations
+CREATE TABLE IF NOT EXISTS migrations (
+    name TEXT PRIMARY KEY,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- RPC Function: exec_sql
+-- Allows executing raw SQL via the REST API
+-- This is used for automated migrations
+-- SECURITY DEFINER allows it to run with elevated privileges
+CREATE OR REPLACE FUNCTION exec_sql(query TEXT)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    EXECUTE query;
+END;
+$$;
+
+-- Grant execute permission to authenticated and service_role
+GRANT EXECUTE ON FUNCTION exec_sql(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION exec_sql(TEXT) TO service_role;
+
 -- KV Store Table
 -- Stores generic key-value pairs with namespace isolation
 CREATE TABLE IF NOT EXISTS kv_store (
