@@ -444,6 +444,22 @@ async fn test_attempt_to_mint_unpaid() {
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
+    let mut mint_quote = wallet
+        .localstore
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    // Since the wallet checks how much it can mint
+    // we manually set it in the db to fake like it was paid to the wallet
+    // so it tries to mint
+    mint_quote.amount_paid = mint_amount;
+    wallet
+        .localstore
+        .add_mint_quote(mint_quote.clone())
+        .await
+        .unwrap();
+
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await;
@@ -467,6 +483,21 @@ async fn test_attempt_to_mint_unpaid() {
     let state = wallet.mint_quote_state(&mint_quote.id).await.unwrap();
 
     assert!(state.amount_paid == Amount::ZERO);
+    let mut mint_quote = wallet
+        .localstore
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    // Since the wallet checks how much it can mint
+    // we manually set it in the db to fake like it was paid to the wallet
+    // so it tries to mint
+    mint_quote.amount_paid = mint_amount;
+    wallet
+        .localstore
+        .add_mint_quote(mint_quote.clone())
+        .await
+        .unwrap();
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)

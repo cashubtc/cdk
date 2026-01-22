@@ -247,21 +247,6 @@ impl<'a> MintSaga<'a, Initial> {
 
         let amount = quote_info.amount_mintable();
 
-        // Reload quote info in case it changed (though unlikely in this short span, good practice for consistency)
-        // Actually, we already have it. But let's follow the pattern if we want fresh state, or just use what we have.
-        // The original code re-fetched it in bolt12 prepare.
-        // Let's re-fetch if we did a network call (mint_bolt12_quote_state), otherwise use existing.
-        let quote_info =
-            if quote_info.payment_method.is_bolt12() && amount != quote_info.amount_mintable() {
-                self.wallet
-                    .localstore
-                    .get_mint_quote(quote_id)
-                    .await?
-                    .ok_or(Error::UnknownQuote)?
-            } else {
-                quote_info
-            };
-
         let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
         let fee_and_amounts = self
             .wallet
