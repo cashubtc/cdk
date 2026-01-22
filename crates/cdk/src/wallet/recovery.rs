@@ -1131,4 +1131,76 @@ mod tests {
         // Saga should be deleted
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
     }
+
+    #[tokio::test]
+    async fn test_recover_melt_requested_quote_paid() {
+        // When melt quote is Paid, should recover (mark proofs spent, cleanup)
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        // Create and reserve proofs
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Create a melt quote
+        let mut quote = test_melt_quote();
+        quote.used_by_operation = Some(saga_id.to_string());
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        // Create saga in MeltRequested state (no change blinded messages for simplicity)
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Melt(MeltSagaState::MeltRequested),
+            Amount::from(100),
+            mint_url.clone(),
+            cdk_common::nuts::CurrencyUnit::Sat,
+            OperationData::Melt(MeltOperationData {
+                quote_id: quote_id.clone(),
+                amount: Amount::from(100),
+                fee_reserve: Amount::from(10),
+                counter_start: None,
+                counter_end: None,
+                change_amount: None,
+                change_blinded_messages: None, // No change to recover
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Mock: quote is Paid
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+            quote: quote_id.clone(),
+            amount: Amount::from(100),
+            fee_reserve: Amount::from(10),
+            state: MeltQuoteState::Paid,
+            expiry: 9999999999,
+            payment_preimage: Some("preimage123".to_string()),
+            change: None,
+            request: None,
+            unit: None,
+        }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        // Should recover (payment succeeded)
+        assert_eq!(report.recovered, 1);
+        assert_eq!(report.compensated, 0);
+        assert_eq!(report.skipped, 0);
+
+        // Proofs should be marked as Spent
+        let proofs = db
+            .get_proofs(None, None, Some(vec![State::Spent]), None)
+            .await
+            .unwrap();
+        assert_eq!(proofs.len(), 1);
+
+        // Saga should be deleted
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
 }
