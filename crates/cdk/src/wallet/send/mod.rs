@@ -203,7 +203,6 @@ impl Wallet {
         send_fee: Amount,
         memo: Option<SendMemo>,
     ) -> Result<Token, Error> {
-        // Delegate to SendSaga
         let saga = SendSaga::from_prepared(
             self,
             operation_id,

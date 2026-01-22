@@ -62,14 +62,6 @@ use saga::MeltSaga;
 #[derive(Debug, Clone, Default)]
 pub struct MeltConfirmOptions {
     /// Skip the pre-melt swap and send proofs directly to melt.
-    ///
-    /// When `false` (default): Performs a swap first to get optimal denominations,
-    /// then sends the swapped proofs to the melt. This ensures exact amounts
-    /// but pays input fees twice (once for swap, once for melt).
-    ///
-    /// When `true`: Sends proofs directly to the melt without swapping first.
-    /// The mint will return any change. This saves the swap input fees but
-    /// may result in less optimal change denominations.
     pub skip_swap: bool,
 }
 
@@ -86,12 +78,6 @@ impl MeltConfirmOptions {
 }
 
 /// A prepared melt operation that can be confirmed or cancelled.
-///
-/// This is the result of calling [`Wallet::prepare_melt`]. The proofs are reserved
-/// but the payment has not yet been executed.
-///
-/// Call [`confirm`](Self::confirm) to execute the melt, or [`cancel`](Self::cancel)
-/// to release the reserved proofs.
 pub struct PreparedMelt<'a> {
     /// The saga in the Prepared state
     saga: MeltSaga<'a, Prepared>,
@@ -146,9 +132,6 @@ impl<'a> PreparedMelt<'a> {
     }
 
     /// Get the total fee if swap is performed (current default behavior)
-    ///
-    /// This is swap_fee + input_fee on optimized proofs.
-    /// Same as [`total_fee()`](Self::total_fee).
     pub fn total_fee_with_swap(&self) -> Amount {
         self.saga.swap_fee() + self.saga.input_fee()
     }
@@ -159,9 +142,6 @@ impl<'a> PreparedMelt<'a> {
     }
 
     /// Get the fee savings from skipping the swap
-    ///
-    /// Returns how much less you would pay in fees by using
-    /// `confirm_with_options(MeltConfirmOptions::skip_swap())`.
     pub fn fee_savings_without_swap(&self) -> Amount {
         self.total_fee_with_swap()
             .checked_sub(self.input_fee_without_swap())
@@ -169,8 +149,6 @@ impl<'a> PreparedMelt<'a> {
     }
 
     /// Get the expected change amount if swap is skipped
-    ///
-    /// This is how much would be "overpaid" and returned as change from the melt.
     pub fn change_amount_without_swap(&self) -> Amount {
         let all_proofs_total = self.saga.proofs().total_amount().unwrap_or(Amount::ZERO)
             + self
@@ -184,31 +162,18 @@ impl<'a> PreparedMelt<'a> {
     }
 
     /// Confirm the prepared melt and execute the payment.
-    ///
-    /// This transitions the saga through: Prepared -> MeltRequested -> Finalized
-    ///
-    /// Uses default options (swap enabled if needed).
     pub async fn confirm(self) -> Result<FinalizedMelt, Error> {
         self.confirm_with_options(MeltConfirmOptions::default())
             .await
     }
 
     /// Confirm the prepared melt with custom options.
-    ///
-    /// This transitions the saga through: Prepared -> MeltRequested -> Finalized
-    ///
-    /// # Options
-    ///
-    /// - `skip_swap`: If true, skips the pre-melt swap and sends proofs directly
-    ///   to the melt. This saves fees but may result in change being returned.
     pub async fn confirm_with_options(
         self,
         options: MeltConfirmOptions,
     ) -> Result<FinalizedMelt, Error> {
-        // Transition to MeltRequested state (handles swap based on options)
         let melt_requested = self.saga.request_melt_with_options(options).await?;
 
-        // Execute the melt request and get Finalized saga
         let finalized = melt_requested.execute(self.metadata).await?;
 
         Ok(FinalizedMelt::new(
@@ -240,31 +205,6 @@ impl Debug for PreparedMelt<'_> {
 
 impl Wallet {
     /// Prepare a melt operation without executing it.
-    ///
-    /// This reserves the proofs needed for the melt but does not execute the payment.
-    /// The returned `PreparedMelt` can be:
-    /// - Confirmed with `confirm()` to execute the payment
-    /// - Cancelled with `cancel()` to release the reserved proofs
-    ///
-    /// This is useful for:
-    /// - Inspecting the fee before committing to the melt
-    /// - Building UIs that show a confirmation step
-    /// - Implementing custom retry/cancellation logic
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// # async fn example(wallet: &cdk::wallet::Wallet) -> anyhow::Result<()> {
-    /// use std::collections::HashMap;
-    /// let quote = wallet.melt_quote("lnbc...".to_string(), None).await?;
-    ///
-    /// let prepared = wallet.prepare_melt(&quote.id, HashMap::new()).await?;
-    /// println!("Fee will be: {}", prepared.total_fee());
-    ///
-    /// // Decide whether to proceed
-    /// let confirmed = prepared.confirm().await?;
-    /// # Ok(())
-    /// # }
-    /// ```
     #[instrument(skip(self, metadata))]
     pub async fn prepare_melt(
         &self,
@@ -281,26 +221,6 @@ impl Wallet {
     }
 
     /// Prepare a melt operation with specific proofs.
-    ///
-    /// Unlike `prepare_melt()`, this method uses the provided proofs directly
-    /// without automatic proof selection. The caller is responsible for ensuring
-    /// the proofs are sufficient to cover the quote amount plus fee reserve.
-    ///
-    /// This is useful when:
-    /// - You have specific proofs you want to use (e.g., from a received token)
-    /// - The proofs are external (not already in the wallet's database)
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// # async fn example(wallet: &cdk::wallet::Wallet, proofs: cdk::nuts::Proofs) -> anyhow::Result<()> {
-    /// use std::collections::HashMap;
-    /// let quote = wallet.melt_quote("lnbc...".to_string(), None).await?;
-    ///
-    /// let prepared = wallet.prepare_melt_proofs(&quote.id, proofs, HashMap::new()).await?;
-    /// let confirmed = prepared.confirm().await?;
-    /// # Ok(())
-    /// # }
-    /// ```
     #[instrument(skip(self, proofs, metadata))]
     pub async fn prepare_melt_proofs(
         &self,
@@ -320,21 +240,6 @@ impl Wallet {
     }
 
     /// Finalize pending melt operations.
-    ///
-    /// This checks all incomplete melt sagas where payment may be pending,
-    /// queries the mint for the current quote status, and:
-    /// - **Paid**: Marks proofs as spent, recovers change, returns `FinalizedMelt` with state `Paid`
-    /// - **Failed/Unpaid**: Compensates by releasing reserved proofs, returns `FinalizedMelt` with state `Unpaid`/`Failed`
-    /// - **Pending/Unknown**: Skips (payment still in flight), not included in result
-    ///
-    /// Call this periodically or after receiving a notification that a
-    /// pending payment may have settled.
-    ///
-    /// # Returns
-    ///
-    /// A vector of finalized melt results. Check the `state` field to determine
-    /// if each melt succeeded (`Paid`) or failed (`Unpaid`/`Failed`).
-    /// Melts that are still pending are not included in the result.
     #[instrument(skip_all)]
     pub async fn finalize_pending_melts(&self) -> Result<Vec<FinalizedMelt>, Error> {
         use cdk_common::wallet::{MeltSagaState, WalletSagaState};
@@ -417,10 +322,6 @@ impl Wallet {
     ///
     /// This is used by `MultiMintPreparedMelt::confirm_with_options` which holds an `Arc<Wallet>`
     /// and has already prepared/reserved proofs.
-    ///
-    /// # Options
-    ///
-    /// - `skip_swap`: If true, skips the pre-melt swap and sends proofs directly.
     #[instrument(skip(self, proofs, proofs_to_swap, metadata, options))]
     #[allow(clippy::too_many_arguments)]
     pub async fn confirm_prepared_melt_with_options(
@@ -434,8 +335,6 @@ impl Wallet {
         metadata: HashMap<String, String>,
         options: MeltConfirmOptions,
     ) -> Result<FinalizedMelt, Error> {
-        // Create a saga in Prepared state and continue from there
-        // We reconstruct the Prepared state from the stored data
         let saga = MeltSaga::from_prepared(
             self,
             operation_id,
@@ -471,7 +370,6 @@ impl Wallet {
     ) -> Result<(), Error> {
         tracing::info!("Cancelling prepared melt for operation {}", operation_id);
 
-        // Revert proof reservation
         let mut all_ys = proofs.ys()?;
         all_ys.extend(proofs_to_swap.ys()?);
 
@@ -481,7 +379,6 @@ impl Wallet {
                 .await?;
         }
 
-        // Release quote reservation
         if let Err(e) = self.localstore.release_melt_quote(&operation_id).await {
             tracing::warn!(
                 "Failed to release melt quote for operation {}: {}",
@@ -490,7 +387,6 @@ impl Wallet {
             );
         }
 
-        // Delete saga record
         if let Err(e) = self.localstore.delete_saga(&operation_id).await {
             tracing::warn!(
                 "Failed to delete melt saga {}: {}. Will be cleaned up on recovery.",

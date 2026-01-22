@@ -3,37 +3,16 @@
 //! This module handles recovery from incomplete wallet sagas after a crash.
 //! It follows the same pattern as the mint's `start_up_check.rs` module.
 //!
-//! # Usage
-//!
-//! Call `recover_incomplete_sagas()` after creating the wallet and before
-//! performing normal operations:
-//!
-//! ```rust,ignore
-//! let wallet = WalletBuilder::new()
-//!     .mint_url(mint_url)
-//!     .unit(CurrencyUnit::Sat)
-//!     .localstore(localstore)
-//!     .seed(&seed)
-//!     .build()?;
-//!
-//! // Recover from any incomplete operations from a previous crash
-//! let report = wallet.recover_incomplete_sagas().await?;
-//! if report.recovered > 0 || report.compensated > 0 {
-//!     tracing::info!("Recovered {} operations, compensated {}",
-//!         report.recovered, report.compensated);
-//! }
-//!
-//! // Now safe to use the wallet normally
-//! ```
-//!
 //! # Recovery Strategy
 //!
-//! For each incomplete saga, the recovery logic examines the saga state and takes
-//! appropriate action:
+//! The recovery logic examines the state of each incomplete saga:
 //!
-//! - **ProofsReserved**: No external call was made. Safe to compensate by releasing proofs.
-//! - **SwapRequested**: External call may have succeeded. Check mint for proof states
-//!   and either reconstruct outputs or compensate.
+//! - **Safe to Rollback:** If no external calls were made (e.g. ProofsReserved),
+//!   the saga is compensated by releasing resources (proofs, quotes).
+//! - **Check External State:** If external calls were possible (e.g. SwapRequested),
+//!   the wallet queries the mint to determine if the operation succeeded.
+//!   - If successful: The wallet completes the local state update (e.g. marking proofs spent).
+//!   - If failed/unknown: The wallet may rollback or retry depending on the specific state.
 
 use async_trait::async_trait;
 use cdk_common::wallet::WalletSagaState;
@@ -306,9 +285,6 @@ impl Wallet {
     /// A report of the recovery operations performed.
     #[instrument(skip(self))]
     pub async fn recover_incomplete_sagas(&self) -> Result<RecoveryReport, Error> {
-        // First, clean up any orphaned quote reservations.
-        // These can occur if the wallet crashed after reserving a quote
-        // but before creating the saga record.
         self.cleanup_orphaned_quote_reservations().await?;
 
         let sagas = self.localstore.get_incomplete_sagas().await?;
@@ -330,7 +306,6 @@ impl Wallet {
                 saga.state.state_str()
             );
 
-            // Delegate to the saga-specific resume functions
             let result: Result<RecoveryAction, Error> = match &saga.state {
                 WalletSagaState::Swap(_) => self.resume_swap_saga(&saga).await,
                 WalletSagaState::Send(_) => self.resume_send_saga(&saga).await,
@@ -368,7 +343,6 @@ impl Wallet {
                 Err(e) => {
                     tracing::error!("Failed to recover saga {}: {}", saga.id, e);
                     report.failed += 1;
-                    // Continue with other sagas - don't fail the entire recovery
                 }
             }
         }
@@ -410,7 +384,6 @@ impl Wallet {
             params.blinded_messages.len()
         );
 
-        // Query the mint for signatures using the stored blinded messages
         let restore_request = RestoreRequest {
             outputs: params.blinded_messages.to_vec(),
         };
@@ -453,7 +426,6 @@ impl Wallet {
         // Get keyset ID from the first blinded message
         let keyset_id = params.blinded_messages[0].keyset_id;
 
-        // Re-derive premint secrets using the counter range
         let premint_secrets = PreMintSecrets::restore_batch(
             keyset_id,
             &self.seed,
