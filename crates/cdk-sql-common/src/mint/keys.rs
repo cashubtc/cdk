@@ -29,7 +29,8 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
             derivation_path,
             derivation_path_index,
             amounts,
-            row_keyset_ppk
+            row_keyset_ppk,
+            cdk_version
         ) = row
     );
 
@@ -47,6 +48,7 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
         amounts,
         input_fee_ppk: column_as_nullable_number!(row_keyset_ppk).unwrap_or(0),
         final_expiry: column_as_nullable_number!(valid_to),
+        cdk_version: column_as_nullable_string!(cdk_version),
     })
 }
 
@@ -61,11 +63,11 @@ where
         INSERT INTO
             keyset (
                 id, unit, active, valid_from, valid_to, derivation_path,
-                amounts, input_fee_ppk, derivation_path_index
+                amounts, input_fee_ppk, derivation_path_index, cdk_version
             )
         VALUES (
             :id, :unit, :active, :valid_from, :valid_to, :derivation_path,
-            :amounts, :input_fee_ppk, :derivation_path_index
+            :amounts, :input_fee_ppk, :derivation_path_index, :cdk_version
         )
         ON CONFLICT(id) DO UPDATE SET
             unit = excluded.unit,
@@ -75,7 +77,8 @@ where
             derivation_path = excluded.derivation_path,
             amounts = excluded.amounts,
             input_fee_ppk = excluded.input_fee_ppk,
-            derivation_path_index = excluded.derivation_path_index
+            derivation_path_index = excluded.derivation_path_index,
+            cdk_version = excluded.cdk_version
         "#,
         )?
         .bind("id", keyset.id.to_string())
@@ -87,6 +90,7 @@ where
         .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
         .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
         .bind("derivation_path_index", keyset.derivation_path_index)
+        .bind("cdk_version", keyset.cdk_version)
         .execute(&self.inner)
         .await?;
 
@@ -176,7 +180,8 @@ where
                 derivation_path,
                 derivation_path_index,
                 amounts,
-                input_fee_ppk
+                input_fee_ppk,
+                cdk_version
             FROM
                 keyset
                 WHERE id=:id"#,
@@ -200,7 +205,8 @@ where
                 derivation_path,
                 derivation_path_index,
                 amounts,
-                input_fee_ppk
+                input_fee_ppk,
+                cdk_version
             FROM
                 keyset
             "#,
@@ -233,6 +239,7 @@ mod test {
                 Column::Integer(0),
                 Column::Text(serde_json::to_string(&amounts).expect("valid json")),
                 Column::Integer(0),
+                Column::Null,
             ]);
             assert!(result.is_ok());
             let keyset = result.unwrap();

@@ -880,6 +880,8 @@ pub struct MintKeySetInfo {
     pub input_fee_ppk: u64,
     /// Final expiry
     pub final_expiry: Option<u64>,
+    /// CDK Version
+    pub cdk_version: Option<String>,
 }
 
 /// Default fee

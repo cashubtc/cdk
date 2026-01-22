@@ -64,6 +64,7 @@ message KeySet {
   Keys keys = 5;
   optional uint64 final_expiry = 6;
   uint64 version = 7;
+  optional string cdk_version = 8;
 }
 
 message Keys {
