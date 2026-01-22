@@ -343,11 +343,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                     tracing::error!("Failed to post swap request (definitive): {}", err);
                     execute_compensations(&mut self.compensations).await?;
                 } else {
-                    tracing::warn!(
-                        "Failed to post swap request (ambiguous): {}. Leaving saga {} for recovery.",
-                        err,
-                        self.state_data.operation_id
-                    );
+                    tracing::warn!("Failed to post swap request (ambiguous): {}.", err,);
                 }
                 return Err(err);
             }

@@ -60,8 +60,8 @@ impl Wallet {
                     "Issue saga {} in MintRequested state - attempting recovery",
                     saga.id
                 );
-                self.complete_issue_from_restore(&saga.id, data).await?;
-                Ok(RecoveryAction::Recovered)
+                // Return the result directly (RecoveryAction)
+                self.complete_issue_from_restore(&saga.id, data).await
             }
         }
     }
@@ -71,7 +71,7 @@ impl Wallet {
         &self,
         saga_id: &uuid::Uuid,
         data: &MintOperationData,
-    ) -> Result<(), Error> {
+    ) -> Result<RecoveryAction, Error> {
         // Try to restore outputs using stored blinded messages
         let new_proofs = self
             .restore_outputs(
@@ -87,6 +87,8 @@ impl Wallet {
             Some(proofs) => {
                 // Issue has no input proofs to remove - just add the recovered proofs
                 self.localstore.update_proofs(proofs, vec![]).await?;
+                self.localstore.delete_saga(saga_id).await?;
+                Ok(RecoveryAction::Recovered)
             }
             None => {
                 // Couldn't restore outputs - issue saga has no inputs to mark spent
@@ -95,12 +97,10 @@ impl Wallet {
                      Run wallet.restore() to recover any missing proofs.",
                     saga_id
                 );
+                self.localstore.delete_saga(saga_id).await?;
+                Ok(RecoveryAction::Compensated)
             }
         }
-
-        self.localstore.delete_saga(saga_id).await?;
-
-        Ok(())
     }
 
     /// Compensate an issue saga by releasing the quote and deleting the saga.

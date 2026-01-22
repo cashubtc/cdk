@@ -455,10 +455,17 @@ impl<'a> MintSaga<'a, Prepared> {
                 })
             }
             Err(e) => {
-                tracing::warn!("Mint saga execution failed: {}. Running compensations.", e);
-                use crate::wallet::saga::execute_compensations;
-                if let Err(comp_err) = execute_compensations(&mut compensations).await {
-                    tracing::error!("Compensation failed: {}", comp_err);
+                if e.is_definitive_failure() {
+                    tracing::warn!(
+                        "Mint saga execution failed (definitive): {}. Running compensations.",
+                        e
+                    );
+                    use crate::wallet::saga::execute_compensations;
+                    if let Err(comp_err) = execute_compensations(&mut compensations).await {
+                        tracing::error!("Compensation failed: {}", comp_err);
+                    }
+                } else {
+                    tracing::warn!("Mint saga execution failed (ambiguous): {}.", e,);
                 }
                 Err(e)
             }

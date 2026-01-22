@@ -251,11 +251,7 @@ impl<'a> SwapSaga<'a, Prepared> {
                     tracing::error!("Swap failed (definitive): {}", err);
                     execute_compensations(&mut self.compensations).await?;
                 } else {
-                    tracing::warn!(
-                        "Swap failed (ambiguous): {}. Leaving saga {} for recovery.",
-                        err,
-                        self.state_data.operation_id
-                    );
+                    tracing::warn!("Swap failed (ambiguous): {}.", err,);
                 }
                 return Err(err);
             }
