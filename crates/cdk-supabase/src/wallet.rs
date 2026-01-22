@@ -7,7 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use cdk_common::auth::oidc::OidcClient;
 use cdk_common::common::ProofInfo;
-use cdk_common::database::{wallet::Database, Error as DatabaseError, KVStoreDatabase};
+use cdk_common::database::wallet::Database;
+use cdk_common::database::{Error as DatabaseError, KVStoreDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{
     CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
@@ -41,7 +42,8 @@ fn decode_jwt_expiry(token: &str) -> Option<u64> {
     }
     let payload_part = parts[1];
 
-    use base64::{engine::general_purpose, Engine as _};
+    use base64::engine::general_purpose;
+    use base64::Engine as _;
 
     let decoded = general_purpose::URL_SAFE_NO_PAD.decode(payload_part).ok()?;
 

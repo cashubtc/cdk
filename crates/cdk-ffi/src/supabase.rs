@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdk_common::auth::oidc::OidcClient;
-use cdk_common::database::{wallet::Database, Error as CdkDbError, KVStoreDatabase};
+use cdk_common::database::wallet::Database;
+use cdk_common::database::{Error as CdkDbError, KVStoreDatabase};
 use cdk_supabase::SupabaseWalletDatabase;
 
 use crate::{
