@@ -242,7 +242,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             .await?;
 
         // Persist saga state for crash recovery
-        let saga = WalletSaga::new(
+        let mut saga = WalletSaga::new(
             operation_id,
             WalletSagaState::Receive(ReceiveSagaState::ProofsPending),
             self.state_data.proofs_amount,
@@ -257,7 +257,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             }),
         );
 
-        self.wallet.localstore.add_saga(saga).await?;
+        self.wallet.localstore.add_saga(saga.clone()).await?;
 
         // Register compensation to remove pending proofs and delete saga on failure
         add_compensation(
@@ -313,24 +313,16 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         // Update saga state to SwapRequested BEFORE making the mint call
         // This is write-ahead logging - if we crash after this, recovery knows
         // the swap may have been attempted
-        let updated_saga = WalletSaga::new(
-            operation_id,
-            WalletSagaState::Receive(ReceiveSagaState::SwapRequested),
-            self.state_data.proofs_amount,
-            self.wallet.mint_url.clone(),
-            self.wallet.unit.clone(),
-            OperationData::Receive(ReceiveOperationData {
-                token: String::new(),
-                counter_start: Some(counter_start),
-                counter_end: Some(counter_end),
-                amount: Some(self.state_data.proofs_amount),
-                blinded_messages: Some(pre_swap.swap_request.outputs().clone()),
-            }),
-        );
+        saga.update_state(WalletSagaState::Receive(ReceiveSagaState::SwapRequested));
+        if let OperationData::Receive(ref mut data) = saga.data {
+            data.counter_start = Some(counter_start);
+            data.counter_end = Some(counter_end);
+            data.blinded_messages = Some(pre_swap.swap_request.outputs().clone());
+        }
 
         // Update saga state - if this fails due to version conflict, another instance
         // is processing this saga, which should not happen during normal operation
-        if !self.wallet.localstore.update_saga(updated_saga).await? {
+        if !self.wallet.localstore.update_saga(saga).await? {
             return Err(Error::Custom(
                 "Saga version conflict during update - another instance may be processing this saga".to_string(),
             ));

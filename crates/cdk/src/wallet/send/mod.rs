@@ -203,6 +203,13 @@ impl Wallet {
         send_fee: Amount,
         memo: Option<SendMemo>,
     ) -> Result<Token, Error> {
+        // Fetch saga from DB for optimistic locking
+        let db_saga = self
+            .localstore
+            .get_saga(&operation_id)
+            .await?
+            .ok_or(Error::Custom("Saga not found".to_string()))?;
+
         let saga = SendSaga::from_prepared(
             self,
             operation_id,
@@ -212,6 +219,7 @@ impl Wallet {
             proofs_to_send,
             swap_fee,
             send_fee,
+            db_saga,
         );
         let (token, _saga) = saga.confirm(memo).await?;
         Ok(token)
@@ -227,6 +235,13 @@ impl Wallet {
         proofs_to_swap: Proofs,
         proofs_to_send: Proofs,
     ) -> Result<(), Error> {
+        // Fetch saga from DB for optimistic locking
+        let db_saga = self
+            .localstore
+            .get_saga(&operation_id)
+            .await?
+            .ok_or(Error::Custom("Saga not found".to_string()))?;
+
         let saga = SendSaga::from_prepared(
             self,
             operation_id,
@@ -236,6 +251,7 @@ impl Wallet {
             proofs_to_send,
             Amount::ZERO, // Dummy
             Amount::ZERO, // Dummy
+            db_saga,
         );
         saga.cancel().await
     }
@@ -284,7 +300,7 @@ impl Wallet {
             cdk_common::wallet::SendSagaState::TokenCreated,
         ) = saga_record.state
         {
-            if let cdk_common::wallet::OperationData::Send(data) = saga_record.data {
+            if let cdk_common::wallet::OperationData::Send(data) = saga_record.data.clone() {
                 let proofs = data.proofs.ok_or(Error::Custom(
                     "No proofs found in pending send saga".to_string(),
                 ))?;
@@ -295,6 +311,7 @@ impl Wallet {
                     state_data: saga::state::TokenCreated {
                         operation_id,
                         proofs,
+                        saga: saga_record,
                     },
                 };
 
@@ -336,7 +353,7 @@ impl Wallet {
             cdk_common::wallet::SendSagaState::TokenCreated,
         ) = saga_record.state
         {
-            if let cdk_common::wallet::OperationData::Send(data) = saga_record.data {
+            if let cdk_common::wallet::OperationData::Send(data) = saga_record.data.clone() {
                 let proofs = data.proofs.ok_or(Error::Custom(
                     "No proofs found in pending send saga".to_string(),
                 ))?;
@@ -347,6 +364,7 @@ impl Wallet {
                     state_data: saga::state::TokenCreated {
                         operation_id,
                         proofs,
+                        saga: saga_record,
                     },
                 };
 

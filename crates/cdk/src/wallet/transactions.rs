@@ -81,13 +81,10 @@ impl Wallet {
         }
 
         // Check if this is a saga-managed transaction
-        if let Some(saga_id_str) = &tx.saga_id {
-            let saga_id = uuid::Uuid::parse_str(saga_id_str)
-                .map_err(|e| Error::Custom(format!("Invalid saga ID: {}", e)))?;
-
+        if let Some(saga_id) = &tx.saga_id {
             // Use the existing revoke_send method which properly handles the saga
             // Discard the returned amount - we just care about success/failure
-            let _ = self.revoke_send(saga_id).await?;
+            let _ = self.revoke_send(*saga_id).await?;
             Ok(())
         } else {
             // Legacy transaction without saga - check proofs and mark spent ones

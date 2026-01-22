@@ -17,6 +17,7 @@ use cdk_common::{
     ProofDleq, PublicKey, SecretKey, SpendingConditions, State,
 };
 use tracing::instrument;
+use uuid::Uuid;
 
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
@@ -840,7 +841,7 @@ where
            .bind("payment_request", transaction.payment_request)
            .bind("payment_proof", transaction.payment_proof)
            .bind("payment_method", transaction.payment_method.map(|pm| pm.to_string()))
-           .bind("saga_id", transaction.saga_id)
+           .bind("saga_id", transaction.saga_id.map(|id| id.to_string()))
            .execute(&*conn)
            .await?;
 
@@ -1922,6 +1923,10 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
     let amount: u64 = column_as_number!(amount);
     let fee: u64 = column_as_number!(fee);
 
+    let saga_id: Option<Uuid> = column_as_nullable_string!(saga_id)
+        .map(|id| Uuid::from_str(&id).ok())
+        .flatten();
+
     Ok(Transaction {
         mint_url: column_as_string!(mint_url, MintUrl::from_str),
         direction: column_as_string!(direction, TransactionDirection::from_str),
@@ -1945,6 +1950,6 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             .map(|v| PaymentMethod::from_str(&v))
             .transpose()
             .map_err(Error::from)?,
-        saga_id: column_as_nullable_string!(saga_id),
+        saga_id,
     })
 }

@@ -335,6 +335,13 @@ impl Wallet {
         metadata: HashMap<String, String>,
         options: MeltConfirmOptions,
     ) -> Result<FinalizedMelt, Error> {
+        // Fetch saga from DB for optimistic locking
+        let db_saga = self
+            .localstore
+            .get_saga(&operation_id)
+            .await?
+            .ok_or(Error::Custom("Saga not found".to_string()))?;
+
         let saga = MeltSaga::from_prepared(
             self,
             operation_id,
@@ -343,6 +350,7 @@ impl Wallet {
             proofs_to_swap,
             input_fee,
             input_fee_without_swap,
+            db_saga,
         );
 
         let melt_requested = saga.request_melt_with_options(options).await?;

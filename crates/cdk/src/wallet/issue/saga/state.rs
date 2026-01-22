@@ -4,11 +4,11 @@
 //! of the mint operation. The type state pattern ensures that only valid
 //! operations are available at each stage.
 
+use cdk_common::wallet::WalletSaga;
 use uuid::Uuid;
 
 use crate::nuts::{Id, PaymentMethod, PreMintSecrets, Proofs};
 use crate::wallet::MintQuote;
-use crate::Amount;
 
 /// Type alias for MintRequest with String quote ID
 pub type MintRequestString = crate::nuts::MintRequest<String>;
@@ -34,8 +34,6 @@ pub struct Prepared {
     pub quote_id: String,
     /// Quote information
     pub quote_info: MintQuote,
-    /// Amount being minted
-    pub amount: Amount,
     /// Active keyset ID
     pub active_keyset_id: Id,
     /// Premint secrets
@@ -44,6 +42,8 @@ pub struct Prepared {
     pub mint_request: MintRequestString,
     /// Payment method (Bolt11 or Bolt12)
     pub payment_method: PaymentMethod,
+    /// The persisted saga for optimistic locking (contains recovery data)
+    pub saga: WalletSaga,
 }
 
 /// Finalized state - mint completed successfully.

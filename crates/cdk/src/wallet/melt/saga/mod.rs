@@ -173,7 +173,7 @@ impl<'a> MeltSaga<'a, Initial> {
                 }),
             );
 
-            self.wallet.localstore.add_saga(saga).await?;
+            self.wallet.localstore.add_saga(saga.clone()).await?;
 
             // Register compensation
             add_compensation(
@@ -200,6 +200,7 @@ impl<'a> MeltSaga<'a, Initial> {
                     input_fee,
                     // No swap needed, so input_fee_without_swap is the same
                     input_fee_without_swap: input_fee,
+                    saga,
                 },
             });
         }
@@ -285,7 +286,7 @@ impl<'a> MeltSaga<'a, Initial> {
             }),
         );
 
-        self.wallet.localstore.add_saga(saga).await?;
+        self.wallet.localstore.add_saga(saga.clone()).await?;
 
         // Register compensation
         add_compensation(
@@ -313,6 +314,7 @@ impl<'a> MeltSaga<'a, Initial> {
                 swap_fee,
                 input_fee,
                 input_fee_without_swap,
+                saga,
             },
         })
     }
@@ -394,7 +396,7 @@ impl<'a> MeltSaga<'a, Initial> {
             }),
         );
 
-        self.wallet.localstore.add_saga(saga).await?;
+        self.wallet.localstore.add_saga(saga.clone()).await?;
 
         // Register compensation to revert proofs on failure
         add_compensation(
@@ -421,6 +423,7 @@ impl<'a> MeltSaga<'a, Initial> {
                 input_fee,
                 // No swap needed, so input_fee_without_swap is the same
                 input_fee_without_swap: input_fee,
+                saga,
             },
         })
     }
@@ -443,6 +446,7 @@ impl<'a> MeltSaga<'a, Prepared> {
         proofs_to_swap: Proofs,
         input_fee: Amount,
         input_fee_without_swap: Amount,
+        saga: WalletSaga,
     ) -> Self {
         Self {
             wallet,
@@ -455,6 +459,7 @@ impl<'a> MeltSaga<'a, Prepared> {
                 swap_fee: Amount::ZERO, // Not needed for reconstruction
                 input_fee,
                 input_fee_without_swap,
+                saga,
             },
         }
     }
@@ -639,28 +644,20 @@ impl<'a> MeltSaga<'a, Prepared> {
         };
 
         // Update saga state to MeltRequested BEFORE making the melt call
-        let updated_saga = WalletSaga::new(
-            operation_id,
-            WalletSagaState::Melt(MeltSagaState::MeltRequested),
-            quote_info.amount,
-            self.wallet.mint_url.clone(),
-            self.wallet.unit.clone(),
-            OperationData::Melt(MeltOperationData {
-                quote_id: quote_info.id.clone(),
-                amount: quote_info.amount,
-                fee_reserve: quote_info.fee_reserve,
-                counter_start: Some(counter_start),
-                counter_end: Some(counter_end),
-                change_amount: if change_amount > Amount::ZERO {
-                    Some(change_amount)
-                } else {
-                    None
-                },
-                change_blinded_messages: change_blinded_messages.clone(),
-            }),
-        );
+        let mut saga = self.state_data.saga.clone();
+        saga.update_state(WalletSagaState::Melt(MeltSagaState::MeltRequested));
+        if let OperationData::Melt(ref mut data) = saga.data {
+            data.counter_start = Some(counter_start);
+            data.counter_end = Some(counter_end);
+            data.change_amount = if change_amount > Amount::ZERO {
+                Some(change_amount)
+            } else {
+                None
+            };
+            data.change_blinded_messages = change_blinded_messages.clone();
+        }
 
-        if !self.wallet.localstore.update_saga(updated_saga).await? {
+        if !self.wallet.localstore.update_saga(saga.clone()).await? {
             self.compensate().await;
             return Err(Error::Custom(
                 "Saga version conflict during update".to_string(),
@@ -675,10 +672,7 @@ impl<'a> MeltSaga<'a, Prepared> {
                 quote: quote_info,
                 final_proofs,
                 premint_secrets,
-                counter_start,
-                counter_end,
-                change_amount,
-                change_blinded_messages,
+                saga,
             },
         })
     }
@@ -891,7 +885,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                 payment_request: Some(quote_info.request.clone()),
                 payment_proof: payment_preimage.clone(),
                 payment_method: Some(quote_info.payment_method.clone()),
-                saga_id: Some(operation_id.to_string()),
+                saga_id: Some(operation_id),
             })
             .await?;
 
@@ -1002,26 +996,8 @@ impl<'a> MeltSaga<'a, MeltRequested> {
         );
 
         // Update saga to PaymentPending
-        let pending_saga = WalletSaga::new(
-            operation_id,
-            WalletSagaState::Melt(MeltSagaState::PaymentPending),
-            quote_info.amount,
-            self.wallet.mint_url.clone(),
-            self.wallet.unit.clone(),
-            OperationData::Melt(MeltOperationData {
-                quote_id: quote_info.id.clone(),
-                amount: quote_info.amount,
-                fee_reserve: quote_info.fee_reserve,
-                counter_start: Some(self.state_data.counter_start),
-                counter_end: Some(self.state_data.counter_end),
-                change_amount: if self.state_data.change_amount > Amount::ZERO {
-                    Some(self.state_data.change_amount)
-                } else {
-                    None
-                },
-                change_blinded_messages: self.state_data.change_blinded_messages.clone(),
-            }),
-        );
+        let mut pending_saga = self.state_data.saga.clone();
+        pending_saga.update_state(WalletSagaState::Melt(MeltSagaState::PaymentPending));
 
         if let Err(e) = self.wallet.localstore.update_saga(pending_saga).await {
             tracing::warn!(

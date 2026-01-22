@@ -269,7 +269,7 @@ impl<'a> SendSaga<'a, Initial> {
             }),
         );
 
-        self.wallet.localstore.add_saga(saga).await?;
+        self.wallet.localstore.add_saga(saga.clone()).await?;
 
         // Register compensation to revert reservation and delete saga on failure
         add_compensation(
@@ -322,6 +322,7 @@ impl<'a> SendSaga<'a, Initial> {
                 swap_fee: split_result.swap_fee,
                 proofs_to_send: split_result.proofs_to_send,
                 send_fee: send_fee.total,
+                saga,
             },
         })
     }
@@ -342,6 +343,7 @@ impl<'a> SendSaga<'a, Prepared> {
         proofs_to_send: Proofs,
         swap_fee: Amount,
         send_fee: Amount,
+        saga: WalletSaga,
     ) -> Self {
         Self {
             wallet,
@@ -354,6 +356,7 @@ impl<'a> SendSaga<'a, Prepared> {
                 proofs_to_send,
                 swap_fee,
                 send_fee,
+                saga,
             },
         }
     }
@@ -431,28 +434,13 @@ impl<'a> SendSaga<'a, Prepared> {
 
         // Update saga state to TokenCreated BEFORE making external calls
         let memo_text = options.memo.as_ref().map(|m| m.memo.clone());
-        let updated_saga = WalletSaga::new(
-            operation_id,
-            WalletSagaState::Send(SendSagaState::TokenCreated),
-            amount,
-            self.wallet.mint_url.clone(),
-            self.wallet.unit.clone(),
-            OperationData::Send(SendOperationData {
-                amount,
-                memo: memo_text,
-                counter_start: None,
-                counter_end: None,
-                token: None,
-                proofs: None, // Will be updated after token creation
-            }),
-        );
+        let mut saga = self.state_data.saga.clone();
+        saga.update_state(WalletSagaState::Send(SendSagaState::TokenCreated));
+        if let OperationData::Send(ref mut data) = saga.data {
+            data.memo = memo_text;
+        }
 
-        if !self
-            .wallet
-            .localstore
-            .update_saga(updated_saga.clone())
-            .await?
-        {
+        if !self.wallet.localstore.update_saga(saga.clone()).await? {
             return Err(Error::Custom(
                 "Saga version conflict during update".to_string(),
             ));
@@ -520,7 +508,7 @@ impl<'a> SendSaga<'a, Prepared> {
                 payment_request: None,
                 payment_proof: None,
                 payment_method: None,
-                saga_id: Some(operation_id.to_string()),
+                saga_id: Some(operation_id),
             })
             .await?;
 
@@ -537,8 +525,7 @@ impl<'a> SendSaga<'a, Prepared> {
 
         // Update the saga with the generated token and proofs so they are persisted
         // This ensures that if we crash now, we have the data needed for revocation
-        let mut final_saga = updated_saga;
-        final_saga.data = OperationData::Send(SendOperationData {
+        saga.data = OperationData::Send(SendOperationData {
             amount,
             memo: options.memo.as_ref().map(|m| m.memo.clone()),
             counter_start: None,
@@ -546,24 +533,27 @@ impl<'a> SendSaga<'a, Prepared> {
             token: Some(token.to_string()),
             proofs: Some(final_proofs_to_send.clone()),
         });
+        // Increment version for the second update
+        saga.update_state(WalletSagaState::Send(SendSagaState::TokenCreated));
 
         // We need to update the state again to increment version
-        if !self.wallet.localstore.update_saga(final_saga).await? {
+        if !self.wallet.localstore.update_saga(saga.clone()).await? {
             return Err(Error::Custom(
                 "Saga version conflict during final update".to_string(),
             ));
         }
 
-        let saga = SendSaga {
+        let send_saga = SendSaga {
             wallet: self.wallet,
             compensations: self.compensations,
             state_data: TokenCreated {
                 operation_id,
                 proofs: final_proofs_to_send,
+                saga,
             },
         };
 
-        Ok((token, saga))
+        Ok((token, send_saga))
     }
 
     /// Cancel the prepared send and release reserved proofs
@@ -621,40 +611,13 @@ impl<'a> SendSaga<'a, TokenCreated> {
         // 2. Lock the saga by transitioning to RollingBack state
         //    This prevents the proof watcher from thinking the swap is a claim by the recipient
         let operation_id = self.state_data.operation_id;
-        let mut rolling_back_saga = WalletSaga::new(
-            operation_id,
-            WalletSagaState::Send(SendSagaState::RollingBack),
-            self.state_data.proofs.total_amount()?,
-            self.wallet.mint_url.clone(),
-            self.wallet.unit.clone(),
-            OperationData::Send(SendOperationData {
-                amount: self.state_data.proofs.total_amount()?,
-                memo: None,
-                counter_start: None,
-                counter_end: None,
-                token: None,
-                proofs: Some(self.state_data.proofs.clone()),
-            }),
-        );
+        let mut saga = self.state_data.saga.clone();
+        saga.update_state(WalletSagaState::Send(SendSagaState::RollingBack));
+        if let OperationData::Send(ref mut data) = saga.data {
+            data.proofs = Some(self.state_data.proofs.clone());
+        }
 
-        // Fetch current version to ensure optimistic locking works
-        let current_saga = self
-            .wallet
-            .localstore
-            .get_saga(&operation_id)
-            .await?
-            .ok_or(Error::Custom("Saga not found".to_string()))?;
-
-        rolling_back_saga.version = current_saga.version;
-        // update_state increments version and sets timestamp
-        rolling_back_saga.update_state(WalletSagaState::Send(SendSagaState::RollingBack));
-
-        if !self
-            .wallet
-            .localstore
-            .update_saga(rolling_back_saga)
-            .await?
-        {
+        if !self.wallet.localstore.update_saga(saga).await? {
             return Err(Error::Custom(
                 "Saga version conflict during rollback lock".to_string(),
             ));
@@ -706,7 +669,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
 
                 // 6. On failure, we MUST revert the state to TokenCreated
                 //    and mark proofs as PendingSpent so monitoring can resume.
-                //    We also need to fetch fresh version again.
+                //    We fetch fresh version from DB since our earlier update succeeded.
                 let current_saga = self
                     .wallet
                     .localstore

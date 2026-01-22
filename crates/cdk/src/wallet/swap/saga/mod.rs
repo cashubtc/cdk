@@ -148,7 +148,7 @@ impl<'a> SwapSaga<'a, Initial> {
             }),
         );
 
-        self.wallet.localstore.add_saga(saga).await?;
+        self.wallet.localstore.add_saga(saga.clone()).await?;
 
         // Register compensation to revert proof reservation and delete saga on failure
         add_compensation(
@@ -169,13 +169,10 @@ impl<'a> SwapSaga<'a, Initial> {
                 operation_id: self.state_data.operation_id,
                 amount,
                 amount_split_target,
-                input_proofs,
                 input_ys,
                 spending_conditions,
                 pre_swap,
-                fee,
-                counter_start,
-                counter_end,
+                saga,
             },
         })
     }
@@ -206,29 +203,15 @@ impl<'a> SwapSaga<'a, Prepared> {
         // Update saga state to SwapRequested BEFORE making the mint call
         // This is write-ahead logging - if we crash after this, recovery knows
         // the swap may have been attempted
-        let input_amount = self.state_data.input_proofs.total_amount()?;
-        let output_amount = input_amount
-            .checked_sub(self.state_data.fee)
-            .ok_or(Error::InsufficientFunds)?;
-
-        let updated_saga = WalletSaga::new(
-            operation_id,
-            WalletSagaState::Swap(SwapSagaState::SwapRequested),
-            input_amount,
-            self.wallet.mint_url.clone(),
-            self.wallet.unit.clone(),
-            OperationData::Swap(SwapOperationData {
-                input_amount,
-                output_amount,
-                counter_start: Some(self.state_data.counter_start),
-                counter_end: Some(self.state_data.counter_end),
-                blinded_messages: Some(self.state_data.pre_swap.swap_request.outputs().clone()),
-            }),
-        );
+        let mut saga = self.state_data.saga.clone();
+        saga.update_state(WalletSagaState::Swap(SwapSagaState::SwapRequested));
+        if let OperationData::Swap(ref mut data) = saga.data {
+            data.blinded_messages = Some(self.state_data.pre_swap.swap_request.outputs().clone());
+        }
 
         // Update saga state - if this fails due to version conflict, another instance
         // is processing this saga, which should not happen during normal operation
-        if !self.wallet.localstore.update_saga(updated_saga).await? {
+        if !self.wallet.localstore.update_saga(saga).await? {
             return Err(Error::Custom(
                 "Saga version conflict during update - another instance may be processing this saga".to_string(),
             ));
