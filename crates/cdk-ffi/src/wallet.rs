@@ -547,16 +547,10 @@ impl Wallet {
             .fee())
     }
 
-    /// Reclaim unspent proofs (mark them as unspent in the database)
-    pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), FfiError> {
-        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
-            proofs.iter().map(|p| p.clone().try_into()).collect();
-        let cdk_proofs = cdk_proofs?;
-        self.inner.reclaim_unspent(cdk_proofs).await?;
-        Ok(())
-    }
-
-    /// Check all pending proofs and return the total amount reclaimed
+    /// Check all pending proofs and return the total amount still pending
+    ///
+    /// This function checks orphaned pending proofs (not managed by active sagas)
+    /// with the mint and marks spent proofs accordingly.
     pub async fn check_all_pending_proofs(&self) -> Result<Amount, FfiError> {
         let amount = self.inner.check_all_pending_proofs().await?;
         Ok(amount.into())

@@ -52,7 +52,23 @@ impl Wallet {
         Ok(proofs)
     }
 
-    /// Revert a transaction
+    /// Revert a transaction by reclaiming unspent proofs.
+    ///
+    /// For transactions created by the saga pattern (with `saga_id` set), this
+    /// function loads the associated send saga and calls `revoke()` on it, which
+    /// properly handles the saga lifecycle including state transitions and cleanup.
+    ///
+    /// For legacy transactions (without `saga_id`), this function checks the proofs
+    /// with the mint and marks any spent proofs accordingly. Unspent proofs are
+    /// left in their current state for manual recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The transaction is not found
+    /// - The transaction is not outgoing
+    /// - The saga is not in a revocable state (e.g., already completed)
+    /// - The token has already been claimed by the recipient
     pub async fn revert_transaction(&self, id: TransactionId) -> Result<(), Error> {
         let tx = self
             .localstore
@@ -64,17 +80,36 @@ impl Wallet {
             return Err(Error::InvalidTransactionDirection);
         }
 
-        let pending_spent_proofs = self
-            .get_pending_spent_proofs()
-            .await?
-            .into_iter()
-            .filter(|p| match p.y() {
-                Ok(y) => tx.ys.contains(&y),
-                Err(_) => false,
-            })
-            .collect::<Vec<_>>();
+        // Check if this is a saga-managed transaction
+        if let Some(saga_id_str) = &tx.saga_id {
+            let saga_id = uuid::Uuid::parse_str(saga_id_str)
+                .map_err(|e| Error::Custom(format!("Invalid saga ID: {}", e)))?;
 
-        self.reclaim_unspent(pending_spent_proofs).await?;
-        Ok(())
+            // Use the existing revoke_send method which properly handles the saga
+            // Discard the returned amount - we just care about success/failure
+            let _ = self.revoke_send(saga_id).await?;
+            Ok(())
+        } else {
+            // Legacy transaction without saga - check proofs and mark spent ones
+            // We don't attempt to swap for legacy transactions to avoid
+            // interfering with any potential in-flight operations
+            let pending_spent_proofs: Proofs = self
+                .get_pending_spent_proofs()
+                .await?
+                .into_iter()
+                .filter(|p| match p.y() {
+                    Ok(y) => tx.ys.contains(&y),
+                    Err(_) => false,
+                })
+                .collect();
+
+            if pending_spent_proofs.is_empty() {
+                return Ok(());
+            }
+
+            // Just check and mark spent - don't attempt swap for legacy transactions
+            self.check_proofs_spent(pending_spent_proofs).await?;
+            Ok(())
+        }
     }
 }
