@@ -512,8 +512,16 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
                             cdk::cdk_database::Error::Database(e.to_string().into())
                         })?,
                     unit: info.unit.into(),
-                    used_by_operation: info.used_by_operation,
-                    created_by_operation: info.created_by_operation,
+                    used_by_operation: info
+                        .used_by_operation
+                        .map(|id| uuid::Uuid::parse_str(&id))
+                        .transpose()
+                        .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?,
+                    created_by_operation: info
+                        .created_by_operation
+                        .map(|id| uuid::Uuid::parse_str(&id))
+                        .transpose()
+                        .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?,
                 })
             })
             .collect();
@@ -556,8 +564,16 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
                             cdk::cdk_database::Error::Database(e.to_string().into())
                         })?,
                     unit: info.unit.into(),
-                    used_by_operation: info.used_by_operation,
-                    created_by_operation: info.created_by_operation,
+                    used_by_operation: info
+                        .used_by_operation
+                        .map(|id| uuid::Uuid::parse_str(&id))
+                        .transpose()
+                        .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?,
+                    created_by_operation: info
+                        .created_by_operation
+                        .map(|id| uuid::Uuid::parse_str(&id))
+                        .transpose()
+                        .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?,
                 })
             })
             .collect();
@@ -901,8 +917,16 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
                             cdk::cdk_database::Error::Database(e.to_string().into())
                         })?,
                     unit: info.unit.into(),
-                    used_by_operation: info.used_by_operation,
-                    created_by_operation: info.created_by_operation,
+                    used_by_operation: info
+                        .used_by_operation
+                        .map(|id| uuid::Uuid::parse_str(&id))
+                        .transpose()
+                        .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?,
+                    created_by_operation: info
+                        .created_by_operation
+                        .map(|id| uuid::Uuid::parse_str(&id))
+                        .transpose()
+                        .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?,
                 })
             })
             .collect()
@@ -1265,8 +1289,16 @@ where
                         .map(|sc| sc.try_into())
                         .transpose()?,
                     unit: info.unit.into(),
-                    used_by_operation: info.used_by_operation,
-                    created_by_operation: info.created_by_operation,
+                    used_by_operation: info
+                        .used_by_operation
+                        .map(|id| uuid::Uuid::parse_str(&id))
+                        .transpose()
+                        .map_err(|e| FfiError::internal(e.to_string()))?,
+                    created_by_operation: info
+                        .created_by_operation
+                        .map(|id| uuid::Uuid::parse_str(&id))
+                        .transpose()
+                        .map_err(|e| FfiError::internal(e.to_string()))?,
                 })
             })
             .collect();

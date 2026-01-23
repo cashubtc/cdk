@@ -164,10 +164,6 @@ impl<'a> ReceiveSaga<'a, Initial> {
             }
         }
 
-        // Sign all outputs if SigAll flag is set
-        // Store sig_flag for later use in execute
-        // (This is handled in execute when signing blinded messages)
-
         Ok(ReceiveSaga {
             wallet: self.wallet,
             compensations: self.compensations,
@@ -219,7 +215,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         let fee_breakdown = self.wallet.get_proofs_fee(&proofs).await?;
 
         let operation_id = self.state_data.operation_id;
-        let operation_id_str = operation_id.to_string();
 
         let proofs_info = proofs
             .clone()
@@ -230,7 +225,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                     self.wallet.mint_url.clone(),
                     State::Pending,
                     self.wallet.unit.clone(),
-                    Some(operation_id_str.clone()),
+                    Some(operation_id),
                     None,
                 )
             })
@@ -241,7 +236,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             .update_proofs(proofs_info.clone(), vec![])
             .await?;
 
-        // Persist saga state for crash recovery
         let mut saga = WalletSaga::new(
             operation_id,
             WalletSagaState::Receive(ReceiveSagaState::ProofsPending),
@@ -249,17 +243,16 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Receive(ReceiveOperationData {
-                token: String::new(), // Not stored for receive operations
-                counter_start: None,  // Will be set after swap request is created
+                token: String::new(),
+                counter_start: None,
                 counter_end: None,
                 amount: Some(self.state_data.proofs_amount),
-                blinded_messages: None, // Will be set when swap is requested
+                blinded_messages: None,
             }),
         );
 
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
-        // Register compensation to remove pending proofs and delete saga on failure
         add_compensation(
             &mut self.compensations,
             Box::new(RemovePendingProofs {

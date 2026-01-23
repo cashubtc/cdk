@@ -135,7 +135,6 @@ impl<'a> MeltSaga<'a, Initial> {
 
         let available_proofs = self.wallet.get_unspent_proofs().await?;
 
-        // Try to select proofs that exactly match inputs_needed_amount
         let exact_input_proofs = Wallet::select_proofs(
             inputs_needed_amount,
             available_proofs.clone(),
@@ -149,13 +148,11 @@ impl<'a> MeltSaga<'a, Initial> {
             let proof_ys = exact_input_proofs.ys()?;
             let operation_id = self.state_data.operation_id;
 
-            // Reserve proofs
             self.wallet
                 .localstore
                 .update_proofs_state(proof_ys.clone(), State::Reserved)
                 .await?;
 
-            // Persist saga state for crash recovery
             let saga = WalletSaga::new(
                 operation_id,
                 WalletSagaState::Melt(MeltSagaState::ProofsReserved),
@@ -175,7 +172,6 @@ impl<'a> MeltSaga<'a, Initial> {
 
             self.wallet.localstore.add_saga(saga.clone()).await?;
 
-            // Register compensation
             add_compensation(
                 &mut self.compensations,
                 Box::new(RevertProofReservation {
@@ -198,25 +194,16 @@ impl<'a> MeltSaga<'a, Initial> {
                     proofs_to_swap: Proofs::new(),
                     swap_fee: Amount::ZERO,
                     input_fee,
-                    // No swap needed, so input_fee_without_swap is the same
                     input_fee_without_swap: input_fee,
                     saga,
                 },
             });
         }
 
-        // Need to swap to get exact denominations
-        // For melt operations, we need to account for:
-        // 1. The melt amount (quote.amount + fee_reserve)
-        // 2. The swap fee (charged when we swap to get correct denominations)
-        // 3. The melt input fee (charged by mint on the proofs we send)
-        //
-        // The tricky part is that after a swap, we have (input - swap_fee) in output.
-        // Then the mint charges input_fee on those output proofs.
-        // So we need: swap_output - melt_input_fee >= inputs_needed_amount
-        //
-        // To ensure we have enough after both fees, we estimate the melt input fee
-        // based on an optimal split of inputs_needed_amount and select proofs to cover that.
+        // Swap needed to get exact denominations for melt.
+        // Fee accounting: swap produces (input - swap_fee), then mint charges input_fee on outputs.
+        // So we need: (input - swap_fee) - melt_input_fee >= inputs_needed_amount
+        // We estimate melt_input_fee based on optimal split and add it to selection amount.
 
         let active_keyset_id = self.wallet.get_active_keyset().await?.id;
         let fee_and_amounts = self
@@ -256,11 +243,9 @@ impl<'a> MeltSaga<'a, Initial> {
         let proofs_to_swap = input_proofs;
         let swap_fee = self.wallet.get_proofs_fee(&proofs_to_swap).await?.total;
 
-        // Reserve proofs_to_swap (all proofs in this case) since they'll be swapped
         let proof_ys = proofs_to_swap.ys()?;
         let operation_id = self.state_data.operation_id;
 
-        // Reserve all proofs that will be swapped
         if !proof_ys.is_empty() {
             self.wallet
                 .localstore
@@ -268,7 +253,6 @@ impl<'a> MeltSaga<'a, Initial> {
                 .await?;
         }
 
-        // Persist saga state for crash recovery
         let saga = WalletSaga::new(
             operation_id,
             WalletSagaState::Melt(MeltSagaState::ProofsReserved),
@@ -288,7 +272,6 @@ impl<'a> MeltSaga<'a, Initial> {
 
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
-        // Register compensation
         add_compensation(
             &mut self.compensations,
             Box::new(RevertProofReservation {
@@ -348,7 +331,6 @@ impl<'a> MeltSaga<'a, Initial> {
 
         let quote_info = self.initialize_melt(quote_id).await?;
 
-        // Validate proofs are sufficient
         let proofs_total = proofs.total_amount()?;
         let inputs_needed = quote_info.amount + quote_info.fee_reserve;
         if proofs_total < inputs_needed {
@@ -378,7 +360,6 @@ impl<'a> MeltSaga<'a, Initial> {
             .update_proofs(proofs_info, vec![])
             .await?;
 
-        // Persist saga state for crash recovery
         let saga = WalletSaga::new(
             operation_id,
             WalletSagaState::Melt(MeltSagaState::ProofsReserved),
@@ -398,7 +379,6 @@ impl<'a> MeltSaga<'a, Initial> {
 
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
-        // Register compensation to revert proofs on failure
         add_compensation(
             &mut self.compensations,
             Box::new(RevertProofReservation {
@@ -583,7 +563,6 @@ impl<'a> MeltSaga<'a, Prepared> {
         }
 
         // Set proofs to Pending state before making melt request
-        let operation_id_str = operation_id.to_string();
         let proofs_info = final_proofs
             .clone()
             .into_iter()
@@ -593,7 +572,7 @@ impl<'a> MeltSaga<'a, Prepared> {
                     self.wallet.mint_url.clone(),
                     State::Pending,
                     self.wallet.unit.clone(),
-                    Some(operation_id_str.clone()),
+                    Some(operation_id),
                     None,
                 )
             })
@@ -995,7 +974,6 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             quote_info.id
         );
 
-        // Update saga to PaymentPending
         let mut pending_saga = self.state_data.saga.clone();
         pending_saga.update_state(WalletSagaState::Melt(MeltSagaState::PaymentPending));
 

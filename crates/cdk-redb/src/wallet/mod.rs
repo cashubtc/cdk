@@ -1111,7 +1111,6 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         operation_id: &uuid::Uuid,
     ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
-        let operation_id_str = operation_id.to_string();
 
         {
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
@@ -1137,7 +1136,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                 }
 
                 proof.state = State::Reserved;
-                proof.used_by_operation = Some(operation_id_str.clone());
+                proof.used_by_operation = Some(*operation_id);
 
                 let updated_json = serde_json::to_string(&proof).map_err(Error::from)?;
                 table
@@ -1153,7 +1152,6 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     #[instrument(skip(self))]
     async fn release_proofs(&self, operation_id: &uuid::Uuid) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
-        let operation_id_str = operation_id.to_string();
 
         {
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
@@ -1171,7 +1169,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
             // Now update proofs that match the operation_id
             for (y_bytes, mut proof) in all_proofs {
-                if proof.used_by_operation.as_deref() == Some(&operation_id_str) {
+                if proof.used_by_operation == Some(*operation_id) {
                     proof.state = State::Unspent;
                     proof.used_by_operation = None;
 
@@ -1194,7 +1192,6 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     ) -> Result<Vec<ProofInfo>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-        let operation_id_str = operation_id.to_string();
 
         let proofs: Vec<ProofInfo> = table
             .iter()
@@ -1203,7 +1200,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             .filter_map(|(_, proof_json)| {
                 serde_json::from_str::<ProofInfo>(proof_json.value()).ok()
             })
-            .filter(|proof| proof.used_by_operation.as_deref() == Some(&operation_id_str))
+            .filter(|proof| proof.used_by_operation == Some(*operation_id))
             .collect();
 
         Ok(proofs)
