@@ -239,11 +239,12 @@ mod test {
                 Column::Integer(0),
                 Column::Text(serde_json::to_string(&amounts).expect("valid json")),
                 Column::Integer(0),
-                Column::Null,
+                Column::Text("0.1.0".to_owned()),
             ]);
             assert!(result.is_ok());
             let keyset = result.unwrap();
             assert_eq!(keyset.amounts.len(), 32);
+            assert_eq!(keyset.cdk_version, Some("0.1.0".to_string()));
         }
     }
 }

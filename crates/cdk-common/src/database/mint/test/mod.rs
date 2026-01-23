@@ -49,7 +49,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        cdk_version: None,
+        cdk_version: Some("0.1.0".to_string()),
     };
     let mut writer = db.begin_transaction().await.expect("db.begin()");
     writer.add_keyset_info(keyset_info).await.unwrap();
