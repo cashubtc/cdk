@@ -249,11 +249,13 @@ impl SupabaseWalletDatabase {
 
     /// Set encryption password
     ///
-    /// Set encryption password
-    ///
     /// Derives an encryption key from the password using PBKDF2.
     /// This key is used to encrypt sensitive data (proof secrets, kv_store values)
     /// before sending to Supabase, ensuring end-to-end privacy.
+    ///
+    /// # Panics
+    ///
+    /// Panics if HMAC initialization fails.
     pub async fn set_encryption_password(&self, password: &str) {
         // Let's use a fixed salt for now as a "wallet-wide" key derivation.
         let salt = b"cdk-supabase-salt";
@@ -2219,10 +2221,15 @@ impl TryFrom<Transaction> for TransactionTable {
 /// Response from Supabase Auth sign-up/sign-in
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SupabaseAuthResponse {
+    /// Access token
     pub access_token: String,
+    /// Token type
     pub token_type: String,
+    /// Expires in
     pub expires_in: Option<i64>,
+    /// Refresh token
     pub refresh_token: Option<String>,
+    /// User
     pub user: serde_json::Value,
 }
 
