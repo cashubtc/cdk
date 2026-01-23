@@ -82,8 +82,8 @@ struct SupabaseTokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: Option<i64>,
-    #[allow(dead_code)]
-    token_type: String,
+    #[serde(skip)]
+    _token_type: (),
 }
 
 /// Supabase wallet database implementation
@@ -247,21 +247,28 @@ impl SupabaseWalletDatabase {
         *refresh = token;
     }
 
-    /// Set encryption password
+    /// Set encryption password with a unique salt
     ///
-    /// Derives an encryption key from the password using PBKDF2.
+    /// Derives an encryption key from the password and salt using PBKDF2.
     /// This key is used to encrypt sensitive data (proof secrets, kv_store values)
     /// before sending to Supabase, ensuring end-to-end privacy.
+    ///
+    /// The `salt` should be unique per wallet/user. Good choices include:
+    /// - The user's Supabase UID (from JWT `sub` claim)
+    /// - A randomly generated value stored client-side
+    ///
+    /// Using a unique salt ensures that even if two users have the same password,
+    /// their encryption keys will be different.
     ///
     /// # Panics
     ///
     /// Panics if HMAC initialization fails.
-    pub async fn set_encryption_password(&self, password: &str) {
-        // Let's use a fixed salt for now as a "wallet-wide" key derivation.
-        let salt = b"cdk-supabase-salt";
+    pub async fn set_encryption_password(&self, password: &str, salt: &str) {
+        // Combine a fixed prefix with the user-provided salt for domain separation
+        let full_salt = format!("cdk-supabase:{}", salt);
 
         let mut key = [0u8; 32];
-        pbkdf2::<hmac::Hmac<Sha256>>(password.as_bytes(), salt, 100_000, &mut key)
+        pbkdf2::<hmac::Hmac<Sha256>>(password.as_bytes(), full_salt.as_bytes(), 100_000, &mut key)
             .expect("HMAC can be initialized with any key length");
 
         let mut encryption_key = self.encryption_key.write().await;
@@ -536,7 +543,7 @@ impl SupabaseWalletDatabase {
         let status = res.status();
         let text = res.text().await.map_err(Error::Reqwest)?;
 
-        tracing::debug!(method = "GET", url = %url, status = %status, response = %text, "Supabase response");
+        tracing::debug!(method = "GET", url = %url, status = %status, response_len = text.len(), "Supabase response");
 
         Ok((status, text))
     }
@@ -550,7 +557,7 @@ impl SupabaseWalletDatabase {
         let url = self.join_url(path)?;
         let auth_bearer = self.get_auth_bearer().await;
 
-        tracing::debug!(method = "POST", url = %url, body = ?body, "Supabase request");
+        tracing::debug!(method = "POST", url = %url, "Supabase request");
 
         let res = self
             .client
@@ -566,7 +573,7 @@ impl SupabaseWalletDatabase {
         let status = res.status();
         let text = res.text().await.map_err(Error::Reqwest)?;
 
-        tracing::debug!(method = "POST", url = %url, status = %status, response = %text, "Supabase response");
+        tracing::debug!(method = "POST", url = %url, status = %status, response_len = text.len(), "Supabase response");
 
         Ok((status, text))
     }
@@ -580,7 +587,7 @@ impl SupabaseWalletDatabase {
         let url = self.join_url(path)?;
         let auth_bearer = self.get_auth_bearer().await;
 
-        tracing::debug!(method = "PATCH", url = %url, body = ?body, "Supabase request");
+        tracing::debug!(method = "PATCH", url = %url, "Supabase request");
 
         let res = self
             .client
@@ -595,7 +602,7 @@ impl SupabaseWalletDatabase {
         let status = res.status();
         let text = res.text().await.map_err(Error::Reqwest)?;
 
-        tracing::debug!(method = "PATCH", url = %url, status = %status, response = %text, "Supabase response");
+        tracing::debug!(method = "PATCH", url = %url, status = %status, response_len = text.len(), "Supabase response");
 
         Ok((status, text))
     }
@@ -619,7 +626,7 @@ impl SupabaseWalletDatabase {
         let status = res.status();
         let text = res.text().await.map_err(Error::Reqwest)?;
 
-        tracing::debug!(method = "DELETE", url = %url, status = %status, response = %text, "Supabase response");
+        tracing::debug!(method = "DELETE", url = %url, status = %status, response_len = text.len(), "Supabase response");
 
         Ok((status, text))
     }
@@ -637,50 +644,6 @@ impl SupabaseWalletDatabase {
         }
     }
 
-    /// Fallback non-atomic update_proofs implementation
-    ///
-    /// Used when the atomic RPC function `update_proofs_atomic` is not available
-    /// (e.g., migration 003 has not been applied yet).
-    ///
-    /// **Warning**: This is not atomic - if adding succeeds but removing fails,
-    /// the database will be left in an inconsistent state.
-    async fn update_proofs_fallback(
-        &self,
-        proofs_json: Vec<serde_json::Value>,
-        ys_to_remove: Vec<String>,
-    ) -> Result<(), DatabaseError> {
-        // Add new proofs
-        if !proofs_json.is_empty() {
-            // Proofs are already encrypted in update_proofs
-            let (status, response_text) = self
-                .post_request("rest/v1/proof?on_conflict=y", &proofs_json)
-                .await?;
-
-            if !status.is_success() {
-                return Err(DatabaseError::Internal(format!(
-                    "update_proofs (add) failed: HTTP {} - {}",
-                    status, response_text
-                )));
-            }
-        }
-
-        // Remove proofs by y values
-        if !ys_to_remove.is_empty() {
-            let filter = format!("({})", ys_to_remove.join(","));
-            let path = format!("rest/v1/proof?y=in.{}", filter);
-
-            let (status, response_text) = self.delete_request(&path).await?;
-
-            if !status.is_success() {
-                return Err(DatabaseError::Internal(format!(
-                    "update_proofs (remove) failed: HTTP {} - {}",
-                    status, response_text
-                )));
-            }
-        }
-
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -851,8 +814,15 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         );
         let (status, text) = self.get_request(&path).await?;
 
-        if !status.is_success() {
+        // 404 or empty result means not found
+        if status == StatusCode::NOT_FOUND {
             return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_mint failed: HTTP {}",
+                status
+            )));
         }
 
         if let Some(mints) = Self::parse_response::<MintTable>(&text)? {
@@ -1178,8 +1148,15 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
         let (status, text) = self.get_request(&path).await?;
 
-        if !status.is_success() {
+        // 404 or empty result means not found
+        if status == StatusCode::NOT_FOUND {
             return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_transaction failed: HTTP {}",
+                status
+            )));
         }
 
         if let Some(txs) = Self::parse_response::<TransactionTable>(&text)? {
@@ -1295,7 +1272,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             method = "POST",
             url = %url,
             status = %status,
-            response = %text,
+            response_len = text.len(),
             "Supabase atomic update_proofs response"
         );
 
@@ -1303,15 +1280,10 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             return Ok(());
         }
 
-        // If RPC fails (e.g., function doesn't exist), fall back to non-atomic approach
-        // This provides backwards compatibility with databases that haven't run migration 003
-        tracing::warn!(
-            "RPC update_proofs_atomic failed (HTTP {}), falling back to non-atomic approach: {}",
-            status,
-            text
-        );
-
-        self.update_proofs_fallback(proofs_json, ys_json).await
+        Err(DatabaseError::Internal(format!(
+            "update_proofs_atomic RPC failed: HTTP {}. Ensure migrations have been run.",
+            status
+        )))
     }
 
     async fn update_proofs_state(
@@ -1377,6 +1349,26 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         let old_encoded = url_encode(&old_mint_url.to_string());
         let update_body = serde_json::json!({ "mint_url": new_mint_url.to_string() });
 
+        // Update mint table first (parent table)
+        let path = format!("rest/v1/mint?mint_url=eq.{}", old_encoded);
+        let (status, response_text) = self.patch_request(&path, &update_body).await?;
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "update_mint_url (mint) failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+
+        // Update keyset table
+        let path = format!("rest/v1/keyset?mint_url=eq.{}", old_encoded);
+        let (status, response_text) = self.patch_request(&path, &update_body).await?;
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "update_mint_url (keyset) failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+
         // Update mint_quote table
         let path = format!("rest/v1/mint_quote?mint_url=eq.{}", old_encoded);
         let (status, response_text) = self.patch_request(&path, &update_body).await?;
@@ -1393,6 +1385,16 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
                 "update_mint_url (proof) failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+
+        // Update transactions table
+        let path = format!("rest/v1/transactions?mint_url=eq.{}", old_encoded);
+        let (status, response_text) = self.patch_request(&path, &update_body).await?;
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "update_mint_url (transactions) failed: HTTP {} - {}",
                 status, response_text
             )));
         }
@@ -1415,7 +1417,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         let url = self.join_url("rest/v1/rpc/increment_keyset_counter")?;
         let auth_bearer = self.get_auth_bearer().await;
 
-        tracing::debug!(method = "POST", url = %url, body = ?rpc_body, "Supabase RPC request");
+        tracing::debug!(method = "POST", url = %url, keyset_id = %keyset_id, increment = count, "Supabase RPC request");
 
         let res = self
             .client
@@ -1432,66 +1434,20 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         let status = res.status();
         let text = res.text().await.map_err(Error::Reqwest)?;
 
-        tracing::debug!(method = "POST", url = %url, status = %status, response = %text, "Supabase RPC response");
+        tracing::debug!(method = "POST", url = %url, status = %status, response_len = text.len(), "Supabase RPC response");
 
         if status.is_success() {
             // RPC returns the new counter value directly
             let new_counter: i32 = serde_json::from_str(&text).map_err(|e| {
-                DatabaseError::Internal(format!(
-                    "Failed to parse counter response '{}': {}",
-                    text, e
-                ))
+                DatabaseError::Internal(format!("Failed to parse counter response: {}", e))
             })?;
             return Ok(new_counter as u32);
         }
 
-        // If RPC fails (e.g., function doesn't exist), fall back to upsert approach
-        // This provides backwards compatibility with databases that haven't run migration 002
-        tracing::warn!(
-            "RPC increment_keyset_counter failed (HTTP {}), falling back to upsert: {}",
-            status,
-            text
-        );
-
-        // Fallback: Use upsert with on_conflict
-        // Note: This is not perfectly atomic but better than DELETE + INSERT
-        let path = format!(
-            "rest/v1/keyset_counter?keyset_id=eq.{}",
-            url_encode(&keyset_id.to_string())
-        );
-        let (get_status, get_text) = self.get_request(&path).await?;
-
-        let current = if get_status.is_success() {
-            if let Some(items) = Self::parse_response::<KeysetCounterTable>(&get_text)? {
-                items.into_iter().next().map(|i| i.counter).unwrap_or(0)
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-
-        let new = current + count;
-
-        // Use upsert (POST with on_conflict)
-        let item = KeysetCounterTable {
-            keyset_id: keyset_id.to_string(),
-            counter: new,
-            _extra: Default::default(),
-        };
-
-        let (upsert_status, response_text) = self
-            .post_request("rest/v1/keyset_counter?on_conflict=keyset_id", &item)
-            .await?;
-
-        if !upsert_status.is_success() {
-            return Err(DatabaseError::Internal(format!(
-                "increment_keyset_counter failed: HTTP {} - {}",
-                upsert_status, response_text
-            )));
-        }
-
-        Ok(new)
+        Err(DatabaseError::Internal(format!(
+            "increment_keyset_counter RPC failed: HTTP {}. Ensure migrations have been run.",
+            status
+        )))
     }
 
     async fn add_mint(
@@ -2109,15 +2065,6 @@ impl TryFrom<ProofInfo> for ProofTable {
             _extra: Default::default(),
         })
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct KeysetCounterTable {
-    keyset_id: String,
-    counter: u32,
-    /// Extra fields from other applications (captured during deserialization, ignored during serialization)
-    #[serde(default, skip_serializing, flatten)]
-    _extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

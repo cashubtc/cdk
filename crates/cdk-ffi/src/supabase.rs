@@ -108,13 +108,23 @@ impl WalletSupabaseDatabase {
         self.inner.inner().set_refresh_token(token).await;
     }
 
-    /// Set encryption password
+    /// Set encryption password with a unique salt
     ///
-    /// Derives an encryption key from the password using PBKDF2.
+    /// Derives an encryption key from the password and salt using PBKDF2.
     /// This key is used to encrypt sensitive data (proof secrets, kv_store values)
     /// before sending to Supabase, ensuring end-to-end privacy.
-    pub async fn set_encryption_password(&self, password: String) {
-        self.inner.inner().set_encryption_password(&password).await;
+    ///
+    /// The `salt` should be unique per wallet/user. Good choices include:
+    /// - The user's Supabase UID (from the `user.id` field in AuthResponse)
+    /// - A randomly generated value stored client-side
+    ///
+    /// Using a unique salt ensures that even if two users have the same password,
+    /// their encryption keys will be different.
+    pub async fn set_encryption_password(&self, password: String, salt: String) {
+        self.inner
+            .inner()
+            .set_encryption_password(&password, &salt)
+            .await;
     }
 
     /// Refresh the access token using the stored refresh token
