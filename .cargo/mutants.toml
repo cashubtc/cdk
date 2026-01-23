@@ -67,4 +67,7 @@ exclude_re = [
     # serialize_to_cbor_diag is only used for CLI diagnostic output (decode_token, decode_request).
     # Not part of any critical path - purely human-readable debugging output.
     "crates/cashu/src/util/mod.rs.*serialize_to_cbor_diag",
+
+    # PartialOrd canonical implementation - just delegates to Ord::cmp, this is standard Rust idiom
+    "crates/cashu/src/nuts/nut00/mod.rs.*impl PartialOrd for Proof.*partial_cmp",
 ]
