@@ -68,9 +68,10 @@ where
         Ok(())
     }
 
-    async fn add_keyset_u32(
-        conn: &ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
-    ) -> Result<(), Error> {
+    async fn add_keyset_u32<T>(conn: &T) -> Result<(), Error>
+    where
+        T: DatabaseExecutor,
+    {
         // First get the keysets where keyset_u32 on key is null
         let keys_without_u32: Vec<Vec<Column>> = query(
             r#"
@@ -1604,14 +1605,16 @@ where
         key: &str,
         value: &[u8],
     ) -> Result<(), database::Error> {
-        crate::keyvalue::kv_write(
-            &self.pool,
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        crate::keyvalue::kv_write_standalone(
+            &*conn,
             primary_namespace,
             secondary_namespace,
             key,
             value,
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     async fn kv_remove(
@@ -1620,7 +1623,10 @@ where
         secondary_namespace: &str,
         key: &str,
     ) -> Result<(), database::Error> {
-        crate::keyvalue::kv_remove(&self.pool, primary_namespace, secondary_namespace, key).await
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        crate::keyvalue::kv_remove_standalone(&*conn, primary_namespace, secondary_namespace, key)
+            .await?;
+        Ok(())
     }
 }
 
