@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 #[cfg(feature = "fake")]
 use std::collections::HashSet;
 use std::env;

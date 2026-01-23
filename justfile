@@ -537,16 +537,21 @@ check-docs:
     "-p cdk"
     "-p cdk-redb"
     "-p cdk-sqlite"
+    "-p cdk-postgres"
     "-p cdk-axum"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
+    "-p cdk-ldk-node"
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"
+    "-p cdk-npubcash"
+    "-p cdk-prometheus"
     "-p cdk-payment-processor"
     "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
+    "-p cdk-ffi"
   )
 
   for arg in "${args[@]}"; do
@@ -566,16 +571,21 @@ docs-strict:
     "-p cdk"
     "-p cdk-redb"
     "-p cdk-sqlite"
+    "-p cdk-postgres"
     "-p cdk-axum"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
+    "-p cdk-ldk-node"
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"
+    "-p cdk-npubcash"
+    "-p cdk-prometheus"
     "-p cdk-payment-processor"
     "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
+    "-p cdk-ffi"
   )
 
   for arg in "${args[@]}"; do

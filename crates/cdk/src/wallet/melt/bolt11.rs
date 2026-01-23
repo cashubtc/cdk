@@ -425,7 +425,7 @@ impl Wallet {
 
         // Calculate optimal denomination split and the fee for those proofs
         // First estimate based on inputs_needed_amount to get target_fee
-        let initial_split = inputs_needed_amount.split(&fee_and_amounts);
+        let initial_split = inputs_needed_amount.split(&fee_and_amounts)?;
         let target_fee = self
             .get_proofs_fee_by_count(
                 vec![(active_keyset_id, initial_split.len() as u64)]
@@ -440,7 +440,7 @@ impl Wallet {
         let inputs_total_needed = inputs_needed_amount + target_fee;
 
         // Recalculate target amounts based on the actual total we need (including fee)
-        let target_amounts = inputs_total_needed.split(&fee_and_amounts);
+        let target_amounts = inputs_total_needed.split(&fee_and_amounts)?;
         let input_proofs = Wallet::select_proofs(
             inputs_total_needed,
             available_proofs,

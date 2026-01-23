@@ -49,9 +49,3 @@ impl From<Error> for cdk_common::payment::Error {
         Self::Lightning(Box::new(e))
     }
 }
-
-impl From<tonic::transport::Error> for Error {
-    fn from(e: tonic::transport::Error) -> Self {
-        Error::InvalidConfig(format!("Transport error: {e}"))
-    }
-}
