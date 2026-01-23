@@ -46,7 +46,6 @@ impl Wallet {
 
         match state {
             SendSagaState::ProofsReserved => {
-                // No token was created - safe to compensate
                 tracing::info!(
                     "Send saga {} in ProofsReserved state - compensating",
                     saga.id
@@ -55,7 +54,6 @@ impl Wallet {
                 Ok(RecoveryAction::Compensated)
             }
             SendSagaState::TokenCreated => {
-                // Token was created but we don't know if it was received
                 tracing::info!(
                     "Send saga {} in TokenCreated state - checking proof states",
                     saga.id
@@ -63,7 +61,6 @@ impl Wallet {
                 self.recover_or_complete_send(&saga.id).await
             }
             SendSagaState::RollingBack => {
-                // We crashed during revocation
                 tracing::info!(
                     "Send saga {} in RollingBack state - checking proof states",
                     saga.id
@@ -78,11 +75,9 @@ impl Wallet {
         &self,
         saga_id: &uuid::Uuid,
     ) -> Result<RecoveryAction, Error> {
-        // Get the reserved/pending proofs for this operation
         let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
 
         if reserved_proofs.is_empty() {
-            // No proofs found - saga may have completed (swap successful)
             tracing::warn!(
                 "No reserved proofs found for rolling back send saga {} - assuming swap success",
                 saga_id
@@ -91,16 +86,12 @@ impl Wallet {
             return Ok(RecoveryAction::Recovered);
         }
 
-        // Check proof states with the mint
         match self.are_proofs_spent(&reserved_proofs).await {
             Ok(true) => {
-                // Proofs are spent - swap succeeded (or recipient claimed)
-                // In either case, the saga is done.
                 tracing::info!(
                     "Send saga {} (RollingBack) - proofs are spent, marking as complete",
                     saga_id
                 );
-                // Ensure local state matches (Spent)
                 let proof_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
                 self.localstore
                     .update_proofs_state(proof_ys, State::Spent)
@@ -109,8 +100,6 @@ impl Wallet {
                 Ok(RecoveryAction::Recovered)
             }
             Ok(false) => {
-                // Proofs are NOT spent - swap failed or didn't happen.
-                // Revert to TokenCreated so user can see it as "Pending" and try again.
                 tracing::info!(
                     "Send saga {} (RollingBack) - proofs not spent, reverting to TokenCreated",
                     saga_id
@@ -152,11 +141,9 @@ impl Wallet {
         &self,
         saga_id: &uuid::Uuid,
     ) -> Result<RecoveryAction, Error> {
-        // Get the reserved/pending proofs for this operation
         let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
 
         if reserved_proofs.is_empty() {
-            // No proofs found - saga may have completed
             tracing::warn!(
                 "No reserved proofs found for send saga {} - cleaning up orphaned saga",
                 saga_id
@@ -167,10 +154,8 @@ impl Wallet {
 
         let proof_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
 
-        // Check proof states with the mint
         match self.are_proofs_spent(&reserved_proofs).await {
             Ok(true) => {
-                // Token was redeemed - mark proofs as spent and clean up
                 tracing::info!(
                     "Send saga {} - proofs are spent, marking as complete",
                     saga_id
@@ -182,8 +167,6 @@ impl Wallet {
                 Ok(RecoveryAction::Recovered)
             }
             Ok(false) => {
-                // Token wasn't redeemed - leave proofs in PendingSpent state
-                // The user still has the token and could redeem it later
                 tracing::info!(
                     "Send saga {} - proofs not spent, token may still be valid",
                     saga_id
