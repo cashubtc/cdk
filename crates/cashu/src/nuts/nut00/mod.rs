@@ -1070,6 +1070,8 @@ impl PartialOrd for PreMintSecrets {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
     use std::str::FromStr;
 
     use super::*;
@@ -1425,5 +1427,102 @@ mod tests {
 
         // Test with multiple active keysets
         assert!(proof.is_active(&[inactive_keyset_id, active_keyset_id]));
+    }
+
+    /// Helper function to compute hash of a value
+    fn compute_hash<T: Hash>(value: &T) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn test_proof_hash_uses_secret() {
+        // Two proofs with same secret should hash to the same value
+        let proof1: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"same_secret","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+
+        let proof2: Proof = serde_json::from_str(
+            r#"{"id":"00ad268c4d1f5826","amount":8,"secret":"same_secret","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}"#,
+        ).unwrap();
+
+        // Same secret = same hash (even with different keyset_id and amount)
+        assert_eq!(compute_hash(&proof1), compute_hash(&proof2));
+
+        // Different secret = different hash
+        let proof3: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"different_secret","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+
+        assert_ne!(compute_hash(&proof1), compute_hash(&proof3));
+    }
+
+    #[test]
+    fn test_proof_v4_hash_uses_secret() {
+        let proof1: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"same_secret","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+
+        let proof2: Proof = serde_json::from_str(
+            r#"{"id":"00ad268c4d1f5826","amount":8,"secret":"same_secret","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}"#,
+        ).unwrap();
+
+        let proof_v4_1: ProofV4 = proof1.into();
+        let proof_v4_2: ProofV4 = proof2.into();
+
+        // Same secret = same hash
+        assert_eq!(compute_hash(&proof_v4_1), compute_hash(&proof_v4_2));
+
+        // Different secret = different hash
+        let proof3: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"different_secret","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+        let proof_v4_3: ProofV4 = proof3.into();
+
+        assert_ne!(compute_hash(&proof_v4_1), compute_hash(&proof_v4_3));
+    }
+
+    #[test]
+    fn test_proof_v3_hash_uses_secret() {
+        let proof1: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"same_secret","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+
+        let proof2: Proof = serde_json::from_str(
+            r#"{"id":"00ad268c4d1f5826","amount":8,"secret":"same_secret","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}"#,
+        ).unwrap();
+
+        let proof_v3_1: ProofV3 = proof1.into();
+        let proof_v3_2: ProofV3 = proof2.into();
+
+        // Same secret = same hash
+        assert_eq!(compute_hash(&proof_v3_1), compute_hash(&proof_v3_2));
+
+        // Different secret = different hash
+        let proof3: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"different_secret","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+        let proof_v3_3: ProofV3 = proof3.into();
+
+        assert_ne!(compute_hash(&proof_v3_1), compute_hash(&proof_v3_3));
+    }
+
+    #[test]
+    #[cfg(feature = "mint")]
+    fn test_currency_unit_derivation_index() {
+        // Each currency unit should have a specific derivation index
+        // These values are important for key derivation compatibility
+        assert_eq!(CurrencyUnit::Sat.derivation_index(), Some(0));
+        assert_eq!(CurrencyUnit::Msat.derivation_index(), Some(1));
+        assert_eq!(CurrencyUnit::Usd.derivation_index(), Some(2));
+        assert_eq!(CurrencyUnit::Eur.derivation_index(), Some(3));
+        assert_eq!(CurrencyUnit::Auth.derivation_index(), Some(4));
+
+        // Custom units should return None
+        assert_eq!(
+            CurrencyUnit::Custom("btc".to_string()).derivation_index(),
+            None
+        );
     }
 }
