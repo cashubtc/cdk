@@ -28,7 +28,7 @@ use self::state::{Finalized, Initial, MeltRequested, Prepared};
 use super::MeltConfirmOptions;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, State};
-use crate::types::ProofInfo;
+use cdk_common::wallet::ProofInfo;
 use crate::util::unix_time;
 use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
 use crate::{ensure_cdk, Amount, Error, Wallet};

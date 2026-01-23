@@ -7,13 +7,12 @@ use async_trait::async_trait;
 use cashu::KeySet;
 
 use super::Error;
-use crate::common::ProofInfo;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
 use crate::wallet::{
-    self, MintQuote as WalletMintQuote, Transaction, TransactionDirection, TransactionId,
+    self, MintQuote as WalletMintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
 };
 
 #[cfg(feature = "test")]

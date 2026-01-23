@@ -15,7 +15,7 @@ use tracing::instrument;
 
 use crate::dhke::construct_proofs;
 use crate::nuts::{MintRequest, State};
-use crate::types::ProofInfo;
+use cdk_common::wallet::ProofInfo;
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::CompensatingAction;

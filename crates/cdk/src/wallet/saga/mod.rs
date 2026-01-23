@@ -151,7 +151,7 @@ pub mod test_utils {
     use cdk_common::secret::Secret;
     use cdk_common::{Amount, SecretKey};
 
-    use crate::types::ProofInfo;
+    use cdk_common::wallet::ProofInfo;
 
     /// Create an in-memory test database
     pub async fn create_test_db(

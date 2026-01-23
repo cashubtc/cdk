@@ -57,7 +57,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_proof_with_dleq() {
-        use cdk_common::common::ProofInfo;
+        use cdk_common::wallet::ProofInfo;
         use cdk_common::mint_url::MintUrl;
         use cdk_common::nuts::{CurrencyUnit, Id, Proof, PublicKey, SecretKey};
         use cdk_common::Amount;
@@ -194,7 +194,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_proofs_by_ys() {
-        use cdk_common::common::ProofInfo;
+        use cdk_common::wallet::ProofInfo;
         use cdk_common::mint_url::MintUrl;
         use cdk_common::nuts::{CurrencyUnit, Id, Proof, SecretKey};
         use cdk_common::Amount;

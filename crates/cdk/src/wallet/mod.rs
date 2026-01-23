@@ -29,7 +29,7 @@ use crate::nuts::{
     nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
 };
-use crate::types::ProofInfo;
+use cdk_common::wallet::ProofInfo;
 use crate::util::unix_time;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::Amount;
