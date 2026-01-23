@@ -3,9 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cdk_common::database::{
-    wallet::Database as CdkWalletDatabase, KVStoreDatabase as CdkKVStoreDatabase,
-};
+use cdk_common::database::wallet::Database as CdkWalletDatabase;
+use cdk_common::database::KVStoreDatabase as CdkKVStoreDatabase;
 
 use crate::error::FfiError;
 #[cfg(feature = "postgres")]

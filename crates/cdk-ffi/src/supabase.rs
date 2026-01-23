@@ -168,12 +168,9 @@ impl WalletSupabaseDatabase {
     }
 
     /// Sign up a new user and automatically set tokens if returned
-    pub async fn signup(
-        &self,
-        email: String,
-        password: String,
-    ) -> Result<AuthResponse, FfiError> {
-        let response = self.inner
+    pub async fn signup(&self, email: String, password: String) -> Result<AuthResponse, FfiError> {
+        let response = self
+            .inner
             .inner()
             .signup(&email, &password)
             .await
@@ -184,12 +181,9 @@ impl WalletSupabaseDatabase {
     }
 
     /// Sign in a user and automatically set tokens on the database instance
-    pub async fn signin(
-        &self,
-        email: String,
-        password: String,
-    ) -> Result<AuthResponse, FfiError> {
-        let response = self.inner
+    pub async fn signin(&self, email: String, password: String) -> Result<AuthResponse, FfiError> {
+        let response = self
+            .inner
             .inner()
             .signin(&email, &password)
             .await
@@ -273,7 +267,10 @@ pub async fn supabase_signin(
 /// This must be called with the Service Role Key to have permission to create tables
 /// and RPC functions. Do not use the anon key or an authenticated user token.
 #[uniffi::export(async_runtime = "tokio")]
-pub async fn supabase_run_migrations(url: String, service_role_key: String) -> Result<(), FfiError> {
+pub async fn supabase_run_migrations(
+    url: String,
+    service_role_key: String,
+) -> Result<(), FfiError> {
     let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
         error_message: e.to_string(),
     })?;
