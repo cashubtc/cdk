@@ -35,6 +35,94 @@ jobs:
       - name: Run Tests
         run: just ffi-test
 
+  build-wheel-x86_64:
+    name: Build Python Wheel (x86_64)
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - name: Checkout CDK
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: yum install -y openssl-devel pkg-config
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup target add x86_64-unknown-linux-gnu
+
+      - name: Scaffold Python Package
+        run: |
+          mkdir -p python-package/src/cdk
+          
+          # Create pyproject.toml
+          cat <<EOF > python-package/pyproject.toml
+          [build-system]
+          requires = ["setuptools>=61.0", "wheel"]
+          build-backend = "setuptools.build_meta"
+
+          [project]
+          name = "cdk-python"
+          version = "0.0.1"
+          description = "CDK Python Bindings (CI Build)"
+          requires-python = ">=3.10"
+          license = {text = "MIT"}
+          authors = [{name = "CDK Developers", email = "tsk@cashudevkit.org"}]
+          
+          [tool.setuptools]
+          packages = ["cdk"]
+          
+          [tool.setuptools.package-dir]
+          cdk = "src/cdk"
+          
+          [tool.setuptools.package-data]
+          cdk = ["*.so", "*.dylib", "*.dll", "*.pyi"]
+          EOF
+
+          # Create __init__.py
+          cat <<EOF > python-package/src/cdk/__init__.py
+          """CDK Python Bindings"""
+          from .cdk import *
+          EOF
+
+      - name: Build FFI & Generate Bindings
+        run: |
+          source $HOME/.cargo/env
+          cd crates/cdk-ffi
+          
+          # Build Rust Library
+          cargo build --profile release-smaller --target x86_64-unknown-linux-gnu
+          
+          # Generate Bindings
+          # Note: We are running natively on x86_64, so we use the native target for the generator
+          cargo run --target x86_64-unknown-linux-gnu --bin uniffi-bindgen generate \
+            --library ../../target/x86_64-unknown-linux-gnu/release-smaller/libcdk_ffi.so \
+            --language python \
+            --out-dir ../../python-package/src/cdk/
+            
+          # Copy Shared Object
+          cp ../../target/x86_64-unknown-linux-gnu/release-smaller/libcdk_ffi.so ../../python-package/src/cdk/
+
+      - name: Build Wheel
+        run: |
+          cd python-package
+          
+          # Find Python (Manylinux specific)
+          PYTHON_BIN="/opt/python/cp310-cp310/bin/python"
+          
+          $PYTHON_BIN -m pip install build wheel auditwheel
+          $PYTHON_BIN -m build --wheel
+          
+          # Auditwheel Repair
+          mkdir -p wheelhouse
+          for whl in dist/*.whl; do
+            $PYTHON_BIN -m auditwheel repair "$whl" --plat manylinux_2_28_x86_64 -w wheelhouse/
+          done
+          
+          echo "✅ Wheel built and repaired successfully"
+          ls -lh wheelhouse/
+
   build-wheel-aarch64:
     name: Build Python Wheel (ARM64)
     runs-on: ubuntu-24.04-arm
