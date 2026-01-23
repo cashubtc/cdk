@@ -3,19 +3,40 @@
 //! This module implements the saga pattern for mint operations using the typestate
 //! pattern to enforce valid state transitions at compile-time.
 //!
-//! # Type State Flow
+//! # State Flow
 //!
 //! ```text
-//! MintSaga<Initial>
-//!   └─> prepare() -> MintSaga<Prepared>
-//!         └─> execute() -> MintSaga<Finalized>
+//! [saga created] ──► SecretsPrepared ──► MintRequested ──► [completed]
+//!                         │                    │
+//!                         │                    ├─ replay succeeds ────► [completed]
+//!                         │                    ├─ restore succeeds ───► [completed]
+//!                         │                    └─ restore fails ──────► [compensated] (proofs may be lost*)
+//!                         │
+//!                         └─ recovery ────────────────────────────────► [compensated]
 //! ```
+//!
+//! *Note: If restore fails after MintRequested, proofs may have been issued but not recovered.
+//! Run `wallet.restore()` to attempt full recovery.
+//!
+//! # States
+//!
+//! | State | Description |
+//! |-------|-------------|
+//! | `SecretsPrepared` | Pre-mint secrets created and counter incremented, ready to request signatures |
+//! | `MintRequested` | Mint request sent to mint, awaiting signatures for new proofs |
+//!
+//! # Recovery Outcomes
+//!
+//! | Outcome | Description |
+//! |---------|-------------|
+//! | `[completed]` | Minting succeeded, new proofs saved to wallet |
+//! | `[compensated]` | Minting failed or rolled back, quote released |
 
 use std::collections::HashMap;
 
 use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::{
-    IssueSagaState, MintOperationData, OperationData, Transaction, TransactionDirection,
+    IssueSagaState, MintOperationData, OperationData, ProofInfo, Transaction, TransactionDirection,
     WalletSaga, WalletSagaState,
 };
 use cdk_common::PaymentMethod;
@@ -27,7 +48,6 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{nut12, MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
-use cdk_common::wallet::ProofInfo;
 use crate::util::unix_time;
 use crate::wallet::saga::{
     add_compensation, clear_compensations, new_compensations, Compensations,

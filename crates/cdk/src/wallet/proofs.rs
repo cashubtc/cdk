@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cdk_common::amount::KeysetFeeAndAmounts;
+use cdk_common::wallet::ProofInfo;
 use cdk_common::Id;
 use tracing::instrument;
 
@@ -9,7 +10,6 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     CheckStateRequest, Proof, ProofState, Proofs, PublicKey, SpendingConditions, State,
 };
-use cdk_common::wallet::ProofInfo;
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
 impl Wallet {

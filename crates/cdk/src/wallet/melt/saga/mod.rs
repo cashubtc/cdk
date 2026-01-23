@@ -3,22 +3,42 @@
 //! This module implements the saga pattern for melt operations using the typestate
 //! pattern to enforce valid state transitions at compile-time.
 //!
-//! # Type State Flow
+//! # State Flow
 //!
 //! ```text
-//! MeltSaga<Initial>
-//!   └─> prepare() -> MeltSaga<Prepared>
-//!                      └─> request_melt_with_options() -> MeltSaga<MeltRequested>
-//!                                              └─> execute() -> MeltResult
+//! [saga created] ──► ProofsReserved ──► MeltRequested ──► PaymentPending ──► [completed]
+//!                         │                   │                 │
+//!                         │                   └─────────────────┤
+//!                         │                                     ├─ quote Paid ─────────► [completed]
+//!                         │                                     ├─ quote Unpaid/Failed ► [compensated]
+//!                         │                                     └─ quote Pending ──────► [skipped]
+//!                         │
+//!                         └─ recovery ────────────────────────────────────────────────► [compensated]
 //! ```
+//!
+//! # States
+//!
+//! | State | Description |
+//! |-------|-------------|
+//! | `ProofsReserved` | Proofs reserved and quote locked, ready to initiate payment |
+//! | `MeltRequested` | Melt request sent to mint, Lightning payment initiated |
+//! | `PaymentPending` | Lightning payment in progress, awaiting confirmation from network |
+//!
+//! # Recovery Outcomes
+//!
+//! | Outcome | Description |
+//! |---------|-------------|
+//! | `[completed]` | Payment succeeded, proofs spent, change (if any) claimed |
+//! | `[compensated]` | Payment failed/cancelled, proofs and quote released |
+//! | `[skipped]` | Payment still pending, will retry on next recovery |
 
 use std::collections::HashMap;
 
 use cdk_common::amount::SplitTarget;
 use cdk_common::dhke::construct_proofs;
 use cdk_common::wallet::{
-    MeltOperationData, MeltQuote, MeltSagaState, OperationData, Transaction, TransactionDirection,
-    WalletSaga, WalletSagaState,
+    MeltOperationData, MeltQuote, MeltSagaState, OperationData, ProofInfo, Transaction,
+    TransactionDirection, WalletSaga, WalletSagaState,
 };
 use cdk_common::MeltQuoteState;
 use tracing::instrument;
@@ -28,7 +48,6 @@ use self::state::{Finalized, Initial, MeltRequested, Prepared};
 use super::MeltConfirmOptions;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, State};
-use cdk_common::wallet::ProofInfo;
 use crate::util::unix_time;
 use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
 use crate::{ensure_cdk, Amount, Error, Wallet};

@@ -149,9 +149,8 @@ pub mod test_utils {
     use cdk_common::database::WalletDatabase;
     use cdk_common::nuts::{CurrencyUnit, Id, Proof, State};
     use cdk_common::secret::Secret;
-    use cdk_common::{Amount, SecretKey};
-
     use cdk_common::wallet::ProofInfo;
+    use cdk_common::{Amount, SecretKey};
 
     /// Create an in-memory test database
     pub async fn create_test_db(
