@@ -29,6 +29,9 @@ pub struct WalletSupabaseDatabase {
 #[uniffi::export(async_runtime = "tokio")]
 impl WalletSupabaseDatabase {
     /// Create a new WalletSupabaseDatabase with API key only (legacy behavior)
+    ///
+    /// No automatic token refresh is configured. Use `set_jwt_token` to manually
+    /// set tokens, or use one of the other constructors for automatic refresh.
     #[uniffi::constructor]
     pub async fn new(url: String, api_key: String) -> Result<Arc<Self>, FfiError> {
         let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
@@ -44,7 +47,31 @@ impl WalletSupabaseDatabase {
         }))
     }
 
-    /// Create a new WalletSupabaseDatabase with OIDC client for automatic token refresh
+    /// Create a new WalletSupabaseDatabase with Supabase Auth for automatic token refresh
+    ///
+    /// This uses Supabase's built-in GoTrue authentication system.
+    /// After creation, call `set_jwt_token()` and `set_refresh_token()` with tokens
+    /// obtained from Supabase Auth sign-in. Token refresh will use Supabase's
+    /// `/auth/v1/token` endpoint automatically.
+    #[uniffi::constructor]
+    pub async fn with_supabase_auth(url: String, api_key: String) -> Result<Arc<Self>, FfiError> {
+        let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
+            error_message: e.to_string(),
+        })?;
+        let db = SupabaseWalletDatabase::with_supabase_auth(url, api_key)
+            .await
+            .map_err(|e| FfiError::Internal {
+                error_message: e.to_string(),
+            })?;
+        Ok(Arc::new(WalletSupabaseDatabase {
+            inner: FfiWalletDatabaseWrapper::new(db),
+        }))
+    }
+
+    /// Create a new WalletSupabaseDatabase with external OIDC provider for automatic token refresh
+    ///
+    /// This uses an external OIDC provider (e.g., Keycloak, Auth0) for token refresh.
+    /// The OIDC provider must be configured in Supabase's JWT settings to validate the tokens.
     #[uniffi::constructor]
     pub async fn with_oidc(
         url: String,
@@ -130,7 +157,132 @@ impl WalletSupabaseDatabase {
                 error_message: e.to_string(),
             })
     }
+
+    /// Sign up a new user and automatically set tokens if returned
+    pub async fn signup(
+        &self,
+        email: String,
+        password: String,
+    ) -> Result<AuthResponse, FfiError> {
+        let response = self.inner
+            .inner()
+            .signup(&email, &password)
+            .await
+            .map_err(|e| FfiError::Internal {
+                error_message: e.to_string(),
+            })?;
+        Ok(response.into())
+    }
+
+    /// Sign in a user and automatically set tokens on the database instance
+    pub async fn signin(
+        &self,
+        email: String,
+        password: String,
+    ) -> Result<AuthResponse, FfiError> {
+        let response = self.inner
+            .inner()
+            .signin(&email, &password)
+            .await
+            .map_err(|e| FfiError::Internal {
+                error_message: e.to_string(),
+            })?;
+        Ok(response.into())
+    }
 }
 
 // Use macro to implement WalletDatabase trait - delegates all methods to inner
 crate::impl_ffi_wallet_database!(WalletSupabaseDatabase);
+
+/// Response from Supabase Auth sign-up/sign-in
+#[derive(Debug, uniffi::Record)]
+pub struct AuthResponse {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: Option<i64>,
+    pub refresh_token: Option<String>,
+    /// User details as a JSON string
+    pub user_json: String,
+}
+
+impl From<cdk_supabase::SupabaseAuthResponse> for AuthResponse {
+    fn from(r: cdk_supabase::SupabaseAuthResponse) -> Self {
+        Self {
+            access_token: r.access_token,
+            token_type: r.token_type,
+            expires_in: r.expires_in,
+            refresh_token: r.refresh_token,
+            user_json: r.user.to_string(),
+        }
+    }
+}
+
+/// Sign up a new user with email and password
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn supabase_signup(
+    url: String,
+    api_key: String,
+    email: String,
+    password: String,
+) -> Result<AuthResponse, FfiError> {
+    let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
+        error_message: e.to_string(),
+    })?;
+
+    let response = cdk_supabase::SupabaseAuth::signup(&url, &api_key, &email, &password)
+        .await
+        .map_err(|e| FfiError::Internal {
+            error_message: e.to_string(),
+        })?;
+
+    Ok(response.into())
+}
+
+/// Sign in a user with email and password
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn supabase_signin(
+    url: String,
+    api_key: String,
+    email: String,
+    password: String,
+) -> Result<AuthResponse, FfiError> {
+    let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
+        error_message: e.to_string(),
+    })?;
+
+    let response = cdk_supabase::SupabaseAuth::signin(&url, &api_key, &email, &password)
+        .await
+        .map_err(|e| FfiError::Internal {
+            error_message: e.to_string(),
+        })?;
+
+    Ok(response.into())
+}
+
+/// Run database migrations using the Service Role Key
+///
+/// This must be called with the Service Role Key to have permission to create tables
+/// and RPC functions. Do not use the anon key or an authenticated user token.
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn supabase_run_migrations(url: String, service_role_key: String) -> Result<(), FfiError> {
+    let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
+        error_message: e.to_string(),
+    })?;
+
+    SupabaseWalletDatabase::run_migrations(url, service_role_key)
+        .await
+        .map_err(|e| FfiError::Internal {
+            error_message: e.to_string(),
+        })?;
+
+    Ok(())
+}
+
+/// Get the full database schema SQL
+///
+/// Returns the concatenated SQL of all migration files.
+/// This can be used to manually set up the database in the Supabase Dashboard.
+#[uniffi::export]
+pub fn supabase_get_schema_sql() -> String {
+    SupabaseWalletDatabase::get_schema_sql()
+}

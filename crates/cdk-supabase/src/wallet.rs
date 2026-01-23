@@ -56,6 +56,31 @@ fn decode_jwt_expiry(token: &str) -> Option<u64> {
     claims.exp
 }
 
+/// Authentication provider for Supabase
+///
+/// This enum abstracts the token refresh logic for different authentication methods.
+#[derive(Debug, Clone)]
+pub enum AuthProvider {
+    /// No authentication provider - uses API key only, no automatic token refresh
+    None,
+    /// Supabase Auth (GoTrue) - uses Supabase's built-in authentication
+    ///
+    /// Token refresh uses `POST /auth/v1/token` with `grant_type=refresh_token`
+    SupabaseAuth,
+    /// External OIDC provider - uses standard OIDC discovery and token endpoint
+    Oidc(OidcClient),
+}
+
+/// Response from Supabase Auth token refresh
+#[derive(Debug, Deserialize)]
+struct SupabaseTokenResponse {
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: Option<i64>,
+    #[allow(dead_code)]
+    token_type: String,
+}
+
 /// Supabase wallet database implementation
 ///
 /// This database uses two types of authentication:
@@ -67,6 +92,13 @@ fn decode_jwt_expiry(token: &str) -> Option<u64> {
 /// - `Authorization: Bearer <jwt_token>`
 ///
 /// When `jwt_token` is not set, the `api_key` is used for both headers (legacy behavior).
+///
+/// ## Authentication Providers
+///
+/// The database supports multiple authentication providers via [`AuthProvider`]:
+/// - **None**: No automatic token refresh, use API key only
+/// - **SupabaseAuth**: Uses Supabase's GoTrue API for token refresh
+/// - **Oidc**: Uses an external OIDC provider for token refresh
 #[derive(Debug, Clone)]
 pub struct SupabaseWalletDatabase {
     url: Url,
@@ -74,51 +106,98 @@ pub struct SupabaseWalletDatabase {
     jwt_token: Arc<RwLock<Option<String>>>,
     refresh_token: Arc<RwLock<Option<String>>>,
     token_expiration: Arc<RwLock<Option<u64>>>,
-    oidc_client: Arc<RwLock<Option<OidcClient>>>,
+    auth_provider: Arc<RwLock<AuthProvider>>,
     client: Client,
 }
 
 impl SupabaseWalletDatabase {
     /// Create a new SupabaseWalletDatabase with API key only (legacy behavior)
     ///
-    /// This will automatically run migrations.
+    /// No automatic token refresh is configured.
+    ///
+    /// **Note**: This does NOT run migrations automatically. Use `run_migrations` manually.
     pub async fn new(url: Url, api_key: String) -> Result<Self, Error> {
-        let db = Self {
+        Ok(Self {
             url,
             api_key,
             jwt_token: Arc::new(RwLock::new(None)),
             refresh_token: Arc::new(RwLock::new(None)),
             token_expiration: Arc::new(RwLock::new(None)),
-            oidc_client: Arc::new(RwLock::new(None)),
+            auth_provider: Arc::new(RwLock::new(AuthProvider::None)),
             client: Client::new(),
-        };
-
-        db.migrate().await?;
-
-        Ok(db)
+        })
     }
 
-    /// Create a new SupabaseWalletDatabase with OIDC client for auth
+    /// Create a new SupabaseWalletDatabase with Supabase Auth for token refresh
     ///
-    /// This will automatically run migrations.
+    /// This uses Supabase's built-in GoTrue authentication system.
+    /// Token refresh uses `POST /auth/v1/token` with `grant_type=refresh_token`.
+    ///
+    /// **Note**: This does NOT run migrations automatically. Use `run_migrations` manually.
+    pub async fn with_supabase_auth(url: Url, api_key: String) -> Result<Self, Error> {
+        Ok(Self {
+            url,
+            api_key,
+            jwt_token: Arc::new(RwLock::new(None)),
+            refresh_token: Arc::new(RwLock::new(None)),
+            token_expiration: Arc::new(RwLock::new(None)),
+            auth_provider: Arc::new(RwLock::new(AuthProvider::SupabaseAuth)),
+            client: Client::new(),
+        })
+    }
+
+    /// Create a new SupabaseWalletDatabase with external OIDC client for auth
+    ///
+    /// This uses an external OIDC provider (e.g., Keycloak, Auth0) for token refresh.
+    /// The OIDC provider must be configured in Supabase to validate the JWTs.
+    ///
+    /// **Note**: This does NOT run migrations automatically. Use `run_migrations` manually.
     pub async fn with_oidc(
         url: Url,
         api_key: String,
         oidc_client: OidcClient,
     ) -> Result<Self, Error> {
-        let db = Self {
+        Ok(Self {
             url,
             api_key,
             jwt_token: Arc::new(RwLock::new(None)),
             refresh_token: Arc::new(RwLock::new(None)),
             token_expiration: Arc::new(RwLock::new(None)),
-            oidc_client: Arc::new(RwLock::new(Some(oidc_client))),
+            auth_provider: Arc::new(RwLock::new(AuthProvider::Oidc(oidc_client))),
+            client: Client::new(),
+        })
+    }
+
+    /// Run database migrations using the Service Role Key
+    ///
+    /// This must be called with the Service Role Key to have permission to create tables
+    /// and RPC functions. Do not use the anon key or an authenticated user token.
+    pub async fn run_migrations(url: Url, service_role_key: String) -> Result<(), Error> {
+        let db = Self {
+            url,
+            api_key: service_role_key,
+            jwt_token: Arc::new(RwLock::new(None)),
+            refresh_token: Arc::new(RwLock::new(None)),
+            token_expiration: Arc::new(RwLock::new(None)),
+            auth_provider: Arc::new(RwLock::new(AuthProvider::None)),
             client: Client::new(),
         };
 
         db.migrate().await?;
+        Ok(())
+    }
 
-        Ok(db)
+    /// Get the full database schema SQL
+    ///
+    /// Returns the concatenated SQL of all migration files.
+    /// This can be used to manually set up the database in the Supabase Dashboard,
+    /// bypassing the need for the `exec_sql` RPC bootstrap.
+    pub fn get_schema_sql() -> String {
+        migrations::MIGRATIONS
+            .iter()
+            .map(|(_, _, sql)| *sql)
+            .collect::<Vec<&str>>()
+            .join("\n\n")
     }
 
     /// Run database migrations
@@ -159,47 +238,151 @@ impl SupabaseWalletDatabase {
     }
 
     /// Refresh the access token using the stored refresh token
+    ///
+    /// This method handles different authentication providers:
+    /// - **SupabaseAuth**: Uses `POST /auth/v1/token` with `grant_type=refresh_token`
+    /// - **Oidc**: Uses the OIDC provider's token endpoint
+    /// - **None**: Returns an error (no provider configured)
     pub async fn refresh_access_token(&self) -> Result<(), Error> {
-        let oidc_client = self.oidc_client.read().await;
+        let refresh_token = self.refresh_token.read().await.clone();
+        let refresh = refresh_token.ok_or_else(|| {
+            Error::Supabase("No refresh token available".to_string())
+        })?;
 
-        if let Some(oidc) = oidc_client.as_ref() {
-            let refresh_token = self.refresh_token.read().await.clone();
+        let auth_provider = self.auth_provider.read().await.clone();
 
-            if let Some(refresh) = refresh_token {
-                if let Some(client_id) = oidc.client_id() {
-                    let response = oidc
-                        .refresh_access_token(client_id, refresh)
-                        .await
-                        .map_err(|e| Error::Supabase(e.to_string()))?;
+        match auth_provider {
+            AuthProvider::None => {
+                return Err(Error::Supabase(
+                    "No authentication provider configured".to_string(),
+                ));
+            }
+            AuthProvider::SupabaseAuth => {
+                // Use Supabase GoTrue API for token refresh
+                let auth_url = self
+                    .url
+                    .join("auth/v1/token?grant_type=refresh_token")
+                    .map_err(|e| Error::Supabase(format!("Invalid auth URL: {}", e)))?;
 
-                    self.set_jwt_token(Some(response.access_token)).await;
+                let body = serde_json::json!({
+                    "refresh_token": refresh
+                });
 
-                    if let Some(new_refresh) = response.refresh_token {
-                        self.set_refresh_token(Some(new_refresh)).await;
-                    }
+                let response = self
+                    .client
+                    .post(auth_url)
+                    .header("apikey", &self.api_key)
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(Error::Reqwest)?;
 
-                    if let Some(expires_in) = response.expires_in {
-                        let expiration = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map_err(|e| Error::Supabase(format!("SystemTime error: {}", e)))?
-                            .as_secs()
-                            + expires_in as u64;
-                        let mut exp = self.token_expiration.write().await;
-                        *exp = Some(expiration);
-                    }
+                let status = response.status();
+                if !status.is_success() {
+                    let text = response.text().await.unwrap_or_default();
+                    return Err(Error::Supabase(format!(
+                        "Supabase token refresh failed: HTTP {} - {}",
+                        status, text
+                    )));
+                }
 
-                    return Ok(());
-                } else {
-                    return Err(Error::Supabase(
-                        "Client ID not set in OIDC client".to_string(),
-                    ));
+                let token_response: SupabaseTokenResponse = response
+                    .json()
+                    .await
+                    .map_err(Error::Reqwest)?;
+
+                self.set_jwt_token(Some(token_response.access_token)).await;
+
+                if let Some(new_refresh) = token_response.refresh_token {
+                    self.set_refresh_token(Some(new_refresh)).await;
+                }
+
+                if let Some(expires_in) = token_response.expires_in {
+                    let expiration = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|e| Error::Supabase(format!("SystemTime error: {}", e)))?
+                        .as_secs()
+                        + expires_in as u64;
+                    let mut exp = self.token_expiration.write().await;
+                    *exp = Some(expiration);
+                }
+            }
+            AuthProvider::Oidc(oidc) => {
+                let client_id = oidc.client_id().ok_or_else(|| {
+                    Error::Supabase("Client ID not set in OIDC client".to_string())
+                })?;
+
+                let response = oidc
+                    .refresh_access_token(client_id, refresh)
+                    .await
+                    .map_err(|e| Error::Supabase(e.to_string()))?;
+
+                self.set_jwt_token(Some(response.access_token)).await;
+
+                if let Some(new_refresh) = response.refresh_token {
+                    self.set_refresh_token(Some(new_refresh)).await;
+                }
+
+                if let Some(expires_in) = response.expires_in {
+                    let expiration = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|e| Error::Supabase(format!("SystemTime error: {}", e)))?
+                        .as_secs()
+                        + expires_in as u64;
+                    let mut exp = self.token_expiration.write().await;
+                    *exp = Some(expiration);
                 }
             }
         }
 
-        Err(Error::Supabase(
-            "No OIDC client or refresh token available".to_string(),
-        ))
+        Ok(())
+    }
+
+    /// Sign up a new user and automatically set tokens if returned
+    pub async fn signup(
+        &self,
+        email: &str,
+        password: &str,
+    ) -> Result<SupabaseAuthResponse, Error> {
+        let response = SupabaseAuth::signup(&self.url, &self.api_key, email, password).await?;
+
+        // If signup returns valid tokens (e.g. auto-confirm enabled), set them
+        if !response.access_token.is_empty() {
+            self.set_jwt_token(Some(response.access_token.clone()))
+                .await;
+        }
+        if let Some(refresh) = &response.refresh_token {
+            self.set_refresh_token(Some(refresh.clone())).await;
+        }
+
+        Ok(response)
+    }
+
+    /// Sign in a user and automatically set tokens on the database instance
+    pub async fn signin(
+        &self,
+        email: &str,
+        password: &str,
+    ) -> Result<SupabaseAuthResponse, Error> {
+        let response = SupabaseAuth::signin(&self.url, &self.api_key, email, password).await?;
+
+        self.set_jwt_token(Some(response.access_token.clone()))
+            .await;
+        if let Some(refresh) = &response.refresh_token {
+            self.set_refresh_token(Some(refresh.clone())).await;
+        }
+        if let Some(expires_in) = response.expires_in {
+             let expiration = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| Error::Supabase(format!("SystemTime error: {}", e)))?
+                .as_secs()
+                + expires_in as u64;
+            let mut exp = self.token_expiration.write().await;
+            *exp = Some(expiration);
+        }
+
+        Ok(response)
     }
 
     /// Get the current JWT token if set
@@ -1921,5 +2104,97 @@ impl TryFrom<Transaction> for TransactionTable {
             payment_method: t.payment_method.map(|p| p.to_string()),
             _extra: Default::default(),
         })
+    }
+}
+
+/// Response from Supabase Auth sign-up/sign-in
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SupabaseAuthResponse {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: Option<i64>,
+    pub refresh_token: Option<String>,
+    pub user: serde_json::Value,
+}
+
+/// Helper for Supabase Authentication
+#[derive(Debug)]
+pub struct SupabaseAuth;
+
+impl SupabaseAuth {
+    /// Sign up a new user with email and password
+    pub async fn signup(
+        url: &Url,
+        api_key: &str,
+        email: &str,
+        password: &str,
+    ) -> Result<SupabaseAuthResponse, Error> {
+        let auth_url = url
+            .join("auth/v1/signup")
+            .map_err(|e| Error::Supabase(format!("Invalid auth URL: {}", e)))?;
+
+        let client = Client::new();
+        let body = serde_json::json!({
+            "email": email,
+            "password": password
+        });
+
+        let response = client
+            .post(auth_url)
+            .header("apikey", api_key)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(Error::Supabase(format!(
+                "Supabase signup failed: HTTP {} - {}",
+                status, text
+            )));
+        }
+
+        response.json().await.map_err(Error::Reqwest)
+    }
+
+    /// Sign in a user with email and password
+    pub async fn signin(
+        url: &Url,
+        api_key: &str,
+        email: &str,
+        password: &str,
+    ) -> Result<SupabaseAuthResponse, Error> {
+        let auth_url = url
+            .join("auth/v1/token?grant_type=password")
+            .map_err(|e| Error::Supabase(format!("Invalid auth URL: {}", e)))?;
+
+        let client = Client::new();
+        let body = serde_json::json!({
+            "email": email,
+            "password": password
+        });
+
+        let response = client
+            .post(auth_url)
+            .header("apikey", api_key)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(Error::Supabase(format!(
+                "Supabase signin failed: HTTP {} - {}",
+                status, text
+            )));
+        }
+
+        response.json().await.map_err(Error::Reqwest)
     }
 }

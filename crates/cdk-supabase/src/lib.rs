@@ -9,4 +9,4 @@ pub mod wallet;
 
 pub use error::Error;
 #[cfg(feature = "wallet")]
-pub use wallet::SupabaseWalletDatabase;
+pub use wallet::{SupabaseAuth, SupabaseAuthResponse, SupabaseWalletDatabase};
