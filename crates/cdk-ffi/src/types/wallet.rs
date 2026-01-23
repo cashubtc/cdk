@@ -462,3 +462,21 @@ impl From<cdk::nuts::MeltOptions> for MeltOptions {
         }
     }
 }
+
+/// Restored Data
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Restored {
+    pub spent: Amount,
+    pub unspent: Amount,
+    pub pending: Amount,
+}
+
+impl From<cdk::wallet::Restored> for Restored {
+    fn from(restored: cdk::wallet::Restored) -> Self {
+        Self {
+            spent: restored.spent.into(),
+            unspent: restored.unspent.into(),
+            pending: restored.pending.into(),
+        }
+    }
+}

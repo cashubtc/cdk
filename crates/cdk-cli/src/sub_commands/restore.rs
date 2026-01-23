@@ -27,9 +27,11 @@ pub async fn restore(
         }
     };
 
-    let amount = wallet.restore().await?;
+    let restored = wallet.restore().await?;
 
-    println!("Restored {amount}");
+    println!("Restored: {}", restored.unspent);
+    println!("Spent: {}", restored.spent);
+    println!("Pending: {}", restored.pending);
 
     Ok(())
 }

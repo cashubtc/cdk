@@ -13,7 +13,7 @@ license.workspace = true
 default = ["grpc", "sqlite"]
 sqlite = ["cdk-sqlite"]
 sqlcipher = ["cdk-sqlite/sqlcipher"]
-grpc = ["dep:tonic", "tokio/full", "dep:prost", "dep:tonic-build"]
+grpc = ["dep:tonic", "tokio/full", "dep:tonic-prost", "dep:tonic-prost-build", "dep:prost"]
 
 [dependencies]
 async-trait.workspace = true
@@ -22,7 +22,8 @@ cdk-common = { workspace = true, default-features = false, features = [
     "mint",
     "auth",
 ] }
-tonic = { workspace = true, optional = true, features = ["router"] }
+tonic = { workspace = true, optional = true, features = ["transport", "tls-ring", "codegen", "router"] }
+tonic-prost = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 tracing.workspace = true
 rustls = { workspace = true }
@@ -44,7 +45,7 @@ tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 getrandom = { version = "0.2", features = ["js"] }
 
 [build-dependencies]
-tonic-build = { workspace = true, features = ["prost"], optional = true }
+tonic-prost-build = { workspace = true, optional = true }
 
 [lints]
 workspace = true

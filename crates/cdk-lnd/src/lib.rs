@@ -711,6 +711,7 @@ impl MintPayment for Lnd {
                     let status = update.status();
 
                     let response = match status {
+                        #[allow(deprecated)]
                         PaymentStatus::Unknown => MakePaymentResponse {
                             payment_lookup_id: payment_identifier.clone(),
                             payment_proof: Some(update.payment_preimage),

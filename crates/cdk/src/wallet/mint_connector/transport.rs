@@ -209,6 +209,7 @@ impl Transport for Async {
 
         serde_json::from_str::<R>(&response).map_err(|err| {
             tracing::warn!("Http Response error: {}", err);
+            tracing::debug!("{:?}", response);
             match ErrorResponse::from_json(&response) {
                 Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
                 Err(err) => err.into(),

@@ -20,7 +20,7 @@ use zeroize::Zeroize;
 use super::builder::WalletBuilder;
 use super::receive::ReceiveOptions;
 use super::send::{PreparedSend, SendOptions};
-use super::Error;
+use super::{Error, Restored};
 use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::ProofsMethods;
@@ -1627,7 +1627,7 @@ impl MultiMintWallet {
 
     /// Restore
     #[instrument(skip(self))]
-    pub async fn restore(&self, mint_url: &MintUrl) -> Result<Amount, Error> {
+    pub async fn restore(&self, mint_url: &MintUrl) -> Result<Restored, Error> {
         let wallets = self.wallets.read().await;
         let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
             mint_url: mint_url.to_string(),
