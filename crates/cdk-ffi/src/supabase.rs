@@ -108,6 +108,15 @@ impl WalletSupabaseDatabase {
         self.inner.inner().set_refresh_token(token).await;
     }
 
+    /// Set encryption password
+    ///
+    /// Derives an encryption key from the password using PBKDF2.
+    /// This key is used to encrypt sensitive data (proof secrets, kv_store values)
+    /// before sending to Supabase, ensuring end-to-end privacy.
+    pub async fn set_encryption_password(&self, password: String) {
+        self.inner.inner().set_encryption_password(&password).await;
+    }
+
     /// Refresh the access token using the stored refresh token
     ///
     /// This requires both an OIDC client and a refresh token to be set.

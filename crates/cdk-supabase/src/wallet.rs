@@ -22,6 +22,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use url::Url;
 
+use aes_gcm::{
+    aead::{Aead, AeadCore, KeyInit},
+    Aes256Gcm, Key, Nonce,
+};
+use pbkdf2::pbkdf2;
+use sha2::Sha256;
+use rand::rngs::OsRng;
+
 use crate::Error;
 
 #[rustfmt::skip]
@@ -108,6 +116,7 @@ pub struct SupabaseWalletDatabase {
     token_expiration: Arc<RwLock<Option<u64>>>,
     auth_provider: Arc<RwLock<AuthProvider>>,
     client: Client,
+    encryption_key: Arc<RwLock<Option<Key<Aes256Gcm>>>>,
 }
 
 impl SupabaseWalletDatabase {
@@ -125,6 +134,7 @@ impl SupabaseWalletDatabase {
             token_expiration: Arc::new(RwLock::new(None)),
             auth_provider: Arc::new(RwLock::new(AuthProvider::None)),
             client: Client::new(),
+            encryption_key: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -143,6 +153,7 @@ impl SupabaseWalletDatabase {
             token_expiration: Arc::new(RwLock::new(None)),
             auth_provider: Arc::new(RwLock::new(AuthProvider::SupabaseAuth)),
             client: Client::new(),
+            encryption_key: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -165,6 +176,7 @@ impl SupabaseWalletDatabase {
             token_expiration: Arc::new(RwLock::new(None)),
             auth_provider: Arc::new(RwLock::new(AuthProvider::Oidc(oidc_client))),
             client: Client::new(),
+            encryption_key: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -181,6 +193,7 @@ impl SupabaseWalletDatabase {
             token_expiration: Arc::new(RwLock::new(None)),
             auth_provider: Arc::new(RwLock::new(AuthProvider::None)),
             client: Client::new(),
+            encryption_key: Arc::new(RwLock::new(None)),
         };
 
         db.migrate().await?;
@@ -235,6 +248,52 @@ impl SupabaseWalletDatabase {
     pub async fn set_refresh_token(&self, token: Option<String>) {
         let mut refresh = self.refresh_token.write().await;
         *refresh = token;
+    }
+
+    /// Set encryption password
+    ///
+    /// Set encryption password
+    ///
+    /// Derives an encryption key from the password using PBKDF2.
+    /// This key is used to encrypt sensitive data (proof secrets, kv_store values)
+    /// before sending to Supabase, ensuring end-to-end privacy.
+    pub async fn set_encryption_password(&self, password: &str) {
+        // Let's use a fixed salt for now as a "wallet-wide" key derivation.
+        let salt = b"cdk-supabase-salt";
+
+        let mut key = [0u8; 32];
+        pbkdf2::<hmac::Hmac<Sha256>>(password.as_bytes(), salt, 100_000, &mut key).expect("HMAC can be initialized with any key length");
+
+        let mut encryption_key = self.encryption_key.write().await;
+        *encryption_key = Some(*Key::<Aes256Gcm>::from_slice(&key));
+    }
+
+    async fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, DatabaseError> {
+        let key_guard = self.encryption_key.read().await;
+        let key = key_guard.as_ref().ok_or(DatabaseError::Internal("Encryption key not set".into()))?;
+        let cipher = Aes256Gcm::new(key);
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
+        let ciphertext = cipher.encrypt(&nonce, data).map_err(|_| DatabaseError::Internal("Encryption failed".into()))?;
+        
+        // Prepend nonce to ciphertext
+        let mut result = nonce.to_vec();
+        result.extend_from_slice(&ciphertext);
+        Ok(result)
+    }
+
+    async fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>, DatabaseError> {
+        let key_guard = self.encryption_key.read().await;
+        let key = key_guard.as_ref().ok_or(DatabaseError::Internal("Encryption key not set".into()))?;
+        let cipher = Aes256Gcm::new(key);
+        
+        if data.len() < 12 {
+             return Err(DatabaseError::Internal("Invalid ciphertext length".into()));
+        }
+
+        let nonce = Nonce::from_slice(&data[0..12]);
+        let ciphertext = &data[12..];
+
+        cipher.decrypt(nonce, ciphertext).map_err(|_| DatabaseError::Internal("Decryption failed".into()))
     }
 
     /// Refresh the access token using the stored refresh token
@@ -595,6 +654,7 @@ impl SupabaseWalletDatabase {
     ) -> Result<(), DatabaseError> {
         // Add new proofs
         if !proofs_json.is_empty() {
+             // Proofs are already encrypted in update_proofs
             let (status, response_text) = self
                 .post_request("rest/v1/proof?on_conflict=y", &proofs_json)
                 .await?;
@@ -749,7 +809,10 @@ impl KVStoreDatabase for SupabaseWalletDatabase {
             if let Some(item) = items.into_iter().next() {
                 let bytes = hex::decode(item.value)
                     .map_err(|_| DatabaseError::Internal("Invalid hex in kv_store".into()))?;
-                return Ok(Some(bytes));
+                
+                // Decrypt value
+                let decrypted = self.decrypt(&bytes).await?;
+                return Ok(Some(decrypted));
             }
         }
         Ok(None)
@@ -1017,7 +1080,15 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
         let mut result = Vec::new();
         if let Some(proofs) = Self::parse_response::<ProofTable>(&text)? {
-            for p in proofs {
+            for mut p in proofs {
+                // Decrypt secret
+                if let Ok(encrypted_bytes) = hex::decode(&p.secret) {
+                    if let Ok(decrypted) = self.decrypt(&encrypted_bytes).await {
+                         if let Ok(secret_str) = String::from_utf8(decrypted) {
+                             p.secret = secret_str;
+                         }
+                    }
+                }
                 result.push(p.try_into()?);
             }
         }
@@ -1055,7 +1126,19 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         }
 
         if let Some(proofs) = Self::parse_response::<ProofTable>(&text)? {
-            proofs.into_iter().map(|p| p.try_into()).collect()
+            let mut result = Vec::new();
+            for mut p in proofs {
+                 // Decrypt secret
+                if let Ok(encrypted_bytes) = hex::decode(&p.secret) {
+                    if let Ok(decrypted) = self.decrypt(&encrypted_bytes).await {
+                         if let Ok(secret_str) = String::from_utf8(decrypted) {
+                             p.secret = secret_str;
+                         }
+                    }
+                }
+                result.push(p.try_into()?);
+            }
+            Ok(result)
         } else {
             Ok(Vec::new())
         }
@@ -1138,13 +1221,19 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         }
 
         // Convert proofs to table format for the RPC call
-        let proofs_json: Vec<serde_json::Value> = added
-            .into_iter()
-            .map(|p| {
-                let table: ProofTable = p.try_into()?;
-                serde_json::to_value(&table).map_err(DatabaseError::from)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+
+        // Re-do serialization loop properly to allow await
+        let mut proofs_json: Vec<serde_json::Value> = Vec::with_capacity(added.len());
+        for p in added {
+             let mut table: ProofTable = p.try_into()?;
+             
+             // Encrypt secret
+             let secret_bytes = table.secret.as_bytes();
+             let encrypted = self.encrypt(secret_bytes).await?;
+             table.secret = hex::encode(encrypted);
+             
+             proofs_json.push(serde_json::to_value(&table).map_err(DatabaseError::from)?);
+        }
 
         // Convert Y values to hex strings
         let ys_json: Vec<String> = removed_ys
@@ -1541,11 +1630,14 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         key: &str,
         value: &[u8],
     ) -> Result<(), DatabaseError> {
+        // Encrypt value
+        let encrypted = self.encrypt(value).await?;
+
         let item = KVStoreTable {
             primary_namespace: primary_namespace.to_string(),
             secondary_namespace: secondary_namespace.to_string(),
             key: key.to_string(),
-            value: hex::encode(value),
+            value: hex::encode(encrypted),
             _extra: Default::default(),
         };
 
