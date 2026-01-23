@@ -358,6 +358,45 @@ mod tests {
         };
         assert!(!proof_info.matches_conditions(&None, &None, &None, &Some(vec![dummy_condition])));
     }
+
+    use super::CdkVersion;
+
+    #[test]
+    fn test_version_parsing() {
+        let v = CdkVersion::from_str("0.1.0").unwrap();
+        assert_eq!(v.major, 0);
+        assert_eq!(v.minor, 1);
+        assert_eq!(v.patch, 0);
+        assert_eq!(v.to_string(), "0.1.0");
+
+        let v = CdkVersion::from_str("1.2.3").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 3);
+    }
+
+    #[test]
+    fn test_version_ordering() {
+        let v1 = CdkVersion::from_str("0.1.0").unwrap();
+        let v2 = CdkVersion::from_str("0.1.1").unwrap();
+        let v3 = CdkVersion::from_str("0.2.0").unwrap();
+        let v4 = CdkVersion::from_str("1.0.0").unwrap();
+
+        assert!(v1 < v2);
+        assert!(v2 < v3);
+        assert!(v3 < v4);
+        assert!(v1 < v4);
+    }
+
+    #[test]
+    fn test_version_serialization() {
+        let v = CdkVersion::from_str("0.14.2").unwrap();
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(json, "\"0.14.2\"");
+
+        let v_deserialized: CdkVersion = serde_json::from_str(&json).unwrap();
+        assert_eq!(v, v_deserialized);
+    }
 }
 
 /// Mint Fee Reserve
@@ -367,4 +406,78 @@ pub struct FeeReserve {
     pub min_fee_reserve: Amount,
     /// Percentage expected fee
     pub percent_fee_reserve: f32,
+}
+
+/// CDK Version
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CdkVersion {
+    /// Major version
+    pub major: u16,
+    /// Minor version
+    pub minor: u16,
+    /// Patch version
+    pub patch: u16,
+}
+
+impl CdkVersion {
+    /// Create new [`CdkVersion`]
+    pub fn new(major: u16, minor: u16, patch: u16) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+}
+
+impl std::fmt::Display for CdkVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl std::str::FromStr for CdkVersion {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split('.').collect();
+        if parts.len() != 3 {
+            return Err(Error::Custom(format!("Invalid version string: {}", s)));
+        }
+
+        let major = parts[0]
+            .parse()
+            .map_err(|_| Error::Custom(format!("Invalid major version: {}", parts[0])))?;
+        let minor = parts[1]
+            .parse()
+            .map_err(|_| Error::Custom(format!("Invalid minor version: {}", parts[1])))?;
+        let patch = parts[2]
+            .parse()
+            .map_err(|_| Error::Custom(format!("Invalid patch version: {}", parts[2])))?;
+
+        Ok(Self {
+            major,
+            minor,
+            patch,
+        })
+    }
+}
+
+impl Serialize for CdkVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for CdkVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        std::str::FromStr::from_str(&s).map_err(serde::de::Error::custom)
+    }
 }
