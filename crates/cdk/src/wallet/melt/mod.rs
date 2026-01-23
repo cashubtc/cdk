@@ -35,9 +35,7 @@ use std::fmt::Debug;
 
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
-use cdk_common::{
-    Error, MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod, ProofsMethods, State,
-};
+use cdk_common::{Error, MeltQuoteState, PaymentMethod, ProofsMethods, State};
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -430,29 +428,32 @@ impl Wallet {
     pub(crate) async fn add_transaction_for_pending_melt(
         &self,
         quote: &MeltQuote,
-        response: &MeltQuoteBolt11Response<String>,
+        new_state: MeltQuoteState,
+        amount: Amount,
+        change_amount: Option<Amount>,
+        payment_preimage: Option<String>,
     ) -> Result<(), Error> {
-        if quote.state != response.state {
+        if quote.state != new_state {
             tracing::info!(
                 "Quote melt {} state changed from {} to {}",
                 quote.id,
                 quote.state,
-                response.state
+                new_state
             );
-            if response.state == MeltQuoteState::Paid {
+            if new_state == MeltQuoteState::Paid {
                 let pending_proofs = self
                     .get_proofs_with(Some(vec![State::Pending]), None)
                     .await?;
                 let proofs_total = pending_proofs.total_amount().unwrap_or_default();
-                let change_total = response.change_amount().unwrap_or_default();
+                let change_total = change_amount.unwrap_or_default();
 
                 self.localstore
                     .add_transaction(Transaction {
                         mint_url: self.mint_url.clone(),
                         direction: TransactionDirection::Outgoing,
-                        amount: response.amount,
+                        amount,
                         fee: proofs_total
-                            .checked_sub(response.amount)
+                            .checked_sub(amount)
                             .and_then(|amt| amt.checked_sub(change_total))
                             .unwrap_or_default(),
                         unit: quote.unit.clone(),
@@ -462,7 +463,7 @@ impl Wallet {
                         metadata: HashMap::new(),
                         quote_id: Some(quote.id.clone()),
                         payment_request: Some(quote.request.clone()),
-                        payment_proof: response.payment_preimage.clone(),
+                        payment_proof: payment_preimage,
                         payment_method: Some(quote.payment_method.clone()),
                         saga_id: None,
                     })
@@ -566,16 +567,25 @@ impl Wallet {
     pub(crate) async fn update_melt_quote_state(
         &self,
         quote: &mut MeltQuote,
-        response: MeltQuoteBolt11Response<String>,
+        new_state: MeltQuoteState,
+        amount: Amount,
+        change_amount: Option<Amount>,
+        payment_preimage: Option<String>,
     ) -> Result<(), Error> {
         if let Err(e) = self
-            .add_transaction_for_pending_melt(quote, &response)
+            .add_transaction_for_pending_melt(
+                quote,
+                new_state,
+                amount,
+                change_amount,
+                payment_preimage.clone(),
+            )
             .await
         {
             tracing::error!("Failed to add transaction for pending melt: {}", e);
         }
 
-        quote.state = response.state;
+        quote.state = new_state;
 
         match self.localstore.add_melt_quote(quote.clone()).await {
             Ok(_) => Ok(()),
@@ -591,7 +601,7 @@ impl Wallet {
                         .await?
                         .ok_or(Error::UnknownQuote)?;
 
-                    fresh_quote.state = response.state;
+                    fresh_quote.state = new_state;
 
                     match self.localstore.add_melt_quote(fresh_quote.clone()).await {
                         Ok(_) => (),
@@ -621,20 +631,44 @@ impl Wallet {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let response = match &quote.payment_method {
+        match &quote.payment_method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
-                self.client.get_melt_quote_status(quote_id).await?
+                let response = self.client.get_melt_quote_status(quote_id).await?;
+                self.update_melt_quote_state(
+                    &mut quote,
+                    response.state,
+                    response.amount,
+                    response.change_amount(),
+                    response.payment_preimage,
+                )
+                .await?;
             }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
-                self.client.get_melt_bolt12_quote_status(quote_id).await?
+                let response = self.client.get_melt_bolt12_quote_status(quote_id).await?;
+                self.update_melt_quote_state(
+                    &mut quote,
+                    response.state,
+                    response.amount,
+                    response.change_amount(),
+                    response.payment_preimage,
+                )
+                .await?;
             }
-            // For custom methods, we fall back to the standard status endpoint
-            // or we might need specific handling if the connector supports it.
-            // Currently using the standard one as a best guess.
-            PaymentMethod::Custom(_) => self.client.get_melt_quote_status(quote_id).await?,
+            PaymentMethod::Custom(method) => {
+                let response = self
+                    .client
+                    .get_melt_quote_custom_status(method, quote_id)
+                    .await?;
+                self.update_melt_quote_state(
+                    &mut quote,
+                    response.state,
+                    response.amount,
+                    response.change_amount(),
+                    response.payment_preimage,
+                )
+                .await?;
+            }
         };
-
-        self.update_melt_quote_state(&mut quote, response).await?;
 
         Ok(quote)
     }

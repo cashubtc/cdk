@@ -103,8 +103,14 @@ impl Wallet {
         let response = self.client.get_melt_quote_status(quote_id).await?;
 
         if let Some(mut quote) = self.localstore.get_melt_quote(quote_id).await? {
-            self.update_melt_quote_state(&mut quote, response.clone())
-                .await?;
+            self.update_melt_quote_state(
+                &mut quote,
+                response.state,
+                response.amount,
+                response.change_amount(),
+                response.payment_preimage.clone(),
+            )
+            .await?;
         } else {
             tracing::info!("Quote melt {} unknown", quote_id);
         }
