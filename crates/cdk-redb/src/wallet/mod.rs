@@ -7,12 +7,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk_common::common::ProofInfo;
 use cdk_common::database::{validate_kvstore_params, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::util::unix_time;
-use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
+use cdk_common::wallet::{
+    self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
+};
 use cdk_common::{
     database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PaymentMethod,
     PublicKey, SpendingConditions, State,

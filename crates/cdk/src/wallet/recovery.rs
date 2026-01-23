@@ -15,13 +15,12 @@
 //!   - If failed/unknown: The wallet may rollback or retry depending on the specific state.
 
 use async_trait::async_trait;
-use cdk_common::wallet::WalletSagaState;
+use cdk_common::wallet::{ProofInfo, WalletSagaState};
 use cdk_common::BlindedMessage;
 use tracing::instrument;
 
 use crate::dhke::construct_proofs;
 use crate::nuts::{CheckStateRequest, PreMintSecrets, Proofs, RestoreRequest, State, SwapRequest};
-use cdk_common::wallet::ProofInfo;
 use crate::{Error, Wallet};
 
 /// Parameters for recovering outputs using stored blinded messages.

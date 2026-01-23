@@ -560,11 +560,11 @@ impl FromStr for OperationKind {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SendSagaState {
-    /// Proofs selected and reserved
+    /// Proofs selected and reserved for sending, ready to create token
     ProofsReserved,
-    /// Token created, proofs marked pending spent
+    /// Token created and ready to share, proofs marked as pending spent awaiting claim
     TokenCreated,
-    /// Send is being rolled back (transient state)
+    /// Rollback in progress, reclaiming proofs via swap (transient state)
     RollingBack,
 }
 
@@ -594,9 +594,9 @@ impl FromStr for SendSagaState {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReceiveSagaState {
-    /// Input proofs validated and stored as pending
+    /// Input proofs validated and stored as pending, ready to swap for new proofs
     ProofsPending,
-    /// Swap request sent to mint
+    /// Swap request sent to mint, awaiting signatures for new proofs
     SwapRequested,
 }
 
@@ -624,9 +624,9 @@ impl FromStr for ReceiveSagaState {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SwapSagaState {
-    /// Input proofs reserved
+    /// Input proofs reserved, swap request prepared, ready to execute
     ProofsReserved,
-    /// Swap request sent to mint
+    /// Swap request sent to mint, awaiting signatures for new proofs
     SwapRequested,
 }
 
@@ -654,9 +654,9 @@ impl FromStr for SwapSagaState {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueSagaState {
-    /// Pre-mint secrets created, counter incremented
+    /// Pre-mint secrets created and counter incremented, ready to request signatures
     SecretsPrepared,
-    /// Mint request sent
+    /// Mint request sent to mint, awaiting signatures for new proofs
     MintRequested,
 }
 
@@ -684,11 +684,11 @@ impl FromStr for IssueSagaState {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MeltSagaState {
-    /// Proofs reserved, quote verified
+    /// Proofs reserved and quote locked, ready to initiate payment
     ProofsReserved,
-    /// Melt request sent to mint
+    /// Melt request sent to mint, Lightning payment initiated
     MeltRequested,
-    /// Payment pending (waiting for LN confirmation)
+    /// Lightning payment in progress, awaiting confirmation from network
     PaymentPending,
 }
 

@@ -3,18 +3,63 @@
 //! This module implements the saga pattern for send operations using the typestate
 //! pattern to enforce valid state transitions at compile-time.
 //!
-//! # Type State Flow
+//! # State Flow
 //!
 //! ```text
-//! SendSaga<Initial>
-//!   └─> prepare() -> SendSaga<Prepared>
+//!                                  Normal Flow
+//!                                  ===========
+//!
+//! [saga created] ──► ProofsReserved ──► TokenCreated ──► [recipient claims] ──► [completed]
+//!                                            │
+//!                                            └──► [user revokes]
+//!                                                       │
+//!                                                       ├─ proofs already spent ──► [completed] + error
+//!                                                       │
+//!                                                       └─ proofs not spent
+//!                                                                 │
+//!                                                                 ▼
+//!                                                           RollingBack
+//!                                                                 │
+//!                                                       ┌─────────┴─────────┐
+//!                                                       │                   │
+//!                                                  swap succeeds       swap fails
+//!                                                       │                   │
+//!                                                       ▼                   ▼
+//!                                                  [completed]        TokenCreated
+//!                                                (proofs reclaimed)   (revert, retry)
+//!
+//!
+//!                                  Recovery Flow
+//!                                  =============
+//!
+//! ProofsReserved ─────────────────────────────────────────► [compensated]
+//!
+//! TokenCreated
+//!     ├─ proofs spent ────────► [completed] (recipient claimed)
+//!     ├─ proofs not spent ────► [completed] (saga deleted, token still valid)
+//!     └─ mint unreachable ────► [skipped]
+//!
+//! RollingBack
+//!     ├─ proofs spent ────────► [completed] (revoke swap succeeded)
+//!     ├─ proofs not spent ────► TokenCreated (revert state, keep monitoring)
+//!     └─ mint unreachable ────► [skipped]
 //! ```
 //!
-//! # Persistence
+//! # States
 //!
-//! The saga state is persisted to the database for crash recovery:
-//! - After `prepare()`: State = ProofsReserved
-//! - After successful completion: Saga is deleted
+//! | State | Description |
+//! |-------|-------------|
+//! | `ProofsReserved` | Proofs selected and reserved for sending, ready to create token |
+//! | `TokenCreated` | Token created and ready to share, proofs marked as pending spent awaiting claim |
+//! | `RollingBack` | Rollback in progress, reclaiming proofs via swap (transient state) |
+//!
+//! # Recovery Outcomes
+//!
+//! | Outcome | Description |
+//! |---------|-------------|
+//! | `[completed]` | Send finalized - either recipient claimed, or user successfully revoked |
+//! | `[compensated]` | Send cancelled before token created, reserved proofs released |
+//! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
 use std::collections::HashMap;
 

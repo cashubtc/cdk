@@ -3,13 +3,33 @@
 //! This module implements the saga pattern for receive operations using the typestate
 //! pattern to enforce valid state transitions at compile-time.
 //!
-//! # Type State Flow
+//! # State Flow
 //!
 //! ```text
-//! ReceiveSaga<Initial>
-//!   └─> prepare() -> ReceiveSaga<Prepared>
-//!         └─> execute() -> ReceiveSaga<Finalized>
+//! [saga created] ──► ProofsPending ──► SwapRequested ──► [completed]
+//!                         │                  │
+//!                         │                  ├─ replay succeeds ───► [completed]
+//!                         │                  ├─ proofs spent ──────► [completed] (via /restore)
+//!                         │                  ├─ proofs not spent ──► [compensated]
+//!                         │                  └─ mint unreachable ──► [skipped]
+//!                         │
+//!                         └─ recovery ─────────────────────────────► [compensated]
 //! ```
+//!
+//! # States
+//!
+//! | State | Description |
+//! |-------|-------------|
+//! | `ProofsPending` | Input proofs validated and stored as pending, ready to swap for new proofs |
+//! | `SwapRequested` | Swap request sent to mint, awaiting signatures for new proofs |
+//!
+//! # Recovery Outcomes
+//!
+//! | Outcome | Description |
+//! |---------|-------------|
+//! | `[completed]` | Receive succeeded, new proofs saved to wallet |
+//! | `[compensated]` | Receive failed, pending input proofs removed |
+//! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
 use std::collections::HashMap;
 
@@ -18,8 +38,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::XOnlyPublicKey;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    OperationData, ReceiveOperationData, ReceiveSagaState, Transaction, TransactionDirection,
-    WalletSaga, WalletSagaState,
+    OperationData, ProofInfo, ReceiveOperationData, ReceiveSagaState, Transaction,
+    TransactionDirection, WalletSaga, WalletSagaState,
 };
 use tracing::instrument;
 
@@ -30,7 +50,6 @@ use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State};
-use cdk_common::wallet::ProofInfo;
 use crate::util::hex;
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,

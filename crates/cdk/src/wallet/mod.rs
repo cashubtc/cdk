@@ -11,6 +11,7 @@ use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
+use cdk_common::wallet::ProofInfo;
 use getrandom::getrandom;
 use subscription::{ActiveSubscription, SubscriptionManager};
 #[cfg(any(feature = "auth", feature = "npubcash"))]
@@ -29,7 +30,6 @@ use crate::nuts::{
     nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
 };
-use cdk_common::wallet::ProofInfo;
 use crate::util::unix_time;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::Amount;

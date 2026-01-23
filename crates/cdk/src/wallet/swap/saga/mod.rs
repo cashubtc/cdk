@@ -3,23 +3,36 @@
 //! This module implements the saga pattern for swap operations using the typestate
 //! pattern to enforce valid state transitions at compile-time.
 //!
-//! # Type State Flow
+//! # State Flow
 //!
 //! ```text
-//! SwapSaga<Initial>
-//!   └─> prepare() -> SwapSaga<Prepared>
-//!         └─> execute() -> SwapSaga<Finalized>
+//! [saga created] ──► ProofsReserved ──► SwapRequested ──► [completed]
+//!                         │                   │
+//!                         │                   ├─ replay succeeds ───► [completed]
+//!                         │                   ├─ proofs spent ──────► [completed] (via /restore)
+//!                         │                   ├─ proofs not spent ──► [compensated]
+//!                         │                   └─ mint unreachable ──► [skipped]
+//!                         │
+//!                         └─ recovery ─────────────────────────────► [compensated]
 //! ```
 //!
-//! # Persistence
+//! # States
 //!
-//! The saga state is persisted to the database for crash recovery:
-//! - After `prepare()`: State = ProofsReserved
-//! - Before mint call in `execute()`: State = SwapRequested
-//! - After successful completion: Saga is deleted
+//! | State | Description |
+//! |-------|-------------|
+//! | `ProofsReserved` | Input proofs reserved, swap request prepared, ready to execute |
+//! | `SwapRequested` | Swap request sent to mint, awaiting signatures for new proofs |
+//!
+//! # Recovery Outcomes
+//!
+//! | Outcome | Description |
+//! |---------|-------------|
+//! | `[completed]` | Swap succeeded, new proofs saved to wallet |
+//! | `[compensated]` | Swap rolled back, input proofs released back to wallet |
+//! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
 use cdk_common::wallet::{
-    OperationData, SwapOperationData, SwapSagaState, WalletSaga, WalletSagaState,
+    OperationData, ProofInfo, SwapOperationData, SwapSagaState, WalletSaga, WalletSagaState,
 };
 use tracing::instrument;
 
@@ -28,7 +41,6 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{nut10, Proofs, SpendingConditions, State};
-use cdk_common::wallet::ProofInfo;
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
     RevertProofReservation as RevertSwapProofReservation,

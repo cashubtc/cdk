@@ -55,7 +55,11 @@ pub fn test_proof(keyset_id: Id, amount: u64) -> Proof {
 }
 
 /// Create a test proof info in Unspent state
-pub fn test_proof_info(keyset_id: Id, amount: u64, mint_url: MintUrl) -> cdk_common::wallet::ProofInfo {
+pub fn test_proof_info(
+    keyset_id: Id,
+    amount: u64,
+    mint_url: MintUrl,
+) -> cdk_common::wallet::ProofInfo {
     let proof = test_proof(keyset_id, amount);
     cdk_common::wallet::ProofInfo::new(proof, mint_url, State::Unspent, CurrencyUnit::Sat).unwrap()
 }

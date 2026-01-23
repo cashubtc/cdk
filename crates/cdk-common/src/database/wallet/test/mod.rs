@@ -16,10 +16,9 @@ use cashu::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
 
 use super::*;
 use crate::mint_url::MintUrl;
-use crate::wallet::ProofInfo;
 use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, State};
 use crate::wallet::{
-    MeltQuote, MintQuote, OperationData, SwapOperationData, SwapSagaState, Transaction,
+    MeltQuote, MintQuote, OperationData, ProofInfo, SwapOperationData, SwapSagaState, Transaction,
     TransactionDirection, WalletSaga, WalletSagaState,
 };
 

@@ -10,12 +10,11 @@
 //!    If the mint cached the response (NUT-19), we get signatures immediately.
 //! 2. **Fallback**: If replay fails, use `/restore` to recover outputs.
 
-use cdk_common::wallet::{IssueSagaState, MintOperationData, OperationData, WalletSaga};
+use cdk_common::wallet::{IssueSagaState, MintOperationData, OperationData, ProofInfo, WalletSaga};
 use tracing::instrument;
 
 use crate::dhke::construct_proofs;
 use crate::nuts::{MintRequest, State};
-use cdk_common::wallet::ProofInfo;
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::CompensatingAction;
