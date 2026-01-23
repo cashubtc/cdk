@@ -9,7 +9,8 @@
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::{
-    BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
+    common::CdkVersion, BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet,
+    Proof, PublicKey,
 };
 
 #[derive(Debug)]
@@ -78,7 +79,7 @@ pub struct SignatoryKeySet {
     /// Final expiry of the keyset (unix timestamp in the future)
     pub final_expiry: Option<u64>,
     /// CDK Version
-    pub cdk_version: Option<String>,
+    pub cdk_version: Option<CdkVersion>,
 }
 
 impl From<&SignatoryKeySet> for KeySet {

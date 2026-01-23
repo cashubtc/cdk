@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
+use cdk_common::common::CdkVersion;
 use cdk_common::database::{Error, MintKeyDatabaseTransaction, MintKeysDatabase};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::{CurrencyUnit, Id};
@@ -48,7 +49,10 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
         amounts,
         input_fee_ppk: column_as_nullable_number!(row_keyset_ppk).unwrap_or(0),
         final_expiry: column_as_nullable_number!(valid_to),
-        cdk_version: column_as_nullable_string!(cdk_version),
+        cdk_version: column_as_nullable_string!(cdk_version)
+            .map(|v| CdkVersion::from_str(&v))
+            .transpose()
+            .map_err(|e| Error::Database(e.to_string().into()))?,
     })
 }
 
@@ -90,7 +94,7 @@ where
         .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
         .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
         .bind("derivation_path_index", keyset.derivation_path_index)
-        .bind("cdk_version", keyset.cdk_version)
+        .bind("cdk_version", keyset.cdk_version.map(|v| v.to_string()))
         .execute(&self.inner)
         .await?;
 
@@ -244,7 +248,10 @@ mod test {
             assert!(result.is_ok());
             let keyset = result.unwrap();
             assert_eq!(keyset.amounts.len(), 32);
-            assert_eq!(keyset.cdk_version, Some("0.1.0".to_string()));
+            assert_eq!(
+                keyset.cdk_version,
+                Some(CdkVersion::from_str("0.1.0").unwrap())
+            );
         }
     }
 }

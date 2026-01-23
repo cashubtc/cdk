@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, All, Secp256k1};
+use cdk_common::common::CdkVersion;
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
@@ -155,7 +157,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
         derivation_path_index,
         amounts: amounts.to_owned(),
         input_fee_ppk,
-        cdk_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        cdk_version: CdkVersion::from_str(env!("CARGO_PKG_VERSION")).ok(),
     };
     (keyset, keyset_info)
 }
