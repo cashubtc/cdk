@@ -1,6 +1,7 @@
 //! Types
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::error::Error;
 use crate::mint_url::MintUrl;
@@ -172,10 +173,10 @@ pub struct ProofInfo {
     pub unit: CurrencyUnit,
     /// Operation ID that is using/spending this proof
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub used_by_operation: Option<String>,
+    pub used_by_operation: Option<Uuid>,
     /// Operation ID that created this proof
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_by_operation: Option<String>,
+    pub created_by_operation: Option<Uuid>,
 }
 
 impl ProofInfo {
@@ -208,8 +209,8 @@ impl ProofInfo {
         mint_url: MintUrl,
         state: State,
         unit: CurrencyUnit,
-        used_by_operation: Option<String>,
-        created_by_operation: Option<String>,
+        used_by_operation: Option<Uuid>,
+        created_by_operation: Option<Uuid>,
     ) -> Result<Self, Error> {
         let y = proof.y()?;
 

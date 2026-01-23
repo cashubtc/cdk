@@ -746,8 +746,8 @@ where
                 "dleq_r",
                 proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
             )
-            .bind("used_by_operation", proof.used_by_operation.as_deref())
-            .bind("created_by_operation", proof.created_by_operation.as_deref())
+            .bind("used_by_operation", proof.used_by_operation.map(|id| id.to_string()))
+            .bind("created_by_operation", proof.created_by_operation.map(|id| id.to_string()))
             .execute(&tx)
             .await?;
         }
@@ -1815,6 +1815,11 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         dleq,
     };
 
+    let used_by_operation =
+        column_as_nullable_string!(used_by_operation).and_then(|id| Uuid::from_str(&id).ok());
+    let created_by_operation =
+        column_as_nullable_string!(created_by_operation).and_then(|id| Uuid::from_str(&id).ok());
+
     Ok(ProofInfo {
         proof,
         y: column_as_string!(y, PublicKey::from_str, PublicKey::from_slice),
@@ -1826,8 +1831,8 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
             |r| { serde_json::from_slice(&r).ok() }
         ),
         unit: column_as_string!(unit, CurrencyUnit::from_str),
-        used_by_operation: column_as_nullable_string!(used_by_operation),
-        created_by_operation: column_as_nullable_string!(created_by_operation),
+        used_by_operation,
+        created_by_operation,
     })
 }
 

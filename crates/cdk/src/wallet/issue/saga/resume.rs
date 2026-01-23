@@ -223,10 +223,8 @@ impl Wallet {
             }
         };
 
-        // Get keyset ID from the first blinded message
         let keyset_id = blinded_messages[0].keyset_id;
 
-        // Re-derive premint secrets
         let premint_secrets = crate::nuts::PreMintSecrets::restore_batch(
             keyset_id,
             &self.seed,
@@ -234,10 +232,8 @@ impl Wallet {
             counter_end,
         )?;
 
-        // Load keyset keys
         let keys = self.load_keyset_keys(keyset_id).await?;
 
-        // Construct proofs
         let proofs = construct_proofs(
             mint_response.signatures,
             premint_secrets.rs(),
@@ -245,7 +241,6 @@ impl Wallet {
             &keys,
         )?;
 
-        // Convert to ProofInfo
         let proof_infos: Vec<ProofInfo> = proofs
             .into_iter()
             .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone()))
@@ -274,9 +269,4 @@ impl Wallet {
         self.localstore.delete_saga(saga_id).await?;
         Ok(())
     }
-}
-
-#[cfg(test)]
-mod tests {
-    // Tests will be moved here from recovery.rs
 }

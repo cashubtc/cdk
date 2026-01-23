@@ -51,7 +51,6 @@ impl Wallet {
             }
         }
 
-        // Construct MeltQuote from response
         let quote = MeltQuote {
             id: quote_res.quote,
             amount: quote_res.amount,
