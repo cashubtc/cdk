@@ -27,7 +27,7 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{nut12, MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
-use crate::types::ProofInfo;
+use cdk_common::wallet::ProofInfo;
 use crate::util::unix_time;
 use crate::wallet::saga::{
     add_compensation, clear_compensations, new_compensations, Compensations,

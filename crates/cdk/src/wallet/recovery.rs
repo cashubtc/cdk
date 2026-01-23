@@ -21,7 +21,7 @@ use tracing::instrument;
 
 use crate::dhke::construct_proofs;
 use crate::nuts::{CheckStateRequest, PreMintSecrets, Proofs, RestoreRequest, State, SwapRequest};
-use crate::types::ProofInfo;
+use cdk_common::wallet::ProofInfo;
 use crate::{Error, Wallet};
 
 /// Parameters for recovering outputs using stored blinded messages.

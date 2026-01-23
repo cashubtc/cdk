@@ -6,12 +6,14 @@ use std::str::FromStr;
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::util::hex;
-use cashu::{nut00, BlindedMessage, PaymentMethod, Proofs, PublicKey};
+use cashu::{nut00, BlindedMessage, PaymentMethod, Proof, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::mint_url::MintUrl;
-use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
+use crate::nuts::{
+    CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
+};
 use crate::{Amount, Error};
 
 /// Wallet Key
@@ -33,6 +35,123 @@ impl WalletKey {
     /// Create new [`WalletKey`]
     pub fn new(mint_url: MintUrl, unit: CurrencyUnit) -> Self {
         Self { mint_url, unit }
+    }
+}
+
+/// Proof info
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofInfo {
+    /// Proof
+    pub proof: Proof,
+    /// y
+    pub y: PublicKey,
+    /// Mint Url
+    pub mint_url: MintUrl,
+    /// Proof State
+    pub state: State,
+    /// Proof Spending Conditions
+    pub spending_condition: Option<SpendingConditions>,
+    /// Unit
+    pub unit: CurrencyUnit,
+    /// Operation ID that is using/spending this proof
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_by_operation: Option<Uuid>,
+    /// Operation ID that created this proof
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_operation: Option<Uuid>,
+}
+
+impl ProofInfo {
+    /// Create new [`ProofInfo`]
+    pub fn new(
+        proof: Proof,
+        mint_url: MintUrl,
+        state: State,
+        unit: CurrencyUnit,
+    ) -> Result<Self, Error> {
+        let y = proof.y()?;
+
+        let spending_condition: Option<SpendingConditions> = (&proof.secret).try_into().ok();
+
+        Ok(Self {
+            proof,
+            y,
+            mint_url,
+            state,
+            spending_condition,
+            unit,
+            used_by_operation: None,
+            created_by_operation: None,
+        })
+    }
+
+    /// Create new [`ProofInfo`] with operation tracking
+    pub fn new_with_operations(
+        proof: Proof,
+        mint_url: MintUrl,
+        state: State,
+        unit: CurrencyUnit,
+        used_by_operation: Option<Uuid>,
+        created_by_operation: Option<Uuid>,
+    ) -> Result<Self, Error> {
+        let y = proof.y()?;
+
+        let spending_condition: Option<SpendingConditions> = (&proof.secret).try_into().ok();
+
+        Ok(Self {
+            proof,
+            y,
+            mint_url,
+            state,
+            spending_condition,
+            unit,
+            used_by_operation,
+            created_by_operation,
+        })
+    }
+
+    /// Check if [`Proof`] matches conditions
+    pub fn matches_conditions(
+        &self,
+        mint_url: &Option<MintUrl>,
+        unit: &Option<CurrencyUnit>,
+        state: &Option<Vec<State>>,
+        spending_conditions: &Option<Vec<SpendingConditions>>,
+    ) -> bool {
+        if let Some(mint_url) = mint_url {
+            if mint_url.ne(&self.mint_url) {
+                return false;
+            }
+        }
+
+        if let Some(unit) = unit {
+            if unit.ne(&self.unit) {
+                return false;
+            }
+        }
+
+        if let Some(state) = state {
+            if !state.contains(&self.state) {
+                return false;
+            }
+        }
+
+        if let Some(spending_conditions) = spending_conditions {
+            match &self.spending_condition {
+                None => {
+                    if !spending_conditions.is_empty() {
+                        return false;
+                    }
+                }
+                Some(s) => {
+                    if !spending_conditions.contains(s) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
     }
 }
 
@@ -896,6 +1015,8 @@ impl WalletSaga {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nuts::Id;
+    use crate::secret::Secret;
 
     #[test]
     fn test_transaction_id_from_hex() {
@@ -916,5 +1037,89 @@ mod tests {
         let hex_str = "a1b2c3d4e5f60718293a0b1c2d3e4f506172839a0b1c2d3e4f506172839a0b1ca1b2";
         let res = TransactionId::from_hex(hex_str);
         assert!(matches!(res, Err(Error::InvalidTransactionId)));
+    }
+
+    #[test]
+    fn test_matches_conditions() {
+        let keyset_id = Id::from_str("00deadbeef123456").unwrap();
+        let proof = Proof::new(
+            Amount::from(64),
+            keyset_id,
+            Secret::new("test_secret"),
+            PublicKey::from_hex(
+                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        );
+
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let proof_info =
+            ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat).unwrap();
+
+        // Test matching mint_url
+        assert!(proof_info.matches_conditions(&Some(mint_url.clone()), &None, &None, &None));
+        assert!(!proof_info.matches_conditions(
+            &Some(MintUrl::from_str("https://different.com").unwrap()),
+            &None,
+            &None,
+            &None
+        ));
+
+        // Test matching unit
+        assert!(proof_info.matches_conditions(&None, &Some(CurrencyUnit::Sat), &None, &None));
+        assert!(!proof_info.matches_conditions(&None, &Some(CurrencyUnit::Msat), &None, &None));
+
+        // Test matching state
+        assert!(proof_info.matches_conditions(&None, &None, &Some(vec![State::Unspent]), &None));
+        assert!(proof_info.matches_conditions(
+            &None,
+            &None,
+            &Some(vec![State::Unspent, State::Spent]),
+            &None
+        ));
+        assert!(!proof_info.matches_conditions(&None, &None, &Some(vec![State::Spent]), &None));
+
+        // Test with no conditions (should match)
+        assert!(proof_info.matches_conditions(&None, &None, &None, &None));
+
+        // Test with multiple conditions
+        assert!(proof_info.matches_conditions(
+            &Some(mint_url),
+            &Some(CurrencyUnit::Sat),
+            &Some(vec![State::Unspent]),
+            &None
+        ));
+    }
+
+    #[test]
+    fn test_matches_conditions_with_spending_conditions() {
+        // This test would need to be expanded with actual SpendingConditions
+        // implementation, but we can test the basic case where no spending
+        // conditions are present
+
+        let keyset_id = Id::from_str("00deadbeef123456").unwrap();
+        let proof = Proof::new(
+            Amount::from(64),
+            keyset_id,
+            Secret::new("test_secret"),
+            PublicKey::from_hex(
+                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        );
+
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let proof_info =
+            ProofInfo::new(proof, mint_url, State::Unspent, CurrencyUnit::Sat).unwrap();
+
+        // Test with empty spending conditions (should match when proof has none)
+        assert!(proof_info.matches_conditions(&None, &None, &None, &Some(vec![])));
+
+        // Test with non-empty spending conditions (should not match when proof has none)
+        let dummy_condition = SpendingConditions::P2PKConditions {
+            data: SecretKey::generate().public_key(),
+            conditions: None,
+        };
+        assert!(!proof_info.matches_conditions(&None, &None, &None, &Some(vec![dummy_condition])));
     }
 }

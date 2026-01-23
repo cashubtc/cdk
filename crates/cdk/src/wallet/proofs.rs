@@ -9,7 +9,7 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     CheckStateRequest, Proof, ProofState, Proofs, PublicKey, SpendingConditions, State,
 };
-use crate::types::ProofInfo;
+use cdk_common::wallet::ProofInfo;
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
 impl Wallet {

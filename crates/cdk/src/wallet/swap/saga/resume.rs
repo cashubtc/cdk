@@ -143,7 +143,7 @@ impl Wallet {
         &self,
         saga_id: &uuid::Uuid,
         data: &SwapOperationData,
-        reserved_proofs: &[crate::types::ProofInfo],
+        reserved_proofs: &[cdk_common::wallet::ProofInfo],
     ) -> Result<(), Error> {
         let new_proofs = self
             .restore_outputs(

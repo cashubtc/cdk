@@ -30,7 +30,7 @@ use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State};
-use crate::types::ProofInfo;
+use cdk_common::wallet::ProofInfo;
 use crate::util::hex;
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,

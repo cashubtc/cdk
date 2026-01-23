@@ -16,7 +16,7 @@ use crate::nuts::{
     nut12, AuthRequired, AuthToken, BlindAuthToken, CurrencyUnit, KeySetInfo, PreMintSecrets,
     Proofs, ProtectedEndpoint, State,
 };
-use crate::types::ProofInfo;
+use cdk_common::wallet::ProofInfo;
 use crate::wallet::mint_connector::AuthHttpClient;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::{Amount, Error, OidcClient};
