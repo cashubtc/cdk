@@ -166,7 +166,7 @@ impl<'a> MeltSaga<'a, Initial> {
                     counter_start: None,
                     counter_end: None,
                     change_amount: None,
-                    change_blinded_messages: None, // Will be set when melt is requested
+                    change_blinded_messages: None,
                 }),
             );
 
@@ -200,28 +200,18 @@ impl<'a> MeltSaga<'a, Initial> {
             });
         }
 
-        // Swap needed to get exact denominations for melt.
-        // Fee accounting: swap produces (input - swap_fee), then mint charges input_fee on outputs.
-        // So we need: (input - swap_fee) - melt_input_fee >= inputs_needed_amount
-        // We estimate melt_input_fee based on optimal split and add it to selection amount.
-
         let active_keyset_id = self.wallet.get_active_keyset().await?.id;
         let fee_and_amounts = self
             .wallet
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
-        // Estimate melt input fee based on optimal split of inputs_needed_amount
         let estimated_output_count = inputs_needed_amount.split(&fee_and_amounts)?.len();
         let estimated_melt_fee = self
             .wallet
             .get_keyset_count_fee(&active_keyset_id, estimated_output_count as u64)
             .await?;
 
-        // Select proofs that will give us enough AFTER swap to cover melt + melt_input_fee
-        // select_proofs with include_fees=true gives: proofs_total - swap_fee >= selection_amount
-        // We want: (proofs_total - swap_fee) - melt_input_fee >= inputs_needed_amount
-        // So selection_amount = inputs_needed_amount + estimated_melt_fee
         let selection_amount = inputs_needed_amount + estimated_melt_fee;
 
         let input_proofs = Wallet::select_proofs(
@@ -232,13 +222,8 @@ impl<'a> MeltSaga<'a, Initial> {
             true,
         )?;
 
-        // The input_fee is the fee that will be charged on the optimal output proofs after swap.
-        // This is the same as estimated_melt_fee which was calculated based on the optimal split.
         let input_fee = estimated_melt_fee;
 
-        // For melt, put ALL proofs in proofs_to_swap and let the swap produce
-        // the exact denominations needed. The swap output will be optimally split.
-        // No proofs_to_send - everything goes through swap to ensure correct denominations.
         let proofs_to_send = Proofs::new();
         let proofs_to_swap = input_proofs;
         let swap_fee = self.wallet.get_proofs_fee(&proofs_to_swap).await?.total;
@@ -282,8 +267,6 @@ impl<'a> MeltSaga<'a, Initial> {
         )
         .await;
 
-        // Input fee if swap is skipped: fee on all proofs sent directly to melt
-        // Since proofs_to_send is empty, this equals swap_fee (fee on proofs_to_swap)
         let input_fee_without_swap = swap_fee;
 
         Ok(MeltSaga {
@@ -398,10 +381,9 @@ impl<'a> MeltSaga<'a, Initial> {
                 operation_id: self.state_data.operation_id,
                 quote: quote_info,
                 proofs,
-                proofs_to_swap: Proofs::new(), // No swap needed - caller provided exact proofs
+                proofs_to_swap: Proofs::new(),
                 swap_fee: Amount::ZERO,
                 input_fee,
-                // No swap needed, so input_fee_without_swap is the same
                 input_fee_without_swap: input_fee,
                 saga,
             },
@@ -436,7 +418,7 @@ impl<'a> MeltSaga<'a, Prepared> {
                 quote,
                 proofs,
                 proofs_to_swap,
-                swap_fee: Amount::ZERO, // Not needed for reconstruction
+                swap_fee: Amount::ZERO,
                 input_fee,
                 input_fee_without_swap,
                 saga,
