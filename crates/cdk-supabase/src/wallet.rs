@@ -643,7 +643,6 @@ impl SupabaseWalletDatabase {
             Ok(Some(items))
         }
     }
-
 }
 
 #[async_trait]
@@ -1315,7 +1314,9 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), DatabaseError> {
         let item: TransactionTable = transaction.try_into()?;
-        let (status, response_text) = self.post_request("rest/v1/transactions", &item).await?;
+        let (status, response_text) = self
+            .post_request("rest/v1/transactions?on_conflict=id,wallet_id", &item)
+            .await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
@@ -1463,7 +1464,9 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             },
         };
 
-        let (status, response_text) = self.post_request("rest/v1/mint", &info_table).await?;
+        let (status, response_text) = self
+            .post_request("rest/v1/mint?on_conflict=mint_url,wallet_id", &info_table)
+            .await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
@@ -1506,7 +1509,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         let items = items?;
 
         let (status, response_text) = self
-            .post_request("rest/v1/keyset?on_conflict=id", &items)
+            .post_request("rest/v1/keyset?on_conflict=id,wallet_id", &items)
             .await?;
 
         if !status.is_success() {
@@ -1520,7 +1523,9 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), DatabaseError> {
         let item: MintQuoteTable = quote.try_into()?;
-        let (status, response_text) = self.post_request("rest/v1/mint_quote", &item).await?;
+        let (status, response_text) = self
+            .post_request("rest/v1/mint_quote?on_conflict=id,wallet_id", &item)
+            .await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
@@ -1546,7 +1551,9 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), DatabaseError> {
         let item: MeltQuoteTable = quote.try_into()?;
-        let (status, response_text) = self.post_request("rest/v1/melt_quote", &item).await?;
+        let (status, response_text) = self
+            .post_request("rest/v1/melt_quote?on_conflict=id,wallet_id", &item)
+            .await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
@@ -1574,7 +1581,9 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         keyset.verify_id().map_err(DatabaseError::from)?;
         let item = KeyTable::from_keyset(&keyset)?;
 
-        let (status, response_text) = self.post_request("rest/v1/key", &item).await?;
+        let (status, response_text) = self
+            .post_request("rest/v1/key?on_conflict=id,wallet_id", &item)
+            .await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
@@ -1616,7 +1625,12 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             _extra: Default::default(),
         };
 
-        let (status, response_text) = self.post_request("rest/v1/kv_store", &item).await?;
+        let (status, response_text) = self
+            .post_request(
+                "rest/v1/kv_store?on_conflict=primary_namespace,secondary_namespace,key,wallet_id",
+                &item,
+            )
+            .await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
