@@ -54,7 +54,6 @@ impl Wallet {
 
         match state {
             SwapSagaState::ProofsReserved => {
-                // No external call was made - safe to compensate
                 tracing::info!(
                     "Swap saga {} in ProofsReserved state - compensating",
                     saga.id
@@ -63,7 +62,6 @@ impl Wallet {
                 Ok(RecoveryAction::Compensated)
             }
             SwapSagaState::SwapRequested => {
-                // External call may have succeeded - check mint
                 tracing::info!(
                     "Swap saga {} in SwapRequested state - checking mint for proof states",
                     saga.id
@@ -83,11 +81,9 @@ impl Wallet {
         saga_id: &uuid::Uuid,
         data: &SwapOperationData,
     ) -> Result<RecoveryAction, Error> {
-        // Get the reserved proofs for this operation
         let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
 
         if reserved_proofs.is_empty() {
-            // No proofs found - saga may have already been cleaned up
             tracing::warn!(
                 "No reserved proofs found for swap saga {} - cleaning up orphaned saga",
                 saga_id
@@ -96,8 +92,6 @@ impl Wallet {
             return Ok(RecoveryAction::Recovered);
         }
 
-        // Step 1: Try to replay the swap request
-        // This leverages NUT-19 caching or completes the swap if inputs weren't spent
         if let Some(new_proofs) = self
             .try_replay_swap_request(
                 saga_id,
@@ -109,17 +103,14 @@ impl Wallet {
             )
             .await?
         {
-            // Replay succeeded - save proofs and clean up
             let input_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
             self.localstore.update_proofs(new_proofs, input_ys).await?;
             self.localstore.delete_saga(saga_id).await?;
             return Ok(RecoveryAction::Recovered);
         }
 
-        // Step 2: Replay failed, fall back to checking proof states
         match self.are_proofs_spent(&reserved_proofs).await {
             Ok(true) => {
-                // Input proofs are spent - swap succeeded, recover outputs via /restore
                 tracing::info!(
                     "Swap saga {} - input proofs spent, recovering outputs via /restore",
                     saga_id
@@ -129,7 +120,6 @@ impl Wallet {
                 Ok(RecoveryAction::Recovered)
             }
             Ok(false) => {
-                // Proofs not spent - swap failed, compensate
                 tracing::info!(
                     "Swap saga {} - input proofs not spent, compensating",
                     saga_id
@@ -138,7 +128,6 @@ impl Wallet {
                 Ok(RecoveryAction::Compensated)
             }
             Err(e) => {
-                // Can't reach mint - skip for now, retry on next recovery
                 tracing::warn!(
                     "Swap saga {} - can't check proof states ({}), skipping",
                     saga_id,
@@ -156,7 +145,6 @@ impl Wallet {
         data: &SwapOperationData,
         reserved_proofs: &[crate::types::ProofInfo],
     ) -> Result<(), Error> {
-        // Try to restore outputs using stored blinded messages
         let new_proofs = self
             .restore_outputs(
                 saga_id,
@@ -167,7 +155,6 @@ impl Wallet {
             )
             .await?;
 
-        // Remove the input proofs (they're spent) and add recovered proofs
         let input_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
 
         match new_proofs {
@@ -175,7 +162,6 @@ impl Wallet {
                 self.localstore.update_proofs(proofs, input_ys).await?;
             }
             None => {
-                // Couldn't restore outputs - mark inputs as spent
                 tracing::warn!(
                     "Swap saga {} - couldn't restore outputs, marking inputs as spent. \
                      Run wallet.restore() to recover any missing proofs.",
@@ -187,7 +173,6 @@ impl Wallet {
             }
         }
 
-        // Delete the saga record
         self.localstore.delete_saga(saga_id).await?;
 
         Ok(())

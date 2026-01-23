@@ -98,10 +98,8 @@ impl<'a> SwapSaga<'a, Initial> {
 
         let fee_breakdown = self.wallet.get_proofs_fee(&input_proofs).await?;
 
-        // Get proof Y values before creating swap (for compensation)
         let input_ys = input_proofs.ys()?;
 
-        // Create swap request (this reserves proofs and increments counter)
         let pre_swap = self
             .wallet
             .create_swap(
@@ -119,9 +117,6 @@ impl<'a> SwapSaga<'a, Initial> {
         let fee = pre_swap.fee;
         let input_amount = input_proofs.total_amount()?;
 
-        // Calculate counter range for recovery
-        // get_keyset_counter doesn't exist, so we use increment_keyset_counter(0)
-        // to get current value without incrementing
         let counter_end = self
             .wallet
             .localstore
@@ -132,7 +127,6 @@ impl<'a> SwapSaga<'a, Initial> {
             .checked_sub(fee)
             .ok_or(Error::InsufficientFunds)?;
 
-        // Persist saga state for crash recovery
         let saga = WalletSaga::new(
             self.state_data.operation_id,
             WalletSagaState::Swap(SwapSagaState::ProofsReserved),
@@ -144,13 +138,12 @@ impl<'a> SwapSaga<'a, Initial> {
                 output_amount,
                 counter_start: Some(counter_start),
                 counter_end: Some(counter_end),
-                blinded_messages: None, // Will be set when swap is requested
+                blinded_messages: None,
             }),
         );
 
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
-        // Register compensation to revert proof reservation and delete saga on failure
         add_compensation(
             &mut self.compensations,
             Box::new(RevertSwapProofReservation {
@@ -161,7 +154,6 @@ impl<'a> SwapSaga<'a, Initial> {
         )
         .await;
 
-        // Transition to Prepared state
         Ok(SwapSaga {
             wallet: self.wallet,
             compensations: self.compensations,
@@ -200,24 +192,18 @@ impl<'a> SwapSaga<'a, Prepared> {
         let unit = &self.wallet.unit;
         let operation_id = self.state_data.operation_id;
 
-        // Update saga state to SwapRequested BEFORE making the mint call
-        // This is write-ahead logging - if we crash after this, recovery knows
-        // the swap may have been attempted
         let mut saga = self.state_data.saga.clone();
         saga.update_state(WalletSagaState::Swap(SwapSagaState::SwapRequested));
         if let OperationData::Swap(ref mut data) = saga.data {
             data.blinded_messages = Some(self.state_data.pre_swap.swap_request.outputs().clone());
         }
 
-        // Update saga state - if this fails due to version conflict, another instance
-        // is processing this saga, which should not happen during normal operation
         if !self.wallet.localstore.update_saga(saga).await? {
             return Err(Error::Custom(
                 "Saga version conflict during update - another instance may be processing this saga".to_string(),
             ));
         }
 
-        // Execute the swap via try_proof_operation_or_reclaim
         let swap_response = match self
             .wallet
             .try_proof_operation_or_reclaim(
@@ -240,11 +226,9 @@ impl<'a> SwapSaga<'a, Prepared> {
             }
         };
 
-        // Get active keyset keys
         let active_keyset_id = self.state_data.pre_swap.pre_mint_secrets.keyset_id;
         let active_keys = self.wallet.load_keyset_keys(active_keyset_id).await?;
 
-        // Construct new proofs from swap response
         let post_swap_proofs = construct_proofs(
             swap_response.signatures,
             self.state_data.pre_swap.pre_mint_secrets.rs(),
@@ -252,7 +236,6 @@ impl<'a> SwapSaga<'a, Prepared> {
             &active_keys,
         )?;
 
-        // Separate proofs based on amount and spending conditions
         let mut added_proofs = Vec::new();
         let change_proofs;
         let send_proofs;
@@ -315,33 +298,27 @@ impl<'a> SwapSaga<'a, Prepared> {
             }
         }
 
-        // Add change proofs as Unspent
         let keep_proofs = change_proofs
             .into_iter()
             .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, unit.clone()))
             .collect::<Result<Vec<ProofInfo>, _>>()?;
         added_proofs.extend(keep_proofs);
 
-        // Update database: add new proofs, remove input proofs
         self.wallet
             .localstore
             .update_proofs(added_proofs, self.state_data.input_ys.clone())
             .await?;
 
-        // Clear compensations - operation completed successfully
         clear_compensations(&mut self.compensations).await;
 
-        // Delete saga record - swap completed successfully (best-effort)
         if let Err(e) = self.wallet.localstore.delete_saga(&operation_id).await {
             tracing::warn!(
                 "Failed to delete swap saga {}: {}. Will be cleaned up on recovery.",
                 operation_id,
                 e
             );
-            // Don't fail the swap if saga deletion fails - orphaned saga is harmless
         }
 
-        // Transition to Finalized state
         Ok(SwapSaga {
             wallet: self.wallet,
             compensations: self.compensations,
