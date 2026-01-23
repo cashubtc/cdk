@@ -42,7 +42,8 @@ utoipa = { workspace = true, optional = true }
 futures.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
-tonic = { workspace = true, features = ["router"] }
+tonic = { workspace = true, features = ["transport", "tls-ring", "codegen", "router"] }
+tonic-prost.workspace = true
 prost.workspace = true
 tokio-stream.workspace = true
 tokio-util = { workspace = true, default-features = false }
@@ -69,7 +70,7 @@ rand.workspace = true
 bip39.workspace = true
 
 [build-dependencies]
-tonic-build.workspace = true
+tonic-prost-build.workspace = true
 
 [lints]
 workspace = true
