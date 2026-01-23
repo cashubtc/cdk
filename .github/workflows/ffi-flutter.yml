@@ -22,6 +22,11 @@ jobs:
           repository: cashubtc/cdk_flutter
           path: cdk-flutter
 
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
 
@@ -51,15 +56,20 @@ jobs:
 
       - name: Verify Compilation
         run: |
-          cd cdk-flutter/rust
+          # 1. Install Dart dependencies
+          cd cdk-flutter
+          flutter pub get
+          
+          # 2. Setup environment
+          cd rust
           # We use the CDK flake environment to ensure we have the right rustc/cargo
           # But we need to make sure flutter_rust_bridge_codegen is in PATH.
-          # Since we installed it with 'cargo install', it should be in ~/.cargo/bin
           export PATH=$HOME/.cargo/bin:$PATH
           
-          # Just check compilation first
+          # 3. Check Rust compilation first
           nix develop ../../cdk --command cargo check
           
-          # Try generating bindings (this effectively tests the codegen parsing)
-          # We skip the Dart generation part if possible or let it fail gracefully if Dart is missing,
-          # but 'cargo check' is the most important part for Rust API compatibility.
+          # 4. Generate bindings
+          # This verifies that the Rust API changes are compatible with the binding generation logic
+          nix develop ../../cdk --command flutter_rust_bridge_codegen generate
+
