@@ -16,20 +16,55 @@ jobs:
         with:
           path: cdk
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+      - name: Checkout CDK Python
+        uses: actions/checkout@v4
         with:
-          workspaces: cdk
+          repository: cashubtc/cdk-python
+          path: cdk-python
 
-      - name: Generate and Test
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Just
+        uses: extractions/setup-just@v1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install build dependencies
         run: |
-          cd cdk
-          # Builds cdk-ffi, generates python bindings, and runs internal integration tests
-          # using the 'ffi' devShell from cdk's flake which has python3 installed
-          nix develop .#ffi --command just ffi-test
+          pip install build wheel uv
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+
+      - name: Build Wheel
+        run: |
+          cd cdk-python
+          chmod +x scripts/generate-linux-x86_64.sh
+          # The script expects CDK at ./cdk or ../cdk. 
+          # Since we checked out 'cdk' at root and 'cdk-python' at root, ../cdk works from inside cdk-python.
+          ./scripts/generate-linux-x86_64.sh
+          
+          # Build the wheel
+          python -m build --wheel
+
+      - name: Verify
+        run: |
+          cd cdk-python
+          uv venv
+          source .venv/bin/activate
+          
+          # Install the built wheel
+          # find dist/ -name "*.whl" | xargs uv pip install
+          # Or install in editable mode if preferred, but wheel is better test of release artifact
+          uv pip install dist/*.whl
+          
+          # Install test deps
+          uv pip install pytest pytest-asyncio
+          
+          # Run tests
+          pytest
