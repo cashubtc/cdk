@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-use bitreq::{Client, Proxy, Request, RequestExt};
+use bitreq::{Client, Proxy, Request, RequestExt, Response};
 use cdk_common::AuthToken;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use hickory_resolver::config::ResolverConfig;
@@ -70,6 +70,26 @@ pub struct Async {
 }
 
 impl Async {
+    fn handle_response<R>(response: Response) -> Result<R, Error>
+    where
+        R: DeserializeOwned,
+    {
+        if response.status_code != 200 {
+            return Err(match ErrorResponse::from_slice(response.as_bytes()) {
+                Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
+                Err(_) => Error::HttpError(Some(response.status_code as u16), "".to_string()),
+            });
+        }
+
+        serde_json::from_slice::<R>(response.as_bytes()).map_err(|err| {
+            tracing::warn!("Http Response error: {}", err);
+            match ErrorResponse::from_slice(response.as_bytes()) {
+                Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
+                Err(err) => err.into(),
+            }
+        })
+    }
+
     fn prepare_request(&self, req: Request, url: Url, auth: Option<AuthToken>) -> Request {
         let proxy = {
             let url = url.to_string();
@@ -196,20 +216,7 @@ impl Transport for Async {
             .await
             .map_err(|e| Error::HttpError(None, e.to_string()))?;
 
-        if response.status_code != 200 {
-            return Err(Error::HttpError(
-                Some(response.status_code as u16),
-                "".to_string(),
-            ));
-        }
-
-        serde_json::from_slice::<R>(response.as_bytes()).map_err(|err| {
-            tracing::warn!("Http Response error: {}", err);
-            match ErrorResponse::from_slice(response.as_bytes()) {
-                Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
-                Err(err) => err.into(),
-            }
-        })
+        Self::handle_response(response)
     }
 
     async fn http_post<P, R>(
@@ -233,20 +240,7 @@ impl Transport for Async {
             .await
             .map_err(|e| Error::HttpError(None, e.to_string()))?;
 
-        if response.status_code != 200 {
-            return Err(Error::HttpError(
-                Some(response.status_code as u16),
-                "".to_string(),
-            ));
-        }
-
-        serde_json::from_slice::<R>(response.as_bytes()).map_err(|err| {
-            tracing::warn!("Http Response error: {}", err);
-            match ErrorResponse::from_slice(response.as_bytes()) {
-                Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
-                Err(err) => err.into(),
-            }
-        })
+        Self::handle_response(response)
     }
 }
 

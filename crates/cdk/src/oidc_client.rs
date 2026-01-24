@@ -270,6 +270,10 @@ impl OidcClient {
 
         let response = bitreq::post(token_url)
             .with_body(body)
+            .with_header(
+                "Content-Type".to_string(),
+                "application/x-www-form-urlencoded".to_string(),
+            )
             .send_async_with_client(&self.client)
             .await?
             .json::<TokenResponse>()?;

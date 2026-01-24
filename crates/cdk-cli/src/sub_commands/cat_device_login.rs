@@ -88,6 +88,10 @@ async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
         .finish();
     let device_code_response = bitreq::post(device_auth_url)
         .with_body(params)
+        .with_header(
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded".to_string(),
+        )
         .send_async()
         .await
         .expect("Failed to send device code request");
@@ -134,6 +138,10 @@ async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
             .finish();
         let token_response = bitreq::post(&token_url)
             .with_body(params)
+            .with_header(
+                "Content-Type".to_string(),
+                "application/x-www-form-urlencoded".to_string(),
+            )
             .send_async()
             .await
             .expect("Failed to send token request");

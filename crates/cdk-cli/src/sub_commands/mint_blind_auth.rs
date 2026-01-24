@@ -171,6 +171,10 @@ async fn refresh_access_token(
         .finish();
     let response = bitreq::post(token_url)
         .with_body(params)
+        .with_header(
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded".to_string(),
+        )
         .send_async()
         .await?;
 

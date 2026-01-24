@@ -125,6 +125,10 @@ async fn get_access_token(mint_info: &MintInfo) -> String {
         .finish();
     let response = bitreq::post(token_url)
         .with_body(params)
+        .with_header(
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded".to_string(),
+        )
         .send_async()
         .await
         .expect("Failed to send token request");
