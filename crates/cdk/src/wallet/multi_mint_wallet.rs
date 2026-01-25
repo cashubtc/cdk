@@ -1231,11 +1231,6 @@ impl MultiMintWallet {
     }
 
     /// Fetch a mint quote from the mint and store it locally
-    ///
-    /// This method contacts the mint to get the current state of a quote,
-    /// creates or updates the quote in local storage, and returns the stored quote.
-    /// Use this when you have a quote ID (e.g., from another device or a payment request)
-    /// and need to track it in this wallet.
     #[instrument(skip(self))]
     pub async fn fetch_mint_quote(
         &self,

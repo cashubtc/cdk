@@ -161,7 +161,6 @@ impl Wallet {
     ///
     /// This method contacts the mint to get the current state of a quote,
     /// creates or updates the quote in local storage, and returns the stored quote.
-    /// Use this when you have a quote ID (e.g., from another device or a payment request)
     #[instrument(skip(self, quote_id))]
     pub async fn fetch_mint_quote(&self, quote_id: &str) -> Result<MintQuote, Error> {
         let response = self.client.get_mint_quote_status(quote_id).await?;
@@ -183,7 +182,7 @@ impl Wallet {
                     self.unit.clone(),
                     response.request,
                     response.expiry.unwrap_or(0),
-                    None, // No secret key for externally created quotes
+                    None,
                 )
             }
         };

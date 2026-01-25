@@ -192,10 +192,6 @@ impl Wallet {
     }
 
     /// Fetch a mint quote from the mint and store it locally
-    ///
-    /// This method contacts the mint to get the current state of a quote,
-    /// creates or updates the quote in local storage, and returns the stored quote.
-    /// Use this when you have a quote ID (e.g., from another device or a payment request)
     pub async fn fetch_mint_quote(&self, quote_id: String) -> Result<MintQuote, FfiError> {
         let quote = self.inner.fetch_mint_quote(&quote_id).await?;
         Ok(quote.into())
