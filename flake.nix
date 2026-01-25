@@ -281,6 +281,7 @@
 
             # Run Python tests
             python3 crates/cdk-ffi/tests/test_transactions.py
+            python3 crates/cdk-ffi/tests/test_kvstore.py
           '';
           installPhaseCommand = "mkdir -p $out";
         });
