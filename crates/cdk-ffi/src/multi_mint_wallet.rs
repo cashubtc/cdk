@@ -336,6 +336,24 @@ impl MultiMintWallet {
         Ok(quote.into())
     }
 
+    /// Fetch a mint quote from the mint and store it locally
+    ///
+    /// This method contacts the mint to get the current state of a quote,
+    /// creates or updates the quote in local storage, and returns the stored quote.
+    /// Use this when you have a quote ID (e.g., from another device or a payment request)
+    pub async fn fetch_mint_quote(
+        &self,
+        mint_url: MintUrl,
+        quote_id: String,
+    ) -> Result<MintQuote, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let quote = self
+            .inner
+            .fetch_mint_quote(&cdk_mint_url, &quote_id)
+            .await?;
+        Ok(quote.into())
+    }
+
     /// Mint tokens at a specific mint
     pub async fn mint(
         &self,
