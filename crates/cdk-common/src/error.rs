@@ -110,6 +110,9 @@ pub enum Error {
     /// Unsupported payment method
     #[error("Payment method unsupported")]
     UnsupportedPaymentMethod,
+    /// Payment method required
+    #[error("Payment method required")]
+    PaymentMethodRequired,
     /// Could not parse bolt12
     #[error("Could not parse bolt12")]
     Bolt12parse,

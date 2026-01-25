@@ -157,42 +157,6 @@ impl Wallet {
         Ok(total_amount)
     }
 
-    /// Fetch a mint quote from the mint and store it locally
-    ///
-    /// This method contacts the mint to get the current state of a quote,
-    /// creates or updates the quote in local storage, and returns the stored quote.
-    #[instrument(skip(self, quote_id))]
-    pub async fn fetch_mint_quote(&self, quote_id: &str) -> Result<MintQuote, Error> {
-        let response = self.client.get_mint_quote_status(quote_id).await?;
-
-        // Check if we already have this quote stored
-        let quote = match self.localstore.get_mint_quote(quote_id).await? {
-            Some(mut existing_quote) => {
-                // Update the state of the existing quote
-                existing_quote.state = response.state;
-                existing_quote
-            }
-            None => {
-                // Create a new quote from the mint response
-                MintQuote::new(
-                    quote_id.to_string(),
-                    self.mint_url.clone(),
-                    PaymentMethod::Known(KnownMethod::Bolt11),
-                    response.amount,
-                    self.unit.clone(),
-                    response.request,
-                    response.expiry.unwrap_or(0),
-                    None,
-                )
-            }
-        };
-
-        // Store the quote
-        self.localstore.add_mint_quote(quote.clone()).await?;
-
-        Ok(quote)
-    }
-
     /// Get active mint quotes
     /// Returns mint quotes that are not expired and not yet issued.
     #[instrument(skip(self))]
