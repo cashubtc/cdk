@@ -18,6 +18,7 @@ bip39 = { workspace = true }
 cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "bip353", "nostr"] }
 cdk-sqlite = { workspace = true }
 cdk-postgres = { workspace = true, optional = true }
+cdk-supabase = { workspace = true, optional = true, features = ["wallet"] }
 futures = { workspace = true }
 once_cell = { workspace = true }
 rand = { workspace = true }
@@ -39,9 +40,10 @@ log = "0.4"
 
 
 [features]
-default = ["postgres"]
+default = ["postgres", "supabase"]
 # Enable Postgres-backed wallet database support in FFI
 postgres = ["cdk-postgres"]
+supabase = ["cdk-supabase"]
 
 [dev-dependencies]
 

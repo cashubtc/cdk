@@ -17,7 +17,7 @@ test = []
 bench = []
 wallet = ["cashu/wallet"]
 mint = ["cashu/mint", "dep:uuid"]
-auth = ["cashu/auth"]
+auth = ["cashu/auth", "dep:reqwest", "dep:jsonwebtoken"]
 nostr = ["wallet", "cashu/nostr"]
 prometheus = ["cdk-prometheus/default"]
 
@@ -43,6 +43,9 @@ serde_with.workspace = true
 web-time.workspace = true
 parking_lot = "0.12.5"
 paste = "1.0.15"
+reqwest = { workspace = true, optional = true }
+jsonwebtoken = { workspace = true, optional = true }
+
 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

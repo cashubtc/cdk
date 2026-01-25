@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
+use cdk_common::database::Error as CdkDatabaseError;
 use cdk_sqlite::wallet::WalletSqliteDatabase as CdkWalletSqliteDatabase;
-use cdk_sqlite::SqliteConnectionManager;
 
 use crate::{
-    CurrencyUnit, FfiError, FfiWalletSQLDatabase, Id, KeySet, KeySetInfo, Keys, MeltQuote,
+    CurrencyUnit, FfiError, FfiWalletDatabaseWrapper, Id, KeySet, KeySetInfo, Keys, MeltQuote,
     MintInfo, MintQuote, MintUrl, ProofInfo, ProofState, PublicKey, SpendingConditions,
     Transaction, TransactionDirection, TransactionId, WalletDatabase,
 };
@@ -12,7 +12,7 @@ use crate::{
 /// FFI-compatible WalletSqliteDatabase implementation that implements the WalletDatabaseFfi trait
 #[derive(uniffi::Object)]
 pub struct WalletSqliteDatabase {
-    inner: Arc<FfiWalletSQLDatabase<SqliteConnectionManager>>,
+    inner: Arc<FfiWalletDatabaseWrapper<CdkWalletSqliteDatabase, CdkDatabaseError>>,
 }
 
 #[uniffi::export]
@@ -34,7 +34,7 @@ impl WalletSqliteDatabase {
         }
         .map_err(FfiError::database)?;
         Ok(Arc::new(Self {
-            inner: FfiWalletSQLDatabase::new(db),
+            inner: FfiWalletDatabaseWrapper::new(db),
         }))
     }
 
@@ -54,7 +54,7 @@ impl WalletSqliteDatabase {
         }
         .map_err(FfiError::database)?;
         Ok(Arc::new(Self {
-            inner: FfiWalletSQLDatabase::new(db),
+            inner: FfiWalletDatabaseWrapper::new(db),
         }))
     }
 }

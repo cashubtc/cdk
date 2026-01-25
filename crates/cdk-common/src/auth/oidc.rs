@@ -37,19 +37,23 @@ pub enum Error {
     InvalidClientId,
 }
 
-impl From<Error> for cdk_common::error::Error {
+impl From<Error> for crate::error::Error {
     fn from(value: Error) -> Self {
         tracing::debug!("Clear auth verification failed: {}", value);
-        cdk_common::error::Error::ClearAuthFailed
+        crate::error::Error::ClearAuthFailed
     }
 }
 
 /// Open Id Config
 #[derive(Debug, Clone, Deserialize)]
 pub struct OidcConfig {
+    /// URI for the JSON Web Key Set
     pub jwks_uri: String,
+    /// Token issuer identifier
     pub issuer: String,
+    /// Token endpoint URL
     pub token_endpoint: String,
+    /// Device authorization endpoint URL
     pub device_authorization_endpoint: String,
 }
 
@@ -63,27 +67,38 @@ pub struct OidcClient {
     jwks_set: Arc<RwLock<Option<JwkSet>>>,
 }
 
+/// OAuth2 grant type
 #[cfg(feature = "wallet")]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GrantType {
+    /// Refresh token grant
     RefreshToken,
 }
 
+/// Request to refresh an access token
 #[cfg(feature = "wallet")]
 #[derive(Debug, Clone, Serialize)]
 pub struct RefreshTokenRequest {
+    /// The grant type for this request
     pub grant_type: GrantType,
+    /// OAuth2 client identifier
     pub client_id: String,
+    /// The refresh token to exchange
     pub refresh_token: String,
 }
 
+/// Response from token endpoint
 #[cfg(feature = "wallet")]
 #[derive(Debug, Clone, Deserialize)]
 pub struct TokenResponse {
+    /// The access token issued by the authorization server
     pub access_token: String,
+    /// Optional refresh token for obtaining new access tokens
     pub refresh_token: Option<String>,
+    /// Optional lifetime in seconds of the access token
     pub expires_in: Option<i64>,
+    /// The type of token issued (typically "Bearer")
     pub token_type: String,
 }
 
@@ -97,6 +112,11 @@ impl OidcClient {
             oidc_config: Arc::new(RwLock::new(None)),
             jwks_set: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Get client id
+    pub fn client_id(&self) -> Option<String> {
+        self.client_id.clone()
     }
 
     /// Get config from oidc server
@@ -197,7 +217,6 @@ impl OidcClient {
         match decode::<HashMap<String, serde_json::Value>>(cat_jwt, &decoding_key, &validation) {
             Ok(claims) => {
                 tracing::debug!("Successfully verified cat");
-                tracing::debug!("Claims: {:?}", claims.claims);
                 if let Some(client_id) = &self.client_id {
                     if let Some(token_client_id) = claims.claims.get("client_id") {
                         if let Some(token_client_id_value) = token_client_id.as_str() {

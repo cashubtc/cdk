@@ -1,16 +1,17 @@
 use std::sync::Arc;
 
-use cdk_postgres::PgConnectionPool;
+use cdk_common::database::Error as CdkDatabaseError;
+use cdk_postgres::WalletPgDatabase;
 
 use crate::{
-    CurrencyUnit, FfiError, FfiWalletSQLDatabase, Id, KeySet, KeySetInfo, Keys, MeltQuote,
+    CurrencyUnit, FfiError, FfiWalletDatabaseWrapper, Id, KeySet, KeySetInfo, Keys, MeltQuote,
     MintInfo, MintQuote, MintUrl, ProofInfo, ProofState, PublicKey, SpendingConditions,
     Transaction, TransactionDirection, TransactionId, WalletDatabase,
 };
 
 #[derive(uniffi::Object)]
 pub struct WalletPostgresDatabase {
-    inner: Arc<FfiWalletSQLDatabase<PgConnectionPool>>,
+    inner: Arc<FfiWalletDatabaseWrapper<WalletPgDatabase, CdkDatabaseError>>,
 }
 
 // Keep a long-lived Tokio runtime for Postgres-created resources so that
@@ -52,7 +53,7 @@ impl WalletPostgresDatabase {
         }
         .map_err(FfiError::database)?;
         Ok(Arc::new(WalletPostgresDatabase {
-            inner: FfiWalletSQLDatabase::new(inner),
+            inner: FfiWalletDatabaseWrapper::new(inner),
         }))
     }
 }
