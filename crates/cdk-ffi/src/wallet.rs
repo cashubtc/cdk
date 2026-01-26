@@ -191,6 +191,15 @@ impl Wallet {
         Ok(quote.into())
     }
 
+    /// Check a specific mint quote status
+    pub async fn check_mint_quote(
+        &self,
+        quote_id: String,
+    ) -> Result<MintQuoteBolt11Response, FfiError> {
+        let quote = self.inner.mint_quote_state(&quote_id).await?;
+        Ok(quote.into())
+    }
+
     /// Fetch a mint quote from the mint and store it locally
     ///
     /// Works with all payment methods (Bolt11, Bolt12, and custom payment methods).
