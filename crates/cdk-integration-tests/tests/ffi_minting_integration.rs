@@ -102,6 +102,31 @@ async fn test_ffi_full_minting_flow() {
     );
     assert!(!quote.id.is_empty(), "Quote should have an ID");
 
+    // Check  mint quote status
+    let quote_status = wallet
+        .check_mint_quote(quote.id.clone())
+        .await
+        .expect("failed to get mint status");
+    assert_eq!(
+        quote_status.amount,
+        Some(mint_amount),
+        "Quote amount should match requested amount"
+    );
+    assert_eq!(
+        quote_status.unit.unwrap(),
+        CurrencyUnit::Sat,
+        "Quote unit should be sats"
+    );
+    assert_eq!(
+        quote_status.state,
+        QuoteState::Unpaid,
+        "Initial quote state should be unpaid"
+    );
+    assert!(
+        !quote_status.request.is_empty(),
+        "Quote should have a payment request"
+    );
+
     // Verify the quote can be parsed as a valid invoice
     let invoice = Bolt11Invoice::from_str(&quote.request)
         .expect("Quote request should be a valid Lightning invoice");

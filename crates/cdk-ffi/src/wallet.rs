@@ -191,6 +191,15 @@ impl Wallet {
         Ok(quote.into())
     }
 
+    /// Check a specific mint quote status
+    pub async fn check_mint_quote(
+        &self,
+        quote_id: String,
+    ) -> Result<MintQuoteBolt11Response, FfiError> {
+        let quote = self.inner.mint_quote_state(&quote_id).await?;
+        Ok(quote.into())
+    }
+
     /// Mint tokens
     pub async fn mint(
         &self,
