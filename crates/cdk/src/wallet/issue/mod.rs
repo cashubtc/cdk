@@ -163,7 +163,7 @@ impl Wallet {
                 match existing_quote {
                     Some(mut existing) => {
                         // Update the existing quote with new state
-                        existing.state = response.state.into();
+                        existing.state = response.state;
                         existing
                     }
                     None => {
