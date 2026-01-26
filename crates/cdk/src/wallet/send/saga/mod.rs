@@ -451,12 +451,25 @@ impl<'a> SendSaga<'a, Prepared> {
 
             let total_send_amount = amount + send_fee;
 
+            let mut counter_start = None;
+            let mut counter_end = None;
+
             if !proofs_to_swap.is_empty() {
                 let swap_amount = total_send_amount
                     .checked_sub(final_proofs_to_send.total_amount()?)
                     .unwrap_or(Amount::ZERO);
 
                 tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
+
+                let keyset_id = self.wallet.fetch_active_keyset().await?.id;
+
+                // Capture counter start before swap
+                counter_start = Some(
+                    self.wallet
+                        .localstore
+                        .increment_keyset_counter(&keyset_id, 0)
+                        .await?,
+                );
 
                 if let Some(swapped_proofs) = self
                     .wallet
@@ -471,6 +484,14 @@ impl<'a> SendSaga<'a, Prepared> {
                 {
                     final_proofs_to_send.extend(swapped_proofs);
                 }
+
+                // Capture counter end after swap
+                counter_end = Some(
+                    self.wallet
+                        .localstore
+                        .increment_keyset_counter(&keyset_id, 0)
+                        .await?,
+                );
             }
 
             if amount > final_proofs_to_send.total_amount()? {
@@ -517,8 +538,8 @@ impl<'a> SendSaga<'a, Prepared> {
             saga.data = OperationData::Send(SendOperationData {
                 amount,
                 memo: options.memo.as_ref().map(|m| m.memo.clone()),
-                counter_start: None,
-                counter_end: None,
+                counter_start,
+                counter_end,
                 token: Some(token.to_string()),
                 proofs: Some(final_proofs_to_send.clone()),
             });

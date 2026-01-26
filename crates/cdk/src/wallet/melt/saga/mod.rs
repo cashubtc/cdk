@@ -497,7 +497,7 @@ impl<'a> MeltSaga<'a, Prepared> {
     /// On failure, compensations revert proof states and release the quote.
     #[instrument(skip_all)]
     pub async fn request_melt_with_options(
-        self,
+        mut self,
         options: MeltConfirmOptions,
     ) -> Result<MeltSaga<'a, MeltRequested>, Error> {
         let operation_id = self.state_data.operation_id;
@@ -583,6 +583,17 @@ impl<'a> MeltSaga<'a, Prepared> {
             .localstore
             .update_proofs(proofs_info, vec![])
             .await?;
+
+        // Add compensation to revert the new proofs if the saga fails later
+        add_compensation(
+            &mut self.compensations,
+            Box::new(RevertProofReservation {
+                localstore: self.wallet.localstore.clone(),
+                proof_ys: final_proofs.ys()?,
+                saga_id: operation_id,
+            }),
+        )
+        .await;
 
         // Calculate change accounting for input fees
         let change_amount = proofs_total - quote_info.amount - actual_input_fee;

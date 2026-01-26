@@ -465,7 +465,10 @@ impl Wallet {
                         payment_request: Some(quote.request.clone()),
                         payment_proof: payment_preimage,
                         payment_method: Some(quote.payment_method.clone()),
-                        saga_id: None,
+                        saga_id: quote
+                            .used_by_operation
+                            .as_ref()
+                            .and_then(|id| Uuid::parse_str(id).ok()),
                     })
                     .await?;
             }

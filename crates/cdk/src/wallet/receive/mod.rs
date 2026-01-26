@@ -39,9 +39,10 @@ impl Wallet {
         proofs: Proofs,
         opts: ReceiveOptions,
         memo: Option<String>,
+        token: Option<String>,
     ) -> Result<Amount, Error> {
         let saga = ReceiveSaga::new(self);
-        let saga = saga.prepare(proofs, opts, memo).await?;
+        let saga = saga.prepare(proofs, opts, memo, token).await?;
         let saga = saga.execute().await?;
         Ok(saga.into_amount())
     }
@@ -92,7 +93,12 @@ impl Wallet {
         ensure_cdk!(self.mint_url == token.mint_url()?, Error::IncorrectMint);
 
         let amount = self
-            .receive_proofs(proofs, opts, token.memo().clone())
+            .receive_proofs(
+                proofs,
+                opts,
+                token.memo().clone(),
+                Some(encoded_token.to_string()),
+            )
             .await?;
 
         Ok(amount)

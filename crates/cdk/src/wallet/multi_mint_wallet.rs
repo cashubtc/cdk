@@ -1967,7 +1967,12 @@ impl MultiMintWallet {
         let mut amount_received = Amount::ZERO;
 
         match wallet
-            .receive_proofs(proofs, opts.receive_options, token_data.memo().clone())
+            .receive_proofs(
+                proofs,
+                opts.receive_options,
+                token_data.memo().clone(),
+                Some(encoded_token.to_string()),
+            )
             .await
         {
             Ok(amount) => {

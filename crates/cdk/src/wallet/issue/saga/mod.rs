@@ -50,7 +50,7 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{nut12, MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
 use crate::util::unix_time;
 use crate::wallet::saga::{
-    add_compensation, clear_compensations, new_compensations, Compensations,
+    add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
 };
 use crate::{Amount, Error, Wallet};
 
@@ -411,7 +411,7 @@ impl<'a> MintSaga<'a, Prepared> {
                     payment_request: Some(quote_info.request.clone()),
                     payment_proof: None,
                     payment_method: Some(payment_method.clone()),
-                    saga_id: None,
+                    saga_id: Some(operation_id),
                 })
                 .await?;
 
@@ -456,7 +456,6 @@ impl<'a> MintSaga<'a, Prepared> {
                         "Mint saga execution failed (definitive): {}. Running compensations.",
                         e
                     );
-                    use crate::wallet::saga::execute_compensations;
                     if let Err(comp_err) = execute_compensations(&mut compensations).await {
                         tracing::error!("Compensation failed: {}", comp_err);
                     }

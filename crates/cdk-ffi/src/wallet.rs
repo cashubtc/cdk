@@ -156,6 +156,7 @@ impl Wallet {
         proofs: Proofs,
         options: ReceiveOptions,
         memo: Option<String>,
+        token: Option<String>,
     ) -> Result<Amount, FfiError> {
         let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
             proofs.into_iter().map(|p| p.try_into()).collect();
@@ -163,7 +164,7 @@ impl Wallet {
 
         let amount = self
             .inner
-            .receive_proofs(cdk_proofs, options.into(), memo)
+            .receive_proofs(cdk_proofs, options.into(), memo, token)
             .await?;
         Ok(amount.into())
     }

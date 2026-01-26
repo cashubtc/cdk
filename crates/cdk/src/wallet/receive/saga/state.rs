@@ -40,6 +40,8 @@ pub struct Prepared {
     pub options: ReceiveOptions,
     /// Memo from the token (if any)
     pub memo: Option<String>,
+    /// Token string (if any)
+    pub token: Option<String>,
     /// Proofs extracted from the token (potentially signed for P2PK/HTLC)
     pub proofs: Proofs,
     /// Total amount of the incoming proofs
