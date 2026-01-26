@@ -102,24 +102,6 @@ impl<T> DerefMut for Acquired<T> {
     }
 }
 
-/// Type alias for dynamic Wallet Database
-#[cfg(feature = "wallet")]
-pub type DynWalletDatabase = std::sync::Arc<dyn WalletDatabase<Error> + Send + Sync>;
-
-// Wallet-specific KVStore type aliases
-/// Wallet Key-Value Store trait object
-#[cfg(feature = "wallet")]
-pub type WalletKVStore = dyn KVStore<Err = Error> + Send + Sync;
-/// Arc-wrapped wallet KV store for shared ownership
-#[cfg(feature = "wallet")]
-pub type DynWalletKVStore = std::sync::Arc<WalletKVStore>;
-/// Wallet Key-Value Store Database trait object
-#[cfg(feature = "wallet")]
-pub type WalletKVStoreDatabase = dyn KVStoreDatabase<Err = Error> + Send + Sync;
-/// Wallet Key-Value Store Transaction trait object
-#[cfg(feature = "wallet")]
-pub type WalletKVStoreTransaction = dyn KVStoreTransaction<Error> + Send + Sync;
-
 /// Data conversion error
 #[derive(thiserror::Error, Debug)]
 pub enum ConversionError {
