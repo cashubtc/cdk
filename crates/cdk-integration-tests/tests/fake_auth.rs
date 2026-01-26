@@ -14,6 +14,7 @@ use cdk::nuts::{
 };
 use cdk::wallet::{AuthHttpClient, AuthMintConnector, HttpClient, MintConnector, WalletBuilder};
 use cdk::{Error, OidcClient};
+use cdk_common::HttpClient as CommonHttpClient;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::fund_wallet;
 use cdk_sqlite::wallet::memory;
@@ -783,15 +784,13 @@ async fn get_access_token(mint_info: &MintInfo) -> (String, String) {
     ];
 
     // Make the token request directly
-    let client = reqwest::Client::new();
-    let response = client
-        .post(token_url)
+    let client = CommonHttpClient::new();
+    let token_response: serde_json::Value = client
+        .post(&token_url)
         .form(&params)
         .send()
         .await
-        .expect("Failed to send token request");
-
-    let token_response: serde_json::Value = response
+        .expect("Failed to send token request")
         .json()
         .await
         .expect("Failed to parse token response");
@@ -840,15 +839,15 @@ async fn get_custom_access_token(
     ];
 
     // Make the token request directly
-    let client = reqwest::Client::new();
+    let client = CommonHttpClient::new();
     let response = client
-        .post(token_url)
+        .post(&token_url)
         .form(&params)
         .send()
         .await
         .map_err(|_| Error::Custom("Failed to send token request".to_string()))?;
 
-    if !response.status().is_success() {
+    if !response.is_success() {
         return Err(Error::Custom(format!(
             "Token request failed with status: {}",
             response.status()
