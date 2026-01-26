@@ -18,6 +18,8 @@ bip39 = { workspace = true }
 cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "bip353", "nostr"] }
 cdk-sqlite = { workspace = true }
 cdk-postgres = { workspace = true, optional = true }
+cdk-npubcash = { workspace = true, optional = true }
+nostr-sdk = { workspace = true, optional = true }
 futures = { workspace = true }
 once_cell = { workspace = true }
 rand = { workspace = true }
@@ -39,9 +41,11 @@ log = "0.4"
 
 
 [features]
-default = ["postgres"]
+default = ["postgres", "npubcash"]
 # Enable Postgres-backed wallet database support in FFI
 postgres = ["cdk-postgres"]
+# Enable NpubCash client bindings
+npubcash = ["cdk-npubcash", "nostr-sdk"]
 
 [dev-dependencies]
 
