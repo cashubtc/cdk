@@ -8,7 +8,6 @@ use cashu::KeySet;
 
 use super::Error;
 use crate::common::ProofInfo;
-use crate::database::KVStoreDatabase;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
@@ -23,7 +22,7 @@ pub mod test;
 /// Wallet Database trait
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait Database<Err>: KVStoreDatabase<Err = Err> + Debug
+pub trait Database<Err>: Debug
 where
     Err: Into<Error> + From<Error>,
 {
@@ -151,6 +150,21 @@ where
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Err>;
 
     // KV Store write methods (non-transactional)
+
+    /// Read a value from the key-value store
+    async fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Err>;
+
+    /// List keys in a namespace
+    async fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, Err>;
 
     /// Write a value to the key-value store
     async fn kv_write(
