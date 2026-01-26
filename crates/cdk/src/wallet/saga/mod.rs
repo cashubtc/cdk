@@ -118,10 +118,26 @@ impl CompensatingAction for RevertProofReservation {
             self.proof_ys.len()
         );
 
-        self.localstore
-            .update_proofs_state(self.proof_ys.clone(), State::Unspent)
+        // Fetch current states to avoid reverting proofs that were already spent
+        // (e.g. by a successful internal swap that occurred before a crash)
+        let current_proofs = self
+            .localstore
+            .get_proofs_by_ys(self.proof_ys.clone())
             .await
             .map_err(Error::Database)?;
+
+        let ys_to_revert: Vec<_> = current_proofs
+            .into_iter()
+            .filter(|p| p.state == State::Reserved || p.state == State::Pending)
+            .map(|p| p.y)
+            .collect();
+
+        if !ys_to_revert.is_empty() {
+            self.localstore
+                .update_proofs_state(ys_to_revert, State::Unspent)
+                .await
+                .map_err(Error::Database)?;
+        }
 
         if let Err(e) = self.localstore.delete_saga(&self.saga_id).await {
             tracing::warn!(

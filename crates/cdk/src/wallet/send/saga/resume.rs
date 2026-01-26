@@ -171,7 +171,6 @@ impl Wallet {
                     "Send saga {} - proofs not spent, token may still be valid",
                     saga_id
                 );
-                self.localstore.delete_saga(saga_id).await?;
                 Ok(RecoveryAction::Recovered)
             }
             Err(e) => {
@@ -390,8 +389,8 @@ mod tests {
             .unwrap();
         assert_eq!(proofs.len(), 1);
 
-        // Saga should be deleted
-        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        // Saga should still exist
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
     }
 
     #[tokio::test]
