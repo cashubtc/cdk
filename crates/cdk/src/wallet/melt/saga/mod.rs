@@ -638,10 +638,7 @@ impl<'a> MeltSaga<'a, Prepared> {
         }
 
         if !self.wallet.localstore.update_saga(saga.clone()).await? {
-            self.compensate().await;
-            return Err(Error::Custom(
-                "Saga version conflict during update".to_string(),
-            ));
+            return Err(Error::ConcurrentUpdate);
         }
 
         Ok(MeltSaga {
