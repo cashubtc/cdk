@@ -335,9 +335,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         // Update saga state - if this fails due to version conflict, another instance
         // is processing this saga, which should not happen during normal operation
         if !self.wallet.localstore.update_saga(saga).await? {
-            return Err(Error::Custom(
-                "Saga version conflict during update - another instance may be processing this saga".to_string(),
-            ));
+            return Err(Error::ConcurrentUpdate);
         }
 
         let swap_response = match self.wallet.client.post_swap(pre_swap.swap_request).await {

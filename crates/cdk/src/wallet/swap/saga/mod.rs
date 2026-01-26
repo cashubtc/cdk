@@ -211,9 +211,7 @@ impl<'a> SwapSaga<'a, Prepared> {
         }
 
         if !self.wallet.localstore.update_saga(saga).await? {
-            return Err(Error::Custom(
-                "Saga version conflict during update - another instance may be processing this saga".to_string(),
-            ));
+            return Err(Error::ConcurrentUpdate);
         }
 
         let swap_response = match self

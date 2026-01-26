@@ -525,9 +525,7 @@ impl<'a> SendSaga<'a, Prepared> {
             saga.update_state(WalletSagaState::Send(SendSagaState::TokenCreated));
 
             if !self.wallet.localstore.update_saga(saga.clone()).await? {
-                return Err(Error::Custom(
-                    "Saga version conflict during update to TokenCreated".to_string(),
-                ));
+                return Err(Error::ConcurrentUpdate);
             }
 
             Ok((token, final_proofs_to_send, saga))
@@ -620,9 +618,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
         }
 
         if !self.wallet.localstore.update_saga(saga).await? {
-            return Err(Error::Custom(
-                "Saga version conflict during rollback lock".to_string(),
-            ));
+            return Err(Error::ConcurrentUpdate);
         }
 
         // 3. Attempt to swap the proofs back to ourselves

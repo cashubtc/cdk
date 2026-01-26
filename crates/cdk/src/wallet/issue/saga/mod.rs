@@ -344,9 +344,7 @@ impl<'a> MintSaga<'a, Prepared> {
             }
 
             if !wallet.localstore.update_saga(updated_saga).await? {
-                return Err(Error::Custom(
-                    "Saga version conflict during update - another instance may be processing this saga".to_string(),
-                ));
+                return Err(Error::ConcurrentUpdate);
             }
 
             let mint_res = wallet
