@@ -101,7 +101,7 @@ async fn main() {
 
         // Send the token
         let prepared_send = wallet.prepare_send(Amount::ONE, SendOptions::default()).await.unwrap();
-        let (token, _send_saga) = prepared_send.confirm(None).await.unwrap();
+        let token = prepared_send.confirm(None).await.unwrap();
 
         println!("{}", token);
     }
