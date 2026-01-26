@@ -78,7 +78,8 @@ use crate::amount::SplitTarget;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{Proofs, State, Token};
 use crate::wallet::saga::{
-    add_compensation, new_compensations, Compensations, RevertProofReservation,
+    add_compensation, execute_compensations, new_compensations, Compensations,
+    RevertProofReservation,
 };
 use crate::wallet::SendKind;
 use crate::{Amount, Error, Wallet};
@@ -431,7 +432,7 @@ impl<'a> SendSaga<'a, Prepared> {
     /// 5. Persists the saga in TokenCreated state (pending send)
     #[instrument(skip(self), err)]
     pub async fn confirm(
-        self,
+        mut self,
         memo: Option<SendMemo>,
     ) -> Result<(Token, SendSaga<'a, TokenCreated>), Error> {
         let operation_id = self.state_data.operation_id;
@@ -444,124 +445,120 @@ impl<'a> SendSaga<'a, Prepared> {
 
         tracing::info!("Confirming prepared send for operation {}", operation_id);
 
-        let total_send_fee = swap_fee + send_fee;
-        let mut final_proofs_to_send = proofs_to_send.clone();
+        let logic_res = async {
+            let total_send_fee = swap_fee + send_fee;
+            let mut final_proofs_to_send = proofs_to_send.clone();
 
-        let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
-        let _keyset_fee_ppk = self
-            .wallet
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
+            let total_send_amount = amount + send_fee;
 
-        let total_send_amount = amount + send_fee;
+            if !proofs_to_swap.is_empty() {
+                let swap_amount = total_send_amount
+                    .checked_sub(final_proofs_to_send.total_amount()?)
+                    .unwrap_or(Amount::ZERO);
 
-        let memo_text = options.memo.as_ref().map(|m| m.memo.clone());
-        let mut saga = self.state_data.saga.clone();
-        saga.update_state(WalletSagaState::Send(SendSagaState::TokenCreated));
-        if let OperationData::Send(ref mut data) = saga.data {
-            data.memo = memo_text;
-        }
+                tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
 
-        if !self.wallet.localstore.update_saga(saga.clone()).await? {
-            return Err(Error::Custom(
-                "Saga version conflict during update".to_string(),
-            ));
-        }
-
-        if !proofs_to_swap.is_empty() {
-            let swap_amount = total_send_amount
-                .checked_sub(final_proofs_to_send.total_amount()?)
-                .unwrap_or(Amount::ZERO);
-
-            tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
-
-            if let Some(swapped_proofs) = self
-                .wallet
-                .swap(
-                    Some(swap_amount),
-                    SplitTarget::None,
-                    proofs_to_swap,
-                    options.conditions.clone(),
-                    false,
-                )
-                .await?
-            {
-                final_proofs_to_send.extend(swapped_proofs);
+                if let Some(swapped_proofs) = self
+                    .wallet
+                    .swap(
+                        Some(swap_amount),
+                        SplitTarget::None,
+                        proofs_to_swap,
+                        options.conditions.clone(),
+                        false,
+                    )
+                    .await?
+                {
+                    final_proofs_to_send.extend(swapped_proofs);
+                }
             }
-        }
 
-        if amount > final_proofs_to_send.total_amount()? {
-            let all_ys = final_proofs_to_send.ys()?;
+            if amount > final_proofs_to_send.total_amount()? {
+                return Err(Error::InsufficientFunds);
+            }
+
             self.wallet
                 .localstore
-                .update_proofs_state(all_ys, State::Unspent)
+                .update_proofs_state(final_proofs_to_send.ys()?, State::PendingSpent)
                 .await?;
-            let _ = self.wallet.localstore.delete_saga(&operation_id).await;
-            return Err(Error::InsufficientFunds);
-        }
 
-        self.wallet
-            .localstore
-            .update_proofs_state(final_proofs_to_send.ys()?, State::PendingSpent)
-            .await?;
+            let send_memo = options.memo.clone().or(memo);
+            let token_memo =
+                send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
 
-        let send_memo = options.memo.clone().or(memo);
-        let token_memo = send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
+            self.wallet
+                .localstore
+                .add_transaction(Transaction {
+                    mint_url: self.wallet.mint_url.clone(),
+                    direction: TransactionDirection::Outgoing,
+                    amount,
+                    fee: total_send_fee,
+                    unit: self.wallet.unit.clone(),
+                    ys: final_proofs_to_send.ys()?,
+                    timestamp: unix_time(),
+                    memo: token_memo.clone(),
+                    metadata: options.metadata.clone(),
+                    quote_id: None,
+                    payment_request: None,
+                    payment_proof: None,
+                    payment_method: None,
+                    saga_id: Some(operation_id),
+                })
+                .await?;
 
-        self.wallet
-            .localstore
-            .add_transaction(Transaction {
-                mint_url: self.wallet.mint_url.clone(),
-                direction: TransactionDirection::Outgoing,
+            let token = Token::new(
+                self.wallet.mint_url.clone(),
+                final_proofs_to_send.clone(),
+                token_memo,
+                self.wallet.unit.clone(),
+            );
+
+            let mut saga = self.state_data.saga.clone();
+            saga.data = OperationData::Send(SendOperationData {
                 amount,
-                fee: total_send_fee,
-                unit: self.wallet.unit.clone(),
-                ys: final_proofs_to_send.ys()?,
-                timestamp: unix_time(),
-                memo: token_memo.clone(),
-                metadata: options.metadata.clone(),
-                quote_id: None,
-                payment_request: None,
-                payment_proof: None,
-                payment_method: None,
-                saga_id: Some(operation_id),
-            })
-            .await?;
+                memo: options.memo.as_ref().map(|m| m.memo.clone()),
+                counter_start: None,
+                counter_end: None,
+                token: Some(token.to_string()),
+                proofs: Some(final_proofs_to_send.clone()),
+            });
+            saga.update_state(WalletSagaState::Send(SendSagaState::TokenCreated));
 
-        let token = Token::new(
-            self.wallet.mint_url.clone(),
-            final_proofs_to_send.clone(),
-            token_memo,
-            self.wallet.unit.clone(),
-        );
+            if !self.wallet.localstore.update_saga(saga.clone()).await? {
+                return Err(Error::Custom(
+                    "Saga version conflict during update to TokenCreated".to_string(),
+                ));
+            }
 
-        saga.data = OperationData::Send(SendOperationData {
-            amount,
-            memo: options.memo.as_ref().map(|m| m.memo.clone()),
-            counter_start: None,
-            counter_end: None,
-            token: Some(token.to_string()),
-            proofs: Some(final_proofs_to_send.clone()),
-        });
-        saga.update_state(WalletSagaState::Send(SendSagaState::TokenCreated));
-
-        if !self.wallet.localstore.update_saga(saga.clone()).await? {
-            return Err(Error::Custom(
-                "Saga version conflict during final update".to_string(),
-            ));
+            Ok((token, final_proofs_to_send, saga))
         }
+        .await;
 
-        let send_saga = SendSaga {
-            wallet: self.wallet,
-            compensations: self.compensations,
-            state_data: TokenCreated {
-                operation_id,
-                proofs: final_proofs_to_send,
-                saga,
-            },
-        };
+        match logic_res {
+            Ok((token, final_proofs_to_send, saga)) => {
+                let send_saga = SendSaga {
+                    wallet: self.wallet,
+                    compensations: self.compensations,
+                    state_data: TokenCreated {
+                        operation_id,
+                        proofs: final_proofs_to_send,
+                        saga,
+                    },
+                };
 
-        Ok((token, send_saga))
+                Ok((token, send_saga))
+            }
+            Err(e) => {
+                if e.is_definitive_failure() {
+                    tracing::warn!(
+                        "Send saga confirmation failed (definitive): {}. Running compensations.",
+                        e
+                    );
+                    execute_compensations(&mut self.compensations).await?;
+                }
+                Err(e)
+            }
+        }
     }
 
     /// Cancel the prepared send and release reserved proofs

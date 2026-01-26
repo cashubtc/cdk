@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -117,7 +116,6 @@ pub struct Wallet {
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
-    in_error_swap_reverted_proofs: Arc<AtomicBool>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

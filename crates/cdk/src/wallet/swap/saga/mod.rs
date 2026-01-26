@@ -218,21 +218,17 @@ impl<'a> SwapSaga<'a, Prepared> {
 
         let swap_response = match self
             .wallet
-            .try_proof_operation_or_reclaim(
-                self.state_data.pre_swap.swap_request.inputs().clone(),
-                self.wallet
-                    .client
-                    .post_swap(self.state_data.pre_swap.swap_request.clone()),
-            )
+            .client
+            .post_swap(self.state_data.pre_swap.swap_request.clone())
             .await
         {
             Ok(response) => response,
             Err(err) => {
                 if err.is_definitive_failure() {
-                    tracing::error!("Swap failed (definitive): {}", err);
+                    tracing::error!("Failed to post swap request (definitive): {}", err);
                     execute_compensations(&mut self.compensations).await?;
                 } else {
-                    tracing::warn!("Swap failed (ambiguous): {}.", err,);
+                    tracing::warn!("Failed to post swap request (ambiguous): {}.", err,);
                 }
                 return Err(err);
             }
