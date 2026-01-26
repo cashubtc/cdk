@@ -11,6 +11,8 @@ pub mod task;
 pub mod common;
 pub mod database;
 pub mod error;
+#[cfg(feature = "http")]
+pub mod http;
 #[cfg(feature = "mint")]
 pub mod melt;
 #[cfg(feature = "mint")]
@@ -36,5 +38,7 @@ pub use cashu::{dhke, ensure_cdk, mint_url, secret, util, SECP256K1};
 // Re-export common types
 pub use common::FinalizedMelt;
 pub use error::Error;
+#[cfg(feature = "http")]
+pub use http::{HttpClient, HttpClientBuilder, HttpError};
 /// Re-export parking_lot for reuse
 pub use parking_lot;

@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use cdk_common::http::HttpClient;
 use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet};
 use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
-use reqwest::Client;
 use serde::Deserialize;
 #[cfg(feature = "wallet")]
 use serde::Serialize;
@@ -17,10 +17,10 @@ use tracing::instrument;
 /// OIDC Error
 #[derive(Debug, Error)]
 pub enum Error {
-    /// From Reqwest error
+    /// From HTTP error
     #[error(transparent)]
-    Reqwest(#[from] reqwest::Error),
-    /// From Reqwest error
+    Http(#[from] cdk_common::HttpError),
+    /// From JWT error
     #[error(transparent)]
     Jwt(#[from] jsonwebtoken::errors::Error),
     /// Missing kid header
@@ -56,7 +56,7 @@ pub struct OidcConfig {
 /// Http Client
 #[derive(Debug, Clone)]
 pub struct OidcClient {
-    client: Client,
+    client: HttpClient,
     openid_discovery: String,
     client_id: Option<String>,
     oidc_config: Arc<RwLock<Option<OidcConfig>>>,
@@ -91,7 +91,7 @@ impl OidcClient {
     /// Create new [`OidcClient`]
     pub fn new(openid_discovery: String, client_id: Option<String>) -> Self {
         Self {
-            client: Client::new(),
+            client: HttpClient::new(),
             openid_discovery,
             client_id,
             oidc_config: Arc::new(RwLock::new(None)),
@@ -103,13 +103,7 @@ impl OidcClient {
     #[instrument(skip(self))]
     pub async fn get_oidc_config(&self) -> Result<OidcConfig, Error> {
         tracing::debug!("Getting oidc config");
-        let oidc_config = self
-            .client
-            .get(&self.openid_discovery)
-            .send()
-            .await?
-            .json::<OidcConfig>()
-            .await?;
+        let oidc_config: OidcConfig = self.client.fetch(&self.openid_discovery).await?;
 
         let mut current_config = self.oidc_config.write().await;
 
@@ -122,13 +116,7 @@ impl OidcClient {
     #[instrument(skip(self))]
     pub async fn get_jwkset(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
         tracing::debug!("Getting jwks set");
-        let jwks_set = self
-            .client
-            .get(jwks_uri)
-            .send()
-            .await?
-            .json::<JwkSet>()
-            .await?;
+        let jwks_set: JwkSet = self.client.fetch(jwks_uri).await?;
 
         let mut current_set = self.jwks_set.write().await;
 
@@ -248,14 +236,7 @@ impl OidcClient {
             refresh_token,
         };
 
-        let response = self
-            .client
-            .post(token_url)
-            .form(&request)
-            .send()
-            .await?
-            .json::<TokenResponse>()
-            .await?;
+        let response: TokenResponse = self.client.post_form(&token_url, &request).await?;
 
         Ok(response)
     }

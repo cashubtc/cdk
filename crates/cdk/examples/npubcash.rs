@@ -136,19 +136,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Request an invoice via LNURL-pay
 async fn request_invoice(npub: &str, amount_msats: u64) -> Result<(), Box<dyn std::error::Error>> {
-    let http_client = reqwest::Client::new();
+    let http_client = cdk_common::HttpClient::new();
 
     let lnurlp_url = format!("{}/.well-known/lnurlp/{}", NPUBCASH_URL, npub);
-    let lnurlp_response: serde_json::Value =
-        http_client.get(&lnurlp_url).send().await?.json().await?;
+    let lnurlp_response: serde_json::Value = http_client.fetch(&lnurlp_url).await?;
 
     let callback = lnurlp_response["callback"]
         .as_str()
         .ok_or("No callback URL")?;
 
     let invoice_url = format!("{}?amount={}", callback, amount_msats);
-    let invoice_response: serde_json::Value =
-        http_client.get(&invoice_url).send().await?.json().await?;
+    let invoice_response: serde_json::Value = http_client.fetch(&invoice_url).await?;
 
     let pr = invoice_response["pr"]
         .as_str()

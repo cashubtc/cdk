@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use reqwest::Client as HttpClient;
+use cdk_common::http::{HttpClient, RawResponse};
 use tracing::instrument;
 
 use crate::auth::JwtAuthProvider;
@@ -200,11 +200,11 @@ impl NpubCashClient {
         let status = response.status();
 
         // Handle error responses
-        if !status.is_success() {
+        if !response.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             return Err(Error::Api {
                 message: error_text,
-                status: status.as_u16(),
+                status,
             });
         }
 
@@ -274,7 +274,7 @@ impl NpubCashClient {
     }
 
     /// Parse the HTTP response and deserialize the JSON body
-    async fn parse_response<T>(&self, response: reqwest::Response) -> Result<T>
+    async fn parse_response<T>(&self, response: RawResponse) -> Result<T>
     where
         T: serde::de::DeserializeOwned,
     {
@@ -284,11 +284,11 @@ impl NpubCashClient {
         let response_text = response.text().await?;
 
         // Handle error status codes
-        if !status.is_success() {
+        if !(200..300).contains(&status) {
             tracing::debug!("Error response ({}): {}", status, response_text);
             return Err(Error::Api {
                 message: response_text,
-                status: status.as_u16(),
+                status,
             });
         }
 
