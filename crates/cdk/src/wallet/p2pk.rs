@@ -1,3 +1,4 @@
+//! This module provides deterministic public key generation.
 use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
