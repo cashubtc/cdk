@@ -1,5 +1,5 @@
 use anyhow::Result;
-use cdk_common::HttpClient;
+use cdk_http_client::HttpClient;
 use cdk_integration_tests::get_mint_url_from_env;
 
 #[tokio::test]

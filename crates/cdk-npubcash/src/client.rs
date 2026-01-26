@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use cdk_common::http::{HttpClient, RawResponse};
+use cdk_http_client::{HttpClient, RawResponse};
 use tracing::instrument;
 
 use crate::auth::JwtAuthProvider;

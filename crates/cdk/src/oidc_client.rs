@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use cdk_common::http::HttpClient;
+use cdk_common::HttpClient;
 use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet};
 use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use serde::Deserialize;

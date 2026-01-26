@@ -108,7 +108,7 @@ impl JwtAuthProvider {
         &self,
         auth_url: &str,
         nostr_token: &str,
-    ) -> Result<cdk_common::http::RawResponse> {
+    ) -> Result<cdk_common::RawResponse> {
         tracing::debug!("Sending request to: {}", auth_url);
         tracing::debug!(
             "Authorization header: Nostr {}",
@@ -130,7 +130,7 @@ impl JwtAuthProvider {
     }
 
     /// Parse the JWT response from the API
-    async fn parse_jwt_response(&self, response: cdk_common::http::RawResponse) -> Result<String> {
+    async fn parse_jwt_response(&self, response: cdk_common::RawResponse) -> Result<String> {
         let status = response.status();
 
         if !response.is_success() {

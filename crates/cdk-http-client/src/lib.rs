@@ -1,12 +1,12 @@
-//! HTTP client abstraction
+//! HTTP client abstraction for CDK
 //!
-//! This module provides an HTTP client wrapper that abstracts the underlying HTTP library (reqwest).
-//! Using this module allows other crates to avoid direct dependencies on reqwest.
+//! This crate provides an HTTP client wrapper that abstracts the underlying HTTP library (reqwest).
+//! Using this crate allows other CDK crates to avoid direct dependencies on reqwest.
 //!
 //! # Example
 //!
 //! ```no_run
-//! use cdk_common::http::{HttpClient, Response};
+//! use cdk_http_client::{HttpClient, Response};
 //! use serde::Deserialize;
 //!
 //! #[derive(Deserialize)]

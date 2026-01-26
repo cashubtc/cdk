@@ -19,9 +19,10 @@ wallet = ["cashu/wallet", "dep:uuid"]
 mint = ["cashu/mint", "dep:uuid"]
 nostr = ["wallet", "cashu/nostr"]
 prometheus = ["cdk-prometheus/default"]
-http = ["dep:reqwest", "dep:regex"]
+http = ["dep:cdk-http-client"]
 
 [dependencies]
+cdk-http-client = { workspace = true, optional = true }
 async-trait.workspace = true
 bitcoin.workspace = true
 cashu.workspace = true
@@ -43,10 +44,8 @@ serde_with.workspace = true
 web-time.workspace = true
 parking_lot = "0.12.5"
 paste = "1.0.15"
-regex = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest = { workspace = true, optional = true }
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "test-util", "sync"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -55,7 +54,6 @@ getrandom = { version = "0.2", features = ["js"] }
 tokio.workspace = true
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["json"], optional = true }
 
 [dev-dependencies]
 rand.workspace = true

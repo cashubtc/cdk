@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use cdk_common::HttpClient;
+use cdk_http_client::HttpClient;
 use cdk_fake_wallet::create_fake_invoice;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
