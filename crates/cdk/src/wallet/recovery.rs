@@ -642,7 +642,7 @@ mod tests {
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
-                token: "cashu...".to_string(),
+                token: Some("cashu...".to_string()),
                 counter_start: None,
                 counter_end: None,
                 amount: Some(Amount::from(100)),

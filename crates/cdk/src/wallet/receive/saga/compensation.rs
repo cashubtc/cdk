@@ -80,7 +80,7 @@ mod tests {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
-                token: "test_token".to_string(),
+                token: Some("test_token".to_string()),
                 amount: Some(Amount::from(1000)),
                 counter_start: Some(0),
                 counter_end: Some(10),

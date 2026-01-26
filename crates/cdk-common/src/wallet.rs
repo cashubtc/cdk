@@ -792,7 +792,7 @@ pub struct SendOperationData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReceiveOperationData {
     /// Token to receive
-    pub token: String,
+    pub token: Option<String>,
     /// Derivation counter start
     pub counter_start: Option<u32>,
     /// Derivation counter end

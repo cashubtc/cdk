@@ -102,6 +102,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
         proofs: Proofs,
         opts: ReceiveOptions,
         memo: Option<String>,
+        token: Option<String>,
     ) -> Result<ReceiveSaga<'a, Prepared>, Error> {
         tracing::info!(
             "Preparing receive for {} proofs with operation {}",
@@ -190,6 +191,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                 operation_id: self.state_data.operation_id,
                 options: opts,
                 memo,
+                token,
                 proofs,
                 proofs_amount,
                 active_keyset_id,
@@ -262,7 +264,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Receive(ReceiveOperationData {
-                token: String::new(),
+                token: self.state_data.token.clone(),
                 counter_start: None,
                 counter_end: None,
                 amount: Some(self.state_data.proofs_amount),
@@ -402,7 +404,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 payment_request: None,
                 payment_proof: None,
                 payment_method: None,
-                saga_id: None,
+                saga_id: Some(operation_id),
             })
             .await?;
 

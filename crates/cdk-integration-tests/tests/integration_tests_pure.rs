@@ -131,6 +131,7 @@ async fn test_swap_to_send() {
             token_proofs.clone(),
             ReceiveOptions::default(),
             token.memo().clone(),
+            Some(token.to_string()),
         )
         .await
         .expect("Failed to receive proofs");
