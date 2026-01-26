@@ -75,6 +75,16 @@ pub type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 /// Re-export subscription
 pub use cdk_common::subscription;
+/// Re-export HTTP client types from cdk-http-client (via cdk-common)
+#[cfg(any(feature = "wallet", feature = "mint"))]
+pub mod http_client {
+    //! HTTP client abstraction
+    //!
+    //! Re-exports from [`cdk_http_client`] for making HTTP requests.
+    pub use cdk_common::{
+        fetch, HttpClient, HttpClientBuilder, HttpError, RawResponse, RequestBuilder, Response,
+    };
+}
 /// Re-export futures::Stream
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub use futures::{Stream, StreamExt};

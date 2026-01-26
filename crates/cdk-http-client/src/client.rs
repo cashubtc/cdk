@@ -3,9 +3,9 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use super::error::HttpError;
-use super::request::RequestBuilder;
-use super::response::{RawResponse, Response};
+use crate::error::HttpError;
+use crate::request::RequestBuilder;
+use crate::response::{RawResponse, Response};
 
 /// HTTP client wrapper
 #[derive(Debug, Clone)]
@@ -224,4 +224,110 @@ impl HttpClientBuilder {
 /// Convenience function for simple GET requests (replaces reqwest::get)
 pub async fn fetch<R: DeserializeOwned>(url: &str) -> Response<R> {
     HttpClient::new().fetch(url).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_client_new() {
+        let client = HttpClient::new();
+        // Client should be constructable without panicking
+        let _ = format!("{:?}", client);
+    }
+
+    #[test]
+    fn test_client_default() {
+        let client = HttpClient::default();
+        // Default should produce a valid client
+        let _ = format!("{:?}", client);
+    }
+
+    #[test]
+    fn test_builder_returns_builder() {
+        let builder = HttpClient::builder();
+        let _ = format!("{:?}", builder);
+    }
+
+    #[test]
+    fn test_builder_build() {
+        let result = HttpClientBuilder::default().build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_from_reqwest() {
+        let reqwest_client = reqwest::Client::new();
+        let client = HttpClient::from_reqwest(reqwest_client);
+        let _ = format!("{:?}", client);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    mod non_wasm {
+        use super::*;
+
+        #[test]
+        fn test_builder_accept_invalid_certs() {
+            let result = HttpClientBuilder::default()
+                .danger_accept_invalid_certs(true)
+                .build();
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_builder_accept_invalid_certs_false() {
+            let result = HttpClientBuilder::default()
+                .danger_accept_invalid_certs(false)
+                .build();
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_builder_proxy() {
+            let proxy_url =
+                url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+            let result = HttpClientBuilder::default().proxy(proxy_url).build();
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_builder_proxy_with_valid_matcher() {
+            let proxy_url =
+                url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+            let result = HttpClientBuilder::default()
+                .proxy_with_matcher(proxy_url, r".*\.example\.com$");
+            assert!(result.is_ok());
+
+            let builder = result.expect("Valid matcher should succeed");
+            let client_result = builder.build();
+            assert!(client_result.is_ok());
+        }
+
+        #[test]
+        fn test_builder_proxy_with_invalid_matcher() {
+            let proxy_url =
+                url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+            // Invalid regex pattern (unclosed bracket)
+            let result = HttpClientBuilder::default().proxy_with_matcher(proxy_url, r"[invalid");
+            assert!(result.is_err());
+
+            if let Err(HttpError::Proxy(msg)) = result {
+                assert!(msg.contains("Invalid proxy pattern"));
+            } else {
+                panic!("Expected HttpError::Proxy");
+            }
+        }
+
+        #[test]
+        fn test_builder_chained_config() {
+            let proxy_url =
+                url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+            let result = HttpClientBuilder::default()
+                .danger_accept_invalid_certs(true)
+                .proxy(proxy_url)
+                .build();
+            assert!(result.is_ok());
+        }
+    }
 }

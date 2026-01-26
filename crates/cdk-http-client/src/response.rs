@@ -2,7 +2,7 @@
 
 use serde::de::DeserializeOwned;
 
-use super::error::HttpError;
+use crate::error::HttpError;
 
 /// HTTP Response type - generic over the body type R and error type E
 /// This is the primary return type for all HTTP operations
@@ -61,5 +61,25 @@ impl RawResponse {
             .await
             .map(|b| b.to_vec())
             .map_err(HttpError::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Note: RawResponse tests require a real reqwest::Response,
+    // so they are in tests/integration.rs using mockito.
+
+    #[test]
+    fn test_response_type_is_result() {
+        // Response<R, E> is just a type alias for Result<R, E>
+        let success: Response<i32> = Ok(42);
+        assert!(success.is_ok());
+        assert!(matches!(success, Ok(42)));
+
+        let error: Response<i32> = Err(HttpError::Timeout);
+        assert!(error.is_err());
+        assert!(matches!(error, Err(HttpError::Timeout)));
     }
 }

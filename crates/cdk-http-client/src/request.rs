@@ -3,8 +3,8 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use super::error::HttpError;
-use super::response::{RawResponse, Response};
+use crate::error::HttpError;
+use crate::response::{RawResponse, Response};
 
 /// HTTP request builder for complex requests
 #[derive(Debug)]

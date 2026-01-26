@@ -1,0 +1,32 @@
+[package]
+name = "cdk-http-client"
+version.workspace = true
+authors = ["CDK Developers"]
+description = "HTTP client abstraction for CDK"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "README.md"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { workspace = true }
+regex = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+mockito = "1"
+serde = { workspace = true }
+
+[lints]
+workspace = true
