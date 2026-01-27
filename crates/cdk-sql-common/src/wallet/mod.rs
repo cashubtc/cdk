@@ -500,7 +500,7 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+    async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -1283,6 +1283,23 @@ where
 
     // KV Store write methods (non-transactional)
 
+    async fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, database::Error> {
+        crate::keyvalue::kv_read(&self.pool, primary_namespace, secondary_namespace, key).await
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, database::Error> {
+        crate::keyvalue::kv_list(&self.pool, primary_namespace, secondary_namespace).await
+    }
+
     async fn kv_write(
         &self,
         primary_namespace: &str,
@@ -1554,31 +1571,4 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             .transpose()
             .map_err(Error::from)?,
     })
-}
-
-// KVStore implementations for wallet
-
-#[async_trait]
-impl<RM> database::KVStoreDatabase for SQLWalletDatabase<RM>
-where
-    RM: DatabasePool + 'static,
-{
-    type Err = Error;
-
-    async fn kv_read(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-    ) -> Result<Option<Vec<u8>>, Error> {
-        crate::keyvalue::kv_read(&self.pool, primary_namespace, secondary_namespace, key).await
-    }
-
-    async fn kv_list(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-    ) -> Result<Vec<String>, Error> {
-        crate::keyvalue::kv_list(&self.pool, primary_namespace, secondary_namespace).await
-    }
 }

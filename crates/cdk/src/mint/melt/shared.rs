@@ -6,7 +6,8 @@
 //!
 //! The functions here ensure consistency between these two code paths.
 
-use cdk_common::database::{self, Acquired, DynMintDatabase};
+use cdk_common::database::mint::Acquired;
+use cdk_common::database::{self, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, State};
 use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
 use cdk_signatory::signatory::SignatoryKeySet;

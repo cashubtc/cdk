@@ -3,9 +3,9 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::database::mint::LockedMeltQuotes;
+use cdk_common::database::mint::{Acquired, LockedMeltQuotes};
 use cdk_common::database::{
-    self, Acquired, ConversionError, Error, MintQuotesDatabase, MintQuotesTransaction,
+    self, ConversionError, Error, MintQuotesDatabase, MintQuotesTransaction,
 };
 use cdk_common::mint::{
     self, IncomingPayment, Issuance, MeltPaymentRequest, MeltQuote, MintQuote, Operation,

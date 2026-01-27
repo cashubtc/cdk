@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::common::ProofInfo;
-use cdk_common::database::{validate_kvstore_params, KVStoreDatabase, WalletDatabase};
+use cdk_common::database::{validate_kvstore_params, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::util::unix_time;
@@ -312,7 +312,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             .collect())
     }
 
-    async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+    async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
@@ -945,7 +945,58 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         Ok(())
     }
 
-    // KV Store write methods (non-transactional)
+    // KV Store methods
+
+    #[instrument(skip(self))]
+    async fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, database::Error> {
+        // Validate parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
+
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
+
+        let result = table
+            .get((primary_namespace, secondary_namespace, key))
+            .map_err(Error::from)?
+            .map(|v| v.value().to_vec());
+
+        Ok(result)
+    }
+
+    #[instrument(skip(self))]
+    async fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, database::Error> {
+        // Validate parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
+
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
+
+        let start = (primary_namespace, secondary_namespace, "");
+        let iter = table.range(start..).map_err(Error::from)?;
+
+        let mut keys = Vec::new();
+
+        for item in iter {
+            let (key, _) = item.map_err(Error::from)?;
+            let (p, s, k) = key.value();
+            if p == primary_namespace && s == secondary_namespace {
+                keys.push(k.to_string());
+            } else {
+                break;
+            }
+        }
+
+        Ok(keys)
+    }
 
     #[instrument(skip(self, value))]
     async fn kv_write(
@@ -990,58 +1041,6 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         write_txn.commit().map_err(Error::from)?;
 
         Ok(())
-    }
-}
-
-#[async_trait]
-impl KVStoreDatabase for WalletRedbDatabase {
-    type Err = database::Error;
-
-    #[instrument(skip_all)]
-    async fn kv_read(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-    ) -> Result<Option<Vec<u8>>, Self::Err> {
-        // Validate parameters according to KV store requirements
-        validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
-
-        let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
-
-        let result = table
-            .get((primary_namespace, secondary_namespace, key))
-            .map_err(Error::from)?
-            .map(|v| v.value().to_vec());
-
-        Ok(result)
-    }
-
-    #[instrument(skip_all)]
-    async fn kv_list(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-    ) -> Result<Vec<String>, Self::Err> {
-        validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
-
-        let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn.open_table(KV_STORE_TABLE).map_err(Error::from)?;
-
-        let mut keys = Vec::new();
-        let start = (primary_namespace, secondary_namespace, "");
-
-        for result in table.range(start..).map_err(Error::from)? {
-            let (key_tuple, _) = result.map_err(Error::from)?;
-            let (primary_from_db, secondary_from_db, k) = key_tuple.value();
-            if primary_from_db != primary_namespace || secondary_from_db != secondary_namespace {
-                break;
-            }
-            keys.push(k.to_string());
-        }
-
-        Ok(keys)
     }
 }
 
