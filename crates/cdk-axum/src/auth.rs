@@ -179,8 +179,8 @@ pub async fn post_mint_auth(
 
 /// Check state of blind auth proofs
 ///
-/// This endpoint allows external apps to check if BATs are valid and unspent
-/// without consuming them. Use this to verify a BAT before accepting it.
+/// This endpoint allows external apps to check if Blind Auth Tokens are valid and unspent
+/// without consuming them. Use this to verify a Blind Auth Token before accepting it.
 #[cfg_attr(feature = "swagger", utoipa::path(
     post,
     context_path = "/v1/auth",
