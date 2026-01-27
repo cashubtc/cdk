@@ -9,7 +9,7 @@
 pub mod database;
 pub mod error;
 pub mod logging;
-pub mod multi_mint_wallet;
+pub mod wallet_repository;
 #[cfg(feature = "npubcash")]
 pub mod npubcash;
 #[cfg(feature = "postgres")]
@@ -22,7 +22,7 @@ pub mod wallet;
 pub use database::*;
 pub use error::*;
 pub use logging::*;
-pub use multi_mint_wallet::*;
+pub use wallet_repository::*;
 #[cfg(feature = "npubcash")]
 pub use npubcash::*;
 pub use types::*;

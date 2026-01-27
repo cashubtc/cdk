@@ -4,8 +4,8 @@ use anyhow::{anyhow, Result};
 use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::PaymentMethod;
-use cdk::wallet::MultiMintWallet;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use cdk::wallet::WalletRepository;
 use cdk::{Amount, StreamExt};
 use cdk_common::nut00::KnownMethod;
 use clap::Args;
@@ -40,13 +40,14 @@ pub struct MintSubCommand {
 }
 
 pub async fn mint(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     sub_command_args: &MintSubCommand,
+    unit: &CurrencyUnit,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
     let description: Option<String> = sub_command_args.description.clone();
 
-    let wallet = get_or_create_wallet(multi_mint_wallet, &mint_url).await?;
+    let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
 
     let payment_method = PaymentMethod::from_str(&sub_command_args.method)?;
 

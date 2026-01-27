@@ -1,9 +1,9 @@
 use anyhow::Result;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::wallet::multi_mint_wallet::MultiMintWallet;
+use cdk::wallet::WalletRepository;
 
-pub async fn check_pending(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
-    let wallets = multi_mint_wallet.get_wallets().await;
+pub async fn check_pending(wallet_repository: &WalletRepository) -> Result<()> {
+    let wallets = wallet_repository.get_wallets().await;
 
     for (i, wallet) in wallets.iter().enumerate() {
         let mint_url = wallet.mint_url.clone();

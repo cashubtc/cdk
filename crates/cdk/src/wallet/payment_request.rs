@@ -22,9 +22,7 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
 use crate::nuts::nut18::Nut10SecretRequest;
 use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
-#[cfg(feature = "nostr")]
-use crate::wallet::MultiMintReceiveOptions;
-use crate::wallet::{MultiMintWallet, SendOptions};
+use crate::wallet::{ReceiveOptions, SendOptions, WalletRepository};
 use crate::Wallet;
 
 impl Wallet {
@@ -245,8 +243,8 @@ pub struct NostrWaitInfo {
     pub pubkey: nostr_sdk::PublicKey,
 }
 
-impl MultiMintWallet {
-    /// Pay a NUT-18 PaymentRequest using the MultiMintWallet.
+impl WalletRepository {
+    /// Pay a NUT-18 PaymentRequest using the WalletRepository.
     ///
     /// This method handles paying a payment request by selecting an appropriate mint:
     /// - If `mint_url` is provided, it verifies the payment request accepts that mint
@@ -625,8 +623,11 @@ impl MultiMintWallet {
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
     #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
+        use std::str::FromStr;
+
         use futures::StreamExt;
 
+        use crate::nuts::CurrencyUnit;
         use crate::wallet::streams::nostr::NostrPaymentEventStream;
 
         let NostrWaitInfo {
@@ -645,19 +646,25 @@ impl MultiMintWallet {
             match item {
                 Ok(payload) => {
                     let token = crate::nuts::Token::new(
-                        payload.mint,
+                        payload.mint.clone(),
                         payload.proofs,
                         payload.memo,
-                        payload.unit,
+                        payload.unit.clone(),
                     );
 
-                    let amount = self
-                        .receive(&token.to_string(), MultiMintReceiveOptions::default())
+                    // Get or create wallet for the token's mint
+                    let unit = payload.unit.clone();
+                    let wallet = self.get_or_create_wallet(&payload.mint, unit).await?;
+
+                    // Receive using the individual wallet
+                    let token_str = token.to_string();
+                    let received = wallet
+                        .receive(&token_str, ReceiveOptions::default())
                         .await?;
 
                     // Stop after first successful receipt
                     cancel.cancel();
-                    return Ok(amount);
+                    return Ok(received.into());
                 }
                 Err(_) => {
                     // Keep listening on parse errors; if you prefer fail-fast, return the error
@@ -676,6 +683,8 @@ impl MultiMintWallet {
     #[cfg(all(feature = "nostr", target_arch = "wasm32"))]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
         use nostr_sdk::prelude::*;
+
+        use crate::nuts::CurrencyUnit;
 
         let NostrWaitInfo {
             keys,
@@ -711,17 +720,24 @@ impl MultiMintWallet {
                         match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {
                             Ok(payload) => {
                                 let token = crate::nuts::Token::new(
-                                    payload.mint,
+                                    payload.mint.clone(),
                                     payload.proofs,
                                     payload.memo,
-                                    payload.unit,
+                                    payload.unit.clone(),
                                 );
 
-                                let amount = self
-                                    .receive(&token.to_string(), MultiMintReceiveOptions::default())
+                                // Get or create wallet for the token's mint
+                                let unit = payload.unit.unwrap_or(CurrencyUnit::Sat);
+                                let wallet =
+                                    self.get_or_create_wallet(&payload.mint, unit).await?;
+
+                                // Receive using the individual wallet
+                                let token_str = token.to_string();
+                                let received = wallet
+                                    .receive(&token_str, ReceiveOptions::default())
                                     .await?;
 
-                                return Ok(amount);
+                                return Ok(received.total_amount());
                             }
                             Err(_) => {
                                 // Ignore malformed payloads and continue listening
