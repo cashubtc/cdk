@@ -11,7 +11,7 @@
 //! ```rust,no_run
 //! # async fn example(wallet: &cdk::wallet::Wallet) -> anyhow::Result<()> {
 //! use std::collections::HashMap;
-//! let quote = wallet.melt_quote("lnbc...".to_string(), None).await?;
+//! let quote = wallet.melt_quote(PaymentMethod::BOLT11, "lnbc...", None, None).await?;
 //!
 //! // Prepare the melt - proofs are reserved but payment not yet executed
 //! let prepared = wallet.prepare_melt(&quote.id, HashMap::new()).await?;
@@ -536,31 +536,36 @@ impl Wallet {
             self.melt_lightning_address_quote(address, amount).await
         }
     }
-    /// Unified melt quote method for all payment methods
+    /// Melt quote for all payment methods
     ///
-    /// Routes to the appropriate handler based on the payment method.
-    /// For custom payment methods, you can pass extra JSON data that will be
-    /// forwarded to the payment processor.
-    ///
-    /// # Arguments
-    /// * `method` - Payment method to use (bolt11, bolt12, or custom)
-    /// * `request` - Payment request string (invoice, offer, or custom format)
-    /// * `options` - Optional melt options (MPP, amountless, etc.)
-    /// * `extra` - Optional extra payment-method-specific data as JSON (for custom methods)
-    pub async fn melt_quote_unified(
+    /// Accepts `Bolt11Invoice`, `Offer`, `String`, or `&str` for the request parameter.
+    #[instrument(skip(self, request, options, extra))]
+    pub async fn melt_quote<T, R>(
         &self,
-        method: PaymentMethod,
-        request: String,
+        method: T,
+        request: R,
         options: Option<MeltOptions>,
-        extra: Option<serde_json::Value>,
-    ) -> Result<MeltQuote, Error> {
+        extra: Option<String>,
+    ) -> Result<MeltQuote, Error>
+    where
+        T: Into<PaymentMethod> + std::fmt::Debug,
+        R: std::fmt::Display,
+    {
+        let method: PaymentMethod = method.into();
+        let request_str = request.to_string();
+        
         match method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => self.melt_quote(request, options).await,
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                self.melt_bolt11_quote(request_str, options).await
+            }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
-                self.melt_bolt12_quote(request, options).await
+                self.melt_bolt12_quote(request_str, options).await
             }
             PaymentMethod::Custom(custom_method) => {
-                self.melt_quote_custom(&custom_method, request, options, extra)
+                let extra_json = extra.map(|s| {
+                    serde_json::from_str(&s).unwrap_or(serde_json::Value::Null)
+                });
+                self.melt_quote_custom(&custom_method, request_str, options, extra_json)
                     .await
             }
         }
