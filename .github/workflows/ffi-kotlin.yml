@@ -1,0 +1,42 @@
+name: FFI - Kotlin Bindings
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify-kotlin:
+    name: Verify Kotlin Bindings
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CDK
+        uses: actions/checkout@v4
+        with:
+          path: cdk
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cdk
+
+      - name: Generate Bindings
+        run: |
+          cd cdk
+          # Builds cdk-ffi and generates kotlin bindings
+          nix develop .#ffi --command just ffi-generate-kotlin
+
+      - name: Verify Artifacts
+        run: |
+          if [ ! -f "cdk/target/bindings/kotlin/org/cashudevkit/cdk_ffi.kt" ]; then
+            echo "Error: Kotlin bindings not found"
+            exit 1
+          fi
+          echo "Kotlin bindings generated successfully"
