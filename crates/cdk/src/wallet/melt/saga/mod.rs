@@ -933,24 +933,26 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             error
         );
 
-        match self.wallet.melt_quote_status(&quote_info.id).await {
-            Ok(status) => match status.state {
+        match self.wallet.internal_check_melt_status(&quote_info.id).await {
+            Ok(response) => match response.state() {
                 MeltQuoteState::Failed | MeltQuoteState::Unknown | MeltQuoteState::Unpaid => {
                     tracing::info!(
                         "Quote {} status is {:?} - releasing proofs",
                         quote_info.id,
-                        status.state
+                        response.state()
                     );
                     self.handle_failure().await;
                     Err(Error::PaymentFailed)
                 }
                 MeltQuoteState::Paid => {
-                    // Payment actually succeeded - finalize
                     tracing::info!(
-                        "Quote {} status is Paid - finalizing despite error",
+                        "Quote {} confirmed paid - finalizing with change",
                         quote_info.id
                     );
-                    self.finalize_success(status, metadata).await
+                    // Convert to standard response for finalize_success
+                    // Custom payment methods will error here (not supported in current saga)
+                    let standard_response = response.into_standard()?;
+                    self.finalize_success(standard_response, metadata).await
                 }
                 MeltQuoteState::Pending => {
                     tracing::info!(

@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use bip39::Mnemonic;
+use cashu::PaymentMethod;
 use cdk::amount::SplitTarget;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState};
 use cdk::wallet::Wallet;
@@ -56,12 +57,15 @@ async fn test_async_melt_returns_pending() {
         check_err: false,
     };
 
-    let invoice = create_fake_invoice(
+    let invoice: cashu::Bolt11Invoice = create_fake_invoice(
         50_000, // 50 sats in millisats
         serde_json::to_string(&fake_invoice_description).unwrap(),
     );
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // Step 3: Call melt (wallet handles proof selection internally)
     let start_time = std::time::Instant::now();
@@ -127,7 +131,10 @@ async fn test_sync_melt_completes_fully() {
         serde_json::to_string(&fake_invoice_description).unwrap(),
     );
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // Step 3: Call melt with prepare/confirm pattern
     let prepared = wallet
@@ -144,7 +151,10 @@ async fn test_sync_melt_completes_fully() {
     );
 
     // Step 6: Verify the quote is PAID in the mint
-    let quote_state = wallet.melt_quote_status(&melt_quote.id).await.unwrap();
+    let quote_state = wallet
+        .check_melt_quote_status(&melt_quote.id)
+        .await
+        .unwrap();
     assert_eq!(
         quote_state.state,
         MeltQuoteState::Paid,

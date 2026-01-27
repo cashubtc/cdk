@@ -11,6 +11,7 @@ use tracing::instrument;
 use crate::nuts::State;
 use crate::types::FinalizedMelt;
 use crate::wallet::melt::saga::compensation::ReleaseMeltQuote;
+use crate::wallet::melt::MeltQuoteStatusResponse;
 use crate::wallet::recovery::RecoveryHelpers;
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
 use crate::{Error, Wallet};
@@ -97,8 +98,8 @@ impl Wallet {
         data: &MeltOperationData,
     ) -> Result<Option<FinalizedMelt>, Error> {
         // Check quote state with the mint
-        match self.client.get_melt_quote_status(&data.quote_id).await {
-            Ok(quote_status) => match quote_status.state {
+        match self.internal_check_melt_status(&data.quote_id).await {
+            Ok(quote_status) => match quote_status.state() {
                 MeltQuoteState::Paid => {
                     // Payment succeeded - mark proofs as spent and recover change
                     tracing::info!("Melt saga {} - payment succeeded, finalizing", saga_id);
@@ -113,7 +114,7 @@ impl Wallet {
                     self.compensate_melt(saga_id).await?;
                     Ok(Some(FinalizedMelt::new(
                         data.quote_id.clone(),
-                        quote_status.state,
+                        quote_status.state(),
                         None,
                         data.amount,
                         Amount::ZERO,
@@ -142,7 +143,7 @@ impl Wallet {
         &self,
         saga_id: &uuid::Uuid,
         data: &MeltOperationData,
-        quote_status: &cdk_common::MeltQuoteBolt11Response<String>,
+        quote_status: &MeltQuoteStatusResponse,
     ) -> Result<FinalizedMelt, Error> {
         // Mark input proofs as spent
         let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
@@ -222,7 +223,7 @@ impl Wallet {
         Ok(FinalizedMelt::new(
             data.quote_id.clone(),
             MeltQuoteState::Paid,
-            quote_status.payment_preimage.clone(),
+            quote_status.payment_preimage(),
             data.amount,
             fee_paid,
             change_proofs,

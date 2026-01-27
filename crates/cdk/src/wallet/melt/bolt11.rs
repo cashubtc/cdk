@@ -6,7 +6,7 @@ use cdk_common::PaymentMethod;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
-use crate::nuts::{CurrencyUnit, MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response};
+use crate::nuts::{CurrencyUnit, MeltOptions, MeltQuoteBolt11Request};
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
@@ -65,29 +65,5 @@ impl Wallet {
         self.localstore.add_melt_quote(quote.clone()).await?;
 
         Ok(quote)
-    }
-
-    /// Melt quote status
-    #[instrument(skip(self, quote_id))]
-    pub async fn melt_quote_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let response = self.client.get_melt_quote_status(quote_id).await?;
-
-        if let Some(mut quote) = self.localstore.get_melt_quote(quote_id).await? {
-            self.update_melt_quote_state(
-                &mut quote,
-                response.state,
-                response.amount,
-                response.change_amount(),
-                response.payment_preimage.clone(),
-            )
-            .await?;
-        } else {
-            tracing::info!("Quote melt {} unknown", quote_id);
-        }
-
-        Ok(response)
     }
 }

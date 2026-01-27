@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
-use cashu::{CurrencyUnit, Id, PreMintSecrets, SecretKey, SpendingConditions, State, SwapRequest};
+use cashu::{CurrencyUnit, Id, PaymentMethod, PreMintSecrets, SecretKey, SpendingConditions, State, SwapRequest};
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::Amount;
@@ -851,7 +851,10 @@ async fn test_melt_with_fees_swap_before_melt() {
     // Create melt quote for 1000 sats (1_000_000 msats)
     // Fake wallet: fee_reserve = max(1, amount * 2%) = 20 sats
     let invoice = create_fake_invoice(1_000_000, "".to_string()); // 1000 sats in msats
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let quote_amount: u64 = melt_quote.amount.into();
     let fee_reserve: u64 = melt_quote.fee_reserve.into();
@@ -983,7 +986,10 @@ async fn test_melt_exact_match_no_swap() {
     // fee_reserve = max(1, 1000 * 2%) = 20 sats
     // inputs_needed = 1000 + 20 = 1020 sats = our exact balance
     let invoice = create_fake_invoice(1_000_000, "".to_string());
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let quote_amount: u64 = melt_quote.amount.into();
     let fee_reserve: u64 = melt_quote.fee_reserve.into();
@@ -1092,7 +1098,10 @@ async fn test_melt_small_amount_tight_margin() {
     // fee_reserve = max(1, 5 * 2%) = 1 sat
     // inputs_needed = 5 + 1 = 6 sats
     let invoice = create_fake_invoice(5_000, "".to_string()); // 5 sats in msats
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let quote_amount: u64 = melt_quote.amount.into();
     let fee_reserve: u64 = melt_quote.fee_reserve.into();
@@ -1197,7 +1206,10 @@ async fn test_melt_swap_tight_margin_regression() {
     // The swap path is what triggered the original bug when proofs_to_swap
     // had tight margins and include_fees=true was incorrectly used.
     let invoice = create_fake_invoice(5_000, "".to_string());
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let quote_amount: u64 = melt_quote.amount.into();
     let fee_reserve: u64 = melt_quote.fee_reserve.into();

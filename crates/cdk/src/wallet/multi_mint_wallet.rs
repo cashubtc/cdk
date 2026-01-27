@@ -1626,7 +1626,7 @@ impl MultiMintWallet {
         })?;
 
         // Check the quote state from the mint
-        wallet.mint_quote_state(quote_id).await?;
+        wallet.check_mint_quote_status(quote_id).await?;
 
         // Get the updated quote from local storage
         let quote = wallet
@@ -2170,7 +2170,7 @@ impl MultiMintWallet {
         })?;
 
         // Check the quote state from the mint
-        wallet.melt_quote_status(quote_id).await?;
+        wallet.check_melt_quote_status(quote_id).await?;
 
         // Get the updated quote from local storage
         let quote = wallet

@@ -148,18 +148,34 @@ impl Wallet {
                 mint_quote.amount_issued = mint_quote_response.amount_issued;
                 mint_quote.amount_paid = mint_quote_response.amount_paid;
             }
-            PaymentMethod::Custom(ref _method) => {
-                tracing::warn!("We cannot check unknown types");
-                return Err(Error::UnsupportedPaymentMethod);
+            PaymentMethod::Custom(ref method) => {
+                let mint_quote_response = self
+                    .client
+                    .get_mint_quote_custom_status(method, &mint_quote.id)
+                    .await?;
+                
+                mint_quote.state = mint_quote_response.state;
+                
+                // Update amounts based on state
+                match mint_quote_response.state {
+                    MintQuoteState::Paid => {
+                        mint_quote.amount_paid = mint_quote_response.amount.unwrap_or_default();
+                    }
+                    MintQuoteState::Issued => {
+                        mint_quote.amount_paid = mint_quote_response.amount.unwrap_or_default();
+                        mint_quote.amount_issued = mint_quote_response.amount.unwrap_or_default();
+                    }
+                    MintQuoteState::Unpaid => (),
+                }
             }
         }
 
         Ok(())
     }
 
-    /// Check mint quote status
+    /// Check mint quote status for any payment method
     #[instrument(skip(self, quote_id))]
-    pub async fn mint_quote_state(&self, quote_id: &str) -> Result<MintQuote, Error> {
+    pub async fn check_mint_quote_status(&self, quote_id: &str) -> Result<MintQuote, Error> {
         let mut mint_quote = self
             .localstore
             .get_mint_quote(quote_id)
@@ -211,7 +227,7 @@ impl Wallet {
         let mut total_amount = Amount::ZERO;
 
         for mint_quote in mint_quotes {
-            let mint_quote = match self.mint_quote_state(&mint_quote.id).await {
+            let mint_quote = match self.check_mint_quote_status(&mint_quote.id).await {
                 Ok(q) => q,
                 Err(err) => {
                     tracing::warn!("Could not check quote state: {}", err);

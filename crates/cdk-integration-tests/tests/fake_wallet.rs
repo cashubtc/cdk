@@ -64,7 +64,10 @@ async fn test_fake_tokens_pending() {
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let melt = async {
         let prepared = wallet
@@ -117,7 +120,10 @@ async fn test_fake_melt_payment_fail() {
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // The melt should error at the payment invoice command
     let melt = async {
@@ -138,7 +144,10 @@ async fn test_fake_melt_payment_fail() {
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // The melt should error at the payment invoice command
     let melt = async {
@@ -186,7 +195,10 @@ async fn test_fake_melt_payment_fail_and_check() {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // The melt should error at the payment invoice command
     let melt = async {
@@ -238,7 +250,10 @@ async fn test_fake_melt_payment_return_fail_status() {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // The melt should error at the payment invoice command
     let melt = async {
@@ -269,7 +284,10 @@ async fn test_fake_melt_payment_return_fail_status() {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // The melt should error at the payment invoice command
     let melt = async {
@@ -323,7 +341,10 @@ async fn test_fake_melt_payment_error_unknown() {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // The melt should error at the payment invoice command
     let melt = async {
@@ -344,7 +365,10 @@ async fn test_fake_melt_payment_error_unknown() {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // The melt should error at the payment invoice command
     let melt = async {
@@ -398,7 +422,10 @@ async fn test_fake_melt_payment_err_paid() {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // The melt should complete successfully
     let prepared = wallet
@@ -464,7 +491,10 @@ async fn test_fake_melt_change_in_quote() {
 
     let proofs = wallet.get_unspent_proofs().await.unwrap();
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let keyset = wallet.fetch_active_keyset().await.unwrap();
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
@@ -492,7 +522,7 @@ async fn test_fake_melt_change_in_quote() {
 
     assert!(melt_response.change.is_some());
 
-    let check = wallet.melt_quote_status(&melt_quote.id).await.unwrap();
+    let check = client.get_melt_quote_status(&melt_quote.id).await.unwrap();
     let mut melt_change = melt_response.change.unwrap();
     melt_change.sort_by(|a, b| a.amount.cmp(&b.amount));
 
@@ -998,7 +1028,10 @@ async fn test_fake_mint_multiple_unit_melt() {
 
         let input_amount: u64 = inputs.total_amount().unwrap().into();
         let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
-        let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+        let melt_quote = wallet
+            .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+            .await
+            .unwrap();
 
         let melt_request = MeltRequest::new(melt_quote.id, inputs, None);
 
@@ -1052,7 +1085,10 @@ async fn test_fake_mint_multiple_unit_melt() {
         let mut sat_outputs = pre_mint.blinded_messages();
 
         usd_outputs.append(&mut sat_outputs);
-        let quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+        let quote = wallet
+            .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+            .await
+            .unwrap();
 
         let melt_request = MeltRequest::new(quote.id, inputs, Some(usd_outputs));
 
@@ -1338,7 +1374,10 @@ async fn test_fake_mint_melt_spend_after_fail() {
 
     let input_amount: u64 = proofs.total_amount().unwrap().into();
     let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let melt_request = MeltRequest::new(melt_quote.id, proofs, None);
 
@@ -1470,7 +1509,10 @@ async fn test_fake_mint_duplicate_proofs_melt() {
 
     let invoice = create_fake_invoice(7000, "".to_string());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let melt_request = MeltRequest::new(melt_quote.id, inputs, None);
 
@@ -1530,7 +1572,10 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
     };
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // Attempt to melt - this should fail but trigger proof recovery
     let melt_result = async {
@@ -1552,7 +1597,7 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
     // Verify we can still spend the recovered proofs
     let valid_invoice = create_fake_invoice(7000, "".to_string());
     let valid_melt_quote = wallet
-        .melt_quote(valid_invoice.to_string(), None)
+        .melt_quote(PaymentMethod::BOLT11, valid_invoice.to_string(), None, None)
         .await
         .unwrap();
 
@@ -1613,7 +1658,10 @@ async fn test_concurrent_melt_same_invoice() {
     // All wallets create melt quotes for the same invoice
     let mut melt_quotes = Vec::with_capacity(NUM_WALLETS);
     for wallet in &wallets {
-        let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+        let melt_quote = wallet
+            .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+            .await
+            .unwrap();
         melt_quotes.push(melt_quote);
     }
 
@@ -1816,7 +1864,7 @@ async fn test_melt_proofs_external() {
 
     // Wallet B creates a melt quote
     let melt_quote = wallet_melter
-        .melt_quote(invoice.to_string(), None)
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
         .await
         .unwrap();
 
@@ -1896,7 +1944,10 @@ async fn test_melt_with_swap_for_exact_amount() {
     let fake_description = FakeInvoiceDescription::default();
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     tracing::info!(
         "Melt quote: amount={}, fee_reserve={}",
@@ -1971,7 +2022,10 @@ async fn test_melt_exact_proofs_no_swap_needed() {
     let fake_description = FakeInvoiceDescription::default();
     let invoice = create_fake_invoice(64_000, serde_json::to_string(&fake_description).unwrap()); // 64 sats
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // Melt should succeed
     let prepared = wallet
@@ -2116,7 +2170,7 @@ async fn test_get_unissued_mint_quotes_wallet() {
 /// 2. Quote state is updated correctly
 /// 3. The quote is stored properly in the localstore
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_mint_quote_state_updates_after_minting() {
+async fn test_check_mint_quote_status_updates_after_minting() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,

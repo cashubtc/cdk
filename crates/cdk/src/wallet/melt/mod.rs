@@ -11,7 +11,9 @@
 //! ```rust,no_run
 //! # async fn example(wallet: &cdk::wallet::Wallet) -> anyhow::Result<()> {
 //! use std::collections::HashMap;
-//! let quote = wallet.melt_quote(PaymentMethod::BOLT11, "lnbc...", None, None).await?;
+//! let quote = wallet
+//!     .melt_quote(PaymentMethod::BOLT11, "lnbc...", None, None)
+//!     .await?;
 //!
 //! // Prepare the melt - proofs are reserved but payment not yet executed
 //! let prepared = wallet.prepare_melt(&quote.id, HashMap::new()).await?;
@@ -55,6 +57,47 @@ pub(crate) mod saga;
 
 use saga::state::Prepared;
 use saga::MeltSaga;
+
+/// Internal response type for melt quote status checking.
+///
+/// Wraps the different response types (Bolt11/Bolt12 vs Custom) that have
+/// identical fields but different Rust types.
+#[derive(Debug, Clone)]
+pub(crate) enum MeltQuoteStatusResponse {
+    /// Standard response (Bolt11/Bolt12)
+    Standard(cdk_common::MeltQuoteBolt11Response<String>),
+    /// Custom payment method response
+    Custom(cdk_common::MeltQuoteCustomResponse<String>),
+}
+
+impl MeltQuoteStatusResponse {
+    /// Get the quote state
+    pub fn state(&self) -> MeltQuoteState {
+        match self {
+            Self::Standard(r) => r.state,
+            Self::Custom(r) => r.state,
+        }
+    }
+
+    /// Get the payment preimage
+    pub fn payment_preimage(&self) -> Option<String> {
+        match self {
+            Self::Standard(r) => r.payment_preimage.clone(),
+            Self::Custom(r) => r.payment_preimage.clone(),
+        }
+    }
+
+    /// Convert to standard response (for Bolt11/Bolt12).
+    /// Returns error for Custom payment methods.
+    pub fn into_standard(self) -> Result<cdk_common::MeltQuoteBolt11Response<String>, Error> {
+        match self {
+            Self::Standard(r) => Ok(r),
+            Self::Custom(_) => Err(Error::Custom(
+                "Cannot convert custom response to standard response".to_string(),
+            )),
+        }
+    }
+}
 
 /// Options for confirming a melt operation
 #[derive(Debug, Clone, Default)]
@@ -553,7 +596,7 @@ impl Wallet {
     {
         let method: PaymentMethod = method.into();
         let request_str = request.to_string();
-        
+
         match method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
                 self.melt_bolt11_quote(request_str, options).await
@@ -562,9 +605,8 @@ impl Wallet {
                 self.melt_bolt12_quote(request_str, options).await
             }
             PaymentMethod::Custom(custom_method) => {
-                let extra_json = extra.map(|s| {
-                    serde_json::from_str(&s).unwrap_or(serde_json::Value::Null)
-                });
+                let extra_json =
+                    extra.map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::Null));
                 self.melt_quote_custom(&custom_method, request_str, options, extra_json)
                     .await
             }
@@ -679,5 +721,43 @@ impl Wallet {
         };
 
         Ok(quote)
+    }
+    /// This returns the raw protocol response including change signatures,
+    /// which is needed by saga recovery flows. For normal status checking,
+    /// use `check_melt_quote_status()` instead.
+    ///
+    /// Routes to the correct client endpoint based on the payment method
+    /// stored in the quote.
+    #[instrument(skip(self, quote_id))]
+    pub(crate) async fn internal_check_melt_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MeltQuoteStatusResponse, Error> {
+        let quote = self
+            .localstore
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        // Route to correct endpoint based on payment method
+        let response = match &quote.payment_method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                let r = self.client.get_melt_quote_status(quote_id).await?;
+                MeltQuoteStatusResponse::Standard(r)
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                let r = self.client.get_melt_bolt12_quote_status(quote_id).await?;
+                MeltQuoteStatusResponse::Standard(r)
+            }
+            PaymentMethod::Custom(method) => {
+                let r = self
+                    .client
+                    .get_melt_quote_custom_status(method, quote_id)
+                    .await?;
+                MeltQuoteStatusResponse::Custom(r)
+            }
+        };
+
+        Ok(response)
     }
 }
