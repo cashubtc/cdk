@@ -3,9 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cdk_common::database::{
-    KVStoreDatabase as CdkKVStoreDatabase, WalletDatabase as CdkWalletDatabase,
-};
+use cdk_common::database::WalletDatabase as CdkWalletDatabase;
 use cdk_sql_common::pool::DatabasePool;
 use cdk_sql_common::SQLWalletDatabase;
 
@@ -209,15 +207,13 @@ impl std::fmt::Debug for WalletDatabaseBridge {
 }
 
 #[async_trait::async_trait]
-impl cdk_common::database::KVStoreDatabase for WalletDatabaseBridge {
-    type Err = cdk::cdk_database::Error;
-
+impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     async fn kv_read(
         &self,
         primary_namespace: &str,
         secondary_namespace: &str,
         key: &str,
-    ) -> Result<Option<Vec<u8>>, Self::Err> {
+    ) -> Result<Option<Vec<u8>>, cdk::cdk_database::Error> {
         self.ffi_db
             .kv_read(
                 primary_namespace.to_string(),
@@ -232,7 +228,7 @@ impl cdk_common::database::KVStoreDatabase for WalletDatabaseBridge {
         &self,
         primary_namespace: &str,
         secondary_namespace: &str,
-    ) -> Result<Vec<String>, Self::Err> {
+    ) -> Result<Vec<String>, cdk::cdk_database::Error> {
         self.ffi_db
             .kv_list(
                 primary_namespace.to_string(),
@@ -241,10 +237,7 @@ impl cdk_common::database::KVStoreDatabase for WalletDatabaseBridge {
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
-}
 
-#[async_trait::async_trait]
-impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     // Mint Management
     async fn get_mint(
         &self,
@@ -343,7 +336,9 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    async fn get_unissued_mint_quotes(&self) -> Result<Vec<cdk::wallet::MintQuote>, Self::Err> {
+    async fn get_unissued_mint_quotes(
+        &self,
+    ) -> Result<Vec<cdk::wallet::MintQuote>, cdk::cdk_database::Error> {
         let result = self
             .ffi_db
             .get_unissued_mint_quotes()
