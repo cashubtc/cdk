@@ -2,8 +2,9 @@ use tracing::instrument;
 
 use super::nut21::ProtectedEndpoint;
 use super::{
-    AuthProof, AuthRequired, AuthToken, BlindAuthToken, BlindSignature, BlindedMessage, Error,
-    Mint, State,
+    AuthProof, AuthRequired, AuthToken, BlindAuthToken, BlindSignature, BlindedMessage,
+    CheckBlindAuthStateRequest, CheckBlindAuthStateResponse, Error, Mint, ProofState,
+    SpendBlindAuthRequest, SpendBlindAuthResponse, State,
 };
 
 impl Mint {
@@ -207,6 +208,105 @@ impl Mint {
         tx.commit().await?;
 
         Ok(())
+    }
+
+    /// Get blind auth states without marking as spent
+    ///
+    /// This method only checks the state of auth proofs without modifying them.
+    /// Use this for external verification when you need to check if a BAT is valid
+    /// before deciding to accept it.
+    #[instrument(skip_all)]
+    pub async fn get_blind_auth_states(
+        &self,
+        request: CheckBlindAuthStateRequest,
+    ) -> Result<CheckBlindAuthStateResponse, Error> {
+        tracing::debug!(
+            "Checking blind auth states for {} proofs",
+            request.auth_proofs.len()
+        );
+
+        let auth_localstore = self.auth_localstore.as_ref().ok_or_else(|| {
+            tracing::error!("Auth localstore is not configured");
+            Error::AmountKey
+        })?;
+
+        let mut states = Vec::with_capacity(request.auth_proofs.len());
+
+        for auth_proof in &request.auth_proofs {
+            // Verify the signature first
+            let blind_auth_token = BlindAuthToken::new(auth_proof.clone());
+            if let Err(e) = self.verify_blind_auth(&blind_auth_token).await {
+                tracing::warn!("Invalid signature for auth proof: {:?}", e);
+                return Err(e);
+            }
+
+            // Calculate Y value
+            let y = auth_proof.y().map_err(|err| {
+                tracing::error!("Failed to calculate Y value for proof: {:?}", err);
+                err
+            })?;
+
+            // Get current state from database
+            let proof_states = auth_localstore.get_proofs_states(&[y]).await?;
+            let state = proof_states
+                .first()
+                .cloned()
+                .flatten()
+                .unwrap_or(State::Unspent);
+
+            states.push(ProofState {
+                y,
+                state,
+                witness: None,
+            });
+        }
+
+        tracing::debug!("Returning {} proof states", states.len());
+        Ok(CheckBlindAuthStateResponse { states })
+    }
+
+    /// Spend a blind auth proof
+    ///
+    /// This method verifies the signature and marks the proof as spent.
+    /// Use this when an external app wants to consume a BAT after successful
+    /// request processing.
+    #[instrument(skip_all)]
+    pub async fn spend_blind_auth(
+        &self,
+        request: SpendBlindAuthRequest,
+    ) -> Result<SpendBlindAuthResponse, Error> {
+        tracing::debug!(
+            "Spending blind auth proof with keyset_id: {:?}",
+            request.auth_proof.keyset_id
+        );
+
+        // Verify the signature
+        let blind_auth_token = BlindAuthToken::new(request.auth_proof.clone());
+        self.verify_blind_auth(&blind_auth_token)
+            .await
+            .map_err(|e| {
+                tracing::error!("Blind auth signature verification failed: {:?}", e);
+                e
+            })?;
+
+        // Calculate Y value
+        let y = request.auth_proof.y().map_err(|err| {
+            tracing::error!("Failed to calculate Y value for proof: {:?}", err);
+            err
+        })?;
+
+        // Mark as spent (reuse existing logic)
+        self.check_blind_auth_proof_spendable(request.auth_proof)
+            .await?;
+
+        tracing::info!("Successfully spent blind auth proof");
+        Ok(SpendBlindAuthResponse {
+            state: ProofState {
+                y,
+                state: State::Spent,
+                witness: None,
+            },
+        })
     }
 
     /// Blind Sign

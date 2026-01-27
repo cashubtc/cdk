@@ -9,7 +9,9 @@ use axum::{Json, Router};
 #[cfg(feature = "swagger")]
 use cdk::error::ErrorResponse;
 use cdk::nuts::{
-    AuthToken, BlindAuthToken, KeysResponse, KeysetResponse, MintAuthRequest, MintResponse,
+    AuthToken, BlindAuthToken, CheckBlindAuthStateRequest, CheckBlindAuthStateResponse,
+    KeysResponse, KeysetResponse, MintAuthRequest, MintResponse, SpendBlindAuthRequest,
+    SpendBlindAuthResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -175,6 +177,64 @@ pub async fn post_mint_auth(
     Ok(Json(res))
 }
 
+/// Check state of blind auth proofs
+///
+/// This endpoint allows external apps to check if BATs are valid and unspent
+/// without consuming them. Use this to verify a BAT before accepting it.
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v1/auth",
+    path = "/blind/checkstate",
+    request_body(content = CheckBlindAuthStateRequest, description = "Auth proofs to check", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = CheckBlindAuthStateResponse, content_type = "application/json"),
+        (status = 400, description = "Invalid request", body = ErrorResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+pub async fn post_blind_auth_checkstate(
+    State(state): State<MintState>,
+    Json(payload): Json<CheckBlindAuthStateRequest>,
+) -> Result<Json<CheckBlindAuthStateResponse>, Response> {
+    let response = state
+        .mint
+        .get_blind_auth_states(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not check blind auth states: {}", err);
+            into_response(err)
+        })?;
+
+    Ok(Json(response))
+}
+
+/// Spend a blind auth proof
+///
+/// This endpoint allows external apps to mark a BAT as spent after
+/// successfully processing a request. The BAT cannot be reused after this.
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v1/auth",
+    path = "/blind/spend",
+    request_body(content = SpendBlindAuthRequest, description = "Auth proof to spend", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successfully spent", body = SpendBlindAuthResponse, content_type = "application/json"),
+        (status = 400, description = "Already spent or invalid", body = ErrorResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+pub async fn post_blind_auth_spend(
+    State(state): State<MintState>,
+    Json(payload): Json<SpendBlindAuthRequest>,
+) -> Result<Json<SpendBlindAuthResponse>, Response> {
+    let response = state.mint.spend_blind_auth(payload).await.map_err(|err| {
+        tracing::error!("Could not spend blind auth: {}", err);
+        into_response(err)
+    })?;
+
+    Ok(Json(response))
+}
+
 pub fn create_auth_router(state: MintState) -> Router<MintState> {
     Router::new()
         .nest(
@@ -183,7 +243,9 @@ pub fn create_auth_router(state: MintState) -> Router<MintState> {
                 .route("/keys", get(get_blind_auth_keys))
                 .route("/keysets", get(get_auth_keysets))
                 .route("/keys/{keyset_id}", get(get_keyset_pubkeys))
-                .route("/mint", post(post_mint_auth)),
+                .route("/mint", post(post_mint_auth))
+                .route("/checkstate", post(post_blind_auth_checkstate))
+                .route("/spend", post(post_blind_auth_spend)),
         )
         .with_state(state)
 }
