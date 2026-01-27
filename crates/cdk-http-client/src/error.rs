@@ -119,7 +119,10 @@ mod tests {
 
         match http_error {
             HttpError::Serialization(msg) => {
-                assert!(msg.contains("expected"), "Error message should describe JSON error");
+                assert!(
+                    msg.contains("expected"),
+                    "Error message should describe JSON error"
+                );
             }
             _ => panic!("Expected HttpError::Serialization"),
         }

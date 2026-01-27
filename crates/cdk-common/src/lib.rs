@@ -33,13 +33,13 @@ pub use cashu::nuts::{self, *};
 #[cfg(feature = "mint")]
 pub use cashu::quote_id::{self, *};
 pub use cashu::{dhke, ensure_cdk, mint_url, secret, util, SECP256K1};
-// Re-export common types
-pub use common::FinalizedMelt;
-pub use error::Error;
 /// Re-export cdk-http-client types
 #[cfg(feature = "http")]
 pub use cdk_http_client::{
     fetch, HttpClient, HttpClientBuilder, HttpError, RawResponse, RequestBuilder, Response,
 };
+// Re-export common types
+pub use common::FinalizedMelt;
+pub use error::Error;
 /// Re-export parking_lot for reuse
 pub use parking_lot;

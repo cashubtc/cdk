@@ -285,18 +285,16 @@ mod tests {
 
         #[test]
         fn test_builder_proxy() {
-            let proxy_url =
-                url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+            let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
             let result = HttpClientBuilder::default().proxy(proxy_url).build();
             assert!(result.is_ok());
         }
 
         #[test]
         fn test_builder_proxy_with_valid_matcher() {
-            let proxy_url =
-                url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
-            let result = HttpClientBuilder::default()
-                .proxy_with_matcher(proxy_url, r".*\.example\.com$");
+            let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+            let result =
+                HttpClientBuilder::default().proxy_with_matcher(proxy_url, r".*\.example\.com$");
             assert!(result.is_ok());
 
             let builder = result.expect("Valid matcher should succeed");
@@ -306,8 +304,7 @@ mod tests {
 
         #[test]
         fn test_builder_proxy_with_invalid_matcher() {
-            let proxy_url =
-                url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+            let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
             // Invalid regex pattern (unclosed bracket)
             let result = HttpClientBuilder::default().proxy_with_matcher(proxy_url, r"[invalid");
             assert!(result.is_err());
@@ -321,8 +318,7 @@ mod tests {
 
         #[test]
         fn test_builder_chained_config() {
-            let proxy_url =
-                url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+            let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
             let result = HttpClientBuilder::default()
                 .danger_accept_invalid_certs(true)
                 .proxy(proxy_url)

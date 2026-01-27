@@ -9,8 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use cdk_common::HttpClient;
-use cdk_common::{Amount, PaymentRequest, PaymentRequestPayload, TransportType};
+use cdk_common::{Amount, HttpClient, PaymentRequest, PaymentRequestPayload, TransportType};
 #[cfg(feature = "nostr")]
 use nostr_sdk::nips::nip19::Nip19Profile;
 #[cfg(feature = "nostr")]
