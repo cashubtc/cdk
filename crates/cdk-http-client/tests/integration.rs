@@ -454,7 +454,10 @@ async fn test_raw_response_text() {
         .get_raw(&server.url())
         .await
         .expect("Request should succeed");
-    let text = response.text().await.expect("Text extraction should succeed");
+    let text = response
+        .text()
+        .await
+        .expect("Text extraction should succeed");
 
     assert_eq!(text, "Hello, World!");
 
@@ -502,7 +505,10 @@ async fn test_raw_response_bytes() {
         .get_raw(&server.url())
         .await
         .expect("Request should succeed");
-    let bytes = response.bytes().await.expect("Bytes extraction should succeed");
+    let bytes = response
+        .bytes()
+        .await
+        .expect("Bytes extraction should succeed");
 
     assert_eq!(bytes, vec![0x01, 0x02, 0x03, 0x04]);
 
@@ -532,7 +538,10 @@ async fn test_request_builder_send() {
 
     assert_eq!(response.status(), 200);
     assert_eq!(
-        response.text().await.expect("Text extraction should succeed"),
+        response
+            .text()
+            .await
+            .expect("Text extraction should succeed"),
         "builder response"
     );
 
@@ -596,7 +605,10 @@ async fn test_request_builder_with_headers() {
 
     assert_eq!(response.status(), 200);
     assert_eq!(
-        response.text().await.expect("Text extraction should succeed"),
+        response
+            .text()
+            .await
+            .expect("Text extraction should succeed"),
         "headers received"
     );
 

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use cdk_http_client::HttpClient;
 use cdk_fake_wallet::create_fake_invoice;
+use cdk_http_client::HttpClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::sleep;
