@@ -50,17 +50,17 @@ pub async fn wait_for_mint_ready_with_shutdown(
 
         tokio::select! {
             // Try to make a request to the mint info endpoint
-            result = reqwest::get(&url) => {
+            result = bitreq::get(&url).send_async() => {
                 match result {
                     Ok(response) => {
-                        if response.status().is_success() {
+                        if response.status_code == 200 {
                             println!("Mint on port {port} is ready");
                             return Ok(());
                         } else {
                             println!(
                                 "Mint on port {} returned status: {}",
                                 port,
-                                response.status()
+                                response.status_code
                             );
                         }
                     }

@@ -120,18 +120,21 @@ async fn get_access_token(mint_info: &MintInfo) -> String {
     ];
 
     // Make the token request directly
-    let client = reqwest::Client::new();
-    let response = client
-        .post(token_url)
-        .form(&params)
-        .send()
+    let params = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(&params)
+        .finish();
+    let response = bitreq::post(token_url)
+        .with_body(params)
+        .with_header(
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded".to_string(),
+        )
+        .send_async()
         .await
         .expect("Failed to send token request");
 
-    let token_response: serde_json::Value = response
-        .json()
-        .await
-        .expect("Failed to parse token response");
+    let token_response: serde_json::Value =
+        response.json().expect("Failed to parse token response");
 
     token_response["access_token"]
         .as_str()

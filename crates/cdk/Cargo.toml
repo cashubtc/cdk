@@ -12,10 +12,10 @@ license.workspace = true
 
 [features]
 default = ["mint", "wallet", "auth", "nostr", "bip353"]
-wallet = ["dep:futures", "dep:reqwest", "cdk-common/wallet", "dep:rustls"]
+wallet = ["dep:futures", "dep:bitreq", "cdk-common/wallet", "dep:rustls"]
 nostr = ["wallet", "dep:nostr-sdk", "cdk-common/nostr"]
 npubcash = ["wallet", "nostr", "dep:cdk-npubcash"]
-mint = ["dep:futures", "dep:reqwest", "cdk-common/mint", "cdk-signatory"]
+mint = ["dep:futures", "dep:bitreq", "cdk-common/mint", "cdk-signatory"]
 auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]
 bip353 = ["dep:hickory-resolver"]
 # We do not commit to a MSRV with swagger enabled
@@ -46,7 +46,7 @@ ciborium.workspace = true
 lightning.workspace = true
 lightning-invoice.workspace = true
 regex.workspace = true
-reqwest = { workspace = true, optional = true }
+bitreq = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
@@ -175,7 +175,7 @@ cdk-fake-wallet.workspace = true
 bip39.workspace = true
 tracing-subscriber.workspace = true
 criterion.workspace = true
-reqwest = { workspace = true }
+bitreq = { workspace = true }
 anyhow.workspace = true
 ureq = { version = "3.1.0", features = ["json"] }
 tokio = { workspace = true, features = ["full"] }

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use base64::Engine;
+use bitreq::Response;
 use nostr_sdk::{EventBuilder, Keys, Kind, Tag};
 use tokio::sync::RwLock;
 
@@ -23,7 +24,6 @@ struct CachedToken {
 pub struct JwtAuthProvider {
     base_url: String,
     keys: Keys,
-    http_client: reqwest::Client,
     cached_token: Arc<RwLock<Option<CachedToken>>>,
 }
 
@@ -38,7 +38,6 @@ impl JwtAuthProvider {
         Self {
             base_url,
             keys,
-            http_client: reqwest::Client::new(),
             cached_token: Arc::new(RwLock::new(None)),
         }
     }
@@ -104,44 +103,37 @@ impl JwtAuthProvider {
     }
 
     /// Send the authentication request to the API
-    async fn send_auth_request(
-        &self,
-        auth_url: &str,
-        nostr_token: &str,
-    ) -> Result<reqwest::Response> {
+    async fn send_auth_request(&self, auth_url: &str, nostr_token: &str) -> Result<Response> {
         tracing::debug!("Sending request to: {}", auth_url);
         tracing::debug!(
             "Authorization header: Nostr {}",
             &nostr_token[..50.min(nostr_token.len())]
         );
 
-        let response = self
-            .http_client
-            .get(auth_url)
-            .header("Authorization", format!("Nostr {nostr_token}"))
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .header("User-Agent", "cdk-npubcash/0.13.0")
-            .send()
+        let response = bitreq::get(auth_url)
+            .with_header("Authorization", format!("Nostr {nostr_token}"))
+            .with_header("Content-Type", "application/json")
+            .with_header("Accept", "application/json")
+            .with_header("User-Agent", "cdk-npubcash/0.13.0")
+            .send_async()
             .await?;
 
-        tracing::debug!("Response status: {}", response.status());
+        tracing::debug!("Response status: {}", response.status_code);
         Ok(response)
     }
 
     /// Parse the JWT response from the API
-    async fn parse_jwt_response(&self, response: reqwest::Response) -> Result<String> {
-        let status = response.status();
-
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
+    async fn parse_jwt_response(&self, response: Response) -> Result<String> {
+        let status = response.status_code;
+        if status != 200 {
+            let error_text = response.as_str().unwrap_or_default();
             tracing::error!("Auth failed - Status: {}, Body: {}", status, error_text);
             return Err(Error::Auth(format!(
                 "Failed to get JWT: {status} - {error_text}"
             )));
         }
 
-        let nip98_response: Nip98Response = response.json().await?;
+        let nip98_response: Nip98Response = response.json()?;
         Ok(nip98_response.data.token)
     }
 
