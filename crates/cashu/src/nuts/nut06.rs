@@ -14,6 +14,7 @@ use super::nut19::CachedEndpoint;
 use super::{nut04, nut05, nut15, nut19, MppMethodSettings};
 #[cfg(feature = "auth")]
 use super::{AuthRequired, BlindAuthSettings, ClearAuthSettings, ProtectedEndpoint};
+use crate::util::serde_helpers::deserialize_empty_string_as_none;
 use crate::CurrencyUnit;
 
 /// Mint Version
@@ -74,7 +75,11 @@ pub struct MintInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// hex pubkey of the mint
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_empty_string_as_none"
+    )]
     pub pubkey: Option<PublicKey>,
     /// implementation name and the version running
     #[serde(skip_serializing_if = "Option::is_none")]
