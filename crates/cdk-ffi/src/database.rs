@@ -4,9 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdk_common::bitcoin::bip32::DerivationPath;
-use cdk_common::database::{
-    KVStoreDatabase as CdkKVStoreDatabase, WalletDatabase as CdkWalletDatabase,
-};
+use cdk_common::database::WalletDatabase as CdkWalletDatabase;
 use cdk_sql_common::pool::DatabasePool;
 use cdk_sql_common::SQLWalletDatabase;
 
