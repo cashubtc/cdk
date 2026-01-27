@@ -22,7 +22,10 @@ use super::{Error, MintConnector};
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::{KnownMethod, PaymentMethod};
 #[cfg(feature = "auth")]
-use crate::nuts::nut22::MintAuthRequest;
+use crate::nuts::nut22::{
+    CheckBlindAuthStateRequest, CheckBlindAuthStateResponse, MintAuthRequest,
+    SpendBlindAuthRequest, SpendBlindAuthResponse,
+};
 use crate::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteCustomRequest, MeltRequest, MintInfo,
@@ -780,5 +783,29 @@ where
         self.transport
             .http_post(url, Some(self.cat.read().await.clone()), &request)
             .await
+    }
+
+    /// Check blind auth state - verify BAT validity without spending
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_blind_auth_checkstate(
+        &self,
+        request: CheckBlindAuthStateRequest,
+    ) -> Result<CheckBlindAuthStateResponse, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "auth", "blind", "checkstate"])?;
+        self.transport.http_post(url, None, &request).await
+    }
+
+    /// Spend blind auth - mark BAT as spent
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_blind_auth_spend(
+        &self,
+        request: SpendBlindAuthRequest,
+    ) -> Result<SpendBlindAuthResponse, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "auth", "blind", "spend"])?;
+        self.transport.http_post(url, None, &request).await
     }
 }

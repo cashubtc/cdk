@@ -35,7 +35,8 @@ mod auth;
 #[cfg(feature = "auth")]
 pub use auth::{
     nut21, nut22, AuthProof, AuthRequired, AuthToken, BlindAuthSettings, BlindAuthToken,
-    ClearAuthSettings, Method, MintAuthRequest, ProtectedEndpoint, RoutePath,
+    CheckBlindAuthStateRequest, CheckBlindAuthStateResponse, ClearAuthSettings, Method,
+    MintAuthRequest, ProtectedEndpoint, RoutePath, SpendBlindAuthRequest, SpendBlindAuthResponse,
 };
 pub use nut00::{
     BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proof, Proofs, ProofsMethods,

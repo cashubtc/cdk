@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use super::nut21::ProtectedEndpoint;
 use crate::dhke::hash_to_curve;
+use crate::nuts::nut07::ProofState;
 use crate::secret::Secret;
 use crate::util::hex;
 use crate::{BlindedMessage, Id, Proof, ProofDleq, PublicKey};
@@ -269,6 +270,39 @@ impl MintAuthRequest {
     pub fn amount(&self) -> u64 {
         self.outputs.len() as u64
     }
+}
+
+/// Check blind auth state request
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct CheckBlindAuthStateRequest {
+    /// Auth proofs to check state
+    #[cfg_attr(feature = "swagger", schema(max_items = 1_000))]
+    pub auth_proofs: Vec<AuthProof>,
+}
+
+/// Check blind auth state response
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct CheckBlindAuthStateResponse {
+    /// States of auth proofs
+    pub states: Vec<ProofState>,
+}
+
+/// Spend blind auth request
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct SpendBlindAuthRequest {
+    /// Auth proof to spend
+    pub auth_proof: AuthProof,
+}
+
+/// Spend blind auth response
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct SpendBlindAuthResponse {
+    /// State after spending
+    pub state: ProofState,
 }
 
 #[cfg(test)]
