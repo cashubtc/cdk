@@ -50,8 +50,8 @@ async fn main() -> anyhow::Result<()> {
     // Initialize the memory store for the first wallet
     let localstore = Arc::new(memory::empty().await?);
 
-    // Create a new MultiMintWallet
-    let wallet = MultiMintWallet::new(localstore.clone(), seed, unit.clone()).await?;
+    // Create a new WalletRepository
+    let wallet: WalletRepository = WalletRepository::new(localstore.clone(), seed).await?;
 
     // ============================================================================
     // Step 1: Add test mints to the wallet
@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Verify mints were added
-    let wallets = wallet.get_wallets().await;
+    let wallets: Vec<cdk::Wallet> = wallet.get_wallets().await;
     println!("\n  Wallet now contains {} mint(s):", wallets.len());
     for w in &wallets {
         println!("    - {}", w.mint_url);
@@ -129,10 +129,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Create a fresh wallet with the same seed (simulating a new device)
     let new_localstore = Arc::new(memory::empty().await?);
-    let new_wallet = MultiMintWallet::new(new_localstore, seed, unit.clone()).await?;
+    let new_wallet = WalletRepository::new(new_localstore, seed).await?;
 
     // Verify the new wallet is empty
-    let new_wallets = new_wallet.get_wallets().await;
+    let new_wallets: Vec<cdk::Wallet> = new_wallet.get_wallets().await;
     println!("  New wallet starts with {} mint(s)", new_wallets.len());
 
     // Derive keys on the new wallet - should be the same!
@@ -172,7 +172,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Verify the mints were restored
-    let restored_wallets = new_wallet.get_wallets().await;
+    let restored_wallets: Vec<cdk::Wallet> = new_wallet.get_wallets().await;
     println!(
         "\n  New wallet now contains {} mint(s):",
         restored_wallets.len()

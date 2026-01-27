@@ -23,11 +23,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize the memory store
     let localstore = Arc::new(memory::empty().await?);
 
-    // Create a new multi-mint wallet for satoshis
-    let wallet = MultiMintWallet::new(localstore, seed, CurrencyUnit::Sat).await?;
+    // Create a new WalletRepository
+    let wallet: WalletRepository = WalletRepository::new(localstore, seed).await?;
 
     // Example: A cashu token string (in practice, this would come from user input)
-    let token = Token::from_str("cashuBo2FteB1odHRwczovL2Zha2UudGhlc2ltcGxla2lkLmRldmF1Y3NhdGF0gaJhaUgAlNWndMQKMmFwg6RhYRkIAGFzeEAwYjk0ZjU5ZjU0OTBkNTkzMzI4ZTIwNDllZTNlZmFjYjM5NzljZjU5NzA5ZTM3N2U5YzBmMDQyNDBmZTUyZTVhYWNYIQNGQCYyf1j996pS-LuP_7VsUE-uzRpAm-K4rZiDEFFc1GFko2FlWCBbuMkhvz39ytCzm7xPaY5vdTbqxlxTzXOsks_8S3sf1GFzWCBg22l0CXH5-QLcfJtUJZ2lfylNfC6_o9FTfKClLzthaGFyWCCP2nJ6Qzd8mwLa_85cu8TrwRIprElVgrhqJeoHJwXmSKRhYRkCAGFzeEBhNmMyODliMjMwMTdlMDhjYTFhOTc4ZjAwNGRiNjI4ZDk1NWI5ZTlmNjMwMjY0MjNjZDc4OGExNDBhOWJiYjgxYWNYIQPMXkT68L8Y0a6royMbkoUTbvxOUgsyDwvRZRNTvwUsWWFko2FlWCCj9BFXexBOrlUyUiY_1qEIEHvd1YphWA2l3YhdFwVRh2FzWCBTNgyGeXvGSFtvYKj3MnJCXA8qjI9fzZHFsIw-F_OAGmFyWCDRHiDbVysUuQZucifYx5zMvOKyVIz7zvcJcfd01FoI3KRhYQhhc3hAMWJjOWQ1MjE5ZTZhYzNjZmZhNTM0NTRkY2JjMzE1YzZjZjY5MmM5MDEzYTUzYTA1YzIzN2YwZTBiOTViZTkwMWFjWCEDXd5sxFgxYgUHctpLENYStcr50UtJ4QRojy0g7mkdvWRhZKNhZVggZzSifCUG692E2sW4L6DT_FuKwLZdUFoMnds3tQyMlAdhc1ggtIo0BS2-6arws5fJx_w0phOiCZZcHIFknlrDXSh3C0NhclggM2dDF0kQyuRoOqrOOMHFrmNnvtGiXWxuvqtD7HidR8I")?;
+    let token = Token::from_str("cashuBo2FteB1odHRwczovL2Zha2UudGhlc2ltcGxla2lkLmRldmF1Y3NhdGF0gaJhaUgAlNWndMQKMmFwg6RhYRkIAGFzeEAwYjk0ZjU5ZjU0OTBkNTkzMzI4ZTIwNDllZTNlZmFjYjM5NzljZjU5NzA5ZTM3N2U5YzBmMDQyNDBmZTUyZTVhYWNYIQNGQCYyf1j996pS-LuP_7VsUE-uzRpAm-K4rZiDEFFc1GFko2FlWCBbuMkhvz39ytCzm7xPaY5vdTbqxlxTzXOsks_8S3sf1GFzWCBg22l0CXH5-QLcfJtUJZ2lfylNfC6_o9FTfKClLzthaGFyWCCP2nJ6Qzd8mwLa_85cu8TrwRIprElVgrhqJeoHJwXmSKRhYRkCAGFzeEBhNmMyODliMjMwMTdlMDhjYTFhOTc4ZjAwNGRiNjI4ZDk1NWI5ZTlmNjMwMjY0MjNjZDc4OGExNDBhOWJiYjgxYWNYIQPMXkT68L8Y0a6royMbkoUTbvxOUgsyDwvRZRNTvwUsWWFko2FlWCCj9BFXexBOrlUyUiY_1qEIEHvd1YphWA2l3YhdFwVRh2FzWCBTNgyGeXvGSFtvYKj3MnJCXA8qjI9fzZHFsIw-F_OAGmFyWCDRHiDbVysUuQZucifYx5zMvOKyVIz7zvcJcfd01FoI3KRhYQhhc3hAMWJjOWQ1MjE5ZTZhYzNjZmZhNTM0NTRkY2JjMzE1YzZjZjY5NmM5MDEzYTUzYTA1YzIzN2YwZTBiOTViZTkwMWFjWCEDXd5sxFgxYgUHctpLENYStcr50UtJ4QRojy0g7mkdvWRhZKNhZVggZzSifCUG692E2sW4L6DT_FuKwLZdUFoMnds3tQyMlAdhc1ggtIo0BS2-6arws5fJx_w0phOiCZZcHIFknlrDXSh3C0NhclggM2dDF0kQyuRoOqrOOMHFrmNnvtGiXWxuvqtD7HidR8I")?;
 
     // Get the mint URL from the token
     let mint_url = token.mint_url()?;
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Using manual keyset lookup ---");
 
     // Get the keysets for this mint
-    let keysets = wallet.get_mint_keysets(&mint_url).await?;
+    let keysets: Vec<cdk::nuts::KeySetInfo> = wallet.get_mint_keysets(&mint_url).await?;
     println!("Found {} keysets for mint", keysets.len());
 
     for keyset in &keysets {

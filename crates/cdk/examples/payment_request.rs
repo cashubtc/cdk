@@ -50,16 +50,20 @@ async fn main() -> anyhow::Result<()> {
     // Initialize the memory store
     let localstore = Arc::new(memory::empty().await?);
 
-    // Create a new MultiMintWallet
-    let wallet = MultiMintWallet::new(localstore, seed, unit.clone()).await?;
+    // Create a new WalletRepository
+    let wallet: WalletRepository = WalletRepository::new(localstore, seed).await?;
 
     // Add the mint to our wallet
     wallet.add_mint(mint_url.parse()?).await?;
 
-    println!("Step 1: Funding the wallet");
-    println!("---------------------------");
+    println!("Using mint: {}", mint_url);
 
-    // Get a wallet for our mint to create a mint quote
+    // ============================================================================
+    // Step 1: Create a payment request (as the receiver)
+    // ============================================================================
+    println!("\nStep 1: Creating payment request...");
+
+    // We need to get the wallet for the specific mint to create a request
     let mint_wallet = wallet
         .get_wallet(&mint_url.parse()?)
         .await

@@ -18,7 +18,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, Token};
-use cdk::wallet::{MultiMintReceiveOptions, MultiMintSendOptions, MultiMintWallet};
+use cdk::wallet::{MultiMintReceiveOptions, MultiMintSendOptions, WalletRepository};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
 use lightning_invoice::Bolt11Invoice;
@@ -31,19 +31,19 @@ fn get_test_temp_dir() -> PathBuf {
     }
 }
 
-/// Helper to create a MultiMintWallet with a fresh seed and in-memory database
-async fn create_test_multi_mint_wallet() -> MultiMintWallet {
+// Helper to create a WalletRepository with a fresh seed and in-memory database
+async fn create_test_multi_mint_wallet() -> WalletRepository {
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
     let localstore = Arc::new(memory::empty().await.unwrap());
 
-    MultiMintWallet::new(localstore, seed, CurrencyUnit::Sat)
+    WalletRepository::new(localstore, seed)
         .await
         .expect("failed to create multi mint wallet")
 }
 
-/// Helper to fund a MultiMintWallet at a specific mint
+/// Helper to fund a WalletRepository at a specific mint
 async fn fund_multi_mint_wallet(
-    wallet: &MultiMintWallet,
+    wallet: &WalletRepository,
     mint_url: &MintUrl,
     amount: Amount,
 ) -> Amount {
@@ -545,7 +545,7 @@ async fn test_multi_mint_wallet_restore() {
     // Create first wallet and fund it
     {
         let localstore = Arc::new(memory::empty().await.unwrap());
-        let wallet1 = MultiMintWallet::new(localstore, seed, CurrencyUnit::Sat)
+        let wallet1 = WalletRepository::new(localstore, seed)
             .await
             .expect("failed to create wallet");
 
@@ -561,7 +561,7 @@ async fn test_multi_mint_wallet_restore() {
 
     // Create second wallet with same seed but fresh storage
     let localstore2 = Arc::new(memory::empty().await.unwrap());
-    let wallet2 = MultiMintWallet::new(localstore2, seed, CurrencyUnit::Sat)
+    let wallet2 = WalletRepository::new(localstore2, seed)
         .await
         .expect("failed to create wallet");
 
@@ -633,18 +633,7 @@ async fn test_multi_mint_wallet_melt_with_mint() {
     );
 }
 
-/// Test unit() function returns correct currency unit
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_multi_mint_wallet_unit() {
-    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
-    let localstore = Arc::new(memory::empty().await.unwrap());
 
-    let wallet = MultiMintWallet::new(localstore, seed, CurrencyUnit::Sat)
-        .await
-        .expect("failed to create wallet");
-
-    assert_eq!(wallet.unit(), &CurrencyUnit::Sat, "Unit should be Sat");
-}
 
 /// Test list_transactions() function
 ///

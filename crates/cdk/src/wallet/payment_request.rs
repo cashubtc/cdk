@@ -623,11 +623,8 @@ impl WalletRepository {
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
     #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
-        use std::str::FromStr;
-
         use futures::StreamExt;
 
-        use crate::nuts::CurrencyUnit;
         use crate::wallet::streams::nostr::NostrPaymentEventStream;
 
         let NostrWaitInfo {

@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::str::FromStr;
+
 
 use cdk_common::database::WalletDatabase;
 use cdk_common::{database, KeySetInfo};
@@ -211,6 +211,37 @@ impl WalletRepository {
     #[instrument(skip(self))]
     pub async fn add_mint(&self, mint_url: MintUrl) -> Result<Wallet, Error> {
         self.create_wallet(mint_url, CurrencyUnit::Sat, None).await
+    }
+
+    /// Add a mint to the repository with a custom configuration and default unit (Sat)
+    #[instrument(skip(self))]
+    pub async fn add_mint_with_config(
+        &self,
+        mint_url: MintUrl,
+        config: WalletConfig,
+    ) -> Result<Wallet, Error> {
+        self.create_wallet(mint_url, CurrencyUnit::Sat, Some(config))
+            .await
+    }
+
+    /// Update configuration for an existing mint
+    ///
+    /// This re-creates the wallet with the new configuration.
+    #[instrument(skip(self))]
+    pub async fn set_mint_config(
+        &self,
+        mint_url: MintUrl,
+        config: WalletConfig,
+    ) -> Result<Wallet, Error> {
+        // Get existing unit from wallet if it exists, otherwise default to Sat
+        let unit = if let Some(wallet) = self.get_wallet(&mint_url).await {
+            wallet.unit.clone()
+        } else {
+            CurrencyUnit::Sat
+        };
+
+        // Re-create wallet with new config
+        self.create_wallet(mint_url, unit, Some(config)).await
     }
 
     /// Create and add a new wallet for a mint URL
@@ -653,12 +684,7 @@ impl Drop for WalletRepository {
     }
 }
 
-/// Deprecated: Use WalletRepository instead
-#[deprecated(
-    since = "0.15.0",
-    note = "Use WalletRepository and individual Wallet methods instead"
-)]
-pub type MultiMintWallet = WalletRepository;
+
 
 #[cfg(test)]
 mod tests {

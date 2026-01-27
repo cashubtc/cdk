@@ -11,8 +11,7 @@ use std::time::Duration;
 
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::multi_mint_wallet::WalletConfig;
-use cdk::wallet::{MultiMintWallet, WalletBuilder};
+use cdk::wallet::{WalletBuilder, WalletConfig, WalletRepository};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -45,12 +44,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Updated wallet TTL to 5 minutes");
 
     // ==========================================
-    // 2. Configure MultiMintWallet
+    // 2. Configure WalletRepository
     // ==========================================
-    println!("\n=== MultiMintWallet Configuration ===");
+    println!("\n=== WalletRepository Configuration ===");
 
-    // Create the MultiMintWallet
-    let multi_wallet = MultiMintWallet::new(localstore.clone(), seed, unit.clone()).await?;
+    // Create the WalletRepository
+    let multi_wallet = WalletRepository::new(localstore.clone(), seed).await?;
 
     // Define configuration for a new mint
     // This config uses a very short 1-minute TTL
