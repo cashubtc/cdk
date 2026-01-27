@@ -14,7 +14,7 @@ impl Wallet {
     /// * `_options` - Melt options (currently unused for custom methods)
     /// * `extra` - Optional extra payment-method-specific data as JSON
     #[instrument(skip(self, request, extra))]
-    pub(super) async fn melt_quote_custom(
+    pub(crate) async fn melt_quote_custom(
         &self,
         method: &str,
         request: String,

@@ -17,7 +17,7 @@ use crate::{Amount, Error, Wallet};
 impl Wallet {
     /// Melt Quote for BOLT12 offer
     #[instrument(skip(self, request))]
-    pub async fn melt_bolt12_quote(
+    pub(crate) async fn melt_bolt12_quote(
         &self,
         request: String,
         options: Option<MeltOptions>,

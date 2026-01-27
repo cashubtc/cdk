@@ -68,7 +68,7 @@ async fn main() -> Result<(), Error> {
         .to_string();
     println!("Invoice to be paid: {}", invoice_to_be_paid);
 
-    let melt_quote = wallet.melt_quote(invoice_to_be_paid, None).await?;
+    let melt_quote = wallet.melt_quote(PaymentMethod::BOLT11, invoice_to_be_paid, None, None).await?;
     println!(
         "Melt quote: {} {} {:?}",
         melt_quote.amount, melt_quote.state, melt_quote,

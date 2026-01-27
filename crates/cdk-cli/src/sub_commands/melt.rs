@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::{bail, Result};
 use cdk::amount::{amount_for_offer, Amount, MSAT_IN_SAT};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, MeltOptions};
+use cdk::nuts::{CurrencyUnit, MeltOptions, PaymentMethod};
 use cdk::wallet::MultiMintWallet;
 use cdk::Bolt11Invoice;
 use clap::{Args, ValueEnum};
@@ -320,7 +320,7 @@ pub async fn pay(
                     .ok_or_else(|| anyhow::anyhow!("Mint {} not found", mint_url))?;
 
                 // Get melt quote for BOLT12
-                let quote = wallet.melt_bolt12_quote(offer_str, options).await?;
+                let quote = wallet.melt_quote(PaymentMethod::BOLT12, offer_str, options, None).await?;
 
                 // Display quote info
                 println!("Melt quote created:");

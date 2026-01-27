@@ -247,13 +247,13 @@ impl Wallet {
     }
 
     /// Get a melt quote
-    pub async fn melt_quote(
+    pub async fn melt_bolt11_quote(
         &self,
         request: String,
         options: Option<MeltOptions>,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_options = options.map(Into::into);
-        let quote = self.inner.melt_quote(request, cdk_options).await?;
+        let quote = self.inner.melt_quote(cdk::nuts::PaymentMethod::BOLT11, request, cdk_options, None).await?;
         Ok(quote.into())
     }
 
@@ -364,7 +364,7 @@ impl Wallet {
         options: Option<MeltOptions>,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_options = options.map(Into::into);
-        let quote = self.inner.melt_bolt12_quote(request, cdk_options).await?;
+        let quote = self.inner.melt_quote(cdk::nuts::PaymentMethod::BOLT12, request, cdk_options, None).await?;
         Ok(quote.into())
     }
     /// Get a melt quote using a unified interface for any payment method
@@ -378,23 +378,17 @@ impl Wallet {
     /// * `request` - Payment request string (invoice, offer, or custom format)
     /// * `options` - Optional melt options (MPP, amountless, etc.)
     /// * `extra` - Optional JSON string with extra payment-method-specific fields (for custom methods)
-    pub async fn melt_quote_unified(
+    pub async fn melt_quote(
         &self,
         method: PaymentMethod,
         request: String,
         options: Option<MeltOptions>,
         extra: Option<String>,
     ) -> Result<MeltQuote, FfiError> {
-        // Parse the extra JSON string into a serde_json::Value
-        let extra_value = extra
-            .map(|s| serde_json::from_str(&s))
-            .transpose()
-            .map_err(|e| FfiError::internal(format!("Invalid extra JSON: {}", e)))?;
-
         let cdk_options = options.map(Into::into);
         let quote = self
             .inner
-            .melt_quote_unified(method.into(), request, cdk_options, extra_value)
+            .melt_quote::<cdk::nuts::PaymentMethod, _>(method.into(), request, cdk_options, extra)
             .await?;
         Ok(quote.into())
     }

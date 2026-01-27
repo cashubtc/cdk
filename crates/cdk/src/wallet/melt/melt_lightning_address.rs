@@ -85,6 +85,6 @@ impl Wallet {
 
         // Create a melt quote for the invoice using the existing bolt11 functionality
         // The invoice from LNURL already contains the amount, so we don't need amountless options
-        self.melt_quote(invoice.to_string(), None).await
+        self.melt_bolt11_quote(invoice.to_string(), None).await
     }
 }
