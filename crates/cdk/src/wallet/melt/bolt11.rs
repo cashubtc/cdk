@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::str::FromStr;
 
 use cdk_common::nut00::KnownMethod;
@@ -7,10 +6,7 @@ use cdk_common::PaymentMethod;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
-use crate::nuts::{
-    CurrencyUnit, MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response, Proofs,
-};
-use crate::types::FinalizedMelt;
+use crate::nuts::{CurrencyUnit, MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response};
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
@@ -116,44 +112,5 @@ impl Wallet {
         }
 
         Ok(response)
-    }
-    /// Melt specific proofs
-    #[instrument(skip(self, proofs))]
-    pub async fn melt_proofs(
-        &self,
-        quote_id: &str,
-        proofs: Proofs,
-    ) -> Result<FinalizedMelt, Error> {
-        self.melt_proofs_with_metadata(quote_id, proofs, HashMap::new())
-            .await
-    }
-
-    /// Melt specific proofs
-    #[instrument(skip(self, proofs))]
-    pub async fn melt_proofs_with_metadata(
-        &self,
-        quote_id: &str,
-        proofs: Proofs,
-        metadata: HashMap<String, String>,
-    ) -> Result<FinalizedMelt, Error> {
-        let prepared = self.prepare_melt_proofs(quote_id, proofs, metadata).await?;
-        prepared.confirm().await
-    }
-
-    /// Melt
-    #[instrument(skip(self))]
-    pub async fn melt(&self, quote_id: &str) -> Result<FinalizedMelt, Error> {
-        self.melt_with_metadata(quote_id, HashMap::new()).await
-    }
-
-    /// Melt with additional metadata to be saved locally with the transaction
-    #[instrument(skip(self))]
-    pub async fn melt_with_metadata(
-        &self,
-        quote_id: &str,
-        metadata: HashMap<String, String>,
-    ) -> Result<FinalizedMelt, Error> {
-        let prepared = self.prepare_melt(quote_id, metadata).await?;
-        prepared.confirm().await
     }
 }
