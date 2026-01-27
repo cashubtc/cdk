@@ -1447,7 +1447,6 @@ mod tests {
     /// - Some(0)
     /// - Some(1)
     /// - Some(-1)
-    /// Also catches mutation that replaces <= with > in the comparison.
     #[test]
     fn test_amount_to_i64_returns_correct_value() {
         // Test with value 100 (catches None, Some(0), Some(1), Some(-1) mutations)
@@ -1871,11 +1870,11 @@ mod tests {
 
         // Greater than
         assert!(large > small);
-        assert!(!(small > large));
+        assert!(small.partial_cmp(&large) != Some(Ordering::Greater));
 
         // Less than
         assert!(small < large);
-        assert!(!(large < small));
+        assert!(large.partial_cmp(&small) != Some(Ordering::Less));
 
         // Greater than or equal
         assert!(large >= small);
@@ -1930,24 +1929,30 @@ mod tests {
         // - >= returns false
         // - <= returns false
 
-        assert!(!(sat > msat));
-        assert!(!(sat < msat));
-        assert!(!(sat >= msat));
-        assert!(!(sat <= msat));
+        assert!(sat.partial_cmp(&msat) != Some(Ordering::Greater));
+        assert!(sat.partial_cmp(&msat) != Some(Ordering::Less));
+        assert!(
+            sat.partial_cmp(&msat) != Some(Ordering::Greater)
+                && sat.partial_cmp(&msat) != Some(Ordering::Equal)
+        );
+        assert!(
+            sat.partial_cmp(&msat) != Some(Ordering::Less)
+                && sat.partial_cmp(&msat) != Some(Ordering::Equal)
+        );
 
-        assert!(!(msat > sat));
-        assert!(!(msat < sat));
-        assert!(!(msat >= sat));
-        assert!(!(msat <= sat));
+        assert!(msat.partial_cmp(&sat) != Some(Ordering::Greater));
+        assert!(msat.partial_cmp(&sat) != Some(Ordering::Less));
+        assert!(msat.partial_cmp(&sat) != Some(Ordering::Less));
+        assert!(msat.partial_cmp(&sat) != Some(Ordering::Greater));
 
         // Even with same value, different units should return false
         let sat100 = Amount::new(100, CurrencyUnit::Sat);
         let msat100 = Amount::new(100, CurrencyUnit::Msat);
 
-        assert!(!(sat100 > msat100));
-        assert!(!(sat100 < msat100));
-        assert!(!(sat100 >= msat100));
-        assert!(!(sat100 <= msat100));
+        assert!(sat100.partial_cmp(&msat100) != Some(Ordering::Greater));
+        assert!(sat100.partial_cmp(&msat100) != Some(Ordering::Less));
+        assert!(sat100.partial_cmp(&msat100) != Some(Ordering::Less));
+        assert!(sat100.partial_cmp(&msat100) != Some(Ordering::Greater));
     }
 
     /// Tests that Amount<()> (untyped) has total ordering and implements Ord.

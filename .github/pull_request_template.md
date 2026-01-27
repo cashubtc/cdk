@@ -28,4 +28,4 @@ of the PR were done in a specific way -->
 ### Checklist
 
 * [ ] I followed the [code style guidelines](https://github.com/cashubtc/cdk/blob/main/CODE_STYLE.md)
-* [ ] I ran `just final-check` before committing
+* [ ] I ran `just quick-check` before committing

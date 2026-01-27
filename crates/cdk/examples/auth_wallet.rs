@@ -1,3 +1,11 @@
+//! Example showing authenticated wallet functionality
+//!
+//! This example demonstrates how to:
+//! 1. Create an authenticated wallet
+//! 2. Authenticate with a mint
+//! 3. Mint tokens with authentication
+//! 4. Check wallet balance
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,9 +18,6 @@ use cdk_common::{MintInfo, ProofsMethods};
 use cdk_sqlite::wallet::memory;
 use rand::Rng;
 use tracing_subscriber::EnvFilter;
-
-const TEST_USERNAME: &str = "cdk-test";
-const TEST_PASSWORD: &str = "cdkpassword";
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -45,24 +50,23 @@ async fn main() -> Result<(), Error> {
     // Request a mint quote from the wallet
     let quote = wallet.mint_quote(amount, None).await;
 
-    println!("Minting nuts ... {:?}", quote);
+    println!("Minting nuts ... {}", quote?.id);
 
     // Getting the CAT token is not inscope of cdk and expected to be handled by the implemntor
     // We just use this helper fn with password auth for testing
     let access_token = get_access_token(&mint_info).await;
 
-    wallet.set_cat(access_token).await.unwrap();
+    wallet.set_cat(access_token).await?;
 
     wallet
         .mint_blind_auth(10.into())
         .await
         .expect("Could not mint blind auth");
 
-    let quote = wallet.mint_quote(amount, None).await.unwrap();
+    let quote = wallet.mint_quote(amount, None).await?;
     let proofs = wallet
         .wait_and_mint_quote(quote, SplitTarget::default(), None, Duration::from_secs(10))
-        .await
-        .unwrap();
+        .await?;
 
     println!("Received: {}", proofs.total_amount()?);
 
@@ -115,8 +119,8 @@ async fn get_access_token(mint_info: &MintInfo) -> String {
     let params = [
         ("grant_type", "password"),
         ("client_id", &client_id),
-        ("username", TEST_USERNAME),
-        ("password", TEST_PASSWORD),
+        ("username", "cdk-test"),
+        ("password", "cdkpassword"),
     ];
 
     // Make the token request directly

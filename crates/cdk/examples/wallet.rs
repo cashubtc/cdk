@@ -1,3 +1,10 @@
+//! Example showing basic wallet functionality
+//!
+//! This example demonstrates how to:
+//! 1. Create a wallet
+//! 2. Mint tokens
+//! 3. Send tokens
+
 use std::sync::Arc;
 use std::time::Duration;
 

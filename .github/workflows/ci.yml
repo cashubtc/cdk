@@ -19,8 +19,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  pre-commit-checks:
-    name: "Cargo fmt, typos"
+  quick-check:
+    name: "Quick Check (typos, fmt, clippy, unit tests)"
     runs-on: self-hosted
     timeout-minutes: 30
     steps:
@@ -31,12 +31,9 @@ jobs:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
-          installCommand: nix profile install nixpkgs#cachix
         continue-on-error: true
-      - name: Cargo fmt
-        run: nix develop -i -L .#stable --command cargo fmt --check
-      - name: typos
-        run: nix develop -i -L .#stable --command typos
+      - name: Run quick-check
+        run: nix build -L .#checks.x86_64-linux.quick-check
 
   # Discover example checks from flake - single source of truth
   discover-examples:
@@ -60,7 +57,7 @@ jobs:
     name: "Example: ${{ matrix.example }}"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, discover-examples]
+    needs: [quick-check, discover-examples]
     strategy:
       fail-fast: true
       matrix:
@@ -108,7 +105,7 @@ jobs:
     name: "Check: ${{ matrix.check }}"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, discover-checks]
+    needs: [quick-check, discover-checks]
     strategy:
       fail-fast: false
       matrix:
@@ -130,7 +127,7 @@ jobs:
     name: "PostgreSQL Tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: quick-check
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -147,7 +144,7 @@ jobs:
     name: "Integration regtest tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: quick-check
     strategy:
       fail-fast: true
       matrix:
@@ -168,7 +165,7 @@ jobs:
     name: "Integration fake mint tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: quick-check
     strategy:
       fail-fast: true
       matrix:
@@ -190,7 +187,7 @@ jobs:
     name: "Integration fake wallet tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: quick-check
     strategy:
       fail-fast: true
       matrix:
@@ -213,7 +210,7 @@ jobs:
     name: "Payment processor tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: quick-check
     strategy:
       fail-fast: true
       matrix:
@@ -252,7 +249,7 @@ jobs:
     name: "MSRV: ${{ matrix.check }}"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, discover-msrv-checks]
+    needs: [quick-check, discover-msrv-checks]
     strategy:
       fail-fast: true
       matrix:
@@ -291,7 +288,7 @@ jobs:
     name: "WASM: ${{ matrix.check }}"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, discover-wasm-checks]
+    needs: [quick-check, discover-wasm-checks]
     strategy:
       fail-fast: true
       matrix:
@@ -312,7 +309,7 @@ jobs:
     name: "Integration fake mint auth tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: quick-check
     strategy:
       fail-fast: true
       matrix:
@@ -346,7 +343,7 @@ jobs:
     name: "Documentation tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: quick-check
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -380,7 +377,7 @@ jobs:
     name: "FFI Python tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: quick-check
     steps:
       - name: checkout
         uses: actions/checkout@v4

@@ -1,3 +1,11 @@
+//! Example showing P2PK (Pay to Public Key) functionality
+//!
+//! This example demonstrates how to:
+//! 1. Create a wallet with P2PK spending conditions
+//! 2. Mint tokens
+//! 3. Send tokens with P2PK lock
+//! 4. Receive tokens with P2PK unlock
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,7 +40,7 @@ async fn main() -> Result<(), Error> {
     let amount = Amount::from(100);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, localstore, seed, None).unwrap();
+    let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
 
     let quote = wallet.mint_quote(amount, None).await?;
     let proofs = wallet
@@ -45,10 +53,8 @@ async fn main() -> Result<(), Error> {
         .await?;
 
     // Mint the received amount
-    println!(
-        "Minted nuts: {:?}",
-        proofs.into_iter().map(|p| p.amount).collect::<Vec<_>>()
-    );
+    let total_amount = proofs.iter().map(|p| u64::from(p.amount)).sum::<u64>();
+    println!("Minted nuts total amount: {}", total_amount);
 
     // Generate a secret key for spending conditions
     let secret = SecretKey::generate();

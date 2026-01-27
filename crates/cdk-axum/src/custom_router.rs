@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn test_create_custom_routers_method_list() {
         // This test verifies the method list formatting
-        let custom_methods = vec!["paypal".to_string(), "venmo".to_string()];
+        let custom_methods = ["paypal".to_string(), "venmo".to_string()];
 
         let methods_str = custom_methods
             .iter()

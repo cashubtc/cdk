@@ -1519,7 +1519,7 @@ async fn test_concurrent_melt_same_invoice() {
                 Mnemonic::generate(12).unwrap().to_seed_normalized(""),
                 None,
             )
-            .expect(&format!("failed to create wallet {}", i)),
+            .unwrap_or_else(|_| panic!("failed to create wallet {}", i)),
         );
         wallets.push(wallet);
     }
@@ -1532,7 +1532,7 @@ async fn test_concurrent_melt_same_invoice() {
         proof_streams
             .next()
             .await
-            .expect(&format!("payment for wallet {}", i))
+            .unwrap_or_else(|| panic!("payment for wallet {}", i))
             .expect("no error");
     }
 

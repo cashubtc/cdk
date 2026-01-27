@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         use std::time::{SystemTime, UNIX_EPOCH};
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("Time went backwards")
             .as_nanos();
         for (i, byte) in s.iter_mut().enumerate() {
             *byte = ((timestamp >> (i % 16)) & 0xFF) as u8;
