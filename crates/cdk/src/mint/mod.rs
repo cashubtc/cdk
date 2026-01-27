@@ -6,9 +6,10 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
+use cdk_common::database::mint::Acquired;
 #[cfg(feature = "auth")]
 use cdk_common::database::DynMintAuthDatabase;
-use cdk_common::database::{self, Acquired, DynMintDatabase};
+use cdk_common::database::{self, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;

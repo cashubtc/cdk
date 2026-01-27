@@ -1,4 +1,4 @@
-use cdk_common::database::Acquired;
+use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::payment::{
