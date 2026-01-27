@@ -2,7 +2,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
-use cashu::{Bolt11Invoice, ProofsMethods};
+use cashu::{Bolt11Invoice, PaymentMethod, ProofsMethods};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{ReceiveOptions, SendKind, SendOptions, Wallet};
@@ -109,7 +109,10 @@ async fn test_fake_melt_change_in_quote() {
 
     let invoice = create_invoice_for_env(Some(invoice_amount)).await.unwrap();
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let proofs = wallet.get_unspent_proofs().await.unwrap();
 

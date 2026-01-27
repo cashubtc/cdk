@@ -20,8 +20,8 @@ use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
 use cashu::mint_url::MintUrl;
 use cashu::{
-    CurrencyUnit, Id, MeltRequest, NotificationPayload, PreMintSecrets, ProofState, SecretKey,
-    SpendingConditions, State, SwapRequest,
+    CurrencyUnit, Id, MeltRequest, NotificationPayload, PaymentMethod, PreMintSecrets, ProofState,
+    SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
@@ -805,7 +805,7 @@ async fn test_mint_change_with_fee_melt() {
     let fake_invoice = create_fake_invoice(1000, "".to_string());
 
     let melt_quote = wallet_alice
-        .melt_quote(fake_invoice.to_string(), None)
+        .melt_quote(PaymentMethod::BOLT11, fake_invoice.to_string(), None, None)
         .await
         .unwrap();
 
@@ -974,7 +974,7 @@ async fn test_concurrent_double_spend_melt() {
 
     // Create a melt quote
     let melt_quote = wallet_alice
-        .melt_quote(invoice.to_string(), None)
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
         .await
         .expect("Failed to create melt quote");
 

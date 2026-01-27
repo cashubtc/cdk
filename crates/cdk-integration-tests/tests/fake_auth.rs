@@ -432,7 +432,7 @@ async fn test_melt_with_auth() {
     let bolt11 = create_fake_invoice(2_000, "".to_string());
 
     let melt_quote = wallet
-        .melt_quote(bolt11.to_string(), None)
+        .melt_quote(PaymentMethod::BOLT11, bolt11.to_string(), None, None)
         .await
         .expect("Could not get melt quote");
 

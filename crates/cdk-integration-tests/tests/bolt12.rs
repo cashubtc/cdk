@@ -231,24 +231,28 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
         .await?;
 
     let wallet_one_melt_quote = wallet_one
-        .melt_bolt12_quote(
+        .melt_quote(
+            PaymentMethod::BOLT12,
             offer.to_string(),
             Some(cashu::MeltOptions::Amountless {
                 amountless: Amountless {
                     amount_msat: 1500.into(),
                 },
             }),
+            None,
         )
         .await?;
 
     let wallet_two_melt_quote = wallet_two
-        .melt_bolt12_quote(
+        .melt_quote(
+            PaymentMethod::BOLT12,
             offer.to_string(),
             Some(cashu::MeltOptions::Amountless {
                 amountless: Amountless {
                     amount_msat: 1000.into(),
                 },
             }),
+            None,
         )
         .await?;
 
@@ -313,7 +317,9 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
         .get_bolt12_offer(Some(10_000), true, "hhhhhhhh".to_string())
         .await?;
 
-    let quote = wallet.melt_bolt12_quote(offer.to_string(), None).await?;
+    let quote = wallet
+        .melt_quote(PaymentMethod::BOLT12, offer.to_string(), None, None)
+        .await?;
 
     let prepared = wallet
         .prepare_melt(&quote.id, std::collections::HashMap::new())
@@ -348,7 +354,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         .mint_quote(PaymentMethod::BOLT12, None, None, None)
         .await?;
 
-    let state = wallet.mint_quote_state(&mint_quote.id).await?;
+    let state = wallet.check_mint_quote_status(&mint_quote.id).await?;
 
     assert_eq!(state.amount_paid, Amount::ZERO);
     assert_eq!(state.amount_issued, Amount::ZERO);
@@ -369,7 +375,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         .await?
         .unwrap();
 
-    let state = wallet.mint_quote_state(&mint_quote.id).await?;
+    let state = wallet.check_mint_quote_status(&mint_quote.id).await?;
 
     assert_eq!(payment, state.amount_paid);
     assert_eq!(state.amount_paid, (pay_amount_msats / 1_000).into());
@@ -480,7 +486,10 @@ async fn test_attempt_to_mint_unpaid() {
         .await
         .unwrap();
 
-    let state = wallet.mint_quote_state(&mint_quote.id).await.unwrap();
+    let state = wallet
+        .check_mint_quote_status(&mint_quote.id)
+        .await
+        .unwrap();
 
     assert!(state.amount_paid == Amount::ZERO);
     let mut mint_quote = wallet
@@ -608,7 +617,7 @@ async fn test_bolt12_quote_amount_issued_tracking() -> Result<()> {
         .await?;
 
     // Verify initial state
-    let state_before = wallet.mint_quote_state(&mint_quote.id).await?;
+    let state_before = wallet.check_mint_quote_status(&mint_quote.id).await?;
     assert_eq!(state_before.amount_paid, Amount::ZERO);
     assert_eq!(state_before.amount_issued, Amount::ZERO);
 
@@ -628,7 +637,7 @@ async fn test_bolt12_quote_amount_issued_tracking() -> Result<()> {
         .expect("Should receive payment notification");
 
     // Check state after payment but before minting
-    let state_after_payment = wallet.mint_quote_state(&mint_quote.id).await?;
+    let state_after_payment = wallet.check_mint_quote_status(&mint_quote.id).await?;
     assert_eq!(
         state_after_payment.amount_paid,
         Amount::from(pay_amount_msats / 1000)
@@ -648,7 +657,7 @@ async fn test_bolt12_quote_amount_issued_tracking() -> Result<()> {
     assert_eq!(minted_amount, payment);
 
     // Check state after minting
-    let state_after_mint = wallet.mint_quote_state(&mint_quote.id).await?;
+    let state_after_mint = wallet.check_mint_quote_status(&mint_quote.id).await?;
     assert_eq!(
         state_after_mint.amount_issued, minted_amount,
         "amount_issued should be updated after minting"

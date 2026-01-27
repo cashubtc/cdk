@@ -9,7 +9,7 @@
 //! integration_tests_pure.rs, etc.)
 
 use anyhow::Result;
-use cashu::MeltQuoteState;
+use cashu::{MeltQuoteState, PaymentMethod};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::wallet::SendOptions;
 use cdk::Amount;
@@ -158,8 +158,12 @@ async fn test_concurrent_melts_isolated() -> Result<()> {
     let invoice2 = create_fake_invoice(300_000, "melt 2".to_string());
 
     // Get quotes
-    let quote1 = wallet.melt_quote(invoice1.to_string(), None).await?;
-    let quote2 = wallet.melt_quote(invoice2.to_string(), None).await?;
+    let quote1 = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice1.to_string(), None, None)
+        .await?;
+    let quote2 = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice2.to_string(), None, None)
+        .await?;
 
     // Execute both melts concurrently
     let wallet1 = wallet.clone();
@@ -250,7 +254,9 @@ async fn test_melt_saga_includes_input_fees() -> Result<()> {
     // inputs_needed without input_fee = 102 sats
     // With input_fee (depends on proof count), mint needs more
     let invoice = create_fake_invoice(100_000, "test melt with fees".to_string());
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await?;
 
     tracing::info!(
         "Melt quote: amount={}, fee_reserve={}",
@@ -349,7 +355,9 @@ async fn test_melt_with_swap_non_optimal_proofs() -> Result<()> {
     // Create melt quote - amount chosen to require a swap
     // With 200 sats in 1-sat proofs, melting 100 sats should require swapping
     let invoice = create_fake_invoice(100_000, "test melt with non-optimal proofs".to_string());
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await?;
 
     tracing::info!(
         "Melt quote: amount={}, fee_reserve={}",
@@ -433,7 +441,9 @@ async fn test_melt_swap_gap_recovery() -> Result<()> {
 
     // 3. Create Melt Quote
     let invoice = create_fake_invoice(100_000, "test gap".to_string());
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await?;
 
     // 4. Prepare Melt
     let prepared = wallet

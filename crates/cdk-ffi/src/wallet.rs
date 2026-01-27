@@ -225,7 +225,7 @@ impl Wallet {
         &self,
         quote_id: String,
     ) -> Result<MintQuoteBolt11Response, FfiError> {
-        let quote = self.inner.mint_quote_state(&quote_id).await?;
+        let quote = self.inner.check_mint_quote_status(&quote_id).await?;
         Ok(quote.into())
     }
 
