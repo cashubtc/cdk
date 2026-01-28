@@ -2084,8 +2084,8 @@ async fn test_check_all_mint_quotes_bolt11() {
     // Verify no proofs have been minted yet
     assert_eq!(wallet.total_balance().await.unwrap(), Amount::ZERO);
 
-    // Call check_all_mint_quotes - this should mint both paid quotes
-    let total_minted = wallet.check_all_mint_quotes().await.unwrap();
+    // Call mint_unissued_quotes - this should mint both paid quotes
+    let total_minted = wallet.mint_unissued_quotes().await.unwrap();
 
     // Verify the total amount minted is correct (100 + 50 = 150)
     assert_eq!(total_minted, Amount::from(150));
@@ -2093,8 +2093,8 @@ async fn test_check_all_mint_quotes_bolt11() {
     // Verify wallet balance matches
     assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(150));
 
-    // Calling check_all_mint_quotes again should return 0 (quotes already minted)
-    let second_check = wallet.check_all_mint_quotes().await.unwrap();
+    // Calling mint_unissued_quotes again should return 0 (quotes already minted)
+    let second_check = wallet.mint_unissued_quotes().await.unwrap();
     assert_eq!(second_check, Amount::ZERO);
 }
 
@@ -2170,7 +2170,7 @@ async fn test_get_unissued_mint_quotes_wallet() {
 /// 2. Quote state is updated correctly
 /// 3. The quote is stored properly in the localstore
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_check_mint_quote_status_updates_after_minting() {
+async fn test_refresh_mint_quote_status_updates_after_minting() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,

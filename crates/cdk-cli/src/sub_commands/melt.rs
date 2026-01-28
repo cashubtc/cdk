@@ -320,7 +320,9 @@ pub async fn pay(
                     .ok_or_else(|| anyhow::anyhow!("Mint {} not found", mint_url))?;
 
                 // Get melt quote for BOLT12
-                let quote = wallet.melt_quote(PaymentMethod::BOLT12, offer_str, options, None).await?;
+                let quote = wallet
+                    .melt_quote(PaymentMethod::BOLT12, offer_str, options, None)
+                    .await?;
 
                 // Display quote info
                 println!("Melt quote created:");

@@ -107,9 +107,9 @@ async fn test_ffi_full_minting_flow() {
     );
     assert!(!quote.id.is_empty(), "Quote should have an ID");
 
-    // Check  mint quote status
+    // Refresh mint quote status
     let quote_status = wallet
-        .check_mint_quote(quote.id.clone())
+        .refresh_mint_quote(quote.id.clone())
         .await
         .expect("failed to get mint status");
     assert_eq!(
