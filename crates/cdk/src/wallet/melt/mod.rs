@@ -681,6 +681,54 @@ impl Wallet {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
+        // Check if there's an in-progress saga for this quote
+        if let Some(ref operation_id_str) = quote.used_by_operation {
+            if let Ok(operation_id) = uuid::Uuid::parse_str(operation_id_str) {
+                match self.localstore.get_saga(&operation_id).await {
+                    Ok(Some(saga)) => {
+                        // Saga exists - try to complete it
+                        tracing::info!(
+                            "Melt quote {} has in-progress saga {}, attempting to complete",
+                            quote_id,
+                            operation_id
+                        );
+
+                        match self.resume_melt_saga(&saga).await? {
+                            Some(_) => {
+                                // Saga completed - re-fetch quote from DB
+                                quote = self
+                                    .localstore
+                                    .get_melt_quote(quote_id)
+                                    .await?
+                                    .ok_or(Error::UnknownQuote)?;
+                            }
+                            None => {
+                                // Saga still pending (payment in progress or mint unreachable)
+                                // Return current quote state - no need to query mint again
+                                // since resume_melt_saga already checked
+                                return Ok(quote);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // Orphaned reservation - release it
+                        tracing::warn!(
+                            "Melt quote {} has orphaned reservation for operation {}, releasing",
+                            quote_id,
+                            operation_id
+                        );
+                        if let Err(e) = self.localstore.release_melt_quote(&operation_id).await {
+                            tracing::warn!("Failed to release orphaned melt quote: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to check saga for melt quote {}: {}", quote_id, e);
+                        return Err(Error::Database(e));
+                    }
+                }
+            }
+        }
+
         match &quote.payment_method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
                 let response = self.client.get_melt_quote_status(quote_id).await?;
