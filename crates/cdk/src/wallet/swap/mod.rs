@@ -3,7 +3,6 @@
 //! This module provides functionality for swapping proofs.
 
 use cdk_common::amount::FeeAndAmounts;
-use cdk_common::nut02::KeySetInfosMethods;
 use cdk_common::Id;
 use tracing::instrument;
 
@@ -13,7 +12,7 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     PreMintSecrets, PreSwap, Proofs, PublicKey, SpendingConditions, State, SwapRequest,
 };
-use crate::{ensure_cdk, Amount, Error, Wallet};
+use crate::{Amount, Error, Wallet};
 
 pub(crate) mod saga;
 
@@ -47,66 +46,10 @@ impl Wallet {
         Ok(saga.into_send_proofs())
     }
 
-    /// Swap from unspent proofs in db
-    #[instrument(skip(self))]
-    pub async fn swap_from_unspent(
-        &self,
-        amount: Amount,
-        conditions: Option<SpendingConditions>,
-        include_fees: bool,
-    ) -> Result<Proofs, Error> {
-        let available_proofs = self
-            .localstore
-            .get_proofs(
-                Some(self.mint_url.clone()),
-                Some(self.unit.clone()),
-                Some(vec![State::Unspent]),
-                None,
-            )
-            .await?;
-
-        let (available_proofs, proofs_sum) = available_proofs
-            .into_iter()
-            .map(|p| p.proof)
-            .try_fold((Vec::new(), Amount::ZERO), |(mut acc1, acc2), p| {
-                let new_sum = acc2.checked_add(p.amount).ok_or(Error::AmountOverflow)?;
-                acc1.push(p);
-                Ok::<_, Error>((acc1, new_sum))
-            })?;
-
-        ensure_cdk!(proofs_sum >= amount, Error::InsufficientFunds);
-
-        let active_keyset_ids = self
-            .get_mint_keysets()
-            .await?
-            .active()
-            .map(|k| k.id)
-            .collect();
-
-        let keyset_fees = self.get_keyset_fees_and_amounts().await?;
-        let proofs = Wallet::select_proofs(
-            amount,
-            available_proofs,
-            &active_keyset_ids,
-            &keyset_fees,
-            true,
-        )?;
-
-        self.swap(
-            Some(amount),
-            SplitTarget::default(),
-            proofs,
-            conditions,
-            include_fees,
-        )
-        .await?
-        .ok_or(Error::InsufficientFunds)
-    }
-
     /// Create Swap Payload
     #[instrument(skip(self, proofs))]
     #[allow(clippy::too_many_arguments)]
-    pub async fn create_swap(
+    pub(crate) async fn create_swap(
         &self,
         active_keyset_id: Id,
         fee_and_amounts: &FeeAndAmounts,

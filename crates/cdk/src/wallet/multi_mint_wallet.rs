@@ -27,7 +27,9 @@ use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut23::QuoteState;
-use crate::nuts::{CurrencyUnit, MeltOptions, PaymentMethod, Proof, Proofs, SpendingConditions, State, Token};
+use crate::nuts::{
+    CurrencyUnit, MeltOptions, PaymentMethod, Proof, Proofs, SpendingConditions, State, Token,
+};
 use crate::types::FinalizedMelt;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
@@ -1333,11 +1335,18 @@ impl MultiMintWallet {
         source_balance: Amount,
     ) -> Result<(MintQuote, crate::wallet::types::MeltQuote), Error> {
         // Step 1: Create mint quote at target mint for the exact amount we want to receive
-        let mint_quote = target_wallet.mint_bolt11_quote(amount, None).await?;
+        let mint_quote = target_wallet
+            .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
+            .await?;
 
         // Step 2: Create melt quote at source mint for the invoice
         let melt_quote = source_wallet
-            .melt_quote(PaymentMethod::BOLT11, mint_quote.request.clone(), None, None)
+            .melt_quote(
+                PaymentMethod::BOLT11,
+                mint_quote.request.clone(),
+                None,
+                None,
+            )
             .await?;
 
         // Step 3: Check if source has enough balance for the total amount needed (amount + melt fees)
@@ -1363,10 +1372,15 @@ impl MultiMintWallet {
         // Step 1: Create melt quote for full balance to discover fees
         // We need to create a dummy mint quote first to get an invoice
         let dummy_mint_quote = target_wallet
-            .mint_bolt11_quote(source_balance, None)
+            .mint_quote(PaymentMethod::BOLT11, Some(source_balance), None, None)
             .await?;
         let probe_melt_quote = source_wallet
-            .melt_quote(PaymentMethod::BOLT11, dummy_mint_quote.request.clone(), None, None)
+            .melt_quote(
+                PaymentMethod::BOLT11,
+                dummy_mint_quote.request.clone(),
+                None,
+                None,
+            )
             .await?;
 
         // Step 2: Calculate actual receive amount (balance - fees)
@@ -1380,12 +1394,17 @@ impl MultiMintWallet {
 
         // Step 3: Create final mint quote for the net amount
         let final_mint_quote = target_wallet
-            .mint_bolt11_quote(receive_amount, None)
+            .mint_quote(PaymentMethod::BOLT11, Some(receive_amount), None, None)
             .await?;
 
         // Step 4: Create final melt quote with the new invoice
         let final_melt_quote = source_wallet
-            .melt_quote(PaymentMethod::BOLT11, final_mint_quote.request.clone(), None, None)
+            .melt_quote(
+                PaymentMethod::BOLT11,
+                final_mint_quote.request.clone(),
+                None,
+                None,
+            )
             .await?;
 
         Ok((final_mint_quote, final_melt_quote))
@@ -1610,7 +1629,9 @@ impl MultiMintWallet {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet.mint_bolt11_quote(amount, description).await
+        wallet
+            .mint_quote(PaymentMethod::BOLT11, Some(amount), description, None)
+            .await
     }
 
     /// Check a specific mint quote status
@@ -2091,7 +2112,9 @@ impl MultiMintWallet {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet.melt_quote(PaymentMethod::BOLT11, bolt11, options, None).await
+        wallet
+            .melt_quote(PaymentMethod::BOLT11, bolt11, options, None)
+            .await
     }
 
     /// Melt (pay invoice) from a specific mint using a quote ID
@@ -2215,7 +2238,9 @@ impl MultiMintWallet {
             let options = Some(MeltOptions::new_mpp(amount_msat));
 
             let task = spawn(async move {
-                let quote = wallet.melt_quote(PaymentMethod::BOLT11, bolt11_clone, options, None).await;
+                let quote = wallet
+                    .melt_quote(PaymentMethod::BOLT11, bolt11_clone, options, None)
+                    .await;
                 (mint_url_clone, quote)
             });
 
@@ -2403,7 +2428,10 @@ impl MultiMintWallet {
         let mut best_wallet = None;
 
         for (_, wallet) in eligible_wallets.iter() {
-            match wallet.melt_quote(PaymentMethod::BOLT11, bolt11.to_string(), options, None).await {
+            match wallet
+                .melt_quote(PaymentMethod::BOLT11, bolt11.to_string(), options, None)
+                .await
+            {
                 Ok(quote) => {
                     if let Some(max_fee) = max_fee {
                         if quote.fee_reserve > max_fee {

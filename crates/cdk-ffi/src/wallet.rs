@@ -210,12 +210,14 @@ impl Wallet {
     /// Get a mint quote
     pub async fn mint_quote(
         &self,
-        amount: Amount,
+        payment_method: PaymentMethod,
+        amount: Option<Amount>,
         description: Option<String>,
+        extra: Option<String>,
     ) -> Result<MintQuote, FfiError> {
         let quote = self
             .inner
-            .mint_bolt11_quote(amount.into(), description)
+            .mint_quote(payment_method, amount.map(Into::into), description, extra)
             .await?;
         Ok(quote.into())
     }
@@ -253,7 +255,10 @@ impl Wallet {
         options: Option<MeltOptions>,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_options = options.map(Into::into);
-        let quote = self.inner.melt_quote(cdk::nuts::PaymentMethod::BOLT11, request, cdk_options, None).await?;
+        let quote = self
+            .inner
+            .melt_quote(cdk::nuts::PaymentMethod::BOLT11, request, cdk_options, None)
+            .await?;
         Ok(quote.into())
     }
 
@@ -298,23 +303,6 @@ impl Wallet {
         Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
 
-    /// Get a quote for a bolt12 mint
-    pub async fn mint_bolt12_quote(
-        &self,
-        amount: Option<Amount>,
-        description: Option<String>,
-    ) -> Result<MintQuote, FfiError> {
-        let quote = self
-            .inner
-            .mint_quote(
-                cdk::nuts::PaymentMethod::Known(cdk::nuts::nut00::KnownMethod::Bolt12),
-                amount.map(Into::into),
-                description,
-                None,
-            )
-            .await?;
-        Ok(quote.into())
-    }
     /// Get a mint quote using a unified interface for any payment method
     ///
     /// This method supports bolt11, bolt12, and custom payment methods.
@@ -364,7 +352,10 @@ impl Wallet {
         options: Option<MeltOptions>,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_options = options.map(Into::into);
-        let quote = self.inner.melt_quote(cdk::nuts::PaymentMethod::BOLT12, request, cdk_options, None).await?;
+        let quote = self
+            .inner
+            .melt_quote(cdk::nuts::PaymentMethod::BOLT12, request, cdk_options, None)
+            .await?;
         Ok(quote.into())
     }
     /// Get a melt quote using a unified interface for any payment method

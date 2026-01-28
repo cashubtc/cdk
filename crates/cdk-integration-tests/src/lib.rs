@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
-use cashu::Bolt11Invoice;
+use cashu::{Bolt11Invoice, PaymentMethod};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::{StreamExt, Wallet};
 use cdk_fake_wallet::create_fake_invoice;
@@ -49,7 +49,7 @@ pub fn standard_keyset_amounts(max_order: u32) -> Vec<u64> {
 
 pub async fn fund_wallet(wallet: Arc<Wallet>, amount: Amount) {
     let quote = wallet
-        .mint_bolt11_quote(amount, None)
+        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
         .await
         .expect("Could not get mint quote");
 
