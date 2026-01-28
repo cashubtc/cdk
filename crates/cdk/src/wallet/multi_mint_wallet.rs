@@ -3,6 +3,7 @@
 //! Simple container that manages [`Wallet`] instances by mint URL.
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk_common::database::WalletDatabase;
