@@ -333,7 +333,7 @@ async fn test_mint_with_auth() {
 
     let mint_amount: Amount = 100.into();
 
-    let quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let quote = wallet.mint_bolt11_quote(mint_amount, None).await.unwrap();
 
     let proofs = wallet
         .wait_and_mint_quote(
@@ -432,13 +432,17 @@ async fn test_melt_with_auth() {
     let bolt11 = create_fake_invoice(2_000, "".to_string());
 
     let melt_quote = wallet
-        .melt_quote(bolt11.to_string(), None)
+        .melt_quote(PaymentMethod::BOLT11, bolt11.to_string(), None, None)
         .await
         .expect("Could not get melt quote");
 
-    let after_melt = wallet.melt(&melt_quote.id).await.expect("Could not melt");
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .expect("Could not prepare melt");
+    let after_melt = prepared.confirm().await.expect("Could not melt");
 
-    assert!(after_melt.state == MeltQuoteState::Paid);
+    assert!(after_melt.state() == MeltQuoteState::Paid);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -512,7 +516,7 @@ async fn test_reuse_auth_proof() {
 
     {
         let quote = wallet
-            .mint_quote(10.into(), None)
+            .mint_bolt11_quote(10.into(), None)
             .await
             .expect("Quote should be allowed");
 
@@ -526,7 +530,7 @@ async fn test_reuse_auth_proof() {
         .unwrap();
 
     {
-        let quote_res = wallet.mint_quote(10.into(), None).await;
+        let quote_res = wallet.mint_bolt11_quote(10.into(), None).await;
         assert!(
             matches!(quote_res, Err(Error::TokenAlreadySpent)),
             "Expected AuthRequired error, got {:?}",
@@ -643,7 +647,7 @@ async fn test_refresh_access_token() {
 
     // Try to get a mint quote with the refreshed token
     let mint_quote = wallet
-        .mint_quote(mint_amount, None)
+        .mint_bolt11_quote(mint_amount, None)
         .await
         .expect("failed to get mint quote with refreshed token");
 
@@ -729,7 +733,7 @@ async fn test_auth_token_spending_order() {
     // Use tokens and verify they're used in the expected order (FIFO)
     for i in 0..3 {
         let mint_quote = wallet
-            .mint_quote(10.into(), None)
+            .mint_bolt11_quote(10.into(), None)
             .await
             .expect("failed to get mint quote");
 

@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
@@ -71,7 +71,9 @@ async fn main() -> anyhow::Result<()> {
 
     // First, we need to fund the wallet
     println!("Requesting mint quote for {} sats...", initial_amount);
-    let mint_quote = wallet.mint_quote(initial_amount, None).await?;
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, Some(initial_amount), None, None)
+        .await?;
     println!(
         "Pay this invoice to fund the wallet:\n{}",
         mint_quote.request
@@ -123,21 +125,37 @@ async fn main() -> anyhow::Result<()> {
             println!("  State: {}", melt_quote.state);
             println!("  Payment Method: {}", melt_quote.payment_method);
 
-            // Execute the payment
-            println!("\nExecuting payment...");
-            match wallet.melt(&melt_quote.id).await {
-                Ok(melt_result) => {
-                    println!("✓ BIP-353 payment successful!");
-                    println!("  State: {}", melt_result.state);
-                    println!("  Amount paid: {} sats", melt_result.amount);
-                    println!("  Fee paid: {} sats", melt_result.fee_paid);
+            // Prepare the payment - shows fees before confirming
+            println!("\nPreparing payment...");
+            match wallet
+                .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+                .await
+            {
+                Ok(prepared) => {
+                    println!("✓ Prepared melt:");
+                    println!("  Amount: {} sats", prepared.amount());
+                    println!("  Total Fee: {} sats", prepared.total_fee());
 
-                    if let Some(preimage) = melt_result.preimage {
-                        println!("  Payment preimage: {}", preimage);
+                    // Execute the payment
+                    println!("\nExecuting payment...");
+                    match prepared.confirm().await {
+                        Ok(confirmed) => {
+                            println!("✓ BIP-353 payment successful!");
+                            println!("  State: {:?}", confirmed.state());
+                            println!("  Amount paid: {} sats", confirmed.amount());
+                            println!("  Fee paid: {} sats", confirmed.fee_paid());
+
+                            if let Some(preimage) = confirmed.payment_proof() {
+                                println!("  Payment preimage: {}", preimage);
+                            }
+                        }
+                        Err(e) => {
+                            println!("✗ BIP-353 payment failed: {}", e);
+                        }
                     }
                 }
                 Err(e) => {
-                    println!("✗ BIP-353 payment failed: {}", e);
+                    println!("✗ Failed to prepare melt: {}", e);
                 }
             }
         }
@@ -184,21 +202,37 @@ async fn main() -> anyhow::Result<()> {
             println!("  State: {}", melt_quote.state);
             println!("  Payment Method: {}", melt_quote.payment_method);
 
-            // Execute the payment
-            println!("\nExecuting payment...");
-            match wallet.melt(&melt_quote.id).await {
-                Ok(melt_result) => {
-                    println!("✓ Lightning Address payment successful!");
-                    println!("  State: {}", melt_result.state);
-                    println!("  Amount paid: {} sats", melt_result.amount);
-                    println!("  Fee paid: {} sats", melt_result.fee_paid);
+            // Prepare the payment - shows fees before confirming
+            println!("\nPreparing payment...");
+            match wallet
+                .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+                .await
+            {
+                Ok(prepared) => {
+                    println!("✓ Prepared melt:");
+                    println!("  Amount: {} sats", prepared.amount());
+                    println!("  Total Fee: {} sats", prepared.total_fee());
 
-                    if let Some(preimage) = melt_result.preimage {
-                        println!("  Payment preimage: {}", preimage);
+                    // Execute the payment
+                    println!("\nExecuting payment...");
+                    match prepared.confirm().await {
+                        Ok(confirmed) => {
+                            println!("✓ Lightning Address payment successful!");
+                            println!("  State: {:?}", confirmed.state());
+                            println!("  Amount paid: {} sats", confirmed.amount());
+                            println!("  Fee paid: {} sats", confirmed.fee_paid());
+
+                            if let Some(preimage) = confirmed.payment_proof() {
+                                println!("  Payment preimage: {}", preimage);
+                            }
+                        }
+                        Err(e) => {
+                            println!("✗ Lightning Address payment failed: {}", e);
+                        }
                     }
                 }
                 Err(e) => {
-                    println!("✗ Lightning Address payment failed: {}", e);
+                    println!("✗ Failed to prepare melt: {}", e);
                 }
             }
         }

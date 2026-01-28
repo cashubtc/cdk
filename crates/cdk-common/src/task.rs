@@ -1,6 +1,7 @@
 //! Thin wrapper for spawn and spawn_local for native and wasm.
 
 use std::future::Future;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 
 use tokio::task::JoinHandle;

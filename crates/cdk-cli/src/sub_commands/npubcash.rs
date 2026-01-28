@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
@@ -14,7 +15,7 @@ use nostr_sdk::ToBech32;
 async fn get_wallet_for_mint(
     multi_mint_wallet: &MultiMintWallet,
     mint_url_str: &str,
-) -> Result<Wallet> {
+) -> Result<Arc<Wallet>> {
     let mint_url = MintUrl::from_str(mint_url_str)?;
 
     // Check if wallet exists for this mint
