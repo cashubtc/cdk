@@ -20,7 +20,7 @@ use bip39::Mnemonic;
 use cdk_ffi::sqlite::WalletSqliteDatabase;
 use cdk_ffi::types::{encode_mint_quote, Amount, CurrencyUnit, QuoteState, SplitTarget};
 use cdk_ffi::wallet::Wallet as FfiWallet;
-use cdk_ffi::WalletConfig;
+use cdk_ffi::{PaymentMethod, WalletConfig};
 use cdk_integration_tests::{get_mint_url_from_env, pay_if_regtest};
 use lightning_invoice::Bolt11Invoice;
 use tokio::time::timeout;
@@ -80,7 +80,12 @@ async fn test_ffi_full_minting_flow() {
 
     // Step 1: Create a mint quote
     let quote = wallet
-        .mint_quote(mint_amount, Some("FFI Integration Test".to_string()))
+        .mint_quote(
+            PaymentMethod::Bolt11,
+            Some(mint_amount),
+            Some("FFI Integration Test".to_string()),
+            None,
+        )
         .await
         .expect("Failed to create mint quote");
 
@@ -234,7 +239,12 @@ async fn test_ffi_mint_quote_creation() {
         let description = format!("Test quote for {} sats", amount_value);
 
         let quote = wallet
-            .mint_quote(amount, Some(description.clone()))
+            .mint_quote(
+                PaymentMethod::Bolt11,
+                Some(amount),
+                Some(description.clone()),
+                None,
+            )
             .await
             .unwrap_or_else(|_| panic!("Failed to create quote for {} sats", amount_value));
 
@@ -301,7 +311,9 @@ async fn test_ffi_minting_error_handling() {
     let wallet = create_test_ffi_wallet().await;
 
     // Test zero amount quote (should fail)
-    let zero_amount_result = wallet.mint_quote(Amount::new(0), None).await;
+    let zero_amount_result = wallet
+        .mint_quote(PaymentMethod::Bolt11, Some(Amount::new(0)), None, None)
+        .await;
     assert!(
         zero_amount_result.is_err(),
         "Should fail to create quote with zero amount"

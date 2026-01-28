@@ -10,15 +10,21 @@
 //!    If the mint cached the response (NUT-19), we get signatures immediately.
 //! 2. **Fallback**: If replay fails, use `/restore` to recover outputs.
 
-use cdk_common::wallet::{IssueSagaState, MintOperationData, OperationData, ProofInfo, WalletSaga};
+use std::collections::HashMap;
+
+use cdk_common::wallet::{
+    IssueSagaState, MintOperationData, OperationData, ProofInfo, Transaction, TransactionDirection,
+    WalletSaga,
+};
 use tracing::instrument;
 
 use crate::dhke::construct_proofs;
 use crate::nuts::{MintRequest, State};
+use crate::util::unix_time;
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::CompensatingAction;
-use crate::{Error, Wallet};
+use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Resume an incomplete issue (mint) saga after crash recovery.
@@ -88,7 +94,22 @@ impl Wallet {
         // Step 1: Try to replay the mint request
         if let Some(proofs) = self.try_replay_mint(saga_id, data).await? {
             // Replay succeeded - save proofs and clean up
-            self.localstore.update_proofs(proofs, vec![]).await?;
+            self.localstore
+                .update_proofs(proofs.clone(), vec![])
+                .await?;
+
+            // Record transaction (best-effort, don't fail recovery if this fails)
+            if let Err(e) = self
+                .record_recovered_issue_transaction(saga_id, &data.quote_id, &proofs)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to record transaction for recovered issue saga {}: {}",
+                    saga_id,
+                    e
+                );
+            }
+
             self.localstore.delete_saga(saga_id).await?;
             return Ok(RecoveryAction::Recovered);
         }
@@ -107,7 +128,22 @@ impl Wallet {
         match new_proofs {
             Some(proofs) => {
                 // Issue has no input proofs to remove - just add the recovered proofs
-                self.localstore.update_proofs(proofs, vec![]).await?;
+                self.localstore
+                    .update_proofs(proofs.clone(), vec![])
+                    .await?;
+
+                // Record transaction (best-effort, don't fail recovery if this fails)
+                if let Err(e) = self
+                    .record_recovered_issue_transaction(saga_id, &data.quote_id, &proofs)
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to record transaction for recovered issue saga {}: {}",
+                        saga_id,
+                        e
+                    );
+                }
+
                 self.localstore.delete_saga(saga_id).await?;
                 Ok(RecoveryAction::Recovered)
             }
@@ -122,6 +158,69 @@ impl Wallet {
                 Ok(RecoveryAction::Compensated)
             }
         }
+    }
+
+    /// Record a transaction for recovered issue proofs.
+    ///
+    /// This is called after successfully recovering proofs via replay or restore.
+    /// If the quote is not found, the transaction is skipped (recovery still succeeds).
+    async fn record_recovered_issue_transaction(
+        &self,
+        saga_id: &uuid::Uuid,
+        quote_id: &str,
+        proofs: &[ProofInfo],
+    ) -> Result<(), Error> {
+        // Get and update quote state from mint
+        let quote = match self.localstore.get_mint_quote(quote_id).await? {
+            Some(mut q) => {
+                // Update state from mint
+                if let Err(e) = self.check_state(&mut q).await {
+                    tracing::warn!(
+                        "Failed to check quote state for transaction recording: {}",
+                        e
+                    );
+                }
+                // Save updated quote state
+                if let Err(e) = self.localstore.add_mint_quote(q.clone()).await {
+                    tracing::warn!("Failed to save updated quote state: {}", e);
+                }
+                q
+            }
+            None => {
+                tracing::warn!(
+                    "Issue saga {} - quote {} not found, skipping transaction recording",
+                    saga_id,
+                    quote_id
+                );
+                return Ok(());
+            }
+        };
+
+        let minted_amount = proofs
+            .iter()
+            .fold(Amount::ZERO, |acc, p| acc + p.proof.amount);
+        let ys: Vec<_> = proofs.iter().map(|p| p.y).collect();
+
+        self.localstore
+            .add_transaction(Transaction {
+                mint_url: self.mint_url.clone(),
+                direction: TransactionDirection::Incoming,
+                amount: minted_amount,
+                fee: Amount::ZERO,
+                unit: self.unit.clone(),
+                ys,
+                timestamp: unix_time(),
+                memo: None,
+                metadata: HashMap::new(),
+                quote_id: Some(quote_id.to_string()),
+                payment_request: Some(quote.request.clone()),
+                payment_proof: None,
+                payment_method: Some(quote.payment_method.clone()),
+                saga_id: Some(*saga_id),
+            })
+            .await?;
+
+        Ok(())
     }
 
     /// Attempt to replay the original mint request.
