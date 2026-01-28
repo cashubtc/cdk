@@ -1,4 +1,4 @@
-//! Integration tests for MultiMintWallet
+//! Integration tests for WalletRepository
 //!
 //! These tests verify the multi-mint wallet functionality including:
 //! - Basic mint/melt operations across multiple mints
@@ -17,8 +17,8 @@ use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, Token};
-use cdk::wallet::{MultiMintReceiveOptions, MultiMintSendOptions, WalletRepository};
+use cdk::nuts::{MeltQuoteState, MintQuoteState, Token};
+use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepository};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
 use lightning_invoice::Bolt11Invoice;
@@ -43,11 +43,12 @@ async fn create_test_multi_mint_wallet() -> WalletRepository {
 
 /// Helper to fund a WalletRepository at a specific mint
 async fn fund_multi_mint_wallet(
-    wallet: &WalletRepository,
+    repo: &WalletRepository,
     mint_url: &MintUrl,
     amount: Amount,
 ) -> Amount {
-    let mint_quote = wallet.mint_quote(mint_url, amount, None).await.unwrap();
+    let wallet = repo.get_wallet(mint_url).await.expect("wallet not found");
+    let mint_quote = wallet.mint_quote(amount, None).await.unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice)
@@ -55,9 +56,8 @@ async fn fund_multi_mint_wallet(
         .unwrap();
 
     let proofs = wallet
-        .wait_for_mint_quote(
-            mint_url,
-            &mint_quote.id,
+        .wait_and_mint_quote(
+            mint_quote,
             SplitTarget::default(),
             None,
             std::time::Duration::from_secs(60),
@@ -68,7 +68,7 @@ async fn fund_multi_mint_wallet(
     proofs.total_amount().unwrap()
 }
 
-/// Test the direct mint() function on MultiMintWallet
+/// Test the direct mint() function on WalletRepository
 ///
 /// This test verifies:
 /// 1. Create a mint quote
@@ -86,11 +86,13 @@ async fn test_multi_mint_wallet_mint() {
         .await
         .expect("failed to add mint");
 
-    // Create mint quote
-    let mint_quote = multi_mint_wallet
-        .mint_quote(&mint_url, 100.into(), None)
+    let wallet = multi_mint_wallet
+        .get_wallet(&mint_url)
         .await
-        .unwrap();
+        .expect("failed to get wallet");
+
+    // Create mint quote
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
     // Pay the invoice (in regtest mode) - for fake wallet, payment is simulated automatically
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
@@ -99,10 +101,7 @@ async fn test_multi_mint_wallet_mint() {
         .unwrap();
 
     // Poll for quote to be paid (like a real wallet would)
-    let mut quote_status = multi_mint_wallet
-        .check_mint_quote(&mint_url, &mint_quote.id)
-        .await
-        .unwrap();
+    let mut quote_status = wallet.mint_quote_state(&mint_quote.id).await.unwrap();
 
     let timeout = tokio::time::Duration::from_secs(30);
     let start = tokio::time::Instant::now();
@@ -115,15 +114,12 @@ async fn test_multi_mint_wallet_mint() {
             );
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        quote_status = multi_mint_wallet
-            .check_mint_quote(&mint_url, &mint_quote.id)
-            .await
-            .unwrap();
+        quote_status = wallet.mint_quote_state(&mint_quote.id).await.unwrap();
     }
 
     // Call mint() directly (quote should be Paid at this point)
-    let proofs = multi_mint_wallet
-        .mint(&mint_url, &mint_quote.id, SplitTarget::default(), None)
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await
         .unwrap();
 
@@ -158,8 +154,10 @@ async fn test_multi_mint_wallet_melt_auto_select() {
     // Create an invoice to pay
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
-    // Use melt() with auto-selection (no specific mint specified)
-    let melt_result = multi_mint_wallet.melt(&invoice, None, None).await.unwrap();
+    // Get wallet and call melt
+    let wallet = multi_mint_wallet.get_wallet(&mint_url).await.unwrap();
+    let melt_quote = wallet.melt_quote(invoice, None).await.unwrap();
+    let melt_result = wallet.melt(&melt_quote.id).await.unwrap();
 
     assert_eq!(
         melt_result.state,
@@ -176,29 +174,29 @@ async fn test_multi_mint_wallet_melt_auto_select() {
     );
 }
 
-/// Test the receive() function on MultiMintWallet
+/// Test the receive() function on WalletRepository
 ///
 /// This test verifies:
 /// 1. Create a token from a wallet
-/// 2. Receive the token in a different MultiMintWallet
+/// 2. Receive the token in a different WalletRepository
 /// 3. Verify the token value is received
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_multi_mint_wallet_receive() {
     // Create sender wallet and fund it
-    let sender_wallet = create_test_multi_mint_wallet().await;
+    let sender_repo = create_test_multi_mint_wallet().await;
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
-    sender_wallet
+    sender_repo
         .add_mint(mint_url.clone())
         .await
         .expect("failed to add mint");
 
-    let funded_amount = fund_multi_mint_wallet(&sender_wallet, &mint_url, 100.into()).await;
+    let funded_amount = fund_multi_mint_wallet(&sender_repo, &mint_url, 100.into()).await;
     assert_eq!(funded_amount, 100.into());
 
     // Create a token to send
-    let send_options = MultiMintSendOptions::default();
+    let sender_wallet = sender_repo.get_wallet(&mint_url).await.unwrap();
     let prepared_send = sender_wallet
-        .prepare_send(mint_url.clone(), 50.into(), send_options)
+        .prepare_send(50.into(), SendOptions::default())
         .await
         .unwrap();
 
@@ -206,17 +204,17 @@ async fn test_multi_mint_wallet_receive() {
     let token_string = token.to_string();
 
     // Create receiver wallet
-    let receiver_wallet = create_test_multi_mint_wallet().await;
+    let receiver_repo = create_test_multi_mint_wallet().await;
     // Add the same mint as trusted
-    receiver_wallet
+    receiver_repo
         .add_mint(mint_url.clone())
         .await
         .expect("failed to add mint");
 
     // Receive the token
-    let receive_options = MultiMintReceiveOptions::default();
+    let receiver_wallet = receiver_repo.get_wallet(&mint_url).await.unwrap();
     let received_amount = receiver_wallet
-        .receive(&token_string, receive_options)
+        .receive(&token_string, ReceiveOptions::default())
         .await
         .unwrap();
 
@@ -228,14 +226,14 @@ async fn test_multi_mint_wallet_receive() {
     );
 
     // Verify receiver balance
-    let receiver_balance = receiver_wallet.total_balance().await.unwrap();
+    let receiver_balance = receiver_repo.total_balance().await.unwrap();
     assert!(
         receiver_balance > Amount::ZERO,
         "Receiver should have balance"
     );
 
     // Verify sender balance decreased
-    let sender_balance = sender_wallet.total_balance().await.unwrap();
+    let sender_balance = sender_repo.total_balance().await.unwrap();
     assert!(
         sender_balance < 100.into(),
         "Sender balance should be less than 100 after send"
@@ -251,20 +249,20 @@ async fn test_multi_mint_wallet_receive() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_multi_mint_wallet_receive_untrusted() {
     // Create sender wallet and fund it
-    let sender_wallet = create_test_multi_mint_wallet().await;
+    let sender_repo = create_test_multi_mint_wallet().await;
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
-    sender_wallet
+    sender_repo
         .add_mint(mint_url.clone())
         .await
         .expect("failed to add mint");
 
-    let funded_amount = fund_multi_mint_wallet(&sender_wallet, &mint_url, 100.into()).await;
+    let funded_amount = fund_multi_mint_wallet(&sender_repo, &mint_url, 100.into()).await;
     assert_eq!(funded_amount, 100.into());
 
     // Create a token to send
-    let send_options = MultiMintSendOptions::default();
+    let sender_wallet = sender_repo.get_wallet(&mint_url).await.unwrap();
     let prepared_send = sender_wallet
-        .prepare_send(mint_url.clone(), 50.into(), send_options)
+        .prepare_send(50.into(), SendOptions::default())
         .await
         .unwrap();
 
@@ -272,28 +270,28 @@ async fn test_multi_mint_wallet_receive_untrusted() {
     let token_string = token.to_string();
 
     // Create receiver wallet WITHOUT adding the mint
-    let receiver_wallet = create_test_multi_mint_wallet().await;
+    let receiver_repo = create_test_multi_mint_wallet().await;
 
-    // First, verify that receiving without allow_untrusted fails
-    let receive_options = MultiMintReceiveOptions::default();
-    let result = receiver_wallet
-        .receive(&token_string, receive_options)
-        .await;
-    assert!(result.is_err(), "Should fail without allow_untrusted");
+    // Add the mint first, then receive (untrusted receive would require the
+    // WalletRepository to auto-add mints, which it doesn't support directly)
+    receiver_repo
+        .add_mint(mint_url.clone())
+        .await
+        .expect("failed to add mint");
 
-    // Now receive with allow_untrusted=true
-    let receive_options = MultiMintReceiveOptions::default().allow_untrusted(true);
+    // Now receive
+    let receiver_wallet = receiver_repo.get_wallet(&mint_url).await.unwrap();
     let received_amount = receiver_wallet
-        .receive(&token_string, receive_options)
+        .receive(&token_string, ReceiveOptions::default())
         .await
         .unwrap();
 
     assert!(received_amount > Amount::ZERO, "Should receive some amount");
 
-    // Verify the mint was added to the wallet
+    // Verify the mint is in the wallet
     assert!(
-        receiver_wallet.has_mint(&mint_url).await,
-        "Mint should be added to wallet"
+        receiver_repo.has_mint(&mint_url).await,
+        "Mint should be in wallet"
     );
 }
 
@@ -319,9 +317,9 @@ async fn test_multi_mint_wallet_prepare_send_happy_path() {
     assert_eq!(funded_amount, 100.into());
 
     // Prepare send
-    let send_options = MultiMintSendOptions::default();
-    let prepared_send = multi_mint_wallet
-        .prepare_send(mint_url.clone(), 50.into(), send_options)
+    let wallet = multi_mint_wallet.get_wallet(&mint_url).await.unwrap();
+    let prepared_send = wallet
+        .prepare_send(50.into(), SendOptions::default())
         .await
         .unwrap();
 
@@ -413,13 +411,13 @@ async fn test_multi_mint_wallet_list_proofs() {
     assert_eq!(proof_total, 100.into(), "Proof total should be 100 sats");
 }
 
-/// Test mint management functions (add_mint, remove_mint, has_mint)
+/// Test mint management functions (add_mint, remove_wallet, has_mint)
 ///
 /// This test verifies:
 /// 1. has_mint returns false for unknown mints
 /// 2. add_mint adds the mint
 /// 3. has_mint returns true after adding
-/// 4. remove_mint removes the mint
+/// 4. remove_wallet removes the mint
 /// 5. has_mint returns false after removal
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_multi_mint_wallet_mint_management() {
@@ -451,10 +449,10 @@ async fn test_multi_mint_wallet_mint_management() {
 
     // Get specific wallet
     let wallet = multi_mint_wallet.get_wallet(&mint_url).await;
-    assert!(wallet.is_some(), "Should be able to get wallet for mint");
+    assert!(wallet.is_ok(), "Should be able to get wallet for mint");
 
-    // Remove the mint
-    multi_mint_wallet.remove_mint(&mint_url).await;
+    // Remove the wallet
+    multi_mint_wallet.remove_wallet(&mint_url).await;
 
     // Now mint should not be in wallet
     assert!(
@@ -480,11 +478,10 @@ async fn test_multi_mint_wallet_check_all_mint_quotes() {
         .await
         .expect("failed to add mint");
 
+    let wallet = multi_mint_wallet.get_wallet(&mint_url).await.unwrap();
+
     // Create a mint quote
-    let mint_quote = multi_mint_wallet
-        .mint_quote(&mint_url, 100.into(), None)
-        .await
-        .unwrap();
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
     // Pay the invoice (in regtest mode) - for fake wallet, payment is simulated automatically
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
@@ -493,10 +490,7 @@ async fn test_multi_mint_wallet_check_all_mint_quotes() {
         .unwrap();
 
     // Poll for quote to be paid (like a real wallet would)
-    let mut quote_status = multi_mint_wallet
-        .check_mint_quote(&mint_url, &mint_quote.id)
-        .await
-        .unwrap();
+    let mut quote_status = wallet.mint_quote_state(&mint_quote.id).await.unwrap();
 
     let timeout = tokio::time::Duration::from_secs(30);
     let start = tokio::time::Instant::now();
@@ -508,10 +502,7 @@ async fn test_multi_mint_wallet_check_all_mint_quotes() {
             );
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        quote_status = multi_mint_wallet
-            .check_mint_quote(&mint_url, &mint_quote.id)
-            .await
-            .unwrap();
+        quote_status = wallet.mint_quote_state(&mint_quote.id).await.unwrap();
     }
 
     // Check all mint quotes - this should find the paid quote and mint
@@ -574,8 +565,9 @@ async fn test_multi_mint_wallet_restore() {
     let balance_before = wallet2.total_balance().await.unwrap();
     assert_eq!(balance_before, Amount::ZERO, "Should start with no balance");
 
-    // Restore from mint
-    let restored = wallet2.restore(&mint_url).await.unwrap();
+    // Restore from mint using the individual wallet
+    let wallet = wallet2.get_wallet(&mint_url).await.unwrap();
+    let restored = wallet.restore().await.unwrap();
     assert_eq!(restored.unspent, 100.into(), "Should restore 100 sats");
 }
 
@@ -584,7 +576,7 @@ async fn test_multi_mint_wallet_restore() {
 /// This test verifies:
 /// 1. Fund wallet
 /// 2. Create melt quote at specific mint
-/// 3. Execute melt_with_mint()
+/// 3. Execute melt()
 /// 4. Verify payment succeeded
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_multi_mint_wallet_melt_with_mint() {
@@ -602,17 +594,14 @@ async fn test_multi_mint_wallet_melt_with_mint() {
     // Create an invoice to pay
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
+    // Get wallet for operations
+    let wallet = multi_mint_wallet.get_wallet(&mint_url).await.unwrap();
+
     // Create melt quote at specific mint
-    let melt_quote = multi_mint_wallet
-        .melt_quote(&mint_url, invoice, None)
-        .await
-        .unwrap();
+    let melt_quote = wallet.melt_quote(invoice, None).await.unwrap();
 
     // Execute melt with specific mint
-    let melt_result = multi_mint_wallet
-        .melt_with_mint(&mint_url, &melt_quote.id)
-        .await
-        .unwrap();
+    let melt_result = wallet.melt(&melt_quote.id).await.unwrap();
 
     assert_eq!(
         melt_result.state,
@@ -621,10 +610,7 @@ async fn test_multi_mint_wallet_melt_with_mint() {
     );
 
     // Check melt quote status
-    let quote_status = multi_mint_wallet
-        .check_melt_quote(&mint_url, &melt_quote.id)
-        .await
-        .unwrap();
+    let quote_status = wallet.melt_quote_status(&melt_quote.id).await.unwrap();
 
     assert_eq!(
         quote_status.state,
@@ -659,16 +645,13 @@ async fn test_multi_mint_wallet_list_transactions() {
         "Should have at least one transaction after minting"
     );
 
+    // Get wallet for melt operations
+    let wallet = multi_mint_wallet.get_wallet(&mint_url).await.unwrap();
+
     // Create an invoice and melt (this creates a melt transaction)
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
-    let melt_quote = multi_mint_wallet
-        .melt_quote(&mint_url, invoice, None)
-        .await
-        .unwrap();
-    multi_mint_wallet
-        .melt_with_mint(&mint_url, &melt_quote.id)
-        .await
-        .unwrap();
+    let melt_quote = wallet.melt_quote(invoice, None).await.unwrap();
+    wallet.melt(&melt_quote.id).await.unwrap();
 
     // List transactions again
     let transactions_after = multi_mint_wallet.list_transactions(None).await.unwrap();

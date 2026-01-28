@@ -88,6 +88,9 @@ pub use receive::ReceiveOptions;
 pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
 
+#[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
+pub use streams::npubcash::NpubCashProofStream;
+
 use crate::nuts::nut00::ProofsMethods;
 
 /// CDK Wallet

@@ -3,6 +3,7 @@
 //! Simple container that manages [`Wallet`] instances by mint URL.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "npubcash")]
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -664,6 +665,10 @@ impl WalletRepository {
         Ok(())
     }
 
+    /// Get the currently active NpubCash mint URL
+    ///
+    /// Returns the mint URL that has been set as active for NpubCash operations,
+    /// or None if no active mint has been configured.
     #[cfg(feature = "npubcash")]
     pub async fn get_active_npubcash_mint(&self) -> Result<Option<MintUrl>, Error> {
         use super::npubcash::{ACTIVE_MINT_KEY, NPUBCASH_KV_NAMESPACE};
@@ -681,6 +686,9 @@ impl WalletRepository {
         }
     }
 
+    /// Set the active NpubCash mint URL
+    ///
+    /// This sets the mint that will be used for NpubCash operations.
     #[cfg(feature = "npubcash")]
     pub async fn set_active_npubcash_mint(&self, mint_url: MintUrl) -> Result<(), Error> {
         use super::npubcash::{ACTIVE_MINT_KEY, NPUBCASH_KV_NAMESPACE};
@@ -695,6 +703,10 @@ impl WalletRepository {
         Ok(())
     }
 
+    /// Sync NpubCash quotes from the active mint
+    ///
+    /// Retrieves pending mint quotes from the currently active NpubCash mint.
+    /// Returns an error if no active mint has been configured.
     #[cfg(feature = "npubcash")]
     pub async fn sync_npubcash_quotes(
         &self,
