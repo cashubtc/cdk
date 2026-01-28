@@ -46,13 +46,7 @@ async fn select_mint(
 
     println!("\nAvailable mints:");
     for (i, (mint_url, balance)) in available_mints.iter().enumerate() {
-        println!(
-            "  {}: {} - {} {}",
-            i,
-            mint_url,
-            balance,
-            unit
-        );
+        println!("  {}: {} - {} {}", i, mint_url, balance, unit);
     }
 
     let mint_number: usize = get_number_input(prompt)?;
@@ -137,10 +131,7 @@ pub async fn transfer(
     let transfer_mode = if sub_command_args.full_balance {
         println!(
             "\nTransferring full balance ({} {}) from {} to {}...",
-            source_balance,
-            unit,
-            source_mint_url,
-            target_mint_url
+            source_balance, unit, source_mint_url, target_mint_url
         );
         TransferMode::FullBalance
     } else {
@@ -164,10 +155,7 @@ pub async fn transfer(
 
         println!(
             "\nTransferring {} {} from {} to {}...",
-            amount,
-            unit,
-            source_mint_url,
-            target_mint_url
+            amount, unit, source_mint_url, target_mint_url
         );
         TransferMode::ExactReceive(amount)
     };
@@ -178,35 +166,22 @@ pub async fn transfer(
         .await?;
 
     println!("\nTransfer completed successfully!");
-    println!(
-        "Amount sent: {} {}",
-        transfer_result.amount_sent,
-        unit
-    );
+    println!("Amount sent: {} {}", transfer_result.amount_sent, unit);
     println!(
         "Amount received: {} {}",
-        transfer_result.amount_received,
-        unit
+        transfer_result.amount_received, unit
     );
     if transfer_result.fees_paid > Amount::ZERO {
-        println!(
-            "Fees paid: {} {}",
-            transfer_result.fees_paid,
-            unit
-        );
+        println!("Fees paid: {} {}", transfer_result.fees_paid, unit);
     }
     println!("\nUpdated balances:");
     println!(
         "  Source mint ({}): {} {}",
-        source_mint_url,
-        transfer_result.source_balance_after,
-        unit
+        source_mint_url, transfer_result.source_balance_after, unit
     );
     println!(
         "  Target mint ({}): {} {}",
-        target_mint_url,
-        transfer_result.target_balance_after,
-        unit
+        target_mint_url, transfer_result.target_balance_after, unit
     );
 
     Ok(())

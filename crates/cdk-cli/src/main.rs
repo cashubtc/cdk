@@ -220,7 +220,9 @@ async fn main() -> Result<()> {
             #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
             {
                 match args.transport {
-                    TorToggle::On => WalletRepository::new_with_tor(localstore.clone(), seed).await?,
+                    TorToggle::On => {
+                        WalletRepository::new_with_tor(localstore.clone(), seed).await?
+                    }
                     TorToggle::Off => WalletRepository::new(localstore.clone(), seed).await?,
                 }
             }
@@ -304,12 +306,8 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::CatLogin(sub_command_args) => {
-            sub_commands::cat_login::cat_login(
-                &wallet_repository,
-                sub_command_args,
-                &work_dir,
-            )
-            .await
+            sub_commands::cat_login::cat_login(&wallet_repository, sub_command_args, &work_dir)
+                .await
         }
         Commands::CatDeviceLogin(sub_command_args) => {
             sub_commands::cat_device_login::cat_device_login(

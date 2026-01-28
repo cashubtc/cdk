@@ -1,7 +1,7 @@
 //! # Payment Request Example (NUT-18)
 //!
 //! This example demonstrates how to create and receive payments using NUT-18
-//! payment requests with the MultiMintWallet. It shows both HTTP and Nostr
+//! payment requests with the WalletRepository. It shows both HTTP and Nostr
 //! transport options.
 //!
 //! ## Payment Request Flow
@@ -29,8 +29,8 @@ use std::time::Duration;
 use anyhow::anyhow;
 use cdk::amount::SplitTarget;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::wallet::payment_request::CreateRequestParams;
+use cdk::wallet::WalletRepository;
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
     let localstore = Arc::new(memory::empty().await?);
 
     // Create a new WalletRepository
-    let wallet: WalletRepository = WalletRepository::new(localstore, seed).await?;
+    let wallet = WalletRepository::new(localstore, seed).await?;
 
     // Add the mint to our wallet
     wallet.add_mint(mint_url.parse()?).await?;
@@ -64,10 +64,7 @@ async fn main() -> anyhow::Result<()> {
     println!("\nStep 1: Creating payment request...");
 
     // We need to get the wallet for the specific mint to create a request
-    let mint_wallet = wallet
-        .get_wallet(&mint_url.parse()?)
-        .await
-        .ok_or_else(|| anyhow!("Wallet not found for mint"))?;
+    let mint_wallet = wallet.get_wallet(&mint_url.parse()?).await?;
     let mint_quote = mint_wallet.mint_quote(initial_amount, None).await?;
 
     println!(

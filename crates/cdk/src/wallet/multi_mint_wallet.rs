@@ -3,8 +3,8 @@
 //! Simple container that manages [`Wallet`] instances by mint URL.
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 use std::sync::Arc;
-
 
 use cdk_common::database::WalletDatabase;
 use cdk_common::{database, KeySetInfo};
@@ -42,6 +42,29 @@ pub struct TransferResult {
     pub source_balance_after: cdk_common::Amount,
     /// Target balance after transfer
     pub target_balance_after: cdk_common::Amount,
+}
+
+/// Data extracted from a token
+///
+/// Contains the mint URL, proofs, and metadata from a parsed token.
+#[derive(Debug, Clone)]
+pub struct TokenData {
+    /// The mint URL from the token
+    pub mint_url: MintUrl,
+    /// The proofs contained in the token
+    pub proofs: cdk_common::Proofs,
+    /// The memo from the token, if present
+    pub memo: Option<String>,
+    /// Value of token
+    pub value: cdk_common::Amount,
+    /// Unit of token
+    pub unit: CurrencyUnit,
+    /// Fee to redeem
+    ///
+    /// If the token is for a mint that we do not know, we cannot get the fee.
+    /// To avoid just erroring and still allow decoding, this is an option.
+    /// None does not mean there is no fee, it means we do not know the fee.
+    pub redeem_fee: Option<cdk_common::Amount>,
 }
 
 /// Configuration for individual wallets within WalletRepository
@@ -201,10 +224,19 @@ impl WalletRepository {
         Ok(wallet)
     }
 
-    /// Get wallet for a mint URL (returns None if not found)
+    /// Get wallet for a mint URL
+    ///
+    /// Returns an error if no wallet exists for the given mint URL.
     #[instrument(skip(self))]
-    pub async fn get_wallet(&self, mint_url: &MintUrl) -> Option<Wallet> {
-        self.wallets.read().await.get(mint_url).cloned()
+    pub async fn get_wallet(&self, mint_url: &MintUrl) -> Result<Wallet, Error> {
+        self.wallets
+            .read()
+            .await
+            .get(mint_url)
+            .cloned()
+            .ok_or_else(|| Error::UnknownMint {
+                mint_url: mint_url.to_string(),
+            })
     }
 
     /// Add a mint to the repository with default unit (Sat)
@@ -234,7 +266,7 @@ impl WalletRepository {
         config: WalletConfig,
     ) -> Result<Wallet, Error> {
         // Get existing unit from wallet if it exists, otherwise default to Sat
-        let unit = if let Some(wallet) = self.get_wallet(&mint_url).await {
+        let unit = if let Ok(wallet) = self.get_wallet(&mint_url).await {
             wallet.unit.clone()
         } else {
             CurrencyUnit::Sat
@@ -323,12 +355,8 @@ impl WalletRepository {
             ));
         }
 
-        let source_wallet = self.get_wallet(source_mint).await.ok_or(Error::UnknownMint {
-            mint_url: source_mint.to_string(),
-        })?;
-        let target_wallet = self.get_wallet(target_mint).await.ok_or(Error::UnknownMint {
-            mint_url: target_mint.to_string(),
-        })?;
+        let source_wallet = self.get_wallet(source_mint).await?;
+        let target_wallet = self.get_wallet(target_mint).await?;
 
         let mut amount_to_receive = match mode {
             TransferMode::ExactReceive(amt) => amt,
@@ -401,20 +429,23 @@ impl WalletRepository {
 
     /// Fetch mint info for the given mint URL
     #[instrument(skip(self))]
-    pub async fn fetch_mint_info(&self, mint_url: &MintUrl) -> Result<Option<crate::nuts::MintInfo>, Error> {
-         let wallet = self.get_wallet(mint_url).await.ok_or(Error::UnknownMint {
-            mint_url: mint_url.to_string(),
-        })?;
+    pub async fn fetch_mint_info(
+        &self,
+        mint_url: &MintUrl,
+    ) -> Result<Option<crate::nuts::MintInfo>, Error> {
+        let wallet = self.get_wallet(mint_url).await?;
         wallet.fetch_mint_info().await
     }
 
     /// Mint blind auth tokens
     #[cfg(feature = "auth")]
     #[instrument(skip(self))]
-    pub async fn mint_blind_auth(&self, mint_url: &MintUrl, amount: cdk_common::Amount) -> Result<crate::nuts::Proofs, Error> {
-        let wallet = self.get_wallet(mint_url).await.ok_or(Error::UnknownMint {
-            mint_url: mint_url.to_string(),
-        })?;
+    pub async fn mint_blind_auth(
+        &self,
+        mint_url: &MintUrl,
+        amount: cdk_common::Amount,
+    ) -> Result<crate::nuts::Proofs, Error> {
+        let wallet = self.get_wallet(mint_url).await?;
         wallet.mint_blind_auth(amount).await
     }
 
@@ -422,19 +453,19 @@ impl WalletRepository {
     #[cfg(feature = "auth")]
     #[instrument(skip(self))]
     pub async fn set_cat(&self, mint_url: &MintUrl, cat: String) -> Result<(), Error> {
-        let wallet = self.get_wallet(mint_url).await.ok_or(Error::UnknownMint {
-            mint_url: mint_url.to_string(),
-        })?;
+        let wallet = self.get_wallet(mint_url).await?;
         wallet.set_cat(cat).await
     }
 
     /// Set refresh token
     #[cfg(feature = "auth")]
     #[instrument(skip(self))]
-    pub async fn set_refresh_token(&self, mint_url: &MintUrl, refresh_token: String) -> Result<(), Error> {
-        let wallet = self.get_wallet(mint_url).await.ok_or(Error::UnknownMint {
-            mint_url: mint_url.to_string(),
-        })?;
+    pub async fn set_refresh_token(
+        &self,
+        mint_url: &MintUrl,
+        refresh_token: String,
+    ) -> Result<(), Error> {
+        let wallet = self.get_wallet(mint_url).await?;
         wallet.set_refresh_token(refresh_token).await
     }
 
@@ -442,9 +473,7 @@ impl WalletRepository {
     #[cfg(feature = "auth")]
     #[instrument(skip(self))]
     pub async fn refresh_access_token(&self, mint_url: &MintUrl) -> Result<(), Error> {
-        let wallet = self.get_wallet(mint_url).await.ok_or(Error::UnknownMint {
-            mint_url: mint_url.to_string(),
-        })?;
+        let wallet = self.get_wallet(mint_url).await?;
         wallet.refresh_access_token().await
     }
 
@@ -452,7 +481,9 @@ impl WalletRepository {
     #[instrument(skip(self))]
     pub async fn total_balance(&self) -> Result<cdk_common::Amount, Error> {
         let balances = self.get_balances().await?;
-        Ok(balances.values().fold(cdk_common::Amount::ZERO, |acc, &x| acc + x))
+        Ok(balances
+            .values()
+            .fold(cdk_common::Amount::ZERO, |acc, &x| acc + x))
     }
 
     /// Get or create a wallet for a mint URL
@@ -465,7 +496,7 @@ impl WalletRepository {
         mint_url: &MintUrl,
         unit: CurrencyUnit,
     ) -> Result<Wallet, Error> {
-        if let Some(wallet) = self.get_wallet(mint_url).await {
+        if let Ok(wallet) = self.get_wallet(mint_url).await {
             return Ok(wallet);
         }
 
@@ -665,16 +696,143 @@ impl WalletRepository {
     }
 
     #[cfg(feature = "npubcash")]
-    pub async fn sync_npubcash_quotes(&self) -> Result<Vec<crate::wallet::types::MintQuote>, Error> {
+    pub async fn sync_npubcash_quotes(
+        &self,
+    ) -> Result<Vec<crate::wallet::types::MintQuote>, Error> {
         let active_mint = self.get_active_npubcash_mint().await?;
         if let Some(mint_url) = active_mint {
-            let wallet = self.get_wallet(&mint_url).await.ok_or(Error::UnknownMint {
-                mint_url: mint_url.to_string(),
-            })?;
+            let wallet = self.get_wallet(&mint_url).await?;
             wallet.sync_npubcash_quotes().await
         } else {
             Err(Error::Custom("No active NpubCash mint set".into()))
         }
+    }
+
+    // =========================================================================
+    // Helper functions for token and proof operations
+    // =========================================================================
+
+    /// Get token data (mint URL and proofs) from a token
+    ///
+    /// This method extracts the mint URL and proofs from a token. It will automatically
+    /// fetch the keysets from the mint if needed to properly decode the proofs.
+    ///
+    /// The mint must already be added to the wallet. If the mint is not in the wallet,
+    /// use `add_mint` first or set `allow_untrusted` in receive options.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The token to extract data from
+    ///
+    /// # Returns
+    ///
+    /// A `TokenData` struct containing the mint URL and proofs
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cdk::wallet::WalletRepository;
+    /// # use cdk::nuts::Token;
+    /// # use std::str::FromStr;
+    /// # async fn example(wallet: &WalletRepository) -> Result<(), Box<dyn std::error::Error>> {
+    /// let token = Token::from_str("cashuA...")?;
+    /// let token_data = wallet.get_token_data(&token).await?;
+    /// println!("Mint: {}", token_data.mint_url);
+    /// println!("Proofs: {} total", token_data.proofs.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[instrument(skip(self, token))]
+    pub async fn get_token_data(
+        &self,
+        token: &crate::nuts::nut00::Token,
+    ) -> Result<TokenData, Error> {
+        let mint_url = token.mint_url()?;
+
+        // Get the keysets for this mint
+        let keysets = self.get_mint_keysets(&mint_url).await?;
+
+        // Extract proofs using the keysets
+        let proofs = token.proofs(&keysets)?;
+
+        // Get the memo
+        let memo = token.memo().clone();
+        let wallet = self.get_wallet(&mint_url).await?;
+        let redeem_fee = wallet.get_proofs_fee(&proofs).await?;
+
+        Ok(TokenData {
+            value: cdk_common::nuts::nut00::ProofsMethods::total_amount(&proofs)?,
+            mint_url,
+            proofs,
+            memo,
+            unit: token.unit().unwrap_or_default(),
+            redeem_fee: Some(redeem_fee.total),
+        })
+    }
+
+    /// List proofs for all mints
+    ///
+    /// Returns a map of mint URL to proofs for each wallet in the repository.
+    #[instrument(skip(self))]
+    pub async fn list_proofs(
+        &self,
+    ) -> Result<std::collections::BTreeMap<MintUrl, Vec<cdk_common::Proof>>, Error> {
+        let mut mint_proofs = std::collections::BTreeMap::new();
+
+        for (mint_url, wallet) in self.wallets.read().await.iter() {
+            let wallet_proofs = wallet.get_unspent_proofs().await?;
+            mint_proofs.insert(mint_url.clone(), wallet_proofs);
+        }
+        Ok(mint_proofs)
+    }
+
+    /// List transactions across all wallets
+    #[instrument(skip(self))]
+    pub async fn list_transactions(
+        &self,
+        direction: Option<cdk_common::wallet::TransactionDirection>,
+    ) -> Result<Vec<cdk_common::wallet::Transaction>, Error> {
+        let mut transactions = Vec::new();
+
+        for (_, wallet) in self.wallets.read().await.iter() {
+            let wallet_transactions = wallet.list_transactions(direction).await?;
+            transactions.extend(wallet_transactions);
+        }
+
+        transactions.sort();
+
+        Ok(transactions)
+    }
+
+    /// Check all pending mint quotes and mint any that are paid
+    #[instrument(skip(self))]
+    pub async fn check_all_mint_quotes(
+        &self,
+        mint_url: Option<MintUrl>,
+    ) -> Result<cdk_common::Amount, Error> {
+        let mut total_minted = cdk_common::Amount::ZERO;
+
+        let wallets = self.wallets.read().await;
+        let wallets_to_check: Vec<_> = match &mint_url {
+            Some(url) => {
+                if let Some(wallet) = wallets.get(url) {
+                    vec![wallet.clone()]
+                } else {
+                    return Err(Error::UnknownMint {
+                        mint_url: url.to_string(),
+                    });
+                }
+            }
+            None => wallets.values().cloned().collect(),
+        };
+        drop(wallets);
+
+        for wallet in wallets_to_check {
+            let amount = wallet.check_all_mint_quotes().await?;
+            total_minted += amount;
+        }
+
+        Ok(total_minted)
     }
 }
 
@@ -683,8 +841,6 @@ impl Drop for WalletRepository {
         self.seed.zeroize();
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -736,7 +892,7 @@ mod tests {
         // Verify we can get it back
         assert!(repo.has_mint(&mint_url).await);
         let retrieved = repo.get_wallet(&mint_url).await;
-        assert!(retrieved.is_some());
+        assert!(retrieved.is_ok());
     }
 
     #[tokio::test]

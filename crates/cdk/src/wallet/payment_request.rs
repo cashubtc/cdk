@@ -296,11 +296,7 @@ impl WalletRepository {
             }
 
             // Get the wallet for the specified mint
-            self.get_wallet(specified_mint)
-                .await
-                .ok_or_else(|| Error::UnknownMint {
-                    mint_url: specified_mint.to_string(),
-                })?
+            self.get_wallet(specified_mint).await?
         } else {
             // No mint specified - find the best matching mint with highest balance
             let balances = self.get_balances().await?;
@@ -320,7 +316,7 @@ impl WalletRepository {
 
                 // Check balance meets requirements and is best so far
                 if *balance >= amount && *balance > best_balance {
-                    if let Some(wallet) = self.get_wallet(mint_url).await {
+                    if let Ok(wallet) = self.get_wallet(mint_url).await {
                         best_balance = *balance;
                         best_wallet = Some(wallet);
                     }
@@ -725,8 +721,7 @@ impl WalletRepository {
 
                                 // Get or create wallet for the token's mint
                                 let unit = payload.unit.unwrap_or(CurrencyUnit::Sat);
-                                let wallet =
-                                    self.get_or_create_wallet(&payload.mint, unit).await?;
+                                let wallet = self.get_or_create_wallet(&payload.mint, unit).await?;
 
                                 // Receive using the individual wallet
                                 let token_str = token.to_string();

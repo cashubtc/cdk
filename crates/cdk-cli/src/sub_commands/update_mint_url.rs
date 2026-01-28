@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::wallet::WalletRepository;
 use clap::Args;
@@ -22,8 +22,7 @@ pub async fn update_mint_url(
 
     let mut wallet = wallet_repository
         .get_wallet(&sub_command_args.old_mint_url)
-        .await
-        .ok_or(anyhow!("Unknown mint url"))?
+        .await?
         .clone();
 
     wallet.update_mint_url(new_mint_url.clone()).await?;

@@ -150,7 +150,7 @@ async fn receive_token(
     let mint_url = token.mint_url()?;
 
     // Check if the mint is already trusted
-    let is_trusted = wallet_repository.get_wallet(&mint_url).await.is_some();
+    let is_trusted = wallet_repository.get_wallet(&mint_url).await.is_ok();
 
     // If mint is not trusted and we don't allow untrusted, error out
     if !is_trusted && !allow_untrusted {

@@ -23,10 +23,7 @@ async fn get_wallet_for_mint(
         wallet_repository.add_mint(mint_url.clone()).await?;
     }
 
-    wallet_repository
-        .get_wallet(&mint_url)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("Failed to get wallet for mint: {}", mint_url_str))
+    Ok(wallet_repository.get_wallet(&mint_url).await?)
 }
 
 #[derive(Subcommand)]

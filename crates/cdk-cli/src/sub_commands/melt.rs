@@ -186,8 +186,7 @@ pub async fn pay(
         }
         PaymentType::Bolt12 => {
             // Process BOLT12 payment (offer)
-            let offer_str =
-                input_or_prompt(sub_command_args.offer.as_ref(), "Enter BOLT12 offer")?;
+            let offer_str = input_or_prompt(sub_command_args.offer.as_ref(), "Enter BOLT12 offer")?;
             let offer = Offer::from_str(&offer_str)
                 .map_err(|e| anyhow::anyhow!("Invalid BOLT12 offer: {:?}", e))?;
 

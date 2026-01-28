@@ -633,8 +633,6 @@ async fn test_multi_mint_wallet_melt_with_mint() {
     );
 }
 
-
-
 /// Test list_transactions() function
 ///
 /// This test verifies:

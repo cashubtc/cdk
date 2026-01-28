@@ -1,7 +1,7 @@
 //! # Nostr Mint Backup Example (NUT-XX)
 //!
 //! This example demonstrates how to backup and restore your mint list
-//! to/from Nostr relays using the MultiMintWallet.
+//! to/from Nostr relays using the WalletRepository.
 //!
 //! ## Features
 //!
@@ -25,7 +25,7 @@
 use std::sync::Arc;
 
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::multi_mint_wallet::MultiMintWallet;
+use cdk::wallet::WalletRepository;
 use cdk::wallet::{BackupOptions, RestoreOptions};
 use cdk_sqlite::wallet::memory;
 use rand::random;
@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
     let localstore = Arc::new(memory::empty().await?);
 
     // Create a new WalletRepository
-    let wallet: WalletRepository = WalletRepository::new(localstore.clone(), seed).await?;
+    let wallet = WalletRepository::new(localstore.clone(), seed).await?;
 
     // ============================================================================
     // Step 1: Add test mints to the wallet
@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     for mint_url in &mints {
         println!("  Adding mint: {}", mint_url);
         match wallet.add_mint(mint_url.parse()?).await {
-            Ok(()) => println!("    + Added successfully"),
+            Ok(_) => println!("    + Added successfully"),
             Err(e) => println!("    x Failed to add: {}", e),
         }
     }

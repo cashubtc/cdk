@@ -23,7 +23,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, PaymentMethod, State};
-use cdk::wallet::{HttpClient, MintConnector, WalletRepository, Wallet};
+use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletRepository};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
 use futures::{SinkExt, StreamExt};
@@ -683,7 +683,6 @@ async fn test_melt_quote_status_after_melt() {
 async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
     let localstore = Arc::new(memory::empty().await.unwrap());
-
 
     let multi_mint_wallet = WalletRepository::new(localstore.clone(), seed)
         .await

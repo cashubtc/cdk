@@ -75,7 +75,9 @@ pub use mint_connector::transport::Transport as HttpTransport;
 #[cfg(feature = "auth")]
 pub use mint_connector::AuthHttpClient;
 pub use mint_connector::{HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector};
-pub use multi_mint_wallet::{WalletConfig, WalletRepository};
+pub use multi_mint_wallet::{
+    TokenData, TransferMode, TransferResult, WalletConfig, WalletRepository,
+};
 
 #[cfg(feature = "nostr")]
 pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResult};

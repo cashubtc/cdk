@@ -9,7 +9,6 @@
 pub mod database;
 pub mod error;
 pub mod logging;
-pub mod wallet_repository;
 #[cfg(feature = "npubcash")]
 pub mod npubcash;
 #[cfg(feature = "postgres")]
@@ -18,15 +17,16 @@ pub mod sqlite;
 pub mod token;
 pub mod types;
 pub mod wallet;
+pub mod wallet_repository;
 
 pub use database::*;
 pub use error::*;
 pub use logging::*;
-pub use wallet_repository::*;
 #[cfg(feature = "npubcash")]
 pub use npubcash::*;
 pub use types::*;
 pub use wallet::*;
+pub use wallet_repository::*;
 
 uniffi::setup_scaffolding!();
 

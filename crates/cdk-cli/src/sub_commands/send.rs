@@ -246,7 +246,9 @@ pub async fn send(
     };
 
     // Prepare and confirm the send using the individual wallet
-    let prepared = wallet.prepare_send(token_amount, send_options.clone()).await?;
+    let prepared = wallet
+        .prepare_send(token_amount, send_options.clone())
+        .await?;
     let memo = send_options.memo;
     let token = prepared.confirm(memo).await?;
 
