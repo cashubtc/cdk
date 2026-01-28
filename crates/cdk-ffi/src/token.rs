@@ -7,7 +7,7 @@ use crate::error::FfiError;
 use crate::{Amount, CurrencyUnit, KeySetInfo, MintUrl, Proofs};
 
 /// FFI-compatible Token
-#[derive(Debug, uniffi::Object)]
+#[derive(Debug, Clone, uniffi::Object)]
 pub struct Token {
     pub(crate) inner: cdk::nuts::Token,
 }
