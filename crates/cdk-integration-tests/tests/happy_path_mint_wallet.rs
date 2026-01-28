@@ -694,20 +694,22 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .await
         .expect("failed to add mint");
 
-    let mint_quote = multi_mint_wallet
-        .mint_quote(&mint_url, 100.into(), None)
+    // Get the wallet from the repository to call methods directly
+    let wallet = multi_mint_wallet
+        .get_wallet(&mint_url)
         .await
-        .unwrap();
+        .expect("failed to get wallet");
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice)
         .await
         .unwrap();
 
-    let _proofs = multi_mint_wallet
-        .wait_for_mint_quote(
-            &mint_url,
-            &mint_quote.id,
+    let _proofs = wallet
+        .wait_and_mint_quote(
+            mint_quote.clone(),
             SplitTarget::default(),
             None,
             Duration::from_secs(60),
@@ -720,21 +722,12 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
 
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
-    let melt_quote = multi_mint_wallet
-        .melt_quote(&mint_url, invoice, None)
-        .await
-        .unwrap();
+    let melt_quote = wallet.melt_quote(invoice, None).await.unwrap();
 
-    let melt_response = multi_mint_wallet
-        .melt_with_mint(&mint_url, &melt_quote.id)
-        .await
-        .unwrap();
+    let melt_response = wallet.melt(&melt_quote.id).await.unwrap();
     assert_eq!(melt_response.state, MeltQuoteState::Paid);
 
-    let quote_status = multi_mint_wallet
-        .check_melt_quote(&mint_url, &melt_quote.id)
-        .await
-        .unwrap();
+    let quote_status = wallet.melt_quote_status(&melt_quote.id).await.unwrap();
     assert_eq!(
         quote_status.state,
         MeltQuoteState::Paid,

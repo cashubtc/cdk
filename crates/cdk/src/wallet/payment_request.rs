@@ -657,7 +657,7 @@ impl WalletRepository {
 
                     // Stop after first successful receipt
                     cancel.cancel();
-                    return Ok(received.into());
+                    return Ok(received);
                 }
                 Err(_) => {
                     // Keep listening on parse errors; if you prefer fail-fast, return the error
