@@ -23,8 +23,9 @@ use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
 use crate::nuts::nut18::Nut10SecretRequest;
 use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
 #[cfg(feature = "nostr")]
-use crate::wallet::MultiMintReceiveOptions;
-use crate::wallet::{MultiMintWallet, SendOptions};
+use crate::wallet::ReceiveOptions;
+
+use crate::wallet::{SendOptions, WalletRepository};
 use crate::Wallet;
 
 impl Wallet {
@@ -245,8 +246,8 @@ pub struct NostrWaitInfo {
     pub pubkey: nostr_sdk::PublicKey,
 }
 
-impl MultiMintWallet {
-    /// Pay a NUT-18 PaymentRequest using the MultiMintWallet.
+impl WalletRepository {
+    /// Pay a NUT-18 PaymentRequest using the WalletRepository.
     ///
     /// This method handles paying a payment request by selecting an appropriate mint:
     /// - If `mint_url` is provided, it verifies the payment request accepts that mint
@@ -298,11 +299,7 @@ impl MultiMintWallet {
             }
 
             // Get the wallet for the specified mint
-            self.get_wallet(specified_mint)
-                .await
-                .ok_or_else(|| Error::UnknownMint {
-                    mint_url: specified_mint.to_string(),
-                })?
+            self.get_wallet(specified_mint).await?
         } else {
             // No mint specified - find the best matching mint with highest balance
             let balances = self.get_balances().await?;
@@ -322,7 +319,7 @@ impl MultiMintWallet {
 
                 // Check balance meets requirements and is best so far
                 if *balance >= amount && *balance > best_balance {
-                    if let Some(wallet) = self.get_wallet(mint_url).await {
+                    if let Ok(wallet) = self.get_wallet(mint_url).await {
                         best_balance = *balance;
                         best_wallet = Some(wallet);
                     }
@@ -645,19 +642,25 @@ impl MultiMintWallet {
             match item {
                 Ok(payload) => {
                     let token = crate::nuts::Token::new(
-                        payload.mint,
+                        payload.mint.clone(),
                         payload.proofs,
                         payload.memo,
-                        payload.unit,
+                        payload.unit.clone(),
                     );
 
-                    let amount = self
-                        .receive(&token.to_string(), MultiMintReceiveOptions::default())
+                    // Get or create wallet for the token's mint
+                    let unit = payload.unit.clone();
+                    let wallet = self.get_or_create_wallet(&payload.mint, unit).await?;
+
+                    // Receive using the individual wallet
+                    let token_str = token.to_string();
+                    let received = wallet
+                        .receive(&token_str, ReceiveOptions::default())
                         .await?;
 
                     // Stop after first successful receipt
                     cancel.cancel();
-                    return Ok(amount);
+                    return Ok(received);
                 }
                 Err(_) => {
                     // Keep listening on parse errors; if you prefer fail-fast, return the error
@@ -711,17 +714,23 @@ impl MultiMintWallet {
                         match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {
                             Ok(payload) => {
                                 let token = crate::nuts::Token::new(
-                                    payload.mint,
+                                    payload.mint.clone(),
                                     payload.proofs,
                                     payload.memo,
-                                    payload.unit,
+                                    payload.unit.clone(),
                                 );
 
-                                let amount = self
-                                    .receive(&token.to_string(), MultiMintReceiveOptions::default())
+                                // Get or create wallet for the token's mint
+                                let unit = payload.unit.clone();
+                                let wallet = self.get_or_create_wallet(&payload.mint, unit).await?;
+
+                                // Receive using the individual wallet
+                                let token_str = token.to_string();
+                                let received = wallet
+                                    .receive(&token_str, ReceiveOptions::default())
                                     .await?;
 
-                                return Ok(amount);
+                                return Ok(received);
                             }
                             Err(_) => {
                                 // Ignore malformed payloads and continue listening

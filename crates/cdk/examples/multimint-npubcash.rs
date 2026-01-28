@@ -17,7 +17,7 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::multi_mint_wallet::MultiMintWallet;
+use cdk::wallet::WalletRepository;
 use cdk::StreamExt;
 use cdk_sqlite::wallet::memory;
 use nostr_sdk::ToBech32;
@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let localstore = memory::empty().await?;
-    let wallet = MultiMintWallet::new(Arc::new(localstore), seed, CurrencyUnit::Sat).await?;
+    let wallet = WalletRepository::new(Arc::new(localstore), seed).await?;
 
     let mint_url_1: MintUrl = MINT_URL_1.parse()?;
     let mint_url_2: MintUrl = MINT_URL_2.parse()?;

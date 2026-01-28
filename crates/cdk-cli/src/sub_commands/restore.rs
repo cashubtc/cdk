@@ -1,6 +1,7 @@
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
-use cdk::wallet::MultiMintWallet;
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::WalletRepository;
 use clap::Args;
 
 #[derive(Args)]
@@ -10,22 +11,15 @@ pub struct RestoreSubCommand {
 }
 
 pub async fn restore(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     sub_command_args: &RestoreSubCommand,
+    unit: &CurrencyUnit,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
 
-    let wallet = match multi_mint_wallet.get_wallet(&mint_url).await {
-        Some(wallet) => wallet.clone(),
-        None => {
-            multi_mint_wallet.add_mint(mint_url.clone()).await?;
-            multi_mint_wallet
-                .get_wallet(&mint_url)
-                .await
-                .expect("Wallet should exist after adding mint")
-                .clone()
-        }
-    };
+    let wallet = wallet_repository
+        .get_or_create_wallet(&mint_url, unit.clone())
+        .await?;
 
     let restored = wallet.restore().await?;
 

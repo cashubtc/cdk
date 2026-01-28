@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 use crate::nuts::{Proofs, SpendingConditions};
-use crate::wallet::multi_mint_wallet::MultiMintWallet;
+use crate::wallet::multi_mint_wallet::WalletRepository;
 use crate::wallet::types::MintQuote;
 use crate::wallet::Wallet;
 
@@ -28,7 +28,7 @@ pub struct NpubCashProofStream {
 impl NpubCashProofStream {
     /// Create a new NpubCash proof stream
     pub fn new(
-        wallet: MultiMintWallet,
+        wallet: WalletRepository,
         poll_interval: Duration,
         split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
@@ -56,9 +56,7 @@ impl NpubCashProofStream {
 
                                         let result = async {
                                             // Get wallet for this quote's mint
-                                            let wallet_instance = wallet.get_wallet(&mint_url).await.ok_or(Error::UnknownMint {
-                                                mint_url: mint_url.to_string(),
-                                            })?;
+                                            let wallet_instance = wallet.get_wallet(&mint_url).await?;
 
                                             let proofs = wallet_instance
                                                 .mint(&quote_id, split_target.clone(), spending_conditions.clone())

@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{anyhow, Result};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::MintInfo;
-use cdk::wallet::MultiMintWallet;
+use cdk::wallet::WalletRepository;
 use cdk::{Amount, OidcClient};
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -22,18 +22,18 @@ pub struct MintBlindAuthSubCommand {
 }
 
 pub async fn mint_blind_auth(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     sub_command_args: &MintBlindAuthSubCommand,
     work_dir: &Path,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
 
     // Ensure the mint exists
-    if !multi_mint_wallet.has_mint(&mint_url).await {
-        multi_mint_wallet.add_mint(mint_url.clone()).await?;
+    if !wallet_repository.has_mint(&mint_url).await {
+        wallet_repository.add_mint(mint_url.clone()).await?;
     }
 
-    multi_mint_wallet.fetch_mint_info(&mint_url).await?;
+    wallet_repository.fetch_mint_info(&mint_url).await?;
 
     // Try to get the token from the provided argument or from the stored file
     let cat = match &sub_command_args.cat {
@@ -61,7 +61,7 @@ pub async fn mint_blind_auth(
     };
 
     // Try to set the access token
-    if let Err(err) = multi_mint_wallet.set_cat(&mint_url, cat.clone()).await {
+    if let Err(err) = wallet_repository.set_cat(&mint_url, cat.clone()).await {
         tracing::error!("Could not set cat: {}", err);
 
         // Try to refresh the token if we have a refresh token
@@ -69,7 +69,7 @@ pub async fn mint_blind_auth(
             println!("Attempting to refresh the access token...");
 
             // Get the mint info to access OIDC configuration
-            if let Some(mint_info) = multi_mint_wallet.fetch_mint_info(&mint_url).await? {
+            if let Some(mint_info) = wallet_repository.fetch_mint_info(&mint_url).await? {
                 match refresh_access_token(&mint_info, &token_data.refresh_token).await {
                     Ok((new_access_token, new_refresh_token)) => {
                         println!("Successfully refreshed access token");
@@ -88,7 +88,7 @@ pub async fn mint_blind_auth(
 
                         // Try setting the new access token
                         if let Err(err) =
-                            multi_mint_wallet.set_cat(&mint_url, new_access_token).await
+                            wallet_repository.set_cat(&mint_url, new_access_token).await
                         {
                             tracing::error!("Could not set refreshed cat: {}", err);
                             return Err(anyhow::anyhow!(
@@ -97,7 +97,7 @@ pub async fn mint_blind_auth(
                         }
 
                         // Set the refresh token
-                        multi_mint_wallet
+                        wallet_repository
                             .set_refresh_token(&mint_url, new_refresh_token)
                             .await?;
                     }
@@ -116,10 +116,10 @@ pub async fn mint_blind_auth(
         // If we have a refresh token, set it
         if let Ok(Some(token_data)) = token_storage::get_token_for_mint(work_dir, &mint_url).await {
             tracing::info!("Attempting to use refresh access token to refresh auth token");
-            multi_mint_wallet
+            wallet_repository
                 .set_refresh_token(&mint_url, token_data.refresh_token)
                 .await?;
-            multi_mint_wallet.refresh_access_token(&mint_url).await?;
+            wallet_repository.refresh_access_token(&mint_url).await?;
         }
     }
 
@@ -128,7 +128,7 @@ pub async fn mint_blind_auth(
     let amount = match sub_command_args.amount {
         Some(amount) => amount,
         None => {
-            let mint_info = multi_mint_wallet
+            let mint_info = wallet_repository
                 .fetch_mint_info(&mint_url)
                 .await?
                 .ok_or(anyhow!("Unknown mint info"))?;
@@ -138,7 +138,7 @@ pub async fn mint_blind_auth(
         }
     };
 
-    let proofs = multi_mint_wallet
+    let proofs = wallet_repository
         .mint_blind_auth(&mint_url, Amount::from(amount))
         .await?;
 

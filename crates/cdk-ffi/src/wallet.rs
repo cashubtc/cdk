@@ -12,6 +12,7 @@ use crate::types::payment_request::PaymentRequest;
 use crate::types::*;
 
 /// FFI-compatible Wallet
+
 #[derive(uniffi::Object)]
 pub struct Wallet {
     inner: Arc<CdkWallet>,

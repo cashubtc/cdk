@@ -262,6 +262,7 @@ impl NostrWaitInfo {
     }
 
     /// Get inner reference
+    #[allow(dead_code)]
     pub(crate) fn inner(&self) -> &cdk::wallet::payment_request::NostrWaitInfo {
         &self.inner
     }
