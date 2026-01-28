@@ -1679,7 +1679,7 @@ where
     async fn list_p2pk_keys(&self) -> Result<Vec<wallet::P2PKSigningKey>, Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let query_str = r#"
-        SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key ORDER BY derivation_index ASC
+        SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key ORDER BY derivation_index DESC
         "#.to_string();
 
         Ok(query(&query_str)?
@@ -1698,7 +1698,7 @@ where
     async fn latest_p2pk(&self) -> Result<Option<wallet::P2PKSigningKey>, Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let query_str = r#"
-        SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key ORDER BY derivation_index ASC LIMIT 1
+        SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key ORDER BY derivation_index DESC LIMIT 1
         "#.to_string();
 
         query(&query_str)?
