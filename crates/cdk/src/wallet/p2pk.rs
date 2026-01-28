@@ -119,11 +119,11 @@ mod tests {
         assert_eq!(stored_keys.len(), 5);
         assert_eq!(
             stored_keys[0].derivation_path.to_string(),
-            "129372'/10'/0'/0'/0"
+            "129372'/10'/0'/0'/4"
         );
         assert_eq!(
             stored_keys[1].derivation_path.to_string(),
-            "129372'/10'/0'/0'/1"
+            "129372'/10'/0'/0'/3"
         );
         assert_eq!(
             stored_keys[2].derivation_path.to_string(),
@@ -131,11 +131,11 @@ mod tests {
         );
         assert_eq!(
             stored_keys[3].derivation_path.to_string(),
-            "129372'/10'/0'/0'/3"
+            "129372'/10'/0'/0'/1"
         );
         assert_eq!(
             stored_keys[4].derivation_path.to_string(),
-            "129372'/10'/0'/0'/4"
+            "129372'/10'/0'/0'/0"
         );
     }
 }
