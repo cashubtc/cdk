@@ -261,20 +261,16 @@ impl MintQuote {
 
     /// Amount that can be minted
     pub fn amount_mintable(&self) -> Amount {
-        let difference = self.amount_paid.saturating_sub(self.amount_issued);
-
-        if difference != Amount::ZERO {
-            return difference;
-        }
-
-        // When fully caught up, BOLT11 quotes can still mint their full amount
-        let is_unminted_bolt11 =
-            self.state != MintQuoteState::Issued && self.payment_method == PaymentMethod::BOLT11;
-
-        if is_unminted_bolt11 {
-            self.amount.unwrap_or(Amount::ZERO)
+        if self.payment_method == PaymentMethod::BOLT11 {
+            // BOLT11 is all-or-nothing: mint full amount when state is Paid
+            if self.state == MintQuoteState::Paid {
+                self.amount.unwrap_or(Amount::ZERO)
+            } else {
+                Amount::ZERO
+            }
         } else {
-            Amount::ZERO
+            // Other payment methods track incremental payments
+            self.amount_paid.saturating_sub(self.amount_issued)
         }
     }
 }
