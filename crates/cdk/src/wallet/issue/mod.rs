@@ -7,7 +7,7 @@ pub(crate) mod saga;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut25::MintQuoteBolt12Request;
-use cdk_common::{PaymentMethod, ProofsMethods};
+use cdk_common::PaymentMethod;
 pub(crate) use saga::MintSaga;
 use tracing::instrument;
 
@@ -16,6 +16,7 @@ use crate::nuts::{
     MintQuoteBolt11Request, MintQuoteCustomRequest, Proofs, SecretKey, SpendingConditions,
 };
 use crate::util::unix_time;
+use crate::wallet::recovery::RecoveryAction;
 use crate::wallet::{MintQuote, MintQuoteState};
 use crate::{Amount, Error, Wallet};
 
@@ -173,61 +174,113 @@ impl Wallet {
         Ok(())
     }
 
+    /// This method:
+    /// 1. Fetches the current quote state from the mint
+    /// 2. If there's an in-progress saga for this quote, attempts to complete it
+    /// 3. If the saga was compensated (rolled back), attempts a fresh mint
+    /// 4. Returns the updated quote
+    #[instrument(skip_all)]
+    async fn inner_check_mint_quote_status(
+        &self,
+        mut mint_quote: MintQuote,
+    ) -> Result<MintQuote, Error> {
+        let quote_id = mint_quote.id.clone();
+        // First, check/update the state from the mint
+        self.check_state(&mut mint_quote).await?;
+
+        // Check if there's an in-progress saga for this quote
+        if let Some(ref operation_id_str) = mint_quote.used_by_operation {
+            if let Ok(operation_id) = uuid::Uuid::parse_str(operation_id_str) {
+                match self.localstore.get_saga(&operation_id).await {
+                    Ok(Some(saga)) => {
+                        // Saga exists - try to complete it (like recovery does)
+                        tracing::info!(
+                            "Mint quote {} has in-progress saga {}, attempting to complete",
+                            quote_id,
+                            operation_id
+                        );
+
+                        let recovery_action = self.resume_issue_saga(&saga).await?;
+
+                        // If compensated, the saga was rolled back - attempt to mint again
+                        if recovery_action == RecoveryAction::Compensated {
+                            tracing::info!(
+                                "Saga {} was compensated, attempting fresh mint for quote {}",
+                                operation_id,
+                                quote_id
+                            );
+                        } else {
+                            // If the saga completed we need to get the updated state of the mint quote fn the db
+                            mint_quote = self
+                                .localstore
+                                .get_mint_quote(&quote_id)
+                                .await?
+                                .ok_or(Error::UnknownQuote)?;
+                        }
+                        // If Recovered or Skipped, just continue with the updated quote
+                    }
+                    Ok(None) => {
+                        // Orphaned reservation - release it
+                        tracing::warn!(
+                            "Mint quote {} has orphaned reservation for operation {}, releasing",
+                            quote_id,
+                            operation_id
+                        );
+                        if let Err(e) = self.localstore.release_mint_quote(&operation_id).await {
+                            tracing::warn!("Failed to release orphaned mint quote: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to check saga for mint quote {}: {}", quote_id, e);
+                        return Err(Error::Database(e));
+                    }
+                }
+            }
+        }
+
+        if mint_quote.amount_mintable() > Amount::ZERO {
+            self.mint(&mint_quote.id, SplitTarget::default(), None)
+                .await?;
+            mint_quote = self
+                .localstore
+                .get_mint_quote(&quote_id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+            return Ok(mint_quote);
+        }
+
+        self.localstore.add_mint_quote(mint_quote.clone()).await?;
+        return Ok(mint_quote);
+    }
+
     /// Check mint quote status for any payment method
     #[instrument(skip(self, quote_id))]
     pub async fn check_mint_quote_status(&self, quote_id: &str) -> Result<MintQuote, Error> {
-        let mut mint_quote = self
+        let mint_quote = self
             .localstore
             .get_mint_quote(quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        self.check_state(&mut mint_quote).await?;
-
-        match self.localstore.add_mint_quote(mint_quote.clone()).await {
-            Ok(_) => (),
-            Err(e) => {
-                let is_concurrent = matches!(e, cdk_common::database::Error::ConcurrentUpdate);
-                if is_concurrent {
-                    tracing::debug!(
-                        "Concurrent update detected for mint quote {}, retrying",
-                        quote_id
-                    );
-                    let mut fresh_quote = self
-                        .localstore
-                        .get_mint_quote(quote_id)
-                        .await?
-                        .ok_or(Error::UnknownQuote)?;
-
-                    self.check_state(&mut fresh_quote).await?;
-
-                    match self.localstore.add_mint_quote(fresh_quote.clone()).await {
-                        Ok(_) => (),
-                        Err(e) => {
-                            if matches!(e, cdk_common::database::Error::ConcurrentUpdate) {
-                                return Err(Error::ConcurrentUpdate);
-                            }
-                            return Err(Error::Database(e));
-                        }
-                    }
-                    mint_quote = fresh_quote;
-                } else {
-                    return Err(Error::Database(e));
-                }
-            }
-        }
+        let mint_quote = self.inner_check_mint_quote_status(mint_quote).await?;
 
         Ok(mint_quote)
     }
 
-    /// Check status of pending mint quotes
+    /// Check status of unissued mint quotes and mint any available amounts
+    ///
+    /// This checks all bolt12 mint quotes and bolt11 quotes that have not been fully minted yet.
+    /// For each quote with a mintable amount, it will mint the tokens.
+    /// Returns the total amount that was minted across all quotes.
     #[instrument(skip(self))]
     pub async fn check_all_mint_quotes(&self) -> Result<Amount, Error> {
         let mint_quotes = self.localstore.get_unissued_mint_quotes().await?;
         let mut total_amount = Amount::ZERO;
 
         for mint_quote in mint_quotes {
-            let mint_quote = match self.check_mint_quote_status(&mint_quote.id).await {
+            let current_amount_issued = mint_quote.amount_issued;
+
+            let mint_quote = match self.inner_check_mint_quote_status(mint_quote).await {
                 Ok(q) => q,
                 Err(err) => {
                     tracing::warn!("Could not check quote state: {}", err);
@@ -235,14 +288,16 @@ impl Wallet {
                 }
             };
 
-            let amount_mintable = mint_quote.amount_mintable();
+            debug_assert!(current_amount_issued < mint_quote.amount_issued);
 
-            if amount_mintable > Amount::ZERO {
-                let proofs = self
-                    .mint(&mint_quote.id, SplitTarget::default(), None)
-                    .await?;
-                total_amount += proofs.total_amount()?;
-            }
+            total_amount = total_amount
+                .checked_add(
+                    mint_quote
+                        .amount_issued
+                        .checked_sub(current_amount_issued)
+                        .unwrap_or_default(),
+                )
+                .ok_or(Error::AmountOverflow)?;
         }
         Ok(total_amount)
     }
