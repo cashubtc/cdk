@@ -720,7 +720,7 @@ impl WalletRepository {
                                 );
 
                                 // Get or create wallet for the token's mint
-                                let unit = payload.unit.unwrap_or(CurrencyUnit::Sat);
+                                let unit = payload.unit.clone();
                                 let wallet = self.get_or_create_wallet(&payload.mint, unit).await?;
 
                                 // Receive using the individual wallet
@@ -729,7 +729,7 @@ impl WalletRepository {
                                     .receive(&token_str, ReceiveOptions::default())
                                     .await?;
 
-                                return Ok(received.total_amount());
+                                return Ok(received);
                             }
                             Err(_) => {
                                 // Ignore malformed payloads and continue listening
