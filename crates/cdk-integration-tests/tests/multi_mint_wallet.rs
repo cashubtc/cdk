@@ -100,7 +100,7 @@ async fn test_multi_mint_wallet_mint() {
 
     // Poll for quote to be paid (like a real wallet would)
     let mut quote_status = multi_mint_wallet
-        .check_mint_quote(&mint_url, &mint_quote.id)
+        .refresh_mint_quote(&mint_url, &mint_quote.id)
         .await
         .unwrap();
 
@@ -114,12 +114,12 @@ async fn test_multi_mint_wallet_mint() {
                 quote_status.state
             );
         }
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         quote_status = multi_mint_wallet
-            .check_mint_quote(&mint_url, &mint_quote.id)
+            .refresh_mint_quote(&mint_url, &mint_quote.id)
             .await
             .unwrap();
     }
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Call mint() directly (quote should be Paid at this point)
     let proofs = multi_mint_wallet
@@ -494,15 +494,28 @@ async fn test_multi_mint_wallet_check_all_mint_quotes() {
 
     // Poll for quote to be paid (like a real wallet would)
     let mut quote_status = multi_mint_wallet
-        .check_mint_quote(&mint_url, &mint_quote.id)
+        .refresh_mint_quote(&mint_url, &mint_quote.id)
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    let timeout = tokio::time::Duration::from_secs(30);
+    let start = tokio::time::Instant::now();
+    while quote_status.state != MintQuoteState::Paid {
+        if start.elapsed() > timeout {
+            panic!(
+                "Timeout waiting for quote to be paid, state: {:?}",
+                quote_status.state
+            );
+        }
+        quote_status = multi_mint_wallet
+            .refresh_mint_quote(&mint_url, &mint_quote.id)
+            .await
+            .unwrap();
+    }
 
     // Check all mint quotes - this should find the paid quote and mint
     let minted_amount = multi_mint_wallet
-        .check_all_mint_quotes(Some(mint_url.clone()))
+        .mint_unissued_quotes(Some(mint_url.clone()))
         .await
         .unwrap();
 

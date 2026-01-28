@@ -1634,9 +1634,11 @@ impl MultiMintWallet {
             .await
     }
 
-    /// Check a specific mint quote status
+    /// Refresh a specific mint quote status from the mint.
+    /// Updates local store with current state from mint.
+    /// Does NOT mint tokens - use wallet.mint() to mint a specific quote.
     #[instrument(skip(self))]
-    pub async fn check_mint_quote(
+    pub async fn refresh_mint_quote(
         &self,
         mint_url: &MintUrl,
         quote_id: &str,
@@ -1646,8 +1648,8 @@ impl MultiMintWallet {
             mint_url: mint_url.to_string(),
         })?;
 
-        // Check the quote state from the mint
-        wallet.check_mint_quote_status(quote_id).await?;
+        // Refresh the quote state from the mint
+        wallet.refresh_mint_quote_status(quote_id).await?;
 
         // Get the updated quote from local storage
         let quote = wallet
@@ -1679,10 +1681,38 @@ impl MultiMintWallet {
             .await
     }
 
-    /// Check all mint quotes
-    /// If quote is paid, wallet will mint
+    /// Refresh all unissued mint quote states
+    /// Does NOT mint - use mint_unissued_quotes() for that
     #[instrument(skip(self))]
-    pub async fn check_all_mint_quotes(&self, mint_url: Option<MintUrl>) -> Result<Amount, Error> {
+    pub async fn refresh_all_mint_quotes(
+        &self,
+        mint_url: Option<MintUrl>,
+    ) -> Result<Vec<MintQuote>, Error> {
+        let mut all_quotes = Vec::new();
+        match mint_url {
+            Some(mint_url) => {
+                let wallets = self.wallets.read().await;
+                let wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
+                    mint_url: mint_url.to_string(),
+                })?;
+
+                all_quotes = wallet.refresh_all_mint_quotes().await?;
+            }
+            None => {
+                for (_, wallet) in self.wallets.read().await.iter() {
+                    let quotes = wallet.refresh_all_mint_quotes().await?;
+                    all_quotes.extend(quotes);
+                }
+            }
+        }
+
+        Ok(all_quotes)
+    }
+
+    /// Refresh states and mint all unissued quotes
+    /// Returns total amount minted across all wallets
+    #[instrument(skip(self))]
+    pub async fn mint_unissued_quotes(&self, mint_url: Option<MintUrl>) -> Result<Amount, Error> {
         let mut total_amount = Amount::ZERO;
         match mint_url {
             Some(mint_url) => {
@@ -1691,11 +1721,11 @@ impl MultiMintWallet {
                     mint_url: mint_url.to_string(),
                 })?;
 
-                total_amount = wallet.check_all_mint_quotes().await?;
+                total_amount = wallet.mint_unissued_quotes().await?;
             }
             None => {
                 for (_, wallet) in self.wallets.read().await.iter() {
-                    let amount = wallet.check_all_mint_quotes().await?;
+                    let amount = wallet.mint_unissued_quotes().await?;
                     total_amount += amount;
                 }
             }

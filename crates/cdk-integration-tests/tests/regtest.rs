@@ -76,7 +76,12 @@ async fn test_internal_payment() {
     let mint_quote = wallet_2.mint_bolt11_quote(10.into(), None).await.unwrap();
 
     let melt = wallet
-        .melt_quote(PaymentMethod::BOLT11, mint_quote.request.clone(), None, None)
+        .melt_quote(
+            PaymentMethod::BOLT11,
+            mint_quote.request.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -273,11 +278,21 @@ async fn test_multimint_melt() {
         },
     };
     let quote_1 = wallet1
-        .melt_quote(PaymentMethod::BOLT11, invoice.clone(), Some(melt_options), None)
+        .melt_quote(
+            PaymentMethod::BOLT11,
+            invoice.clone(),
+            Some(melt_options),
+            None,
+        )
         .await
         .expect("Could not get melt quote");
     let quote_2 = wallet2
-        .melt_quote(PaymentMethod::BOLT11, invoice.clone(), Some(melt_options), None)
+        .melt_quote(
+            PaymentMethod::BOLT11,
+            invoice.clone(),
+            Some(melt_options),
+            None,
+        )
         .await
         .expect("Could not get melt quote");
 
@@ -452,7 +467,10 @@ async fn test_attempt_to_mint_unpaid() {
 
     let mint_quote = wallet.mint_bolt11_quote(mint_amount, None).await.unwrap();
 
-    let state = wallet.check_mint_quote_status(&mint_quote.id).await.unwrap();
+    let state = wallet
+        .refresh_mint_quote_status(&mint_quote.id)
+        .await
+        .unwrap();
 
     assert!(state.state == MintQuoteState::Unpaid);
 

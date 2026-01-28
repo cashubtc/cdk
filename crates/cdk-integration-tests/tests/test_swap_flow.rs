@@ -14,7 +14,10 @@ use std::sync::Arc;
 
 use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
-use cashu::{CurrencyUnit, Id, PaymentMethod, PreMintSecrets, SecretKey, SpendingConditions, State, SwapRequest};
+use cashu::{
+    CurrencyUnit, Id, PaymentMethod, PreMintSecrets, SecretKey, SpendingConditions, State,
+    SwapRequest,
+};
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::Amount;

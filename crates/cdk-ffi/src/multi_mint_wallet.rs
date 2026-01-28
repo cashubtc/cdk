@@ -363,8 +363,10 @@ impl MultiMintWallet {
         Ok(quote.into())
     }
 
-    /// Check a specific mint quote status
-    pub async fn check_mint_quote(
+    /// Refresh a specific mint quote status from the mint.
+    /// Updates local store with current state from mint.
+    /// Does NOT mint tokens - use mint() to mint a specific quote.
+    pub async fn refresh_mint_quote(
         &self,
         mint_url: MintUrl,
         quote_id: String,
@@ -372,7 +374,7 @@ impl MultiMintWallet {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
         let quote = self
             .inner
-            .check_mint_quote(&cdk_mint_url, &quote_id)
+            .refresh_mint_quote(&cdk_mint_url, &quote_id)
             .await?;
         Ok(quote.into())
     }
@@ -658,13 +660,25 @@ impl MultiMintWallet {
         Ok(proofs.into_iter().map(Into::into).collect())
     }
 
-    /// Check all mint quotes and mint if paid
-    pub async fn check_all_mint_quotes(
+    /// Refresh all unissued mint quote states
+    /// Does NOT mint - use mint_unissued_quotes() for that
+    pub async fn refresh_all_mint_quotes(
+        &self,
+        mint_url: Option<MintUrl>,
+    ) -> Result<Vec<MintQuote>, FfiError> {
+        let cdk_mint_url = mint_url.map(|url| url.try_into()).transpose()?;
+        let quotes = self.inner.refresh_all_mint_quotes(cdk_mint_url).await?;
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
+    /// Refresh states and mint all unissued quotes
+    /// Returns total amount minted across all wallets
+    pub async fn mint_unissued_quotes(
         &self,
         mint_url: Option<MintUrl>,
     ) -> Result<Amount, FfiError> {
         let cdk_mint_url = mint_url.map(|url| url.try_into()).transpose()?;
-        let amount = self.inner.check_all_mint_quotes(cdk_mint_url).await?;
+        let amount = self.inner.mint_unissued_quotes(cdk_mint_url).await?;
         Ok(amount.into())
     }
 

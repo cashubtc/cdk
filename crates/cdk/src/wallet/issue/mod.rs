@@ -238,27 +238,15 @@ impl Wallet {
             }
         }
 
-        if mint_quote.amount_mintable() > Amount::ZERO {
-            // Save the updated quote state BEFORE minting so the saga can read the correct state
-            self.localstore.add_mint_quote(mint_quote.clone()).await?;
-
-            self.mint(&mint_quote.id, SplitTarget::default(), None)
-                .await?;
-            mint_quote = self
-                .localstore
-                .get_mint_quote(&quote_id)
-                .await?
-                .ok_or(Error::UnknownQuote)?;
-            return Ok(mint_quote);
-        }
-
         self.localstore.add_mint_quote(mint_quote.clone()).await?;
-        return Ok(mint_quote);
+        Ok(mint_quote)
     }
 
-    /// Check mint quote status for any payment method
+    /// Refresh the status of a single mint quote from the mint.
+    /// Updates local store with current state from mint.
+    /// Does NOT mint tokens - use mint() to mint a specific quote.
     #[instrument(skip(self, quote_id))]
-    pub async fn check_mint_quote_status(&self, quote_id: &str) -> Result<MintQuote, Error> {
+    pub async fn refresh_mint_quote_status(&self, quote_id: &str) -> Result<MintQuote, Error> {
         let mint_quote = self
             .localstore
             .get_mint_quote(quote_id)
@@ -270,13 +258,30 @@ impl Wallet {
         Ok(mint_quote)
     }
 
-    /// Check status of unissued mint quotes and mint any available amounts
-    ///
-    /// This checks all bolt12 mint quotes and bolt11 quotes that have not been fully minted yet.
-    /// For each quote with a mintable amount, it will mint the tokens.
-    /// Returns the total amount that was minted across all quotes.
+    /// Refresh all unissued mint quote states from the mint.
+    /// Updates local store with current state from mint for each quote.
+    /// Does NOT mint tokens - use mint() or mint_unissued_quotes() for that.
     #[instrument(skip(self))]
-    pub async fn check_all_mint_quotes(&self) -> Result<Amount, Error> {
+    pub async fn refresh_all_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        let mint_quotes = self.localstore.get_unissued_mint_quotes().await?;
+        let mut updated_quotes = Vec::new();
+
+        for mint_quote in mint_quotes {
+            match self.inner_check_mint_quote_status(mint_quote).await {
+                Ok(q) => updated_quotes.push(q),
+                Err(err) => {
+                    tracing::warn!("Could not check quote state: {}", err);
+                    continue;
+                }
+            }
+        }
+        Ok(updated_quotes)
+    }
+
+    /// Refresh states and mint all unissued quotes that have mintable amounts.
+    /// Returns the total amount minted across all quotes.
+    #[instrument(skip(self))]
+    pub async fn mint_unissued_quotes(&self) -> Result<Amount, Error> {
         let mint_quotes = self.localstore.get_unissued_mint_quotes().await?;
         let mut total_amount = Amount::ZERO;
 
@@ -291,11 +296,25 @@ impl Wallet {
                 }
             };
 
-            debug_assert!(current_amount_issued < mint_quote.amount_issued);
+            if mint_quote.amount_mintable() > Amount::ZERO {
+                if let Err(err) = self
+                    .mint(&mint_quote.id, SplitTarget::default(), None)
+                    .await
+                {
+                    tracing::warn!("Could not mint quote {}: {}", mint_quote.id, err);
+                    continue;
+                }
+            }
+
+            // Get updated quote to calculate minted amount
+            let updated_quote = match self.localstore.get_mint_quote(&mint_quote.id).await {
+                Ok(Some(q)) => q,
+                _ => continue,
+            };
 
             total_amount = total_amount
                 .checked_add(
-                    mint_quote
+                    updated_quote
                         .amount_issued
                         .checked_sub(current_amount_issued)
                         .unwrap_or_default(),

@@ -81,7 +81,7 @@ async fn main() {
         println!("Pay request: {}", quote.request);
 
         loop {
-            let status = wallet.mint_quote_state(&quote.id).await.unwrap();
+            let status = wallet.refresh_mint_quote(&quote.id).await.unwrap();
 
             if status.state == MintQuoteState::Paid {
                 break;
