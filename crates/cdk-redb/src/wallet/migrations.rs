@@ -11,7 +11,9 @@ use redb::{
 };
 
 use super::Error;
-use crate::wallet::{KEYSETS_TABLE, KEYSET_COUNTER, KEYSET_U32_MAPPING, MINT_KEYS_TABLE};
+use crate::wallet::{
+    KEYSETS_TABLE, KEYSET_COUNTER, KEYSET_U32_MAPPING, MINT_KEYS_TABLE, P2PK_SIGNING_KEYS_TABLE,
+};
 
 // <Mint_url, Info>
 const MINTS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mints_table");
@@ -199,4 +201,21 @@ pub(crate) fn migrate_03_to_04(db: Arc<Database>) -> Result<u32, Error> {
     write_txn.commit()?;
 
     Ok(4)
+}
+
+pub(crate) fn migrate_04_to_05(db: Arc<Database>) -> Result<u32, Error> {
+    tracing::info!("Starting migration from version 4 to 5: Initializing P2PK_SIGNING_KEYS_TABLE");
+    let write_txn = db.begin_write().map_err(Error::from)?;
+
+    {
+        // Open the table to initialize it (redb creates tables on first open)
+        let _ = write_txn
+            .open_table(P2PK_SIGNING_KEYS_TABLE)
+            .map_err(Error::from)?;
+    }
+
+    write_txn.commit()?;
+    tracing::info!("Finished migration from version 4 to 5: P2PK_SIGNING_KEYS_TABLE initialized");
+
+    Ok(5)
 }
