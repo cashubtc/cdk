@@ -61,6 +61,7 @@ mod send;
 mod streams;
 pub mod subscription;
 mod swap;
+mod traits;
 mod transactions;
 pub mod util;
 

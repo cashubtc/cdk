@@ -18,6 +18,7 @@ pub mod sqlite;
 pub mod token;
 pub mod types;
 pub mod wallet;
+mod wallet_traits;
 
 pub use database::*;
 pub use error::*;
