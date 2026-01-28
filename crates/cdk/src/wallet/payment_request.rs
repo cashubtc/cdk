@@ -22,7 +22,7 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
 use crate::nuts::nut18::Nut10SecretRequest;
 use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
-#[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
+#[cfg(feature = "nostr")]
 use crate::wallet::ReceiveOptions;
 
 use crate::wallet::{SendOptions, WalletRepository};
@@ -679,8 +679,6 @@ impl WalletRepository {
     #[cfg(all(feature = "nostr", target_arch = "wasm32"))]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
         use nostr_sdk::prelude::*;
-
-        use crate::nuts::CurrencyUnit;
 
         let NostrWaitInfo {
             keys,
