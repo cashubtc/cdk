@@ -1,3 +1,7 @@
+//! Benchmarks for TransactionId performance
+#![allow(missing_docs)]
+#![allow(clippy::missing_docs_in_private_items)]
+
 use cashu::nuts::nut01::SecretKey;
 use cashu::PublicKey;
 use cdk_common::wallet::TransactionId;
@@ -9,6 +13,7 @@ fn generate_public_keys(count: usize) -> Vec<PublicKey> {
         .collect()
 }
 
+/// Test
 fn bench_transaction_id(c: &mut Criterion) {
     let mut group = c.benchmark_group("TransactionId::new");
 

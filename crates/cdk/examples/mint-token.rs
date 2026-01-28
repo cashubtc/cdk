@@ -1,3 +1,10 @@
+//! Example showing how to mint tokens
+//!
+//! This example demonstrates how to:
+//! 1. Create a wallet
+//! 2. Request a mint quote
+//! 3. Mint tokens from a mint
+
 use std::sync::Arc;
 use std::time::Duration;
 

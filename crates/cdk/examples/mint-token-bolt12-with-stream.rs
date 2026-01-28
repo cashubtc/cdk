@@ -1,3 +1,10 @@
+//! Example showing how to mint tokens with BOLT12 using streams
+//!
+//! This example demonstrates how to:
+//! 1. Create a wallet
+//! 2. Request a mint quote using BOLT12 with streaming
+//! 3. Mint tokens from a mint using streams
+
 use std::sync::Arc;
 
 use cdk::error::Error;

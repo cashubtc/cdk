@@ -114,10 +114,7 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
         result.is_err(),
         "Should fail with only preimage (no signature)"
     );
-    println!(
-        "✓ Spending with ONLY preimage failed as expected: {:?}",
-        result.err()
-    );
+    println!("✓ Spending with ONLY preimage failed as expected");
 
     // Step 7: Try to spend with only signature (should fail - preimage required)
     let mut swap_request_signature_only =
@@ -133,10 +130,7 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
         result.is_err(),
         "Should fail with only signature (no preimage)"
     );
-    println!(
-        "✓ Spending with ONLY signature failed as expected: {:?}",
-        result.err()
-    );
+    println!("✓ Spending with ONLY signature failed as expected");
 
     // Step 8: Now try to spend the HTLC proofs with correct preimage + signature
     let mut swap_request_both =
@@ -154,7 +148,6 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
         "Should succeed with correct preimage and signature: {:?}",
         result.err()
     );
-    println!("✓ HTLC spent successfully with correct preimage AND signature");
 }
 
 /// Test: HTLC with wrong preimage
@@ -222,10 +215,7 @@ async fn test_htlc_wrong_preimage() {
 
     let result = mint.process_swap_request(swap_request).await;
     assert!(result.is_err(), "Should fail with wrong preimage");
-    println!(
-        "✓ HTLC with wrong preimage failed as expected: {:?}",
-        result.err()
-    );
+    println!("✓ HTLC with wrong preimage failed as expected");
 }
 
 /// Test: HTLC locktime after expiry (refund path)
@@ -302,7 +292,6 @@ async fn test_htlc_locktime_after_expiry() {
         "Bob should be able to spend after locktime without preimage: {:?}",
         result.err()
     );
-    println!("✓ HTLC spent by refund key after locktime (no preimage needed)");
 }
 
 /// Test: HTLC with multisig (preimage + 2-of-3 signatures)
@@ -374,7 +363,6 @@ async fn test_htlc_multisig_2of3() {
         result.is_err(),
         "Should fail with only 1 signature (need 2)"
     );
-    println!("✓ HTLC with 1-of-3 signatures failed as expected");
 
     // Now with preimage + 2 signatures (Alice and Bob) - should succeed
     let mut swap_request_two_sigs =
@@ -392,7 +380,6 @@ async fn test_htlc_multisig_2of3() {
         "Should succeed with preimage + 2-of-3 signatures: {:?}",
         result.err()
     );
-    println!("✓ HTLC spent with preimage + 2-of-3 signatures");
 }
 
 /// Test: HTLC receiver path still works after locktime (NUT-14 compliance)
@@ -473,5 +460,4 @@ async fn test_htlc_receiver_path_after_locktime() {
         "Receiver should be able to spend with preimage even after locktime: {:?}",
         result.err()
     );
-    println!("✓ HTLC receiver path works after locktime (NUT-14 compliant)");
 }

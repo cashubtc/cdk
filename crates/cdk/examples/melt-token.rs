@@ -1,3 +1,10 @@
+//! Example showing how to melt tokens
+//!
+//! This example demonstrates how to:
+//! 1. Create a wallet
+//! 2. Mint tokens
+//! 3. Melt tokens to a lightning invoice
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,11 +53,11 @@ async fn main() -> Result<(), Error> {
     // We need to prepare a lightning invoice
     let private_key = SecretKey::from_slice(
         &<[u8; 32]>::from_hex("e126f68f7eafcc8b74f54d269fe206be715000f94dac067d1c04a8ca3b2db734")
-            .unwrap(),
+            .expect("Valid hex"),
     )
-    .unwrap();
+    .expect("Valid secret key");
     let random_bytes = rand::rng().random::<[u8; 32]>();
-    let payment_hash = sha256::Hash::from_slice(&random_bytes).unwrap();
+    let payment_hash = sha256::Hash::from_slice(&random_bytes).expect("Valid hash");
     let payment_secret = PaymentSecret([42u8; 32]);
     let invoice_to_be_paid = InvoiceBuilder::new(Currency::Bitcoin)
         .amount_milli_satoshis(5 * 1000)
@@ -60,18 +67,15 @@ async fn main() -> Result<(), Error> {
         .current_timestamp()
         .min_final_cltv_expiry_delta(144)
         .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
-        .unwrap()
+        .expect("Valid invoice")
         .to_string();
     println!("Invoice to be paid: {}", invoice_to_be_paid);
 
     let melt_quote = wallet.melt_quote(invoice_to_be_paid, None).await?;
-    println!(
-        "Melt quote: {} {} {:?}",
-        melt_quote.amount, melt_quote.state, melt_quote,
-    );
+    println!("Melt quote: {} {}", melt_quote.amount, melt_quote.state);
 
     let melted = wallet.melt(&melt_quote.id).await?;
-    println!("Melted: {:?}", melted);
+    println!("Melted: {}", melted.state);
 
     Ok(())
 }

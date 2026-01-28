@@ -119,15 +119,39 @@ async fn main() -> anyhow::Result<()> {
     println!("Encoded: {}\n", payment_request);
 
     println!("Request Details:");
-    println!("  Amount: {:?}", payment_request.amount);
-    println!("  Unit: {:?}", payment_request.unit);
-    println!("  Description: {:?}", payment_request.description);
-    println!("  Mints: {:?}", payment_request.mints);
-    println!("  Transports: {:?}", payment_request.transports);
+    println!(
+        "  Amount: {}",
+        payment_request
+            .amount
+            .map_or_else(|| "None".to_string(), |a| format!("{}", a))
+    );
+    println!(
+        "  Unit: {}",
+        payment_request
+            .unit
+            .map_or_else(|| "None".to_string(), |u| format!("{}", u))
+    );
+    println!(
+        "  Description: {}",
+        payment_request.description.as_deref().unwrap_or("None")
+    );
+    if let Some(mints) = payment_request.mints {
+        let mint_strings: Vec<String> = mints.iter().map(|m| m.to_string()).collect();
+        println!("  Mints: {}", mint_strings.join(", "));
+    }
+    println!(
+        "  Transports: {}",
+        payment_request
+            .transports
+            .iter()
+            .map(|t| format!("{:?}", t))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     if let Some(ref info) = nostr_wait_info {
         println!("\nNostr Wait Info:");
-        println!("  Relays: {:?}", info.relays);
+        println!("  Relays: {}", info.relays.join(", "));
         println!("  Pubkey: {}", info.pubkey);
 
         println!("\nTo receive payment, call:");
@@ -174,10 +198,31 @@ async fn main() -> anyhow::Result<()> {
     println!("Encoded: {}\n", http_request);
 
     println!("Request Details:");
-    println!("  Amount: {:?}", http_request.amount);
-    println!("  Unit: {:?}", http_request.unit);
-    println!("  Description: {:?}", http_request.description);
-    println!("  Transports: {:?}", http_request.transports);
+    println!(
+        "  Amount: {}",
+        http_request
+            .amount
+            .map_or_else(|| "None".to_string(), |a| format!("{}", a))
+    );
+    println!(
+        "  Unit: {}",
+        http_request
+            .unit
+            .map_or_else(|| "None".to_string(), |u| format!("{}", u))
+    );
+    println!(
+        "  Description: {}",
+        http_request.description.as_deref().unwrap_or("None")
+    );
+    println!(
+        "  Transports: {}",
+        http_request
+            .transports
+            .iter()
+            .map(|t| format!("{:?}", t))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     println!("\nWith HTTP transport:");
     println!("  - Payer will POST tokens to: https://example.com/cashu/callback");

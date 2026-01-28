@@ -416,6 +416,50 @@ pub async fn cache_post_mint_custom(
     Ok(result)
 }
 
+/// Cached version of post_melt_custom for NUT-19 caching support
+#[instrument(skip_all, fields(method = ?method))]
+pub async fn cache_post_melt_custom(
+    #[cfg(feature = "auth")] auth: AuthHeader,
+    prefer: PreferHeader,
+    state: State<MintState>,
+    method: Path<String>,
+    payload: Json<cdk::nuts::MeltRequest<QuoteId>>,
+) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
+    use std::ops::Deref;
+
+    let State(mint_state) = state.clone();
+    let json_extracted_payload = payload.deref();
+
+    let cache_key = match mint_state.cache.calculate_key(json_extracted_payload) {
+        Some(key) => key,
+        None => {
+            // Could not calculate key, just return the handler result
+            #[cfg(feature = "auth")]
+            return post_melt_custom(auth, prefer, state, method, payload).await;
+            #[cfg(not(feature = "auth"))]
+            return post_melt_custom(prefer, state, method, payload).await;
+        }
+    };
+
+    if let Some(cached_response) = mint_state
+        .cache
+        .get::<MeltQuoteBolt11Response<QuoteId>>(&cache_key)
+        .await
+    {
+        return Ok(Json(cached_response));
+    }
+
+    #[cfg(feature = "auth")]
+    let result = post_melt_custom(auth, prefer, state, method, payload).await?;
+    #[cfg(not(feature = "auth"))]
+    let result = post_melt_custom(prefer, state, method, payload).await?;
+
+    // Cache the response
+    mint_state.cache.set(cache_key, result.deref()).await;
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderValue, Request, StatusCode};
@@ -523,48 +567,4 @@ mod tests {
         assert!(result.is_ok());
         assert!(!result.unwrap().respond_async);
     }
-}
-
-/// Cached version of post_melt_custom for NUT-19 caching support
-#[instrument(skip_all, fields(method = ?method))]
-pub async fn cache_post_melt_custom(
-    #[cfg(feature = "auth")] auth: AuthHeader,
-    prefer: PreferHeader,
-    state: State<MintState>,
-    method: Path<String>,
-    payload: Json<cdk::nuts::MeltRequest<QuoteId>>,
-) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
-    use std::ops::Deref;
-
-    let State(mint_state) = state.clone();
-    let json_extracted_payload = payload.deref();
-
-    let cache_key = match mint_state.cache.calculate_key(json_extracted_payload) {
-        Some(key) => key,
-        None => {
-            // Could not calculate key, just return the handler result
-            #[cfg(feature = "auth")]
-            return post_melt_custom(auth, prefer, state, method, payload).await;
-            #[cfg(not(feature = "auth"))]
-            return post_melt_custom(prefer, state, method, payload).await;
-        }
-    };
-
-    if let Some(cached_response) = mint_state
-        .cache
-        .get::<MeltQuoteBolt11Response<QuoteId>>(&cache_key)
-        .await
-    {
-        return Ok(Json(cached_response));
-    }
-
-    #[cfg(feature = "auth")]
-    let result = post_melt_custom(auth, prefer, state, method, payload).await?;
-    #[cfg(not(feature = "auth"))]
-    let result = post_melt_custom(prefer, state, method, payload).await?;
-
-    // Cache the response
-    mint_state.cache.set(cache_key, result.deref()).await;
-
-    Ok(result)
 }

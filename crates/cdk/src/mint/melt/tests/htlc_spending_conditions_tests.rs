@@ -124,14 +124,13 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
     }
 
     let melt_request_preimage_only =
-        cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_preimage_only.into(), None);
+        cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_preimage_only, None);
 
     let result = melt_request_preimage_only.verify_spending_conditions();
     assert!(
         result.is_err(),
         "Should fail with only preimage (no signature)"
     );
-    println!("✓ Melting with ONLY preimage failed verification as expected");
 
     // Also verify the actual melt fails
     let melt_result = mint.melt(&melt_request_preimage_only).await;
@@ -139,7 +138,6 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
         melt_result.is_err(),
         "Actual melt should also fail with only preimage"
     );
-    println!("✓ Actual melt with ONLY preimage also failed as expected");
 
     // Step 8: Try to melt with only signature (should fail - preimage required)
     let mut proofs_signature_only = htlc_proofs.clone();
@@ -150,14 +148,13 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
     }
 
     let melt_request_signature_only =
-        cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_signature_only.into(), None);
+        cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_signature_only, None);
 
     let result = melt_request_signature_only.verify_spending_conditions();
     assert!(
         result.is_err(),
         "Should fail with only signature (no preimage)"
     );
-    println!("✓ Melting with ONLY signature failed verification as expected");
 
     // Also verify the actual melt fails
     let melt_result = mint.melt(&melt_request_signature_only).await;
@@ -165,7 +162,6 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
         melt_result.is_err(),
         "Actual melt should also fail with only signature"
     );
-    println!("✓ Actual melt with ONLY signature also failed as expected");
 
     // Step 9: Now melt with correct preimage + signature
     let mut proofs_both = htlc_proofs.clone();
@@ -176,16 +172,12 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
         proof.sign_p2pk(alice_secret.clone()).unwrap();
     }
 
-    let melt_request =
-        cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_both.into(), None);
+    let melt_request = cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_both, None);
 
     // Verify spending conditions pass
     melt_request.verify_spending_conditions().unwrap();
-    println!("✓ HTLC spending conditions verified successfully");
 
     // Perform the actual melt - this also verifies spending conditions internally
     let melt_response = mint.melt(&melt_request).await.unwrap();
-    println!("✓ Melt operation completed successfully!");
-    println!("  Quote state: {:?}", melt_response.state);
     assert_eq!(melt_response.quote, melt_quote.quote);
 }
