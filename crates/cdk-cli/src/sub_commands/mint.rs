@@ -57,7 +57,12 @@ pub async fn mint(
                     .amount
                     .ok_or(anyhow!("Amount must be defined"))?;
                 let quote = wallet
-                    .mint_bolt11_quote(Amount::from(amount), description)
+                    .mint_quote(
+                        PaymentMethod::BOLT11,
+                        Some(Amount::from(amount)),
+                        description,
+                        None,
+                    )
                     .await?;
 
                 println!(

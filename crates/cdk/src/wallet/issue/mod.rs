@@ -153,9 +153,9 @@ impl Wallet {
                     .client
                     .get_mint_quote_custom_status(method, &mint_quote.id)
                     .await?;
-                
+
                 mint_quote.state = mint_quote_response.state;
-                
+
                 // Update amounts based on state
                 match mint_quote_response.state {
                     MintQuoteState::Paid => {
