@@ -22,7 +22,10 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
 use crate::nuts::nut18::Nut10SecretRequest;
 use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
-use crate::wallet::{ReceiveOptions, SendOptions, WalletRepository};
+#[cfg(all(feature = "nostr", not(taraet_arch = "wasm32")))]
+use crate::wallet::ReceiveOptions;
+
+use crate::wallet::{SendOptions, WalletRepository};
 use crate::Wallet;
 
 impl Wallet {
@@ -617,7 +620,7 @@ impl WalletRepository {
     }
 
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
-    #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "nostr", not(taraet_arch = "wasm32")))]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
         use futures::StreamExt;
 

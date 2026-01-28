@@ -147,14 +147,10 @@ impl WalletRepository {
     ) -> Result<(), FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
 
-        let config = if let Some(count) = target_proof_count {
-            Some(
-                cdk::wallet::multi_mint_wallet::WalletConfig::new()
-                    .with_target_proof_count(count as usize),
-            )
-        } else {
-            None
-        };
+        let config = target_proof_count.map(|count| {
+            cdk::wallet::multi_mint_wallet::WalletConfig::new()
+                .with_target_proof_count(count as usize)
+        });
 
         let unit_enum = unit.unwrap_or(CurrencyUnit::Sat);
 
@@ -167,16 +163,9 @@ impl WalletRepository {
 
     /// Remove mint from WalletRepository
     pub async fn remove_mint(&self, mint_url: MintUrl) {
-        let url_str = mint_url.url.clone();
-        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into().unwrap_or_else(|_| {
-            // If conversion fails, we can't remove the mint, but we shouldn't panic
-            // This is a best-effort operation
-            cdk::mint_url::MintUrl::from_str(&url_str).unwrap_or_else(|_| {
-                // Last resort: create a dummy URL that won't match anything
-                cdk::mint_url::MintUrl::from_str("https://invalid.mint")
-                    .expect("Valid hardcoded URL")
-            })
-        });
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url
+            .try_into()
+            .unwrap_or(cdk::mint_url::MintUrl::from_str("").unwrap());
         self.inner.remove_wallet(&cdk_mint_url).await;
     }
 
