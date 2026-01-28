@@ -239,6 +239,9 @@ impl Wallet {
         }
 
         if mint_quote.amount_mintable() > Amount::ZERO {
+            // Save the updated quote state BEFORE minting so the saga can read the correct state
+            self.localstore.add_mint_quote(mint_quote.clone()).await?;
+
             self.mint(&mint_quote.id, SplitTarget::default(), None)
                 .await?;
             mint_quote = self

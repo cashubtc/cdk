@@ -114,12 +114,12 @@ async fn test_multi_mint_wallet_mint() {
                 quote_status.state
             );
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         quote_status = multi_mint_wallet
             .check_mint_quote(&mint_url, &mint_quote.id)
             .await
             .unwrap();
     }
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Call mint() directly (quote should be Paid at this point)
     let proofs = multi_mint_wallet
@@ -498,21 +498,7 @@ async fn test_multi_mint_wallet_check_all_mint_quotes() {
         .await
         .unwrap();
 
-    let timeout = tokio::time::Duration::from_secs(30);
-    let start = tokio::time::Instant::now();
-    while quote_status.state != MintQuoteState::Paid {
-        if start.elapsed() > timeout {
-            panic!(
-                "Timeout waiting for quote to be paid, state: {:?}",
-                quote_status.state
-            );
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        quote_status = multi_mint_wallet
-            .check_mint_quote(&mint_url, &mint_quote.id)
-            .await
-            .unwrap();
-    }
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Check all mint quotes - this should find the paid quote and mint
     let minted_amount = multi_mint_wallet
