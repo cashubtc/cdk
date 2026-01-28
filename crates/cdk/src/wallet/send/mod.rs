@@ -181,9 +181,6 @@ impl Wallet {
             send_fee: prepared_saga.send_fee(),
         };
 
-        // Drop the saga - state is persisted in DB
-        drop(prepared_saga);
-
         Ok(prepared)
     }
 
