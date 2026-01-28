@@ -1,4 +1,5 @@
 use anyhow::Result;
+use cdk_http_client::HttpClient;
 use cdk_integration_tests::get_mint_url_from_env;
 
 #[tokio::test]
@@ -7,10 +8,10 @@ async fn test_ldk_node_mint_info() -> Result<()> {
     let mint_url = get_mint_url_from_env();
 
     // Create an HTTP client
-    let client = reqwest::Client::new();
+    let client = HttpClient::new();
 
     // Make a request to the info endpoint
-    let response = client.get(format!("{}/v1/info", mint_url)).send().await?;
+    let response = client.get(&format!("{}/v1/info", mint_url)).send().await?;
 
     // Check that we got a successful response
     assert_eq!(response.status(), 200);
@@ -34,7 +35,7 @@ async fn test_ldk_node_mint_quote() -> Result<()> {
     let mint_url = get_mint_url_from_env();
 
     // Create an HTTP client
-    let client = reqwest::Client::new();
+    let client = HttpClient::new();
 
     // Create a mint quote request
     let quote_request = serde_json::json!({
@@ -44,7 +45,7 @@ async fn test_ldk_node_mint_quote() -> Result<()> {
 
     // Make a request to create a mint quote
     let response = client
-        .post(format!("{}/v1/mint/quote/bolt11", mint_url))
+        .post(&format!("{}/v1/mint/quote/bolt11", mint_url))
         .json(&quote_request)
         .send()
         .await?;
@@ -57,7 +58,7 @@ async fn test_ldk_node_mint_quote() -> Result<()> {
 
     // For now, we'll just check that we get a response (even if it's an error)
     // In a real test, we'd want to verify the quote was created correctly
-    assert!(status.is_success() || status.as_u16() < 500);
+    assert!(status < 300 || status < 500);
 
     Ok(())
 }

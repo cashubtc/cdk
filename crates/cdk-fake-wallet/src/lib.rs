@@ -105,10 +105,7 @@ impl ExchangeRateCache {
     /// Fetch fresh rate and update cache
     async fn fetch_fresh_rate(&self, currency: &CurrencyUnit) -> Result<f64, Error> {
         let url = "https://mempool.space/api/v1/prices";
-        let response = reqwest::get(url)
-            .await
-            .map_err(|_| Error::UnknownInvoiceAmount)?
-            .json::<MempoolPricesResponse>()
+        let response: MempoolPricesResponse = cdk_common::fetch(url)
             .await
             .map_err(|_| Error::UnknownInvoiceAmount)?;
 
