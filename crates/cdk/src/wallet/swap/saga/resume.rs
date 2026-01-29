@@ -14,7 +14,8 @@
 use cdk_common::wallet::{OperationData, SwapOperationData, SwapSagaState, WalletSaga};
 use tracing::instrument;
 
-use crate::nuts::State;
+use crate::dhke::hash_to_curve;
+use crate::nuts::{PreMintSecrets, State};
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
 use crate::{Error, Wallet};
@@ -74,68 +75,148 @@ impl Wallet {
     /// Check mint and either complete swap or compensate.
     ///
     /// Uses a replay-first strategy:
-    /// 1. Try to replay the original swap request (leverages NUT-19 caching)
-    /// 2. If replay fails, fall back to checking proof states and /restore
+    /// 1. Check if new proofs are already in the DB (Local Success)
+    /// 2. Try to replay the original swap request (leverages NUT-19 caching)
+    /// 3. If replay fails or inputs missing, check proof states and /restore
     async fn recover_or_compensate_swap(
         &self,
         saga_id: &uuid::Uuid,
         data: &SwapOperationData,
     ) -> Result<RecoveryAction, Error> {
+        // 1. Fast Path: Check if new proofs are already in the DB (Local Success)
+        if self.check_db_for_swap_success(saga_id, data).await? {
+            return Ok(RecoveryAction::Recovered);
+        }
+
         let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
 
-        if reserved_proofs.is_empty() {
+        // 2. Replay Path: Try to replay if we have inputs
+        // We can only replay if we have the inputs to construct the request
+        if !reserved_proofs.is_empty() {
+            if let Some(new_proofs) = self
+                .try_replay_swap_request(
+                    saga_id,
+                    "Swap",
+                    data.blinded_messages.as_deref(),
+                    data.counter_start,
+                    data.counter_end,
+                    &reserved_proofs,
+                )
+                .await?
+            {
+                let input_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
+                self.localstore.update_proofs(new_proofs, input_ys).await?;
+                self.localstore.delete_saga(saga_id).await?;
+                return Ok(RecoveryAction::Recovered);
+            }
+        }
+
+        // 3. State Check & Restore Path
+        // Determine if we should attempt restore. We restore if:
+        // A) Inputs are missing (assumed spent/lost)
+        // B) Inputs are present but marked SPENT at the mint
+        let should_restore = if reserved_proofs.is_empty() {
             tracing::warn!(
-                "No reserved proofs found for swap saga {} - cleaning up orphaned saga",
+                "Reserved proofs missing for swap saga {}, assuming spent and attempting restore.",
                 saga_id
             );
-            self.localstore.delete_saga(saga_id).await?;
-            return Ok(RecoveryAction::Recovered);
-        }
+            true
+        } else {
+            match self.are_proofs_spent(&reserved_proofs).await {
+                Ok(true) => {
+                    tracing::info!(
+                        "Swap saga {} - input proofs spent, recovering outputs via /restore",
+                        saga_id
+                    );
+                    true
+                }
+                Ok(false) => {
+                    tracing::info!(
+                        "Swap saga {} - input proofs not spent, compensating",
+                        saga_id
+                    );
+                    false
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Swap saga {} - can't check proof states ({}), skipping",
+                        saga_id,
+                        e
+                    );
+                    return Ok(RecoveryAction::Skipped);
+                }
+            }
+        };
 
-        if let Some(new_proofs) = self
-            .try_replay_swap_request(
-                saga_id,
-                "Swap",
-                data.blinded_messages.as_deref(),
-                data.counter_start,
-                data.counter_end,
-                &reserved_proofs,
-            )
-            .await?
-        {
-            let input_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
-            self.localstore.update_proofs(new_proofs, input_ys).await?;
-            self.localstore.delete_saga(saga_id).await?;
-            return Ok(RecoveryAction::Recovered);
+        if should_restore {
+            match self
+                .complete_swap_from_restore(saga_id, data, &reserved_proofs)
+                .await
+            {
+                Ok(_) => Ok(RecoveryAction::Recovered),
+                Err(e) => {
+                    if reserved_proofs.is_empty() {
+                        tracing::warn!(
+                            "Restore failed for orphaned saga {} ({}). Cleaning up.",
+                            saga_id,
+                            e
+                        );
+                        self.localstore.delete_saga(saga_id).await?;
+                        Ok(RecoveryAction::Recovered)
+                    } else {
+                        Err(e)
+                    }
+                }
+            }
+        } else {
+            // Inputs exist and are Unspent -> Compensate
+            self.compensate_swap(saga_id).await?;
+            Ok(RecoveryAction::Compensated)
         }
+    }
 
-        match self.are_proofs_spent(&reserved_proofs).await {
-            Ok(true) => {
-                tracing::info!(
-                    "Swap saga {} - input proofs spent, recovering outputs via /restore",
-                    saga_id
-                );
-                self.complete_swap_from_restore(saga_id, data, &reserved_proofs)
-                    .await?;
-                Ok(RecoveryAction::Recovered)
-            }
-            Ok(false) => {
-                tracing::info!(
-                    "Swap saga {} - input proofs not spent, compensating",
-                    saga_id
-                );
-                self.compensate_swap(saga_id).await?;
-                Ok(RecoveryAction::Compensated)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Swap saga {} - can't check proof states ({}), skipping",
-                    saga_id,
-                    e
-                );
-                Ok(RecoveryAction::Skipped)
+    /// Check if the new proofs for this swap are already in the database
+    async fn check_db_for_swap_success(
+        &self,
+        saga_id: &uuid::Uuid,
+        data: &SwapOperationData,
+    ) -> Result<bool, Error> {
+        if let (Some(blinded_messages), Some(start), Some(end)) = (
+            data.blinded_messages.as_deref(),
+            data.counter_start,
+            data.counter_end,
+        ) {
+            if !blinded_messages.is_empty() {
+                let keyset_id = blinded_messages[0].keyset_id;
+                // Attempt to restore secrets to derive expected Ys
+                if let Ok(premint_secrets) =
+                    PreMintSecrets::restore_batch(keyset_id, &self.seed, start, end)
+                {
+                    // Derive Ys from secrets
+                    let ys_result: Result<Vec<crate::nuts::PublicKey>, _> = premint_secrets
+                        .secrets
+                        .iter()
+                        .map(|p| hash_to_curve(&p.secret.to_bytes()))
+                        .collect();
+
+                    if let Ok(ys) = ys_result {
+                        // Check if these Ys exist in the DB
+                        if let Ok(existing_proofs) = self.localstore.get_proofs_by_ys(ys).await {
+                            // If we find any proofs, it means the swap succeeded and we saved them
+                            if !existing_proofs.is_empty() {
+                                tracing::info!(
+                                    "Swap saga {} - new proofs found in DB, cleaning up",
+                                    saga_id
+                                );
+                                self.localstore.delete_saga(saga_id).await?;
+                                return Ok(true);
+                            }
+                        }
+                    }
+                }
             }
         }
+        Ok(false)
     }
 
     /// Complete a swap by restoring outputs from the mint.
