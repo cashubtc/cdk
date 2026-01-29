@@ -357,11 +357,23 @@ impl WalletRepository {
         let key = WalletKey::new(mint_url.clone(), currency_unit.clone());
         let mut wallets = self.wallets.write().await;
 
-        if wallets.remove(&key).is_some() {
-            Ok(())
-        } else {
-            Err(Error::UnknownWallet(key))
+        if !wallets.contains_key(&key) {
+            return Err(Error::UnknownWallet(key));
         }
+
+        // Check if this is the last wallet for the mint
+        let is_last_wallet = wallets
+            .keys()
+            .filter(|k| k.mint_url == mint_url)
+            .count()
+            == 1;
+
+        if is_last_wallet {
+            self.localstore.remove_mint(mint_url).await?;
+        }
+
+        wallets.remove(&key);
+        Ok(())
     }
 
     /// Get all wallets
@@ -961,5 +973,50 @@ mod tests {
 
         let wallets = repo.get_wallets().await;
         assert_eq!(wallets.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_remove_wallet_persists_to_db() {
+        let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("Failed to create in-memory database"),
+        );
+        let seed = [0u8; 64];
+        let repo = WalletRepository::new(localstore.clone(), seed)
+            .await
+            .expect("Failed to create WalletRepository");
+
+        let mint_url: MintUrl = "https://mint.example.com".parse().unwrap();
+
+        // Add mint to DB manually to simulate existing state
+        localstore
+            .add_mint(mint_url.clone(), None)
+            .await
+            .unwrap();
+
+        // Verify mint is in DB
+        assert!(localstore
+            .get_mint(mint_url.clone())
+            .await
+            .unwrap()
+            .is_some());
+
+        // Create wallet in repo
+        repo.create_wallet(mint_url.clone(), CurrencyUnit::Sat, None)
+            .await
+            .expect("Failed to create wallet");
+
+        // Remove wallet
+        repo.remove_wallet(mint_url.clone(), CurrencyUnit::Sat)
+            .await
+            .expect("Failed to remove wallet");
+
+        // Verify mint is REMOVED from DB
+        assert!(localstore
+            .get_mint(mint_url.clone())
+            .await
+            .unwrap()
+            .is_none());
     }
 }

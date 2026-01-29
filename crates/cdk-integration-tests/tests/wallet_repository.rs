@@ -487,11 +487,16 @@ async fn test_wallet_repository_mint_management() {
         .await;
     assert!(wallet.is_ok(), "Should be able to get wallet for mint");
 
-    // Remove the wallet
-    wallet_repository
-        .remove_wallet(mint_url.clone(), CurrencyUnit::Sat)
-        .await
-        .unwrap();
+    // Get wallets for this mint
+    let mint_wallets = wallet_repository.get_wallets_for_mint(&mint_url).await;
+
+    // Remove all wallets for the mint
+    for wallet in mint_wallets {
+        wallet_repository
+            .remove_wallet(mint_url.clone(), wallet.unit.clone())
+            .await
+            .unwrap();
+    }
 
     // Now mint should not be in wallet
     assert!(
