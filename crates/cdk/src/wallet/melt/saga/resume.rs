@@ -257,5 +257,305 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
-    // Tests will be moved here from recovery.rs
+    use std::sync::Arc;
+
+    use cdk_common::nuts::{CurrencyUnit, State};
+    use cdk_common::wallet::{
+        MeltOperationData, MeltSagaState, OperationData, WalletSaga, WalletSagaState,
+    };
+    use cdk_common::{Amount, MeltQuoteBolt11Response, MeltQuoteState};
+
+    use crate::wallet::saga::test_utils::{
+        create_test_db, test_keyset_id, test_mint_url, test_proof_info,
+    };
+    use crate::wallet::test_utils::{
+        create_test_wallet_with_mock, test_melt_quote, MockMintConnector,
+    };
+
+    #[tokio::test]
+    async fn test_recover_melt_proofs_reserved() {
+        // Compensate: proofs released, quote released
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_id = format!("test_melt_quote_{}", uuid::Uuid::new_v4());
+
+        // Create and reserve proofs
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Store melt quote before reserving it
+        let mut melt_quote = test_melt_quote();
+        melt_quote.id = quote_id.clone();
+        db.add_melt_quote(melt_quote).await.unwrap();
+        db.reserve_melt_quote(&quote_id, &saga_id).await.unwrap();
+
+        // Create saga in ProofsReserved state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Melt(MeltSagaState::ProofsReserved),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Melt(MeltOperationData {
+                quote_id,
+                amount: Amount::from(100),
+                fee_reserve: Amount::from(10),
+                counter_start: None,
+                counter_end: None,
+                change_amount: None,
+                change_blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Create wallet and recover
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await
+            .unwrap();
+
+        // Verify compensation
+        assert!(result.is_some());
+        let finalized = result.unwrap();
+        assert_eq!(finalized.state(), MeltQuoteState::Unpaid);
+
+        // Proofs should be back to Unspent
+        let proofs = db
+            .get_proofs(None, None, Some(vec![State::Unspent]), None)
+            .await
+            .unwrap();
+        assert_eq!(proofs.len(), 1);
+
+        // Saga should be deleted
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_melt_melt_requested_quote_paid() {
+        // Mock: quote Paid → complete melt, get change
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_id = format!("test_melt_quote_{}", uuid::Uuid::new_v4());
+
+        // Create and reserve proofs
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Create saga in MeltRequested state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Melt(MeltSagaState::MeltRequested),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Melt(MeltOperationData {
+                quote_id: quote_id.clone(),
+                amount: Amount::from(100),
+                fee_reserve: Amount::from(10),
+                counter_start: None,
+                counter_end: None,
+                change_amount: None,
+                change_blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Store melt quote
+        let mut melt_quote = test_melt_quote();
+        melt_quote.id = quote_id.clone();
+        db.add_melt_quote(melt_quote).await.unwrap();
+
+        // Mock: quote is Paid
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+            quote: quote_id,
+            state: MeltQuoteState::Paid,
+            expiry: 9999999999,
+            fee_reserve: Amount::from(10),
+            amount: Amount::from(100),
+            request: Some("lnbc100...".to_string()),
+            payment_preimage: Some("preimage123".to_string()),
+            change: None,
+            unit: Some(CurrencyUnit::Sat),
+        }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await
+            .unwrap();
+
+        // Verify melt completed
+        assert!(result.is_some());
+        let finalized = result.unwrap();
+        assert_eq!(finalized.state(), MeltQuoteState::Paid);
+
+        // Proofs should be marked spent
+        let proofs = db
+            .get_proofs(None, None, Some(vec![State::Spent]), None)
+            .await
+            .unwrap();
+        assert_eq!(proofs.len(), 1);
+
+        // Saga should be deleted
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_melt_melt_requested_quote_unpaid() {
+        // Mock: quote Unpaid → compensate
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_id = format!("test_melt_quote_{}", uuid::Uuid::new_v4());
+
+        // Create and reserve proofs
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Create saga in MeltRequested state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Melt(MeltSagaState::MeltRequested),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Melt(MeltOperationData {
+                quote_id: quote_id.clone(),
+                amount: Amount::from(100),
+                fee_reserve: Amount::from(10),
+                counter_start: None,
+                counter_end: None,
+                change_amount: None,
+                change_blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Store melt quote
+        let mut melt_quote = test_melt_quote();
+        melt_quote.id = quote_id.clone();
+        db.add_melt_quote(melt_quote).await.unwrap();
+
+        // Mock: quote is Unpaid
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+            quote: quote_id,
+            state: MeltQuoteState::Unpaid,
+            expiry: 9999999999,
+            fee_reserve: Amount::from(10),
+            amount: Amount::from(100),
+            request: Some("lnbc100...".to_string()),
+            payment_preimage: None,
+            change: None,
+            unit: Some(CurrencyUnit::Sat),
+        }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await
+            .unwrap();
+
+        // Verify compensation
+        assert!(result.is_some());
+        let finalized = result.unwrap();
+        assert!(
+            finalized.state() == MeltQuoteState::Unpaid
+                || finalized.state() == MeltQuoteState::Failed
+        );
+
+        // Proofs should be released
+        let proofs = db
+            .get_proofs(None, None, Some(vec![State::Unspent]), None)
+            .await
+            .unwrap();
+        assert_eq!(proofs.len(), 1);
+
+        // Saga should be deleted
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_melt_melt_requested_quote_pending() {
+        // Mock: quote Pending → skip
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_id = format!("test_melt_quote_{}", uuid::Uuid::new_v4());
+
+        // Create and reserve proofs
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Create saga in MeltRequested state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Melt(MeltSagaState::MeltRequested),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Melt(MeltOperationData {
+                quote_id: quote_id.clone(),
+                amount: Amount::from(100),
+                fee_reserve: Amount::from(10),
+                counter_start: None,
+                counter_end: None,
+                change_amount: None,
+                change_blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Store melt quote
+        let mut melt_quote = test_melt_quote();
+        melt_quote.id = quote_id.clone();
+        db.add_melt_quote(melt_quote).await.unwrap();
+
+        // Mock: quote is Pending (no payment_preimage)
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+            quote: quote_id,
+            state: MeltQuoteState::Pending,
+            expiry: 9999999999,
+            fee_reserve: Amount::from(10),
+            amount: Amount::from(100),
+            request: Some("lnbc100...".to_string()),
+            payment_preimage: None,
+            change: None,
+            unit: Some(CurrencyUnit::Sat),
+        }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await
+            .unwrap();
+
+        // Should skip (None returned for pending)
+        assert!(result.is_none());
+
+        // Proofs should still be reserved
+        let reserved = db.get_reserved_proofs(&saga_id).await.unwrap();
+        assert_eq!(reserved.len(), 1);
+
+        // Saga should still exist
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+    }
 }

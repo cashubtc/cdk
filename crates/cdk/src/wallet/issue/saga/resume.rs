@@ -359,3 +359,185 @@ impl Wallet {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk_common::nuts::{CurrencyUnit, RestoreResponse};
+    use cdk_common::wallet::{
+        IssueSagaState, MintOperationData, OperationData, WalletSaga, WalletSagaState,
+    };
+    use cdk_common::Amount;
+
+    use crate::wallet::recovery::RecoveryAction;
+    use crate::wallet::saga::test_utils::{create_test_db, test_mint_url};
+    use crate::wallet::test_utils::{
+        create_test_wallet_with_mock, test_mint_quote, MockMintConnector,
+    };
+
+    #[tokio::test]
+    async fn test_recover_issue_secrets_prepared() {
+        // Compensate: quote released
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_id = format!("test_mint_quote_{}", uuid::Uuid::new_v4());
+
+        // Store mint quote before reserving it
+        let mut mint_quote = test_mint_quote(mint_url.clone());
+        mint_quote.id = quote_id.clone(); // Use our specific quote ID
+        db.add_mint_quote(mint_quote).await.unwrap();
+
+        // Reserve mint quote
+        db.reserve_mint_quote(&quote_id, &saga_id).await.unwrap();
+
+        // Create saga in SecretsPrepared state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Issue(IssueSagaState::SecretsPrepared),
+            Amount::from(1000),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Mint(MintOperationData {
+                quote_id: quote_id.clone(),
+                amount: Amount::from(1000),
+                blinded_messages: None,
+                counter_start: None,
+                counter_end: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Create wallet and recover
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_issue_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await;
+
+        // Verify compensation
+        assert!(result.is_ok());
+        let recovery_action = result.unwrap();
+        assert_eq!(recovery_action, RecoveryAction::Compensated);
+
+        // Saga should be deleted
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_issue_mint_requested_replay_succeeds() {
+        // Mock: post_mint succeeds → recovered
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_id = format!("test_mint_quote_{}", uuid::Uuid::new_v4());
+
+        // Create saga in MintRequested state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Issue(IssueSagaState::MintRequested),
+            Amount::from(1000),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Mint(MintOperationData {
+                quote_id: quote_id.clone(),
+                amount: Amount::from(1000),
+                blinded_messages: Some(vec![]), // Empty for simplicity
+                counter_start: Some(0),
+                counter_end: Some(10),
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Store mint quote
+        let mint_quote = test_mint_quote(mint_url.clone());
+        db.add_mint_quote(mint_quote).await.unwrap();
+
+        // Mock: post_mint succeeds
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_post_mint_response(Ok(crate::nuts::MintResponse { signatures: vec![] }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_issue_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await;
+
+        // Verify recovery
+        assert!(result.is_ok());
+        let recovery_action = result.unwrap();
+
+        // With empty blinded_messages, falls back to restore
+        // With empty restore response, saga deleted as Compensated
+        assert_eq!(recovery_action, RecoveryAction::Compensated);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+
+        // No proofs created
+        let proofs = db.get_proofs(None, None, None, None).await.unwrap();
+        assert!(proofs.is_empty());
+
+        // No transaction recorded for compensated issue
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert!(transactions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_recover_issue_mint_requested_restore_succeeds() {
+        // Mock: post_mint fails, restore succeeds → recovered
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_id = format!("test_mint_quote_{}", uuid::Uuid::new_v4());
+
+        // Create saga in MintRequested state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Issue(IssueSagaState::MintRequested),
+            Amount::from(1000),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Mint(MintOperationData {
+                quote_id: quote_id.clone(),
+                amount: Amount::from(1000),
+                blinded_messages: Some(vec![]),
+                counter_start: Some(0),
+                counter_end: Some(10),
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Store mint quote
+        let mint_quote = test_mint_quote(mint_url.clone());
+        db.add_mint_quote(mint_quote).await.unwrap();
+
+        // Mock: post_mint fails, restore returns proofs
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_post_mint_response(Err(crate::Error::Custom("Mint failed".to_string())));
+        mock_client._set_restore_response(Ok(RestoreResponse {
+            signatures: vec![],
+            outputs: vec![],
+            promises: None,
+        }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_issue_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await;
+
+        // Verify recovery
+        assert!(result.is_ok());
+        let recovery_action = result.unwrap();
+
+        // post_mint fails, restore returns empty -> Compensated
+        assert_eq!(recovery_action, RecoveryAction::Compensated);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+
+        // No proofs
+        let proofs = db.get_proofs(None, None, None, None).await.unwrap();
+        assert!(proofs.is_empty());
+
+        // No transaction for compensated issue
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert!(transactions.is_empty());
+    }
+}

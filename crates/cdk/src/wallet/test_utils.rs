@@ -131,6 +131,10 @@ pub struct MockMintConnector {
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
     /// Response for get_melt_quote_status calls
     pub melt_quote_status_response: Mutex<Option<Result<MeltQuoteBolt11Response<String>, Error>>>,
+    /// Response for post_mint calls
+    pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
+    /// Response for post_swap calls
+    pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
 }
 
 impl MockMintConnector {
@@ -139,6 +143,8 @@ impl MockMintConnector {
             check_state_response: Mutex::new(None),
             restore_response: Mutex::new(None),
             melt_quote_status_response: Mutex::new(None),
+            post_mint_response: Mutex::new(None),
+            post_swap_response: Mutex::new(None),
         }
     }
 
@@ -155,6 +161,14 @@ impl MockMintConnector {
         response: Result<MeltQuoteBolt11Response<String>, Error>,
     ) {
         *self.melt_quote_status_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_post_mint_response(&self, response: Result<MintResponse, Error>) {
+        *self.post_mint_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_post_swap_response(&self, response: Result<SwapResponse, Error>) {
+        *self.post_swap_response.lock().unwrap() = Some(response);
     }
 }
 
@@ -211,7 +225,11 @@ impl MintConnector for MockMintConnector {
         _method: &PaymentMethod,
         _request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
-        unimplemented!()
+        self.post_mint_response
+            .lock()
+            .unwrap()
+            .take()
+            .expect("MockMintConnector: post_mint called without configured response")
     }
 
     async fn post_melt_quote(
@@ -241,7 +259,11 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn post_swap(&self, _request: SwapRequest) -> Result<SwapResponse, Error> {
-        unimplemented!()
+        self.post_swap_response
+            .lock()
+            .unwrap()
+            .take()
+            .expect("MockMintConnector: post_swap called without configured response")
     }
 
     async fn get_mint_info(&self) -> Result<crate::nuts::MintInfo, Error> {

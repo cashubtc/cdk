@@ -188,5 +188,205 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
-    // Tests will be moved here from recovery.rs
+    use std::sync::Arc;
+
+    use cdk_common::nuts::{CheckStateResponse, CurrencyUnit, ProofState, RestoreResponse, State};
+    use cdk_common::wallet::{
+        OperationData, ReceiveOperationData, ReceiveSagaState, WalletSaga, WalletSagaState,
+    };
+    use cdk_common::Amount;
+
+    use crate::wallet::recovery::RecoveryAction;
+    use crate::wallet::saga::test_utils::{
+        create_test_db, test_keyset_id, test_mint_url, test_proof_info,
+    };
+    use crate::wallet::test_utils::{create_test_wallet_with_mock, MockMintConnector};
+
+    #[tokio::test]
+    async fn test_recover_receive_proofs_pending() {
+        // Compensate: remove pending proofs
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        // Create proofs in Unspent state and reserve them
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Create saga in ProofsPending state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Receive(ReceiveSagaState::ProofsPending),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Receive(ReceiveOperationData {
+                token: Some("test_token".to_string()),
+                counter_start: None,
+                counter_end: None,
+                amount: Some(Amount::from(100)),
+                blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Create wallet and recover
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_receive_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await;
+
+        // Verify compensation
+        assert!(result.is_ok());
+        let recovery_action = result.unwrap();
+        assert_eq!(recovery_action, RecoveryAction::Compensated);
+
+        // Pending proofs should be removed
+        let proofs = db.get_proofs(None, None, None, None).await.unwrap();
+        assert!(proofs.is_empty());
+
+        // Saga should be deleted
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_receive_swap_requested_replay_succeeds() {
+        // Mock: post_swap succeeds → recovered
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        // Create proofs in Unspent state and reserve them
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Create saga in SwapRequested state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Receive(ReceiveSagaState::SwapRequested),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Receive(ReceiveOperationData {
+                token: Some("test_token".to_string()),
+                counter_start: Some(0),
+                counter_end: Some(10),
+                amount: Some(Amount::from(100)),
+                blinded_messages: Some(vec![]), // Empty for simplicity
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Mock: check_state returns Unspent (swap hasn't happened yet)
+        // and post_swap succeeds
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState {
+                y: proof_y,
+                state: State::Unspent, // Not spent yet
+                witness: None,
+            }],
+        }));
+        mock_client.set_post_swap_response(Ok(crate::nuts::SwapResponse { signatures: vec![] }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_receive_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await;
+
+        // Verify recovery
+        assert!(result.is_ok());
+        let recovery_action = result.unwrap();
+        assert_eq!(recovery_action, RecoveryAction::Compensated);
+
+        // Saga should be deleted
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+
+        // Proof should be removed (compensation deletes pending proofs)
+        let proofs = db.get_proofs(None, None, None, None).await.unwrap();
+        assert!(proofs.is_empty());
+
+        // No transactions should be recorded
+        assert!(db
+            .list_transactions(None, None, None)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_recover_receive_swap_requested_proofs_spent() {
+        // Mock: check_state returns Spent, restore succeeds → recovered
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        // Create proofs in Unspent state and reserve them
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        // Create saga in SwapRequested state
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Receive(ReceiveSagaState::SwapRequested),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Receive(ReceiveOperationData {
+                token: Some("test_token".to_string()),
+                counter_start: Some(0),
+                counter_end: Some(10),
+                amount: Some(Amount::from(100)),
+                blinded_messages: Some(vec![]),
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        // Mock: check_state returns Spent (swap happened at mint)
+        // and restore returns new proofs
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState {
+                y: proof_y,
+                state: State::Spent, // Spent at mint
+                witness: None,
+            }],
+        }));
+        mock_client._set_restore_response(Ok(RestoreResponse {
+            signatures: vec![],
+            outputs: vec![],
+            promises: None,
+        }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_receive_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await;
+
+        // Should recover via restore
+        assert!(result.is_ok());
+        let recovery_action = result.unwrap();
+        assert_eq!(recovery_action, RecoveryAction::Recovered);
+
+        // Saga should be deleted
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+
+        // Proof marked spent/removed
+        let proofs = db.get_proofs(None, None, None, None).await.unwrap();
+        assert!(proofs.is_empty());
+        let reserved = db.get_reserved_proofs(&saga_id).await.unwrap();
+        assert!(reserved.is_empty());
+
+        // Note: Receive saga does not record transactions
+    }
 }
