@@ -696,7 +696,7 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
 
     // Get the wallet from the repository to call methods directly
     let wallet = multi_mint_wallet
-        .get_wallet(&mint_url)
+        .get_wallet(&mint_url, &CurrencyUnit::Sat)
         .await
         .expect("failed to get wallet");
 
