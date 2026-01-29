@@ -251,7 +251,7 @@ impl<'a> MintSaga<'a, Initial> {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<MintSaga<'a, Prepared>, Error> {
-        let quote_info = self
+        let mut quote_info = self
             .wallet
             .localstore
             .get_mint_quote(quote_id)
@@ -265,7 +265,22 @@ impl<'a> MintSaga<'a, Initial> {
             quote_info.payment_method
         );
 
-        let amount = quote_info.amount_mintable();
+        let mut amount = quote_info.amount_mintable();
+
+        if amount == Amount::ZERO {
+            self.wallet
+                .inner_check_mint_quote_status(quote_info.clone())
+                .await?;
+
+            quote_info = self
+                .wallet
+                .localstore
+                .get_mint_quote(quote_id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+
+            amount = quote_info.amount_mintable();
+        }
 
         let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
         let fee_and_amounts = self

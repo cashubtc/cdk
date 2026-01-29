@@ -25,7 +25,9 @@ use cdk::nuts::{
     NotificationPayload, PaymentMethod, PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
-use cdk_integration_tests::{get_mint_url_from_env, get_second_mint_url_from_env, get_test_client};
+use cdk_integration_tests::{
+    attempt_manual_mint, get_mint_url_from_env, get_second_mint_url_from_env, get_test_client,
+};
 use cdk_sqlite::wallet::{self, memory};
 use futures::join;
 use tokio::time::timeout;
@@ -450,11 +452,16 @@ async fn test_attempt_to_mint_unpaid() {
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await;
+    let response = attempt_manual_mint(
+        &wallet,
+        &get_mint_url_from_env(),
+        &mint_quote,
+        mint_amount,
+        PaymentMethod::Known(KnownMethod::Bolt11),
+    )
+    .await;
 
-    match proofs {
+    match response {
         Err(err) => {
             if !matches!(err, cdk::Error::UnpaidQuote) {
                 panic!("Wrong error quote should be unpaid: {}", err);
@@ -474,11 +481,16 @@ async fn test_attempt_to_mint_unpaid() {
 
     assert!(state.state == MintQuoteState::Unpaid);
 
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await;
+    let response = attempt_manual_mint(
+        &wallet,
+        &get_mint_url_from_env(),
+        &mint_quote,
+        mint_amount,
+        PaymentMethod::Known(KnownMethod::Bolt11),
+    )
+    .await;
 
-    match proofs {
+    match response {
         Err(err) => {
             if !matches!(err, cdk::Error::UnpaidQuote) {
                 panic!("Wrong error quote should be unpaid: {}", err);

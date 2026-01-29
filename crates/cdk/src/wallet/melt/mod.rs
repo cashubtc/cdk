@@ -11,6 +11,7 @@
 //! ```rust,no_run
 //! # async fn example(wallet: &cdk::wallet::Wallet) -> anyhow::Result<()> {
 //! use std::collections::HashMap;
+//!
 //! use cdk::nuts::PaymentMethod;
 //! let quote = wallet
 //!     .melt_quote(PaymentMethod::BOLT11, "lnbc...", None, None)
