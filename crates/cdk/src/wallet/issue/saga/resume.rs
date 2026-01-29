@@ -27,15 +27,11 @@ use crate::wallet::saga::CompensatingAction;
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
-    /// Resume an incomplete issue (mint) saga after crash recovery.
+    /// Resume an incomplete issue saga after crash recovery.
     ///
-    /// # Recovery Logic
-    ///
-    /// - **SecretsPrepared**: Secrets created but mint request not sent.
-    ///   Safe to compensate (no proofs to revert, just release quote and delete saga).
-    ///
-    /// - **MintRequested**: Mint request was sent. Try to recover outputs
-    ///   using stored blinded messages.
+    /// Recovery depends on state:
+    /// - SecretsPrepared: No mint request sent, safe to compensate.
+    /// - MintRequested: Mint request sent, attempt to recover outputs.
     #[instrument(skip(self, saga))]
     pub async fn resume_issue_saga(&self, saga: &WalletSaga) -> Result<RecoveryAction, Error> {
         let state = match &saga.state {
@@ -82,16 +78,13 @@ impl Wallet {
     }
 
     /// Complete an issue by first trying replay, then falling back to restore.
-    ///
-    /// Uses a replay-first strategy:
-    /// 1. Try to replay the original mint request (leverages NUT-19 caching)
-    /// 2. If replay fails, fall back to /restore
+    /// Replay leverages NUT-19 caching.
     async fn complete_issue_from_restore(
         &self,
         saga_id: &uuid::Uuid,
         data: &MintOperationData,
     ) -> Result<RecoveryAction, Error> {
-        // Step 1: Try to replay the mint request
+        // Try replay first
         if let Some(proofs) = self.try_replay_mint(saga_id, data).await? {
             // Replay succeeded - save proofs and clean up
             self.localstore
@@ -114,7 +107,7 @@ impl Wallet {
             return Ok(RecoveryAction::Recovered);
         }
 
-        // Step 2: Replay failed, fall back to /restore
+        // Replay failed, fall back to /restore
         let new_proofs = self
             .restore_outputs(
                 saga_id,
@@ -161,9 +154,7 @@ impl Wallet {
     }
 
     /// Record a transaction for recovered issue proofs.
-    ///
-    /// This is called after successfully recovering proofs via replay or restore.
-    /// If the quote is not found, the transaction is skipped (recovery still succeeds).
+    /// Skipped if quote not found (recovery still succeeds).
     async fn record_recovered_issue_transaction(
         &self,
         saga_id: &uuid::Uuid,

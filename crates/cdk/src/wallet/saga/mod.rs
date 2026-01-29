@@ -25,9 +25,7 @@ use crate::nuts::{PublicKey, State};
 use crate::Error;
 
 /// Trait for compensating actions in the saga pattern.
-///
-/// Compensating actions are registered as steps complete and executed in reverse
-/// order (LIFO) if the saga fails. Each action should be idempotent.
+/// Actions are executed in reverse order (LIFO) during rollback.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub(crate) trait CompensatingAction: Send + Sync {
@@ -38,10 +36,7 @@ pub(crate) trait CompensatingAction: Send + Sync {
     fn name(&self) -> &'static str;
 }
 
-/// A queue of compensating actions for saga rollback.
-///
-/// Actions are stored in LIFO order (most recent first) and executed
-/// in that order during compensation.
+/// Queue of compensating actions for saga rollback.
 pub(crate) type Compensations = VecDeque<Box<dyn CompensatingAction>>;
 
 /// Create a new empty compensations queue
@@ -49,10 +44,8 @@ pub(crate) fn new_compensations() -> Compensations {
     VecDeque::new()
 }
 
-/// Execute all compensating actions in the queue.
-///
-/// Actions are executed in LIFO order (most recent first).
-/// Errors during compensation are logged but don't stop the process.
+/// Execute all compensating actions in LIFO order.
+/// Errors are logged but execution continues.
 pub(crate) async fn execute_compensations(compensations: &mut Compensations) -> Result<(), Error> {
     if compensations.is_empty() {
         return Ok(());
@@ -75,8 +68,6 @@ pub(crate) async fn execute_compensations(compensations: &mut Compensations) -> 
 }
 
 /// Clear all compensating actions from the queue.
-///
-/// Called when an operation completes successfully.
 pub(crate) async fn clear_compensations(compensations: &mut Compensations) {
     compensations.clear();
 }
@@ -89,22 +80,13 @@ pub(crate) async fn add_compensation(
     compensations.push_front(action);
 }
 
-// ============================================================================
 // Shared Compensation Actions
-// ============================================================================
 
-/// Compensation action to revert proof reservation.
-///
-/// This compensation is used when a saga fails after proofs have been reserved.
-/// It sets the proofs back to Unspent state and deletes the saga record.
-///
-/// Used by: send, melt, and swap sagas.
+/// Reverts proof reservation on saga failure.
+/// Sets proofs back to Unspent and deletes the saga record.
 pub(crate) struct RevertProofReservation {
-    /// Database reference
     pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
-    /// Y values (public keys) of the reserved proofs
     pub proof_ys: Vec<PublicKey>,
-    /// Saga ID for cleanup
     pub saga_id: uuid::Uuid,
 }
 

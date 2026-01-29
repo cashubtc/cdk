@@ -1,8 +1,7 @@
 //! State types for the Receive saga.
 //!
-//! Each state is a distinct type that holds the data relevant to that stage
-//! of the receive operation. The type state pattern ensures that only valid
-//! operations are available at each stage.
+//! Each state is a distinct type holding data relevant to that stage.
+//! The typestate pattern ensures only valid operations are available at each stage.
 //!
 //! # Type State Flow
 //!
@@ -20,8 +19,7 @@ use crate::wallet::receive::ReceiveOptions;
 use crate::Amount;
 
 /// Initial state - operation ID assigned but no work done yet.
-///
-/// The receive saga starts in this state. Only `prepare()` is available.
+/// Only `prepare()` is available in this state.
 #[derive(Debug)]
 pub struct Initial {
     /// Unique operation identifier for tracking and crash recovery
@@ -29,9 +27,7 @@ pub struct Initial {
 }
 
 /// Prepared state - token has been parsed and proofs extracted.
-///
-/// After successful preparation, the saga transitions to this state.
-/// Methods available: `execute()`
+/// `execute()` is available in this state.
 #[derive(Debug)]
 pub struct Prepared {
     /// Unique operation identifier
@@ -51,9 +47,7 @@ pub struct Prepared {
 }
 
 /// Finalized state - receive operation completed successfully.
-///
-/// After successful execution, the saga transitions to this state.
-/// The received amount can be retrieved and the saga is complete.
+/// The received amount can be retrieved from this state.
 #[derive(Debug)]
 pub struct Finalized {
     /// Total amount received (after fees)

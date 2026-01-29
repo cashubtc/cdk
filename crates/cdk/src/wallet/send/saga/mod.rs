@@ -115,16 +115,10 @@ impl<'a> SendSaga<'a, Initial> {
 
     /// Prepare the send operation by selecting and reserving proofs.
     ///
-    /// This is the first step in the saga. It:
-    /// 1. Refreshes keysets if online mode
-    /// 2. Selects proofs for the requested amount
-    /// 3. Reserves the selected proofs (sets state to Reserved)
-    /// 4. Splits proofs between direct send and swap
+    /// Refreshes keysets (if online), selects and reserves proofs for the
+    /// requested amount, and splits proofs between direct send and swap.
     ///
-    /// # Compensation
-    ///
-    /// Registers a compensation action that will revert proof reservation
-    /// if later steps fail.
+    /// Registers compensation to revert proof reservation on failure.
     #[instrument(skip_all)]
     pub async fn prepare(
         self,
@@ -357,8 +351,7 @@ impl<'a> SendSaga<'a, Initial> {
 impl<'a> SendSaga<'a, Prepared> {
     /// Create a new send saga directly in the Prepared state.
     ///
-    /// This constructor is used by `confirm_send` to reconstruct
-    /// a saga from stored state/cache when confirming an already-prepared send.
+    /// Used when reconstructing a saga from stored state for confirmation.
     #[allow(clippy::too_many_arguments)]
     pub fn from_prepared(
         wallet: &'a Wallet,
@@ -424,12 +417,8 @@ impl<'a> SendSaga<'a, Prepared> {
 
     /// Confirm the prepared send and create a token.
     ///
-    /// This method:
-    /// 1. Updates the saga state to TokenCreated
-    /// 2. Performs any necessary swaps
-    /// 3. Marks proofs as pending spent
-    /// 4. Creates the token
-    /// 5. Persists the saga in TokenCreated state (pending send)
+    /// Performs necessary swaps, marks proofs as pending spent, creates the
+    /// token, and persists the saga in TokenCreated state.
     #[instrument(skip(self), err)]
     pub async fn confirm(
         mut self,
@@ -607,15 +596,13 @@ impl<'a> SendSaga<'a, Prepared> {
 }
 
 impl<'a> SendSaga<'a, TokenCreated> {
-    /// Revoke the sent token (if not yet claimed by recipient).
+    /// Revoke the sent token if not yet claimed by recipient.
     ///
-    /// This attempts to swap the proofs back to the wallet.
-    /// If successful, the saga is completed (deleted).
+    /// Swaps proofs back to the wallet. On success, the saga is completed.
     pub async fn revoke(self) -> Result<Amount, Error> {
         tracing::info!("Revoking send operation {}", self.state_data.operation_id);
 
-        // 1. Check if proofs are still Unspent/PendingSpent according to Mint
-        //    (We skip local check because we want to force a check with the mint)
+        // Check with mint if proofs are still unspent. Skip local check to force mint validation.
         let states = self
             .wallet
             .check_proofs_spent(self.state_data.proofs.clone())
@@ -629,8 +616,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
             return Err(Error::Custom("Token already claimed".to_string()));
         }
 
-        // 2. Lock the saga by transitioning to RollingBack state
-        //    This prevents the proof watcher from thinking the swap is a claim by the recipient
+        // Lock saga in RollingBack state to prevent proof watcher from treating swap as recipient claim
         let operation_id = self.state_data.operation_id;
         let mut saga = self.state_data.saga.clone();
         saga.update_state(WalletSagaState::Send(SendSagaState::RollingBack));
@@ -642,8 +628,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
             return Err(Error::ConcurrentUpdate);
         }
 
-        // 3. Attempt to swap the proofs back to ourselves
-        //    We use the swap method which handles new secret generation
+        // Swap proofs back to wallet with fresh secrets
         let swap_result = self
             .wallet
             .swap(
@@ -660,8 +645,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
                 let amount_recovered = match swapped_proofs {
                     Some(proofs) => proofs.total_amount()?,
                     None => {
-                        // If swap returned None, it means all proofs were kept (refreshed)
-                        // The recovered amount is the input amount minus swap fees
+                        // All proofs kept (refreshed). Recovered amount is input minus fees.
                         let input_amount = self.state_data.proofs.total_amount()?;
                         let fee = self
                             .wallet
@@ -679,9 +663,8 @@ impl<'a> SendSaga<'a, TokenCreated> {
             Err(e) => {
                 tracing::error!("Revoke swap failed: {}. Reverting lock.", e);
 
-                // 6. On failure, we MUST revert the state to TokenCreated
-                //    and mark proofs as PendingSpent so monitoring can resume.
-                //    We fetch fresh version from DB since our earlier update succeeded.
+                // Revert state to TokenCreated and mark proofs as PendingSpent to resume monitoring.
+                // Fetch fresh saga from DB since earlier update succeeded.
                 let current_saga = self
                     .wallet
                     .localstore
@@ -706,7 +689,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
 
     /// Check the status of the sent token.
     ///
-    /// If the token has been claimed (spent), the saga is finalized and removed.
+    /// Finalizes and removes the saga if the token has been claimed.
     /// Returns true if claimed, false if still pending.
     pub async fn check_status(self) -> Result<bool, Error> {
         let states = self

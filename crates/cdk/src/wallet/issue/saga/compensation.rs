@@ -20,9 +20,7 @@ use crate::wallet::saga::CompensatingAction;
 use crate::Error;
 
 /// Compensation action to release a mint quote reservation.
-///
-/// This compensation is used when mint fails after the quote has been reserved
-/// but before it has been used. It clears the used_by_operation field on the quote.
+/// Clears the used_by_operation field on the quote.
 pub struct ReleaseMintQuote {
     /// Database reference
     pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
@@ -53,15 +51,9 @@ impl CompensatingAction for ReleaseMintQuote {
     }
 }
 
-/// Placeholder compensation action for mint operations.
-///
-/// Currently, mint operations don't require compensation because:
-/// - Counter increments are intentionally not reversed
-/// - No proofs are stored until after successful mint
-/// - Quote state is not modified until after successful mint
-///
-/// This struct exists for consistency with other sagas and for
-/// potential future use if mint recovery logic changes.
+/// Compensation action for mint operations.
+/// Deletes the saga on failure. Counter increments are intentionally not reversed
+/// as they don't cause data loss and secrets can be recovered via restore.
 pub struct MintCompensation {
     /// Database reference
     pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,

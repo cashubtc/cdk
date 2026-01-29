@@ -117,11 +117,7 @@ impl<'a> MeltSaga<'a, Initial> {
 
     /// Prepare the melt operation by selecting and reserving proofs.
     ///
-    /// This is the first step in the saga. It:
-    /// 1. Loads the quote from the database
-    /// 2. Selects proofs for the required amount
-    /// 3. Reserves the selected proofs (sets state to Reserved)
-    /// 4. Determines if a swap is needed
+    /// Loads the quote, selects and reserves proofs for the required amount.
     ///
     /// # Compensation
     ///
@@ -306,13 +302,8 @@ impl<'a> MeltSaga<'a, Initial> {
 
     /// Prepare the melt operation with specific proofs (no automatic selection).
     ///
-    /// Unlike `prepare()`, this method uses the provided proofs directly without
-    /// automatic proof selection. The caller is responsible for ensuring the proofs
-    /// are sufficient to cover the quote amount plus fee reserve.
-    ///
-    /// This is useful when:
-    /// - You have specific proofs you want to use (e.g., from a token)
-    /// - The proofs are external (not in the wallet's database)
+    /// Uses the provided proofs directly without automatic proof selection.
+    /// The caller must ensure the proofs cover the quote amount plus fee reserve.
     ///
     /// # Compensation
     ///
@@ -482,11 +473,7 @@ impl<'a> MeltSaga<'a, Prepared> {
 
     /// Build the melt request with options and transition to MeltRequested state.
     ///
-    /// This method:
-    /// 1. Performs swap if needed (unless skip_swap is true)
-    /// 2. Sets proofs to Pending state
-    /// 3. Creates pre-mint secrets for change
-    /// 4. Updates saga state to MeltRequested
+    /// Performs swap if needed, sets proofs to Pending, creates pre-mint secrets for change.
     ///
     /// # Options
     ///
@@ -667,8 +654,7 @@ impl<'a> MeltSaga<'a, Prepared> {
 
     /// Execute compensations and cancel the melt.
     async fn compensate(self) {
-        // We move compensations out of self so we can iterate it while owning self
-        // Note: self is already owned, so we can just move fields out
+        // Move compensations out of self to iterate while owning self
         let mut compensations = self.compensations;
         while let Some(action) = compensations.pop_front() {
             if let Err(e) = action.execute().await {
@@ -717,11 +703,7 @@ impl std::fmt::Debug for MeltSaga<'_, Prepared> {
 impl<'a> MeltSaga<'a, MeltRequested> {
     /// Execute the melt request.
     ///
-    /// This method:
-    /// 1. Sends the melt request to the mint
-    /// 2. Handles the response (success, pending, or failure)
-    /// 3. Finalizes on success or updates state for pending
-    /// 4. Executes compensations on failure
+    /// Sends the melt request to the mint and handles the response.
     ///
     /// # Returns
     ///

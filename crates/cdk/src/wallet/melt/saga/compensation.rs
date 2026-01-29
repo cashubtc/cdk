@@ -16,9 +16,6 @@ pub(crate) use crate::wallet::saga::RevertProofReservation;
 use crate::Error;
 
 /// Compensation action to release a melt quote reservation.
-///
-/// This compensation is used when melt fails after the quote has been reserved
-/// but before it has been used. It clears the used_by_operation field on the quote.
 pub struct ReleaseMeltQuote {
     /// Database reference
     pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,

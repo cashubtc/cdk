@@ -50,11 +50,7 @@ use crate::{Amount, Error, Wallet};
 pub(crate) mod resume;
 pub(crate) mod state;
 
-/// Saga pattern implementation for swap operations.
-///
-/// Uses the typestate pattern to enforce valid state transitions at compile-time.
-/// Each state (Initial, Prepared, Finalized) is a distinct type, and operations
-/// are only available on the appropriate type.
+/// Swap saga using typestate pattern for compile-time state transition safety.
 pub(crate) struct SwapSaga<'a, S> {
     /// Wallet reference
     wallet: &'a Wallet,
@@ -78,16 +74,13 @@ impl<'a> SwapSaga<'a, Initial> {
 
     /// Prepare the swap operation.
     ///
-    /// This is the first step in the saga. It:
-    /// 1. Gets the active keyset
-    /// 2. Calculates fees
-    /// 3. Creates the swap request (which reserves proofs and increments counter)
-    /// 4. Persists the saga state for crash recovery
+    /// Gets the active keyset, calculates fees, creates the swap request
+    /// (reserving proofs and incrementing counter), and persists saga state
+    /// for crash recovery.
     ///
     /// # Compensation
     ///
-    /// Registers a compensation action that will revert proof reservation
-    /// and delete the saga if later steps fail.
+    /// On failure, reverts proof reservation and deletes the saga.
     #[instrument(skip_all)]
     pub async fn prepare(
         mut self,
@@ -185,14 +178,8 @@ impl<'a> SwapSaga<'a, Initial> {
 impl<'a> SwapSaga<'a, Prepared> {
     /// Execute the swap operation.
     ///
-    /// This completes the swap by:
-    /// 1. Updating saga state to SwapRequested (for crash recovery)
-    /// 2. Posting the swap request to the mint
-    /// 3. Constructing new proofs from the response
-    /// 4. Updating the database (add new proofs, remove old ones)
-    /// 5. Deleting the saga record
-    ///
-    /// On success, compensations are cleared.
+    /// Updates saga state for recovery, posts swap to mint, constructs new
+    /// proofs from response, updates database, and deletes saga record.
     #[instrument(skip_all)]
     pub async fn execute(mut self) -> Result<SwapSaga<'a, Finalized>, Error> {
         tracing::info!(

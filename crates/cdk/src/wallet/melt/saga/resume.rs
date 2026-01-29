@@ -19,18 +19,12 @@ use crate::{Error, Wallet};
 impl Wallet {
     /// Resume an incomplete melt saga after crash recovery.
     ///
-    /// # Recovery Logic
-    ///
-    /// - **ProofsReserved**: Proofs reserved but melt not executed.
-    ///   Safe to compensate by releasing the reserved proofs. Returns `None`
-    ///   since no payment was attempted.
-    ///
-    /// - **MeltRequested/PaymentPending**: Melt request was sent or payment is pending.
-    ///   Check quote state to determine if payment succeeded.
+    /// Determines the payment status by querying the mint and either
+    /// completes the operation or compensates.
     ///
     /// # Returns
     ///
-    /// - `Ok(Some(FinalizedMelt))` - The melt was finalized (paid), compensated (failed/unpaid/never started)
+    /// - `Ok(Some(FinalizedMelt))` - The melt was finalized or compensated
     /// - `Ok(None)` - The melt was skipped (still pending, mint unreachable)
     /// - `Err(e)` - An error occurred during recovery
     #[instrument(skip(self, saga))]

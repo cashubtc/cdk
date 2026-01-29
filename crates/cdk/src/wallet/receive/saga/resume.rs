@@ -1,15 +1,15 @@
 //! Resume logic for receive sagas after crash recovery.
 //!
-//! This module handles resuming incomplete receive sagas that were interrupted
-//! by a crash. It determines the actual state by querying the mint and
-//! either completes the operation or compensates.
+//! Handles incomplete receive sagas interrupted by a crash.
+//! Determines the actual state by querying the mint and either completes
+//! the operation or compensates.
 //!
 //! # Recovery Strategy
 //!
-//! For `SwapRequested` state, we use a replay-first strategy:
-//! 1. **Replay**: Attempt to replay the original `post_swap` request.
-//!    If the mint cached the response (NUT-19), we get signatures immediately.
-//! 2. **Fallback**: If replay fails, check if inputs are spent and use `/restore`.
+//! For `SwapRequested` state, uses a replay-first strategy:
+//! - **Replay**: Attempt to replay the original `post_swap` request.
+//!   If the mint cached the response (NUT-19), signatures are returned immediately.
+//! - **Fallback**: If replay fails, check if inputs are spent and use `/restore`.
 
 use cdk_common::wallet::{OperationData, ReceiveOperationData, ReceiveSagaState, WalletSaga};
 use tracing::instrument;
@@ -22,13 +22,9 @@ use crate::{Error, Wallet};
 impl Wallet {
     /// Resume an incomplete receive saga after crash recovery.
     ///
-    /// # Recovery Logic
-    ///
-    /// - **ProofsPending**: Proofs stored in Pending state but swap not executed.
-    ///   Safe to compensate by removing the pending proofs.
-    ///
-    /// - **SwapRequested**: Swap was requested. Check if input proofs are spent.
-    ///   If spent, try to reconstruct outputs. If not spent, compensate.
+    /// For `ProofsPending` state, compensates by removing pending proofs.
+    /// For `SwapRequested` state, checks if input proofs are spent and either
+    /// recovers outputs or compensates.
     #[instrument(skip(self, saga))]
     pub async fn resume_receive_saga(&self, saga: &WalletSaga) -> Result<RecoveryAction, Error> {
         let state = match &saga.state {
@@ -72,9 +68,9 @@ impl Wallet {
 
     /// Check mint and either complete receive or compensate.
     ///
-    /// Uses a replay-first strategy:
-    /// 1. Try to replay the original swap request (leverages NUT-19 caching)
-    /// 2. If replay fails, fall back to checking proof states and /restore
+    /// Uses a replay-first strategy: first attempts to replay the original swap
+    /// request (leverages NUT-19 caching). If replay fails, falls back to
+    /// checking proof states and using /restore.
     async fn recover_or_compensate_receive(
         &self,
         saga_id: &uuid::Uuid,

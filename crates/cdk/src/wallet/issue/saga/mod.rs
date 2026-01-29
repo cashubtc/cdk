@@ -304,15 +304,9 @@ impl<'a> MintSaga<'a, Initial> {
 impl<'a> MintSaga<'a, Prepared> {
     /// Execute the mint operation.
     ///
-    /// This completes the mint by:
-    /// 1. Posting the mint request to the mint
-    /// 2. Verifying DLEQ proofs
-    /// 3. Constructing proofs
-    /// 4. Updating quote state
-    /// 5. Storing proofs
-    /// 6. Recording transaction
-    ///
-    /// On success, compensations are cleared.
+    /// Posts mint request, verifies DLEQ proofs, constructs and stores proofs,
+    /// updates quote state, and records transaction. On success, compensations
+    /// are cleared.
     #[instrument(skip_all)]
     pub async fn execute(self) -> Result<MintSaga<'a, Finalized>, Error> {
         let MintSaga {

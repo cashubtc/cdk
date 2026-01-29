@@ -88,13 +88,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
 
     /// Prepare proofs for receiving.
     ///
-    /// This is the first step in the saga. It:
-    /// 1. Loads mint info if needed
-    /// 2. Gets the active keyset
-    /// 3. Verifies DLEQ proofs
-    /// 4. Signs P2PK proofs if signing keys are provided
-    /// 5. Adds HTLC preimages if provided
-    ///
+    /// Verifies DLEQ proofs, signs P2PK proofs if keys provided, and adds HTLC preimages.
     /// No database changes are made in this step.
     #[instrument(skip_all)]
     pub async fn prepare(
@@ -203,16 +197,8 @@ impl<'a> ReceiveSaga<'a, Initial> {
 impl<'a> ReceiveSaga<'a, Prepared> {
     /// Execute the receive operation.
     ///
-    /// This completes the receive by:
-    /// 1. Storing proofs in Pending state
-    /// 2. Creating and executing a swap
-    /// 3. Storing new proofs
-    /// 4. Recording the transaction
-    ///
-    /// # Compensation
-    ///
-    /// Registers a compensation action that will remove pending proofs
-    /// if the swap fails.
+    /// Stores proofs in Pending state, executes the swap, stores new proofs,
+    /// and records the transaction. On failure, removes pending proofs.
     #[instrument(skip_all)]
     pub async fn execute(mut self) -> Result<ReceiveSaga<'a, Finalized>, Error> {
         tracing::info!(
@@ -324,9 +310,9 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             .await?;
         let counter_start = counter_end.saturating_sub(pre_swap.derived_secret_count);
 
-        // Update saga state to SwapRequested BEFORE making the mint call
-        // This is write-ahead logging - if we crash after this, recovery knows
-        // the swap may have been attempted
+        // Update saga state to SwapRequested BEFORE making the mint call.
+        // This is write-ahead logging - if a crash occurs after this, recovery knows
+        // the swap may have been attempted.
         saga.update_state(WalletSagaState::Receive(ReceiveSagaState::SwapRequested));
         if let OperationData::Receive(ref mut data) = saga.data {
             data.counter_start = Some(counter_start);
@@ -335,7 +321,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         }
 
         // Update saga state - if this fails due to version conflict, another instance
-        // is processing this saga, which should not happen during normal operation
+        // is processing this saga, which should not happen during normal operation.
         if !self.wallet.localstore.update_saga(saga).await? {
             return Err(Error::ConcurrentUpdate);
         }
@@ -416,7 +402,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 operation_id,
                 e
             );
-            // Don't fail the receive if saga deletion fails - orphaned saga is harmless
+            // Don't fail the receive if saga deletion fails - orphaned saga is harmless.
         }
 
         Ok(ReceiveSaga {

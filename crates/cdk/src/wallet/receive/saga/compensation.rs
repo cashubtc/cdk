@@ -1,7 +1,7 @@
 //! Compensation actions for the receive saga.
 //!
-//! When a saga step fails, compensating actions are executed in reverse order (LIFO)
-//! to undo all completed steps and restore the database to its pre-saga state.
+//! When a saga step fails, compensating actions execute in reverse order (LIFO)
+//! to undo completed steps and restore the database to its pre-saga state.
 
 use std::sync::Arc;
 

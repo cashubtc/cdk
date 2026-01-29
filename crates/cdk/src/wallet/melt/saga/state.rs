@@ -26,8 +26,6 @@ use crate::wallet::MeltQuote;
 use crate::Amount;
 
 /// Initial state - operation ID assigned but no work done yet.
-///
-/// The melt saga starts in this state. Only `prepare()` is available.
 #[derive(Debug)]
 pub struct Initial {
     /// Unique operation identifier for tracking and crash recovery
@@ -35,9 +33,6 @@ pub struct Initial {
 }
 
 /// Prepared state - proofs have been selected and reserved.
-///
-/// After successful preparation, the saga transitions to this state.
-/// From here, `request_melt_with_options()` builds the melt request and transitions to `MeltRequested`.
 pub struct Prepared {
     /// Unique operation identifier
     pub operation_id: Uuid,
@@ -58,9 +53,6 @@ pub struct Prepared {
 }
 
 /// MeltRequested state - melt request has been built and is ready to send.
-///
-/// The saga transitions to this state after building the melt request.
-/// `execute()` sends the request and processes the response.
 pub struct MeltRequested {
     /// Unique operation identifier
     pub operation_id: Uuid,
@@ -75,9 +67,6 @@ pub struct MeltRequested {
 }
 
 /// Finalized state - melt completed successfully.
-///
-/// The saga transitions to this state after a successful melt.
-/// Accessor methods provide the result data.
 pub struct Finalized {
     /// Quote ID
     pub quote_id: String,

@@ -13,19 +13,14 @@ use crate::wallet::MintQuote;
 /// Type alias for MintRequest with String quote ID
 pub type MintRequestString = crate::nuts::MintRequest<String>;
 
-/// Initial state - operation ID assigned but no work done yet.
-///
-/// The mint saga starts in this state. Only `prepare()` is available.
+/// Initial state - operation ID assigned, no work done yet.
 #[derive(Debug)]
 pub struct Initial {
     /// Unique operation identifier for tracking and crash recovery
     pub operation_id: Uuid,
 }
 
-/// Prepared state - quote validated and premint secrets created.
-///
-/// After successful preparation, the saga transitions to this state.
-/// Methods available: `execute()`
+/// Prepared state - quote validated, premint secrets created, ready to execute.
 #[derive(Debug)]
 pub struct Prepared {
     /// Unique operation identifier
@@ -42,14 +37,11 @@ pub struct Prepared {
     pub mint_request: MintRequestString,
     /// Payment method (Bolt11 or Bolt12)
     pub payment_method: PaymentMethod,
-    /// The persisted saga for optimistic locking (contains recovery data)
+    /// Persisted saga for optimistic locking and recovery
     pub saga: WalletSaga,
 }
 
-/// Finalized state - mint completed successfully.
-///
-/// After successful execution, the saga transitions to this state.
-/// The minted proofs can be retrieved and the saga is complete.
+/// Finalized state - mint completed successfully, proofs available.
 #[derive(Debug)]
 pub struct Finalized {
     /// Minted proofs

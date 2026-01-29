@@ -14,14 +14,6 @@ use crate::{Error, Wallet};
 
 impl Wallet {
     /// Resume an incomplete send saga after crash recovery.
-    ///
-    /// # Recovery Logic
-    ///
-    /// - **ProofsReserved**: The token hasn't been created yet.
-    ///   Safe to compensate by releasing the reserved proofs.
-    ///
-    /// - **TokenCreated**: The token was created but we don't know if it was redeemed.
-    ///   Check the mint to determine if the proofs were spent, then update state accordingly.
     #[instrument(skip(self, saga))]
     pub async fn resume_send_saga(&self, saga: &WalletSaga) -> Result<RecoveryAction, Error> {
         let state = match &saga.state {
@@ -218,7 +210,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_recover_send_proofs_reserved() {
-        // Test that send saga in ProofsReserved state gets compensated
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -230,7 +221,6 @@ mod tests {
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
         db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
 
-        // Create saga in ProofsReserved state
         let saga = WalletSaga::new(
             saga_id,
             WalletSagaState::Send(SendSagaState::ProofsReserved),
@@ -248,33 +238,27 @@ mod tests {
         );
         db.add_saga(saga).await.unwrap();
 
-        // Run recovery
         let wallet = create_test_wallet(db.clone()).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
 
         assert_eq!(report.compensated, 1);
 
-        // Verify proofs are released
         let proofs = db
             .get_proofs(None, None, Some(vec![State::Unspent]), None)
             .await
             .unwrap();
         assert_eq!(proofs.len(), 1);
 
-        // Verify saga is deleted
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn test_recover_send_token_created_proofs_spent() {
-        // When send saga is in TokenCreated state and proofs are spent,
-        // the token was claimed - mark proofs spent and delete saga
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
         let saga_id = uuid::Uuid::new_v4();
 
-        // Create proofs: add as Unspent, reserve, then change to PendingSpent
         let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
         let proof_y = proof_info.y;
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
@@ -283,7 +267,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Create saga in TokenCreated state
         let saga = WalletSaga::new(
             saga_id,
             WalletSagaState::Send(SendSagaState::TokenCreated),
@@ -301,7 +284,6 @@ mod tests {
         );
         db.add_saga(saga).await.unwrap();
 
-        // Mock: proofs are spent (token was claimed by recipient)
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_check_state_response(Ok(CheckStateResponse {
             states: vec![ProofState {
@@ -314,31 +296,25 @@ mod tests {
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
 
-        // Should recover (token was claimed)
         assert_eq!(report.recovered, 1);
         assert_eq!(report.compensated, 0);
 
-        // Proofs should be marked as Spent
         let proofs = db
             .get_proofs(None, None, Some(vec![State::Spent]), None)
             .await
             .unwrap();
         assert_eq!(proofs.len(), 1);
 
-        // Saga should be deleted
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn test_recover_send_token_created_proofs_not_spent() {
-        // When send saga is in TokenCreated state and proofs are NOT spent,
-        // the token is still valid - leave proofs in PendingSpent and delete saga
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
         let saga_id = uuid::Uuid::new_v4();
 
-        // Create proofs: add as Unspent, reserve, then change to PendingSpent
         let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
         let proof_y = proof_info.y;
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
@@ -347,7 +323,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Create saga in TokenCreated state
         let saga = WalletSaga::new(
             saga_id,
             WalletSagaState::Send(SendSagaState::TokenCreated),
@@ -365,7 +340,6 @@ mod tests {
         );
         db.add_saga(saga).await.unwrap();
 
-        // Mock: proofs are NOT spent (token not yet claimed)
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_check_state_response(Ok(CheckStateResponse {
             states: vec![ProofState {
@@ -378,31 +352,25 @@ mod tests {
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
 
-        // Should recover (saga cleaned up, proofs left as-is)
         assert_eq!(report.recovered, 1);
         assert_eq!(report.compensated, 0);
 
-        // Proofs should remain in PendingSpent (token still valid)
         let proofs = db
             .get_proofs(None, None, Some(vec![State::PendingSpent]), None)
             .await
             .unwrap();
         assert_eq!(proofs.len(), 1);
 
-        // Saga should still exist
         assert!(db.get_saga(&saga_id).await.unwrap().is_some());
     }
 
     #[tokio::test]
     async fn test_recover_send_rolling_back_proofs_spent() {
-        // When send saga is in RollingBack state and proofs are spent,
-        // the swap/claim succeeded - mark proofs spent and delete saga
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
         let saga_id = uuid::Uuid::new_v4();
 
-        // Create proofs: add as Unspent, reserve, then change to PendingSpent
         let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
         let proof_y = proof_info.y;
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
@@ -442,30 +410,24 @@ mod tests {
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
 
-        // Should recover
         assert_eq!(report.recovered, 1);
 
-        // Proofs should be marked as Spent
         let proofs = db
             .get_proofs(None, None, Some(vec![State::Spent]), None)
             .await
             .unwrap();
         assert_eq!(proofs.len(), 1);
 
-        // Saga should be deleted
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn test_recover_send_rolling_back_proofs_not_spent() {
-        // When send saga is in RollingBack state and proofs are NOT spent,
-        // the swap failed - revert to TokenCreated state so user can retry
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
         let saga_id = uuid::Uuid::new_v4();
 
-        // Create proofs: add as Unspent, reserve, then change to PendingSpent
         let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
         let proof_y = proof_info.y;
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
@@ -474,7 +436,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Create saga in RollingBack state
         let saga = WalletSaga::new(
             saga_id,
             WalletSagaState::Send(SendSagaState::RollingBack),
@@ -492,7 +453,6 @@ mod tests {
         );
         db.add_saga(saga).await.unwrap();
 
-        // Mock: proofs are NOT spent
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_check_state_response(Ok(CheckStateResponse {
             states: vec![ProofState {
@@ -505,17 +465,14 @@ mod tests {
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
 
-        // Should recover (reverted to TokenCreated)
         assert_eq!(report.recovered, 1);
 
-        // Proofs should be in PendingSpent state
         let proofs = db
             .get_proofs(None, None, Some(vec![State::PendingSpent]), None)
             .await
             .unwrap();
         assert_eq!(proofs.len(), 1);
 
-        // Saga should still exist but in TokenCreated state
         let saga = db.get_saga(&saga_id).await.unwrap().unwrap();
         assert!(matches!(
             saga.state,
