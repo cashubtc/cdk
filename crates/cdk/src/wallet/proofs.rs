@@ -211,7 +211,7 @@ impl Wallet {
             //
             // The first step is to sort the proofs, select the one with the biggest amount, and
             // perform a swap requesting the exact amount (covering the swap fees).
-            input_proofs.sort_by(|a, b| a.amount.cmp(&b.amount));
+            input_proofs.sort_by_key(|a| a.amount);
 
             if let Some(proof_to_exchange) = input_proofs.pop() {
                 let fee_ppk = fees_and_keyset_amounts

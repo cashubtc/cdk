@@ -460,7 +460,7 @@ pub(crate) fn split_proofs_for_send(
                             }
 
                             // Move the smallest proof from send to swap
-                            proofs_to_send.sort_by(|a, b| a.amount.cmp(&b.amount));
+                            proofs_to_send.sort_by_key(|a| a.amount);
                             let proof_to_move = proofs_to_send.remove(0);
                             proofs_to_swap.push(proof_to_move);
                         }
