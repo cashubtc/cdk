@@ -7,14 +7,15 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use cdk_common::database;
 use cdk_common::database::WalletDatabase;
-use cdk_common::{database, KeySetInfo};
+use cdk_common::wallet::WalletKey;
 use tokio::sync::RwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
 
 use super::builder::WalletBuilder;
-use super::Error;
+use super::{Error, MintConnector};
 use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
@@ -134,17 +135,18 @@ impl WalletConfig {
     }
 }
 
-/// Repository for managing Wallet instances by mint URL
+/// Repository for managing Wallet instances by mint URL and currency unit
 ///
 /// Simple container that bootstraps wallets from database and provides
-/// access to individual Wallet instances.
+/// access to individual Wallet instances. Each wallet is uniquely identified
+/// by the combination of mint URL and currency unit.
 #[derive(Clone)]
 pub struct WalletRepository {
     /// Storage backend
     localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     seed: [u8; 64],
-    /// Wallets indexed by mint URL
-    wallets: Arc<RwLock<BTreeMap<MintUrl, Wallet>>>,
+    /// Wallets indexed by (mint URL, currency unit)
+    wallets: Arc<RwLock<BTreeMap<WalletKey, Wallet>>>,
     /// Proxy configuration for HTTP clients (optional)
     proxy_config: Option<url::Url>,
     /// Shared Tor transport to be cloned into each TorHttpClient (if enabled)
@@ -225,59 +227,106 @@ impl WalletRepository {
         Ok(wallet)
     }
 
-    /// Get wallet for a mint URL
+    /// Get wallet for a mint URL and currency unit
     ///
-    /// Returns an error if no wallet exists for the given mint URL.
+    /// Returns an error if no wallet exists for the given mint URL and unit combination.
     #[instrument(skip(self))]
-    pub async fn get_wallet(&self, mint_url: &MintUrl) -> Result<Wallet, Error> {
+    pub async fn get_wallet(
+        &self,
+        mint_url: &MintUrl,
+        unit: &CurrencyUnit,
+    ) -> Result<Wallet, Error> {
+        let key = WalletKey::new(mint_url.clone(), unit.clone());
         self.wallets
             .read()
             .await
-            .get(mint_url)
+            .get(&key)
             .cloned()
-            .ok_or_else(|| Error::UnknownMint {
-                mint_url: mint_url.to_string(),
-            })
+            .ok_or_else(|| Error::UnknownWallet(key))
     }
 
-    /// Add a mint to the repository with default unit (Sat)
+    /// Get all wallets for a specific mint URL (any currency unit)
     #[instrument(skip(self))]
-    pub async fn add_mint(&self, mint_url: MintUrl) -> Result<Wallet, Error> {
-        self.create_wallet(mint_url, CurrencyUnit::Sat, None).await
+    pub async fn get_wallets_for_mint(&self, mint_url: &MintUrl) -> Vec<Wallet> {
+        self.wallets
+            .read()
+            .await
+            .iter()
+            .filter(|(key, _)| &key.mint_url == mint_url)
+            .map(|(_, wallet)| wallet.clone())
+            .collect()
     }
 
-    /// Add a mint to the repository with a custom configuration and default unit (Sat)
+    /// Check if a specific wallet exists (mint URL + unit combination)
+    #[instrument(skip(self))]
+    pub async fn has_wallet(&self, mint_url: &MintUrl, unit: &CurrencyUnit) -> bool {
+        let key = WalletKey::new(mint_url.clone(), unit.clone());
+        self.wallets.read().await.contains_key(&key)
+    }
+
+    /// Add a mint to the repository
+    ///
+    /// Fetches the mint info to discover all supported currency units and creates
+    /// a wallet for each unit. Returns all created wallets.
+    #[instrument(skip(self))]
+    pub async fn add_mint(&self, mint_url: MintUrl) -> Result<Vec<Wallet>, Error> {
+        self.add_mint_with_config(mint_url, None).await
+    }
+
+    /// Add a mint to the repository with a custom configuration
+    ///
+    /// Fetches the mint info to discover all supported currency units and creates
+    /// a wallet for each unit with the given configuration. Returns all created wallets.
     #[instrument(skip(self))]
     pub async fn add_mint_with_config(
         &self,
         mint_url: MintUrl,
-        config: WalletConfig,
-    ) -> Result<Wallet, Error> {
-        self.create_wallet(mint_url, CurrencyUnit::Sat, Some(config))
-            .await
+        config: Option<WalletConfig>,
+    ) -> Result<Vec<Wallet>, Error> {
+        // Fetch mint info to get supported units
+        let mint_info = self.fetch_mint_info(&mint_url).await?;
+        let supported_units = mint_info.supported_units();
+
+        if supported_units.is_empty() {
+            return Err(Error::Custom(
+                "Mint does not support any currency units".into(),
+            ));
+        }
+
+        let mut wallets = Vec::new();
+        for unit in supported_units {
+            // Skip if wallet already exists for this unit
+            if self.has_wallet(&mint_url, unit).await {
+                if let Ok(existing) = self.get_wallet(&mint_url, unit).await {
+                    wallets.push(existing);
+                }
+                continue;
+            }
+
+            let wallet = self
+                .create_wallet(mint_url.clone(), unit.clone(), config.clone())
+                .await?;
+            wallets.push(wallet);
+        }
+
+        Ok(wallets)
     }
 
-    /// Update configuration for an existing mint
+    /// Update configuration for an existing mint and unit
     ///
     /// This re-creates the wallet with the new configuration.
     #[instrument(skip(self))]
     pub async fn set_mint_config(
         &self,
         mint_url: MintUrl,
+        unit: CurrencyUnit,
         config: WalletConfig,
     ) -> Result<Wallet, Error> {
-        // Get existing unit from wallet if it exists, otherwise default to Sat
-        let unit = if let Ok(wallet) = self.get_wallet(&mint_url).await {
-            wallet.unit.clone()
-        } else {
-            CurrencyUnit::Sat
-        };
-
         // Re-create wallet with new config
         self.create_wallet(mint_url, unit, Some(config)).await
     }
 
-    /// Create and add a new wallet for a mint URL
+    /// Create and add a new wallet for a mint URL and currency unit
     /// Returns the created wallet
     #[instrument(skip(self))]
     pub async fn create_wallet(
@@ -287,21 +336,32 @@ impl WalletRepository {
         config: Option<WalletConfig>,
     ) -> Result<Wallet, Error> {
         let wallet = self
-            .create_wallet_internal(mint_url.clone(), unit, config.as_ref())
+            .create_wallet_internal(mint_url.clone(), unit.clone(), config.as_ref())
             .await?;
 
-        // Insert into wallets map
+        // Insert into wallets map using WalletKey
+        let key = WalletKey::new(mint_url, unit);
         let mut wallets = self.wallets.write().await;
-        wallets.insert(mint_url, wallet.clone());
+        wallets.insert(key, wallet.clone());
 
         Ok(wallet)
     }
 
     /// Remove a wallet from the repository
     #[instrument(skip(self))]
-    pub async fn remove_wallet(&self, mint_url: &MintUrl) {
+    pub async fn remove_wallet(
+        &self,
+        mint_url: MintUrl,
+        currency_unit: CurrencyUnit,
+    ) -> Result<(), Error> {
+        let key = WalletKey::new(mint_url.clone(), currency_unit.clone());
         let mut wallets = self.wallets.write().await;
-        wallets.remove(mint_url);
+
+        if wallets.remove(&key).is_some() {
+            Ok(())
+        } else {
+            Err(Error::UnknownWallet(key))
+        }
     }
 
     /// Get all wallets
@@ -310,174 +370,30 @@ impl WalletRepository {
         self.wallets.read().await.values().cloned().collect()
     }
 
-    /// Check if wallet exists for mint
+    /// Check if any wallet exists for a mint (regardless of currency unit)
     #[instrument(skip(self))]
     pub async fn has_mint(&self, mint_url: &MintUrl) -> bool {
-        self.wallets.read().await.contains_key(mint_url)
+        self.wallets
+            .read()
+            .await
+            .keys()
+            .any(|key| &key.mint_url == mint_url)
     }
-
-    /// Get keysets for a mint url
-    pub async fn get_mint_keysets(&self, mint_url: &MintUrl) -> Result<Vec<KeySetInfo>, Error> {
-        let wallets = self.wallets.read().await;
-        let target_wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
-            mint_url: mint_url.to_string(),
-        })?;
-
-        target_wallet.load_mint_keysets().await
-    }
-
     /// Get balances for all wallets
     ///
-    /// Returns a map of mint URL to balance for each wallet in the repository.
+    /// Returns a map of (mint URL, currency unit) to balance for each wallet in the repository.
     #[instrument(skip(self))]
-    pub async fn get_balances(&self) -> Result<BTreeMap<MintUrl, cdk_common::Amount>, Error> {
+    pub async fn get_balances(&self) -> Result<BTreeMap<WalletKey, cdk_common::Amount>, Error> {
         let wallets = self.wallets.read().await;
         let mut balances = BTreeMap::new();
 
-        for (mint_url, wallet) in wallets.iter() {
+        for (key, wallet) in wallets.iter() {
             let balance = wallet.total_balance().await?;
-            balances.insert(mint_url.clone(), balance);
+            balances.insert(key.clone(), balance);
         }
 
         Ok(balances)
     }
-
-    /// Transfer funds from one mint to another via Lightning swap
-    #[instrument(skip(self))]
-    pub async fn transfer(
-        &self,
-        source_mint: &MintUrl,
-        target_mint: &MintUrl,
-        mode: TransferMode,
-    ) -> Result<TransferResult, Error> {
-        if source_mint == target_mint {
-            return Err(Error::Custom(
-                "Source and target mints must be different".into(),
-            ));
-        }
-
-        let source_wallet = self.get_wallet(source_mint).await?;
-        let target_wallet = self.get_wallet(target_mint).await?;
-
-        let mut amount_to_receive = match mode {
-            TransferMode::ExactReceive(amt) => amt,
-            TransferMode::FullBalance => source_wallet.total_balance().await?,
-        };
-
-        // 1. Get Mint Quote from Target
-        let mint_quote = target_wallet.mint_quote(amount_to_receive, None).await?;
-
-        // 2. Get Melt Quote from Source
-        let melt_quote = source_wallet
-            .melt_quote(mint_quote.request.clone(), None)
-            .await?;
-
-        let fee = melt_quote.fee_reserve;
-        let total_cost = amount_to_receive + fee;
-
-        if let TransferMode::FullBalance = mode {
-            let balance = source_wallet.total_balance().await?;
-            if total_cost > balance {
-                let deficit = total_cost - balance;
-                amount_to_receive = amount_to_receive
-                    .checked_sub(deficit)
-                    .ok_or(Error::InsufficientFunds)?;
-
-                // Retry quote with new amount
-                let mint_quote_2 = target_wallet.mint_quote(amount_to_receive, None).await?;
-                let melt_quote_2 = source_wallet
-                    .melt_quote(mint_quote_2.request.clone(), None)
-                    .await?;
-
-                let total_cost_2 = amount_to_receive + melt_quote_2.fee_reserve;
-                if total_cost_2 > balance {
-                    return Err(Error::InsufficientFunds);
-                }
-
-                // Use second attempt
-                let melted = source_wallet.melt(&melt_quote_2.id).await?;
-                let _minted = target_wallet
-                    .mint(
-                        &mint_quote_2.id,
-                        crate::amount::SplitTarget::default(),
-                        None,
-                    )
-                    .await?;
-
-                return Ok(TransferResult {
-                    amount_sent: melted.amount + melted.fee_paid,
-                    amount_received: amount_to_receive,
-                    fees_paid: melted.fee_paid,
-                    source_balance_after: source_wallet.total_balance().await?,
-                    target_balance_after: target_wallet.total_balance().await?,
-                });
-            }
-        }
-
-        let melted = source_wallet.melt(&melt_quote.id).await?;
-        let _minted = target_wallet
-            .mint(&mint_quote.id, crate::amount::SplitTarget::default(), None)
-            .await?;
-
-        Ok(TransferResult {
-            amount_sent: melted.amount + melted.fee_paid,
-            amount_received: amount_to_receive,
-            fees_paid: melted.fee_paid,
-            source_balance_after: source_wallet.total_balance().await?,
-            target_balance_after: target_wallet.total_balance().await?,
-        })
-    }
-
-    /// Fetch mint info for the given mint URL
-    #[instrument(skip(self))]
-    pub async fn fetch_mint_info(
-        &self,
-        mint_url: &MintUrl,
-    ) -> Result<Option<crate::nuts::MintInfo>, Error> {
-        let wallet = self.get_wallet(mint_url).await?;
-        wallet.fetch_mint_info().await
-    }
-
-    /// Mint blind auth tokens
-    #[cfg(feature = "auth")]
-    #[instrument(skip(self))]
-    pub async fn mint_blind_auth(
-        &self,
-        mint_url: &MintUrl,
-        amount: cdk_common::Amount,
-    ) -> Result<crate::nuts::Proofs, Error> {
-        let wallet = self.get_wallet(mint_url).await?;
-        wallet.mint_blind_auth(amount).await
-    }
-
-    /// Set CAT
-    #[cfg(feature = "auth")]
-    #[instrument(skip(self))]
-    pub async fn set_cat(&self, mint_url: &MintUrl, cat: String) -> Result<(), Error> {
-        let wallet = self.get_wallet(mint_url).await?;
-        wallet.set_cat(cat).await
-    }
-
-    /// Set refresh token
-    #[cfg(feature = "auth")]
-    #[instrument(skip(self))]
-    pub async fn set_refresh_token(
-        &self,
-        mint_url: &MintUrl,
-        refresh_token: String,
-    ) -> Result<(), Error> {
-        let wallet = self.get_wallet(mint_url).await?;
-        wallet.set_refresh_token(refresh_token).await
-    }
-
-    /// Refresh access token
-    #[cfg(feature = "auth")]
-    #[instrument(skip(self))]
-    pub async fn refresh_access_token(&self, mint_url: &MintUrl) -> Result<(), Error> {
-        let wallet = self.get_wallet(mint_url).await?;
-        wallet.refresh_access_token().await
-    }
-
     /// Get total balance across all wallets
     #[instrument(skip(self))]
     pub async fn total_balance(&self) -> Result<cdk_common::Amount, Error> {
@@ -486,10 +402,9 @@ impl WalletRepository {
             .values()
             .fold(cdk_common::Amount::ZERO, |acc, &x| acc + x))
     }
-
-    /// Get or create a wallet for a mint URL
+    /// Get or create a wallet for a mint URL and currency unit
     ///
-    /// If a wallet for the mint URL already exists, returns it.
+    /// If a wallet for the mint URL and unit already exists, returns it.
     /// Otherwise creates a new wallet with the specified unit and adds it to the repository.
     #[instrument(skip(self))]
     pub async fn get_or_create_wallet(
@@ -497,11 +412,86 @@ impl WalletRepository {
         mint_url: &MintUrl,
         unit: CurrencyUnit,
     ) -> Result<Wallet, Error> {
-        if let Ok(wallet) = self.get_wallet(mint_url).await {
+        if let Ok(wallet) = self.get_wallet(mint_url, &unit).await {
             return Ok(wallet);
         }
 
         self.create_wallet(mint_url.clone(), unit, None).await
+    }
+
+    /// Fetch mint info from a mint URL
+    ///
+    /// Creates a temporary HTTP client to fetch the mint info.
+    /// This is useful to discover supported currency units before adding a mint.
+    pub async fn fetch_mint_info(
+        &self,
+        mint_url: &MintUrl,
+    ) -> Result<crate::nuts::MintInfo, Error> {
+        // Create an HTTP client based on the repository configuration
+        let client: Arc<dyn MintConnector + Send + Sync> =
+            if let Some(proxy_url) = &self.proxy_config {
+                Arc::new(
+                    crate::wallet::HttpClient::with_proxy(
+                        mint_url.clone(),
+                        proxy_url.clone(),
+                        None,
+                        true,
+                    )
+                    .unwrap_or_else(|_| {
+                        #[cfg(feature = "auth")]
+                        {
+                            crate::wallet::HttpClient::new(mint_url.clone(), None)
+                        }
+                        #[cfg(not(feature = "auth"))]
+                        {
+                            crate::wallet::HttpClient::new(mint_url.clone())
+                        }
+                    }),
+                )
+            } else {
+                #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+                if let Some(tor) = &self.shared_tor_transport {
+                    let transport = tor.clone();
+                    #[cfg(feature = "auth")]
+                    {
+                        Arc::new(crate::wallet::TorHttpClient::with_transport(
+                            mint_url.clone(),
+                            transport,
+                            None,
+                        ))
+                    }
+                    #[cfg(not(feature = "auth"))]
+                    {
+                        Arc::new(crate::wallet::TorHttpClient::with_transport(
+                            mint_url.clone(),
+                            transport,
+                        ))
+                    }
+                } else {
+                    #[cfg(feature = "auth")]
+                    {
+                        Arc::new(crate::wallet::HttpClient::new(mint_url.clone(), None))
+                    }
+                    #[cfg(not(feature = "auth"))]
+                    {
+                        Arc::new(crate::wallet::HttpClient::new(mint_url.clone()))
+                    }
+                }
+
+                #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
+                {
+                    #[cfg(feature = "auth")]
+                    {
+                        Arc::new(crate::wallet::HttpClient::new(mint_url.clone(), None))
+                    }
+                    #[cfg(not(feature = "auth"))]
+                    {
+                        Arc::new(crate::wallet::HttpClient::new(mint_url.clone()))
+                    }
+                }
+            };
+
+        client.get_mint_info().await
     }
 
     /// Internal: Create wallet with optional custom configuration
@@ -642,23 +632,43 @@ impl WalletRepository {
     /// Load all wallets from database
     ///
     /// This loads wallets for all mints stored in the database.
-    /// Since wallets now have per-wallet units, this creates wallets with
-    /// a default unit (Sat). Callers should use `create_wallet` with the
-    /// appropriate unit for new wallets.
+    /// For each mint, it fetches the mint info to discover supported units
+    /// and creates a wallet for each supported unit.
     #[instrument(skip(self))]
     async fn load_wallets(&self) -> Result<(), Error> {
         let mints = self.localstore.get_mints().await.map_err(Error::Database)?;
 
         for (mint_url, _mint_info) in mints {
-            // Add mint to the repository if not already present
-            // Use default unit (Sat) for backward compatibility
-            if !self.has_mint(&mint_url).await {
+            // Try to fetch mint info and create wallets for all supported units
+            // If fetch fails, fall back to creating just a Sat wallet
+            let units = match self.fetch_mint_info(&mint_url).await {
+                Ok(info) => {
+                    let supported = info.supported_units();
+                    if supported.is_empty() {
+                        vec![CurrencyUnit::Sat]
+                    } else {
+                        supported.into_iter().cloned().collect()
+                    }
+                }
+                Err(_) => {
+                    // If we can't fetch mint info, use default Sat unit for backward compatibility
+                    vec![CurrencyUnit::Sat]
+                }
+            };
+
+            for unit in units {
+                let key = WalletKey::new(mint_url.clone(), unit.clone());
+                // Skip if wallet already exists
+                if self.wallets.read().await.contains_key(&key) {
+                    continue;
+                }
+
                 let wallet = self
-                    .create_wallet_internal(mint_url.clone(), CurrencyUnit::Sat, None)
+                    .create_wallet_internal(mint_url.clone(), unit, None)
                     .await?;
 
                 let mut wallets = self.wallets.write().await;
-                wallets.insert(mint_url, wallet);
+                wallets.insert(key, wallet);
             }
         }
 
@@ -707,13 +717,15 @@ impl WalletRepository {
     ///
     /// Retrieves pending mint quotes from the currently active NpubCash mint.
     /// Returns an error if no active mint has been configured.
+    /// Uses Sat as the default unit for NpubCash operations.
     #[cfg(feature = "npubcash")]
     pub async fn sync_npubcash_quotes(
         &self,
     ) -> Result<Vec<crate::wallet::types::MintQuote>, Error> {
         let active_mint = self.get_active_npubcash_mint().await?;
         if let Some(mint_url) = active_mint {
-            let wallet = self.get_wallet(&mint_url).await?;
+            // NpubCash typically uses Sat, try to find a Sat wallet first
+            let wallet = self.get_wallet(&mint_url, &CurrencyUnit::Sat).await?;
             wallet.sync_npubcash_quotes().await
         } else {
             Err(Error::Custom("No active NpubCash mint set".into()))
@@ -760,16 +772,16 @@ impl WalletRepository {
         token: &crate::nuts::nut00::Token,
     ) -> Result<TokenData, Error> {
         let mint_url = token.mint_url()?;
+        let unit = token.unit().unwrap_or_default();
 
-        // Get the keysets for this mint
-        let keysets = self.get_mint_keysets(&mint_url).await?;
-
+        // Get the keysets for this mint using the token's unit
+        let wallet = self.get_wallet(&mint_url, &unit).await?;
+        let keysets = wallet.get_mint_keysets().await?;
         // Extract proofs using the keysets
         let proofs = token.proofs(&keysets)?;
 
         // Get the memo
         let memo = token.memo().clone();
-        let wallet = self.get_wallet(&mint_url).await?;
         let redeem_fee = wallet.get_proofs_fee(&proofs).await?;
 
         Ok(TokenData {
@@ -777,23 +789,23 @@ impl WalletRepository {
             mint_url,
             proofs,
             memo,
-            unit: token.unit().unwrap_or_default(),
+            unit,
             redeem_fee: Some(redeem_fee.total),
         })
     }
 
-    /// List proofs for all mints
+    /// List proofs for all wallets
     ///
-    /// Returns a map of mint URL to proofs for each wallet in the repository.
+    /// Returns a map of (mint URL, currency unit) to proofs for each wallet in the repository.
     #[instrument(skip(self))]
     pub async fn list_proofs(
         &self,
-    ) -> Result<std::collections::BTreeMap<MintUrl, Vec<cdk_common::Proof>>, Error> {
+    ) -> Result<std::collections::BTreeMap<WalletKey, Vec<cdk_common::Proof>>, Error> {
         let mut mint_proofs = std::collections::BTreeMap::new();
 
-        for (mint_url, wallet) in self.wallets.read().await.iter() {
+        for (key, wallet) in self.wallets.read().await.iter() {
             let wallet_proofs = wallet.get_unspent_proofs().await?;
-            mint_proofs.insert(mint_url.clone(), wallet_proofs);
+            mint_proofs.insert(key.clone(), wallet_proofs);
         }
         Ok(mint_proofs)
     }
@@ -827,13 +839,19 @@ impl WalletRepository {
         let wallets = self.wallets.read().await;
         let wallets_to_check: Vec<_> = match &mint_url {
             Some(url) => {
-                if let Some(wallet) = wallets.get(url) {
-                    vec![wallet.clone()]
-                } else {
+                // Get all wallets for this mint (any currency unit)
+                let filtered: Vec<_> = wallets
+                    .iter()
+                    .filter(|(key, _)| &key.mint_url == url)
+                    .map(|(_, wallet)| wallet.clone())
+                    .collect();
+
+                if filtered.is_empty() {
                     return Err(Error::UnknownMint {
                         mint_url: url.to_string(),
                     });
                 }
+                filtered
             }
             None => wallets.values().cloned().collect(),
         };
@@ -903,7 +921,8 @@ mod tests {
 
         // Verify we can get it back
         assert!(repo.has_mint(&mint_url).await);
-        let retrieved = repo.get_wallet(&mint_url).await;
+        assert!(repo.has_wallet(&mint_url, &CurrencyUnit::Sat).await);
+        let retrieved = repo.get_wallet(&mint_url, &CurrencyUnit::Sat).await;
         assert!(retrieved.is_ok());
     }
 
@@ -918,8 +937,12 @@ mod tests {
             .expect("Failed to create wallet");
 
         assert!(repo.has_mint(&mint_url).await);
-        repo.remove_wallet(&mint_url).await;
+        assert!(repo.has_wallet(&mint_url, &CurrencyUnit::Sat).await);
+        let _ = repo
+            .remove_wallet(mint_url.clone(), CurrencyUnit::Sat)
+            .await;
         assert!(!repo.has_mint(&mint_url).await);
+        assert!(!repo.has_wallet(&mint_url, &CurrencyUnit::Sat).await);
     }
 
     #[tokio::test]

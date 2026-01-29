@@ -2,9 +2,9 @@ use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use cdk::mint_url::MintUrl;
-use cdk::wallet::multi_mint_wallet::TransferMode;
 use cdk::wallet::WalletRepository;
 use cdk::Amount;
+use cdk_common::wallet::WalletKey;
 use clap::Args;
 
 use crate::utils::get_number_input;
@@ -37,7 +37,7 @@ async fn select_mint(
     // Filter out excluded mint if provided
     let available_mints: Vec<_> = balances
         .iter()
-        .filter(|(url, _)| exclude_mint.is_none_or(|excluded| url != &excluded))
+        .filter(|(key, _)| exclude_mint.is_none_or(|excluded| &key.mint_url != excluded))
         .collect();
 
     if available_mints.is_empty() {
@@ -45,14 +45,17 @@ async fn select_mint(
     }
 
     println!("\nAvailable mints:");
-    for (i, (mint_url, balance)) in available_mints.iter().enumerate() {
-        println!("  {}: {} - {} {}", i, mint_url, balance, unit);
+    for (i, (key, balance)) in available_mints.iter().enumerate() {
+        println!(
+            "  {}: {} ({}) - {} {}",
+            i, key.mint_url, key.unit, balance, unit
+        );
     }
 
     let mint_number: usize = get_number_input(prompt)?;
     available_mints
         .get(mint_number)
-        .map(|(url, _)| (*url).clone())
+        .map(|(key, _)| key.mint_url.clone())
         .ok_or_else(|| anyhow::anyhow!("Invalid mint number"))
 }
 
@@ -118,22 +121,58 @@ pub async fn transfer(
 
     // Check source mint balance
     let balances = wallet_repository.get_balances().await?;
-    let source_balance = balances
-        .get(&source_mint_url)
-        .copied()
-        .unwrap_or(Amount::ZERO);
+    let source_key = WalletKey::new(source_mint_url.clone(), unit.clone());
+    let source_balance = balances.get(&source_key).copied().unwrap_or(Amount::ZERO);
 
     if source_balance == Amount::ZERO {
         bail!("Source mint has no balance to transfer");
     }
 
-    // Determine transfer mode based on user input
-    let transfer_mode = if sub_command_args.full_balance {
+    // Get source and target wallets
+    let source_wallet = wallet_repository
+        .get_or_create_wallet(&source_mint_url, unit.clone())
+        .await?;
+    let target_wallet = wallet_repository
+        .get_or_create_wallet(&target_mint_url, unit.clone())
+        .await?;
+
+    // Determine transfer mode and execute
+    if sub_command_args.full_balance {
         println!(
             "\nTransferring full balance ({} {}) from {} to {}...",
             source_balance, unit, source_mint_url, target_mint_url
         );
-        TransferMode::FullBalance
+
+        // Send all from source
+        let prepared = source_wallet
+            .prepare_send(source_balance, Default::default())
+            .await?;
+        let token = prepared.confirm(None).await?;
+
+        // Receive at target
+        let received = target_wallet
+            .receive(&token.to_string(), Default::default())
+            .await?;
+
+        let source_balance_after = source_wallet.total_balance().await?;
+        let target_balance_after = target_wallet.total_balance().await?;
+
+        println!("\nTransfer completed successfully!");
+        println!("Amount sent: {} {}", source_balance, unit);
+        println!("Amount received: {} {}", received, unit);
+        let fees_paid = source_balance - received;
+        if fees_paid > Amount::ZERO {
+            println!("Fees paid: {} {}", fees_paid, unit);
+        }
+        println!("\nUpdated balances:");
+        println!(
+            "  Source mint ({}): {} {}",
+            source_mint_url, source_balance_after, unit
+        );
+        println!(
+            "  Target mint ({}): {} {}",
+            target_mint_url, target_balance_after, unit
+        );
     } else {
         let amount = match sub_command_args.amount {
             Some(amt) => Amount::from(amt),
@@ -157,32 +196,38 @@ pub async fn transfer(
             "\nTransferring {} {} from {} to {}...",
             amount, unit, source_mint_url, target_mint_url
         );
-        TransferMode::ExactReceive(amount)
-    };
 
-    // Perform the transfer
-    let transfer_result = wallet_repository
-        .transfer(&source_mint_url, &target_mint_url, transfer_mode)
-        .await?;
+        // Send from source
+        let prepared = source_wallet
+            .prepare_send(amount, Default::default())
+            .await?;
+        let token = prepared.confirm(None).await?;
 
-    println!("\nTransfer completed successfully!");
-    println!("Amount sent: {} {}", transfer_result.amount_sent, unit);
-    println!(
-        "Amount received: {} {}",
-        transfer_result.amount_received, unit
-    );
-    if transfer_result.fees_paid > Amount::ZERO {
-        println!("Fees paid: {} {}", transfer_result.fees_paid, unit);
+        // Receive at target
+        let received = target_wallet
+            .receive(&token.to_string(), Default::default())
+            .await?;
+
+        let source_balance_after = source_wallet.total_balance().await?;
+        let target_balance_after = target_wallet.total_balance().await?;
+
+        println!("\nTransfer completed successfully!");
+        println!("Amount sent: {} {}", amount, unit);
+        println!("Amount received: {} {}", received, unit);
+        let fees_paid = amount - received;
+        if fees_paid > Amount::ZERO {
+            println!("Fees paid: {} {}", fees_paid, unit);
+        }
+        println!("\nUpdated balances:");
+        println!(
+            "  Source mint ({}): {} {}",
+            source_mint_url, source_balance_after, unit
+        );
+        println!(
+            "  Target mint ({}): {} {}",
+            target_mint_url, target_balance_after, unit
+        );
     }
-    println!("\nUpdated balances:");
-    println!(
-        "  Source mint ({}): {} {}",
-        source_mint_url, transfer_result.source_balance_after, unit
-    );
-    println!(
-        "  Target mint ({}): {} {}",
-        target_mint_url, transfer_result.target_balance_after, unit
-    );
 
     Ok(())
 }

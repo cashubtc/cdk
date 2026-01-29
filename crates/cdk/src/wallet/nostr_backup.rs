@@ -9,7 +9,7 @@ use nostr_sdk::prelude::*;
 use nostr_sdk::{Client as NostrClient, Filter, Keys};
 use tracing::instrument;
 
-use super::multi_mint_wallet::WalletRepository;
+use super::wallet_repository::WalletRepository;
 use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut27::{
@@ -236,6 +236,7 @@ impl WalletRepository {
             for mint_url in &backup.mints {
                 if !self.has_mint(mint_url).await {
                     // Ignore errors for individual mints to continue restoring others
+                    // add_mint now fetches mint info and creates wallets for all supported units
                     if self.add_mint(mint_url.clone()).await.is_ok() {
                         mints_added += 1;
                     }

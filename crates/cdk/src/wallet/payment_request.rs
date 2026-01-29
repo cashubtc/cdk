@@ -24,7 +24,6 @@ use crate::nuts::nut18::Nut10SecretRequest;
 use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
 #[cfg(feature = "nostr")]
 use crate::wallet::ReceiveOptions;
-
 use crate::wallet::{SendOptions, WalletRepository};
 use crate::Wallet;
 
@@ -286,6 +285,9 @@ impl WalletRepository {
         // Get the list of mints accepted by the payment request (None means any mint is accepted)
         let accepted_mints = payment_request.mints.as_ref();
 
+        // Get the unit from the payment request, defaulting to Sat
+        let unit = payment_request.unit.clone().unwrap_or(CurrencyUnit::Sat);
+
         // Select the wallet to use for payment
         let selected_wallet = if let Some(specified_mint) = &mint_url {
             // User specified a mint - verify it's accepted by the payment request
@@ -298,18 +300,23 @@ impl WalletRepository {
                 }
             }
 
-            // Get the wallet for the specified mint
-            self.get_wallet(specified_mint).await?
+            // Get the wallet for the specified mint and unit
+            self.get_wallet(specified_mint, &unit).await?
         } else {
             // No mint specified - find the best matching mint with highest balance
             let balances = self.get_balances().await?;
             let mut best_wallet: Option<Wallet> = None;
             let mut best_balance = Amount::ZERO;
 
-            for (mint_url, balance) in balances.iter() {
+            for (wallet_key, balance) in balances.iter() {
+                // Only consider wallets with matching unit
+                if wallet_key.unit != unit {
+                    continue;
+                }
+
                 // Check if this mint is accepted by the payment request
                 let is_accepted = match accepted_mints {
-                    Some(accepted) => accepted.contains(mint_url),
+                    Some(accepted) => accepted.contains(&wallet_key.mint_url),
                     None => true, // No mints specified means any mint is accepted
                 };
 
@@ -319,7 +326,7 @@ impl WalletRepository {
 
                 // Check balance meets requirements and is best so far
                 if *balance >= amount && *balance > best_balance {
-                    if let Ok(wallet) = self.get_wallet(mint_url).await {
+                    if let Ok(wallet) = self.get_wallet(&wallet_key.mint_url, &unit).await {
                         best_balance = *balance;
                         best_wallet = Some(wallet);
                     }
@@ -468,12 +475,15 @@ impl WalletRepository {
         params: CreateRequestParams,
     ) -> Result<(PaymentRequest, Option<NostrWaitInfo>), Error> {
         // Collect available mints for the selected unit
-        let mints = self
+        // Filter by the requested unit and extract unique mint URLs
+        let requested_unit = CurrencyUnit::from_str(&params.unit)?;
+        let mints: Vec<MintUrl> = self
             .get_balances()
             .await?
             .keys()
-            .cloned()
-            .collect::<Vec<_>>();
+            .filter(|key| key.unit == requested_unit)
+            .map(|key| key.mint_url.clone())
+            .collect();
 
         // Transports
         let transport_type = params.transport.to_lowercase();
@@ -570,12 +580,15 @@ impl WalletRepository {
         params: CreateRequestParams,
     ) -> Result<PaymentRequest, Error> {
         // Collect available mints for the selected unit
-        let mints = self
+        // Filter by the requested unit and extract unique mint URLs
+        let requested_unit = CurrencyUnit::from_str(&params.unit)?;
+        let mints: Vec<MintUrl> = self
             .get_balances()
             .await?
             .keys()
-            .cloned()
-            .collect::<Vec<_>>();
+            .filter(|key| key.unit == requested_unit)
+            .map(|key| key.mint_url.clone())
+            .collect();
 
         // Transports
         let transport_type = params.transport.to_lowercase();

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
+use cdk::nuts::CurrencyUnit;
 use cdk::wallet::WalletRepository;
 use clap::Args;
 
@@ -14,6 +15,7 @@ pub struct UpdateMintUrlSubCommand {
 pub async fn update_mint_url(
     wallet_repository: &WalletRepository,
     sub_command_args: &UpdateMintUrlSubCommand,
+    unit: &CurrencyUnit,
 ) -> Result<()> {
     let UpdateMintUrlSubCommand {
         old_mint_url,
@@ -21,7 +23,7 @@ pub async fn update_mint_url(
     } = sub_command_args;
 
     let mut wallet = wallet_repository
-        .get_wallet(&sub_command_args.old_mint_url)
+        .get_wallet(&sub_command_args.old_mint_url, unit)
         .await?
         .clone();
 

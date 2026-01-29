@@ -14,8 +14,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 use crate::nuts::{Proofs, SpendingConditions};
-use crate::wallet::multi_mint_wallet::WalletRepository;
 use crate::wallet::types::MintQuote;
+use crate::wallet::wallet_repository::WalletRepository;
 use crate::wallet::Wallet;
 
 /// Stream that continuously polls NpubCash and yields proofs as payments arrive
@@ -55,8 +55,8 @@ impl NpubCashProofStream {
                                         tracing::info!("Minting NpubCash quote {}...", quote_id);
 
                                         let result = async {
-                                            // Get wallet for this quote's mint
-                                            let wallet_instance = wallet.get_wallet(&mint_url).await?;
+                                            // Get wallet for this quote's mint and unit
+                                            let wallet_instance = wallet.get_wallet(&mint_url, &quote.unit).await?;
 
                                             let proofs = wallet_instance
                                                 .mint(&quote_id, split_target.clone(), spending_conditions.clone())

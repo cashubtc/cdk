@@ -10,7 +10,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, Token};
+use cdk::nuts::Token;
 use cdk::wallet::WalletRepository;
 use cdk_sqlite::wallet::memory;
 use rand::random;
@@ -68,8 +68,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     println!("\n--- Using manual keyset lookup ---");
 
-    // Get the keysets for this mint
-    let keysets: Vec<cdk::nuts::KeySetInfo> = wallet.get_mint_keysets(&mint_url).await?;
+    // Get the keysets for this mint using a wallet
+    let mint_wallet = wallet
+        .get_wallets_for_mint(&mint_url)
+        .await
+        .into_iter()
+        .next()
+        .ok_or("No wallet found for mint")?;
+    let keysets: Vec<cdk::nuts::KeySetInfo> = mint_wallet.get_mint_keysets().await?;
     println!("Found {} keysets for mint", keysets.len());
 
     for keyset in &keysets {

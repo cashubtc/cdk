@@ -26,7 +26,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::anyhow;
 use cdk::amount::SplitTarget;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::payment_request::CreateRequestParams;
@@ -64,7 +63,9 @@ async fn main() -> anyhow::Result<()> {
     println!("\nStep 1: Creating payment request...");
 
     // We need to get the wallet for the specific mint to create a request
-    let mint_wallet = wallet.get_wallet(&mint_url.parse()?).await?;
+    let mint_wallet = wallet
+        .get_or_create_wallet(&mint_url.parse()?, unit.clone())
+        .await?;
     let mint_quote = mint_wallet.mint_quote(initial_amount, None).await?;
 
     println!(

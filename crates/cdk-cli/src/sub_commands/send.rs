@@ -68,23 +68,26 @@ pub async fn send(
             return Err(anyhow!("No mints available in the wallet"));
         }
 
-        let balances_vec: Vec<(MintUrl, Amount)> = balances_map.into_iter().collect();
+        let balances_vec: Vec<_> = balances_map.into_iter().collect();
 
         // If only one mint exists, automatically select it
         if balances_vec.len() == 1 {
-            balances_vec[0].0.clone()
+            balances_vec[0].0.mint_url.clone()
         } else {
             // Display all mints with their balances and let user select
             println!("\nAvailable mints and balances:");
-            for (index, (mint_url, balance)) in balances_vec.iter().enumerate() {
-                println!("  {}: {} - {} {}", index, mint_url, balance, unit);
+            for (index, (key, balance)) in balances_vec.iter().enumerate() {
+                println!(
+                    "  {}: {} ({}) - {} {}",
+                    index, key.mint_url, key.unit, balance, unit
+                );
             }
 
             loop {
                 let selection: usize = get_number_input("Enter mint number to send from")?;
 
-                if let Some((mint_url, _)) = balances_vec.get(selection) {
-                    break mint_url.clone();
+                if let Some((key, _)) = balances_vec.get(selection) {
+                    break key.mint_url.clone();
                 }
 
                 println!("Invalid selection, please try again.");

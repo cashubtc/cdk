@@ -49,7 +49,6 @@ mod keysets;
 mod melt;
 mod mint_connector;
 mod mint_metadata_cache;
-pub mod multi_mint_wallet;
 #[cfg(feature = "npubcash")]
 mod npubcash;
 pub mod payment_request;
@@ -63,6 +62,7 @@ pub mod subscription;
 mod swap;
 mod transactions;
 pub mod util;
+pub mod wallet_repository;
 
 #[cfg(feature = "auth")]
 pub use auth::{AuthMintConnector, AuthWallet};
@@ -75,10 +75,6 @@ pub use mint_connector::transport::Transport as HttpTransport;
 #[cfg(feature = "auth")]
 pub use mint_connector::AuthHttpClient;
 pub use mint_connector::{HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector};
-pub use multi_mint_wallet::{
-    TokenData, TransferMode, TransferResult, WalletConfig, WalletRepository,
-};
-
 #[cfg(feature = "nostr")]
 pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResult};
 pub use payment_request::CreateRequestParams;
@@ -86,10 +82,12 @@ pub use payment_request::CreateRequestParams;
 pub use payment_request::NostrWaitInfo;
 pub use receive::ReceiveOptions;
 pub use send::{PreparedSend, SendMemo, SendOptions};
-pub use types::{MeltQuote, MintQuote, SendKind};
-
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
 pub use streams::npubcash::NpubCashProofStream;
+pub use types::{MeltQuote, MintQuote, SendKind};
+pub use wallet_repository::{
+    TokenData, TransferMode, TransferResult, WalletConfig, WalletRepository,
+};
 
 use crate::nuts::nut00::ProofsMethods;
 

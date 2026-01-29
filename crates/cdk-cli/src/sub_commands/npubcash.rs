@@ -5,6 +5,7 @@ use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
+use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{Wallet, WalletRepository};
 use cdk::StreamExt;
 use clap::Subcommand;
@@ -23,7 +24,9 @@ async fn get_wallet_for_mint(
         wallet_repository.add_mint(mint_url.clone()).await?;
     }
 
-    Ok(wallet_repository.get_wallet(&mint_url).await?)
+    Ok(wallet_repository
+        .get_or_create_wallet(&mint_url, CurrencyUnit::Sat)
+        .await?)
 }
 
 #[derive(Subcommand)]

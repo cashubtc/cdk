@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Add the mint with the custom configuration
     multi_wallet
-        .add_mint_with_config(mint_url_2.clone(), config.clone())
+        .add_mint_with_config(mint_url_2.clone(), Some(config.clone()))
         .await?;
     println!("Added mint {} with 1 minute TTL", mint_url_2);
 
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     multi_wallet.add_mint(mint_url.clone()).await?; // Add first mint with default settings
     multi_wallet
-        .set_mint_config(mint_url.clone(), no_refresh_config)
+        .set_mint_config(mint_url.clone(), unit.clone(), no_refresh_config)
         .await?;
     println!("Updated mint {} to never expire metadata cache", mint_url);
 

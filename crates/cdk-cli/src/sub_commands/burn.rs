@@ -18,8 +18,9 @@ pub async fn burn(
 
     match &sub_command_args.mint_url {
         Some(mint_url) => {
-            let wallet = wallet_repository.get_wallet(mint_url).await?;
-            total_burnt = wallet.check_all_pending_proofs().await?;
+            for wallet in wallet_repository.get_wallets_for_mint(mint_url).await {
+                total_burnt += wallet.check_all_pending_proofs().await?;
+            }
         }
         None => {
             for wallet in wallet_repository.get_wallets().await {

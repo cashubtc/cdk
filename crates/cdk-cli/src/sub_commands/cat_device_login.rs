@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::MintInfo;
 use cdk::wallet::WalletRepository;
@@ -30,10 +30,7 @@ pub async fn cat_device_login(
         wallet_repository.add_mint(mint_url.clone()).await?;
     }
 
-    let mint_info = wallet_repository
-        .fetch_mint_info(&mint_url)
-        .await?
-        .ok_or(anyhow!("Mint info not found"))?;
+    let mint_info = wallet_repository.fetch_mint_info(&mint_url).await?;
 
     let (access_token, refresh_token) = get_device_code_token(&mint_info).await;
 

@@ -25,8 +25,7 @@
 use std::sync::Arc;
 
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::WalletRepository;
-use cdk::wallet::{BackupOptions, RestoreOptions};
+use cdk::wallet::{BackupOptions, RestoreOptions, WalletRepository};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 

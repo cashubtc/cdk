@@ -81,11 +81,6 @@ pub struct PaymentRequest {
 }
 
 impl PaymentRequest {
-    /// Create from inner CDK type
-    pub(crate) fn from_inner(inner: cdk::nuts::PaymentRequest) -> Self {
-        Self { inner }
-    }
-
     /// Get inner reference
     pub(crate) fn inner(&self) -> &cdk::nuts::PaymentRequest {
         &self.inner
@@ -256,11 +251,6 @@ pub struct NostrWaitInfo {
 }
 
 impl NostrWaitInfo {
-    /// Create from inner CDK type
-    pub(crate) fn from_inner(inner: cdk::wallet::payment_request::NostrWaitInfo) -> Self {
-        Self { inner }
-    }
-
     /// Get inner reference
     #[allow(dead_code)]
     pub(crate) fn inner(&self) -> &cdk::wallet::payment_request::NostrWaitInfo {

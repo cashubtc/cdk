@@ -277,8 +277,12 @@ async fn main() -> Result<()> {
                 .await
         }
         Commands::UpdateMintUrl(sub_command_args) => {
-            sub_commands::update_mint_url::update_mint_url(&wallet_repository, sub_command_args)
-                .await
+            sub_commands::update_mint_url::update_mint_url(
+                &wallet_repository,
+                sub_command_args,
+                &currency_unit,
+            )
+            .await
         }
         Commands::ListMintProofs => {
             sub_commands::list_mint_proofs::proofs(&wallet_repository).await

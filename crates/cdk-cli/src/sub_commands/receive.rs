@@ -6,8 +6,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use cdk::nuts::{CurrencyUnit, SecretKey, Token};
 use cdk::util::unix_time;
-use cdk::wallet::ReceiveOptions;
-use cdk::wallet::WalletRepository;
+use cdk::wallet::{ReceiveOptions, WalletRepository};
 use cdk::Amount;
 use clap::Args;
 use nostr_sdk::nips::nip04;
@@ -150,7 +149,7 @@ async fn receive_token(
     let mint_url = token.mint_url()?;
 
     // Check if the mint is already trusted
-    let is_trusted = wallet_repository.get_wallet(&mint_url).await.is_ok();
+    let is_trusted = wallet_repository.has_mint(&mint_url).await;
 
     // If mint is not trusted and we don't allow untrusted, error out
     if !is_trusted && !allow_untrusted {
