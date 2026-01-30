@@ -39,6 +39,34 @@ impl Mint {
             ));
         }
 
+        // Check max inputs limit
+        let inputs_count = input_proofs.len();
+        if inputs_count > self.max_inputs {
+            tracing::warn!(
+                "Swap request exceeds max inputs limit: {} > {}",
+                inputs_count,
+                self.max_inputs
+            );
+            return Err(Error::MaxInputsExceeded {
+                actual: inputs_count,
+                max: self.max_inputs,
+            });
+        }
+
+        // Check max outputs limit
+        let outputs_count = swap_request.outputs().len();
+        if outputs_count > self.max_outputs {
+            tracing::warn!(
+                "Swap request exceeds max outputs limit: {} > {}",
+                outputs_count,
+                self.max_outputs
+            );
+            return Err(Error::MaxOutputsExceeded {
+                actual: outputs_count,
+                max: self.max_outputs,
+            });
+        }
+
         // We don't need to check P2PK or HTLC again. It has all been checked above
         // and the code doesn't reach here unless such verifications were satisfactory
 

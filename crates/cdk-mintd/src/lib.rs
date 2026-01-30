@@ -368,6 +368,10 @@ async fn configure_mint_builder(
     // Configure caching with payment methods
     let mint_builder = configure_cache(settings, mint_builder, &payment_methods);
 
+    // Configure transaction limits
+    let mint_builder =
+        mint_builder.with_limits(settings.limits.max_inputs, settings.limits.max_outputs);
+
     Ok(mint_builder)
 }
 

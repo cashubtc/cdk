@@ -217,6 +217,7 @@ pub fn create_fake_wallet_settings(
             enable_swagger_ui: None,
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
+        limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::FakeWallet,
             invoice_description: None,
@@ -271,6 +272,7 @@ pub fn create_cln_settings(
             enable_swagger_ui: None,
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
+        limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::Cln,
             invoice_description: None,
@@ -320,6 +322,7 @@ pub fn create_lnd_settings(
             enable_swagger_ui: None,
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
+        limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::Lnd,
             invoice_description: None,

@@ -326,6 +326,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
     let mnemonic = Mnemonic::generate(12)?;
 
     mint_builder = mint_builder
+        .with_limits(2000, 2000)
         .with_name("pure test mint".to_string())
         .with_description("pure test mint".to_string())
         .with_urls(vec!["https://aaa".to_string()]);
