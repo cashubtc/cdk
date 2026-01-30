@@ -7,13 +7,12 @@ use async_trait::async_trait;
 use cashu::KeySet;
 
 use super::Error;
-use crate::common::ProofInfo;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
 use crate::wallet::{
-    self, MintQuote as WalletMintQuote, Transaction, TransactionDirection, TransactionId,
+    self, MintQuote as WalletMintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
 };
 
 #[cfg(feature = "test")]
@@ -92,27 +91,27 @@ where
     ) -> Result<Vec<Transaction>, Err>;
 
     /// Update the proofs in storage by adding new proofs or removing proofs by
-    /// their Y value (without transaction)
+    /// their Y value
     async fn update_proofs(
         &self,
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), Err>;
 
-    /// Update proofs state in storage (without transaction)
+    /// Update proofs state in storage
     async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Err>;
 
-    /// Add transaction to storage (without transaction)
+    /// Add transaction to storage
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Err>;
 
-    /// Update mint url (without transaction)
+    /// Update mint url
     async fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
         new_mint_url: MintUrl,
     ) -> Result<(), Err>;
 
-    /// Atomically increment Keyset counter and return new value (without transaction)
+    /// Atomically increment Keyset counter and return new value
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<u32, Err>;
 
     /// Add Mint to storage
@@ -149,7 +148,59 @@ where
     /// Remove transaction from storage
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Err>;
 
-    // KV Store write methods (non-transactional)
+    /// Add a wallet saga to storage.
+    ///
+    /// The saga should be created with `WalletSaga::new()` which initializes
+    /// `version = 0`. This is the starting point for optimistic locking.
+    async fn add_saga(&self, saga: wallet::WalletSaga) -> Result<(), Err>;
+
+    /// Get a wallet saga by ID.
+    async fn get_saga(&self, id: &uuid::Uuid) -> Result<Option<wallet::WalletSaga>, Err>;
+
+    /// Update a wallet saga with optimistic locking.
+    ///
+    /// Returns `Ok(true)` if the update succeeded (version match), or `Ok(false)`
+    /// if another instance modified the saga first (version mismatch).
+    async fn update_saga(&self, saga: wallet::WalletSaga) -> Result<bool, Err>;
+
+    /// Delete a wallet saga.
+    async fn delete_saga(&self, id: &uuid::Uuid) -> Result<(), Err>;
+
+    /// Get all incomplete sagas.
+    async fn get_incomplete_sagas(&self) -> Result<Vec<wallet::WalletSaga>, Err>;
+
+    /// Reserve proofs for an operation
+    async fn reserve_proofs(
+        &self,
+        ys: Vec<PublicKey>,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), Err>;
+
+    /// Release proofs reserved by an operation
+    async fn release_proofs(&self, operation_id: &uuid::Uuid) -> Result<(), Err>;
+
+    /// Get proofs reserved by an operation
+    async fn get_reserved_proofs(&self, operation_id: &uuid::Uuid) -> Result<Vec<ProofInfo>, Err>;
+
+    /// Reserve a melt quote for an operation.
+    async fn reserve_melt_quote(
+        &self,
+        quote_id: &str,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), Err>;
+
+    /// Release a melt quote reserved by an operation.
+    async fn release_melt_quote(&self, operation_id: &uuid::Uuid) -> Result<(), Err>;
+
+    /// Reserve a mint quote for an operation.
+    async fn reserve_mint_quote(
+        &self,
+        quote_id: &str,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), Err>;
+
+    /// Release a mint quote reserved by an operation.
+    async fn release_mint_quote(&self, operation_id: &uuid::Uuid) -> Result<(), Err>;
 
     /// Read a value from the key-value store
     async fn kv_read(

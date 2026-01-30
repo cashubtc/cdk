@@ -20,8 +20,8 @@ use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
 use cashu::mint_url::MintUrl;
 use cashu::{
-    CurrencyUnit, Id, MeltRequest, NotificationPayload, PreMintSecrets, ProofState, SecretKey,
-    SpendingConditions, State, SwapRequest,
+    CurrencyUnit, Id, MeltRequest, NotificationPayload, PaymentMethod, PreMintSecrets, ProofState,
+    SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
@@ -131,6 +131,7 @@ async fn test_swap_to_send() {
             token_proofs.clone(),
             ReceiveOptions::default(),
             token.memo().clone(),
+            Some(token.to_string()),
         )
         .await
         .expect("Failed to receive proofs");
@@ -804,16 +805,17 @@ async fn test_mint_change_with_fee_melt() {
     let fake_invoice = create_fake_invoice(1000, "".to_string());
 
     let melt_quote = wallet_alice
-        .melt_quote(fake_invoice.to_string(), None)
+        .melt_quote(PaymentMethod::BOLT11, fake_invoice.to_string(), None, None)
         .await
         .unwrap();
 
-    let w = wallet_alice
-        .melt_proofs(&melt_quote.id, proofs)
+    let prepared = wallet_alice
+        .prepare_melt_proofs(&melt_quote.id, proofs, std::collections::HashMap::new())
         .await
         .unwrap();
+    let w = prepared.confirm().await.unwrap();
 
-    assert_eq!(w.change.unwrap().total_amount().unwrap(), 97.into());
+    assert_eq!(w.change().unwrap().total_amount().unwrap(), 97.into());
 
     // Check amounts after melting
     // Melting redeems 100 sats and issues 97 sats as change
@@ -972,7 +974,7 @@ async fn test_concurrent_double_spend_melt() {
 
     // Create a melt quote
     let melt_quote = wallet_alice
-        .melt_quote(invoice.to_string(), None)
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
         .await
         .expect("Failed to create melt quote");
 

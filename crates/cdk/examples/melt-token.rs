@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,7 +8,7 @@ use bitcoin::hex::prelude::FromHex;
 use bitcoin::secp256k1::Secp256k1;
 use cdk::error::Error;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, SecretKey};
+use cdk::nuts::{CurrencyUnit, PaymentMethod, SecretKey};
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
@@ -29,7 +31,9 @@ async fn main() -> Result<(), Error> {
     // Create a new wallet
     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None)?;
 
-    let quote = wallet.mint_quote(amount, None).await?;
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
+        .await?;
     let proofs = wallet
         .wait_and_mint_quote(
             quote,
@@ -64,14 +68,32 @@ async fn main() -> Result<(), Error> {
         .to_string();
     println!("Invoice to be paid: {}", invoice_to_be_paid);
 
-    let melt_quote = wallet.melt_quote(invoice_to_be_paid, None).await?;
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice_to_be_paid, None, None)
+        .await?;
     println!(
         "Melt quote: {} {} {:?}",
         melt_quote.amount, melt_quote.state, melt_quote,
     );
 
-    let melted = wallet.melt(&melt_quote.id).await?;
-    println!("Melted: {:?}", melted);
+    // Prepare the melt - this shows fees before confirming
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await?;
+    println!(
+        "Prepared melt - Amount: {}, Total Fee: {}",
+        prepared.amount(),
+        prepared.total_fee()
+    );
+
+    // Confirm the melt to execute the payment
+    let confirmed = prepared.confirm().await?;
+    println!(
+        "Melted: state={:?}, amount={}, fee={}",
+        confirmed.state(),
+        confirmed.amount(),
+        confirmed.fee_paid()
+    );
 
     Ok(())
 }

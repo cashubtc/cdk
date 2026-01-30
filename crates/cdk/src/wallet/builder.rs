@@ -264,7 +264,6 @@ impl WalletBuilder {
             seed,
             client: client.clone(),
             subscription: SubscriptionManager::new(client, self.use_http_subscription),
-            in_error_swap_reverted_proofs: Arc::new(false.into()),
         })
     }
 }

@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::{bail, Result};
 use cdk::amount::{amount_for_offer, Amount, MSAT_IN_SAT};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, MeltOptions};
+use cdk::nuts::{CurrencyUnit, MeltOptions, PaymentMethod};
 use cdk::wallet::MultiMintWallet;
 use cdk::Bolt11Invoice;
 use clap::{Args, ValueEnum};
@@ -217,12 +217,14 @@ pub async fn pay(
         for (mint_url, melted) in results {
             println!(
                 "  {} - Paid: {}, Fee: {}",
-                mint_url, melted.amount, melted.fee_paid
+                mint_url,
+                melted.amount(),
+                melted.fee_paid()
             );
-            total_paid += melted.amount;
-            total_fees += melted.fee_paid;
+            total_paid += melted.amount();
+            total_fees += melted.fee_paid();
 
-            if let Some(preimage) = melted.preimage {
+            if let Some(preimage) = melted.payment_proof() {
                 println!("    Preimage: {}", preimage);
             }
         }
@@ -271,9 +273,11 @@ pub async fn pay(
 
                 println!(
                     "Payment successful: state={}, amount={}, fee_paid={}",
-                    melted.state, melted.amount, melted.fee_paid
+                    melted.state(),
+                    melted.amount(),
+                    melted.fee_paid()
                 );
-                if let Some(preimage) = melted.preimage {
+                if let Some(preimage) = melted.payment_proof() {
                     println!("Payment preimage: {}", preimage);
                 }
             }
@@ -316,7 +320,9 @@ pub async fn pay(
                     .ok_or_else(|| anyhow::anyhow!("Mint {} not found", mint_url))?;
 
                 // Get melt quote for BOLT12
-                let quote = wallet.melt_bolt12_quote(offer_str, options).await?;
+                let quote = wallet
+                    .melt_quote(PaymentMethod::BOLT12, offer_str, options, None)
+                    .await?;
 
                 // Display quote info
                 println!("Melt quote created:");
@@ -327,12 +333,21 @@ pub async fn pay(
                 println!("  Expiry: {}", quote.expiry);
 
                 // Execute the melt
-                let melted = wallet.melt(&quote.id).await?;
+                let prepared = wallet
+                    .prepare_melt(&quote.id, std::collections::HashMap::new())
+                    .await?;
+                println!(
+                    "Prepared melt - Amount: {}, Fee: {}",
+                    prepared.amount(),
+                    prepared.total_fee()
+                );
+                let confirmed = prepared.confirm().await?;
                 println!(
                     "Payment successful: Paid {} with fee {}",
-                    melted.amount, melted.fee_paid
+                    confirmed.amount(),
+                    confirmed.fee_paid()
                 );
-                if let Some(preimage) = melted.preimage {
+                if let Some(preimage) = confirmed.payment_proof() {
                     println!("Payment preimage: {}", preimage);
                 }
             }
@@ -383,12 +398,21 @@ pub async fn pay(
                 println!("  Expiry: {}", quote.expiry);
 
                 // Execute the melt
-                let melted = wallet.melt(&quote.id).await?;
+                let prepared = wallet
+                    .prepare_melt(&quote.id, std::collections::HashMap::new())
+                    .await?;
+                println!(
+                    "Prepared melt - Amount: {}, Fee: {}",
+                    prepared.amount(),
+                    prepared.total_fee()
+                );
+                let confirmed = prepared.confirm().await?;
                 println!(
                     "Payment successful: Paid {} with fee {}",
-                    melted.amount, melted.fee_paid
+                    confirmed.amount(),
+                    confirmed.fee_paid()
                 );
-                if let Some(preimage) = melted.preimage {
+                if let Some(preimage) = confirmed.payment_proof() {
                     println!("Payment preimage: {}", preimage);
                 }
             }

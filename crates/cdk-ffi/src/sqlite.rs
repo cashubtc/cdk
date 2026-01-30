@@ -32,7 +32,7 @@ impl WalletSqliteDatabase {
                     .block_on(async move { CdkWalletSqliteDatabase::new(file_path.as_str()).await })
             }
         }
-        .map_err(FfiError::database)?;
+        .map_err(FfiError::internal)?;
         Ok(Arc::new(Self {
             inner: FfiWalletSQLDatabase::new(db),
         }))
@@ -52,7 +52,7 @@ impl WalletSqliteDatabase {
                     .block_on(async move { cdk_sqlite::wallet::memory::empty().await })
             }
         }
-        .map_err(FfiError::database)?;
+        .map_err(FfiError::internal)?;
         Ok(Arc::new(Self {
             inner: FfiWalletSQLDatabase::new(db),
         }))

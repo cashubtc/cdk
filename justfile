@@ -79,6 +79,9 @@ test-pure db="memory":
   # Run swap flow tests (detailed testing of swap operation)
   CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test test_swap_flow -- --test-threads 1
 
+  # Run wallet saga tests
+  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test wallet_saga -- --test-threads 1
+
 test-all db="memory":
     #!/usr/bin/env bash
     set -euo pipefail

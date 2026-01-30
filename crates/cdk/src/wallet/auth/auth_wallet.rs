@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
+use cdk_common::wallet::ProofInfo;
 use cdk_common::{AuthProof, Id, Keys, MintInfo};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -16,7 +17,6 @@ use crate::nuts::{
     nut12, AuthRequired, AuthToken, BlindAuthToken, CurrencyUnit, KeySetInfo, PreMintSecrets,
     Proofs, ProtectedEndpoint, State,
 };
-use crate::types::ProofInfo;
 use crate::wallet::mint_connector::AuthHttpClient;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::{Amount, Error, OidcClient};

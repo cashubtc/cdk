@@ -1,8 +1,10 @@
+#![allow(missing_docs)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::error::Error;
-use cdk::nuts::{CurrencyUnit, SecretKey, SpendingConditions};
+use cdk::nuts::{CurrencyUnit, PaymentMethod, SecretKey, SpendingConditions};
 use cdk::wallet::{ReceiveOptions, SendOptions, Wallet};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
@@ -34,7 +36,9 @@ async fn main() -> Result<(), Error> {
     // Create a new wallet
     let wallet = Wallet::new(mint_url, unit, localstore, seed, None).unwrap();
 
-    let quote = wallet.mint_quote(amount, None).await?;
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
+        .await?;
     let proofs = wallet
         .wait_and_mint_quote(
             quote,

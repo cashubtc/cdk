@@ -1,17 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
 use cdk_common::amount::KeysetFeeAndAmounts;
-use cdk_common::wallet::TransactionId;
+use cdk_common::wallet::ProofInfo;
 use cdk_common::Id;
 use tracing::instrument;
 
-use crate::amount::SplitTarget;
 use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     CheckStateRequest, Proof, ProofState, Proofs, PublicKey, SpendingConditions, State,
 };
-use crate::types::ProofInfo;
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
 impl Wallet {
@@ -70,41 +68,6 @@ impl Wallet {
         Ok(())
     }
 
-    /// Reclaim unspent proofs
-    ///
-    /// Checks the stats of [`Proofs`] swapping for a new [`Proof`] if unspent
-    #[instrument(skip(self, proofs))]
-    pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), Error> {
-        let proof_ys = proofs.ys()?;
-
-        let transaction_id = TransactionId::new(proof_ys.clone());
-
-        let spendable = self
-            .client
-            .post_check_state(CheckStateRequest { ys: proof_ys })
-            .await?
-            .states;
-
-        let unspent: Proofs = proofs
-            .into_iter()
-            .zip(spendable)
-            .filter_map(|(p, s)| (s.state == State::Unspent).then_some(p))
-            .collect();
-
-        self.swap(None, SplitTarget::default(), unspent, None, false)
-            .await?;
-
-        let _ = self
-            .localstore
-            .remove_transaction(transaction_id)
-            .await
-            .inspect_err(|err| {
-                tracing::warn!("Failed to remove transaction: {:?}", err);
-            });
-
-        Ok(())
-    }
-
     /// NUT-07 Check the state of a [`Proof`] with the mint
     #[instrument(skip(self, proofs))]
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
@@ -127,7 +90,27 @@ impl Wallet {
         Ok(spendable.states)
     }
 
-    /// Checks pending proofs for spent status
+    /// Checks pending proofs for spent status and marks spent proofs accordingly.
+    ///
+    /// # Legacy Recovery Function
+    ///
+    /// This function is intended for recovering **orphaned proofs** that were stuck
+    /// in `Pending`, `Reserved`, or `PendingSpent` state before the saga pattern
+    /// was implemented, or proofs whose saga was deleted without proper cleanup.
+    ///
+    /// **Important**: This function only operates on proofs that are NOT currently
+    /// associated with an active saga operation (i.e., `used_by_operation` is `None`).
+    /// Proofs managed by active sagas are skipped to avoid interfering with in-flight
+    /// operations.
+    ///
+    /// For proofs that are part of active sagas, use the appropriate saga recovery
+    /// mechanism (`recover_incomplete_sagas`) or saga-specific methods like
+    /// `SendSaga::revoke()`.
+    ///
+    /// # Returns
+    ///
+    /// The total amount of orphaned proofs that remain pending (not spent by the mint)
+    /// after checking.
     #[instrument(skip(self))]
     pub async fn check_all_pending_proofs(&self) -> Result<Amount, Error> {
         let mut balance = Amount::ZERO;
@@ -142,12 +125,24 @@ impl Wallet {
             )
             .await?;
 
-        if proofs.is_empty() {
+        // Filter out proofs that are managed by active sagas
+        let orphaned_proofs: Vec<ProofInfo> = proofs
+            .into_iter()
+            .filter(|p| p.used_by_operation.is_none())
+            .collect();
+
+        if orphaned_proofs.is_empty() {
             return Ok(Amount::ZERO);
         }
 
         let states = self
-            .check_proofs_spent(proofs.clone().into_iter().map(|p| p.proof).collect())
+            .check_proofs_spent(
+                orphaned_proofs
+                    .clone()
+                    .into_iter()
+                    .map(|p| p.proof)
+                    .collect(),
+            )
             .await?;
 
         // Both `State::Pending` and `State::Unspent` should be included in the pending
@@ -160,9 +155,10 @@ impl Wallet {
             .map(|s| s.y)
             .collect();
 
-        let (pending_proofs, non_pending_proofs): (Vec<ProofInfo>, Vec<ProofInfo>) = proofs
-            .into_iter()
-            .partition(|p| pending_states.contains(&p.y));
+        let (pending_proofs, non_pending_proofs): (Vec<ProofInfo>, Vec<ProofInfo>) =
+            orphaned_proofs
+                .into_iter()
+                .partition(|p| pending_states.contains(&p.y));
 
         let amount = Amount::try_sum(pending_proofs.iter().map(|p| p.proof.amount))?;
 
@@ -215,7 +211,7 @@ impl Wallet {
             //
             // The first step is to sort the proofs, select the one with the biggest amount, and
             // perform a swap requesting the exact amount (covering the swap fees).
-            input_proofs.sort_by(|a, b| a.amount.cmp(&b.amount));
+            input_proofs.sort_by_key(|a| a.amount);
 
             if let Some(proof_to_exchange) = input_proofs.pop() {
                 let fee_ppk = fees_and_keyset_amounts

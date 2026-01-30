@@ -339,6 +339,15 @@ impl Amount<()> {
             .map(|v| Amount { value: v, unit: () })
     }
 
+    /// Subtracts `other` from `self`, returning zero if the result would be negative.
+    pub fn saturating_sub(self, other: Self) -> Self {
+        if other > self {
+            Self::ZERO
+        } else {
+            self - other
+        }
+    }
+
     /// Try sum to check for overflow
     pub fn try_sum<I>(iter: I) -> Result<Self, Error>
     where

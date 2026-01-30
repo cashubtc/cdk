@@ -31,6 +31,11 @@ pub struct MintQuote {
     pub payment_method: PaymentMethod,
     /// Secret key (optional, hex-encoded)
     pub secret_key: Option<String>,
+    /// Operation ID that reserved this quote
+    pub used_by_operation: Option<String>,
+    /// Version for optimistic locking
+    #[serde(default)]
+    pub version: u32,
 }
 
 impl From<cdk::wallet::MintQuote> for MintQuote {
@@ -47,6 +52,8 @@ impl From<cdk::wallet::MintQuote> for MintQuote {
             amount_paid: quote.amount_paid.into(),
             payment_method: quote.payment_method.into(),
             secret_key: quote.secret_key.map(|sk| sk.to_secret_hex()),
+            used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
+            version: quote.version,
         }
     }
 }
@@ -73,6 +80,8 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             amount_paid: quote.amount_paid.into(),
             payment_method: quote.payment_method.into(),
             secret_key,
+            used_by_operation: quote.used_by_operation,
+            version: quote.version,
         })
     }
 }
@@ -140,6 +149,20 @@ impl From<cdk::nuts::MintQuoteBolt11Response<String>> for MintQuoteBolt11Respons
             amount: response.amount.map(Into::into),
             unit: response.unit.map(Into::into),
             pubkey: response.pubkey.map(|p| p.to_string()),
+        }
+    }
+}
+
+impl From<cdk::wallet::MintQuote> for MintQuoteBolt11Response {
+    fn from(quote: cdk::wallet::MintQuote) -> Self {
+        Self {
+            quote: quote.id,
+            request: quote.request,
+            state: quote.state.into(),
+            expiry: Some(quote.expiry),
+            amount: quote.amount.map(Into::into),
+            unit: Some(quote.unit.into()),
+            pubkey: quote.secret_key.map(|sk| sk.public_key().to_string()),
         }
     }
 }
@@ -333,6 +356,11 @@ pub struct MeltQuote {
     pub payment_preimage: Option<String>,
     /// Payment method
     pub payment_method: PaymentMethod,
+    /// Operation ID that reserved this quote
+    pub used_by_operation: Option<String>,
+    /// Version for optimistic locking
+    #[serde(default)]
+    pub version: u32,
 }
 
 impl From<cdk::wallet::MeltQuote> for MeltQuote {
@@ -347,6 +375,8 @@ impl From<cdk::wallet::MeltQuote> for MeltQuote {
             expiry: quote.expiry,
             payment_preimage: quote.payment_preimage.clone(),
             payment_method: quote.payment_method.into(),
+            used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
+            version: quote.version,
         }
     }
 }
@@ -365,6 +395,8 @@ impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
             expiry: quote.expiry,
             payment_preimage: quote.payment_preimage,
             payment_method: quote.payment_method.into(),
+            used_by_operation: quote.used_by_operation,
+            version: quote.version,
         })
     }
 }
