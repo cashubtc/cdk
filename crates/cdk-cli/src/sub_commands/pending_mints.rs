@@ -7,7 +7,7 @@ pub async fn mint_pending(wallet_repository: &WalletRepository) -> Result<()> {
     let mut total_amount = Amount::ZERO;
 
     for wallet in wallets {
-        let amount = wallet.check_all_mint_quotes().await?;
+        let amount = wallet.check_all_pending_proofs().await?;
         total_amount += amount;
     }
 

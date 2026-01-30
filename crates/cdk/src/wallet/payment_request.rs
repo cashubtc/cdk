@@ -329,12 +329,12 @@ impl WalletRepository {
                 if *balance >= amount && *balance > best_balance {
                     if let Ok(wallet) = self.get_wallet(&wallet_key.mint_url, &unit).await {
                         best_balance = *balance;
-                        best_wallet = Some(wallet);
+                        best_wallet = Some(Arc::new(wallet));
                     }
                 }
             }
 
-            best_wallet.ok_or(Error::InsufficientFunds)?
+            best_wallet.map(|w| (*w).clone()).ok_or(Error::InsufficientFunds)?
         };
 
         // Use the selected wallet to pay the request

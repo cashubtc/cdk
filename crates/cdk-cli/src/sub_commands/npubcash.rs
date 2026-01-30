@@ -25,9 +25,11 @@ async fn get_wallet_for_mint(
         wallet_repository.add_mint(mint_url.clone()).await?;
     }
 
-    Ok(wallet_repository
-        .get_or_create_wallet(&mint_url, CurrencyUnit::Sat)
-        .await?)
+    Ok(Arc::new(
+        wallet_repository
+            .get_or_create_wallet(&mint_url, CurrencyUnit::Sat)
+            .await?,
+    ))
 }
 
 #[derive(Subcommand)]

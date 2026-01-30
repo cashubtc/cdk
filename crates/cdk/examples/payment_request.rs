@@ -27,7 +27,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::amount::SplitTarget;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::nut00::KnownMethod;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::payment_request::CreateRequestParams;
 use cdk::wallet::WalletRepository;
 use cdk_sqlite::wallet::memory;
@@ -66,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     let mint_wallet = wallet
         .get_or_create_wallet(&mint_url.parse()?, unit.clone())
         .await?;
-    let mint_quote = mint_wallet.mint_quote(initial_amount, None).await?;
+    let mint_quote = mint_wallet.mint_quote(PaymentMethod::Known(KnownMethod::Bolt11), Some(initial_amount), None, None).await?;
 
     println!(
         "Pay this invoice to fund the wallet:\n{}",

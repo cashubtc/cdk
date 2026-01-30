@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use cdk::amount::{amount_for_offer, Amount, MSAT_IN_SAT};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, MeltOptions};
+use cdk::nuts::nut00::KnownMethod;
+use cdk::nuts::{CurrencyUnit, MeltOptions, PaymentMethod};
 use cdk::wallet::WalletRepository;
 use cdk::Bolt11Invoice;
 use cdk_common::wallet::WalletKey;
@@ -170,7 +172,7 @@ pub async fn pay(
             let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
 
             // Get melt quote
-            let quote = wallet.melt_quote(bolt11_str.clone(), options).await?;
+            let quote = wallet.melt_quote(PaymentMethod::Known(KnownMethod::Bolt11), bolt11_str.clone(), options, None).await?;
 
             println!("Melt quote created:");
             println!("  Quote ID: {}", quote.id);
@@ -178,13 +180,13 @@ pub async fn pay(
             println!("  Fee Reserve: {}", quote.fee_reserve);
 
             // Execute the melt
-            let melted = wallet.melt(&quote.id).await?;
+            let melted = wallet.prepare_melt(&quote.id, HashMap::new()).await?.confirm().await?;
 
             println!(
-                "Payment successful: state={}, amount={}, fee_paid={}",
-                melted.state, melted.amount, melted.fee_paid
+                "Payment successful: state={:?}, amount={}, fee_paid={}",
+                melted.state(), melted.amount(), melted.fee_paid()
             );
-            if let Some(preimage) = melted.preimage {
+            if let Some(preimage) = melted.payment_proof() {
                 println!("Payment preimage: {}", preimage);
             }
         }
@@ -223,7 +225,7 @@ pub async fn pay(
             let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
 
             // Get melt quote for BOLT12
-            let quote = wallet.melt_bolt12_quote(offer_str, options).await?;
+            let quote = wallet.melt_quote(PaymentMethod::Known(KnownMethod::Bolt12), offer_str, options, None).await?;
 
             // Display quote info
             println!("Melt quote created:");
@@ -234,12 +236,12 @@ pub async fn pay(
             println!("  Expiry: {}", quote.expiry);
 
             // Execute the melt
-            let melted = wallet.melt(&quote.id).await?;
+            let melted = wallet.prepare_melt(&quote.id, HashMap::new()).await?.confirm().await?;
             println!(
                 "Payment successful: Paid {} with fee {}",
-                melted.amount, melted.fee_paid
+                melted.amount(), melted.fee_paid()
             );
-            if let Some(preimage) = melted.preimage {
+            if let Some(preimage) = melted.payment_proof() {
                 println!("Payment preimage: {}", preimage);
             }
         }
@@ -287,12 +289,12 @@ pub async fn pay(
             println!("  Expiry: {}", quote.expiry);
 
             // Execute the melt
-            let melted = wallet.melt(&quote.id).await?;
+            let melted = wallet.prepare_melt(&quote.id, HashMap::new()).await?.confirm().await?;
             println!(
                 "Payment successful: Paid {} with fee {}",
-                melted.amount, melted.fee_paid
+                melted.amount(), melted.fee_paid()
             );
-            if let Some(preimage) = melted.preimage {
+            if let Some(preimage) = melted.payment_proof() {
                 println!("Payment preimage: {}", preimage);
             }
         }
