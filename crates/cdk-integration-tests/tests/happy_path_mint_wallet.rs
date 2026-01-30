@@ -133,7 +133,12 @@ async fn test_happy_mint_melt_round_trip() {
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
     let melt = wallet
-        .melt_quote(PaymentMethod::Known(KnownMethod::Bolt11), invoice.to_string(), None, None)
+        .melt_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -649,7 +654,12 @@ async fn test_melt_quote_status_after_melt() {
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
     let melt_quote = wallet
-        .melt_quote(PaymentMethod::Known(KnownMethod::Bolt11), invoice.to_string(), None, None)
+        .melt_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -714,7 +724,15 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .await
         .expect("failed to get wallet");
 
-    let mint_quote = wallet.mint_quote(PaymentMethod::Known(KnownMethod::Bolt11), Some(100.into()), None, None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            Some(100.into()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice)
@@ -736,12 +754,29 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
 
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
-    let melt_quote = wallet.melt_quote(PaymentMethod::Known(KnownMethod::Bolt11), invoice.to_string(), None, None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            invoice.to_string(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
-    let melt_response: cdk::types::FinalizedMelt = wallet.prepare_melt(&melt_quote.id, HashMap::new()).await.unwrap().confirm().await.unwrap();
+    let melt_response: cdk::types::FinalizedMelt = wallet
+        .prepare_melt(&melt_quote.id, HashMap::new())
+        .await
+        .unwrap()
+        .confirm()
+        .await
+        .unwrap();
     assert_eq!(melt_response.state(), MeltQuoteState::Paid);
 
-    let quote_status = wallet.check_melt_quote_status(&melt_quote.id).await.unwrap();
+    let quote_status = wallet
+        .check_melt_quote_status(&melt_quote.id)
+        .await
+        .unwrap();
     assert_eq!(
         quote_status.state,
         MeltQuoteState::Paid,
@@ -805,7 +840,12 @@ async fn test_fake_melt_change_in_quote() {
     let proofs = wallet.get_unspent_proofs().await.unwrap();
 
     let melt_quote = wallet
-        .melt_quote(PaymentMethod::Known(KnownMethod::Bolt11), invoice.to_string(), None, None)
+        .melt_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -889,7 +929,12 @@ async fn test_pay_invoice_twice() {
     let invoice = create_invoice_for_env(Some(25)).await.unwrap();
 
     let melt_quote = wallet
-        .melt_quote(PaymentMethod::Known(KnownMethod::Bolt11), invoice.to_string(), None, None)
+        .melt_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -901,7 +946,12 @@ async fn test_pay_invoice_twice() {
 
     // Creating a second quote for the same invoice is allowed
     let melt_quote_two = wallet
-        .melt_quote(PaymentMethod::Known(KnownMethod::Bolt11), invoice.to_string(), None, None)
+        .melt_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
