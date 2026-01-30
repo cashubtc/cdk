@@ -1,6 +1,7 @@
 use anyhow::Result;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::wallet::WalletRepository;
+use cdk::Amount;
 
 pub async fn check_pending(wallet_repository: &WalletRepository) -> Result<()> {
     let wallets = wallet_repository.get_wallets().await;
@@ -9,24 +10,20 @@ pub async fn check_pending(wallet_repository: &WalletRepository) -> Result<()> {
         let mint_url = wallet.mint_url.clone();
         println!("{i}: {mint_url}");
 
-        // Get all pending proofs
-        let pending_proofs = wallet.get_pending_proofs().await?;
-        if pending_proofs.is_empty() {
-            println!("No pending proofs found");
-            continue;
-        }
-
-        println!(
-            "Found {} pending proofs with {} {}",
-            pending_proofs.len(),
-            pending_proofs.total_amount()?,
-            wallet.unit
-        );
-
-        // Try to reclaim any proofs that are no longer pending
-        match wallet.reclaim_unspent(pending_proofs).await {
-            Ok(()) => println!("Successfully reclaimed pending proofs"),
-            Err(e) => println!("Error reclaimed pending proofs: {e}"),
+        // Check all orphaned pending proofs (not managed by active sagas)
+        // This function queries the mint and marks spent proofs accordingly
+        match wallet.check_all_pending_proofs().await {
+            Ok(pending_amount) => {
+                if pending_amount == Amount::ZERO {
+                    println!("No orphaned pending proofs found");
+                } else {
+                    println!(
+                        "Checked pending proofs: {} {} still pending",
+                        pending_amount, wallet.unit
+                    );
+                }
+            }
+            Err(e) => println!("Error checking pending proofs: {e}"),
         }
     }
     Ok(())

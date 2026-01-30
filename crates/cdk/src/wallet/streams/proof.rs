@@ -116,12 +116,7 @@ impl Stream for MultipleMintQuoteProofStream<'_> {
                                 .await
                                 .map(|proofs| (mint_quote, proofs)),
                             PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => wallet
-                                .mint_bolt12(
-                                    &mint_quote.id,
-                                    amount,
-                                    amount_split_target,
-                                    spending_conditions,
-                                )
+                                .mint(&mint_quote.id, amount_split_target, spending_conditions)
                                 .await
                                 .map(|proofs| (mint_quote, proofs)),
                             _ => Err(Error::UnsupportedPaymentMethod),

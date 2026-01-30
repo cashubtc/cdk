@@ -40,9 +40,8 @@
         stdenv = pkgs.stdenv;
         isDarwin = stdenv.isDarwin;
         libsDarwin =
-          with pkgs;
           lib.optionals isDarwin [
-            # Additional darwin specific inputs can be set here
+            # Additional drwin specific inputs can be set here
             # Note: Security and SystemConfiguration frameworks are provided by the default SDK
           ];
 
@@ -53,7 +52,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.92.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.93.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
           extensions = [
             "rustfmt"
