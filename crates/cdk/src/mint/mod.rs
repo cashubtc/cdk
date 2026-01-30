@@ -183,6 +183,21 @@ impl Mint {
                     stored.pubkey = computed_info.pubkey;
                     mutated = true;
                 }
+
+                // Merge auth settings from computed_info if stored doesn't have them
+                // Protected endpoints will be populated dynamically from auth database
+                #[cfg(feature = "auth")]
+                {
+                    if stored.nuts.nut21.is_none() && computed_info.nuts.nut21.is_some() {
+                        stored.nuts.nut21 = computed_info.nuts.nut21.clone();
+                        mutated = true;
+                    }
+                    if stored.nuts.nut22.is_none() && computed_info.nuts.nut22.is_some() {
+                        stored.nuts.nut22 = computed_info.nuts.nut22.clone();
+                        mutated = true;
+                    }
+                }
+
                 if mutated {
                     let updated = serde_json::to_vec(&stored)?;
                     let mut tx = localstore.begin_transaction().await?;
