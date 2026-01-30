@@ -334,7 +334,9 @@ impl WalletRepository {
                 }
             }
 
-            best_wallet.map(|w| (*w).clone()).ok_or(Error::InsufficientFunds)?
+            best_wallet
+                .map(|w| (*w).clone())
+                .ok_or(Error::InsufficientFunds)?
         };
 
         // Use the selected wallet to pay the request

@@ -759,9 +759,10 @@ impl Wallet {
                     .client
                     .get_melt_quote_custom_status(method, quote_id)
                     .await?;
-                let change_amount = response.change.as_ref().and_then(|change| {
-                    Amount::try_sum(change.iter().map(|sig| sig.amount)).ok()
-                });
+                let change_amount = response
+                    .change
+                    .as_ref()
+                    .and_then(|change| Amount::try_sum(change.iter().map(|sig| sig.amount)).ok());
                 self.update_melt_quote_state(
                     &mut quote,
                     response.state,
