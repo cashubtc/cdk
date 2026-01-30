@@ -12,13 +12,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cashu::nut00::KnownMethod;
 use cashu::secret::Secret;
-use cashu::{Amount, CurrencyUnit, SecretKey};
+use cashu::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
 
 use super::*;
-use crate::common::ProofInfo;
 use crate::mint_url::MintUrl;
 use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, State};
-use crate::wallet::{MeltQuote, MintQuote, Transaction, TransactionDirection};
+use crate::wallet::{
+    MeltQuote, MintQuote, OperationData, ProofInfo, SwapOperationData, SwapSagaState, Transaction,
+    TransactionDirection, WalletSaga, WalletSagaState,
+};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -128,6 +130,8 @@ fn test_melt_quote() -> MeltQuote {
         expiry: 9999999999,
         payment_preimage: None,
         payment_method: cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        used_by_operation: None,
+        version: 0,
     }
 }
 
@@ -148,7 +152,26 @@ fn test_transaction(mint_url: MintUrl, direction: TransactionDirection) -> Trans
         payment_request: None,
         payment_proof: None,
         payment_method: None,
+        saga_id: None,
     }
+}
+
+/// Create a test wallet saga
+fn test_wallet_saga(mint_url: MintUrl) -> WalletSaga {
+    WalletSaga::new(
+        uuid::Uuid::new_v4(),
+        WalletSagaState::Swap(SwapSagaState::ProofsReserved),
+        Amount::from(1000),
+        mint_url,
+        CurrencyUnit::Sat,
+        OperationData::Swap(SwapOperationData {
+            input_amount: Amount::from(1000),
+            output_amount: Amount::from(990),
+            counter_start: Some(0),
+            counter_end: Some(10),
+            blinded_messages: None,
+        }),
+    )
 }
 
 // =============================================================================
@@ -470,6 +493,86 @@ where
 
     let retrieved = db.get_melt_quote(&quote.id).await.unwrap();
     assert!(retrieved.is_none());
+}
+
+/// Test mint quote optimistic locking
+pub async fn add_mint_quote_optimistic_locking<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let quote = test_mint_quote(mint_url);
+
+    // 1. Initial add (insert)
+    db.add_mint_quote(quote.clone()).await.unwrap();
+
+    let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 0);
+
+    // 2. Update (version 0 -> 1)
+    let mut quote_update_1 = quote.clone();
+    quote_update_1.state = MintQuoteState::Issued; // Change something
+    db.add_mint_quote(quote_update_1.clone()).await.unwrap();
+
+    let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert_eq!(retrieved.state, MintQuoteState::Issued);
+
+    // 3. Stale update (using version 0) - should fail
+    // quote_update_1 still has version 0
+    let mut stale_quote = quote_update_1.clone();
+    stale_quote.amount = Some(Amount::from(999));
+
+    let result = db.add_mint_quote(stale_quote).await;
+    assert!(matches!(
+        result,
+        Err(crate::database::Error::ConcurrentUpdate)
+    ));
+
+    // Verify DB wasn't changed
+    let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert_eq!(retrieved.state, MintQuoteState::Issued);
+    assert_ne!(retrieved.amount, Some(Amount::from(999)));
+}
+
+/// Test melt quote optimistic locking
+pub async fn add_melt_quote_optimistic_locking<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let quote = test_melt_quote();
+
+    // 1. Initial add (insert)
+    db.add_melt_quote(quote.clone()).await.unwrap();
+
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 0);
+
+    // 2. Update (version 0 -> 1)
+    let mut quote_update_1 = quote.clone();
+    quote_update_1.state = MeltQuoteState::Paid;
+    db.add_melt_quote(quote_update_1.clone()).await.unwrap();
+
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert_eq!(retrieved.state, MeltQuoteState::Paid);
+
+    // 3. Stale update (using version 0) - should fail
+    let mut stale_quote = quote_update_1.clone();
+    stale_quote.amount = Amount::from(999);
+
+    let result = db.add_melt_quote(stale_quote).await;
+    assert!(matches!(
+        result,
+        Err(crate::database::Error::ConcurrentUpdate)
+    ));
+
+    // Verify DB wasn't changed
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert_eq!(retrieved.state, MeltQuoteState::Paid);
+    assert_ne!(retrieved.amount, Amount::from(999));
 }
 
 // =============================================================================
@@ -1020,6 +1123,296 @@ where
     assert_eq!(value3, Some(b"value_sub2".to_vec()));
 }
 
+// =============================================================================
+// Wallet Saga Tests
+// =============================================================================
+
+/// Test adding and retrieving a saga
+pub async fn add_and_get_saga<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let saga = test_wallet_saga(mint_url);
+    let saga_id = saga.id;
+
+    // Add saga
+    db.add_saga(saga.clone()).await.unwrap();
+
+    // Get saga
+    let retrieved = db.get_saga(&saga_id).await.unwrap();
+    assert!(retrieved.is_some());
+    let retrieved = retrieved.unwrap();
+    assert_eq!(retrieved.id, saga_id);
+    assert_eq!(retrieved.version, 0);
+    assert_eq!(retrieved.amount, Amount::from(1000));
+}
+
+/// Test saga optimistic locking
+pub async fn update_saga_optimistic_locking<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let saga = test_wallet_saga(mint_url);
+    let saga_id = saga.id;
+
+    // Add saga
+    db.add_saga(saga).await.unwrap();
+
+    // Get saga and update state
+    let mut saga = db.get_saga(&saga_id).await.unwrap().unwrap();
+    assert_eq!(saga.version, 0);
+
+    saga.update_state(WalletSagaState::Swap(SwapSagaState::SwapRequested));
+    assert_eq!(saga.version, 1);
+
+    // Update should succeed
+    let success = db.update_saga(saga.clone()).await.unwrap();
+    assert!(success);
+
+    // Verify updated state
+    let retrieved = db.get_saga(&saga_id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert!(matches!(
+        retrieved.state,
+        WalletSagaState::Swap(SwapSagaState::SwapRequested)
+    ));
+
+    // Try to update with stale version (simulating concurrent access)
+    let mut stale_saga = saga.clone();
+    stale_saga.version = 0; // Reset to old version
+    stale_saga.update_state(WalletSagaState::Swap(SwapSagaState::ProofsReserved));
+    // Now version is 1, but DB has version 1, so expected_version would be 0
+
+    // This should fail due to version mismatch
+    let success = db.update_saga(stale_saga).await.unwrap();
+    assert!(!success);
+
+    // Original state should be unchanged
+    let retrieved = db.get_saga(&saga_id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert!(matches!(
+        retrieved.state,
+        WalletSagaState::Swap(SwapSagaState::SwapRequested)
+    ));
+}
+
+/// Test deleting a saga
+pub async fn delete_saga<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let saga = test_wallet_saga(mint_url);
+    let saga_id = saga.id;
+
+    // Add saga
+    db.add_saga(saga).await.unwrap();
+
+    // Verify it exists
+    let retrieved = db.get_saga(&saga_id).await.unwrap();
+    assert!(retrieved.is_some());
+
+    // Delete saga
+    db.delete_saga(&saga_id).await.unwrap();
+
+    // Verify it's gone
+    let retrieved = db.get_saga(&saga_id).await.unwrap();
+    assert!(retrieved.is_none());
+}
+
+/// Test getting incomplete sagas
+pub async fn get_incomplete_sagas<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+
+    // Add multiple sagas
+    let saga1 = test_wallet_saga(mint_url.clone());
+    let saga2 = test_wallet_saga(mint_url.clone());
+    let saga3 = test_wallet_saga(mint_url);
+    let saga1_id = saga1.id;
+    let saga3_id = saga3.id;
+
+    db.add_saga(saga1).await.unwrap();
+    db.add_saga(saga2.clone()).await.unwrap();
+    db.add_saga(saga3).await.unwrap();
+
+    // Get all incomplete sagas
+    let incomplete = db.get_incomplete_sagas().await.unwrap();
+    assert_eq!(incomplete.len(), 3);
+
+    // Delete one saga (simulating completion)
+    db.delete_saga(&saga2.id).await.unwrap();
+
+    // Should now have 2 incomplete
+    let incomplete = db.get_incomplete_sagas().await.unwrap();
+    assert_eq!(incomplete.len(), 2);
+
+    // Verify the correct ones remain
+    let ids: Vec<_> = incomplete.iter().map(|s| s.id).collect();
+    assert!(ids.contains(&saga1_id));
+    assert!(ids.contains(&saga3_id));
+}
+
+// =============================================================================
+// Proof Reservation Tests
+// =============================================================================
+
+/// Test reserving proofs for an operation
+pub async fn reserve_proofs<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let proof_info_1 = test_proof_info(keyset_id, 100, mint_url.clone());
+    let proof_info_2 = test_proof_info(keyset_id, 200, mint_url.clone());
+
+    // Add proofs
+    db.update_proofs(vec![proof_info_1.clone(), proof_info_2.clone()], vec![])
+        .await
+        .unwrap();
+
+    // Reserve proofs for an operation
+    let operation_id = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_info_1.y, proof_info_2.y], &operation_id)
+        .await
+        .unwrap();
+
+    // Verify proofs are now reserved
+    let proofs = db
+        .get_proofs(None, None, Some(vec![State::Reserved]), None)
+        .await
+        .unwrap();
+    assert_eq!(proofs.len(), 2);
+}
+
+/// Test releasing reserved proofs
+pub async fn release_proofs<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let proof_info_1 = test_proof_info(keyset_id, 100, mint_url.clone());
+    let proof_info_2 = test_proof_info(keyset_id, 200, mint_url.clone());
+
+    // Add proofs
+    db.update_proofs(vec![proof_info_1.clone(), proof_info_2.clone()], vec![])
+        .await
+        .unwrap();
+
+    // Reserve proofs
+    let operation_id = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_info_1.y, proof_info_2.y], &operation_id)
+        .await
+        .unwrap();
+
+    // Verify they're reserved
+    let reserved = db
+        .get_proofs(None, None, Some(vec![State::Reserved]), None)
+        .await
+        .unwrap();
+    assert_eq!(reserved.len(), 2);
+
+    // Release proofs
+    db.release_proofs(&operation_id).await.unwrap();
+
+    // Verify proofs are back to unspent
+    let unspent = db
+        .get_proofs(None, None, Some(vec![State::Unspent]), None)
+        .await
+        .unwrap();
+    assert_eq!(unspent.len(), 2);
+
+    let reserved = db
+        .get_proofs(None, None, Some(vec![State::Reserved]), None)
+        .await
+        .unwrap();
+    assert!(reserved.is_empty());
+}
+
+/// Test getting proofs reserved by an operation
+pub async fn get_reserved_proofs<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let proof_info_1 = test_proof_info(keyset_id, 100, mint_url.clone());
+    let proof_info_2 = test_proof_info(keyset_id, 200, mint_url.clone());
+    let proof_info_3 = test_proof_info(keyset_id, 300, mint_url.clone());
+
+    // Add proofs
+    db.update_proofs(
+        vec![
+            proof_info_1.clone(),
+            proof_info_2.clone(),
+            proof_info_3.clone(),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    // Reserve some proofs for operation 1
+    let operation_id_1 = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_info_1.y, proof_info_2.y], &operation_id_1)
+        .await
+        .unwrap();
+
+    // Reserve other proofs for operation 2
+    let operation_id_2 = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_info_3.y], &operation_id_2)
+        .await
+        .unwrap();
+
+    // Get proofs for operation 1
+    let reserved_1 = db.get_reserved_proofs(&operation_id_1).await.unwrap();
+    assert_eq!(reserved_1.len(), 2);
+    let ys_1: Vec<_> = reserved_1.iter().map(|p| p.y).collect();
+    assert!(ys_1.contains(&proof_info_1.y));
+    assert!(ys_1.contains(&proof_info_2.y));
+
+    // Get proofs for operation 2
+    let reserved_2 = db.get_reserved_proofs(&operation_id_2).await.unwrap();
+    assert_eq!(reserved_2.len(), 1);
+    assert_eq!(reserved_2[0].y, proof_info_3.y);
+
+    // Get proofs for non-existent operation
+    let empty = db.get_reserved_proofs(&uuid::Uuid::new_v4()).await.unwrap();
+    assert!(empty.is_empty());
+}
+
+/// Test that reserving already reserved proofs fails
+pub async fn reserve_proofs_already_reserved<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+
+    // Add proof
+    db.update_proofs(vec![proof_info.clone()], vec![])
+        .await
+        .unwrap();
+
+    // Reserve proof
+    let operation_id_1 = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_info.y], &operation_id_1)
+        .await
+        .unwrap();
+
+    // Try to reserve the same proof for another operation - should fail
+    let operation_id_2 = uuid::Uuid::new_v4();
+    let result = db.reserve_proofs(vec![proof_info.y], &operation_id_2).await;
+    assert!(result.is_err());
+}
+
 /// Unit test that is expected to be passed for a correct wallet database implementation
 #[macro_export]
 macro_rules! wallet_db_test {
@@ -1041,6 +1434,8 @@ macro_rules! wallet_db_test {
             add_and_get_melt_quote,
             get_melt_quote_in_transaction,
             remove_melt_quote,
+            add_mint_quote_optimistic_locking,
+            add_melt_quote_optimistic_locking,
             add_and_get_proofs,
             get_proofs_in_transaction,
             update_proofs,
@@ -1059,7 +1454,15 @@ macro_rules! wallet_db_test {
             kvstore_list,
             kvstore_update,
             kvstore_remove,
-            kvstore_namespace_isolation
+            kvstore_namespace_isolation,
+            add_and_get_saga,
+            update_saga_optimistic_locking,
+            delete_saga,
+            get_incomplete_sagas,
+            reserve_proofs,
+            release_proofs,
+            get_reserved_proofs,
+            reserve_proofs_already_reserved
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

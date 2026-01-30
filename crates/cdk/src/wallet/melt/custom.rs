@@ -14,7 +14,7 @@ impl Wallet {
     /// * `_options` - Melt options (currently unused for custom methods)
     /// * `extra` - Optional extra payment-method-specific data as JSON
     #[instrument(skip(self, request, extra))]
-    pub(super) async fn melt_quote_custom(
+    pub(crate) async fn melt_quote_custom(
         &self,
         method: &str,
         request: String,
@@ -31,17 +31,24 @@ impl Wallet {
         };
         let quote_res = self.client.post_melt_custom_quote(quote_request).await?;
 
+        // Construct MeltQuote from custom response
+        // Use response's request if present, otherwise fallback to input request
+        let quote_request_str = quote_res.request.unwrap_or(request);
+
         let quote = MeltQuote {
             id: quote_res.quote,
             amount: quote_res.amount,
-            request,
+            request: quote_request_str,
             unit: self.unit.clone(),
             fee_reserve: quote_res.fee_reserve,
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_preimage: quote_res.payment_preimage,
             payment_method: PaymentMethod::Custom(method.to_string()),
+            used_by_operation: None,
+            version: 0,
         };
+
         self.localstore.add_melt_quote(quote.clone()).await?;
 
         Ok(quote)

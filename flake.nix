@@ -41,7 +41,7 @@
         isDarwin = stdenv.isDarwin;
         libsDarwin =
           lib.optionals isDarwin [
-            # Additional darwin specific inputs can be set here
+            # Additional drwin specific inputs can be set here
             # Note: Security and SystemConfiguration frameworks are provided by the default SDK
           ];
 

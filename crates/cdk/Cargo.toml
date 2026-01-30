@@ -168,6 +168,22 @@ required-features = ["npubcash"]
 name = "configure_wallet"
 required-features = ["wallet"]
 
+[[example]]
+name = "receive-token"
+required-features = ["wallet"]
+
+[[example]]
+name = "multi-mint-wallet"
+required-features = ["wallet"]
+
+[[example]]
+name = "restore-wallet"
+required-features = ["wallet"]
+
+[[example]]
+name = "revoke_send"
+required-features = ["wallet"]
+
 [dev-dependencies]
 rand.workspace = true
 cdk-sqlite.workspace = true

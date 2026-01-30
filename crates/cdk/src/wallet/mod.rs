@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,6 +10,7 @@ use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
+use cdk_common::wallet::ProofInfo;
 use getrandom::getrandom;
 use subscription::{ActiveSubscription, SubscriptionManager};
 #[cfg(any(feature = "auth", feature = "npubcash"))]
@@ -29,7 +29,6 @@ use crate::nuts::{
     nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
 };
-use crate::types::ProofInfo;
 use crate::util::unix_time;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::Amount;
@@ -56,11 +55,14 @@ pub mod payment_request;
 mod proofs;
 mod receive;
 mod reclaim;
+mod recovery;
+pub(crate) mod saga;
 mod send;
 #[cfg(not(target_arch = "wasm32"))]
 mod streams;
 pub mod subscription;
 mod swap;
+pub mod test_utils;
 mod transactions;
 pub mod util;
 
@@ -68,6 +70,7 @@ pub mod util;
 pub use auth::{AuthMintConnector, AuthWallet};
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
+pub use melt::{MeltConfirmOptions, PreparedMelt};
 #[cfg(feature = "auth")]
 pub use mint_connector::http_client::AuthHttpClient as BaseAuthHttpClient;
 pub use mint_connector::http_client::HttpClient as BaseHttpClient;
@@ -82,6 +85,7 @@ pub use payment_request::CreateRequestParams;
 #[cfg(feature = "nostr")]
 pub use payment_request::NostrWaitInfo;
 pub use receive::ReceiveOptions;
+pub use recovery::RecoveryReport;
 pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
 
@@ -112,7 +116,6 @@ pub struct Wallet {
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
-    in_error_swap_reverted_proofs: Arc<AtomicBool>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -298,12 +301,10 @@ impl Wallet {
     /// its URL
     #[instrument(skip(self))]
     pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
-        // Update the mint URL in the wallet DB
         self.localstore
             .update_mint_url(self.mint_url.clone(), new_mint_url.clone())
             .await?;
 
-        // Update the mint URL in the wallet struct field
         self.mint_url = new_mint_url;
 
         Ok(())
@@ -615,8 +616,6 @@ impl Wallet {
                 start_counter += 100;
             }
 
-            // Set counter to highest found + 1 to avoid reusing any counter values
-            // that already have signatures at the mint
             if let Some(highest) = highest_counter {
                 self.localstore
                     .increment_keyset_counter(&keyset.id, highest + 1)

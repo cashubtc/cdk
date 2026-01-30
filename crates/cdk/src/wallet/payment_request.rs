@@ -5,6 +5,7 @@
 //! is returned so callers can handle alternative delivery mechanisms explicitly.
 
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::Result;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -306,7 +307,7 @@ impl MultiMintWallet {
         } else {
             // No mint specified - find the best matching mint with highest balance
             let balances = self.get_balances().await?;
-            let mut best_wallet: Option<Wallet> = None;
+            let mut best_wallet: Option<Arc<Wallet>> = None;
             let mut best_balance = Amount::ZERO;
 
             for (mint_url, balance) in balances.iter() {
