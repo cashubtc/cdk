@@ -362,11 +362,7 @@ impl WalletRepository {
         }
 
         // Check if this is the last wallet for the mint
-        let is_last_wallet = wallets
-            .keys()
-            .filter(|k| k.mint_url == mint_url)
-            .count()
-            == 1;
+        let is_last_wallet = wallets.keys().filter(|k| k.mint_url == mint_url).count() == 1;
 
         if is_last_wallet {
             self.localstore.remove_mint(mint_url).await?;
@@ -990,10 +986,7 @@ mod tests {
         let mint_url: MintUrl = "https://mint.example.com".parse().unwrap();
 
         // Add mint to DB manually to simulate existing state
-        localstore
-            .add_mint(mint_url.clone(), None)
-            .await
-            .unwrap();
+        localstore.add_mint(mint_url.clone(), None).await.unwrap();
 
         // Verify mint is in DB
         assert!(localstore
