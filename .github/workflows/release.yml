@@ -1,4 +1,5 @@
-name: Release Binaries
+me: Release Binaries
+
 on:
   release:
     types: [published]
@@ -52,10 +53,27 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Setup Cross
         if: matrix.use_cross
         run: |
           cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Configure Cross (install protoc in container)
+        if: matrix.use_cross
+        shell: bash
+        run: |
+          # Create Cross.toml to install protobuf-compiler inside the cross container
+          cat <<EOF > Cross.toml
+          [target.${{ matrix.target }}]
+          pre-build = [
+            "apt-get update && apt-get install -y protobuf-compiler"
+          ]
+          EOF
 
       - name: Build cdk-cli
         shell: bash
@@ -88,23 +106,4 @@ jobs:
           cd dist
           tar -czf ../${{ matrix.asset_name }}.tar.gz cdk-cli cdk-mintd
 
-      - name: Package artifacts (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: bash
-        run: |
-          mkdir -p dist
-          # cdk-cli
-          cp target/${{ matrix.target }}/release/cdk-cli.exe dist/cdk-cli.exe
-          # cdk-mintd
-          cp target/${{ matrix.target }}/release/cdk-mintd.exe dist/cdk-mintd.exe
 
-          cd dist
-          7z a ../${{ matrix.asset_name }}.zip cdk-cli.exe cdk-mintd.exe
-
-      - name: Upload binaries to release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: |
-            ${{ matrix.asset_name }}.tar.gz
-            ${{ matrix.asset_name }}.zip
