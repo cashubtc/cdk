@@ -425,7 +425,7 @@
           };
         });
 
-        buildInputs =
+        baseBuildInputs =
           with pkgs;
           [
             # Add additional build inputs here
@@ -436,20 +436,49 @@
             protobuf
             nixpkgs-fmt
             typos
-            lnd
-            clightningWithMako
-            bitcoind
-            sqlx-cli
-            mprocs
 
             cargo-outdated
             cargo-mutants
             cargo-fuzz
 
+            # Database
+            postgresql_16
+            startPostgres
+            stopPostgres
+            pgStatus
+            pgConnect
+
             # Needed for github ci
             libz
           ]
           ++ libsDarwin;
+
+        regtestBuildInputs =
+          with pkgs;
+          [
+            lnd
+            clightningWithMako
+            bitcoind
+            mprocs
+          ];
+
+        commonShellHook = ''
+          # Needed for github ci
+          export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [ pkgs.zlib ]}:$LD_LIBRARY_PATH
+        '';
+
+        pgShellHook = ''
+          # PostgreSQL environment variables
+          export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
+
+          echo ""
+          echo "PostgreSQL commands available:"
+          echo "  start-postgres  - Initialize and start PostgreSQL"
+          echo "  stop-postgres   - Stop PostgreSQL (run before exiting)"
+          echo "  pg-status       - Check PostgreSQL status"
+          echo "  pg-connect      - Connect to PostgreSQL with psql"
+          echo ""
+        '';
 
         # PostgreSQL configuration
         postgresConf = {
@@ -572,8 +601,8 @@
                   cargo update
                   cargo update home --precise 0.5.11
                   cargo update typed-index-collections --precise 3.3.0
-              ";
-                buildInputs = buildInputs ++ [ msrv_toolchain ];
+              " + commonShellHook + pgShellHook;
+                buildInputs = baseBuildInputs ++ [ msrv_toolchain ];
                 inherit nativeBuildInputs;
               }
               // envVars
@@ -581,32 +610,9 @@
 
             stable = pkgs.mkShell (
               {
-                shellHook = ''
-                  # Needed for github ci
-                  export LD_LIBRARY_PATH=${
-                    pkgs.lib.makeLibraryPath [
-                      pkgs.zlib
-                    ]
-                  }:$LD_LIBRARY_PATH
-
-                  # PostgreSQL environment variables
-                  export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
-
-                  echo ""
-                  echo "PostgreSQL commands available:"
-                  echo "  start-postgres  - Initialize and start PostgreSQL"
-                  echo "  stop-postgres   - Stop PostgreSQL (run before exiting)"
-                  echo "  pg-status       - Check PostgreSQL status"
-                  echo "  pg-connect      - Connect to PostgreSQL with psql"
-                  echo ""
-                '';
-                buildInputs = buildInputs ++ [
+                shellHook = commonShellHook + pgShellHook;
+                buildInputs = baseBuildInputs ++ [
                   stable_toolchain
-                  pkgs.postgresql_16
-                  startPostgres
-                  stopPostgres
-                  pgStatus
-                  pgConnect
                 ];
                 inherit nativeBuildInputs;
 
@@ -614,34 +620,33 @@
               // envVars
             );
 
+            regtest = pkgs.mkShell (
+              {
+                shellHook = commonShellHook + pgShellHook;
+                buildInputs = baseBuildInputs ++ regtestBuildInputs ++ [
+                  stable_toolchain
+                ];
+                inherit nativeBuildInputs;
+              }
+              // envVars
+            );
+
             nightly = pkgs.mkShell (
               {
-                shellHook = ''
-                  # Needed for github ci
-                  export LD_LIBRARY_PATH=${
-                    pkgs.lib.makeLibraryPath [
-                      pkgs.zlib
-                    ]
-                  }:$LD_LIBRARY_PATH
-
-                  # PostgreSQL environment variables
-                  export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
-
-                  echo ""
-                  echo "PostgreSQL commands available:"
-                  echo "  start-postgres  - Initialize and start PostgreSQL"
-                  echo "  stop-postgres   - Stop PostgreSQL (run before exiting)"
-                  echo "  pg-status       - Check PostgreSQL status"
-                  echo "  pg-connect      - Connect to PostgreSQL with psql"
-                  echo ""
-                '';
-                buildInputs = buildInputs ++ [
+                shellHook = commonShellHook + pgShellHook;
+                buildInputs = baseBuildInputs ++ [
                   nightly_toolchain
-                  pkgs.postgresql_16
-                  startPostgres
-                  stopPostgres
-                  pgStatus
-                  pgConnect
+                ];
+                inherit nativeBuildInputs;
+              }
+              // envVars
+            );
+
+            nightly-regtest = pkgs.mkShell (
+              {
+                shellHook = commonShellHook + pgShellHook;
+                buildInputs = baseBuildInputs ++ regtestBuildInputs ++ [
+                  nightly_toolchain
                 ];
                 inherit nativeBuildInputs;
               }
@@ -660,8 +665,8 @@
                   fi
                   echo "Docker is available at $(which docker)"
                   echo "Docker version: $(docker --version)"
-                '';
-                buildInputs = buildInputs ++ [
+                '' + commonShellHook + pgShellHook;
+                buildInputs = baseBuildInputs ++ regtestBuildInputs ++ [
                   stable_toolchain
                   pkgs.docker-client
                   pkgs.python311
@@ -674,12 +679,12 @@
             # Shell for FFI development (Python bindings)
             ffi = pkgs.mkShell (
               {
-                shellHook = ''
+                shellHook = commonShellHook + pgShellHook + ''
                   echo "FFI development shell"
                   echo "  just ffi-test        - Run Python FFI tests"
                   echo "  just ffi-dev-python  - Launch Python REPL with CDK FFI"
                 '';
-                buildInputs = buildInputs ++ [
+                buildInputs = baseBuildInputs ++ [
                   stable_toolchain
                   pkgs.python311
                 ];
@@ -693,7 +698,9 @@
             inherit
               msrv
               stable
+              regtest
               nightly
+              nightly-regtest
               integration
               ffi
               ;

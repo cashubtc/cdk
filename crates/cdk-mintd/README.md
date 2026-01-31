@@ -38,8 +38,11 @@ This project uses [Nix](https://nixos.org/) to manage development dependencies.
 git clone https://github.com/cashubtc/cdk.git
 cd cdk
 
-# Enter development environment
+# Enter lean development environment
 nix develop
+
+# OR enter full regtest environment (with bitcoind, cln, lnd, postgres)
+nix develop .#regtest
 
 # Build binary
 cargo build --bin cdk-mintd --release
