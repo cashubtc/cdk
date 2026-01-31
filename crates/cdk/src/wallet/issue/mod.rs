@@ -267,6 +267,10 @@ impl Wallet {
         let mut updated_quotes = Vec::new();
 
         for mint_quote in mint_quotes {
+            if mint_quote.mint_url != self.mint_url || mint_quote.unit != self.unit {
+                continue;
+            }
+
             match self.inner_check_mint_quote_status(mint_quote).await {
                 Ok(q) => updated_quotes.push(q),
                 Err(err) => {
@@ -286,6 +290,10 @@ impl Wallet {
         let mut total_amount = Amount::ZERO;
 
         for mint_quote in mint_quotes {
+            if mint_quote.mint_url != self.mint_url || mint_quote.unit != self.unit {
+                continue;
+            }
+
             let current_amount_issued = mint_quote.amount_issued;
 
             let mint_quote = match self.inner_check_mint_quote_status(mint_quote).await {

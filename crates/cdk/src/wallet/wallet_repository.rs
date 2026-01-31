@@ -866,12 +866,8 @@ impl WalletRepository {
         drop(wallets);
 
         for wallet in wallets_to_check {
-            let quotes = wallet.refresh_all_mint_quotes().await?;
-            for quote in quotes {
-                if let Some(amount) = quote.amount {
-                    total_minted += amount;
-                }
-            }
+            let minted = wallet.mint_unissued_quotes().await?;
+            total_minted += minted;
         }
 
         Ok(total_minted)
