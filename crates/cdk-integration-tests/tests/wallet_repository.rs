@@ -52,7 +52,15 @@ async fn fund_wallet_repository(
         .get_wallet(mint_url, &CurrencyUnit::Sat)
         .await
         .expect("wallet not found");
-    let mint_quote = wallet.mint_quote(PaymentMethod::Known(KnownMethod::Bolt11), Some(amount), None, None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            Some(amount),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice)
@@ -96,7 +104,15 @@ async fn test_wallet_repository_mint() {
         .expect("failed to get wallet");
 
     // Create mint quote
-    let mint_quote = wallet.mint_quote(PaymentMethod::Known(KnownMethod::Bolt11), Some(100.into()), None, None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            Some(100.into()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
     // Pay the invoice (in regtest mode) - for fake wallet, payment is simulated automatically
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
@@ -126,12 +142,11 @@ async fn test_wallet_repository_mint() {
             .await
             .unwrap();
     }
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        quote_status = wallet
-            .refresh_mint_quote_status(&mint_quote.id)
-            .await
-            .unwrap();
-
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    quote_status = wallet
+        .refresh_mint_quote_status(&mint_quote.id)
+        .await
+        .unwrap();
 
     // Call mint() directly (quote should be Paid at this point)
     let proofs = wallet
@@ -592,12 +607,11 @@ async fn test_wallet_repository_check_all_mint_quotes() {
             .await
             .unwrap();
     }
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        quote_status = wallet
-            .refresh_mint_quote_status(&mint_quote.id)
-            .await
-            .unwrap();
-
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    quote_status = wallet
+        .refresh_mint_quote_status(&mint_quote.id)
+        .await
+        .unwrap();
 
     // Check all mint quotes - this should find the paid quote and mint
     let minted_amount = wallet_repository
@@ -722,7 +736,10 @@ async fn test_wallet_repository_melt_with_mint() {
     );
 
     // Check melt quote status
-    let quote_status = wallet.check_melt_quote_status(&melt_quote.id).await.unwrap();
+    let quote_status = wallet
+        .check_melt_quote_status(&melt_quote.id)
+        .await
+        .unwrap();
 
     assert_eq!(
         quote_status.state,

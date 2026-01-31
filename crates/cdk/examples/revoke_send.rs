@@ -53,7 +53,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Minting {} sats...", mint_amount);
 
     let mint_quote = mint_wallet
-        .mint_quote(PaymentMethod::Known(KnownMethod::Bolt11), Some(mint_amount), None, None)
+        .mint_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            Some(mint_amount),
+            None,
+            None,
+        )
         .await?;
 
     // Wait for quote to be paid (automatic with fake mint)
@@ -104,9 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Check specific status
-    let claimed = mint_wallet
-        .check_send_status(operation_id)
-        .await?;
+    let claimed = mint_wallet.check_send_status(operation_id).await?;
     println!("Is token claimed? {}", claimed);
 
     if !claimed {
@@ -183,9 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check status from sender side
     println!("Checking status from sender...");
-    let claimed_2 = mint_wallet
-        .check_send_status(operation_id_2)
-        .await?;
+    let claimed_2 = mint_wallet.check_send_status(operation_id_2).await?;
     println!("Is token claimed? {}", claimed_2);
 
     if claimed_2 {

@@ -56,7 +56,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Creating mint quote for {} sats...", mint_amount);
 
     let mint_quote = mint_wallet
-        .mint_quote(PaymentMethod::Known(KnownMethod::Bolt11), Some(mint_amount), None, None)
+        .mint_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            Some(mint_amount),
+            None,
+            None,
+        )
         .await?;
     println!("Invoice to pay: {}", mint_quote.request);
 
