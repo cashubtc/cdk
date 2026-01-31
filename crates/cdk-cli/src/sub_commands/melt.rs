@@ -194,7 +194,7 @@ pub async fn pay(
                 .await?;
 
             println!(
-                "Payment successful: state={:?}, amount={}, fee_paid={}",
+                "Payment successful: state={}, amount={}, fee_paid={}",
                 melted.state(),
                 melted.amount(),
                 melted.fee_paid()

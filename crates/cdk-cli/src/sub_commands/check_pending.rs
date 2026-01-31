@@ -1,5 +1,4 @@
 use anyhow::Result;
-use cdk::nuts::nut00::ProofsMethods;
 use cdk::wallet::WalletRepository;
 use cdk::Amount;
 
