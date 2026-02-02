@@ -109,7 +109,10 @@ async fn test_happy_mint_melt_round_trip() {
     .expect("Failed to connect");
     let (mut write, mut reader) = ws_stream.split();
 
-    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice)
@@ -249,7 +252,10 @@ async fn test_happy_mint() {
 
     let mint_amount = Amount::from(100);
 
-    let mint_quote = wallet.mint_bolt11_quote(mint_amount, None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+        .await
+        .unwrap();
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
@@ -299,7 +305,10 @@ async fn test_restore() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice)
@@ -392,7 +401,10 @@ async fn test_restore_large_proof_count() {
     while remaining > 0 {
         let batch = remaining.min(batch_size);
 
-        let mint_quote = wallet.mint_bolt11_quote(batch.into(), None).await.unwrap();
+        let mint_quote = wallet
+            .mint_quote(PaymentMethod::BOLT11, Some(batch.into()), None, None)
+            .await
+            .unwrap();
 
         let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
         pay_if_regtest(&get_test_temp_dir(), &invoice)
@@ -490,7 +502,10 @@ async fn test_restore_with_counter_gap() {
     .expect("failed to create new wallet");
 
     // Mint first batch of proofs (uses counters starting at 0)
-    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice)
         .await
@@ -523,7 +538,10 @@ async fn test_restore_with_counter_gap() {
         .unwrap();
 
     // Mint second batch of proofs (uses counters after the gap)
-    let mint_quote2 = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
+    let mint_quote2 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
     let invoice2 = Bolt11Invoice::from_str(&mint_quote2.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice2)
         .await
@@ -626,7 +644,10 @@ async fn test_melt_quote_status_after_melt() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice)
@@ -709,7 +730,13 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .expect("failed to add mint");
 
     let mint_quote = multi_mint_wallet
-        .mint_quote(&mint_url, 100.into(), None)
+        .mint_quote(
+            &mint_url,
+            PaymentMethod::BOLT11,
+            Some(100.into()),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -735,7 +762,7 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
     let melt_quote = multi_mint_wallet
-        .melt_quote(&mint_url, invoice, None)
+        .melt_quote(&mint_url, PaymentMethod::BOLT11, invoice, None, None)
         .await
         .unwrap();
 
@@ -791,7 +818,10 @@ async fn test_fake_melt_change_in_quote() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
 
     let bolt11 = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
 
@@ -873,7 +903,10 @@ async fn test_pay_invoice_twice() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_bolt11_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
 
     pay_if_regtest(&get_test_temp_dir(), &mint_quote.request.parse().unwrap())
         .await

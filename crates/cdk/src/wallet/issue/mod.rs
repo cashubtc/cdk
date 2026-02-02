@@ -112,16 +112,6 @@ impl Wallet {
         Ok(quote)
     }
 
-    /// Mint Bolt11 Quote (Legacy Wrapper)
-    pub async fn mint_bolt11_quote(
-        &self,
-        amount: Amount,
-        description: Option<String>,
-    ) -> Result<MintQuote, Error> {
-        self.mint_quote(PaymentMethod::BOLT11, Some(amount), description, None)
-            .await
-    }
-
     /// Checks the state of a mint quote with the mint
     async fn check_state(&self, mint_quote: &mut MintQuote) -> Result<(), Error> {
         match mint_quote.payment_method {

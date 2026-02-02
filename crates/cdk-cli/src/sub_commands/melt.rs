@@ -254,7 +254,13 @@ pub async fn pay(
                 let melted = if let Some(mint_url) = selected_mint {
                     // User selected a specific mint - use the new mint-specific functions
                     let quote = multi_mint_wallet
-                        .melt_quote(&mint_url, bolt11_str.clone(), options)
+                        .melt_quote(
+                            &mint_url,
+                            PaymentMethod::BOLT11,
+                            bolt11_str.clone(),
+                            options,
+                            None,
+                        )
                         .await?;
 
                     println!("Melt quote created:");
