@@ -74,6 +74,7 @@ message RotationRequest {
   CurrencyUnit unit = 1;
   uint64 input_fee_ppk = 2;
   repeated uint64 amounts = 3;
+  bool use_keyset_v2 = 4;
 }
 
 enum CurrencyUnitType {

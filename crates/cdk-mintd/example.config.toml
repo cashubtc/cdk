@@ -7,6 +7,12 @@ mnemonic = ""
 # input_fee_ppk = 0
 # enable_swagger_ui = false
 
+# Set keyset version preference.
+# true = Force upgrade to V2 (Version01).
+# false = Force downgrade to V1 (Version00).
+# If unset (default), existing keysets are preserved, but new ones use V2.
+# use_keyset_v2 = true
+
 [info.quote_ttl]
 # Prefer explicit fields over inline tables for readability and ease of overrides
 mint_ttl = 600

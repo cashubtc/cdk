@@ -12,7 +12,7 @@ use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::DynMintPayment;
 #[cfg(feature = "auth")]
 use cdk_common::{database::DynMintAuthDatabase, nut21, nut22};
-use cdk_signatory::signatory::Signatory;
+use cdk_signatory::signatory::{RotateKeyArguments, Signatory};
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
@@ -37,6 +37,7 @@ pub struct MintBuilder {
     payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+    use_keyset_v2: Option<bool>,
 }
 
 impl std::fmt::Debug for MintBuilder {
@@ -72,7 +73,14 @@ impl MintBuilder {
             payment_processors: HashMap::new(),
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
+            use_keyset_v2: None,
         }
+    }
+
+    /// Set use keyset v2
+    pub fn with_keyset_v2(mut self, use_keyset_v2: Option<bool>) -> Self {
+        self.use_keyset_v2 = use_keyset_v2;
+        self
     }
 
     /// Set clear auth settings
@@ -384,6 +392,61 @@ impl MintBuilder {
         self,
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Mint, Error> {
+        // Check active keysets and rotate if necessary
+        let active_keysets = signatory.keysets().await?;
+
+        for (unit, (fee, max_order)) in &self.supported_units {
+            // Check if we have an active keyset for this unit
+            let keyset = active_keysets
+                .keysets
+                .iter()
+                .find(|k| k.active && k.unit == *unit);
+
+            let mut rotate = false;
+
+            if let Some(keyset) = keyset {
+                // Check if fee matches
+                if keyset.input_fee_ppk != *fee {
+                    tracing::info!(
+                        "Rotating keyset for unit {} due to fee mismatch (current: {}, expected: {})",
+                        unit,
+                        keyset.input_fee_ppk,
+                        fee
+                    );
+                    rotate = true;
+                }
+
+                // Check if version matches explicit preference
+                if let Some(want_v2) = self.use_keyset_v2 {
+                    let is_v2 =
+                        keyset.id.get_version() == cdk_common::nut02::KeySetVersion::Version01;
+                    if want_v2 && !is_v2 {
+                        tracing::info!("Rotating keyset for unit {} due to explicit V2 preference (current is V1)", unit);
+                        rotate = true;
+                    } else if !want_v2 && is_v2 {
+                        tracing::info!("Rotating keyset for unit {} due to explicit V1 preference (current is V2)", unit);
+                        rotate = true;
+                    }
+                }
+            } else {
+                // No active keyset for this unit
+                tracing::info!("Rotating keyset for unit {} (no active keyset found)", unit);
+                rotate = true;
+            }
+
+            if rotate {
+                let amounts: Vec<u64> = (0..*max_order).map(|i| 2_u64.pow(i as u32)).collect();
+                signatory
+                    .rotate_keyset(RotateKeyArguments {
+                        unit: unit.clone(),
+                        amounts,
+                        input_fee_ppk: *fee,
+                        use_keyset_v2: self.use_keyset_v2.unwrap_or(true),
+                    })
+                    .await?;
+            }
+        }
+
         #[cfg(feature = "auth")]
         if let Some(auth_localstore) = self.auth_localstore {
             return Mint::new_with_auth(
