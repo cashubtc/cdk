@@ -762,7 +762,7 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
     let melt_quote = multi_mint_wallet
-        .melt_quote(&mint_url, invoice, None)
+        .melt_quote(&mint_url, PaymentMethod::BOLT11, invoice, None, None)
         .await
         .unwrap();
 

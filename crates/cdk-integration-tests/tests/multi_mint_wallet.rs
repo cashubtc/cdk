@@ -618,7 +618,7 @@ async fn test_multi_mint_wallet_melt_with_mint() {
 
     // Create melt quote at specific mint
     let melt_quote = multi_mint_wallet
-        .melt_quote(&mint_url, invoice, None)
+        .melt_quote(&mint_url, PaymentMethod::BOLT11, invoice, None, None)
         .await
         .unwrap();
 
@@ -689,7 +689,7 @@ async fn test_multi_mint_wallet_list_transactions() {
     // Create an invoice and melt (this creates a melt transaction)
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
     let melt_quote = multi_mint_wallet
-        .melt_quote(&mint_url, invoice, None)
+        .melt_quote(&mint_url, PaymentMethod::BOLT11, invoice, None, None)
         .await
         .unwrap();
     multi_mint_wallet

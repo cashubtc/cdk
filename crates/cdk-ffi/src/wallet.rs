@@ -250,20 +250,6 @@ impl Wallet {
         Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
-    /// Get a melt quote
-    pub async fn melt_bolt11_quote(
-        &self,
-        request: String,
-        options: Option<MeltOptions>,
-    ) -> Result<MeltQuote, FfiError> {
-        let cdk_options = options.map(Into::into);
-        let quote = self
-            .inner
-            .melt_quote(cdk::nuts::PaymentMethod::BOLT11, request, cdk_options, None)
-            .await?;
-        Ok(quote.into())
-    }
-
     /// Prepare a melt operation
     ///
     /// Returns a `PreparedMelt` that can be confirmed or cancelled.
@@ -319,19 +305,6 @@ impl Wallet {
             .await?;
 
         Ok(proofs.into_iter().map(|p| p.into()).collect())
-    }
-    /// Get a quote for a bolt12 melt
-    pub async fn melt_bolt12_quote(
-        &self,
-        request: String,
-        options: Option<MeltOptions>,
-    ) -> Result<MeltQuote, FfiError> {
-        let cdk_options = options.map(Into::into);
-        let quote = self
-            .inner
-            .melt_quote(cdk::nuts::PaymentMethod::BOLT12, request, cdk_options, None)
-            .await?;
-        Ok(quote.into())
     }
     /// Get a melt quote using a unified interface for any payment method
     ///

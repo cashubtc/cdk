@@ -136,7 +136,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create melt quote
     let melt_quote = wallet
-        .melt_quote(&mint_url, invoice.to_string(), None)
+        .melt_quote(
+            &mint_url,
+            PaymentMethod::BOLT11,
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await?;
     println!(
         "Melt quote: {} sats + {} fee reserve",
