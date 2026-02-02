@@ -1113,6 +1113,26 @@ mod tests {
     }
 
     #[test]
+    fn test_currency_unit_parsing() {
+        assert_eq!(CurrencyUnit::from_str("sat").unwrap(), CurrencyUnit::Sat);
+        assert_eq!(CurrencyUnit::from_str("SAT").unwrap(), CurrencyUnit::Sat);
+        assert_eq!(CurrencyUnit::from_str("msat").unwrap(), CurrencyUnit::Msat);
+        assert_eq!(CurrencyUnit::from_str("MSAT").unwrap(), CurrencyUnit::Msat);
+        assert_eq!(CurrencyUnit::from_str("usd").unwrap(), CurrencyUnit::Usd);
+        assert_eq!(CurrencyUnit::from_str("USD").unwrap(), CurrencyUnit::Usd);
+        assert_eq!(CurrencyUnit::from_str("eur").unwrap(), CurrencyUnit::Eur);
+        assert_eq!(CurrencyUnit::from_str("EUR").unwrap(), CurrencyUnit::Eur);
+        assert_eq!(CurrencyUnit::from_str("auth").unwrap(), CurrencyUnit::Auth);
+        assert_eq!(CurrencyUnit::from_str("AUTH").unwrap(), CurrencyUnit::Auth);
+
+        // Custom
+        assert_eq!(
+            CurrencyUnit::from_str("custom").unwrap(),
+            CurrencyUnit::Custom("custom".to_string())
+        );
+    }
+
+    #[test]
     fn test_payment_method_parsing() {
         // Test known methods (case insensitive)
         assert_eq!(
