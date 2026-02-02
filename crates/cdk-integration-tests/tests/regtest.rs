@@ -425,12 +425,17 @@ async fn test_regtest_melt_amountless() {
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
     ln_client
-        .pay_invoice(mint_quote.request)
+        .pay_invoice(mint_quote.request.clone())
         .await
         .expect("failed to pay invoice");
 
     let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .wait_and_mint_quote(
+            mint_quote,
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(60),
+        )
         .await
         .unwrap();
 
