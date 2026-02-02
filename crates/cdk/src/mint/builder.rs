@@ -389,11 +389,19 @@ impl MintBuilder {
 
     /// Build the mint with the provided signatory
     pub async fn build_with_signatory(
-        self,
+        #[allow(unused_mut)] mut self,
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Mint, Error> {
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
+
+        // Ensure Auth keyset is created when auth is enabled
+        #[cfg(feature = "auth")]
+        if self.auth_localstore.is_some() {
+            self.supported_units
+                .entry(CurrencyUnit::Auth)
+                .or_insert((0, 1));
+        }
 
         for (unit, (fee, max_order)) in &self.supported_units {
             // Check if we have an active keyset for this unit
