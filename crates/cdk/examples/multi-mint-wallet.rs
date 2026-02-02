@@ -9,7 +9,7 @@ use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::wallet::{MultiMintReceiveOptions, SendOptions};
 use cdk::Amount;
@@ -53,7 +53,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- MINT ---");
     println!("Creating mint quote for {} sats...", mint_amount);
 
-    let mint_quote = wallet.mint_quote(&mint_url, mint_amount, None).await?;
+    let mint_quote = wallet
+        .mint_quote(
+            &mint_url,
+            PaymentMethod::BOLT11,
+            Some(mint_amount),
+            None,
+            None,
+        )
+        .await?;
     println!("Invoice to pay: {}", mint_quote.request);
 
     // Wait for quote to be paid and mint proofs
@@ -128,7 +136,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create melt quote
     let melt_quote = wallet
-        .melt_quote(&mint_url, invoice.to_string(), None)
+        .melt_quote(
+            &mint_url,
+            PaymentMethod::BOLT11,
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await?;
     println!(
         "Melt quote: {} sats + {} fee reserve",

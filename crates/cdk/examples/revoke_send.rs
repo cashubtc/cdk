@@ -7,7 +7,7 @@ use std::time::Duration;
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::wallet::SendOptions;
 use cdk::Amount;
@@ -48,7 +48,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- 1. FUNDING WALLET ---");
     println!("Minting {} sats...", mint_amount);
 
-    let mint_quote = wallet.mint_quote(&mint_url, mint_amount, None).await?;
+    let mint_quote = wallet
+        .mint_quote(
+            &mint_url,
+            PaymentMethod::BOLT11,
+            Some(mint_amount),
+            None,
+            None,
+        )
+        .await?;
 
     // Wait for quote to be paid (automatic with fake mint)
     let _proofs = wallet

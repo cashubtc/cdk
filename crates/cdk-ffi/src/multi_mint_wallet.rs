@@ -352,13 +352,21 @@ impl MultiMintWallet {
     pub async fn mint_quote(
         &self,
         mint_url: MintUrl,
-        amount: Amount,
+        payment_method: PaymentMethod,
+        amount: Option<Amount>,
         description: Option<String>,
+        extra: Option<String>,
     ) -> Result<MintQuote, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
         let quote = self
             .inner
-            .mint_quote(&cdk_mint_url, amount.into(), description)
+            .mint_quote(
+                &cdk_mint_url,
+                payment_method,
+                amount.map(Into::into),
+                description,
+                extra,
+            )
             .await?;
         Ok(quote.into())
     }
@@ -432,14 +440,16 @@ impl MultiMintWallet {
     pub async fn melt_quote(
         &self,
         mint_url: MintUrl,
+        payment_method: PaymentMethod,
         request: String,
         options: Option<MeltOptions>,
+        extra: Option<String>,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
         let cdk_options = options.map(Into::into);
         let quote = self
             .inner
-            .melt_quote(&cdk_mint_url, request, cdk_options)
+            .melt_quote(&cdk_mint_url, payment_method, request, cdk_options, extra)
             .await?;
         Ok(quote.into())
     }

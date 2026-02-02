@@ -333,7 +333,10 @@ async fn test_mint_with_auth() {
 
     let mint_amount: Amount = 100.into();
 
-    let quote = wallet.mint_bolt11_quote(mint_amount, None).await.unwrap();
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+        .await
+        .unwrap();
 
     let proofs = wallet
         .wait_and_mint_quote(
@@ -516,7 +519,7 @@ async fn test_reuse_auth_proof() {
 
     {
         let quote = wallet
-            .mint_bolt11_quote(10.into(), None)
+            .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
             .await
             .expect("Quote should be allowed");
 
@@ -530,7 +533,9 @@ async fn test_reuse_auth_proof() {
         .unwrap();
 
     {
-        let quote_res = wallet.mint_bolt11_quote(10.into(), None).await;
+        let quote_res = wallet
+            .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
+            .await;
         assert!(
             matches!(quote_res, Err(Error::TokenAlreadySpent)),
             "Expected AuthRequired error, got {:?}",
@@ -647,7 +652,7 @@ async fn test_refresh_access_token() {
 
     // Try to get a mint quote with the refreshed token
     let mint_quote = wallet
-        .mint_bolt11_quote(mint_amount, None)
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
         .await
         .expect("failed to get mint quote with refreshed token");
 
@@ -733,7 +738,7 @@ async fn test_auth_token_spending_order() {
     // Use tokens and verify they're used in the expected order (FIFO)
     for i in 0..3 {
         let mint_quote = wallet
-            .mint_bolt11_quote(10.into(), None)
+            .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
             .await
             .expect("failed to get mint quote");
 
