@@ -17,7 +17,7 @@ use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, Token};
+use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, PaymentMethod, Token};
 use cdk::wallet::{MultiMintReceiveOptions, MultiMintWallet, SendOptions};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
@@ -47,7 +47,10 @@ async fn fund_multi_mint_wallet(
     mint_url: &MintUrl,
     amount: Amount,
 ) -> Amount {
-    let mint_quote = wallet.mint_quote(mint_url, amount, None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(mint_url, PaymentMethod::BOLT11, Some(amount), None, None)
+        .await
+        .unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice)
@@ -88,7 +91,13 @@ async fn test_multi_mint_wallet_mint() {
 
     // Create mint quote
     let mint_quote = multi_mint_wallet
-        .mint_quote(&mint_url, 100.into(), None)
+        .mint_quote(
+            &mint_url,
+            PaymentMethod::BOLT11,
+            Some(100.into()),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -482,7 +491,13 @@ async fn test_multi_mint_wallet_check_all_mint_quotes() {
 
     // Create a mint quote
     let mint_quote = multi_mint_wallet
-        .mint_quote(&mint_url, 100.into(), None)
+        .mint_quote(
+            &mint_url,
+            PaymentMethod::BOLT11,
+            Some(100.into()),
+            None,
+            None,
+        )
         .await
         .unwrap();
 

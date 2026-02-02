@@ -305,33 +305,6 @@ impl Wallet {
         Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
 
-    /// Get a mint quote using a unified interface for any payment method
-    ///
-    /// This method supports bolt11, bolt12, and custom payment methods.
-    /// For custom methods, you can pass extra JSON data that will be forwarded
-    /// to the payment processor.
-    ///
-    /// # Arguments
-    /// * `amount` - Optional amount to mint (required for bolt11)
-    /// * `method` - Payment method to use (bolt11, bolt12, or custom)
-    /// * `description` - Optional description for the quote
-    /// * `extra` - Optional JSON string with extra payment-method-specific fields (for custom methods)
-    pub async fn mint_quote_unified(
-        &self,
-        amount: Option<Amount>,
-        method: PaymentMethod,
-        description: Option<String>,
-        extra: Option<String>,
-    ) -> Result<MintQuote, FfiError> {
-        let method: cdk::nuts::PaymentMethod = method.into();
-
-        let quote = self
-            .inner
-            .mint_quote(method, amount.map(Into::into), description, extra)
-            .await?;
-        Ok(quote.into())
-    }
-
     pub async fn mint_unified(
         &self,
         quote_id: String,

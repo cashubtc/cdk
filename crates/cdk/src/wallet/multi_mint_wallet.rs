@@ -1617,21 +1617,24 @@ impl MultiMintWallet {
     }
 
     /// Mint quote for wallet
-    #[instrument(skip(self))]
-    pub async fn mint_quote(
+    #[instrument(skip(self, method))]
+    pub async fn mint_quote<T>(
         &self,
         mint_url: &MintUrl,
-        amount: Amount,
+        method: T,
+        amount: Option<Amount>,
         description: Option<String>,
-    ) -> Result<MintQuote, Error> {
+        extra: Option<String>,
+    ) -> Result<MintQuote, Error>
+    where
+        T: Into<PaymentMethod>,
+    {
         let wallets = self.wallets.read().await;
         let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet
-            .mint_quote(PaymentMethod::BOLT11, Some(amount), description, None)
-            .await
+        wallet.mint_quote(method, amount, description, extra).await
     }
 
     /// Refresh a specific mint quote status from the mint.
