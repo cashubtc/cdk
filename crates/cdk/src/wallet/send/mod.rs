@@ -24,6 +24,7 @@ use saga::SendSaga;
 ///
 /// Created by [`Wallet::prepare_send`]. Call [`confirm`](Self::confirm) to complete the send
 /// and create a token, or [`cancel`](Self::cancel) to release reserved proofs.
+#[must_use = "must be confirmed or canceled to release reserved proofs"]
 pub struct PreparedSend<'a> {
     wallet: &'a Wallet,
     operation_id: Uuid,
