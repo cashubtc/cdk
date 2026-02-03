@@ -121,6 +121,7 @@ impl MeltConfirmOptions {
 }
 
 /// A prepared melt operation that can be confirmed or cancelled.
+#[must_use = "must be confirmed or canceled to release reserved proofs"]
 pub struct PreparedMelt<'a> {
     /// The saga in the Prepared state
     saga: MeltSaga<'a, Prepared>,
