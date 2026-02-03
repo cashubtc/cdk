@@ -48,52 +48,9 @@ impl DbSignatory {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
 
-        let (mut active_keysets, active_keyset_units) = init_keysets(
-            xpriv,
-            &secp_ctx,
-            &localstore,
-            &supported_units,
-            &custom_paths,
-        )
-        .await?;
+        init_keysets(xpriv, &secp_ctx, &localstore, &supported_units).await?;
 
         supported_units.entry(CurrencyUnit::Auth).or_insert((0, 1));
-        let mut tx = localstore.begin_transaction().await?;
-
-        // Create new keysets for supported units that aren't covered by the current keysets
-        for (unit, (fee, max_order)) in supported_units {
-            if !active_keyset_units.contains(&unit) {
-                let derivation_path = match custom_paths.get(&unit) {
-                    Some(path) => path.clone(),
-                    None => {
-                        derivation_path_from_unit(unit.clone(), 0).ok_or(Error::UnsupportedUnit)?
-                    }
-                };
-
-                let amounts = (0..max_order)
-                    .map(|i| 2_u64.pow(i as u32))
-                    .collect::<Vec<_>>();
-
-                let (keyset, keyset_info) = create_new_keyset(
-                    &secp_ctx,
-                    xpriv,
-                    derivation_path,
-                    Some(0),
-                    unit.clone(),
-                    &amounts,
-                    fee,
-                    // TODO: add and connect settings for this
-                    None,
-                );
-
-                let id = keyset_info.id;
-                tx.add_keyset_info(keyset_info).await?;
-                tx.set_active_keyset(unit, id).await?;
-                active_keysets.insert(id, keyset);
-            }
-        }
-
-        tx.commit().await?;
 
         let keys = Self {
             keysets: Default::default(),
@@ -267,6 +224,7 @@ impl Signatory for DbSignatory {
             args.input_fee_ppk,
             // TODO: add and connect settings for this
             None,
+            args.use_keyset_v2,
         );
         let id = info.id;
         let mut tx = self.localstore.begin_transaction().await?;

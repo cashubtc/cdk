@@ -80,6 +80,7 @@ async fn test_correct_keyset() {
         CurrencyUnit::Sat,
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
+        true,
     )
     .await
     .unwrap();
@@ -98,6 +99,7 @@ async fn test_correct_keyset() {
         CurrencyUnit::Sat,
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
+        true,
     )
     .await
     .unwrap();

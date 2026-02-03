@@ -22,6 +22,9 @@ pub struct RotateNextKeysetCommand {
     /// The input fee in parts per thousand to apply when minting with this keyset
     #[arg(short, long)]
     input_fee_ppk: Option<u64>,
+    /// Use keyset v2
+    #[arg(long)]
+    use_keyset_v2: Option<bool>,
 }
 
 /// Executes the rotate_next_keyset command against the mint server
@@ -50,6 +53,7 @@ pub async fn rotate_next_keyset(
             unit: sub_command_args.unit.clone(),
             amounts,
             input_fee_ppk: sub_command_args.input_fee_ppk,
+            use_keyset_v2: sub_command_args.use_keyset_v2,
         }))
         .await?;
 

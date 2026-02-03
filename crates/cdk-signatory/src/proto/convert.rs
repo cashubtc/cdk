@@ -337,6 +337,7 @@ impl From<crate::signatory::RotateKeyArguments> for RotationRequest {
             unit: Some(value.unit.into()),
             amounts: value.amounts,
             input_fee_ppk: value.input_fee_ppk,
+            use_keyset_v2: value.use_keyset_v2,
         }
     }
 }
@@ -352,6 +353,7 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
                 .try_into()?,
             amounts: self.amounts,
             input_fee_ppk: self.input_fee_ppk,
+            use_keyset_v2: self.use_keyset_v2,
         })
     }
 }

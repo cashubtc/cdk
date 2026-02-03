@@ -57,6 +57,8 @@ pub struct Info {
     pub signatory_url: Option<String>,
     pub signatory_certs: Option<String>,
     pub input_fee_ppk: Option<u64>,
+    /// Use keyset v2
+    pub use_keyset_v2: Option<bool>,
 
     pub http_cache: cache::Config,
 
@@ -88,6 +90,7 @@ impl Default for Info {
             signatory_url: None,
             signatory_certs: None,
             input_fee_ppk: None,
+            use_keyset_v2: None,
             http_cache: cache::Config::default(),
             enable_swagger_ui: None,
             logging: LoggingConfig::default(),
@@ -114,6 +117,7 @@ impl std::fmt::Debug for Info {
             .field("listen_port", &self.listen_port)
             .field("mnemonic", &mnemonic_display)
             .field("input_fee_ppk", &self.input_fee_ppk)
+            .field("use_keyset_v2", &self.use_keyset_v2)
             .field("http_cache", &self.http_cache)
             .field("logging", &self.logging)
             .field("enable_swagger_ui", &self.enable_swagger_ui)
