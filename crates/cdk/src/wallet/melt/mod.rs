@@ -36,6 +36,8 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::future::{Future, IntoFuture};
+use std::pin::Pin;
 
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
@@ -46,6 +48,8 @@ use uuid::Uuid;
 use crate::nuts::nut00::KnownMethod;
 use crate::nuts::{MeltOptions, Proofs};
 use crate::types::FinalizedMelt;
+use crate::wallet::subscription::NotificationPayload;
+use crate::wallet::WalletSubscription;
 use crate::{Amount, Wallet};
 
 mod bolt11;
@@ -58,7 +62,132 @@ mod melt_lightning_address;
 pub(crate) mod saga;
 
 use saga::state::Prepared;
-use saga::MeltSaga;
+use saga::{MeltSaga, MeltSagaResult};
+
+/// Result of a melt operation using async support (NUT-05).
+#[derive(Debug)]
+pub enum MeltResult<'a> {
+    /// Melt completed immediately
+    Paid(FinalizedMelt),
+    /// Melt is pending - can be awaited or dropped to poll elsewhere
+    Pending(PendingMelt<'a>),
+}
+
+/// A pending melt operation that can be awaited.
+#[derive(Debug)]
+pub struct PendingMelt<'a> {
+    saga: MeltSaga<'a, saga::state::PaymentPending>,
+    metadata: HashMap<String, String>,
+}
+
+impl<'a> PendingMelt<'a> {
+    /// Wait for the melt to complete by polling the mint.
+    async fn wait(self) -> Result<FinalizedMelt, Error> {
+        let quote_id = self.saga.quote().id.clone();
+        let wallet = self.saga.wallet;
+
+        let mut subscription = match self.saga.quote().payment_method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                wallet
+                    .subscribe(WalletSubscription::Bolt11MeltQuoteState(vec![
+                        quote_id.clone()
+                    ]))
+                    .await?
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                wallet
+                    .subscribe(WalletSubscription::Bolt12MeltQuoteState(vec![
+                        quote_id.clone()
+                    ]))
+                    .await?
+            }
+            PaymentMethod::Custom(ref method) => {
+                wallet
+                    .subscribe(WalletSubscription::MeltQuoteCustom(
+                        method.to_string(),
+                        vec![quote_id.clone()],
+                    ))
+                    .await?
+            }
+        };
+
+        loop {
+            match subscription.recv().await {
+                Some(event) => {
+                    let notification = event.into_inner();
+
+                    let (response_quote_id, state, payment_preimage, change) = match notification {
+                        NotificationPayload::MeltQuoteBolt11Response(response) => (
+                            response.quote,
+                            response.state,
+                            response.payment_preimage,
+                            response.change,
+                        ),
+                        NotificationPayload::MeltQuoteBolt12Response(response) => (
+                            response.quote,
+                            response.state,
+                            response.payment_preimage,
+                            response.change,
+                        ),
+                        NotificationPayload::CustomMeltQuoteResponse(_, response) => (
+                            response.quote,
+                            response.state,
+                            response.payment_preimage,
+                            response.change,
+                        ),
+                        _ => continue,
+                    };
+
+                    if response_quote_id != quote_id {
+                        continue;
+                    }
+
+                    match state {
+                        MeltQuoteState::Paid => {
+                            let finalized = self
+                                .saga
+                                .finalize(state, payment_preimage, change, self.metadata)
+                                .await?;
+
+                            return Ok(FinalizedMelt::new(
+                                finalized.quote_id().to_string(),
+                                finalized.state(),
+                                finalized.payment_proof().map(|s| s.to_string()),
+                                finalized.amount(),
+                                finalized.fee_paid(),
+                                finalized.into_change(),
+                            ));
+                        }
+                        MeltQuoteState::Failed
+                        | MeltQuoteState::Unpaid
+                        | MeltQuoteState::Unknown => {
+                            self.saga.handle_failure().await;
+                            return Err(Error::PaymentFailed);
+                        }
+                        MeltQuoteState::Pending => continue,
+                    }
+                }
+                None => {
+                    return Err(Error::Custom("Subscription closed".to_string()));
+                }
+            }
+        }
+    }
+}
+
+impl<'a> IntoFuture for PendingMelt<'a> {
+    type Output = Result<FinalizedMelt, Error>;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send + 'a>>;
+
+    #[cfg(target_arch = "wasm32")]
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + 'a>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.wait())
+    }
+}
 
 /// Internal response type for melt quote status checking.
 ///
@@ -210,28 +339,75 @@ impl<'a> PreparedMelt<'a> {
     }
 
     /// Confirm the prepared melt and execute the payment.
+    ///
+    /// This method waits for the payment to complete and returns the finalized melt.
+    /// If the mint supports async payments (NUT-05), this may complete faster by
+    /// not blocking on the payment processing.
     pub async fn confirm(self) -> Result<FinalizedMelt, Error> {
         self.confirm_with_options(MeltConfirmOptions::default())
             .await
     }
 
     /// Confirm the prepared melt with custom options.
+    ///
+    /// This method waits for the payment to complete and returns the finalized melt.
+    /// If the mint supports async payments (NUT-05), this may complete faster by
+    /// not blocking on the payment processing.
     pub async fn confirm_with_options(
         self,
         options: MeltConfirmOptions,
     ) -> Result<FinalizedMelt, Error> {
+        match self.confirm_async_with_options(options).await? {
+            MeltResult::Paid(finalized) => Ok(finalized),
+            MeltResult::Pending(pending) => pending.await,
+        }
+    }
+
+    /// Confirm the prepared melt using async support (NUT-05).
+    ///
+    /// Sends the melt request with a `Prefer: async` header and waits for the mint's
+    /// response. Returns `Paid` if the payment completed immediately, or `Pending` if
+    /// the mint accepted the async request and will process it in the background.
+    ///
+    /// Note: This waits for the mint's initial response, which may block if the mint
+    /// does not support async payments. Only returns `Pending` if the mint explicitly
+    /// supports and accepts async melt requests.
+    pub async fn confirm_async(self) -> Result<MeltResult<'a>, Error> {
+        self.confirm_async_with_options(MeltConfirmOptions::default())
+            .await
+    }
+
+    /// Confirm with async support and custom options.
+    ///
+    /// Sends the melt request with a `Prefer: async` header and waits for the mint's
+    /// response. Returns `Paid` if the payment completed immediately, or `Pending` if
+    /// the mint accepted the async request and will process it in the background.
+    ///
+    /// Note: This waits for the mint's initial response, which may block if the mint
+    /// does not support async payments. Only returns `Pending` if the mint explicitly
+    /// supports and accepts async melt requests.
+    pub async fn confirm_async_with_options(
+        self,
+        options: MeltConfirmOptions,
+    ) -> Result<MeltResult<'a>, Error> {
         let melt_requested = self.saga.request_melt_with_options(options).await?;
 
-        let finalized = melt_requested.execute(self.metadata).await?;
+        let result = melt_requested.execute_async(self.metadata.clone()).await?;
 
-        Ok(FinalizedMelt::new(
-            finalized.quote_id().to_string(),
-            finalized.state(),
-            finalized.payment_proof().map(|s| s.to_string()),
-            finalized.amount(),
-            finalized.fee_paid(),
-            finalized.into_change(),
-        ))
+        match result {
+            MeltSagaResult::Finalized(finalized) => Ok(MeltResult::Paid(FinalizedMelt::new(
+                finalized.quote_id().to_string(),
+                finalized.state(),
+                finalized.payment_proof().map(|s| s.to_string()),
+                finalized.amount(),
+                finalized.fee_paid(),
+                finalized.into_change(),
+            ))),
+            MeltSagaResult::Pending(pending_saga) => Ok(MeltResult::Pending(PendingMelt {
+                saga: pending_saga,
+                metadata: self.metadata,
+            })),
+        }
     }
 
     /// Cancel the prepared melt and release reserved proofs
@@ -402,16 +578,25 @@ impl Wallet {
         );
 
         let melt_requested = saga.request_melt_with_options(options).await?;
-        let finalized = melt_requested.execute(metadata).await?;
+        let result = melt_requested.execute_async(metadata.clone()).await?;
 
-        Ok(FinalizedMelt::new(
-            finalized.quote_id().to_string(),
-            finalized.state(),
-            finalized.payment_proof().map(|s| s.to_string()),
-            finalized.amount(),
-            finalized.fee_paid(),
-            finalized.into_change(),
-        ))
+        match result {
+            MeltSagaResult::Finalized(finalized) => Ok(FinalizedMelt::new(
+                finalized.quote_id().to_string(),
+                finalized.state(),
+                finalized.payment_proof().map(|s| s.to_string()),
+                finalized.amount(),
+                finalized.fee_paid(),
+                finalized.into_change(),
+            )),
+            MeltSagaResult::Pending(pending_saga) => {
+                let pending = PendingMelt {
+                    saga: pending_saga,
+                    metadata,
+                };
+                pending.wait().await
+            }
+        }
     }
 
     /// Cancel a prepared melt and release reserved proofs.
