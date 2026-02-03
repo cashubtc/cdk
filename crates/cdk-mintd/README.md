@@ -93,6 +93,25 @@ export CDK_MINTD_DATABASE=sqlite
 cdk-mintd
 ```
 
+### Keyset Version Management
+
+The mint supports rotating keysets to newer versions (e.g., migrating from V1 to V2).
+
+**Policy Configuration:**
+By default, the mint will use V2 (Version01) for *new* keysets but will preserve existing V1 (Version00) keysets to avoid unnecessary rotation. You can force a specific policy using `config.toml` or environment variables:
+
+- `use_keyset_v2 = true` (or `CDK_MINTD_USE_KEYSET_V2=true`): Forces V2. If the current active keyset is V1, it will be rotated to V2 on startup.
+- `use_keyset_v2 = false` (or `CDK_MINTD_USE_KEYSET_V2=false`): Forces V1. If the current active keyset is V2, it will be rotated to V1 on startup.
+- **Unset (Default)**: Preserves the current keyset version. If no keyset exists, V2 is created.
+
+**Manual Rotation:**
+You can manually trigger a rotation to a specific version using the CLI:
+
+```bash
+mint-cli rotate-next-keyset --use-keyset-v2       # Rotate to V2
+mint-cli rotate-next-keyset --use-keyset-v2=false # Rotate to V1
+```
+
 ## Production Examples
 
 ### With LDK Node (Recommended for Testing)

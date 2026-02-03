@@ -566,6 +566,7 @@ async fn test_swap_overpay_underpay_fee() {
             CurrencyUnit::Sat,
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
+            true,
         )
         .await
         .unwrap();
@@ -584,8 +585,7 @@ async fn test_swap_overpay_underpay_fee() {
         .await
         .expect("Could not get proofs");
 
-    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
-    let keyset_id = Id::v1_from_keys(&keys);
+    let keyset_id = mint_bob.pubkeys().keysets.first().unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let preswap = PreMintSecrets::random(
@@ -645,6 +645,7 @@ async fn test_mint_enforce_fee() {
             CurrencyUnit::Sat,
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
+            true,
         )
         .await
         .unwrap();
@@ -758,6 +759,7 @@ async fn test_mint_change_with_fee_melt() {
             CurrencyUnit::Sat,
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
+            true,
         )
         .await
         .unwrap();

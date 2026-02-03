@@ -438,6 +438,8 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
         }
     }
 
+    builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
+
     builder
 }
 /// Configures Lightning Network backend based on the specified backend type

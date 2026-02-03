@@ -275,6 +275,7 @@ fn create_ldk_settings(
             signatory_url: None,
             signatory_certs: None,
             input_fee_ppk: None,
+            use_keyset_v2: None,
             http_cache: cdk_axum::cache::Config::default(),
             enable_swagger_ui: None,
             logging: LoggingConfig::default(),
