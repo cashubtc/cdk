@@ -39,9 +39,7 @@ use tokio::sync::Mutex;
 use web_time::Instant;
 
 use crate::nuts::Id;
-use crate::wallet::MintConnector;
-#[cfg(feature = "auth")]
-use crate::wallet::{AuthMintConnector, AuthWallet};
+use crate::wallet::{AuthMintConnector, AuthWallet, MintConnector};
 use crate::{Error, Wallet};
 
 /// Metadata freshness and versioning information
@@ -94,8 +92,7 @@ pub struct MintMetadata {
     /// Freshness tracking for regular (non-auth) mint data
     status: FreshnessStatus,
 
-    /// Freshness tracking for blind auth keysets (when `auth` feature enabled)
-    #[cfg(feature = "auth")]
+    /// Freshness tracking for blind auth keysets
     auth_status: FreshnessStatus,
 }
 
@@ -161,7 +158,6 @@ impl Wallet {
     }
 }
 
-#[cfg(feature = "auth")]
 impl AuthWallet {
     /// Get information about metadata cache info
     pub fn get_metadata_cache_info(&self) -> FreshnessStatus {
@@ -264,11 +260,7 @@ impl MintMetadataCache {
         }
 
         // Perform the fetch
-        #[cfg(feature = "auth")]
         let metadata = self.fetch_from_http(Some(client), None).await?;
-
-        #[cfg(not(feature = "auth"))]
-        let metadata = self.fetch_from_http(Some(client)).await?;
 
         // Persist to database
         self.database_sync(storage.clone(), metadata.clone()).await;
@@ -349,7 +341,6 @@ impl MintMetadataCache {
     /// # Returns
     ///
     /// Metadata containing auth keysets and keys
-    #[cfg(feature = "auth")]
     pub async fn load_auth(
         &self,
         storage: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
@@ -544,7 +535,7 @@ impl MintMetadataCache {
     async fn fetch_from_http(
         &self,
         client: Option<&Arc<dyn MintConnector + Send + Sync>>,
-        #[cfg(feature = "auth")] auth_client: Option<&Arc<dyn AuthMintConnector + Send + Sync>>,
+        auth_client: Option<&Arc<dyn AuthMintConnector + Send + Sync>>,
     ) -> Result<Arc<MintMetadata>, Error> {
         tracing::debug!("Fetching mint metadata from HTTP for {}", self.mint_url);
 
@@ -572,7 +563,6 @@ impl MintMetadataCache {
         }
 
         // Fetch auth keysets if auth client provided
-        #[cfg(feature = "auth")]
         if let Some(auth_client) = auth_client.as_ref() {
             keysets_to_fetch.extend(auth_client.get_mint_blind_auth_keysets().await?.keysets);
         }
@@ -601,17 +591,11 @@ impl MintMetadataCache {
             {
                 let keyset = if let Some(client) = client.as_ref() {
                     client.get_mint_keyset(keyset_info.id).await?
+                } else if let Some(auth_client) = auth_client.as_ref() {
+                    auth_client
+                        .get_mint_blind_auth_keyset(keyset_info.id)
+                        .await?
                 } else {
-                    #[cfg(feature = "auth")]
-                    if let Some(auth_client) = auth_client.as_ref() {
-                        auth_client
-                            .get_mint_blind_auth_keyset(keyset_info.id)
-                            .await?
-                    } else {
-                        return Err(Error::Internal);
-                    }
-
-                    #[cfg(not(feature = "auth"))]
                     return Err(Error::Internal);
                 };
 
@@ -629,7 +613,6 @@ impl MintMetadataCache {
             new_metadata.status.version += 1;
         }
 
-        #[cfg(feature = "auth")]
         if auth_client.is_some() {
             new_metadata.auth_status.is_populated = true;
             new_metadata.auth_status.updated_at = Instant::now();

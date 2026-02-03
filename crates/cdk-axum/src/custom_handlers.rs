@@ -12,7 +12,6 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::mint::QuoteId;
-#[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteBolt12Request,
@@ -23,7 +22,6 @@ use cdk::nuts::{
 use serde_json::Value;
 use tracing::instrument;
 
-#[cfg(feature = "auth")]
 use crate::auth::AuthHeader;
 use crate::router_handlers::into_response;
 use crate::MintState;
@@ -77,22 +75,19 @@ where
 /// For other methods, it passes the request data directly to the payment processor.
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn post_mint_custom_quote(
-    #[cfg(feature = "auth")] auth: AuthHeader,
+    auth: AuthHeader,
     State(state): State<MintState>,
     Path(method): Path<String>,
     Json(payload): Json<Value>,
 ) -> Result<Response, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuote(method.clone())),
-            )
-            .await
-            .map_err(into_response)?;
-    }
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuote(method.clone())),
+        )
+        .await
+        .map_err(into_response)?;
 
     match method.as_str() {
         "bolt11" => {
@@ -160,21 +155,18 @@ pub async fn post_mint_custom_quote(
 /// Get custom payment method mint quote status
 #[instrument(skip_all, fields(method = ?method, quote_id = ?quote_id))]
 pub async fn get_check_mint_custom_quote(
-    #[cfg(feature = "auth")] auth: AuthHeader,
+    auth: AuthHeader,
     State(state): State<MintState>,
     Path((method, quote_id)): Path<(String, QuoteId)>,
 ) -> Result<Response, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote(method.clone())),
-            )
-            .await
-            .map_err(into_response)?;
-    }
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote(method.clone())),
+        )
+        .await
+        .map_err(into_response)?;
 
     let quote_response = state
         .mint
@@ -214,22 +206,19 @@ pub async fn get_check_mint_custom_quote(
 /// Mint tokens with custom payment method
 #[instrument(skip_all, fields(method = ?method, quote_id = ?payload.quote))]
 pub async fn post_mint_custom(
-    #[cfg(feature = "auth")] auth: AuthHeader,
+    auth: AuthHeader,
     State(state): State<MintState>,
     Path(method): Path<String>,
     Json(payload): Json<MintRequest<QuoteId>>,
 ) -> Result<Json<MintResponse>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::Mint(method.clone())),
-            )
-            .await
-            .map_err(into_response)?;
-    }
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Mint(method.clone())),
+        )
+        .await
+        .map_err(into_response)?;
 
     // Note: process_mint_request will validate the quote internally
     // including checking if it's paid and matches the expected payment method
@@ -245,22 +234,19 @@ pub async fn post_mint_custom(
 /// Request a melt quote for custom payment method
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn post_melt_custom_quote(
-    #[cfg(feature = "auth")] auth: AuthHeader,
+    auth: AuthHeader,
     State(state): State<MintState>,
     Path(method): Path<String>,
     Json(payload): Json<Value>,
 ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuote(method.clone())),
-            )
-            .await
-            .map_err(into_response)?;
-    }
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuote(method.clone())),
+        )
+        .await
+        .map_err(into_response)?;
 
     let response = match method.as_str() {
         "bolt11" => {
@@ -310,21 +296,18 @@ pub async fn post_melt_custom_quote(
 /// Get custom payment method melt quote status
 #[instrument(skip_all, fields(method = ?method, quote_id = ?quote_id))]
 pub async fn get_check_melt_custom_quote(
-    #[cfg(feature = "auth")] auth: AuthHeader,
+    auth: AuthHeader,
     State(state): State<MintState>,
     Path((method, quote_id)): Path<(String, QuoteId)>,
 ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuote(method.clone())),
-            )
-            .await
-            .map_err(into_response)?;
-    }
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuote(method.clone())),
+        )
+        .await
+        .map_err(into_response)?;
 
     // Note: check_melt_quote returns the response directly
     // The payment method validation is done when the quote was created
@@ -340,23 +323,20 @@ pub async fn get_check_melt_custom_quote(
 /// Melt tokens with custom payment method
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn post_melt_custom(
-    #[cfg(feature = "auth")] auth: AuthHeader,
+    auth: AuthHeader,
     prefer: PreferHeader,
     State(state): State<MintState>,
     Path(method): Path<String>,
     Json(payload): Json<cdk::nuts::MeltRequest<QuoteId>>,
 ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::Melt(method.clone())),
-            )
-            .await
-            .map_err(into_response)?;
-    }
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Melt(method.clone())),
+        )
+        .await
+        .map_err(into_response)?;
 
     let res = if prefer.respond_async {
         // Asynchronous processing - return immediately after setup
@@ -380,7 +360,7 @@ pub async fn post_melt_custom(
 /// Cached version of post_mint_custom for NUT-19 caching support
 #[instrument(skip_all, fields(method = ?method, quote_id = ?payload.quote))]
 pub async fn cache_post_mint_custom(
-    #[cfg(feature = "auth")] auth: AuthHeader,
+    auth: AuthHeader,
     state: State<MintState>,
     method: Path<String>,
     payload: Json<MintRequest<QuoteId>>,
@@ -394,10 +374,7 @@ pub async fn cache_post_mint_custom(
         Some(key) => key,
         None => {
             // Could not calculate key, just return the handler result
-            #[cfg(feature = "auth")]
             return post_mint_custom(auth, state, method, payload).await;
-            #[cfg(not(feature = "auth"))]
-            return post_mint_custom(state, method, payload).await;
         }
     };
 
@@ -405,10 +382,7 @@ pub async fn cache_post_mint_custom(
         return Ok(Json(cached_response));
     }
 
-    #[cfg(feature = "auth")]
     let result = post_mint_custom(auth, state, method, payload).await?;
-    #[cfg(not(feature = "auth"))]
-    let result = post_mint_custom(state, method, payload).await?;
 
     // Cache the response
     mint_state.cache.set(cache_key, result.deref()).await;
@@ -528,7 +502,7 @@ mod tests {
 /// Cached version of post_melt_custom for NUT-19 caching support
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn cache_post_melt_custom(
-    #[cfg(feature = "auth")] auth: AuthHeader,
+    auth: AuthHeader,
     prefer: PreferHeader,
     state: State<MintState>,
     method: Path<String>,
@@ -543,10 +517,7 @@ pub async fn cache_post_melt_custom(
         Some(key) => key,
         None => {
             // Could not calculate key, just return the handler result
-            #[cfg(feature = "auth")]
             return post_melt_custom(auth, prefer, state, method, payload).await;
-            #[cfg(not(feature = "auth"))]
-            return post_melt_custom(prefer, state, method, payload).await;
         }
     };
 
@@ -558,10 +529,7 @@ pub async fn cache_post_melt_custom(
         return Ok(Json(cached_response));
     }
 
-    #[cfg(feature = "auth")]
     let result = post_melt_custom(auth, prefer, state, method, payload).await?;
-    #[cfg(not(feature = "auth"))]
-    let result = post_melt_custom(prefer, state, method, payload).await?;
 
     // Cache the response
     mint_state.cache.set(cache_key, result.deref()).await;

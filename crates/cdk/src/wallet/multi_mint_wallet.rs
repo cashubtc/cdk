@@ -92,7 +92,6 @@ pub struct WalletConfig {
     /// Custom mint connector implementation
     pub mint_connector: Option<Arc<dyn super::MintConnector + Send + Sync>>,
     /// Custom auth connector implementation
-    #[cfg(feature = "auth")]
     pub auth_connector: Option<Arc<dyn super::auth::AuthMintConnector + Send + Sync>>,
     /// Target number of proofs to maintain at each denomination
     pub target_proof_count: Option<usize>,
@@ -123,7 +122,6 @@ impl WalletConfig {
     }
 
     /// Set custom auth connector
-    #[cfg(feature = "auth")]
     pub fn with_auth_connector(
         mut self,
         connector: Arc<dyn super::auth::AuthMintConnector + Send + Sync>,
@@ -627,7 +625,6 @@ impl MultiMintWallet {
                 }
 
                 // TODO: Handle auth_connector if provided
-                #[cfg(feature = "auth")]
                 if let Some(_auth_connector) = config.auth_connector {
                     // For now, we can't easily inject auth_connector into the wallet
                     // This would require additional work on the Wallet API
@@ -644,7 +641,6 @@ impl MultiMintWallet {
     /// Set the auth client (AuthWallet) for a specific mint
     ///
     /// This allows updating the auth wallet for an existing mint wallet without recreating it.
-    #[cfg(feature = "auth")]
     #[instrument(skip_all)]
     pub async fn set_auth_client(
         &self,
@@ -739,7 +735,6 @@ impl MultiMintWallet {
                 }
 
                 // TODO: Handle auth_connector if provided
-                #[cfg(feature = "auth")]
                 if let Some(_auth_connector) = &cfg.auth_connector {
                     // For now, we can't easily inject auth_connector into the wallet
                     // This would require additional work on the Wallet/WalletBuilder API
@@ -762,16 +757,7 @@ impl MultiMintWallet {
                 None,
                 true,
             )
-            .unwrap_or_else(|_| {
-                #[cfg(feature = "auth")]
-                {
-                    crate::wallet::HttpClient::new(mint_url.clone(), None)
-                }
-                #[cfg(not(feature = "auth"))]
-                {
-                    crate::wallet::HttpClient::new(mint_url.clone())
-                }
-            });
+            .unwrap_or_else(|_| crate::wallet::HttpClient::new(mint_url.clone(), None));
             let mut builder = WalletBuilder::new()
                 .mint_url(mint_url.clone())
                 .unit(self.unit.clone())
@@ -791,18 +777,7 @@ impl MultiMintWallet {
                 // Create wallet with Tor transport client, cloning the shared transport
                 let client = {
                     let transport = tor.clone();
-                    #[cfg(feature = "auth")]
-                    {
-                        crate::wallet::TorHttpClient::with_transport(
-                            mint_url.clone(),
-                            transport,
-                            None,
-                        )
-                    }
-                    #[cfg(not(feature = "auth"))]
-                    {
-                        crate::wallet::TorHttpClient::with_transport(mint_url.clone(), transport)
-                    }
+                    crate::wallet::TorHttpClient::with_transport(mint_url.clone(), transport, None)
                 };
 
                 let mut builder = WalletBuilder::new()
@@ -2573,7 +2548,6 @@ impl MultiMintWallet {
     /// Mint blind auth tokens for a specific mint
     ///
     /// This is a convenience method that calls the underlying wallet's mint_blind_auth.
-    #[cfg(feature = "auth")]
     #[instrument(skip_all)]
     pub async fn mint_blind_auth(
         &self,
@@ -2591,7 +2565,6 @@ impl MultiMintWallet {
     /// Get unspent auth proofs for a specific mint
     ///
     /// This is a convenience method that calls the underlying wallet's get_unspent_auth_proofs.
-    #[cfg(feature = "auth")]
     #[instrument(skip_all)]
     pub async fn get_unspent_auth_proofs(
         &self,
@@ -2608,7 +2581,6 @@ impl MultiMintWallet {
     /// Set Clear Auth Token (CAT) for authentication at a specific mint
     ///
     /// This is a convenience method that calls the underlying wallet's set_cat.
-    #[cfg(feature = "auth")]
     #[instrument(skip_all)]
     pub async fn set_cat(&self, mint_url: &MintUrl, cat: String) -> Result<(), Error> {
         let wallets = self.wallets.read().await;
@@ -2622,7 +2594,6 @@ impl MultiMintWallet {
     /// Set refresh token for authentication at a specific mint
     ///
     /// This is a convenience method that calls the underlying wallet's set_refresh_token.
-    #[cfg(feature = "auth")]
     #[instrument(skip_all)]
     pub async fn set_refresh_token(
         &self,
@@ -2640,7 +2611,6 @@ impl MultiMintWallet {
     /// Refresh CAT token for a specific mint
     ///
     /// This is a convenience method that calls the underlying wallet's refresh_access_token.
-    #[cfg(feature = "auth")]
     #[instrument(skip(self))]
     pub async fn refresh_access_token(&self, mint_url: &MintUrl) -> Result<(), Error> {
         let wallets = self.wallets.read().await;

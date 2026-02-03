@@ -29,10 +29,8 @@ pub mod nut26;
 #[cfg(all(feature = "wallet", feature = "nostr"))]
 pub mod nut27;
 
-#[cfg(feature = "auth")]
 mod auth;
 
-#[cfg(feature = "auth")]
 pub use auth::{
     nut21, nut22, AuthProof, AuthRequired, AuthToken, BlindAuthSettings, BlindAuthToken,
     ClearAuthSettings, Method, MintAuthRequest, ProtectedEndpoint, RoutePath,

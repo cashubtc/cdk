@@ -11,11 +11,10 @@ license.workspace = true
 readme = "README.md"
 
 [features]
-default = ["mint", "wallet", "auth"]
+default = ["mint", "wallet"]
 swagger = ["dep:utoipa"]
 mint = []
 wallet = []
-auth = ["dep:strum", "dep:strum_macros", "dep:regex"]
 nostr = ["dep:nostr-sdk"]
 bench = []
 
@@ -34,9 +33,9 @@ url.workspace = true
 utoipa = { workspace = true, optional = true }
 serde_json.workspace = true
 serde_with.workspace = true
-regex = { workspace = true, optional = true }
-strum = { workspace = true, optional = true }
-strum_macros = { workspace = true, optional = true }
+regex.workspace = true
+strum.workspace = true
+strum_macros.workspace = true
 nostr-sdk = { workspace = true, optional = true }
 zeroize = "1"
 web-time.workspace = true

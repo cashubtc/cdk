@@ -438,11 +438,9 @@ pub enum Error {
     NUT20(#[from] crate::nuts::nut20::Error),
     /// NUT21 Error
     #[error(transparent)]
-    #[cfg(feature = "auth")]
     NUT21(#[from] crate::nuts::nut21::Error),
     /// NUT22 Error
     #[error(transparent)]
-    #[cfg(feature = "auth")]
     NUT22(#[from] crate::nuts::nut22::Error),
     /// NUT23 Error
     #[error(transparent)]
@@ -635,9 +633,7 @@ impl Error {
             Self::NUT14(_) => true,
             Self::NUT18(_) => true,
             Self::NUT20(_) => true,
-            #[cfg(feature = "auth")]
             Self::NUT21(_) => true,
-            #[cfg(feature = "auth")]
             Self::NUT22(_) => true,
             Self::NUT23(_) => true,
             #[cfg(feature = "mint")]
