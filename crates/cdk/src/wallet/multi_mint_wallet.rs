@@ -156,6 +156,7 @@ impl WalletConfig {
 ///
 /// This holds an `Arc<Wallet>` so it can call `.confirm()` without holding
 /// the RwLock. Created by [`MultiMintWallet::prepare_send`].
+#[must_use = "must be confirmed or canceled to release reserved proofs"]
 pub struct MultiMintPreparedSend {
     wallet: Arc<Wallet>,
     operation_id: Uuid,
@@ -254,6 +255,7 @@ impl std::fmt::Debug for MultiMintPreparedSend {
 ///
 /// This holds an `Arc<Wallet>` so it can call `.confirm()` without holding
 /// the RwLock. Created by [`MultiMintWallet::prepare_melt`].
+#[must_use = "must be confirmed or canceled to release reserved proofs"]
 pub struct MultiMintPreparedMelt {
     wallet: Arc<Wallet>,
     operation_id: Uuid,
