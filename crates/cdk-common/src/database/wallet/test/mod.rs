@@ -1573,8 +1573,14 @@ macro_rules! wallet_db_test {
             kvstore_update,
             kvstore_remove,
             kvstore_namespace_isolation,
-mod transactions;
-mod p2pk;
+            add_and_get_saga,
+            update_saga_optimistic_locking,
+            delete_saga,
+            get_incomplete_sagas,
+            reserve_proofs,
+            release_proofs,
+            get_reserved_proofs,
+            reserve_proofs_already_reserved
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {
