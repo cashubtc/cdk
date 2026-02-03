@@ -46,8 +46,8 @@ pub struct RotateKeyArguments {
     pub amounts: Vec<u64>,
     /// Input fee
     pub input_fee_ppk: u64,
-    /// Expiration of keyset
-    pub final_expiry: Option<u64>,
+    /// KeySet Version
+    pub use_keyset_v2: bool,
 }
 
 #[derive(Debug, Clone)]

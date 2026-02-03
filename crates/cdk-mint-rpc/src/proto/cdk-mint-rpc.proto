@@ -124,6 +124,7 @@ message RotateNextKeysetRequest {
     string unit = 1;
     repeated uint64 amounts = 2;
     optional uint64 input_fee_ppk = 3;
+    optional bool use_keyset_v2 = 4;
 }
 
 

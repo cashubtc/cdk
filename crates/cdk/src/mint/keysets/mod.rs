@@ -77,6 +77,7 @@ impl Mint {
         unit: CurrencyUnit,
         amounts: Vec<u64>,
         input_fee_ppk: u64,
+        use_keyset_v2: bool,
     ) -> Result<MintKeySetInfo, Error> {
         let result = self
             .signatory
@@ -84,7 +85,7 @@ impl Mint {
                 unit,
                 amounts,
                 input_fee_ppk,
-                final_expiry: None,
+                use_keyset_v2,
             })
             .await?;
 
