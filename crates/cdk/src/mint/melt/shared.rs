@@ -119,7 +119,7 @@ pub async fn rollback_melt_quote(
     }
 
     // Get and lock the quote, then reset state from Pending to Unpaid
-    if let Some(mut quote) = tx.get_melt_quote(quote_id).await? {
+    let quote_option = if let Some(mut quote) = tx.get_melt_quote(quote_id).await? {
         let previous_state = tx
             .update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
             .await?;
@@ -130,7 +130,10 @@ pub async fn rollback_melt_quote(
                 previous_state
             );
         }
-    }
+        Some(quote)
+    } else {
+        None
+    };
 
     // Delete melt request tracking record
     tx.delete_melt_request(quote_id).await?;
@@ -152,6 +155,10 @@ pub async fn rollback_melt_quote(
         for pk in input_ys.iter() {
             pubsub.proof_state((*pk, State::Unspent));
         }
+    }
+
+    if let Some(quote) = quote_option {
+        pubsub.melt_quote_status(&*quote, None, None, MeltQuoteState::Unpaid);
     }
 
     tracing::info!(
