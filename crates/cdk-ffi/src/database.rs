@@ -683,8 +683,9 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
         Ok(result
             .into_iter()
             .map(|k| {
-                k.try_into()
-                    .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+                k.try_into().map_err(|e: crate::error::FfiError| {
+                    cdk::cdk_database::Error::Database(e.to_string().into())
+                })
             })
             .collect::<Result<Vec<_>, _>>()?)
     }
@@ -699,8 +700,9 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
         Ok(result
             .map(|k| {
-                k.try_into()
-                    .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+                k.try_into().map_err(|e: crate::error::FfiError| {
+                    cdk::cdk_database::Error::Database(e.to_string().into())
+                })
             })
             .transpose()?)
     }
@@ -717,8 +719,9 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
         Ok(result
             .map(|k| {
-                k.try_into()
-                    .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+                k.try_into().map_err(|e: crate::error::FfiError| {
+                    cdk::cdk_database::Error::Database(e.to_string().into())
+                })
             })
             .transpose()?)
     }
@@ -1952,9 +1955,108 @@ macro_rules! impl_ffi_wallet_database {
             async fn remove_keys(&self, id: Id) -> Result<(), FfiError> {
                 self.inner.remove_keys(id).await
             }
-            // 
-=== Saga management methods
 
+            // P2PK methods
+
+            async fn add_p2pk_key(
+                &self,
+                pubkey: PublicKey,
+                derivation_path: String,
+                derivation_index: u32,
+            ) -> Result<(), FfiError> {
+                self.inner
+                    .add_p2pk_key(pubkey, derivation_path, derivation_index)
+                    .await
+            }
+
+            async fn get_p2pk_key(
+                &self,
+                pubkey: PublicKey,
+            ) -> Result<Option<P2PKSigningKey>, FfiError> {
+                self.inner.get_p2pk_key(pubkey).await
+            }
+
+            async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError> {
+                self.inner.list_p2pk_keys().await
+            }
+
+            async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, FfiError> {
+                self.inner.latest_p2pk().await
+            }
+
+            // ========== Saga management methods ==========
+
+            async fn add_saga(&self, saga_json: String) -> Result<(), FfiError> {
+                self.inner.add_saga(saga_json).await
+            }
+
+            async fn get_saga(&self, id: String) -> Result<Option<String>, FfiError> {
+                self.inner.get_saga(id).await
+            }
+
+            async fn update_saga(&self, saga_json: String) -> Result<bool, FfiError> {
+                self.inner.update_saga(saga_json).await
+            }
+
+            async fn delete_saga(&self, id: String) -> Result<(), FfiError> {
+                self.inner.delete_saga(id).await
+            }
+
+            async fn get_incomplete_sagas(&self) -> Result<Vec<String>, FfiError> {
+                self.inner.get_incomplete_sagas().await
+            }
+
+            // ========== Proof reservation methods ==========
+
+            async fn reserve_proofs(
+                &self,
+                ys: Vec<PublicKey>,
+                operation_id: String,
+            ) -> Result<(), FfiError> {
+                self.inner.reserve_proofs(ys, operation_id).await
+            }
+
+            async fn release_proofs(&self, operation_id: String) -> Result<(), FfiError> {
+                self.inner.release_proofs(operation_id).await
+            }
+
+            async fn get_reserved_proofs(
+                &self,
+                operation_id: String,
+            ) -> Result<Vec<ProofInfo>, FfiError> {
+                self.inner.get_reserved_proofs(operation_id).await
+            }
+
+            // ========== Quote reservation methods ==========
+
+            async fn reserve_melt_quote(
+                &self,
+                quote_id: String,
+                operation_id: String,
+            ) -> Result<(), FfiError> {
+                self.inner.reserve_melt_quote(quote_id, operation_id).await
+            }
+
+            async fn release_melt_quote(&self, operation_id: String) -> Result<(), FfiError> {
+                self.inner.release_melt_quote(operation_id).await
+            }
+
+            async fn reserve_mint_quote(
+                &self,
+                quote_id: String,
+                operation_id: String,
+            ) -> Result<(), FfiError> {
+                self.inner.reserve_mint_quote(quote_id, operation_id).await
+            }
+
+            async fn release_mint_quote(&self, operation_id: String) -> Result<(), FfiError> {
+                self.inner.release_mint_quote(operation_id).await
+            }
+        }
+    };
+}
+
+/// FFI-safe database type enum
 #[derive(uniffi::Enum, Clone)]
 pub enum WalletDbBackend {
     Sqlite {

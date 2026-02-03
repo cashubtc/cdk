@@ -7,9 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bitcoin::bip32::DerivationPath;
-use cdk_common::common::ProofInfo;
-use cdk_common::database::{ConversionError, Error, WalletDatabase};
+use cdk_common::bitcoin::bip32::DerivationPath;
 use cdk_common::database::{validate_kvstore_params, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nut00::KnownMethod;
@@ -24,7 +22,7 @@ use cdk_common::{
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
 
-use super::error::Error;
+use crate::error::Error;
 use crate::migrations::migrate_00_to_01;
 use crate::wallet::migrations::{
     migrate_01_to_02, migrate_02_to_03, migrate_03_to_04, migrate_04_to_05,

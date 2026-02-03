@@ -171,7 +171,8 @@ impl<'a> ReceiveSaga<'a, Initial> {
                                 proof.sign_p2pk(signing.to_owned().clone())?;
                             }
                             None => {
-                                let secret_key_option = self.wallet.get_signing_key(&pubkey).await?;
+                                let secret_key_option =
+                                    self.wallet.get_signing_key(&pubkey).await?;
                                 if let Some(secret_key) = secret_key_option {
                                     // cache secret key so it only has to be looked up once for the duration of the receive operation
                                     p2pk_signing_keys
