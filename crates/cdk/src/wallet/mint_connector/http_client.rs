@@ -4,8 +4,8 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use cdk_common::{
-    nut19, MeltQuoteBolt12Request, MeltQuoteCustomResponse, MintQuoteBolt12Request,
-    MintQuoteBolt12Response,
+    nut19, MeltQuoteBolt12Request, MeltQuoteBolt12Response, MeltQuoteCustomResponse,
+    MintQuoteBolt12Request, MintQuoteBolt12Response,
 };
 #[cfg(feature = "auth")]
 use cdk_common::{Method, ProtectedEndpoint, RoutePath};
@@ -563,7 +563,7 @@ where
     async fn post_melt_bolt12_quote(
         &self,
         request: MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+    ) -> Result<MeltQuoteBolt12Response<String>, Error> {
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt12"])?;
@@ -585,7 +585,7 @@ where
     async fn get_melt_bolt12_quote_status(
         &self,
         quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+    ) -> Result<MeltQuoteBolt12Response<String>, Error> {
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt12", quote_id])?;

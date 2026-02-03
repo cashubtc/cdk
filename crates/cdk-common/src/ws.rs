@@ -65,6 +65,15 @@ pub fn notification_uuid_to_notification_string(
             NotificationPayload::MintQuoteBolt12Response(quote) => {
                 NotificationPayload::MintQuoteBolt12Response(quote.to_string_id())
             }
+            NotificationPayload::MeltQuoteBolt12Response(quote) => {
+                NotificationPayload::MeltQuoteBolt12Response(quote.to_string_id())
+            }
+            NotificationPayload::CustomMintQuoteResponse(method, quote) => {
+                NotificationPayload::CustomMintQuoteResponse(method, quote.to_string_id())
+            }
+            NotificationPayload::CustomMeltQuoteResponse(method, quote) => {
+                NotificationPayload::CustomMeltQuoteResponse(method, quote.to_string_id())
+            }
         },
     }
 }
@@ -72,9 +81,9 @@ pub fn notification_uuid_to_notification_string(
 #[cfg(feature = "mint")]
 /// Converts a notification to a websocket message that can be sent to clients
 pub fn notification_to_ws_message(notification: NotificationInner<QuoteId>) -> WsMessageOrResponse {
-    nut17::ws::WsMessageOrResponse::Notification(nut17::ws::WsNotification {
+    nut17::ws::WsMessageOrResponse::Notification(Box::new(nut17::ws::WsNotification {
         jsonrpc: JSON_RPC_VERSION.to_owned(),
         method: "subscribe".to_string(),
         params: notification_uuid_to_notification_string(notification),
-    })
+    }))
 }

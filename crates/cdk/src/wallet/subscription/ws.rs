@@ -148,8 +148,8 @@ pub(crate) async fn stream_client(
                 };
 
                 match msg {
-                    WsMessageOrResponse::Notification(payload) => {
-                        reply_to.send(payload.params.payload);
+                    WsMessageOrResponse::Notification(ref payload) => {
+                        reply_to.send(payload.params.payload.clone());
                     }
                     WsMessageOrResponse::Response(response) => {
                         tracing::debug!("Received response from server: {:?}", response);
