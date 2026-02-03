@@ -589,7 +589,7 @@ pub enum CurrencyUnit {
 impl CurrencyUnit {
     /// Derivation index mint will use for unit
     #[deprecated(
-        since = "0.14.0",
+        since = "0.15.0",
         note = "This function is outdated; use `hashed_derivation_index` instead."
     )]
     pub fn derivation_index(&self) -> Option<u32> {
