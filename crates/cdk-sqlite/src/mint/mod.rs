@@ -11,7 +11,6 @@ pub mod memory;
 pub type MintSqliteDatabase = SQLMintDatabase<SqliteConnectionManager>;
 
 /// Mint Auth database with rusqlite
-#[cfg(feature = "auth")]
 pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteConnectionManager>;
 
 #[cfg(test)]

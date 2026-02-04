@@ -15,7 +15,7 @@ name = "cdk_ffi"
 [dependencies]
 async-trait = { workspace = true }
 bip39 = { workspace = true }
-cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "bip353", "nostr"] }
+cdk = { workspace = true, default-features = false, features = ["wallet", "bip353", "nostr"] }
 cdk-sqlite = { workspace = true }
 cdk-postgres = { workspace = true, optional = true }
 cdk-npubcash = { workspace = true, optional = true }

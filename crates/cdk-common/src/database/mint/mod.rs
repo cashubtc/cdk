@@ -17,13 +17,11 @@ use crate::nuts::{
 };
 use crate::payment::PaymentIdentifier;
 
-#[cfg(feature = "auth")]
 mod auth;
 
 #[cfg(feature = "test")]
 pub mod test;
 
-#[cfg(feature = "auth")]
 pub use auth::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
 
 // Re-export KVStore types from shared module for backward compatibility

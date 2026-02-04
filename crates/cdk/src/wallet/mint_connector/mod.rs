@@ -17,14 +17,12 @@ use crate::nuts::{
     MintQuoteBolt11Response, MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest,
     MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
-#[cfg(feature = "auth")]
 use crate::wallet::AuthWallet;
 
 pub mod http_client;
 pub mod transport;
 
 /// Auth HTTP Client with async transport
-#[cfg(feature = "auth")]
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
 /// Default Http Client with async transport (non-Tor)
 pub type HttpClient = http_client::HttpClient<transport::Async>;
@@ -108,11 +106,9 @@ pub trait MintConnector: Debug {
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error>;
 
     /// Get the auth wallet for the client
-    #[cfg(feature = "auth")]
     async fn get_auth_wallet(&self) -> Option<AuthWallet>;
 
     /// Set auth wallet on client
-    #[cfg(feature = "auth")]
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>);
     /// Mint Quote [NUT-04]
     async fn post_mint_bolt12_quote(

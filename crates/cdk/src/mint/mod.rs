@@ -7,9 +7,7 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::mint::Acquired;
-#[cfg(feature = "auth")]
-use cdk_common::database::DynMintAuthDatabase;
-use cdk_common::database::{self, DynMintDatabase};
+use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
@@ -17,7 +15,6 @@ pub use cdk_common::quote_id::QuoteId;
 use cdk_prometheus::global;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
-#[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
 use tokio::sync::{Mutex, Notify};
@@ -27,11 +24,8 @@ use tracing::instrument;
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
-use crate::Amount;
-#[cfg(feature = "auth")]
-use crate::OidcClient;
+use crate::{Amount, OidcClient};
 
-#[cfg(feature = "auth")]
 pub(crate) mod auth;
 mod builder;
 mod check_spendable;
@@ -67,13 +61,11 @@ pub struct Mint {
     /// Mint Storage backend
     localstore: DynMintDatabase,
     /// Auth Storage backend (only available with auth feature)
-    #[cfg(feature = "auth")]
     auth_localstore: Option<DynMintAuthDatabase>,
     /// Payment processors for mint
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
     /// Subscription manager
     pubsub_manager: Arc<PubSubManager>,
-    #[cfg(feature = "auth")]
     oidc_client: Option<OidcClient>,
     /// In-memory keyset
     keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
@@ -114,7 +106,6 @@ impl Mint {
             mint_info,
             signatory,
             localstore,
-            #[cfg(feature = "auth")]
             None,
             payment_processors,
             max_inputs,
@@ -124,7 +115,6 @@ impl Mint {
     }
 
     /// Create new [`Mint`] with authentication support
-    #[cfg(feature = "auth")]
     pub async fn new_with_auth(
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
@@ -152,7 +142,7 @@ impl Mint {
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: DynMintDatabase,
-        #[cfg(feature = "auth")] auth_localstore: Option<DynMintAuthDatabase>,
+        auth_localstore: Option<DynMintAuthDatabase>,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
         max_inputs: usize,
         max_outputs: usize,
@@ -200,7 +190,6 @@ impl Mint {
 
                 // Merge auth settings from computed_info if stored doesn't have them
                 // Protected endpoints will be populated dynamically from auth database
-                #[cfg(feature = "auth")]
                 {
                     if stored.nuts.nut21.is_none() && computed_info.nuts.nut21.is_some() {
                         stored.nuts.nut21 = computed_info.nuts.nut21.clone();
@@ -245,7 +234,6 @@ impl Mint {
             signatory,
             pubsub_manager: PubSubManager::new((localstore.clone(), payment_processors.clone())),
             localstore,
-            #[cfg(feature = "auth")]
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
                 OidcClient::new(
                     nut21.openid_discovery.clone(),
@@ -253,7 +241,6 @@ impl Mint {
                 )
             }),
             payment_processors,
-            #[cfg(feature = "auth")]
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
@@ -511,7 +498,6 @@ impl Mint {
 
         let mint_info: MintInfo = serde_json::from_slice(&mint_info)?;
 
-        #[cfg(feature = "auth")]
         let mint_info = if let Some(auth_db) = self.auth_localstore.as_ref() {
             let mut mint_info = mint_info;
             let auth_endpoints = auth_db.get_auth_for_endpoints().await?;

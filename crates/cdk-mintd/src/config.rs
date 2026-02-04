@@ -574,7 +574,6 @@ pub struct Settings {
     pub fake_wallet: Option<FakeWallet>,
     pub grpc_processor: Option<GrpcProcessor>,
     pub database: Database,
-    #[cfg(feature = "auth")]
     pub auth_database: Option<AuthDatabase>,
     #[cfg(feature = "management-rpc")]
     pub mint_management_rpc: Option<MintManagementRpc>,
