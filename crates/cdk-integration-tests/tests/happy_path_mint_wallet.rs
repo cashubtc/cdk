@@ -23,7 +23,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, PaymentMethod, State};
-use cdk::wallet::{HttpClient, MintConnector, MultiMintWallet, Wallet};
+use cdk::wallet::{HttpClient, MintConnector, MultiMintWallet, Wallet, WalletTrait};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
 use futures::{SinkExt, StreamExt};

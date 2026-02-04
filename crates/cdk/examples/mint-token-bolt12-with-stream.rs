@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cdk::error::Error;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{SendOptions, Wallet};
+use cdk::wallet::{SendOptions, Wallet, WalletTrait};
 use cdk::{Amount, StreamExt};
 use cdk_sqlite::wallet::memory;
 use rand::random;
