@@ -559,6 +559,9 @@ pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
     pub ln: Ln,
+    /// Transaction limits for DoS protection
+    #[serde(default)]
+    pub limits: Limits,
     #[cfg(feature = "cln")]
     pub cln: Option<Cln>,
     #[cfg(feature = "lnbits")]
@@ -586,6 +589,34 @@ pub struct Prometheus {
     pub enabled: bool,
     pub address: Option<String>,
     pub port: Option<u16>,
+}
+
+/// Transaction limits configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Limits {
+    /// Maximum number of inputs allowed per transaction (swap/melt)
+    #[serde(default = "default_max_inputs")]
+    pub max_inputs: usize,
+    /// Maximum number of outputs allowed per transaction (mint/swap/melt)
+    #[serde(default = "default_max_outputs")]
+    pub max_outputs: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_inputs: 1000,
+            max_outputs: 1000,
+        }
+    }
+}
+
+fn default_max_inputs() -> usize {
+    1000
+}
+
+fn default_max_outputs() -> usize {
+    1000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

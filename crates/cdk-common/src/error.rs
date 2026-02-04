@@ -196,6 +196,22 @@ pub enum Error {
     /// Duplicate output
     #[error("Duplicate outputs")]
     DuplicateOutputs,
+    /// Maximum number of inputs exceeded
+    #[error("Maximum inputs exceeded: {actual} provided, max {max}")]
+    MaxInputsExceeded {
+        /// Actual number of inputs provided
+        actual: usize,
+        /// Maximum allowed inputs
+        max: usize,
+    },
+    /// Maximum number of outputs exceeded
+    #[error("Maximum outputs exceeded: {actual} provided, max {max}")]
+    MaxOutputsExceeded {
+        /// Actual number of outputs provided
+        actual: usize,
+        /// Maximum allowed outputs
+        max: usize,
+    },
     /// Multiple units provided
     #[error("Cannot have multiple units")]
     MultipleUnits,

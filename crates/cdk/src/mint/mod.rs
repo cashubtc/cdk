@@ -79,6 +79,10 @@ pub struct Mint {
     keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
+    /// Maximum number of inputs allowed per transaction
+    max_inputs: usize,
+    /// Maximum number of outputs allowed per transaction
+    max_outputs: usize,
 }
 
 impl std::fmt::Debug for Mint {
@@ -103,6 +107,8 @@ impl Mint {
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: DynMintDatabase,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        max_inputs: usize,
+        max_outputs: usize,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -111,6 +117,8 @@ impl Mint {
             #[cfg(feature = "auth")]
             None,
             payment_processors,
+            max_inputs,
+            max_outputs,
         )
         .await
     }
@@ -123,6 +131,8 @@ impl Mint {
         localstore: DynMintDatabase,
         auth_localstore: DynMintAuthDatabase,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        max_inputs: usize,
+        max_outputs: usize,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -130,6 +140,8 @@ impl Mint {
             localstore,
             Some(auth_localstore),
             payment_processors,
+            max_inputs,
+            max_outputs,
         )
         .await
     }
@@ -142,6 +154,8 @@ impl Mint {
         localstore: DynMintDatabase,
         #[cfg(feature = "auth")] auth_localstore: Option<DynMintAuthDatabase>,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        max_inputs: usize,
+        max_outputs: usize,
     ) -> Result<Self, Error> {
         let keysets = signatory.keysets().await?;
         if !keysets
@@ -243,6 +257,8 @@ impl Mint {
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
+            max_inputs,
+            max_outputs,
         })
     }
 
@@ -1123,9 +1139,16 @@ mod tests {
                 .unwrap();
         }
 
-        Mint::new(MintInfo::default(), signatory, localstore, HashMap::new())
-            .await
-            .unwrap()
+        Mint::new(
+            MintInfo::default(),
+            signatory,
+            localstore,
+            HashMap::new(),
+            1000,
+            1000,
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]

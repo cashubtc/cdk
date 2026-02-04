@@ -38,6 +38,8 @@ pub struct MintBuilder {
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     use_keyset_v2: Option<bool>,
+    max_inputs: usize,
+    max_outputs: usize,
 }
 
 impl std::fmt::Debug for MintBuilder {
@@ -74,6 +76,8 @@ impl MintBuilder {
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
             use_keyset_v2: None,
+            max_inputs: 100,
+            max_outputs: 100,
         }
     }
 
@@ -250,6 +254,13 @@ impl MintBuilder {
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     ) -> Self {
         self.custom_paths = custom_paths;
+        self
+    }
+
+    /// Set transaction limits for DoS protection
+    pub fn with_limits(mut self, max_inputs: usize, max_outputs: usize) -> Self {
+        self.max_inputs = max_inputs;
+        self.max_outputs = max_outputs;
         self
     }
 
@@ -463,6 +474,8 @@ impl MintBuilder {
                 self.localstore,
                 auth_localstore,
                 self.payment_processors,
+                self.max_inputs,
+                self.max_outputs,
             )
             .await;
         }
@@ -471,6 +484,8 @@ impl MintBuilder {
             signatory,
             self.localstore,
             self.payment_processors,
+            self.max_inputs,
+            self.max_outputs,
         )
         .await
     }

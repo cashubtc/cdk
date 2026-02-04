@@ -202,3 +202,10 @@ max_delay_time = 3
 # swap = "blind"
 # restore = "blind"
 # check_proof_state = "none"
+
+# Transaction limits for DoS protection (optional, defaults shown)
+[limits]
+# Maximum number of inputs allowed per transaction (swap/melt)
+max_inputs = 1000
+# Maximum number of outputs allowed per transaction (mint/swap/melt)
+max_outputs = 1000
