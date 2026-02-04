@@ -70,7 +70,7 @@ pub enum MeltResult<'a> {
     /// Melt completed immediately
     Paid(FinalizedMelt),
     /// Melt is pending - can be awaited or dropped to poll elsewhere
-    Pending(PendingMelt<'a>),
+    Pending(Box<PendingMelt<'a>>),
 }
 
 /// A pending melt operation that can be awaited.
@@ -359,7 +359,7 @@ impl<'a> PreparedMelt<'a> {
     ) -> Result<FinalizedMelt, Error> {
         match self.confirm_async_with_options(options).await? {
             MeltResult::Paid(finalized) => Ok(finalized),
-            MeltResult::Pending(pending) => pending.await,
+            MeltResult::Pending(pending) => (*pending).await,
         }
     }
 
@@ -403,10 +403,12 @@ impl<'a> PreparedMelt<'a> {
                 finalized.fee_paid(),
                 finalized.into_change(),
             ))),
-            MeltSagaResult::Pending(pending_saga) => Ok(MeltResult::Pending(PendingMelt {
-                saga: pending_saga,
-                metadata: self.metadata,
-            })),
+            MeltSagaResult::Pending(pending_saga) => {
+                Ok(MeltResult::Pending(Box::new(PendingMelt {
+                    saga: pending_saga,
+                    metadata: self.metadata,
+                })))
+            }
         }
     }
 

@@ -12,6 +12,9 @@ use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::ProofInfo;
 use getrandom::getrandom;
+pub use mint_connector::http_client::{
+    AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
+};
 use subscription::{ActiveSubscription, SubscriptionManager};
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::instrument;

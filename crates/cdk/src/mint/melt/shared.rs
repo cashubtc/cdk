@@ -581,7 +581,7 @@ pub async fn finalize_melt_quote(
 
     // Publish quote status change
     pubsub.melt_quote_status(
-        &*locked_quote,
+        &locked_quote,
         payment_preimage,
         change_sigs.clone(),
         MeltQuoteState::Paid,

@@ -1014,7 +1014,7 @@ impl MeltSaga<PaymentConfirmed> {
         tx.commit().await?;
 
         self.pubsub.melt_quote_status(
-            &*quote,
+            &quote,
             payment_preimage.clone(),
             change.clone(),
             MeltQuoteState::Paid,

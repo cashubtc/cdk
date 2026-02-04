@@ -146,7 +146,7 @@ async fn main() -> Result<(), Error> {
         MeltResult::Pending(pending) => {
             println!("Melt is pending, waiting for completion via WebSocket...");
             // You can either await the pending melt directly:
-            let finalized = pending.await?;
+            let finalized = (*pending).await?;
             println!(
                 "Async melt completed after waiting: state={:?}, amount={}, fee_paid={}",
                 finalized.state(),

@@ -446,7 +446,7 @@ async fn test_confirm_async_pending_can_be_awaited() {
         MeltResult::Paid(_melt) => panic!("We expect it to be pending"),
         MeltResult::Pending(pending) => {
             // This is the key test - awaiting the pending melt
-            let melt = pending.await.unwrap();
+            let melt = (*pending).await.unwrap();
             melt
         }
     };
@@ -802,7 +802,7 @@ async fn test_confirm_vs_confirm_async_behavior() {
 
     let finalized_b = match result_b {
         MeltResult::Paid(melt) => melt,
-        MeltResult::Pending(pending) => pending.await.unwrap(),
+        MeltResult::Pending(pending) => (*pending).await.unwrap(),
     };
 
     assert_eq!(
