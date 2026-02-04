@@ -102,3 +102,6 @@ pub struct MeltQuoteBolt12Request {
     /// Payment Options
     pub options: Option<MeltOptions>,
 }
+
+/// Melt quote response [NUT-25]
+pub type MeltQuoteBolt12Response<Q> = crate::nuts::nut23::MeltQuoteBolt11Response<Q>;

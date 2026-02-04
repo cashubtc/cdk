@@ -4,8 +4,8 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 use cdk_common::{
-    MeltQuoteBolt12Request, MeltQuoteCustomResponse, MintQuoteBolt12Request,
-    MintQuoteBolt12Response,
+    MeltQuoteBolt12Request, MeltQuoteBolt12Response, MeltQuoteCustomResponse,
+    MintQuoteBolt12Request, MintQuoteBolt12Response,
 };
 
 use super::Error;
@@ -128,12 +128,12 @@ pub trait MintConnector: Debug {
     async fn post_melt_bolt12_quote(
         &self,
         request: MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+    ) -> Result<MeltQuoteBolt12Response<String>, Error>;
     /// Melt Quote Status [NUT-23]
     async fn get_melt_bolt12_quote_status(
         &self,
         quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+    ) -> Result<MeltQuoteBolt12Response<String>, Error>;
 
     /// Mint Quote for Custom Payment Method
     async fn post_mint_custom_quote(

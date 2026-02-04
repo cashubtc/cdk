@@ -121,6 +121,15 @@ where
             NotificationPayload::MintQuoteBolt12Response(r) => {
                 NotificationId::MintQuoteBolt12(r.quote.to_owned())
             }
+            NotificationPayload::MeltQuoteBolt12Response(r) => {
+                NotificationId::MeltQuoteBolt12(r.quote.to_owned())
+            }
+            NotificationPayload::CustomMintQuoteResponse(method, r) => {
+                NotificationId::MintQuoteCustom(method.clone(), r.quote.to_owned())
+            }
+            NotificationPayload::CustomMeltQuoteResponse(method, r) => {
+                NotificationId::MeltQuoteCustom(method.clone(), r.quote.to_owned())
+            }
             NotificationPayload::ProofState(p) => NotificationId::ProofState(p.y.to_owned()),
         }]
     }

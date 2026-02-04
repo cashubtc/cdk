@@ -66,8 +66,10 @@ use saga::MeltSaga;
 /// identical fields but different Rust types.
 #[derive(Debug, Clone)]
 pub(crate) enum MeltQuoteStatusResponse {
-    /// Standard response (Bolt11/Bolt12)
+    /// Standard response (Bolt11)
     Standard(cdk_common::MeltQuoteBolt11Response<String>),
+    /// Bolt12 response
+    Bolt12(cdk_common::MeltQuoteBolt12Response<String>),
     /// Custom payment method response
     Custom(cdk_common::MeltQuoteCustomResponse<String>),
 }
@@ -77,6 +79,7 @@ impl MeltQuoteStatusResponse {
     pub fn state(&self) -> MeltQuoteState {
         match self {
             Self::Standard(r) => r.state,
+            Self::Bolt12(r) => r.state,
             Self::Custom(r) => r.state,
         }
     }
@@ -85,17 +88,18 @@ impl MeltQuoteStatusResponse {
     pub fn payment_preimage(&self) -> Option<String> {
         match self {
             Self::Standard(r) => r.payment_preimage.clone(),
+            Self::Bolt12(r) => r.payment_preimage.clone(),
             Self::Custom(r) => r.payment_preimage.clone(),
         }
     }
 
-    /// Convert to standard response (for Bolt11/Bolt12).
-    /// Returns error for Custom payment methods.
+    /// Convert to standard response (for Bolt11).
+    /// Returns error for Custom payment methods and Bolt12 (since types differ).
     pub fn into_standard(self) -> Result<cdk_common::MeltQuoteBolt11Response<String>, Error> {
         match self {
             Self::Standard(r) => Ok(r),
-            Self::Custom(_) => Err(Error::Custom(
-                "Cannot convert custom response to standard response".to_string(),
+            _ => Err(Error::Custom(
+                "Cannot convert response to standard bolt11 response".to_string(),
             )),
         }
     }
@@ -798,7 +802,7 @@ impl Wallet {
             }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
                 let r = self.client.get_melt_bolt12_quote_status(quote_id).await?;
-                MeltQuoteStatusResponse::Standard(r)
+                MeltQuoteStatusResponse::Bolt12(r)
             }
             PaymentMethod::Custom(method) => {
                 let r = self

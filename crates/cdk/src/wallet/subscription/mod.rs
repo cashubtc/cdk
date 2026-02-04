@@ -155,11 +155,16 @@ impl SubscriptionClient {
     ) -> Option<(usize, String)> {
         let (kind, filter) = match params {
             NotificationId::ProofState(x) => (Kind::ProofState, x.to_string()),
-            NotificationId::MeltQuoteBolt11(q) | NotificationId::MeltQuoteBolt12(q) => {
-                (Kind::Bolt11MeltQuote, q)
-            }
+            NotificationId::MeltQuoteBolt11(q) => (Kind::Bolt11MeltQuote, q),
+            NotificationId::MeltQuoteBolt12(q) => (Kind::Bolt12MeltQuote, q),
             NotificationId::MintQuoteBolt11(q) => (Kind::Bolt11MintQuote, q),
             NotificationId::MintQuoteBolt12(q) => (Kind::Bolt12MintQuote, q),
+            NotificationId::MintQuoteCustom(method, q) => {
+                (Kind::Custom(format!("{}_mint_quote", method)), q)
+            }
+            NotificationId::MeltQuoteCustom(method, q) => {
+                (Kind::Custom(format!("{}_melt_quote", method)), q)
+            }
         };
 
         let request: WsRequest<_> = (
@@ -304,7 +309,41 @@ impl Transport for SubscriptionClient {
                     };
 
                     reply_to.send(MintEvent::new(
-                        NotificationPayload::MeltQuoteBolt11Response(response),
+                        NotificationPayload::MeltQuoteBolt12Response(response),
+                    ));
+                }
+                NotificationId::MintQuoteCustom(method, id) => {
+                    let response = match self
+                        .http_client
+                        .get_mint_quote_custom_status(&method, &id)
+                        .await
+                    {
+                        Ok(success) => success,
+                        Err(err) => {
+                            tracing::error!("Error with Custom Mint Quote {} with {:?}", id, err);
+                            continue;
+                        }
+                    };
+
+                    reply_to.send(MintEvent::new(
+                        NotificationPayload::CustomMintQuoteResponse(method, response),
+                    ));
+                }
+                NotificationId::MeltQuoteCustom(method, id) => {
+                    let response = match self
+                        .http_client
+                        .get_melt_quote_custom_status(&method, &id)
+                        .await
+                    {
+                        Ok(success) => success,
+                        Err(err) => {
+                            tracing::error!("Error with Custom Melt Quote {} with {:?}", id, err);
+                            continue;
+                        }
+                    };
+
+                    reply_to.send(MintEvent::new(
+                        NotificationPayload::CustomMeltQuoteResponse(method, response),
                     ));
                 }
                 _ => {}

@@ -41,6 +41,22 @@ impl SubscriptionRequest for Params {
                 Kind::Bolt12MintQuote => QuoteId::from_str(filter)
                     .map(NotificationId::MintQuoteBolt12)
                     .map_err(|_| Error::ParsingError(filter.to_owned())),
+                Kind::Bolt12MeltQuote => QuoteId::from_str(filter)
+                    .map(NotificationId::MeltQuoteBolt12)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
+                Kind::Custom(ref s) => {
+                    if let Some(method) = s.strip_suffix("_mint_quote") {
+                        QuoteId::from_str(filter)
+                            .map(|id| NotificationId::MintQuoteCustom(method.to_string(), id))
+                            .map_err(|_| Error::ParsingError(filter.to_owned()))
+                    } else if let Some(method) = s.strip_suffix("_melt_quote") {
+                        QuoteId::from_str(filter)
+                            .map(|id| NotificationId::MeltQuoteCustom(method.to_string(), id))
+                            .map_err(|_| Error::ParsingError(filter.to_owned()))
+                    } else {
+                        Err(Error::ParsingError(filter.to_owned()))
+                    }
+                }
             })
             .collect::<Result<Vec<_>, _>>()
     }
@@ -73,6 +89,18 @@ impl SubscriptionRequest for WalletParams {
                         .map_err(|_| Error::ParsingError(filter.to_owned()))?,
 
                     Kind::Bolt12MintQuote => NotificationId::MintQuoteBolt12(filter.to_owned()),
+                    Kind::Bolt12MeltQuote => NotificationId::MeltQuoteBolt12(filter.to_owned()),
+                    Kind::Custom(ref s) => {
+                        if let Some(method) = s.strip_suffix("_mint_quote") {
+                            NotificationId::MintQuoteCustom(method.to_string(), filter.to_owned())
+                        } else if let Some(method) = s.strip_suffix("_melt_quote") {
+                            NotificationId::MeltQuoteCustom(method.to_string(), filter.to_owned())
+                        } else {
+                            // If we can't parse the custom method, we can't create a NotificationId
+                            // This might happen if the custom kind doesn't follow the convention
+                            return Err(Error::ParsingError(format!("Invalid custom kind: {}", s)));
+                        }
+                    }
                 })
             })
             .collect::<Result<Vec<_>, _>>()

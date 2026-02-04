@@ -13,8 +13,8 @@ use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
 use cdk_common::subscription::SubId;
 use cdk_common::{
     Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteState, ProofState, PublicKey,
-    QuoteId,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteState,
+    NotificationPayload, ProofState, PublicKey, QuoteId,
 };
 
 use super::Mint;
@@ -95,6 +95,9 @@ impl MintPubSubSpec {
 
                         to_return.push(mint_quote);
                     }
+                }
+                NotificationId::MintQuoteCustom(_, _) | NotificationId::MeltQuoteCustom(_, _) => {
+                    continue;
                 }
             }
         }
@@ -181,8 +184,13 @@ impl PubSubManager {
                     total_issued.into(),
                 );
             }
-            _ => {
-                // We don't send ws updates for unknown methods
+            cdk_common::PaymentMethod::Custom(ref method) => {
+                if let Ok(response) = MintQuoteCustomResponse::try_from(mint_quote.clone()) {
+                    self.publish(NotificationPayload::CustomMintQuoteResponse(
+                        method.clone(),
+                        response,
+                    ));
+                }
             }
         }
     }
@@ -200,8 +208,13 @@ impl PubSubManager {
                     mint_quote.amount_issued().into(),
                 );
             }
-            _ => {
-                // We don't send ws updates for unknown methods
+            cdk_common::PaymentMethod::Custom(ref method) => {
+                if let Ok(response) = MintQuoteCustomResponse::try_from(mint_quote.clone()) {
+                    self.publish(NotificationPayload::CustomMintQuoteResponse(
+                        method.clone(),
+                        response,
+                    ));
+                }
             }
         }
     }
