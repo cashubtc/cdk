@@ -7,6 +7,7 @@
 mod common;
 mod database;
 mod info;
+mod limits;
 mod ln;
 mod mint_info;
 
@@ -45,6 +46,7 @@ pub use fake_wallet::*;
 pub use grpc_processor::*;
 #[cfg(feature = "ldk-node")]
 pub use ldk_node::*;
+pub use limits::*;
 pub use ln::*;
 #[cfg(feature = "lnbits")]
 pub use lnbits::*;
@@ -94,6 +96,7 @@ impl Settings {
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
         self.ln = self.ln.clone().from_env();
+        self.limits = self.limits.clone().from_env();
 
         #[cfg(feature = "auth")]
         {
