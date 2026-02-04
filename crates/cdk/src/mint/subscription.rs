@@ -6,15 +6,15 @@ use std::sync::Arc;
 
 use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
-use cdk_common::mint::MintQuote;
+use cdk_common::mint::{MeltQuote, MintQuote};
 use cdk_common::nut17::NotificationId;
 use cdk_common::payment::DynMintPayment;
 use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
 use cdk_common::subscription::SubId;
 use cdk_common::{
-    Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteState,
-    NotificationPayload, ProofState, PublicKey, QuoteId,
+    Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
+    MeltQuoteState, MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
+    MintQuoteState, NotificationPayload, ProofState, PublicKey, QuoteId,
 };
 
 use super::Mint;
@@ -249,18 +249,55 @@ impl PubSubManager {
     }
 
     /// Helper function to emit a MeltQuoteBolt11Response status
-    pub fn melt_quote_status<E: Into<MeltQuoteBolt11Response<QuoteId>>>(
+    pub fn melt_quote_status(
         &self,
-        quote: E,
+        quote: &MeltQuote,
         payment_preimage: Option<String>,
         change: Option<Vec<BlindSignature>>,
         new_state: MeltQuoteState,
     ) {
-        let mut quote = quote.into();
-        quote.state = new_state;
-        quote.payment_preimage = payment_preimage;
-        quote.change = change;
-        self.publish(quote);
+        match quote.payment_method {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
+                let mut event: MeltQuoteBolt11Response<QuoteId> = quote.clone().into();
+                event.state = new_state;
+                event.payment_preimage = payment_preimage;
+                event.change = change;
+                self.publish(NotificationPayload::MeltQuoteBolt11Response(event));
+            }
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
+                let mut event: MeltQuoteBolt12Response<QuoteId> = quote.clone().into();
+                event.state = new_state;
+                event.payment_preimage = payment_preimage;
+                event.change = change;
+                self.publish(NotificationPayload::MeltQuoteBolt12Response(event));
+            }
+            cdk_common::PaymentMethod::Custom(ref method) => {
+                let request_str = match &quote.request {
+                    cdk_common::mint::MeltPaymentRequest::Custom { request, .. } => {
+                        Some(request.clone())
+                    }
+                    _ => None,
+                };
+
+                let response = cdk_common::nuts::MeltQuoteCustomResponse {
+                    quote: quote.id.clone(),
+                    amount: quote.amount().into(),
+                    fee_reserve: quote.fee_reserve().into(),
+                    state: new_state,
+                    expiry: quote.expiry,
+                    payment_preimage,
+                    change,
+                    request: request_str,
+                    unit: Some(quote.unit.clone()),
+                    extra: serde_json::Value::Null,
+                };
+
+                self.publish(NotificationPayload::CustomMeltQuoteResponse(
+                    method.clone(),
+                    response,
+                ));
+            }
+        }
     }
 }
 
