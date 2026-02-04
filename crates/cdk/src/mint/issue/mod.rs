@@ -20,7 +20,6 @@ use tracing::instrument;
 use crate::mint::Verification;
 use crate::Mint;
 
-#[cfg(feature = "auth")]
 mod auth;
 
 /// Request for creating a mint quote

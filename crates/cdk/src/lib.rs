@@ -8,7 +8,7 @@ compile_error!("The 'tor' feature is not supported on wasm32 targets (browser). 
 pub mod cdk_database {
     //! CDK Database
     pub use cdk_common::database::Error;
-    #[cfg(all(feature = "mint", feature = "auth"))]
+    #[cfg(feature = "mint")]
     pub use cdk_common::database::MintAuthDatabase;
     #[cfg(feature = "wallet")]
     pub use cdk_common::database::WalletDatabase;
@@ -33,7 +33,7 @@ mod bip353;
 #[cfg(feature = "wallet")]
 mod lightning_address;
 
-#[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
+#[cfg(any(feature = "wallet", feature = "mint"))]
 mod oidc_client;
 
 #[cfg(feature = "mint")]
@@ -46,7 +46,7 @@ pub use cdk_common::{
     error::{self, Error},
     lightning_invoice, mint_url, nuts, secret, util, ws, Amount, Bolt11Invoice,
 };
-#[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
+#[cfg(any(feature = "wallet", feature = "mint"))]
 pub use oidc_client::OidcClient;
 
 #[cfg(any(feature = "wallet", feature = "mint"))]

@@ -289,12 +289,10 @@ impl MintConnector for MockMintConnector {
             .expect("MockMintConnector: post_restore called without configured response")
     }
 
-    #[cfg(feature = "auth")]
     async fn get_auth_wallet(&self) -> Option<crate::wallet::AuthWallet> {
         None
     }
 
-    #[cfg(feature = "auth")]
     async fn set_auth_wallet(&self, _wallet: Option<crate::wallet::AuthWallet>) {}
 
     async fn get_mint_quote_custom_status(

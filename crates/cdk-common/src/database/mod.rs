@@ -25,7 +25,7 @@ pub use mint::{
     SignaturesDatabase as MintSignaturesDatabase,
     SignaturesTransaction as MintSignatureTransaction, Transaction as MintTransaction,
 };
-#[cfg(all(feature = "mint", feature = "auth"))]
+#[cfg(feature = "mint")]
 pub use mint::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;
@@ -140,7 +140,6 @@ pub enum Error {
     NUT02(#[from] crate::nuts::nut02::Error),
     /// NUT22 Error
     #[error(transparent)]
-    #[cfg(feature = "auth")]
     NUT22(#[from] crate::nuts::nut22::Error),
     /// NUT04 Error
     #[error(transparent)]

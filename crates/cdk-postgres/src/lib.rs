@@ -322,7 +322,6 @@ impl DatabaseExecutor for PostgresConnection {
 pub type MintPgDatabase = SQLMintDatabase<PgConnectionPool>;
 
 /// Mint Auth database with Postgres
-#[cfg(feature = "auth")]
 pub type MintPgAuthDatabase = SQLMintAuthDatabase<PgConnectionPool>;
 
 /// Wallet DB implementation with PostgreSQL

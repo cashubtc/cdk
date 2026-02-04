@@ -4,14 +4,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bitcoin::bip32::DerivationPath;
-use cdk_common::database::{DynMintDatabase, MintKeysDatabase};
+use cdk_common::database::{DynMintAuthDatabase, DynMintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::DynMintPayment;
-#[cfg(feature = "auth")]
-use cdk_common::{database::DynMintAuthDatabase, nut21, nut22};
+use cdk_common::{nut21, nut22};
 use cdk_signatory::signatory::{RotateKeyArguments, Signatory};
 
 use super::nut17::SupportedMethods;
@@ -20,11 +19,9 @@ use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_database;
 use crate::mint::Mint;
-#[cfg(feature = "auth")]
-use crate::nuts::ProtectedEndpoint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
-    MppMethodSettings, PaymentMethod,
+    MppMethodSettings, PaymentMethod, ProtectedEndpoint,
 };
 use crate::types::PaymentProcessorKey;
 
@@ -32,7 +29,6 @@ use crate::types::PaymentProcessorKey;
 pub struct MintBuilder {
     mint_info: MintInfo,
     localstore: DynMintDatabase,
-    #[cfg(feature = "auth")]
     auth_localstore: Option<DynMintAuthDatabase>,
     payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
@@ -70,7 +66,6 @@ impl MintBuilder {
         MintBuilder {
             mint_info,
             localstore,
-            #[cfg(feature = "auth")]
             auth_localstore: None,
             payment_processors: HashMap::new(),
             supported_units: HashMap::new(),
@@ -88,7 +83,6 @@ impl MintBuilder {
     }
 
     /// Set clear auth settings
-    #[cfg(feature = "auth")]
     pub fn with_auth(
         mut self,
         auth_localstore: DynMintAuthDatabase,
@@ -131,7 +125,6 @@ impl MintBuilder {
     }
 
     /// Set blind auth settings
-    #[cfg(feature = "auth")]
     pub fn with_blind_auth(
         mut self,
         bat_max_mint: u64,
@@ -407,7 +400,6 @@ impl MintBuilder {
         let active_keysets = signatory.keysets().await?;
 
         // Ensure Auth keyset is created when auth is enabled
-        #[cfg(feature = "auth")]
         if self.auth_localstore.is_some() {
             self.supported_units
                 .entry(CurrencyUnit::Auth)
@@ -466,7 +458,6 @@ impl MintBuilder {
             }
         }
 
-        #[cfg(feature = "auth")]
         if let Some(auth_localstore) = self.auth_localstore {
             return Mint::new_with_auth(
                 self.mint_info,

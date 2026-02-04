@@ -11,10 +11,9 @@ rust-version.workspace = true                            # MSRV
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-default = ["mint", "wallet", "auth"]
+default = ["mint", "wallet"]
 mint = ["cdk-common/mint", "cdk-sql-common/mint"]
 wallet = ["cdk-common/wallet", "cdk-sql-common/wallet"]
-auth = ["cdk-common/auth", "cdk-sql-common/auth"]
 
 [dependencies]
 async-trait.workspace = true

@@ -11,7 +11,6 @@ mod limits;
 mod ln;
 mod mint_info;
 
-#[cfg(feature = "auth")]
 mod auth;
 #[cfg(feature = "cln")]
 mod cln;
@@ -34,7 +33,6 @@ use std::env;
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Result};
-#[cfg(feature = "auth")]
 pub use auth::*;
 #[cfg(feature = "cln")]
 pub use cln::*;
@@ -78,27 +76,23 @@ impl Settings {
             );
         }
 
-        // Parse auth database configuration from environment variables (when auth is enabled)
-        #[cfg(feature = "auth")]
-        {
-            self.auth_database = Some(crate::config::AuthDatabase {
-                postgres: Some(
-                    self.auth_database
-                        .clone()
-                        .unwrap_or_default()
-                        .postgres
-                        .unwrap_or_default()
-                        .from_env(),
-                ),
-            });
-        }
+        // Parse auth database configuration from environment variables
+        self.auth_database = Some(crate::config::AuthDatabase {
+            postgres: Some(
+                self.auth_database
+                    .clone()
+                    .unwrap_or_default()
+                    .postgres
+                    .unwrap_or_default()
+                    .from_env(),
+            ),
+        });
 
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
         self.ln = self.ln.clone().from_env();
         self.limits = self.limits.clone().from_env();
 
-        #[cfg(feature = "auth")]
         {
             // Check env vars for auth config even if None
             let auth = self.auth.clone().unwrap_or_default().from_env();

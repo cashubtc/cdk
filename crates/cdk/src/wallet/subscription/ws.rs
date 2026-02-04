@@ -1,7 +1,6 @@
 use cdk_common::nut17::ws::WsMessageOrResponse;
 use cdk_common::pub_sub::remote_consumer::{InternalRelay, StreamCtrl, SubscribeMessage};
 use cdk_common::pub_sub::Error as PubsubError;
-#[cfg(feature = "auth")]
 use cdk_common::{Method, RoutePath};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
@@ -29,21 +28,12 @@ pub(crate) async fn stream_client(
         url.set_scheme("ws").expect("Could not set scheme");
     }
 
-    #[cfg(not(feature = "auth"))]
-    let request = url.to_string().into_client_request().map_err(|err| {
-        tracing::error!("Failed to create client request: {:?}", err);
-        // Fallback to HTTP client if we can't create the WebSocket request
-        cdk_common::pub_sub::Error::NotSupported
-    })?;
-
-    #[cfg(feature = "auth")]
     let mut request = url.to_string().into_client_request().map_err(|err| {
         tracing::error!("Failed to create client request: {:?}", err);
         // Fallback to HTTP client if we can't create the WebSocket request
         cdk_common::pub_sub::Error::NotSupported
     })?;
 
-    #[cfg(feature = "auth")]
     {
         let auth_wallet = client.http_client.get_auth_wallet().await;
         let token = match auth_wallet.as_ref() {

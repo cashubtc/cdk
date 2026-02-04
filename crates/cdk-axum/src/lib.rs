@@ -5,7 +5,6 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-#[cfg(feature = "auth")]
 use auth::create_auth_router;
 use axum::middleware::from_fn;
 use axum::response::Response;
@@ -17,7 +16,6 @@ use router_handlers::*;
 
 mod metrics;
 
-#[cfg(feature = "auth")]
 mod auth;
 pub mod cache;
 mod custom_handlers;
@@ -48,9 +46,7 @@ mod swagger_imports {
         MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
         MintQuoteBolt11Response,
     };
-    #[cfg(feature = "auth")]
-    pub use cdk::nuts::MintAuthRequest;
-    pub use cdk::nuts::{nut04, nut05, nut15, MeltQuoteState, MintQuoteState};
+    pub use cdk::nuts::{nut04, nut05, nut15, MeltQuoteState, MintAuthRequest, MintQuoteState};
 }
 
 #[cfg(feature = "swagger")]
@@ -97,64 +93,8 @@ macro_rules! define_api_doc {
     };
 }
 
-// Configuration without auth feature
-#[cfg(all(feature = "swagger", not(feature = "auth")))]
-define_api_doc! {
-    schemas: [
-        Amount,
-        BlindedMessage,
-        BlindSignature,
-        BlindSignatureDleq,
-        CheckStateRequest,
-        CheckStateResponse,
-        ContactInfo,
-        CurrencyUnit,
-        ErrorCode,
-        ErrorResponse,
-        HTLCWitness,
-        Keys,
-        KeysResponse,
-        KeysetResponse,
-        KeySet,
-        KeySetInfo,
-        MeltRequest<String>,
-        MeltQuoteBolt11Request,
-        MeltQuoteBolt11Response<String>,
-        MeltQuoteState,
-        MeltMethodSettings,
-        MintRequest<String>,
-        MintResponse,
-        MintInfo,
-        MintQuoteBolt11Request,
-        MintQuoteBolt11Response<String>,
-        MintQuoteState,
-        MintMethodSettings,
-        MintVersion,
-        Mpp,
-        MppMethodSettings,
-        Nuts,
-        P2PKWitness,
-        PaymentMethod,
-        Proof,
-        ProofDleq,
-        ProofState,
-        PublicKey,
-        RestoreRequest,
-        RestoreResponse,
-        SecretKey,
-        State,
-        SupportedSettings,
-        SwapRequest,
-        SwapResponse,
-        Witness,
-        nut04::Settings,
-        nut05::Settings,
-        nut15::Settings
-    ]
-}
-
 // Configuration with auth feature
-#[cfg(all(feature = "swagger", feature = "auth"))]
+#[cfg(feature = "swagger")]
 define_api_doc! {
     schemas: [
         Amount,
@@ -227,10 +167,7 @@ async fn cors_middleware(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Response {
-    #[cfg(feature = "auth")]
     let allowed_headers = "Content-Type, Clear-auth, Blind-auth";
-    #[cfg(not(feature = "auth"))]
-    let allowed_headers = "Content-Type";
 
     // Handle preflight requests
     if req.method() == axum::http::Method::OPTIONS {
@@ -296,7 +233,6 @@ pub async fn create_mint_router_with_custom_cache(
 
     let mint_router = Router::new().nest("/v1", v1_router);
 
-    #[cfg(feature = "auth")]
     let mint_router = {
         let auth_router = create_auth_router(state.clone());
         mint_router.nest("/v1", auth_router)

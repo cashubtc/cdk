@@ -115,11 +115,7 @@ async fn main() -> Result<(), Error> {
     let amount = Amount::from(10);
 
     let mint_url = MintUrl::from_str(mint_url)?;
-    #[cfg(feature = "auth")]
     let http_client = CustomConnector::new(mint_url.clone(), None);
-
-    #[cfg(not(feature = "auth"))]
-    let http_client = CustomConnector::new(mint_url.clone());
 
     // Create a new wallet
     let wallet = WalletBuilder::new()
