@@ -1013,8 +1013,6 @@ impl MeltSaga<PaymentConfirmed> {
 
         tx.commit().await?;
 
-        debug_assert!(quote.state == MeltQuoteState::Paid);
-
         self.pubsub.melt_quote_status(
             &*quote,
             payment_preimage.clone(),

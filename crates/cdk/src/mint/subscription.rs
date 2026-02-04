@@ -61,7 +61,7 @@ impl MintPubSubSpec {
         for idx in request.iter() {
             match idx {
                 NotificationId::ProofState(pk) => public_keys.push(*pk),
-                NotificationId::MeltQuoteBolt11(uuid) | NotificationId::MeltQuoteBolt12(uuid) => {
+                NotificationId::MeltQuoteBolt11(uuid) => {
                     // TODO: In the HTTP handler, we check with the LN backend if a payment is in a pending quote state to resolve stuck payments.
                     // Implement similar logic here for WebSocket-only wallets.
                     if let Some(melt_quote) = self
@@ -71,6 +71,17 @@ impl MintPubSubSpec {
                         .map_err(|e| e.to_string())?
                     {
                         let melt_quote: MeltQuoteBolt11Response<_> = melt_quote.into();
+                        to_return.push(melt_quote.into());
+                    }
+                }
+                NotificationId::MeltQuoteBolt12(uuid) => {
+                    if let Some(melt_quote) = self
+                        .db
+                        .get_melt_quote(uuid)
+                        .await
+                        .map_err(|e| e.to_string())?
+                    {
+                        let melt_quote: MeltQuoteBolt12Response<_> = melt_quote.into();
                         to_return.push(melt_quote.into());
                     }
                 }
