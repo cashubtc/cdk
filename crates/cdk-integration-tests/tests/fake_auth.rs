@@ -8,9 +8,9 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{
-    AuthProof, AuthToken, BlindAuthToken, CheckStateRequest, CurrencyUnit, MeltQuoteBolt11Request,
-    MeltQuoteState, MeltRequest, MintQuoteBolt11Request, MintRequest, PaymentMethod,
-    RestoreRequest, State, SwapRequest,
+    AuthProof, AuthToken, BlindAuthToken, CheckBlindAuthStateRequest, CheckStateRequest,
+    CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MeltRequest, MintQuoteBolt11Request,
+    MintRequest, PaymentMethod, RestoreRequest, SpendBlindAuthRequest, State, SwapRequest,
 };
 use cdk::wallet::{AuthHttpClient, AuthMintConnector, HttpClient, MintConnector, WalletBuilder};
 use cdk::{Error, OidcClient};
@@ -871,4 +871,152 @@ async fn get_custom_access_token(
         .to_string();
 
     Ok((access_token, refresh_token))
+}
+
+// ============================================================================
+// External BAT Verification Tests
+// ============================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_blind_auth_checkstate_unspent() {
+    let db = Arc::new(memory::empty().await.unwrap());
+
+    let wallet = WalletBuilder::new()
+        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .unit(CurrencyUnit::Sat)
+        .localstore(db.clone())
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .build()
+        .expect("Wallet");
+
+    let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
+    let (access_token, _) = get_access_token(&mint_info).await;
+
+    wallet.set_cat(access_token).await.unwrap();
+
+    // Mint BAT
+    wallet.mint_blind_auth(1.into()).await.unwrap();
+
+    let auth_proofs = wallet
+        .get_unspent_auth_proofs()
+        .await
+        .expect("Could not get auth proofs");
+
+    assert_eq!(auth_proofs.len(), 1);
+
+    // Check state using external endpoint
+    let client = AuthHttpClient::new(MintUrl::from_str(MINT_URL).expect("valid mint url"), None);
+
+    let request = CheckBlindAuthStateRequest {
+        auth_proofs: auth_proofs.clone(),
+    };
+
+    let response = client
+        .post_blind_auth_checkstate(request)
+        .await
+        .expect("Failed to check blind auth state");
+
+    assert_eq!(response.states.len(), 1);
+    assert_eq!(response.states[0].state, State::Unspent);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_blind_auth_spend() {
+    let db = Arc::new(memory::empty().await.unwrap());
+
+    let wallet = WalletBuilder::new()
+        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .unit(CurrencyUnit::Sat)
+        .localstore(db.clone())
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .build()
+        .expect("Wallet");
+
+    let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
+    let (access_token, _) = get_access_token(&mint_info).await;
+
+    wallet.set_cat(access_token).await.unwrap();
+
+    // Mint BAT
+    wallet.mint_blind_auth(1.into()).await.unwrap();
+
+    let auth_proofs = wallet
+        .get_unspent_auth_proofs()
+        .await
+        .expect("Could not get auth proofs");
+
+    assert_eq!(auth_proofs.len(), 1);
+
+    // Spend using external endpoint
+    let client = AuthHttpClient::new(MintUrl::from_str(MINT_URL).expect("valid mint url"), None);
+
+    let request = SpendBlindAuthRequest {
+        auth_proof: auth_proofs[0].clone(),
+    };
+
+    let response = client
+        .post_blind_auth_spend(request)
+        .await
+        .expect("Failed to spend blind auth");
+
+    assert_eq!(response.state.state, State::Spent);
+
+    // Verify it's now spent by checking state
+    let check_request = CheckBlindAuthStateRequest {
+        auth_proofs: auth_proofs.clone(),
+    };
+
+    let check_response = client
+        .post_blind_auth_checkstate(check_request)
+        .await
+        .expect("Failed to check blind auth state");
+
+    assert_eq!(check_response.states[0].state, State::Spent);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_blind_auth_spend_already_spent() {
+    let db = Arc::new(memory::empty().await.unwrap());
+
+    let wallet = WalletBuilder::new()
+        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .unit(CurrencyUnit::Sat)
+        .localstore(db.clone())
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .build()
+        .expect("Wallet");
+
+    let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
+    let (access_token, _) = get_access_token(&mint_info).await;
+
+    wallet.set_cat(access_token).await.unwrap();
+
+    // Mint BAT
+    wallet.mint_blind_auth(1.into()).await.unwrap();
+
+    let auth_proofs = wallet
+        .get_unspent_auth_proofs()
+        .await
+        .expect("Could not get auth proofs");
+
+    let client = AuthHttpClient::new(MintUrl::from_str(MINT_URL).expect("valid mint url"), None);
+
+    // First spend - should succeed
+    let request = SpendBlindAuthRequest {
+        auth_proof: auth_proofs[0].clone(),
+    };
+
+    client
+        .post_blind_auth_spend(request.clone())
+        .await
+        .expect("First spend should succeed");
+
+    // Second spend - should fail with TokenAlreadySpent
+    let result = client.post_blind_auth_spend(request).await;
+
+    assert!(
+        matches!(result, Err(Error::TokenAlreadySpent)),
+        "Expected TokenAlreadySpent error, got {:?}",
+        result
+    );
 }
