@@ -671,3 +671,393 @@ mod tests {
         assert!(!proof_info.matches_conditions(&None, &None, &None, &Some(vec![dummy_condition])));
     }
 }
+
+/// Abstract wallet interface for Cashu protocol operations.
+///
+/// This trait defines the complete set of operations a Cashu wallet must support,
+/// using associated types to remain implementation-agnostic. It enables:
+///
+/// - **Polymorphism**: program against the interface rather than a concrete wallet
+/// - **FFI support**: wrap the trait with foreign-function-friendly types
+/// - **Testability**: mock wallet behavior in tests without a real mint
+///
+/// A wallet is bound to a single mint URL and currency unit. For multi-mint
+/// scenarios, see `MultiMintWallet` which manages a collection of per-mint wallets.
+///
+/// # Lifecycle
+///
+/// A typical usage flow:
+/// 1. **Mint** — request a quote, pay the invoice, mint proofs
+/// 2. **Send** — select proofs and produce a token for the recipient
+/// 3. **Receive** — swap incoming proofs into the local wallet
+/// 4. **Melt** — redeem proofs by paying a Lightning invoice
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+pub trait Wallet: Send + Sync {
+    // --- Associated types ---
+
+    /// Numeric amount (e.g. `cdk_common::Amount`)
+    type Amount: Clone + Send + Sync;
+    /// Ordered collection of ecash proofs
+    type Proofs: Clone + Send + Sync;
+    /// Single ecash proof
+    type Proof: Clone + Send + Sync;
+    /// Mint-issued quote describing how to fund the wallet (NUT-04 / NUT-23 / NUT-25)
+    type MintQuote: Clone + Send + Sync;
+    /// Mint-issued quote describing a Lightning payment to execute (NUT-05 / NUT-24)
+    type MeltQuote: Clone + Send + Sync;
+    /// Outcome of a confirmed melt, including preimage and fee details
+    type MeltResult: Clone + Send + Sync;
+    /// Serialisable ecash token (V3 / V4)
+    type Token: Clone + Send + Sync;
+    /// Currency unit for this wallet's keyset (e.g. `sat`, `usd`)
+    type CurrencyUnit: Clone + Send + Sync;
+    /// Parsed and validated mint URL
+    type MintUrl: Clone + Send + Sync;
+    /// Mint self-description returned by `GET /v1/info`
+    type MintInfo: Clone + Send + Sync;
+    /// Keyset metadata (id, unit, fee rate, active flag, …)
+    type KeySetInfo: Clone + Send + Sync;
+    /// Error type returned by all fallible operations
+    type Error: Send + Sync + 'static;
+    /// Configuration for [`send`](Self::send) (memo, amount split target, P2PK, …)
+    type SendOptions: Clone + Send + Sync;
+    /// Configuration for [`receive`](Self::receive) (P2PK pre-image, …)
+    type ReceiveOptions: Clone + Send + Sync;
+    /// P2PK / HTLC spending conditions attached to outputs
+    type SpendingConditions: Clone + Send + Sync;
+    /// Strategy for splitting proof amounts (e.g. powers-of-two, custom targets)
+    type SplitTarget: Clone + Send + Sync + Default;
+    /// Payment protocol selector (Bolt11, Bolt12, or a custom method name)
+    type PaymentMethod: Clone + Send + Sync;
+    /// Per-method melt options (MPP, amountless invoices, …)
+    type MeltOptions: Clone + Send + Sync;
+    /// Summary returned by [`restore`](Self::restore) (proofs recovered, amount, …)
+    type Restored: Clone + Send + Sync;
+    /// Persistent record of a wallet operation (mint, melt, send, receive, …)
+    type Transaction: Clone + Send + Sync;
+    /// Unique identifier for a [`Transaction`](Self::Transaction)
+    type TransactionId: Clone + Send + Sync;
+    /// Incoming vs outgoing filter for [`list_transactions`](Self::list_transactions)
+    type TransactionDirection: Clone + Send + Sync;
+    /// NUT-18 payment request
+    type PaymentRequest: Clone + Send + Sync;
+    /// Handle to an active WebSocket subscription; dropping it unsubscribes
+    type Subscription: Send + Sync;
+    /// Parameters passed to [`subscribe`](Self::subscribe) to filter events
+    type SubscribeParams: Clone + Send + Sync;
+
+    // --- Identity ---
+
+    /// Return the mint URL this wallet is bound to.
+    fn mint_url(&self) -> Self::MintUrl;
+
+    /// Return the currency unit this wallet operates in.
+    fn unit(&self) -> Self::CurrencyUnit;
+
+    // --- Balance ---
+
+    /// Return the sum of all `Unspent` proof amounts for this mint and unit.
+    async fn total_balance(&self) -> Result<Self::Amount, Self::Error>;
+
+    /// Return the sum of all `Pending` proof amounts (proofs involved in
+    /// in-flight operations that have not yet settled).
+    async fn total_pending_balance(&self) -> Result<Self::Amount, Self::Error>;
+
+    /// Return the sum of all `Reserved` proof amounts (proofs locked to
+    /// a send that has not been claimed or revoked).
+    async fn total_reserved_balance(&self) -> Result<Self::Amount, Self::Error>;
+
+    // --- Mint info ---
+
+    /// Fetch mint info by calling `GET /v1/info` on the mint.
+    ///
+    /// Always makes a network request and updates the local cache.
+    /// Returns `None` if the mint does not expose info.
+    async fn fetch_mint_info(&self) -> Result<Option<Self::MintInfo>, Self::Error>;
+
+    /// Return cached mint info, re-fetching from the mint only when the
+    /// cache TTL has expired.
+    async fn load_mint_info(&self) -> Result<Self::MintInfo, Self::Error>;
+
+    /// Return the active keyset that has the lowest input fee per proof (`input_fee_ppk`).
+    async fn get_active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error>;
+
+    /// Fetch the latest keysets from the mint, store them locally, and return
+    /// the full list of keysets for this wallet's unit.
+    async fn refresh_keysets(&self) -> Result<Vec<Self::KeySetInfo>, Self::Error>;
+
+    // --- Minting ---
+
+    /// Request a mint quote for the given payment method.
+    ///
+    /// The mint returns an invoice (or equivalent payment request) that, once
+    /// paid, allows the caller to mint ecash proofs of the quoted amount.
+    ///
+    /// # Arguments
+    /// * `method` — payment protocol to use (Bolt11, Bolt12, or custom)
+    /// * `amount` — requested amount; **required** for Bolt11 and Custom,
+    ///   optional for Bolt12 (the payer chooses the amount)
+    /// * `description` — optional memo embedded in the invoice; only honoured
+    ///   when the mint advertises description support for the method
+    /// * `extra` — optional JSON string with method-specific fields (used by
+    ///   custom payment methods)
+    async fn mint_quote(
+        &self,
+        method: Self::PaymentMethod,
+        amount: Option<Self::Amount>,
+        description: Option<String>,
+        extra: Option<String>,
+    ) -> Result<Self::MintQuote, Self::Error>;
+
+    /// Re-fetch the current state of a mint quote from the mint.
+    ///
+    /// Use this to poll whether the underlying invoice has been paid.
+    /// The returned quote reflects the latest `state` and `amount_paid`.
+    async fn refresh_mint_quote(&self, quote_id: &str) -> Result<Self::MintQuote, Self::Error>;
+
+    // --- Melting ---
+
+    /// Request a melt quote to pay an external invoice with ecash.
+    ///
+    /// The mint estimates the amount of ecash (including fees) needed to
+    /// settle the given payment request.
+    ///
+    /// # Arguments
+    /// * `method` — payment protocol to use (Bolt11, Bolt12, or custom)
+    /// * `request` — the payment request string (e.g. a BOLT-11 invoice or
+    ///   BOLT-12 offer)
+    /// * `options` — method-specific options (MPP, amountless invoice amount, …)
+    /// * `extra` — optional JSON string with custom-method-specific fields
+    async fn melt_quote(
+        &self,
+        method: Self::PaymentMethod,
+        request: String,
+        options: Option<Self::MeltOptions>,
+        extra: Option<String>,
+    ) -> Result<Self::MeltQuote, Self::Error>;
+
+    // --- Sending ---
+
+    /// Select proofs for the given `amount`, optionally swap for exact
+    /// change, and produce an ecash token to hand to the recipient.
+    async fn send(
+        &self,
+        amount: Self::Amount,
+        options: Self::SendOptions,
+    ) -> Result<Self::Token, Self::Error>;
+
+    /// Return the IDs of all in-flight send operations whose proofs are
+    /// currently in the `Reserved` state.
+    async fn get_pending_sends(&self) -> Result<Vec<String>, Self::Error>;
+
+    /// Cancel a pending send and return the reserved proofs to `Unspent`.
+    ///
+    /// Returns the total amount of proofs reclaimed.
+    async fn revoke_send(&self, operation_id: &str) -> Result<Self::Amount, Self::Error>;
+
+    /// Check whether the recipient has already swapped the proofs from
+    /// a pending send. Returns `true` if the proofs have been spent.
+    async fn check_send_status(&self, operation_id: &str) -> Result<bool, Self::Error>;
+
+    // --- Receiving ---
+
+    /// Decode an ecash token string, swap the proofs into this wallet,
+    /// and return the received amount.
+    async fn receive(
+        &self,
+        encoded_token: &str,
+        options: Self::ReceiveOptions,
+    ) -> Result<Self::Amount, Self::Error>;
+
+    /// Swap raw proofs into this wallet (e.g. proofs obtained out-of-band).
+    ///
+    /// `memo` and `token` are optional metadata stored alongside the
+    /// resulting transaction record.
+    async fn receive_proofs(
+        &self,
+        proofs: Self::Proofs,
+        options: Self::ReceiveOptions,
+        memo: Option<String>,
+        token: Option<String>,
+    ) -> Result<Self::Amount, Self::Error>;
+
+    // --- Swapping ---
+
+    /// Swap `input_proofs` at the mint, optionally changing denominations
+    /// or attaching spending conditions to the new outputs.
+    ///
+    /// Returns `None` when no change proofs are produced (all value went
+    /// to conditioned outputs).
+    async fn swap(
+        &self,
+        amount: Option<Self::Amount>,
+        amount_split_target: Self::SplitTarget,
+        input_proofs: Self::Proofs,
+        spending_conditions: Option<Self::SpendingConditions>,
+        include_fees: bool,
+    ) -> Result<Option<Self::Proofs>, Self::Error>;
+
+    // --- Proofs ---
+
+    /// Return all proofs in the `Unspent` state.
+    async fn get_unspent_proofs(&self) -> Result<Self::Proofs, Self::Error>;
+
+    /// Return all proofs in the `Pending` state (involved in an in-flight
+    /// mint, melt, or swap).
+    async fn get_pending_proofs(&self) -> Result<Self::Proofs, Self::Error>;
+
+    /// Return all proofs in the `Reserved` state (locked to an unclaimed send).
+    async fn get_reserved_proofs(&self) -> Result<Self::Proofs, Self::Error>;
+
+    /// Return all proofs in the `PendingSpent` state (sent to the mint
+    /// but not yet confirmed spent).
+    async fn get_pending_spent_proofs(&self) -> Result<Self::Proofs, Self::Error>;
+
+    /// Query the mint for the current state of every pending proof,
+    /// reclaim any that are still unspent, and return the total
+    /// amount reclaimed.
+    async fn check_all_pending_proofs(&self) -> Result<Self::Amount, Self::Error>;
+
+    /// Ask the mint which of the given `proofs` have been spent.
+    ///
+    /// Returns a `Vec<bool>` aligned with the input: `true` = spent.
+    async fn check_proofs_spent(&self, proofs: Self::Proofs) -> Result<Vec<bool>, Self::Error>;
+
+    /// Swap the given proofs back into the wallet, discarding any that
+    /// the mint reports as already spent.
+    async fn reclaim_unspent(&self, proofs: Self::Proofs) -> Result<(), Self::Error>;
+
+    // --- Transactions ---
+
+    /// List recorded transactions, optionally filtered by direction.
+    ///
+    /// Pass `None` to return both incoming and outgoing transactions.
+    async fn list_transactions(
+        &self,
+        direction: Option<Self::TransactionDirection>,
+    ) -> Result<Vec<Self::Transaction>, Self::Error>;
+
+    /// Look up a single transaction by its ID.
+    ///
+    /// Returns `None` if no transaction with that ID exists.
+    async fn get_transaction(
+        &self,
+        id: Self::TransactionId,
+    ) -> Result<Option<Self::Transaction>, Self::Error>;
+
+    /// Return the proofs that were involved in the given transaction.
+    async fn get_proofs_for_transaction(
+        &self,
+        id: Self::TransactionId,
+    ) -> Result<Self::Proofs, Self::Error>;
+
+    /// Revert a transaction by returning its proofs to the `Unspent` state.
+    ///
+    /// This is only valid for transactions whose proofs have **not** been
+    /// spent at the mint.
+    async fn revert_transaction(&self, id: Self::TransactionId) -> Result<(), Self::Error>;
+
+    // --- Token verification ---
+
+    /// Verify the DLEQ (Discrete-Log Equality) proofs on every proof
+    /// inside the given token, ensuring they were signed by the mint.
+    async fn verify_token_dleq(&self, token: &Self::Token) -> Result<(), Self::Error>;
+
+    // --- Wallet recovery ---
+
+    /// Deterministically re-derive all secrets from the wallet seed and
+    /// recover any proofs that the mint still considers unspent.
+    async fn restore(&self) -> Result<Self::Restored, Self::Error>;
+
+    // --- Keysets & fees ---
+
+    /// Return the `input_fee_ppk` (parts per thousand) for the given keyset.
+    async fn get_keyset_fees(&self, keyset_id: &str) -> Result<u64, Self::Error>;
+
+    /// Calculate the total fee for spending `proof_count` proofs from the
+    /// given keyset.
+    async fn calculate_fee(
+        &self,
+        proof_count: u64,
+        keyset_id: &str,
+    ) -> Result<Self::Amount, Self::Error>;
+
+    // --- Subscriptions ---
+
+    /// Open a WebSocket subscription to the mint for real-time state
+    /// updates (e.g. quote state changes).
+    ///
+    /// The returned handle stays subscribed until it is dropped.
+    async fn subscribe(
+        &self,
+        params: Self::SubscribeParams,
+    ) -> Result<Self::Subscription, Self::Error>;
+
+    // --- Payment requests ---
+
+    /// Fulfil a NUT-18 payment request by sending ecash to the payee
+    /// via the transport specified in the request.
+    ///
+    /// `custom_amount` overrides the amount in the request when set.
+    async fn pay_request(
+        &self,
+        request: Self::PaymentRequest,
+        custom_amount: Option<Self::Amount>,
+    ) -> Result<(), Self::Error>;
+
+    // --- BIP-353 / Lightning Address ---
+
+    /// Resolve a BIP-353 human-readable address to a BOLT-12 offer and
+    /// return a melt quote for the given `amount` (in millisatoshis).
+    ///
+    /// Not available on `wasm32` targets (requires DNS resolution).
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn melt_bip353_quote(
+        &self,
+        address: &str,
+        amount: Self::Amount,
+    ) -> Result<Self::MeltQuote, Self::Error>;
+
+    /// Resolve a Lightning Address (LNURL-pay) and return a melt quote
+    /// for the given `amount` (in millisatoshis).
+    ///
+    /// Not available on `wasm32` targets (requires HTTPS callback).
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn melt_lightning_address_quote(
+        &self,
+        address: &str,
+        amount: Self::Amount,
+    ) -> Result<Self::MeltQuote, Self::Error>;
+
+    /// Resolve a human-readable address (tries BIP-353 first, then
+    /// Lightning Address) and return a melt quote for the given `amount`
+    /// (in millisatoshis).
+    ///
+    /// Not available on `wasm32` targets.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn melt_human_readable_quote(
+        &self,
+        address: &str,
+        amount: Self::Amount,
+    ) -> Result<Self::MeltQuote, Self::Error>;
+
+    // --- Auth ---
+
+    /// Store a Clear Auth Token (CAT) for authenticated mint access.
+    async fn set_cat(&self, cat: String) -> Result<(), Self::Error>;
+
+    /// Store an OAuth2 refresh token for authenticated mint access.
+    async fn set_refresh_token(&self, refresh_token: String) -> Result<(), Self::Error>;
+
+    /// Use the stored refresh token to obtain a new access token from the
+    /// mint's OIDC provider.
+    async fn refresh_access_token(&self) -> Result<(), Self::Error>;
+
+    /// Mint blind-auth proofs that can be presented to the mint to
+    /// authenticate future requests.
+    async fn mint_blind_auth(&self, amount: Self::Amount) -> Result<Self::Proofs, Self::Error>;
+
+    /// Return all unspent blind-auth proofs.
+    async fn get_unspent_auth_proofs(&self) -> Result<Self::Proofs, Self::Error>;
+}

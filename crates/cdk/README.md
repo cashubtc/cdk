@@ -55,7 +55,7 @@ use cdk::amount::SplitTarget;
 use cdk_sqlite::wallet::memory;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
 #[cfg(feature = "wallet")]
-use cdk::wallet::{RecoveryReport, SendOptions, Wallet};
+use cdk::wallet::{RecoveryReport, SendOptions, Wallet, WalletTrait};
 use cdk::Amount;
 use rand::random;
 use tokio::time::sleep;

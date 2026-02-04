@@ -66,8 +66,8 @@ use std::collections::HashMap;
 use cdk_common::nut02::KeySetInfosMethods;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    OperationData, SendOperationData, SendSagaState, Transaction, TransactionDirection, WalletSaga,
-    WalletSagaState,
+    OperationData, SendOperationData, SendSagaState, Transaction, TransactionDirection,
+    Wallet as WalletTrait, WalletSaga, WalletSagaState,
 };
 use cdk_common::Id;
 use tracing::instrument;

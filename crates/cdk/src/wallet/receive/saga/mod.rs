@@ -39,7 +39,7 @@ use bitcoin::XOnlyPublicKey;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
     OperationData, ProofInfo, ReceiveOperationData, ReceiveSagaState, Transaction,
-    TransactionDirection, WalletSaga, WalletSagaState,
+    TransactionDirection, Wallet as WalletTrait, WalletSaga, WalletSagaState,
 };
 use tracing::instrument;
 

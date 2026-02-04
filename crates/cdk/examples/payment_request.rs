@@ -31,6 +31,7 @@ use cdk::amount::SplitTarget;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::wallet::payment_request::CreateRequestParams;
+use cdk::wallet::WalletTrait;
 use cdk_sqlite::wallet::memory;
 use rand::random;
 

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::Wallet;
+use cdk::wallet::{Wallet, WalletTrait};
 use cdk::Amount;
 use cdk_common::nut02::KeySetInfosMethods;
 use cdk_sqlite::wallet::memory;

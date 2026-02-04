@@ -8,7 +8,7 @@ use bitcoin::hex::prelude::FromHex;
 use bitcoin::secp256k1::Secp256k1;
 use cdk::error::Error;
 use cdk::nuts::{CurrencyUnit, PaymentMethod, SecretKey};
-use cdk::wallet::{MeltOutcome, Wallet};
+use cdk::wallet::{MeltOutcome, Wallet, WalletTrait};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};

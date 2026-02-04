@@ -26,7 +26,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::{
     MeltQuoteBolt11Response, MeltRequest, MintRequest, MintResponse, PreMintSecrets, Proofs,
 };
-use cdk::wallet::{HttpClient, MintConnector, MintQuote};
+use cdk::wallet::{HttpClient, MintConnector, MintQuote, WalletTrait};
 use cdk::{StreamExt, Wallet};
 use cdk_fake_wallet::create_fake_invoice;
 use init_regtest::{get_lnd_dir, LND_RPC_ADDR};

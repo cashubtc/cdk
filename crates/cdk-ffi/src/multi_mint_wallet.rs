@@ -352,7 +352,7 @@ impl MultiMintWallet {
     pub async fn mint_quote(
         &self,
         mint_url: MintUrl,
-        payment_method: PaymentMethod,
+        method: PaymentMethod,
         amount: Option<Amount>,
         description: Option<String>,
         extra: Option<String>,
@@ -362,7 +362,7 @@ impl MultiMintWallet {
             .inner
             .mint_quote(
                 &cdk_mint_url,
-                payment_method,
+                method.into(),
                 amount.map(Into::into),
                 description,
                 extra,

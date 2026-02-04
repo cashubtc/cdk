@@ -5,9 +5,8 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::PaymentMethod;
-use cdk::wallet::MultiMintWallet;
+use cdk::wallet::{MultiMintWallet, WalletTrait};
 use cdk::{Amount, StreamExt};
-use cdk_common::nut00::KnownMethod;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
@@ -51,86 +50,30 @@ pub async fn mint(
     let payment_method = PaymentMethod::from_str(&sub_command_args.method)?;
 
     let quote = match &sub_command_args.quote_id {
-        None => match payment_method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => {
-                let amount = sub_command_args
-                    .amount
-                    .ok_or(anyhow!("Amount must be defined"))?;
-                let quote = wallet
-                    .mint_quote(
-                        PaymentMethod::BOLT11,
-                        Some(Amount::from(amount)),
-                        description,
-                        None,
-                    )
-                    .await?;
+        None => {
+            let amount = sub_command_args.amount.map(Amount::from);
 
-                println!(
-                    "Quote: id={}, state={}, amount={}, expiry={}",
-                    quote.id,
-                    quote.state,
-                    quote.amount.map_or("none".to_string(), |a| a.to_string()),
-                    quote.expiry
-                );
+            let quote = WalletTrait::mint_quote(
+                wallet.as_ref(),
+                payment_method.clone(),
+                amount,
+                description,
+                None,
+            )
+            .await?;
 
-                println!("Please pay: {}", quote.request);
+            println!(
+                "Quote: id={}, state={}, amount={}, expiry={}",
+                quote.id,
+                quote.state,
+                quote.amount.map_or("none".to_string(), |a| a.to_string()),
+                quote.expiry
+            );
 
-                quote
-            }
-            PaymentMethod::Known(KnownMethod::Bolt12) => {
-                let amount = sub_command_args.amount;
-                println!(
-                    "Single use: {}",
-                    sub_command_args
-                        .single_use
-                        .map_or("none".to_string(), |b| b.to_string())
-                );
-                let quote = wallet
-                    .mint_quote(
-                        payment_method.clone(),
-                        amount.map(|a| a.into()),
-                        description,
-                        None,
-                    )
-                    .await?;
+            println!("Please pay: {}", quote.request);
 
-                println!(
-                    "Quote: id={}, state={}, amount={}, expiry={}",
-                    quote.id,
-                    quote.state,
-                    quote.amount.map_or("none".to_string(), |a| a.to_string()),
-                    quote.expiry
-                );
-
-                println!("Please pay: {}", quote.request);
-
-                quote
-            }
-            _ => {
-                let amount = sub_command_args.amount;
-                println!(
-                    "Single use: {}",
-                    sub_command_args
-                        .single_use
-                        .map_or("none".to_string(), |b| b.to_string())
-                );
-                let quote = wallet
-                    .mint_quote(payment_method.clone(), amount.map(|a| a.into()), None, None)
-                    .await?;
-
-                println!(
-                    "Quote: id={}, state={}, amount={}, expiry={}",
-                    quote.id,
-                    quote.state,
-                    quote.amount.map_or("none".to_string(), |a| a.to_string()),
-                    quote.expiry
-                );
-
-                println!("Please pay: {}", quote.request);
-
-                quote
-            }
-        },
+            quote
+        }
         Some(quote_id) => wallet
             .localstore
             .get_mint_quote(quote_id)

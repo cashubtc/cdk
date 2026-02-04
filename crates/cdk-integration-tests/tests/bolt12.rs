@@ -11,7 +11,7 @@ use cashu::nut23::Amountless;
 use cashu::{
     Amount, CurrencyUnit, MintRequest, MintUrl, PaymentMethod, PreMintSecrets, ProofsMethods,
 };
-use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletBuilder};
+use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletBuilder, WalletTrait};
 use cdk_integration_tests::get_mint_url_from_env;
 use cdk_integration_tests::init_regtest::{get_cln_dir, get_temp_dir};
 use cdk_sqlite::wallet::memory;

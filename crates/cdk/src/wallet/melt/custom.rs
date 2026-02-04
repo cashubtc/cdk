@@ -1,4 +1,4 @@
-use cdk_common::wallet::MeltQuote;
+use cdk_common::wallet::{MeltQuote, Wallet as WalletTrait};
 use cdk_common::PaymentMethod;
 use tracing::instrument;
 
