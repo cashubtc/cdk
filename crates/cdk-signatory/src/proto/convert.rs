@@ -63,6 +63,7 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
             amounts: keys.keys().map(|x| x.to_u64()).collect::<Vec<_>>(),
             keys: cdk_common::Keys::new(keys),
             final_expiry: self.final_expiry,
+            version: self.version,
         })
     }
 }
@@ -82,7 +83,7 @@ impl From<crate::signatory::SignatoryKeySet> for KeySet {
                     .collect(),
             }),
             final_expiry: keyset.final_expiry,
-            version: Default::default(),
+            version: keyset.version,
         }
     }
 }
