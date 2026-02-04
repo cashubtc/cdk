@@ -15,7 +15,7 @@ default = ["mint", "wallet", "auth"]
 swagger = ["dep:utoipa"]
 mint = []
 wallet = []
-auth = ["dep:strum", "dep:strum_macros", "dep:regex"]
+auth = ["dep:strum", "dep:strum_macros"]
 nostr = ["dep:nostr-sdk"]
 bench = []
 
@@ -34,7 +34,6 @@ url.workspace = true
 utoipa = { workspace = true, optional = true }
 serde_json.workspace = true
 serde_with.workspace = true
-regex = { workspace = true, optional = true }
 strum = { workspace = true, optional = true }
 strum_macros = { workspace = true, optional = true }
 nostr-sdk = { workspace = true, optional = true }
