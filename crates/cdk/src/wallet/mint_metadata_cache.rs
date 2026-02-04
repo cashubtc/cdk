@@ -34,7 +34,7 @@ use cdk_common::database::{self, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{KeySetInfo, Keys};
 use cdk_common::parking_lot::RwLock;
-use cdk_common::{KeySet, MintInfo};
+use cdk_common::{CurrencyUnit, KeySet, MintInfo};
 use tokio::sync::Mutex;
 use web_time::Instant;
 
@@ -589,14 +589,18 @@ impl MintMetadataCache {
             if let std::collections::hash_map::Entry::Vacant(e) =
                 new_metadata.keys.entry(keyset_info.id)
             {
-                let keyset = if let Some(client) = client.as_ref() {
-                    client.get_mint_keyset(keyset_info.id).await?
-                } else if let Some(auth_client) = auth_client.as_ref() {
+                let keyset = if keyset_info.unit == CurrencyUnit::Auth {
                     auth_client
+                        .as_ref()
+                        .ok_or(Error::Internal)?
                         .get_mint_blind_auth_keyset(keyset_info.id)
                         .await?
                 } else {
-                    return Err(Error::Internal);
+                    client
+                        .as_ref()
+                        .ok_or(Error::Internal)?
+                        .get_mint_keyset(keyset_info.id)
+                        .await?
                 };
 
                 // Verify the keyset ID matches the keys
