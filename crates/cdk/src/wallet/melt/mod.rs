@@ -144,6 +144,31 @@ impl<'a> PendingMelt<'a> {
 
                     match state {
                         MeltQuoteState::Paid => {
+                            // Mints **SHOULD** return change on the WS but it testing it seems nutshell may not.
+                            // So in the event there is no change in the WS we call the check
+                            // This does mean an extra request in the case there is truly no change but this is usually not the case
+                            // Nutshell 0.18.2 and below have this issue should be fixed in the next release
+                            let change = if change.is_none() {
+                                tracing::debug!("Received WS with no change checking with HTTP");
+
+                                match self.saga.wallet.internal_check_melt_status(&quote_id).await {
+                                    Ok(response) => match response {
+                                        MeltQuoteStatusResponse::Standard(r) => r.change,
+                                        MeltQuoteStatusResponse::Bolt12(r) => r.change,
+                                        MeltQuoteStatusResponse::Custom(r) => r.change,
+                                    },
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Failed to check melt status via HTTP: {}",
+                                            e
+                                        );
+                                        None
+                                    }
+                                }
+                            } else {
+                                change
+                            };
+
                             let finalized = self
                                 .saga
                                 .finalize(state, payment_preimage, change, self.metadata)
