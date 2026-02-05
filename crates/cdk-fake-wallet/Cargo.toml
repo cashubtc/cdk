@@ -13,7 +13,7 @@ readme = "README.md"
 [dependencies]
 async-trait.workspace = true
 bitcoin.workspace = true
-cdk-common = { workspace = true, features = ["mint"] }
+cdk-common = { workspace = true, features = ["mint", "http"] }
 futures.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -24,7 +24,6 @@ serde_json.workspace = true
 lightning-invoice.workspace = true
 lightning.workspace = true
 tokio-stream.workspace = true
-reqwest.workspace = true
 uuid.workspace = true
 
 [lints]

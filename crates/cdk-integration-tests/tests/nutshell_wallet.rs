@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use cdk_fake_wallet::create_fake_invoice;
-use reqwest::Client;
+use cdk_http_client::HttpClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::sleep;
@@ -22,17 +22,17 @@ const DEFAULT_TEST_AMOUNT: u64 = 10000;
 
 /// Helper function to mint tokens via Lightning invoice
 async fn mint_tokens(base_url: &str, amount: u64) -> String {
-    let client = Client::new();
+    let client = HttpClient::new();
 
     // Create an invoice for the specified amount
     let invoice_url = format!("{}/lightning/create_invoice?amount={}", base_url, amount);
 
-    let invoice_response = client
+    let invoice_response: InvoiceResponse = client
         .post(&invoice_url)
         .send()
         .await
         .expect("Failed to send invoice creation request")
-        .json::<InvoiceResponse>()
+        .json()
         .await
         .expect("Failed to parse invoice response");
 
@@ -43,7 +43,7 @@ async fn mint_tokens(base_url: &str, amount: u64) -> String {
 
 /// Helper function to wait for payment confirmation
 async fn wait_for_payment_confirmation(base_url: &str, payment_request: &str) {
-    let client = Client::new();
+    let client = HttpClient::new();
     let check_url = format!(
         "{}/lightning/invoice_state?payment_request={}",
         base_url, payment_request
@@ -63,7 +63,7 @@ async fn wait_for_payment_confirmation(base_url: &str, payment_request: &str) {
             .await
             .expect("Failed to send payment check request");
 
-        if response.status().is_success() {
+        if response.is_success() {
             let state: Value = response
                 .json()
                 .await
@@ -90,19 +90,13 @@ async fn wait_for_payment_confirmation(base_url: &str, payment_request: &str) {
 
 /// Helper function to get the current wallet balance
 async fn get_wallet_balance(base_url: &str) -> u64 {
-    let client = Client::new();
+    let client = HttpClient::new();
     let balance_url = format!("{}/balance", base_url);
 
-    let balance_response = client
-        .get(&balance_url)
-        .send()
+    let balance: Value = client
+        .fetch(&balance_url)
         .await
-        .expect("Failed to send balance request");
-
-    let balance: Value = balance_response
-        .json()
-        .await
-        .expect("Failed to parse balance response");
+        .expect("Failed to fetch balance");
 
     balance["balance"]
         .as_u64()
@@ -149,7 +143,7 @@ async fn test_nutshell_wallet_swap() {
 
     let send_amount = 100;
     let send_url = format!("{}/send?amount={}", base_url, send_amount);
-    let client = Client::new();
+    let client = HttpClient::new();
 
     let response: Value = client
         .post(&send_url)
@@ -217,7 +211,7 @@ async fn test_nutshell_wallet_melt() {
     let payment_amount = 1000; // 1000 sats
     let fake_invoice = create_fake_invoice(payment_amount, "Test payment".to_string());
     let pay_url = format!("{}/lightning/pay_invoice?bolt11={}", base_url, fake_invoice);
-    let client = Client::new();
+    let client = HttpClient::new();
 
     // Step 4: Pay the invoice
     let _response: Value = client

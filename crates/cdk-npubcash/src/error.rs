@@ -23,7 +23,7 @@ pub enum Error {
 
     /// HTTP request failed
     #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[from] cdk_common::HttpError),
 
     /// JSON serialization/deserialization error
     #[error("JSON serialization error: {0}")]
