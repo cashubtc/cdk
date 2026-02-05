@@ -35,6 +35,7 @@ pub async fn wait_for_mint_ready_with_shutdown(
 ) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}/v1/info");
     let start_time = std::time::Instant::now();
+    let http_client = cdk_common::HttpClient::new();
 
     println!("Waiting for mint on port {port} to be ready...");
 
@@ -50,10 +51,10 @@ pub async fn wait_for_mint_ready_with_shutdown(
 
         tokio::select! {
             // Try to make a request to the mint info endpoint
-            result = reqwest::get(&url) => {
+            result = http_client.get_raw(&url) => {
                 match result {
                     Ok(response) => {
-                        if response.status().is_success() {
+                        if response.is_success() {
                             println!("Mint on port {port} is ready");
                             return Ok(());
                         } else {

@@ -9,14 +9,13 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use cdk_common::{Amount, PaymentRequest, PaymentRequestPayload, TransportType};
+use cdk_common::{Amount, HttpClient, PaymentRequest, PaymentRequestPayload, TransportType};
 #[cfg(feature = "nostr")]
 use nostr_sdk::nips::nip19::Nip19Profile;
 #[cfg(feature = "nostr")]
 use nostr_sdk::prelude::*;
 #[cfg(feature = "nostr")]
 use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32};
-use reqwest::Client;
 
 use crate::error::Error;
 use crate::mint_url::MintUrl;
@@ -165,22 +164,22 @@ impl Wallet {
                 }
 
                 TransportType::HttpPost => {
-                    let client = Client::new();
+                    let client = HttpClient::new();
 
                     let res = client
-                        .post(transport.target.clone())
+                        .post(&transport.target)
                         .json(&payload)
                         .send()
                         .await
                         .map_err(|e| Error::HttpError(None, e.to_string()))?;
 
                     let status = res.status();
-                    if status.is_success() {
+                    if res.is_success() {
                         println!("Successfully posted payment");
                         Ok(())
                     } else {
                         let body = res.text().await.unwrap_or_default();
-                        Err(Error::HttpError(Some(status.as_u16()), body))
+                        Err(Error::HttpError(Some(status), body))
                     }
                 }
                 TransportType::InBand => {
