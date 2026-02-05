@@ -267,6 +267,73 @@ mod tests {
         assert_eq!(finalized.fee_paid(), Amount::from(1));
         assert_eq!(finalized.total_amount(), Amount::from(32));
     }
+
+    use super::CdkVersion;
+
+    #[test]
+    fn test_version_parsing() {
+        // Test legacy format (defaults to cdk)
+        let v = CdkVersion::from_str("0.1.0").unwrap();
+        assert_eq!(v.implementation, "cdk");
+        assert_eq!(v.major, 0);
+        assert_eq!(v.minor, 1);
+        assert_eq!(v.patch, 0);
+        assert_eq!(v.to_string(), "cdk/0.1.0");
+
+        // Test explicit cdk format
+        let v = CdkVersion::from_str("cdk/1.2.3").unwrap();
+        assert_eq!(v.implementation, "cdk");
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 3);
+        assert_eq!(v.to_string(), "cdk/1.2.3");
+
+        // Test nutshell format
+        let v = CdkVersion::from_str("nutshell/0.16.0").unwrap();
+        assert_eq!(v.implementation, "nutshell");
+        assert_eq!(v.major, 0);
+        assert_eq!(v.minor, 16);
+        assert_eq!(v.patch, 0);
+        assert_eq!(v.to_string(), "nutshell/0.16.0");
+    }
+
+    #[test]
+    fn test_version_ordering() {
+        let v1 = CdkVersion::from_str("cdk/0.1.0").unwrap();
+        let v2 = CdkVersion::from_str("cdk/0.1.1").unwrap();
+        let v3 = CdkVersion::from_str("cdk/0.2.0").unwrap();
+        let v4 = CdkVersion::from_str("cdk/1.0.0").unwrap();
+
+        assert!(v1 < v2);
+        assert!(v2 < v3);
+        assert!(v3 < v4);
+        assert!(v1 < v4);
+
+        // Test mixed implementations
+        let v_nutshell = CdkVersion::from_str("nutshell/0.1.0").unwrap();
+        assert_eq!(v1.partial_cmp(&v_nutshell), None);
+        assert!(!(v1 < v_nutshell));
+        assert!(!(v1 > v_nutshell));
+        assert!(!(v1 == v_nutshell));
+    }
+
+    #[test]
+    fn test_version_serialization() {
+        let v = CdkVersion::from_str("cdk/0.14.2").unwrap();
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(json, "\"cdk/0.14.2\"");
+
+        let v_deserialized: CdkVersion = serde_json::from_str(&json).unwrap();
+        assert_eq!(v, v_deserialized);
+
+        // Legacy deserialization (string without prefix)
+        let json_legacy = "\"0.14.2\"";
+        let v_legacy: CdkVersion = serde_json::from_str(json_legacy).unwrap();
+        assert_eq!(v_legacy.implementation, "cdk");
+        assert_eq!(v_legacy.major, 0);
+        assert_eq!(v_legacy.minor, 14);
+        assert_eq!(v_legacy.patch, 2);
+    }
 }
 
 /// Mint Fee Reserve
@@ -276,4 +343,113 @@ pub struct FeeReserve {
     pub min_fee_reserve: Amount,
     /// Percentage expected fee
     pub percent_fee_reserve: f32,
+}
+
+/// CDK Version
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct CdkVersion {
+    /// Implementation name (e.g., "cdk", "nutshell")
+    pub implementation: String,
+    /// Major version
+    pub major: u16,
+    /// Minor version
+    pub minor: u16,
+    /// Patch version
+    pub patch: u16,
+}
+
+impl CdkVersion {
+    /// Create new [`CdkVersion`]
+    pub fn new(implementation: String, major: u16, minor: u16, patch: u16) -> Self {
+        Self {
+            implementation,
+            major,
+            minor,
+            patch,
+        }
+    }
+}
+
+impl std::fmt::Display for CdkVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}/{}.{}.{}",
+            self.implementation, self.major, self.minor, self.patch
+        )
+    }
+}
+
+impl PartialOrd for CdkVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        if self.implementation != other.implementation {
+            return None;
+        }
+
+        match self.major.cmp(&other.major) {
+            std::cmp::Ordering::Equal => match self.minor.cmp(&other.minor) {
+                std::cmp::Ordering::Equal => Some(self.patch.cmp(&other.patch)),
+                other => Some(other),
+            },
+            other => Some(other),
+        }
+    }
+}
+
+impl std::str::FromStr for CdkVersion {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (implementation, version_str) = match s.split_once('/') {
+            Some((impl_str, ver_str)) => (impl_str.to_string(), ver_str),
+            None => ("cdk".to_string(), s),
+        };
+
+        let parts: Vec<&str> = version_str.splitn(3, '.').collect();
+        if parts.len() != 3 {
+            return Err(Error::Custom(format!("Invalid version string: {}", s)));
+        }
+
+        let major = parts[0]
+            .parse()
+            .map_err(|_| Error::Custom(format!("Invalid major version: {}", parts[0])))?;
+        let minor = parts[1]
+            .parse()
+            .map_err(|_| Error::Custom(format!("Invalid minor version: {}", parts[1])))?;
+
+        // Handle patch version with optional suffixes like -rc1
+        let patch_str = parts[2];
+        let patch_end = patch_str
+            .find(|c: char| !c.is_numeric())
+            .unwrap_or(patch_str.len());
+        let patch = patch_str[..patch_end]
+            .parse()
+            .map_err(|_| Error::Custom(format!("Invalid patch version: {}", parts[2])))?;
+
+        Ok(Self {
+            implementation,
+            major,
+            minor,
+            patch,
+        })
+    }
+}
+
+impl Serialize for CdkVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for CdkVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        std::str::FromStr::from_str(&s).map_err(serde::de::Error::custom)
+    }
 }

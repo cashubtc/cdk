@@ -88,5 +88,6 @@ pub mod http_client {
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub use futures::{Stream, StreamExt};
 /// Payment Request
-#[cfg(feature = "wallet")]
-pub use wallet::payment_request;
+
+#[cfg(test)]
+mod cdk_version_test;
