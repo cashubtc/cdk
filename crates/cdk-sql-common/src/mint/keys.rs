@@ -49,8 +49,8 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
         amounts,
         input_fee_ppk: column_as_nullable_number!(row_keyset_ppk).unwrap_or(0),
         final_expiry: column_as_nullable_number!(valid_to),
-        cdk_version: column_as_nullable_string!(cdk_version).and_then(|v| {
-            match CdkVersion::from_str(&v) {
+        cdk_version: column_as_nullable_string!(cdk_version).and_then(
+            |v| match CdkVersion::from_str(&v) {
                 Ok(ver) => Some(ver),
                 Err(e) => {
                     tracing::warn!(
@@ -60,8 +60,8 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
                     );
                     None
                 }
-            }
-        }),
+            },
+        ),
     })
 }
 
