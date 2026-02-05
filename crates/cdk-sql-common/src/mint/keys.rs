@@ -49,10 +49,19 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
         amounts,
         input_fee_ppk: column_as_nullable_number!(row_keyset_ppk).unwrap_or(0),
         final_expiry: column_as_nullable_number!(valid_to),
-        cdk_version: column_as_nullable_string!(cdk_version)
-            .map(|v| CdkVersion::from_str(&v))
-            .transpose()
-            .map_err(|e| Error::Database(e.to_string().into()))?,
+        cdk_version: column_as_nullable_string!(cdk_version).and_then(|v| {
+            match CdkVersion::from_str(&v) {
+                Ok(ver) => Some(ver),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse cdk_version from database: {}. Error: {}",
+                        v,
+                        e
+                    );
+                    None
+                }
+            }
+        }),
     })
 }
 
@@ -243,14 +252,14 @@ mod test {
                 Column::Integer(0),
                 Column::Text(serde_json::to_string(&amounts).expect("valid json")),
                 Column::Integer(0),
-                Column::Text("0.1.0".to_owned()),
+                Column::Text("cdk/0.1.0".to_owned()),
             ]);
             assert!(result.is_ok());
             let keyset = result.unwrap();
             assert_eq!(keyset.amounts.len(), 32);
             assert_eq!(
                 keyset.cdk_version,
-                Some(CdkVersion::from_str("0.1.0").unwrap())
+                Some(CdkVersion::from_str("cdk/0.1.0").unwrap())
             );
         }
     }

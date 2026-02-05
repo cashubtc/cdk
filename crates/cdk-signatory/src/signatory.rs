@@ -134,7 +134,7 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
             amounts: info.amounts.clone(),
             keys: key.keys.clone().into(),
             final_expiry: key.final_expiry,
-            cdk_version: info.cdk_version,
+            cdk_version: info.cdk_version.clone(),
         }
     }
 }
