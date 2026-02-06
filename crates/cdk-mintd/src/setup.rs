@@ -7,7 +7,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail};
+use anyhow::bail;
 use async_trait::async_trait;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
@@ -52,7 +52,7 @@ impl LnBackendSetup for config::Cln {
     ) -> anyhow::Result<cdk_cln::Cln> {
         // Validate required connection field
         if self.rpc_path.as_os_str().is_empty() {
-            return Err(anyhow!(
+            return Err(anyhow::anyhow!(
                 "CLN rpc_path must be set via config or CDK_MINTD_CLN_RPC_PATH env var"
             ));
         }
@@ -60,9 +60,9 @@ impl LnBackendSetup for config::Cln {
         let cln_socket = expand_path(
             self.rpc_path
                 .to_str()
-                .ok_or(anyhow!("cln socket not defined"))?,
+                .ok_or(anyhow::anyhow!("cln socket not defined"))?,
         )
-        .ok_or(anyhow!("cln socket not defined"))?;
+        .ok_or(anyhow::anyhow!("cln socket not defined"))?;
 
         let fee_reserve = FeeReserve {
             min_fee_reserve: self.reserve_fee_min,
@@ -343,7 +343,7 @@ impl LnBackendSetup for config::LdkNode {
             Some(
                 mnemonic_str
                     .parse::<Mnemonic>()
-                    .map_err(|e| anyhow!("invalid ldk_node_mnemonic in config: {e}"))?,
+                    .map_err(|e| anyhow::anyhow!("invalid ldk_node_mnemonic in config: {e}"))?,
             )
         } else {
             // Check if this is a new node or an existing node
@@ -361,7 +361,7 @@ impl LnBackendSetup for config::LdkNode {
         let ldk_node_settings = settings
             .ldk_node
             .as_ref()
-            .ok_or_else(|| anyhow!("ldk_node configuration is required"))?;
+            .ok_or_else(|| anyhow::anyhow!("ldk_node configuration is required"))?;
         let announce_addrs: Vec<_> = ldk_node_settings
             .ldk_node_announce_addresses
             .as_ref()
