@@ -18,7 +18,9 @@ pub mod sqlite;
 pub mod token;
 pub mod types;
 pub mod wallet;
+mod wallet_trait;
 
+pub use cdk_common::wallet::Wallet as WalletTrait;
 pub use database::*;
 pub use error::*;
 pub use logging::*;

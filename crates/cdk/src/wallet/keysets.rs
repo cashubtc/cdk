@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts};
-use cdk_common::nut02::{KeySetInfos, KeySetInfosMethods};
+use cdk_common::nut02::KeySetInfosMethods;
 use tracing::instrument;
 
 use crate::nuts::{Id, KeySetInfo, Keys};
@@ -64,36 +64,7 @@ impl Wallet {
         }
     }
 
-    /// Refresh keysets by fetching the latest from mint - always fetches fresh data
-    ///
-    /// Forces a fresh fetch of keyset information from the mint server,
-    /// updating the metadata cache and database. Use this when you need
-    /// the most up-to-date keyset information.
-    #[instrument(skip(self))]
-    pub async fn refresh_keysets(&self) -> Result<KeySetInfos, Error> {
-        tracing::debug!("Refreshing keysets from mint");
-
-        let keysets = self
-            .metadata_cache
-            .load_from_mint(&self.localstore, &self.client)
-            .await?
-            .keysets
-            .iter()
-            .filter_map(|(_, keyset)| {
-                if keyset.unit == self.unit && keyset.active {
-                    Some((*keyset.clone()).clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        if !keysets.is_empty() {
-            Ok(keysets)
-        } else {
-            Err(Error::UnknownKeySet)
-        }
-    }
+    // refresh_keysets() is now implemented via the WalletMintInfo trait in traits.rs
 
     /// Get the active keyset with the lowest fees - fetches fresh data from mint
     ///
@@ -110,24 +81,7 @@ impl Wallet {
             .ok_or(Error::NoActiveKeyset)
     }
 
-    /// Get the active keyset with the lowest fees from cache
-    ///
-    /// Returns the active keyset with minimum input fees from the metadata cache.
-    /// Uses cached data if available, fetches from mint if cache not populated.
-    #[instrument(skip(self))]
-    pub async fn get_active_keyset(&self) -> Result<KeySetInfo, Error> {
-        self.metadata_cache
-            .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.read();
-                *ttl
-            })
-            .await?
-            .active_keysets
-            .iter()
-            .min_by_key(|k| k.input_fee_ppk)
-            .map(|ks| (**ks).clone())
-            .ok_or(Error::NoActiveKeyset)
-    }
+    // get_active_keyset() is now implemented via the WalletMintInfo trait in traits.rs
 
     /// Get keyset fees and amounts for all keysets from metadata cache
     ///

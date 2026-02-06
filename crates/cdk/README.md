@@ -55,7 +55,7 @@ use cdk::amount::SplitTarget;
 use cdk_sqlite::wallet::memory;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
 #[cfg(feature = "wallet")]
-use cdk::wallet::Wallet;
+use cdk::wallet::{Wallet, WalletTrait};
 #[cfg(feature = "wallet")]
 use cdk::wallet::SendOptions;
 use cdk::Amount;

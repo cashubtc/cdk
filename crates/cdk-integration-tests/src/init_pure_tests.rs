@@ -27,7 +27,7 @@ use cdk::nuts::{
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
-use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
+use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder, WalletTrait};
 use cdk::{Amount, Error, Mint, StreamExt};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;

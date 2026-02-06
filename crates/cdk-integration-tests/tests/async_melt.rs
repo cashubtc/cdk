@@ -14,7 +14,7 @@ use bip39::Mnemonic;
 use cashu::PaymentMethod;
 use cdk::amount::SplitTarget;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState};
-use cdk::wallet::Wallet;
+use cdk::wallet::{Wallet, WalletTrait};
 use cdk::StreamExt;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_sqlite::wallet::memory;

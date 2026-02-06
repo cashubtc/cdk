@@ -129,9 +129,10 @@ impl From<CurrencyUnit> for CdkCurrencyUnit {
 }
 
 /// FFI-compatible SplitTarget
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Enum)]
 pub enum SplitTarget {
     /// Default target; least amount of proofs
+    #[default]
     None,
     /// Target amount for wallet to have most proofs that add up to value
     Value { amount: Amount },

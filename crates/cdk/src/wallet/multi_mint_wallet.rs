@@ -11,7 +11,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use cdk_common::database::WalletDatabase;
 use cdk_common::task::spawn;
-use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection, TransactionId};
+use cdk_common::wallet::{
+    MeltQuote, Transaction, TransactionDirection, TransactionId, Wallet as WalletTrait,
+};
 use cdk_common::{database, KeySetInfo};
 use tokio::sync::RwLock;
 use tracing::instrument;
@@ -1594,24 +1596,21 @@ impl MultiMintWallet {
     }
 
     /// Mint quote for wallet
-    #[instrument(skip(self, method))]
-    pub async fn mint_quote<T>(
+    #[instrument(skip(self))]
+    pub async fn mint_quote(
         &self,
         mint_url: &MintUrl,
-        method: T,
+        method: PaymentMethod,
         amount: Option<Amount>,
         description: Option<String>,
         extra: Option<String>,
-    ) -> Result<MintQuote, Error>
-    where
-        T: Into<PaymentMethod>,
-    {
+    ) -> Result<MintQuote, Error> {
         let wallets = self.wallets.read().await;
         let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet.mint_quote(method, amount, description, extra).await
+        WalletTrait::mint_quote(wallet.as_ref(), method, amount, description, extra).await
     }
 
     /// Refresh a specific mint quote status from the mint.

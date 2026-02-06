@@ -38,7 +38,7 @@ use cdk_common::amount::SplitTarget;
 use cdk_common::dhke::construct_proofs;
 use cdk_common::wallet::{
     MeltOperationData, MeltQuote, MeltSagaState, OperationData, ProofInfo, Transaction,
-    TransactionDirection, WalletSaga, WalletSagaState,
+    TransactionDirection, Wallet as WalletTrait, WalletSaga, WalletSagaState,
 };
 use cdk_common::MeltQuoteState;
 use tracing::instrument;
