@@ -29,7 +29,7 @@ pub async fn init_keysets(
         // We only care about units that are supported
         if let Some((input_fee_ppk, max_order)) = supported_units.get(&unit) {
             let mut keysets = keysets;
-            keysets.sort_by(|a, b| b.derivation_path_index.cmp(&a.derivation_path_index));
+            keysets.sort_by_key(|b| std::cmp::Reverse(b.derivation_path_index));
 
             if let Some(highest_index_keyset) = keysets.first() {
                 // Check if it matches our criteria

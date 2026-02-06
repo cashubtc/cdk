@@ -75,7 +75,7 @@ pub fn get_paginated_payments_streaming(
         .collect();
 
     // Sort by timestamp (newest first)
-    time_indexed.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    time_indexed.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
 
     let total_count = time_indexed.len();
 
