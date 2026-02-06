@@ -8,6 +8,7 @@ use super::amount::{Amount, SplitTarget};
 use super::proof::{Proofs, SpendingConditions};
 use crate::error::FfiError;
 use crate::token::Token;
+use crate::types::keys::PublicKey;
 
 /// FFI-compatible SendMemo
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -79,6 +80,69 @@ impl From<SendKind> for cdk::wallet::SendKind {
             SendKind::OfflineTolerance { tolerance } => {
                 cdk::wallet::SendKind::OfflineTolerance(tolerance.into())
             }
+        }
+    }
+}
+
+/// FFI-compatible MeltConfirmOptions
+#[derive(Debug, Clone, Default, uniffi::Record)]
+pub struct MeltConfirmOptions {
+    /// Skip the pre-melt swap and send proofs directly to melt
+    pub skip_swap: bool,
+}
+
+impl From<MeltConfirmOptions> for cdk::wallet::MeltConfirmOptions {
+    fn from(options: MeltConfirmOptions) -> Self {
+        Self {
+            skip_swap: options.skip_swap,
+        }
+    }
+}
+
+impl From<cdk::wallet::MeltConfirmOptions> for MeltConfirmOptions {
+    fn from(options: cdk::wallet::MeltConfirmOptions) -> Self {
+        Self {
+            skip_swap: options.skip_swap,
+        }
+    }
+}
+
+/// FFI-compatible P2PKSigningKey
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct P2PKSigningKey {
+    /// Public key
+    pub pubkey: PublicKey,
+    /// Derivation path as string
+    pub derivation_path: String,
+    /// Derivation index
+    pub derivation_index: u32,
+    /// Created time
+    pub created_time: u64,
+}
+
+impl TryFrom<P2PKSigningKey> for cdk_common::wallet::P2PKSigningKey {
+    type Error = crate::error::FfiError;
+
+    fn try_from(key: P2PKSigningKey) -> Result<Self, Self::Error> {
+        Ok(Self {
+            pubkey: key.pubkey.try_into()?,
+            derivation_path: key
+                .derivation_path
+                .parse()
+                .expect("Invalid derivation path"),
+            derivation_index: key.derivation_index,
+            created_time: key.created_time,
+        })
+    }
+}
+
+impl From<cdk_common::wallet::P2PKSigningKey> for P2PKSigningKey {
+    fn from(key: cdk_common::wallet::P2PKSigningKey) -> Self {
+        Self {
+            pubkey: key.pubkey.into(),
+            derivation_path: key.derivation_path.to_string(),
+            derivation_index: key.derivation_index,
+            created_time: key.created_time,
         }
     }
 }
@@ -659,27 +723,4 @@ impl From<cdk::wallet::Restored> for Restored {
         }
     }
 }
-
-/// FFI-compatible options for confirming a melt operation
-#[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
-pub struct MeltConfirmOptions {
-    /// Skip the pre-melt swap and send proofs directly to melt.
-    /// When true, saves swap input fees but gets change from melt instead.
-    pub skip_swap: bool,
-}
-
-impl From<MeltConfirmOptions> for cdk::wallet::MeltConfirmOptions {
-    fn from(opts: MeltConfirmOptions) -> Self {
-        cdk::wallet::MeltConfirmOptions {
-            skip_swap: opts.skip_swap,
-        }
-    }
-}
-
-impl From<cdk::wallet::MeltConfirmOptions> for MeltConfirmOptions {
-    fn from(opts: cdk::wallet::MeltConfirmOptions) -> Self {
-        Self {
-            skip_swap: opts.skip_swap,
-        }
-    }
-}
+pub use cdk_common::wallet::{WalletSaga, WalletSagaState};

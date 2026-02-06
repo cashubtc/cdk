@@ -6,10 +6,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{ConversionError, Error, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
+use cdk_common::util::unix_time;
 use cdk_common::wallet::{
     self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
 };
@@ -681,7 +683,6 @@ where
         .collect::<Vec<_>>())
     }
 
-    #[instrument(skip(self))]
     async fn update_proofs(
         &self,
         added: Vec<ProofInfo>,
@@ -1629,6 +1630,82 @@ where
             .await?;
         Ok(())
     }
+
+    // P2PK methods
+
+    #[instrument(skip(self))]
+    async fn add_p2pk_key(
+        &self,
+        pubkey: &PublicKey,
+        derivation_path: DerivationPath,
+        derivation_index: u32,
+    ) -> Result<(), Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let query_str = r#"
+        INSERT INTO p2pk_signing_key (pubkey, derivation_index, derivation_path, created_time)
+        VALUES (:pubkey, :derivation_index, :derivation_path, :created_time)
+        "#
+        .to_string();
+
+        query(&query_str)?
+            .bind("pubkey", pubkey.to_bytes().to_vec())
+            .bind("derivation_index", derivation_index)
+            .bind("derivation_path", derivation_path.to_string())
+            .bind("created_time", unix_time() as i64)
+            .execute(&*conn)
+            .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_p2pk_key(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Option<wallet::P2PKSigningKey>, Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let query_str = r#"SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key WHERE pubkey = :pubkey"#.to_string();
+
+        query(&query_str)?
+            .bind("pubkey", pubkey.to_bytes().to_vec())
+            .fetch_one(&*conn)
+            .await?
+            .map(sql_row_to_p2pk_signing_key)
+            .transpose()
+    }
+
+    #[instrument(skip(self))]
+    async fn list_p2pk_keys(&self) -> Result<Vec<wallet::P2PKSigningKey>, Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let query_str = r#"
+        SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key ORDER BY derivation_index DESC
+        "#.to_string();
+
+        Ok(query(&query_str)?
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .filter_map(|row| {
+                let row = sql_row_to_p2pk_signing_key(row).ok()?;
+
+                Some(row)
+            })
+            .collect::<Vec<wallet::P2PKSigningKey>>())
+    }
+
+    #[instrument(skip(self))]
+    async fn latest_p2pk(&self) -> Result<Option<wallet::P2PKSigningKey>, Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let query_str = r#"
+        SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key ORDER BY derivation_index DESC LIMIT 1
+        "#.to_string();
+
+        query(&query_str)?
+            .fetch_one(&*conn)
+            .await?
+            .map(sql_row_to_p2pk_signing_key)
+            .transpose()
+    }
 }
 
 fn sql_row_to_mint_info(row: Vec<Column>) -> Result<MintInfo, Error> {
@@ -1964,4 +2041,49 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             .map_err(Error::from)?,
         saga_id,
     })
+}
+
+fn sql_row_to_p2pk_signing_key(row: Vec<Column>) -> Result<wallet::P2PKSigningKey, Error> {
+    unpack_into!(
+        let (
+            pubkey,
+            derivation_index,
+            derivation_path,
+            created_time
+        ) = row
+    );
+
+    Ok(wallet::P2PKSigningKey {
+        pubkey: column_as_string!(pubkey, PublicKey::from_str, PublicKey::from_slice),
+        derivation_index: column_as_number!(derivation_index),
+        derivation_path: column_as_string!(derivation_path, DerivationPath::from_str),
+        created_time: column_as_number!(created_time),
+    })
+}
+
+// KVStore implementations for wallet
+
+#[async_trait]
+impl<RM> database::KVStoreDatabase for SQLWalletDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    async fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        crate::keyvalue::kv_read(&self.pool, primary_namespace, secondary_namespace, key).await
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, Error> {
+        crate::keyvalue::kv_list(&self.pool, primary_namespace, secondary_namespace).await
+    }
 }

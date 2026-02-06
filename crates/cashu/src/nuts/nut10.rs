@@ -39,7 +39,7 @@ pub(crate) struct SpendingRequirements {
     pub refund_path: Option<RefundPath>,
 }
 
-/// NUT13 Error
+/// NUT10 Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Secret error
@@ -48,6 +48,10 @@ pub enum Error {
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
+
+    /// Proof does not contain enough signature for lock
+    #[error("proof does not contain enough proofs to be spendable")]
+    NotEnoughSignatures,
 }
 
 ///  NUT10 Secret Kind
