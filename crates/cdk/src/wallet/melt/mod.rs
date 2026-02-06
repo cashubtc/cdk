@@ -368,6 +368,33 @@ impl<'a> PreparedMelt<'a> {
     /// This method waits for the payment to complete and returns the finalized melt.
     /// If the mint supports async payments (NUT-05), this may complete faster by
     /// not blocking on the payment processing.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use std::collections::HashMap;
+    /// # async fn example(wallet: &cdk::wallet::Wallet) -> anyhow::Result<()> {
+    /// use cdk::nuts::PaymentMethod;
+    ///
+    /// let quote = wallet
+    ///     .melt_quote(PaymentMethod::BOLT11, "lnbc...", None, None)
+    ///     .await?;
+    ///
+    /// // Prepare the melt
+    /// let prepared = wallet.prepare_melt(&quote.id, HashMap::new()).await?;
+    ///
+    /// // Confirm and wait for completion
+    /// let finalized = prepared.confirm().await?;
+    ///
+    /// println!(
+    ///     "Melt completed: state={:?}, amount={}, fee_paid={}",
+    ///     finalized.state(),
+    ///     finalized.amount(),
+    ///     finalized.fee_paid()
+    /// );
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn confirm(self) -> Result<FinalizedMelt, Error> {
         self.confirm_with_options(MeltConfirmOptions::default())
             .await
@@ -398,6 +425,48 @@ impl<'a> PreparedMelt<'a> {
     /// Note: This waits for the mint's initial response, which may block if the mint
     /// does not support async payments. Only returns `Pending` if the mint explicitly
     /// supports and accepts async melt requests.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use cdk::nuts::PaymentMethod;
+    /// use cdk::wallet::MeltOutcome;
+    ///
+    /// let quote = wallet
+    ///     .melt_quote(PaymentMethod::BOLT11, "lnbc...", None, None)
+    ///     .await?;
+    ///
+    /// // Prepare the melt
+    /// let prepared = wallet.prepare_melt(&quote.id, HashMap::new()).await?;
+    ///
+    /// // Confirm with async preference
+    /// match prepared.confirm_prefer_async().await? {
+    ///     MeltOutcome::Paid(finalized) => {
+    ///         println!(
+    ///             "Melt completed immediately: state={:?}, amount={}, fee_paid={}",
+    ///             finalized.state(),
+    ///             finalized.amount(),
+    ///             finalized.fee_paid()
+    ///         );
+    ///     }
+    ///     MeltOutcome::Pending(pending) => {
+    ///         // You can await the pending melt directly
+    ///         let finalized = pending.await?;
+    ///         println!(
+    ///             "Melt completed after waiting: state={:?}, amount={}, fee_paid={}",
+    ///             finalized.state(),
+    ///             finalized.amount(),
+    ///             finalized.fee_paid()
+    ///         );
+    ///
+    ///         // Alternative: Instead of awaiting, you could:
+    ///         // 1. Store the quote ID and check status later with:
+    ///         //    wallet.check_melt_quote_status(&quote.id).await?
+    ///         // 2. Let the wallet's background task handle it via:
+    ///         //    wallet.finalize_pending_melts().await?
+    ///     }
+    /// }
+    /// ```
     pub async fn confirm_prefer_async(self) -> Result<MeltOutcome<'a>, Error> {
         self.confirm_prefer_async_with_options(MeltConfirmOptions::default())
             .await
@@ -430,12 +499,10 @@ impl<'a> PreparedMelt<'a> {
                 finalized.fee_paid(),
                 finalized.into_change(),
             ))),
-            MeltSagaResult::Pending(pending_saga) => {
-                Ok(MeltOutcome::Pending(PendingMelt {
-                    saga: Box::new(pending_saga),
-                    metadata: self.metadata,
-                }))
-            }
+            MeltSagaResult::Pending(pending_saga) => Ok(MeltOutcome::Pending(PendingMelt {
+                saga: Box::new(pending_saga),
+                metadata: self.metadata,
+            })),
         }
     }
 
