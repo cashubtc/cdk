@@ -122,11 +122,53 @@ cargo run --bin cdk-mintd
 
 Note: For cdk-mintd, you need to have the protobuf compiler installed as it's required for some dependencies.
 
-## Use Nix Shell
+## Nix Development Environments
 
-```sh
-  nix develop -c $SHELL  
+CDK uses Nix flakes to provide reproducible development environments. We offer a tiered shell strategy to ensure developers only download what they need for their specific tasks.
+
+### Available Shells
+
+| Shell | Command | Key Tools Included | Best For |
+| :--- | :--- | :--- | :--- |
+| **Stable (Default)** | `nix develop` | Rust Stable, **PostgreSQL**, Protobuf | Library, Wallet, and Mint development |
+| **Regtest** | `nix develop .#regtest` | Stable + **bitcoind, CLN, LND, mprocs** | Local integration testing and nodes |
+| **Nightly** | `nix develop .#nightly` | Rust Nightly, **PostgreSQL** | Formatting and experimental features |
+| **Nightly Regtest** | `nix develop .#nightly-regtest` | Nightly + **Full Regtest Stack** | Comprehensive testing on nightly |
+| **Integration** | `nix develop .#integration` | Stable + Regtest Stack + **Docker** | Binding, Auth, and Docker tests |
+| **MSRV** | `nix develop .#msrv` | Rust 1.85.0 (Minimum version) | Ensuring backward compatibility |
+| **FFI** | `nix develop .#ffi` | Stable + Python 3.11 | Working on UniFFI bindings |
+
+### PostgreSQL Helpers
+
+All CDK shells come with a built-in PostgreSQL instance and helper scripts to manage it locally within your project directory:
+
+- `start-postgres`: Initialize and start a local PostgreSQL instance (data stored in `.pg_data/`).
+- `stop-postgres`: Safely shut down the local database.
+- `pg-status`: Check if the database is running.
+- `pg-connect`: Open an interactive `psql` session to the local database.
+
+### Direct Flake Commands
+
+You can build project components directly using flake targets without manually entering a shell:
+
+```bash
+# Build the wallet CLI
+nix build .#cdk-cli
+./result/bin/cdk-cli --help
+
+# Build the mint daemon
+nix build .#cdk-mintd
+
+# Run a check (clippy + tests) for a specific crate
+nix build .#checks.x86_64-linux.cashu
 ```
+
+### Nix Troubleshooting
+
+- **Updating Dependencies**: If you notice dependencies are out of date or a new tool has been added to the flake, run `nix flake update` to refresh the `flake.lock` file.
+- **Command Not Found**: Ensure you have entered the shell (e.g., `nix develop`). Some tools like `mprocs` or `bitcoind` are only available in the `regtest` shell.
+- **Cache Issues**: If you suspect the environment is not reflecting recent flake changes, you can force a re-evaluation with `nix flake check`.
+- **Persistent Data**: The local PostgreSQL instance stores data in the `.pg_data/` directory. If you want to reset your database completely, stop the database and delete this directory.
 
 ## Regtest Environment
 
