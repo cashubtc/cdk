@@ -25,7 +25,9 @@ use cdk::nuts::{
     NotificationPayload, PaymentMethod, PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
-use cdk_integration_tests::{get_mint_url_from_env, get_second_mint_url_from_env, get_test_client};
+use cdk_integration_tests::{
+    attempt_manual_mint, get_mint_url_from_env, get_second_mint_url_from_env, get_test_client,
+};
 use cdk_sqlite::wallet::{self, memory};
 use futures::join;
 use tokio::time::timeout;
@@ -45,7 +47,10 @@ async fn test_internal_payment() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
 
     ln_client
         .pay_invoice(mint_quote.request.clone())
@@ -73,16 +78,28 @@ async fn test_internal_payment() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet_2.mint_quote(10.into(), None).await.unwrap();
+    let mint_quote = wallet_2
+        .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
+        .await
+        .unwrap();
 
     let melt = wallet
-        .melt_quote(mint_quote.request.clone(), None)
+        .melt_quote(
+            PaymentMethod::BOLT11,
+            mint_quote.request.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     assert_eq!(melt.amount, 10.into());
 
-    let _melted = wallet.melt(&melt.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let _melted = prepared.confirm().await.unwrap();
 
     let _proofs = wallet_2
         .wait_and_mint_quote(
@@ -151,7 +168,10 @@ async fn test_websocket_connection() {
     .expect("failed to create new wallet");
 
     // Create a small mint quote to test notifications
-    let mint_quote = wallet.mint_quote(10.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
+        .await
+        .unwrap();
 
     // Subscribe to notifications for this quote
     let mut subscription = wallet
@@ -227,7 +247,10 @@ async fn test_multimint_melt() {
     let mint_amount = Amount::from(100);
 
     // Fund the wallets
-    let quote = wallet1.mint_quote(mint_amount, None).await.unwrap();
+    let quote = wallet1
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+        .await
+        .unwrap();
     ln_client
         .pay_invoice(quote.request.clone())
         .await
@@ -243,7 +266,10 @@ async fn test_multimint_melt() {
         .await
         .expect("payment");
 
-    let quote = wallet2.mint_quote(mint_amount, None).await.unwrap();
+    let quote = wallet2
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+        .await
+        .unwrap();
     ln_client
         .pay_invoice(quote.request.clone())
         .await
@@ -269,26 +295,44 @@ async fn test_multimint_melt() {
         },
     };
     let quote_1 = wallet1
-        .melt_quote(invoice.clone(), Some(melt_options))
+        .melt_quote(
+            PaymentMethod::BOLT11,
+            invoice.clone(),
+            Some(melt_options),
+            None,
+        )
         .await
         .expect("Could not get melt quote");
     let quote_2 = wallet2
-        .melt_quote(invoice.clone(), Some(melt_options))
+        .melt_quote(
+            PaymentMethod::BOLT11,
+            invoice.clone(),
+            Some(melt_options),
+            None,
+        )
         .await
         .expect("Could not get melt quote");
 
-    // Multimint pay invoice
-    let result1 = wallet1.melt(&quote_1.id);
-    let result2 = wallet2.melt(&quote_2.id);
-    let result = join!(result1, result2);
+    // Multimint pay invoice - prepare both melts
+    let prepared1 = wallet1
+        .prepare_melt(&quote_1.id, std::collections::HashMap::new())
+        .await
+        .expect("Could not prepare melt 1");
+    let prepared2 = wallet2
+        .prepare_melt(&quote_2.id, std::collections::HashMap::new())
+        .await
+        .expect("Could not prepare melt 2");
+
+    // Confirm both in parallel
+    let result = join!(prepared1.confirm(), prepared2.confirm());
 
     // Unpack results
     let result1 = result.0.unwrap();
     let result2 = result.1.unwrap();
 
     // Check
-    assert!(result1.state == result2.state);
-    assert!(result1.state == MeltQuoteState::Paid);
+    assert!(result1.state() == result2.state());
+    assert!(result1.state() == MeltQuoteState::Paid);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -305,7 +349,10 @@ async fn test_cached_mint() {
 
     let mint_amount = Amount::from(100);
 
-    let quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+        .await
+        .unwrap();
     ln_client
         .pay_invoice(quote.request.clone())
         .await
@@ -370,17 +417,25 @@ async fn test_regtest_melt_amountless() {
 
     let mint_amount = Amount::from(100);
 
-    let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+        .await
+        .unwrap();
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
     ln_client
-        .pay_invoice(mint_quote.request)
+        .pay_invoice(mint_quote.request.clone())
         .await
         .expect("failed to pay invoice");
 
     let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .wait_and_mint_quote(
+            mint_quote,
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(60),
+        )
         .await
         .unwrap();
 
@@ -393,13 +448,17 @@ async fn test_regtest_melt_amountless() {
     let options = MeltOptions::new_amountless(5_000);
 
     let melt_quote = wallet
-        .melt_quote(invoice.clone(), Some(options))
+        .melt_quote(PaymentMethod::BOLT11, invoice.clone(), Some(options), None)
         .await
         .unwrap();
 
-    let melt = wallet.melt(&melt_quote.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melt = prepared.confirm().await.unwrap();
 
-    assert!(melt.amount == 5.into());
+    assert!(melt.amount() == 5.into());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -415,15 +474,23 @@ async fn test_attempt_to_mint_unpaid() {
 
     let mint_amount = Amount::from(100);
 
-    let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+        .await
+        .unwrap();
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await;
+    let response = attempt_manual_mint(
+        &wallet,
+        &get_mint_url_from_env(),
+        &mint_quote,
+        mint_amount,
+        PaymentMethod::Known(KnownMethod::Bolt11),
+    )
+    .await;
 
-    match proofs {
+    match response {
         Err(err) => {
             if !matches!(err, cdk::Error::UnpaidQuote) {
                 panic!("Wrong error quote should be unpaid: {}", err);
@@ -434,17 +501,28 @@ async fn test_attempt_to_mint_unpaid() {
         }
     }
 
-    let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+        .await
+        .unwrap();
 
-    let state = wallet.mint_quote_state(&mint_quote.id).await.unwrap();
+    let state = wallet
+        .refresh_mint_quote_status(&mint_quote.id)
+        .await
+        .unwrap();
 
     assert!(state.state == MintQuoteState::Unpaid);
 
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await;
+    let response = attempt_manual_mint(
+        &wallet,
+        &get_mint_url_from_env(),
+        &mint_quote,
+        mint_amount,
+        PaymentMethod::Known(KnownMethod::Bolt11),
+    )
+    .await;
 
-    match proofs {
+    match response {
         Err(err) => {
             if !matches!(err, cdk::Error::UnpaidQuote) {
                 panic!("Wrong error quote should be unpaid: {}", err);

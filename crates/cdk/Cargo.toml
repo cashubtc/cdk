@@ -11,12 +11,11 @@ license.workspace = true
 
 
 [features]
-default = ["mint", "wallet", "auth", "nostr", "bip353"]
-wallet = ["dep:futures", "dep:reqwest", "cdk-common/wallet", "dep:rustls"]
+default = ["mint", "wallet", "nostr", "bip353"]
+wallet = ["dep:futures", "cdk-common/wallet", "cdk-common/http", "dep:rustls"]
 nostr = ["wallet", "dep:nostr-sdk", "cdk-common/nostr"]
 npubcash = ["wallet", "nostr", "dep:cdk-npubcash"]
-mint = ["dep:futures", "dep:reqwest", "cdk-common/mint", "cdk-signatory"]
-auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]
+mint = ["dep:futures", "cdk-common/mint", "cdk-common/http", "cdk-signatory"]
 bip353 = ["dep:hickory-resolver"]
 # We do not commit to a MSRV with swagger enabled
 swagger = ["mint", "dep:utoipa", "cdk-common/swagger"]
@@ -46,7 +45,6 @@ ciborium.workspace = true
 lightning.workspace = true
 lightning-invoice.workspace = true
 regex.workspace = true
-reqwest = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
@@ -57,7 +55,7 @@ futures = { workspace = true, optional = true, features = ["alloc"] }
 url.workspace = true
 utoipa = { workspace = true, optional = true }
 uuid.workspace = true
-jsonwebtoken = { workspace = true, optional = true }
+jsonwebtoken.workspace = true
 nostr-sdk = { workspace = true, optional = true }
 cdk-npubcash = { workspace = true, optional = true }
 cdk-prometheus = {workspace = true, optional = true}
@@ -122,7 +120,7 @@ required-features = ["wallet"]
 
 [[example]]
 name = "auth_wallet"
-required-features = ["wallet", "auth"]
+required-features = ["wallet"]
 
 [[example]]
 name = "bip353"
@@ -168,6 +166,22 @@ required-features = ["npubcash"]
 name = "configure_wallet"
 required-features = ["wallet"]
 
+[[example]]
+name = "receive-token"
+required-features = ["wallet"]
+
+[[example]]
+name = "multi-mint-wallet"
+required-features = ["wallet"]
+
+[[example]]
+name = "restore-wallet"
+required-features = ["wallet"]
+
+[[example]]
+name = "revoke_send"
+required-features = ["wallet"]
+
 [dev-dependencies]
 rand.workspace = true
 cdk-sqlite.workspace = true
@@ -175,7 +189,6 @@ cdk-fake-wallet.workspace = true
 bip39.workspace = true
 tracing-subscriber.workspace = true
 criterion.workspace = true
-reqwest = { workspace = true }
 anyhow.workspace = true
 ureq = { version = "3.1.0", features = ["json"] }
 tokio = { workspace = true, features = ["full"] }

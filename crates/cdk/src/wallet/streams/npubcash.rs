@@ -61,7 +61,11 @@ impl NpubCashProofStream {
                                             })?;
 
                                             let proofs = wallet_instance
-                                                .mint(&quote_id, split_target.clone(), spending_conditions.clone())
+                                                .mint(
+                                                    &quote_id,
+                                                    split_target.clone(),
+                                                    spending_conditions.clone(),
+                                                )
                                                 .await?;
 
                                             Ok((quote.clone(), proofs))
@@ -147,7 +151,11 @@ impl WalletNpubCashProofStream {
 
                                         let result = async {
                                             let proofs = wallet
-                                                .mint(&quote_id, split_target.clone(), spending_conditions.clone())
+                                                .mint(
+                                                    &quote_id,
+                                                    split_target.clone(),
+                                                    spending_conditions.clone(),
+                                                )
                                                 .await?;
                                             Ok((quote.clone(), proofs))
                                         }.await;

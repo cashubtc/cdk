@@ -14,7 +14,10 @@ use std::sync::Arc;
 
 use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
-use cashu::{CurrencyUnit, Id, PreMintSecrets, SecretKey, SpendingConditions, State, SwapRequest};
+use cashu::{
+    CurrencyUnit, Id, PaymentMethod, PreMintSecrets, SecretKey, SpendingConditions, State,
+    SwapRequest,
+};
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::Amount;
@@ -723,6 +726,7 @@ async fn test_swap_with_fees() {
         CurrencyUnit::Sat,
         cdk_integration_tests::standard_keyset_amounts(32),
         100,
+        true,
     )
     .await
     .expect("Failed to rotate keyset");
@@ -822,6 +826,7 @@ async fn test_melt_with_fees_swap_before_melt() {
         CurrencyUnit::Sat,
         cdk_integration_tests::standard_keyset_amounts(32),
         1000, // 1 sat per proof
+        true,
     )
     .await
     .expect("Failed to rotate keyset");
@@ -851,7 +856,10 @@ async fn test_melt_with_fees_swap_before_melt() {
     // Create melt quote for 1000 sats (1_000_000 msats)
     // Fake wallet: fee_reserve = max(1, amount * 2%) = 20 sats
     let invoice = create_fake_invoice(1_000_000, "".to_string()); // 1000 sats in msats
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let quote_amount: u64 = melt_quote.amount.into();
     let fee_reserve: u64 = melt_quote.fee_reserve.into();
@@ -871,10 +879,14 @@ async fn test_melt_with_fees_swap_before_melt() {
     );
 
     // Perform melt
-    let melted = wallet.melt(&melt_quote.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melted = prepared.confirm().await.unwrap();
 
-    let melt_amount: u64 = melted.amount.into();
-    let ln_fee_paid: u64 = melted.fee_paid.into();
+    let melt_amount: u64 = melted.amount().into();
+    let ln_fee_paid: u64 = melted.fee_paid().into();
 
     tracing::info!(
         "Melt completed: amount={}, ln_fee_paid={}",
@@ -979,7 +991,10 @@ async fn test_melt_exact_match_no_swap() {
     // fee_reserve = max(1, 1000 * 2%) = 20 sats
     // inputs_needed = 1000 + 20 = 1020 sats = our exact balance
     let invoice = create_fake_invoice(1_000_000, "".to_string());
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let quote_amount: u64 = melt_quote.amount.into();
     let fee_reserve: u64 = melt_quote.fee_reserve.into();
@@ -993,10 +1008,14 @@ async fn test_melt_exact_match_no_swap() {
     );
 
     // Perform melt
-    let melted = wallet.melt(&melt_quote.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melted = prepared.confirm().await.unwrap();
 
-    let melt_amount: u64 = melted.amount.into();
-    let ln_fee_paid: u64 = melted.fee_paid.into();
+    let melt_amount: u64 = melted.amount().into();
+    let ln_fee_paid: u64 = melted.fee_paid().into();
 
     tracing::info!(
         "Melt completed: amount={}, ln_fee_paid={}",
@@ -1055,6 +1074,7 @@ async fn test_melt_small_amount_tight_margin() {
         CurrencyUnit::Sat,
         cdk_integration_tests::standard_keyset_amounts(32),
         1000,
+        true,
     )
     .await
     .expect("Failed to rotate keyset");
@@ -1084,7 +1104,10 @@ async fn test_melt_small_amount_tight_margin() {
     // fee_reserve = max(1, 5 * 2%) = 1 sat
     // inputs_needed = 5 + 1 = 6 sats
     let invoice = create_fake_invoice(5_000, "".to_string()); // 5 sats in msats
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let quote_amount: u64 = melt_quote.amount.into();
     let fee_reserve: u64 = melt_quote.fee_reserve.into();
@@ -1097,19 +1120,23 @@ async fn test_melt_small_amount_tight_margin() {
     );
 
     // This should succeed even with tight margins
-    let melted = wallet
-        .melt(&melt_quote.id)
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .expect("Prepare melt should succeed");
+    let melted = prepared
+        .confirm()
         .await
         .expect("Melt should succeed even with tight swap margin");
 
-    let melt_amount: u64 = melted.amount.into();
+    let melt_amount: u64 = melted.amount().into();
     assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
 
     let final_balance: u64 = wallet.total_balance().await.unwrap().into();
     tracing::info!(
         "Melt completed: amount={}, fee_paid={}, final_balance={}",
-        melted.amount,
-        melted.fee_paid,
+        melted.amount(),
+        melted.fee_paid(),
         final_balance
     );
 
@@ -1154,6 +1181,7 @@ async fn test_melt_swap_tight_margin_regression() {
         CurrencyUnit::Sat,
         cdk_integration_tests::standard_keyset_amounts(32),
         250,
+        true,
     )
     .await
     .expect("Failed to rotate keyset");
@@ -1185,7 +1213,10 @@ async fn test_melt_swap_tight_margin_regression() {
     // The swap path is what triggered the original bug when proofs_to_swap
     // had tight margins and include_fees=true was incorrectly used.
     let invoice = create_fake_invoice(5_000, "".to_string());
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let quote_amount: u64 = melt_quote.amount.into();
     let fee_reserve: u64 = melt_quote.fee_reserve.into();
@@ -1200,19 +1231,23 @@ async fn test_melt_swap_tight_margin_regression() {
     // This is the key test: melt should succeed even when swap is needed
     // Before the fix, include_fees=true in swap caused InsufficientFunds
     // After the fix, include_fees=false allows the swap to succeed
-    let melted = wallet
-        .melt(&melt_quote.id)
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .expect("Prepare melt should succeed");
+    let melted = prepared
+        .confirm()
         .await
         .expect("Melt should succeed with swap-before-melt (regression test)");
 
-    let melt_amount: u64 = melted.amount.into();
+    let melt_amount: u64 = melted.amount().into();
     assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
 
     let final_balance: u64 = wallet.total_balance().await.unwrap().into();
     tracing::info!(
         "Melt completed: amount={}, fee_paid={}, final_balance={}",
-        melted.amount,
-        melted.fee_paid,
+        melted.amount(),
+        melted.fee_paid(),
         final_balance
     );
 
@@ -1474,6 +1509,7 @@ async fn test_wallet_multi_keyset_counter_updates() {
         CurrencyUnit::Sat,
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
+        true,
     )
     .await
     .expect("Failed to rotate keyset");

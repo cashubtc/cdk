@@ -22,10 +22,10 @@ npubcash = ["cdk/npubcash"]
 anyhow.workspace = true
 bip39.workspace = true
 bitcoin.workspace = true
-cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "nostr", "bip353"]}
+cdk = { workspace = true, default-features = false, features = ["wallet", "nostr", "bip353"]}
 cdk-redb = { workspace = true, features = ["wallet"], optional = true }
 cdk-sqlite = { workspace = true, features = ["wallet"] }
-cdk-common = { workspace = true, features = ["wallet"] }
+cdk-common = { workspace = true, features = ["wallet", "http"] }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -34,7 +34,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 home.workspace = true
 nostr-sdk = { workspace = true }
-reqwest.workspace = true
 url.workspace = true
 serde_with.workspace = true
 lightning.workspace = true

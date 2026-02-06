@@ -69,5 +69,11 @@ exclude_re = [
     "crates/cashu/src/util/mod.rs.*serialize_to_cbor_diag",
 
     # PartialOrd canonical implementation - just delegates to Ord::cmp, this is standard Rust idiom
-    "crates/cashu/src/nuts/nut00/mod.rs.*impl PartialOrd for Proof.*partial_cmp",
+    "crates/cashu/src/nuts/nut00/mod.rs:.*impl PartialOrd for Proof.*partial_cmp",
+
+    # Trivial getters in nut00
+    "crates/cashu/src/nuts/nut00/mod.rs:.*PaymentMethod::is_known",
+    "crates/cashu/src/nuts/nut00/mod.rs:.*PaymentMethod::is_custom",
+    "crates/cashu/src/nuts/nut00/mod.rs:.*PaymentMethod::is_bolt11",
+    "crates/cashu/src/nuts/nut00/mod.rs:.*impl fmt::Display for KnownMethod.*fmt",
 ]

@@ -53,7 +53,7 @@ use std::time::Duration;
 #[cfg(feature = "wallet")]
 use cdk::amount::SplitTarget;
 use cdk_sqlite::wallet::memory;
-use cdk::nuts::{CurrencyUnit, MintQuoteState};
+use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
 #[cfg(feature = "wallet")]
 use cdk::wallet::Wallet;
 #[cfg(feature = "wallet")]
@@ -76,12 +76,12 @@ async fn main() {
 
         let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None).unwrap();
 
-        let quote = wallet.mint_quote(amount, None).await.unwrap();
+        let quote = wallet.mint_quote(PaymentMethod::BOLT11, Some(amount), None, None).await.unwrap();
 
         println!("Pay request: {}", quote.request);
 
         loop {
-            let status = wallet.mint_quote_state(&quote.id).await.unwrap();
+            let status = wallet.refresh_mint_quote_status(&quote.id).await.unwrap();
 
             if status.state == MintQuoteState::Paid {
                 break;

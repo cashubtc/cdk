@@ -13,7 +13,6 @@ use cdk::nuts::{
 };
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "auth")]
 use crate::{get_keyset_pubkeys, into_response, MintState};
 
 const CLEAR_AUTH_KEY: &str = "Clear-auth";
@@ -99,7 +98,6 @@ where
 /// Get all active keyset IDs of the mint
 ///
 /// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
-#[cfg(feature = "auth")]
 pub async fn get_auth_keysets(
     State(state): State<MintState>,
 ) -> Result<Json<KeysetResponse>, Response> {

@@ -267,10 +267,11 @@ pub fn setup_tracing() {
 
     let h2_filter = "h2=warn";
     let hyper_filter = "hyper=warn";
+    let tower_filter = "tower=warn";
     let tokio_postgres = "tokio_postgres=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{default_filter},{h2_filter},{hyper_filter},{tokio_postgres}"
+        "{default_filter},{h2_filter},{hyper_filter},{tower_filter},{tokio_postgres}"
     ));
 
     // Ok if successful, Err if already initialized
@@ -281,6 +282,10 @@ pub fn setup_tracing() {
 }
 
 pub async fn create_and_start_test_mint() -> Result<Mint> {
+    create_mint_with_limits(None).await
+}
+
+pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<Mint> {
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
@@ -328,6 +333,12 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         .with_name("pure test mint".to_string())
         .with_description("pure test mint".to_string())
         .with_urls(vec!["https://aaa".to_string()]);
+
+    if let Some((max_inputs, max_outputs)) = limits {
+        mint_builder = mint_builder.with_limits(max_inputs, max_outputs);
+    } else {
+        mint_builder = mint_builder.with_limits(2000, 2000);
+    }
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
@@ -414,7 +425,9 @@ pub async fn fund_wallet(
     split_target: Option<SplitTarget>,
 ) -> Result<Amount> {
     let desired_amount = Amount::from(amount);
-    let quote = wallet.mint_quote(desired_amount, None).await?;
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(desired_amount), None, None)
+        .await?;
 
     Ok(wallet
         .proof_stream(quote, split_target.unwrap_or_default(), None)

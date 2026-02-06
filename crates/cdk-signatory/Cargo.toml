@@ -20,7 +20,6 @@ async-trait.workspace = true
 bitcoin.workspace = true
 cdk-common = { workspace = true, default-features = false, features = [
     "mint",
-    "auth",
 ] }
 tonic = { workspace = true, optional = true, features = ["transport", "tls-ring", "codegen", "router"] }
 tonic-prost = { workspace = true, optional = true }
@@ -31,7 +30,7 @@ rustls = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # main.rs dependencies
 anyhow.workspace = true
-cdk-sqlite = { workspace = true, features = ["mint", "auth"], optional = true }
+cdk-sqlite = { workspace = true, features = ["mint"], optional = true }
 clap = { workspace = true }
 bip39.workspace = true
 home.workspace = true

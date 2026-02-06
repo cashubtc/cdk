@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use cdk::amount::SplitTarget;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::wallet::payment_request::CreateRequestParams;
 use cdk_sqlite::wallet::memory;
@@ -64,7 +64,9 @@ async fn main() -> anyhow::Result<()> {
         .get_wallet(&mint_url.parse()?)
         .await
         .ok_or_else(|| anyhow!("Wallet not found for mint"))?;
-    let mint_quote = mint_wallet.mint_quote(initial_amount, None).await?;
+    let mint_quote = mint_wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(initial_amount), None, None)
+        .await?;
 
     println!(
         "Pay this invoice to fund the wallet:\n{}",

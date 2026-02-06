@@ -20,8 +20,8 @@ use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
 use cashu::mint_url::MintUrl;
 use cashu::{
-    CurrencyUnit, Id, MeltRequest, NotificationPayload, PreMintSecrets, ProofState, SecretKey,
-    SpendingConditions, State, SwapRequest,
+    CurrencyUnit, Id, MeltRequest, NotificationPayload, PaymentMethod, PreMintSecrets, ProofState,
+    SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
@@ -131,6 +131,7 @@ async fn test_swap_to_send() {
             token_proofs.clone(),
             ReceiveOptions::default(),
             token.memo().clone(),
+            Some(token.to_string()),
         )
         .await
         .expect("Failed to receive proofs");
@@ -565,6 +566,7 @@ async fn test_swap_overpay_underpay_fee() {
             CurrencyUnit::Sat,
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
+            true,
         )
         .await
         .unwrap();
@@ -583,8 +585,7 @@ async fn test_swap_overpay_underpay_fee() {
         .await
         .expect("Could not get proofs");
 
-    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
-    let keyset_id = Id::v1_from_keys(&keys);
+    let keyset_id = mint_bob.pubkeys().keysets.first().unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let preswap = PreMintSecrets::random(
@@ -644,6 +645,7 @@ async fn test_mint_enforce_fee() {
             CurrencyUnit::Sat,
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
+            true,
         )
         .await
         .unwrap();
@@ -746,6 +748,268 @@ async fn test_mint_enforce_fee() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_mint_max_outputs_exceeded_mint() {
+    setup_tracing();
+    // Set max outputs to 5
+    let mint_bob = create_mint_with_limits(Some((100, 5)))
+        .await
+        .expect("Failed to create test mint");
+
+    let wallet_alice = create_test_wallet_for_mint(mint_bob.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Alice tries to mint 10 sats with split target 1 (requesting 10 outputs)
+    // This should fail because max_outputs is 5
+    let result = fund_wallet(
+        wallet_alice.clone(),
+        10,
+        Some(SplitTarget::Value(Amount::ONE)),
+    )
+    .await;
+
+    match result {
+        Ok(_) => panic!("Mint allowed exceeding max outputs"),
+        Err(err) => {
+            if let Some(cdk::Error::MaxOutputsExceeded { actual, max }) =
+                err.downcast_ref::<cdk::Error>()
+            {
+                // actual might be more than 10 depending on internal splitting logic, but certainly > 5
+                assert!(*actual >= 10);
+                assert_eq!(*max, 5);
+            } else {
+                panic!("Wrong error returned: {:?}", err);
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_mint_max_inputs_exceeded_melt() {
+    setup_tracing();
+    // Set max inputs to 5
+    let mint_bob = create_mint_with_limits(Some((5, 100)))
+        .await
+        .expect("Failed to create test mint");
+
+    let wallet_alice = create_test_wallet_for_mint(mint_bob.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Alice gets 10 sats with small outputs to have enough proofs
+    fund_wallet(
+        wallet_alice.clone(),
+        10,
+        Some(SplitTarget::Value(Amount::ONE)),
+    )
+    .await
+    .expect("Failed to fund wallet");
+
+    let proofs = wallet_alice
+        .get_unspent_proofs()
+        .await
+        .expect("Could not get proofs");
+
+    // Use 6 proofs (limit is 5)
+    let six_proofs: Vec<_> = proofs.iter().take(6).cloned().collect();
+    assert_eq!(six_proofs.len(), 6);
+
+    let fake_invoice = create_fake_invoice(1000, "".to_string());
+    let melt_quote = wallet_alice
+        .melt_quote(PaymentMethod::BOLT11, fake_invoice.to_string(), None, None)
+        .await
+        .expect("Failed to create melt quote");
+
+    let melt_request = MeltRequest::new(melt_quote.id.parse().unwrap(), six_proofs, None);
+
+    match mint_bob.melt(&melt_request).await {
+        Ok(_) => panic!("Melt allowed exceeding max inputs"),
+        Err(err) => match err {
+            cdk::Error::MaxInputsExceeded { actual, max } => {
+                assert_eq!(actual, 6);
+                assert_eq!(max, 5);
+            }
+            _ => panic!("Wrong error returned: {:?}", err),
+        },
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_mint_max_outputs_exceeded_melt() {
+    setup_tracing();
+    // Set max outputs to 20
+    let mint_bob = create_mint_with_limits(Some((100, 20)))
+        .await
+        .expect("Failed to create test mint");
+
+    let wallet_alice = create_test_wallet_for_mint(mint_bob.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Alice gets 100 sats
+    fund_wallet(wallet_alice.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let proofs = wallet_alice
+        .get_unspent_proofs()
+        .await
+        .expect("Could not get proofs");
+
+    let fake_invoice = create_fake_invoice(1000, "".to_string()); // 1000 msat = 1 sat
+    let melt_quote = wallet_alice
+        .melt_quote(PaymentMethod::BOLT11, fake_invoice.to_string(), None, None)
+        .await
+        .expect("Failed to create melt quote");
+
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
+    let keyset_id = keys.id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
+    // Create 21 blinded messages for change (limit is 20)
+    let preswap = PreMintSecrets::random(
+        keyset_id,
+        21.into(),
+        &SplitTarget::Value(Amount::ONE),
+        &fee_and_amounts,
+    )
+    .unwrap();
+
+    let change_messages = preswap.blinded_messages();
+    assert!(change_messages.len() >= 21);
+    let excessive_change: Vec<_> = change_messages.into_iter().take(21).collect();
+
+    let melt_request = MeltRequest::new(
+        melt_quote.id.parse().unwrap(),
+        proofs,
+        Some(excessive_change),
+    );
+
+    match mint_bob.melt(&melt_request).await {
+        Ok(_) => panic!("Melt allowed exceeding max outputs"),
+        Err(err) => match err {
+            cdk::Error::MaxOutputsExceeded { actual, max } => {
+                assert_eq!(actual, 21);
+                assert_eq!(max, 20);
+            }
+            _ => panic!("Wrong error returned: {:?}", err),
+        },
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_mint_max_inputs_exceeded() {
+    setup_tracing();
+    let mint_bob = create_mint_with_limits(Some((5, 100)))
+        .await
+        .expect("Failed to create test mint");
+
+    let wallet_alice = create_test_wallet_for_mint(mint_bob.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Alice gets 100 sats with small outputs to have enough proofs
+    fund_wallet(
+        wallet_alice.clone(),
+        100,
+        Some(SplitTarget::Value(Amount::ONE)),
+    )
+    .await
+    .expect("Failed to fund wallet");
+
+    let proofs = wallet_alice
+        .get_unspent_proofs()
+        .await
+        .expect("Could not get proofs");
+
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
+    let keyset_id = keys.id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
+    // Use 6 proofs (limit is 5)
+    let six_proofs: Vec<_> = proofs.iter().take(6).cloned().collect();
+    assert_eq!(six_proofs.len(), 6);
+
+    let preswap = PreMintSecrets::random(
+        keyset_id,
+        6.into(),
+        &SplitTarget::default(),
+        &fee_and_amounts,
+    )
+    .unwrap();
+
+    let swap_request = SwapRequest::new(six_proofs, preswap.blinded_messages());
+
+    match mint_bob.process_swap_request(swap_request).await {
+        Ok(_) => panic!("Swap allowed exceeding max inputs"),
+        Err(err) => match err {
+            cdk::Error::MaxInputsExceeded { actual, max } => {
+                assert_eq!(actual, 6);
+                assert_eq!(max, 5);
+            }
+            _ => panic!("Wrong error returned: {:?}", err),
+        },
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_mint_max_outputs_exceeded() {
+    setup_tracing();
+    // Set max outputs to 20
+    let mint_bob = create_mint_with_limits(Some((100, 20)))
+        .await
+        .expect("Failed to create test mint");
+
+    let wallet_alice = create_test_wallet_for_mint(mint_bob.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Alice gets 50 sats
+    fund_wallet(wallet_alice.clone(), 50, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let proofs = wallet_alice
+        .get_unspent_proofs()
+        .await
+        .expect("Could not get proofs");
+
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
+    let keyset_id = keys.id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
+    // Try to split into 21 outputs (limit is 20)
+    let preswap = PreMintSecrets::random(
+        keyset_id,
+        21.into(),
+        &SplitTarget::Value(Amount::ONE),
+        &fee_and_amounts,
+    )
+    .unwrap();
+
+    // Verify we generated enough messages
+    let messages = preswap.blinded_messages();
+    // We expect 21 messages because we asked for split target of 1 sat for 21 sats total.
+    assert!(messages.len() >= 21);
+
+    // Just take 21 messages to trigger the limit
+    let excessive_messages: Vec<_> = messages.into_iter().take(21).collect();
+
+    let swap_request = SwapRequest::new(proofs, excessive_messages);
+
+    match mint_bob.process_swap_request(swap_request).await {
+        Ok(_) => panic!("Swap allowed exceeding max outputs"),
+        Err(err) => match err {
+            cdk::Error::MaxOutputsExceeded { actual, max } => {
+                assert_eq!(actual, 21);
+                assert_eq!(max, 20);
+            }
+            _ => panic!("Wrong error returned: {:?}", err),
+        },
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_mint_change_with_fee_melt() {
     setup_tracing();
     let mint_bob = create_and_start_test_mint()
@@ -757,6 +1021,7 @@ async fn test_mint_change_with_fee_melt() {
             CurrencyUnit::Sat,
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
+            true,
         )
         .await
         .unwrap();
@@ -804,16 +1069,17 @@ async fn test_mint_change_with_fee_melt() {
     let fake_invoice = create_fake_invoice(1000, "".to_string());
 
     let melt_quote = wallet_alice
-        .melt_quote(fake_invoice.to_string(), None)
+        .melt_quote(PaymentMethod::BOLT11, fake_invoice.to_string(), None, None)
         .await
         .unwrap();
 
-    let w = wallet_alice
-        .melt_proofs(&melt_quote.id, proofs)
+    let prepared = wallet_alice
+        .prepare_melt_proofs(&melt_quote.id, proofs, std::collections::HashMap::new())
         .await
         .unwrap();
+    let w = prepared.confirm().await.unwrap();
 
-    assert_eq!(w.change.unwrap().total_amount().unwrap(), 97.into());
+    assert_eq!(w.change().unwrap().total_amount().unwrap(), 97.into());
 
     // Check amounts after melting
     // Melting redeems 100 sats and issues 97 sats as change
@@ -972,7 +1238,7 @@ async fn test_concurrent_double_spend_melt() {
 
     // Create a melt quote
     let melt_quote = wallet_alice
-        .melt_quote(invoice.to_string(), None)
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
         .await
         .expect("Failed to create melt quote");
 

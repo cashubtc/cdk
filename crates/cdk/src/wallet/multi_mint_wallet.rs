@@ -15,18 +15,22 @@ use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection, Transacti
 use cdk_common::{database, KeySetInfo, PaymentMethod};
 use tokio::sync::RwLock;
 use tracing::instrument;
+use uuid::Uuid;
 use zeroize::Zeroize;
 
 use super::builder::WalletBuilder;
+use super::melt::MeltConfirmOptions;
 use super::receive::ReceiveOptions;
-use super::send::{PreparedSend, SendOptions};
+use super::send::{SendMemo, SendOptions};
 use super::{Error, Restored};
 use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut23::QuoteState;
-use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, State, Token};
-use crate::types::Melted;
+use crate::nuts::{
+    CurrencyUnit, MeltOptions, PaymentMethod, Proof, Proofs, SpendingConditions, State, Token,
+};
+use crate::types::FinalizedMelt;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
 use crate::wallet::types::MintQuote;
@@ -88,7 +92,6 @@ pub struct WalletConfig {
     /// Custom mint connector implementation
     pub mint_connector: Option<Arc<dyn super::MintConnector + Send + Sync>>,
     /// Custom auth connector implementation
-    #[cfg(feature = "auth")]
     pub auth_connector: Option<Arc<dyn super::auth::AuthMintConnector + Send + Sync>>,
     /// Target number of proofs to maintain at each denomination
     pub target_proof_count: Option<usize>,
@@ -119,7 +122,6 @@ impl WalletConfig {
     }
 
     /// Set custom auth connector
-    #[cfg(feature = "auth")]
     pub fn with_auth_connector(
         mut self,
         connector: Arc<dyn super::auth::AuthMintConnector + Send + Sync>,
@@ -145,6 +147,249 @@ impl WalletConfig {
     pub fn with_metadata_cache_ttl(mut self, ttl: Option<std::time::Duration>) -> Self {
         self.metadata_cache_ttl = ttl;
         self
+    }
+}
+
+/// A prepared send operation from MultiMintWallet
+///
+/// This holds an `Arc<Wallet>` so it can call `.confirm()` without holding
+/// the RwLock. Created by [`MultiMintWallet::prepare_send`].
+#[must_use = "must be confirmed or canceled to release reserved proofs"]
+pub struct MultiMintPreparedSend {
+    wallet: Arc<Wallet>,
+    operation_id: Uuid,
+    amount: Amount,
+    options: SendOptions,
+    proofs_to_swap: Proofs,
+    proofs_to_send: Proofs,
+    swap_fee: Amount,
+    send_fee: Amount,
+}
+
+impl MultiMintPreparedSend {
+    /// Operation ID for this prepared send
+    pub fn operation_id(&self) -> Uuid {
+        self.operation_id
+    }
+
+    /// Amount to send
+    pub fn amount(&self) -> Amount {
+        self.amount
+    }
+
+    /// Send options
+    pub fn options(&self) -> &SendOptions {
+        &self.options
+    }
+
+    /// Proofs that need to be swapped before sending
+    pub fn proofs_to_swap(&self) -> &Proofs {
+        &self.proofs_to_swap
+    }
+
+    /// Fee for the swap operation
+    pub fn swap_fee(&self) -> Amount {
+        self.swap_fee
+    }
+
+    /// Proofs that will be sent directly
+    pub fn proofs_to_send(&self) -> &Proofs {
+        &self.proofs_to_send
+    }
+
+    /// Fee the recipient will pay to redeem the token
+    pub fn send_fee(&self) -> Amount {
+        self.send_fee
+    }
+
+    /// All proofs (both to swap and to send)
+    pub fn proofs(&self) -> Proofs {
+        let mut proofs = self.proofs_to_swap.clone();
+        proofs.extend(self.proofs_to_send.clone());
+        proofs
+    }
+
+    /// Total fee (swap + send)
+    pub fn fee(&self) -> Amount {
+        self.swap_fee + self.send_fee
+    }
+
+    /// Confirm the prepared send and create a token
+    pub async fn confirm(self, memo: Option<SendMemo>) -> Result<Token, Error> {
+        self.wallet
+            .confirm_send(
+                self.operation_id,
+                self.amount,
+                self.options,
+                self.proofs_to_swap,
+                self.proofs_to_send,
+                self.swap_fee,
+                self.send_fee,
+                memo,
+            )
+            .await
+    }
+
+    /// Cancel the prepared send and release reserved proofs
+    pub async fn cancel(self) -> Result<(), Error> {
+        self.wallet
+            .cancel_send(self.operation_id, self.proofs_to_swap, self.proofs_to_send)
+            .await
+    }
+}
+
+impl std::fmt::Debug for MultiMintPreparedSend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultiMintPreparedSend")
+            .field("operation_id", &self.operation_id)
+            .field("amount", &self.amount)
+            .field("swap_fee", &self.swap_fee)
+            .field("send_fee", &self.send_fee)
+            .finish()
+    }
+}
+
+/// A prepared melt operation from MultiMintWallet
+///
+/// This holds an `Arc<Wallet>` so it can call `.confirm()` without holding
+/// the RwLock. Created by [`MultiMintWallet::prepare_melt`].
+#[must_use = "must be confirmed or canceled to release reserved proofs"]
+pub struct MultiMintPreparedMelt {
+    wallet: Arc<Wallet>,
+    operation_id: Uuid,
+    quote: MeltQuote,
+    proofs: Proofs,
+    proofs_to_swap: Proofs,
+    swap_fee: Amount,
+    input_fee: Amount,
+    input_fee_without_swap: Amount,
+    metadata: std::collections::HashMap<String, String>,
+}
+
+impl MultiMintPreparedMelt {
+    /// Get the operation ID
+    pub fn operation_id(&self) -> Uuid {
+        self.operation_id
+    }
+
+    /// Get the quote
+    pub fn quote(&self) -> &MeltQuote {
+        &self.quote
+    }
+
+    /// Get the amount to be melted
+    pub fn amount(&self) -> Amount {
+        self.quote.amount
+    }
+
+    /// Get the proofs that will be used
+    pub fn proofs(&self) -> &Proofs {
+        &self.proofs
+    }
+
+    /// Get the proofs that need to be swapped
+    pub fn proofs_to_swap(&self) -> &Proofs {
+        &self.proofs_to_swap
+    }
+
+    /// Get the swap fee
+    pub fn swap_fee(&self) -> Amount {
+        self.swap_fee
+    }
+
+    /// Get the input fee
+    pub fn input_fee(&self) -> Amount {
+        self.input_fee
+    }
+
+    /// Get the total fee (with swap, if applicable)
+    pub fn total_fee(&self) -> Amount {
+        self.swap_fee + self.input_fee
+    }
+
+    /// Returns true if a swap would be performed (proofs_to_swap is not empty)
+    pub fn requires_swap(&self) -> bool {
+        !self.proofs_to_swap.is_empty()
+    }
+
+    /// Get the total fee if swap is performed (current default behavior)
+    ///
+    /// This is swap_fee + input_fee on optimized proofs.
+    /// Same as [`total_fee()`](Self::total_fee).
+    pub fn total_fee_with_swap(&self) -> Amount {
+        self.swap_fee + self.input_fee
+    }
+
+    /// Get the input fee if swap is skipped (fee on all proofs sent directly)
+    pub fn input_fee_without_swap(&self) -> Amount {
+        self.input_fee_without_swap
+    }
+
+    /// Get the fee savings from skipping the swap
+    ///
+    /// Returns how much less you would pay in fees by using
+    /// `confirm_with_options(MeltConfirmOptions::skip_swap())`.
+    pub fn fee_savings_without_swap(&self) -> Amount {
+        self.total_fee_with_swap()
+            .checked_sub(self.input_fee_without_swap)
+            .unwrap_or(Amount::ZERO)
+    }
+
+    /// Get the expected change amount if swap is skipped
+    ///
+    /// This is how much would be "overpaid" and returned as change from the melt.
+    pub fn change_amount_without_swap(&self) -> Amount {
+        let all_proofs_total = self.proofs.total_amount().unwrap_or(Amount::ZERO)
+            + self.proofs_to_swap.total_amount().unwrap_or(Amount::ZERO);
+        let needed = self.quote.amount + self.quote.fee_reserve + self.input_fee_without_swap;
+        all_proofs_total.checked_sub(needed).unwrap_or(Amount::ZERO)
+    }
+
+    /// Confirm the prepared melt and execute the payment
+    pub async fn confirm(self) -> Result<FinalizedMelt, Error> {
+        self.confirm_with_options(MeltConfirmOptions::default())
+            .await
+    }
+
+    /// Confirm the prepared melt with custom options
+    ///
+    /// # Options
+    ///
+    /// - `skip_swap`: If true, skips the pre-melt swap and sends proofs directly.
+    pub async fn confirm_with_options(
+        self,
+        options: MeltConfirmOptions,
+    ) -> Result<FinalizedMelt, Error> {
+        self.wallet
+            .confirm_prepared_melt_with_options(
+                self.operation_id,
+                self.quote,
+                self.proofs,
+                self.proofs_to_swap,
+                self.input_fee,
+                self.input_fee_without_swap,
+                self.metadata,
+                options,
+            )
+            .await
+    }
+
+    /// Cancel the prepared melt and release reserved proofs
+    pub async fn cancel(self) -> Result<(), Error> {
+        self.wallet
+            .cancel_prepared_melt(self.operation_id, self.proofs, self.proofs_to_swap)
+            .await
+    }
+}
+
+impl std::fmt::Debug for MultiMintPreparedMelt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultiMintPreparedMelt")
+            .field("operation_id", &self.operation_id)
+            .field("quote_id", &self.quote.id)
+            .field("amount", &self.quote.amount)
+            .field("total_fee", &self.total_fee())
+            .finish()
     }
 }
 
@@ -185,12 +430,11 @@ impl WalletConfig {
 /// println!("Total balance: {} sats", balance);
 ///
 /// // Send tokens from a specific mint
-/// let prepared = wallet.prepare_send(
+/// let token = wallet.send(
 ///     mint_url1,
 ///     Amount::from(100),
 ///     Default::default()
 /// ).await?;
-/// let token = prepared.confirm(None).await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -201,8 +445,8 @@ pub struct MultiMintWallet {
     seed: [u8; 64],
     /// The currency unit this wallet supports
     unit: CurrencyUnit,
-    /// Wallets indexed by mint URL
-    wallets: Arc<RwLock<BTreeMap<MintUrl, Wallet>>>,
+    /// Wallets indexed by mint URL (wrapped in Arc for sharing)
+    wallets: Arc<RwLock<BTreeMap<MintUrl, Arc<Wallet>>>>,
     /// Proxy configuration for HTTP clients (optional)
     proxy_config: Option<url::Url>,
     /// Shared Tor transport to be cloned into each TorHttpClient (if enabled)
@@ -314,9 +558,9 @@ impl MultiMintWallet {
             .create_wallet_with_config(mint_url.clone(), None)
             .await?;
 
-        // Insert into wallets map
+        // Insert into wallets map (wrapped in Arc)
         let mut wallets = self.wallets.write().await;
-        wallets.insert(mint_url, wallet);
+        wallets.insert(mint_url, Arc::new(wallet));
 
         Ok(())
     }
@@ -336,9 +580,9 @@ impl MultiMintWallet {
             .create_wallet_with_config(mint_url.clone(), Some(&config))
             .await?;
 
-        // Insert into wallets map
+        // Insert into wallets map (wrapped in Arc)
         let mut wallets = self.wallets.write().await;
-        wallets.insert(mint_url, wallet);
+        wallets.insert(mint_url, Arc::new(wallet));
 
         Ok(())
     }
@@ -357,7 +601,14 @@ impl MultiMintWallet {
         if self.has_mint(&mint_url).await {
             // Update existing wallet in place
             let mut wallets = self.wallets.write().await;
-            if let Some(wallet) = wallets.get_mut(&mint_url) {
+            if let Some(wallet_arc) = wallets.get_mut(&mint_url) {
+                // Try to get mutable access - fails if there are other Arc references
+                let wallet = Arc::get_mut(wallet_arc).ok_or_else(|| {
+                    Error::Custom(
+                        "Cannot modify wallet config while operations are in progress".to_string(),
+                    )
+                })?;
+
                 // Update target_proof_count if provided
                 if let Some(count) = config.target_proof_count {
                     wallet.set_target_proof_count(count);
@@ -374,7 +625,6 @@ impl MultiMintWallet {
                 }
 
                 // TODO: Handle auth_connector if provided
-                #[cfg(feature = "auth")]
                 if let Some(_auth_connector) = config.auth_connector {
                     // For now, we can't easily inject auth_connector into the wallet
                     // This would require additional work on the Wallet API
@@ -391,7 +641,6 @@ impl MultiMintWallet {
     /// Set the auth client (AuthWallet) for a specific mint
     ///
     /// This allows updating the auth wallet for an existing mint wallet without recreating it.
-    #[cfg(feature = "auth")]
     #[instrument(skip_all)]
     pub async fn set_auth_client(
         &self,
@@ -412,6 +661,50 @@ impl MultiMintWallet {
     pub async fn remove_mint(&self, mint_url: &MintUrl) {
         let mut wallets = self.wallets.write().await;
         wallets.remove(mint_url);
+    }
+
+    /// Update the mint URL for an existing wallet
+    ///
+    /// This updates the mint URL in the database and recreates the wallet with the new URL.
+    /// Returns an error if the old mint URL doesn't exist or if there are active operations
+    /// on the wallet.
+    #[instrument(skip(self))]
+    pub async fn update_mint_url(
+        &self,
+        old_mint_url: &MintUrl,
+        new_mint_url: MintUrl,
+    ) -> Result<(), Error> {
+        // Get write lock and check if wallet exists
+        let mut wallets = self.wallets.write().await;
+
+        // Remove old wallet - this will fail if there are other Arc references
+        let old_wallet_arc = wallets.remove(old_mint_url).ok_or(Error::UnknownMint {
+            mint_url: old_mint_url.to_string(),
+        })?;
+
+        // Check that we're the only holder of this Arc
+        // If not, someone else is using the wallet (e.g., PreparedSend)
+        let old_wallet = Arc::try_unwrap(old_wallet_arc).map_err(|_| {
+            Error::Custom("Cannot update mint URL while operations are in progress".to_string())
+        })?;
+
+        // Update the database
+        self.localstore
+            .update_mint_url(old_mint_url.clone(), new_mint_url.clone())
+            .await
+            .map_err(Error::Database)?;
+
+        // Create a new wallet with the new URL
+        // We drop the old wallet and create fresh to ensure clean state
+        drop(old_wallet);
+        let new_wallet = self
+            .create_wallet_with_config(new_mint_url.clone(), None)
+            .await?;
+
+        // Insert the new wallet
+        wallets.insert(new_mint_url, Arc::new(new_wallet));
+
+        Ok(())
     }
 
     /// Internal: Create wallet with optional custom configuration
@@ -442,7 +735,6 @@ impl MultiMintWallet {
                 }
 
                 // TODO: Handle auth_connector if provided
-                #[cfg(feature = "auth")]
                 if let Some(_auth_connector) = &cfg.auth_connector {
                     // For now, we can't easily inject auth_connector into the wallet
                     // This would require additional work on the Wallet/WalletBuilder API
@@ -465,16 +757,7 @@ impl MultiMintWallet {
                 None,
                 true,
             )
-            .unwrap_or_else(|_| {
-                #[cfg(feature = "auth")]
-                {
-                    crate::wallet::HttpClient::new(mint_url.clone(), None)
-                }
-                #[cfg(not(feature = "auth"))]
-                {
-                    crate::wallet::HttpClient::new(mint_url.clone())
-                }
-            });
+            .unwrap_or_else(|_| crate::wallet::HttpClient::new(mint_url.clone(), None));
             let mut builder = WalletBuilder::new()
                 .mint_url(mint_url.clone())
                 .unit(self.unit.clone())
@@ -494,18 +777,7 @@ impl MultiMintWallet {
                 // Create wallet with Tor transport client, cloning the shared transport
                 let client = {
                     let transport = tor.clone();
-                    #[cfg(feature = "auth")]
-                    {
-                        crate::wallet::TorHttpClient::with_transport(
-                            mint_url.clone(),
-                            transport,
-                            None,
-                        )
-                    }
-                    #[cfg(not(feature = "auth"))]
-                    {
-                        crate::wallet::TorHttpClient::with_transport(mint_url.clone(), transport)
-                    }
+                    crate::wallet::TorHttpClient::with_transport(mint_url.clone(), transport, None)
                 };
 
                 let mut builder = WalletBuilder::new()
@@ -587,13 +859,13 @@ impl MultiMintWallet {
 
     /// Get Wallets from MultiMintWallet
     #[instrument(skip(self))]
-    pub async fn get_wallets(&self) -> Vec<Wallet> {
+    pub async fn get_wallets(&self) -> Vec<Arc<Wallet>> {
         self.wallets.read().await.values().cloned().collect()
     }
 
     /// Get Wallet from MultiMintWallet
     #[instrument(skip(self))]
-    pub async fn get_wallet(&self, mint_url: &MintUrl) -> Option<Wallet> {
+    pub async fn get_wallet(&self, mint_url: &MintUrl) -> Option<Arc<Wallet>> {
         self.wallets.read().await.get(mint_url).cloned()
     }
 
@@ -799,18 +1071,67 @@ impl MultiMintWallet {
         Ok(total)
     }
 
-    /// Prepare to send tokens from a specific mint with optional transfer from other mints
+    /// Prepare a send operation from a specific mint
     ///
-    /// This method ensures that sends always happen from only one mint. If the specified
-    /// mint doesn't have sufficient balance and `allow_transfer` is enabled in options,
-    /// it will first transfer funds from other mints to the target mint.
+    /// Returns a [`MultiMintPreparedSend`] that holds an `Arc<Wallet>` and can be
+    /// confirmed later by calling `.confirm()`. This does not support automatic
+    /// transfers from other mints - use [`send`](Self::send) for that.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let prepared = wallet.prepare_send(mint_url, amount, options).await?;
+    /// // Inspect the prepared send...
+    /// println!("Fee: {}", prepared.fee());
+    /// // Then confirm or cancel
+    /// let token = prepared.confirm(None).await?;
+    /// ```
     #[instrument(skip(self))]
     pub async fn prepare_send(
         &self,
         mint_url: MintUrl,
         amount: Amount,
+        opts: SendOptions,
+    ) -> Result<MultiMintPreparedSend, Error> {
+        // Clone the Arc<Wallet> and release the lock immediately
+        let wallet = {
+            let wallets = self.wallets.read().await;
+            wallets
+                .get(&mint_url)
+                .ok_or(Error::UnknownMint {
+                    mint_url: mint_url.to_string(),
+                })?
+                .clone()
+        };
+
+        // Call prepare_send on the wallet (lock is released)
+        let prepared = wallet.prepare_send(amount, opts.clone()).await?;
+
+        // Extract data into MultiMintPreparedSend
+        // Clone the Arc again since `prepared` borrows from `wallet`
+        Ok(MultiMintPreparedSend {
+            wallet: Arc::clone(&wallet),
+            operation_id: prepared.operation_id(),
+            amount: prepared.amount(),
+            options: opts,
+            proofs_to_swap: prepared.proofs_to_swap().clone(),
+            proofs_to_send: prepared.proofs_to_send().clone(),
+            swap_fee: prepared.swap_fee(),
+            send_fee: prepared.send_fee(),
+        })
+    }
+
+    /// Send tokens from a specific mint with optional transfer from other mints
+    ///
+    /// This method ensures that sends always happen from only one mint. If the specified
+    /// mint doesn't have sufficient balance and `allow_transfer` is enabled in options,
+    /// it will first transfer funds from other mints to the target mint.
+    #[instrument(skip(self))]
+    pub async fn send(
+        &self,
+        mint_url: MintUrl,
+        amount: Amount,
         opts: MultiMintSendOptions,
-    ) -> Result<PreparedSend, Error> {
+    ) -> Result<Token, Error> {
         // Ensure the mint exists
         let wallets = self.wallets.read().await;
         let target_wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
@@ -820,9 +1141,12 @@ impl MultiMintWallet {
         // Check current balance of target mint
         let target_balance = target_wallet.total_balance().await?;
 
-        // If target mint has sufficient balance, prepare send directly
+        // If target mint has sufficient balance, send directly
         if target_balance >= amount {
-            return target_wallet.prepare_send(amount, opts.send_options).await;
+            let prepared = target_wallet
+                .prepare_send(amount, opts.send_options.clone())
+                .await?;
+            return prepared.confirm(opts.send_options.memo).await;
         }
 
         // If transfer is not allowed, return insufficient funds error
@@ -878,13 +1202,16 @@ impl MultiMintWallet {
         self.transfer_parallel(&mint_url, transfer_needed, source_mints)
             .await?;
 
-        // Now prepare the send from the target mint
+        // Now send from the target mint
         let wallets = self.wallets.read().await;
         let target_wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
             mint_url: mint_url.to_string(),
         })?;
 
-        target_wallet.prepare_send(amount, opts.send_options).await
+        let prepared = target_wallet
+            .prepare_send(amount, opts.send_options.clone())
+            .await?;
+        prepared.confirm(opts.send_options.memo).await
     }
 
     /// Transfer funds from a single source wallet to target mint using Lightning Network (melt/mint)
@@ -955,7 +1282,7 @@ impl MultiMintWallet {
         let target_balance_final = target_wallet.total_balance().await?;
 
         let amount_sent = source_balance_initial - source_balance_final;
-        let fees_paid = melted.fee_paid;
+        let fees_paid = melted.fee_paid();
 
         tracing::info!(
             "Transferred {} from {} to {} via Lightning (sent: {} sats, received: {} sats, fee: {} sats)",
@@ -985,11 +1312,18 @@ impl MultiMintWallet {
         source_balance: Amount,
     ) -> Result<(MintQuote, crate::wallet::types::MeltQuote), Error> {
         // Step 1: Create mint quote at target mint for the exact amount we want to receive
-        let mint_quote = target_wallet.mint_quote(amount, None).await?;
+        let mint_quote = target_wallet
+            .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
+            .await?;
 
         // Step 2: Create melt quote at source mint for the invoice
         let melt_quote = source_wallet
-            .melt_quote(mint_quote.request.clone(), None)
+            .melt_quote(
+                PaymentMethod::BOLT11,
+                mint_quote.request.clone(),
+                None,
+                None,
+            )
             .await?;
 
         // Step 3: Check if source has enough balance for the total amount needed (amount + melt fees)
@@ -1014,9 +1348,16 @@ impl MultiMintWallet {
 
         // Step 1: Create melt quote for full balance to discover fees
         // We need to create a dummy mint quote first to get an invoice
-        let dummy_mint_quote = target_wallet.mint_quote(source_balance, None).await?;
+        let dummy_mint_quote = target_wallet
+            .mint_quote(PaymentMethod::BOLT11, Some(source_balance), None, None)
+            .await?;
         let probe_melt_quote = source_wallet
-            .melt_quote(dummy_mint_quote.request.clone(), None)
+            .melt_quote(
+                PaymentMethod::BOLT11,
+                dummy_mint_quote.request.clone(),
+                None,
+                None,
+            )
             .await?;
 
         // Step 2: Calculate actual receive amount (balance - fees)
@@ -1029,14 +1370,75 @@ impl MultiMintWallet {
         }
 
         // Step 3: Create final mint quote for the net amount
-        let final_mint_quote = target_wallet.mint_quote(receive_amount, None).await?;
+        let final_mint_quote = target_wallet
+            .mint_quote(PaymentMethod::BOLT11, Some(receive_amount), None, None)
+            .await?;
 
         // Step 4: Create final melt quote with the new invoice
         let final_melt_quote = source_wallet
-            .melt_quote(final_mint_quote.request.clone(), None)
+            .melt_quote(
+                PaymentMethod::BOLT11,
+                final_mint_quote.request.clone(),
+                None,
+                None,
+            )
             .await?;
 
         Ok((final_mint_quote, final_melt_quote))
+    }
+
+    /// Get all pending send operations across all mints
+    ///
+    /// Returns a list of (MintUrl, Uuid) tuples for all pending sends.
+    #[instrument(skip(self))]
+    pub async fn get_pending_sends(&self) -> Result<Vec<(MintUrl, Uuid)>, Error> {
+        let mut pending_sends = Vec::new();
+
+        for (mint_url, wallet) in self.wallets.read().await.iter() {
+            let wallet_pending = wallet.get_pending_sends().await?;
+            for id in wallet_pending {
+                pending_sends.push((mint_url.clone(), id));
+            }
+        }
+
+        Ok(pending_sends)
+    }
+
+    /// Revoke a pending send operation for a specific mint
+    ///
+    /// Attempts to reclaim the funds by swapping the proofs back to the wallet.
+    /// If successful, the saga is deleted.
+    #[instrument(skip(self))]
+    pub async fn revoke_send(
+        &self,
+        mint_url: MintUrl,
+        operation_id: Uuid,
+    ) -> Result<Amount, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.revoke_send(operation_id).await
+    }
+
+    /// Check status of a pending send operation for a specific mint
+    ///
+    /// Checks if the token has been claimed by the recipient.
+    /// If claimed, the saga is finalized (deleted).
+    /// Returns true if claimed, false if still pending.
+    #[instrument(skip(self))]
+    pub async fn check_send_status(
+        &self,
+        mint_url: MintUrl,
+        operation_id: Uuid,
+    ) -> Result<bool, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.check_send_status(operation_id).await
     }
 
     /// Execute the actual transfer using the prepared quotes
@@ -1046,7 +1448,7 @@ impl MultiMintWallet {
         target_wallet: &Wallet,
         final_mint_quote: &MintQuote,
         final_melt_quote: &crate::wallet::types::MeltQuote,
-    ) -> Result<(Melted, Amount), Error> {
+    ) -> Result<(FinalizedMelt, Amount), Error> {
         // Step 1: Subscribe to mint quote updates before melting
         let mut subscription = target_wallet
             .subscribe(super::WalletSubscription::Bolt11MintQuoteState(vec![
@@ -1055,7 +1457,10 @@ impl MultiMintWallet {
             .await?;
 
         // Step 2: Melt from source wallet using the final melt quote
-        let melted = source_wallet.melt(&final_melt_quote.id).await?;
+        let prepared = source_wallet
+            .prepare_melt(&final_melt_quote.id, std::collections::HashMap::new())
+            .await?;
+        let melted = prepared.confirm().await?;
 
         // Step 3: Wait for payment confirmation via subscription
         tracing::debug!(
@@ -1189,24 +1594,31 @@ impl MultiMintWallet {
     }
 
     /// Mint quote for wallet
-    #[instrument(skip(self))]
-    pub async fn mint_quote(
+    #[instrument(skip(self, method))]
+    pub async fn mint_quote<T>(
         &self,
         mint_url: &MintUrl,
-        amount: Amount,
+        method: T,
+        amount: Option<Amount>,
         description: Option<String>,
-    ) -> Result<MintQuote, Error> {
+        extra: Option<String>,
+    ) -> Result<MintQuote, Error>
+    where
+        T: Into<PaymentMethod>,
+    {
         let wallets = self.wallets.read().await;
         let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet.mint_quote(amount, description).await
+        wallet.mint_quote(method, amount, description, extra).await
     }
 
-    /// Check a specific mint quote status
+    /// Refresh a specific mint quote status from the mint.
+    /// Updates local store with current state from mint.
+    /// Does NOT mint tokens - use wallet.mint() to mint a specific quote.
     #[instrument(skip(self))]
-    pub async fn check_mint_quote(
+    pub async fn refresh_mint_quote(
         &self,
         mint_url: &MintUrl,
         quote_id: &str,
@@ -1216,8 +1628,8 @@ impl MultiMintWallet {
             mint_url: mint_url.to_string(),
         })?;
 
-        // Check the quote state from the mint
-        wallet.mint_quote_state(quote_id).await?;
+        // Refresh the quote state from the mint
+        wallet.refresh_mint_quote_status(quote_id).await?;
 
         // Get the updated quote from local storage
         let quote = wallet
@@ -1274,10 +1686,38 @@ impl MultiMintWallet {
             .await
     }
 
-    /// Check all mint quotes
-    /// If quote is paid, wallet will mint
+    /// Refresh all unissued mint quote states
+    /// Does NOT mint - use mint_unissued_quotes() for that
     #[instrument(skip(self))]
-    pub async fn check_all_mint_quotes(&self, mint_url: Option<MintUrl>) -> Result<Amount, Error> {
+    pub async fn refresh_all_mint_quotes(
+        &self,
+        mint_url: Option<MintUrl>,
+    ) -> Result<Vec<MintQuote>, Error> {
+        let mut all_quotes = Vec::new();
+        match mint_url {
+            Some(mint_url) => {
+                let wallets = self.wallets.read().await;
+                let wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
+                    mint_url: mint_url.to_string(),
+                })?;
+
+                all_quotes = wallet.refresh_all_mint_quotes().await?;
+            }
+            None => {
+                for (_, wallet) in self.wallets.read().await.iter() {
+                    let quotes = wallet.refresh_all_mint_quotes().await?;
+                    all_quotes.extend(quotes);
+                }
+            }
+        }
+
+        Ok(all_quotes)
+    }
+
+    /// Refresh states and mint all unissued quotes
+    /// Returns total amount minted across all wallets
+    #[instrument(skip(self))]
+    pub async fn mint_unissued_quotes(&self, mint_url: Option<MintUrl>) -> Result<Amount, Error> {
         let mut total_amount = Amount::ZERO;
         match mint_url {
             Some(mint_url) => {
@@ -1286,11 +1726,11 @@ impl MultiMintWallet {
                     mint_url: mint_url.to_string(),
                 })?;
 
-                total_amount = wallet.check_all_mint_quotes().await?;
+                total_amount = wallet.mint_unissued_quotes().await?;
             }
             None => {
                 for (_, wallet) in self.wallets.read().await.iter() {
-                    let amount = wallet.check_all_mint_quotes().await?;
+                    let amount = wallet.mint_unissued_quotes().await?;
                     total_amount += amount;
                 }
             }
@@ -1583,7 +2023,12 @@ impl MultiMintWallet {
         let mut amount_received = Amount::ZERO;
 
         match wallet
-            .receive_proofs(proofs, opts.receive_options, token_data.memo().clone())
+            .receive_proofs(
+                proofs,
+                opts.receive_options,
+                token_data.memo().clone(),
+                Some(encoded_token.to_string()),
+            )
             .await
         {
             Ok(amount) => {
@@ -1690,34 +2135,50 @@ impl MultiMintWallet {
     }
 
     /// Create a melt quote for a specific mint
-    #[instrument(skip(self, bolt11))]
-    pub async fn melt_quote(
+    #[instrument(skip(self, method, request))]
+    pub async fn melt_quote<T, R>(
         &self,
         mint_url: &MintUrl,
-        bolt11: String,
+        method: T,
+        request: R,
         options: Option<MeltOptions>,
-    ) -> Result<crate::wallet::types::MeltQuote, Error> {
+        extra: Option<String>,
+    ) -> Result<MeltQuote, Error>
+    where
+        T: Into<PaymentMethod> + std::fmt::Debug,
+        R: std::fmt::Display,
+    {
         let wallets = self.wallets.read().await;
         let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet.melt_quote(bolt11, options).await
+        wallet.melt_quote(method, request, options, extra).await
     }
 
     /// Melt (pay invoice) from a specific mint using a quote ID
+    ///
+    /// For more control over fees, use `prepare_melt()` instead.
     #[instrument(skip(self))]
     pub async fn melt_with_mint(
         &self,
         mint_url: &MintUrl,
         quote_id: &str,
-    ) -> Result<Melted, Error> {
-        let wallets = self.wallets.read().await;
-        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
-            mint_url: mint_url.to_string(),
-        })?;
+    ) -> Result<FinalizedMelt, Error> {
+        let wallet = {
+            let wallets = self.wallets.read().await;
+            wallets
+                .get(mint_url)
+                .ok_or(Error::UnknownMint {
+                    mint_url: mint_url.to_string(),
+                })?
+                .clone()
+        };
 
-        wallet.melt(quote_id).await
+        let prepared = wallet
+            .prepare_melt(quote_id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
     }
 
     /// Melt specific proofs from a specific mint using a quote ID
@@ -1734,20 +2195,28 @@ impl MultiMintWallet {
     ///
     /// # Returns
     ///
-    /// A `Melted` result containing the payment details and any change proofs
+    /// A `FinalizedMelt` result containing the payment details and any change proofs
     #[instrument(skip(self, proofs))]
     pub async fn melt_proofs(
         &self,
         mint_url: &MintUrl,
         quote_id: &str,
         proofs: Proofs,
-    ) -> Result<Melted, Error> {
-        let wallets = self.wallets.read().await;
-        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
-            mint_url: mint_url.to_string(),
-        })?;
+    ) -> Result<FinalizedMelt, Error> {
+        let wallet = {
+            let wallets = self.wallets.read().await;
+            wallets
+                .get(mint_url)
+                .ok_or(Error::UnknownMint {
+                    mint_url: mint_url.to_string(),
+                })?
+                .clone()
+        };
 
-        wallet.melt_proofs(quote_id, proofs).await
+        let prepared = wallet
+            .prepare_melt_proofs(quote_id, proofs, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
     }
 
     /// Check a specific melt quote status
@@ -1763,7 +2232,7 @@ impl MultiMintWallet {
         })?;
 
         // Check the quote state from the mint
-        wallet.melt_quote_status(quote_id).await?;
+        wallet.check_melt_quote_status(quote_id).await?;
 
         // Get the updated quote from local storage
         let quote = wallet
@@ -1808,7 +2277,9 @@ impl MultiMintWallet {
             let options = Some(MeltOptions::new_mpp(amount_msat));
 
             let task = spawn(async move {
-                let quote = wallet.melt_quote(bolt11_clone, options).await;
+                let quote = wallet
+                    .melt_quote(PaymentMethod::BOLT11, bolt11_clone, options, None)
+                    .await;
                 (mint_url_clone, quote)
             });
 
@@ -1840,7 +2311,7 @@ impl MultiMintWallet {
     pub async fn mpp_melt(
         &self,
         quotes: Vec<(MintUrl, String)>, // (mint_url, quote_id)
-    ) -> Result<Vec<(MintUrl, Melted)>, Error> {
+    ) -> Result<Vec<(MintUrl, FinalizedMelt)>, Error> {
         let mut results = Vec::new();
         let mut tasks = Vec::new();
 
@@ -1857,8 +2328,14 @@ impl MultiMintWallet {
             let mint_url_clone = mint_url.clone();
 
             let task = spawn(async move {
-                let melted = wallet.melt(&quote_id).await;
-                (mint_url_clone, melted)
+                let result = async {
+                    let prepared = wallet
+                        .prepare_melt(&quote_id, std::collections::HashMap::new())
+                        .await?;
+                    prepared.confirm().await
+                }
+                .await;
+                (mint_url_clone, result)
             });
 
             tasks.push(task);
@@ -1884,6 +2361,56 @@ impl MultiMintWallet {
         Ok(results)
     }
 
+    /// Prepare a melt operation from a specific mint
+    ///
+    /// Returns a [`MultiMintPreparedMelt`] that holds an `Arc<Wallet>` and can be
+    /// confirmed later by calling `.confirm()`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let quote = wallet.melt_quote(&mint_url, "lnbc...", None).await?;
+    /// let prepared = wallet.prepare_melt(&mint_url, &quote.id, HashMap::new()).await?;
+    /// // Inspect the prepared melt...
+    /// println!("Fee: {}", prepared.total_fee());
+    /// // Then confirm or cancel
+    /// let confirmed = prepared.confirm().await?;
+    /// ```
+    #[instrument(skip(self, metadata))]
+    pub async fn prepare_melt(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+        metadata: std::collections::HashMap<String, String>,
+    ) -> Result<MultiMintPreparedMelt, Error> {
+        // Clone the Arc<Wallet> and release the lock immediately
+        let wallet = {
+            let wallets = self.wallets.read().await;
+            wallets
+                .get(mint_url)
+                .ok_or(Error::UnknownMint {
+                    mint_url: mint_url.to_string(),
+                })?
+                .clone()
+        };
+
+        // Call prepare_melt on the wallet (lock is released)
+        let prepared = wallet.prepare_melt(quote_id, metadata.clone()).await?;
+
+        // Extract data into MultiMintPreparedMelt
+        // Clone the Arc again since `prepared` borrows from `wallet`
+        Ok(MultiMintPreparedMelt {
+            wallet: Arc::clone(&wallet),
+            operation_id: prepared.operation_id(),
+            quote: prepared.quote().clone(),
+            proofs: prepared.proofs().clone(),
+            proofs_to_swap: prepared.proofs_to_swap().clone(),
+            swap_fee: prepared.swap_fee(),
+            input_fee: prepared.input_fee(),
+            input_fee_without_swap: prepared.input_fee_without_swap(),
+            metadata,
+        })
+    }
+
     /// Melt (pay invoice) with automatic wallet selection (deprecated, use specific mint functions for better control)
     ///
     /// Automatically selects the best wallet to pay from based on:
@@ -1900,7 +2427,7 @@ impl MultiMintWallet {
     /// let invoice = "lnbc100n1p...";
     ///
     /// let result = wallet.melt(invoice, None, None).await?;
-    /// println!("Paid {} sats, fee was {} sats", result.amount, result.fee_paid);
+    /// println!("Paid {} sats, fee was {} sats", result.amount(), result.fee_paid());
     /// # Ok(())
     /// # }
     /// ```
@@ -1910,7 +2437,7 @@ impl MultiMintWallet {
         bolt11: &str,
         options: Option<MeltOptions>,
         max_fee: Option<Amount>,
-    ) -> Result<Melted, Error> {
+    ) -> Result<FinalizedMelt, Error> {
         // Parse the invoice to get the amount
         let invoice = bolt11
             .parse::<crate::Bolt11Invoice>()
@@ -1940,7 +2467,10 @@ impl MultiMintWallet {
         let mut best_wallet = None;
 
         for (_, wallet) in eligible_wallets.iter() {
-            match wallet.melt_quote(bolt11.to_string(), options).await {
+            match wallet
+                .melt_quote(PaymentMethod::BOLT11, bolt11.to_string(), options, None)
+                .await
+            {
                 Ok(quote) => {
                     if let Some(max_fee) = max_fee {
                         if quote.fee_reserve > max_fee {
@@ -1963,7 +2493,10 @@ impl MultiMintWallet {
         }
 
         if let (Some(quote), Some(wallet)) = (best_quote, best_wallet) {
-            return wallet.melt(&quote.id).await;
+            let prepared = wallet
+                .prepare_melt(&quote.id, std::collections::HashMap::new())
+                .await?;
+            return prepared.confirm().await;
         }
 
         Err(Error::InsufficientFunds)
@@ -2040,7 +2573,6 @@ impl MultiMintWallet {
     /// Mint blind auth tokens for a specific mint
     ///
     /// This is a convenience method that calls the underlying wallet's mint_blind_auth.
-    #[cfg(feature = "auth")]
     #[instrument(skip_all)]
     pub async fn mint_blind_auth(
         &self,
@@ -2058,7 +2590,6 @@ impl MultiMintWallet {
     /// Get unspent auth proofs for a specific mint
     ///
     /// This is a convenience method that calls the underlying wallet's get_unspent_auth_proofs.
-    #[cfg(feature = "auth")]
     #[instrument(skip_all)]
     pub async fn get_unspent_auth_proofs(
         &self,
@@ -2075,7 +2606,6 @@ impl MultiMintWallet {
     /// Set Clear Auth Token (CAT) for authentication at a specific mint
     ///
     /// This is a convenience method that calls the underlying wallet's set_cat.
-    #[cfg(feature = "auth")]
     #[instrument(skip_all)]
     pub async fn set_cat(&self, mint_url: &MintUrl, cat: String) -> Result<(), Error> {
         let wallets = self.wallets.read().await;
@@ -2089,7 +2619,6 @@ impl MultiMintWallet {
     /// Set refresh token for authentication at a specific mint
     ///
     /// This is a convenience method that calls the underlying wallet's set_refresh_token.
-    #[cfg(feature = "auth")]
     #[instrument(skip_all)]
     pub async fn set_refresh_token(
         &self,
@@ -2107,7 +2636,6 @@ impl MultiMintWallet {
     /// Refresh CAT token for a specific mint
     ///
     /// This is a convenience method that calls the underlying wallet's refresh_access_token.
-    #[cfg(feature = "auth")]
     #[instrument(skip(self))]
     pub async fn refresh_access_token(&self, mint_url: &MintUrl) -> Result<(), Error> {
         let wallets = self.wallets.read().await;
@@ -2387,7 +2915,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_prepare_send_insufficient_funds() {
+    async fn test_send_insufficient_funds() {
         use std::str::FromStr;
 
         let multi_wallet = create_test_multi_wallet().await;
@@ -2395,7 +2923,7 @@ mod tests {
         let options = MultiMintSendOptions::new();
 
         let result = multi_wallet
-            .prepare_send(mint_url, Amount::from(1000), options)
+            .send(mint_url, Amount::from(1000), options)
             .await;
 
         assert!(result.is_err());

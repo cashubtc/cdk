@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use bip39::Mnemonic;
+use cashu::PaymentMethod;
 use cdk::amount::SplitTarget;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState};
 use cdk::wallet::Wallet;
@@ -36,7 +37,10 @@ async fn test_async_melt_returns_pending() {
     .expect("failed to create new wallet");
 
     // Step 1: Mint some tokens
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
@@ -56,19 +60,25 @@ async fn test_async_melt_returns_pending() {
         check_err: false,
     };
 
-    let invoice = create_fake_invoice(
+    let invoice: cashu::Bolt11Invoice = create_fake_invoice(
         50_000, // 50 sats in millisats
         serde_json::to_string(&fake_invoice_description).unwrap(),
     );
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     // Step 3: Call melt (wallet handles proof selection internally)
     let start_time = std::time::Instant::now();
 
     // This should complete and return the final state
-    // TODO: Add Prefer: respond-async header support to wallet.melt()
-    let melt_response = wallet.melt(&melt_quote.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let confirmed = prepared.confirm().await.unwrap();
 
     let elapsed = start_time.elapsed();
 
@@ -77,7 +87,7 @@ async fn test_async_melt_returns_pending() {
 
     // Step 4: Verify the melt completed successfully
     assert_eq!(
-        melt_response.state,
+        confirmed.state(),
         MeltQuoteState::Paid,
         "Melt should complete with PAID state"
     );
@@ -99,7 +109,10 @@ async fn test_sync_melt_completes_fully() {
     .expect("failed to create new wallet");
 
     // Step 1: Mint some tokens
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
@@ -124,20 +137,30 @@ async fn test_sync_melt_completes_fully() {
         serde_json::to_string(&fake_invoice_description).unwrap(),
     );
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
-    // Step 3: Call synchronous melt
-    let melt_response = wallet.melt(&melt_quote.id).await.unwrap();
+    // Step 3: Call melt with prepare/confirm pattern
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let confirmed = prepared.confirm().await.unwrap();
 
     // Step 5: Verify response shows payment completed
     assert_eq!(
-        melt_response.state,
+        confirmed.state(),
         MeltQuoteState::Paid,
-        "Synchronous melt should return PAID state"
+        "Melt should return PAID state"
     );
 
     // Step 6: Verify the quote is PAID in the mint
-    let quote_state = wallet.melt_quote_status(&melt_quote.id).await.unwrap();
+    let quote_state = wallet
+        .check_melt_quote_status(&melt_quote.id)
+        .await
+        .unwrap();
     assert_eq!(
         quote_state.state,
         MeltQuoteState::Paid,

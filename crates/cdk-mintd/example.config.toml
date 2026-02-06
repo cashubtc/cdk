@@ -7,6 +7,12 @@ mnemonic = ""
 # input_fee_ppk = 0
 # enable_swagger_ui = false
 
+# Set keyset version preference.
+# true = Force upgrade to V2 (Version01).
+# false = Force downgrade to V1 (Version00).
+# If unset (default), existing keysets are preserved, but new ones use V2.
+# use_keyset_v2 = true
+
 [info.quote_ttl]
 # Prefer explicit fields over inline tables for readability and ease of overrides
 mint_ttl = 600
@@ -196,3 +202,10 @@ max_delay_time = 3
 # swap = "blind"
 # restore = "blind"
 # check_proof_state = "none"
+
+# Transaction limits for DoS protection (optional, defaults shown)
+[limits]
+# Maximum number of inputs allowed per transaction (swap/melt)
+max_inputs = 1000
+# Maximum number of outputs allowed per transaction (mint/swap/melt)
+max_outputs = 1000

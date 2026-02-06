@@ -25,7 +25,7 @@ pub use mint::{
     SignaturesDatabase as MintSignaturesDatabase,
     SignaturesTransaction as MintSignatureTransaction, Transaction as MintTransaction,
 };
-#[cfg(all(feature = "mint", feature = "auth"))]
+#[cfg(feature = "mint")]
 pub use mint::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;
@@ -140,7 +140,6 @@ pub enum Error {
     NUT02(#[from] crate::nuts::nut02::Error),
     /// NUT22 Error
     #[error(transparent)]
-    #[cfg(feature = "auth")]
     NUT22(#[from] crate::nuts::nut22::Error),
     /// NUT04 Error
     #[error(transparent)]
@@ -164,6 +163,12 @@ pub enum Error {
     /// Proof not found
     #[error("Proof not found")]
     ProofNotFound,
+    /// Proof not in unspent state (may be reserved, pending, or spent)
+    #[error("Proof not in unspent state")]
+    ProofNotUnspent,
+    /// Quote is already in use by another operation
+    #[error("Quote already in use by another operation")]
+    QuoteAlreadyInUse,
     /// Invalid keyset
     #[error("Unknown or invalid keyset")]
     InvalidKeysetId,
@@ -207,6 +212,10 @@ pub enum Error {
     /// KV Store invalid key or namespace
     #[error("Invalid KV store key or namespace: {0}")]
     KVStoreInvalidKey(String),
+
+    /// Concurrent update detected
+    #[error("Concurrent update detected")]
+    ConcurrentUpdate,
 }
 
 #[cfg(feature = "mint")]

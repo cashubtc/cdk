@@ -2,7 +2,6 @@
 //! Cdk mintd lib
 
 // std
-#[cfg(feature = "auth")]
 use std::collections::HashMap;
 use std::env::{self};
 use std::net::SocketAddr;
@@ -34,9 +33,9 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
     feature = "ldk-node"
 ))]
 use cdk::nuts::CurrencyUnit;
-#[cfg(feature = "auth")]
-use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
-use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
+use cdk::nuts::{
+    AuthRequired, ContactInfo, Method, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
+};
 use cdk_axum::cache::HttpCache;
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
@@ -44,18 +43,16 @@ use cdk_common::database::DynMintDatabase;
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
-#[cfg(all(feature = "auth", feature = "postgres"))]
+#[cfg(feature = "postgres")]
 use cdk_postgres::MintPgAuthDatabase;
 #[cfg(feature = "postgres")]
 use cdk_postgres::MintPgDatabase;
-#[cfg(all(feature = "auth", feature = "sqlite"))]
+#[cfg(feature = "sqlite")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
-#[cfg(feature = "auth")]
-use config::AuthType;
-use config::{DatabaseEngine, LnBackend};
+use config::{AuthType, DatabaseEngine, LnBackend};
 use env_vars::ENV_WORK_DIR;
 use setup::LnBackendSetup;
 use tower::ServiceBuilder;
@@ -368,6 +365,10 @@ async fn configure_mint_builder(
     // Configure caching with payment methods
     let mint_builder = configure_cache(settings, mint_builder, &payment_methods);
 
+    // Configure transaction limits
+    let mint_builder =
+        mint_builder.with_limits(settings.limits.max_inputs, settings.limits.max_outputs);
+
     Ok(mint_builder)
 }
 
@@ -437,6 +438,8 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
             builder = builder.with_tos_url(tos_url.to_string());
         }
     }
+
+    builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
 
     builder
 }
@@ -683,7 +686,6 @@ fn configure_cache(
     mint_builder.with_cache(Some(cache.ttl.as_secs()), cached_endpoints)
 }
 
-#[cfg(feature = "auth")]
 async fn setup_authentication(
     settings: &config::Settings,
     _work_dir: &Path,
@@ -888,7 +890,7 @@ async fn start_services_with_shutdown(
     mint_builder_info: cdk::nuts::MintInfo,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     routers: Vec<Router>,
-    #[cfg(feature = "auth")] auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
+    auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
@@ -1001,7 +1003,6 @@ async fn start_services_with_shutdown(
     tracing::info!("Payment methods: {:?}", custom_methods);
 
     // Configure auth for custom payment methods if auth is enabled
-    #[cfg(feature = "auth")]
     if let (Some(ref auth_settings), Some(auth_db)) = (&settings.auth, &auth_localstore) {
         if auth_settings.auth_enabled {
             use std::collections::HashMap;
@@ -1372,7 +1373,6 @@ pub async fn run_mintd_with_shutdown(
 
     let mint_builder =
         configure_mint_builder(settings, maybe_mint_builder, runtime, work_dir, Some(kv)).await?;
-    #[cfg(feature = "auth")]
     let (mint_builder, auth_localstore) =
         setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 
@@ -1391,7 +1391,6 @@ pub async fn run_mintd_with_shutdown(
         config_mint_info,
         shutdown_signal,
         routers,
-        #[cfg(feature = "auth")]
         auth_localstore,
     )
     .await

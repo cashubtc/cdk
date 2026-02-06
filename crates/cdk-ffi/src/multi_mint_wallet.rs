@@ -292,38 +292,89 @@ impl MultiMintWallet {
         Ok(restored.into())
     }
 
-    /// Prepare a send operation from a specific mint
-    pub async fn prepare_send(
+    /// Get all pending send operations across all mints
+    pub async fn get_pending_sends(&self) -> Result<Vec<PendingSend>, FfiError> {
+        let sends = self.inner.get_pending_sends().await?;
+        Ok(sends
+            .into_iter()
+            .map(|(mint_url, id)| PendingSend {
+                mint_url: mint_url.into(),
+                operation_id: id.to_string(),
+            })
+            .collect())
+    }
+
+    /// Revoke a pending send operation for a specific mint
+    pub async fn revoke_send(
+        &self,
+        mint_url: MintUrl,
+        operation_id: String,
+    ) -> Result<Amount, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let uuid = uuid::Uuid::parse_str(&operation_id)
+            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
+        let amount = self.inner.revoke_send(cdk_mint_url, uuid).await?;
+        Ok(amount.into())
+    }
+
+    /// Check status of a pending send operation for a specific mint
+    pub async fn check_send_status(
+        &self,
+        mint_url: MintUrl,
+        operation_id: String,
+    ) -> Result<bool, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let uuid = uuid::Uuid::parse_str(&operation_id)
+            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
+        let claimed = self.inner.check_send_status(cdk_mint_url, uuid).await?;
+        Ok(claimed)
+    }
+
+    /// Send tokens from a specific mint
+    ///
+    /// This method prepares and confirms the send in one step.
+    /// For more control over the send process, use the single-mint Wallet.
+    pub async fn send(
         &self,
         mint_url: MintUrl,
         amount: Amount,
         options: MultiMintSendOptions,
-    ) -> Result<Arc<PreparedSend>, FfiError> {
+    ) -> Result<Token, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
-        let prepared = self
+        let token = self
             .inner
-            .prepare_send(cdk_mint_url, amount.into(), options.into())
+            .send(cdk_mint_url, amount.into(), options.into())
             .await?;
-        Ok(Arc::new(prepared.into()))
+        Ok(token.into())
     }
 
     /// Get a mint quote from a specific mint
     pub async fn mint_quote(
         &self,
         mint_url: MintUrl,
-        amount: Amount,
+        payment_method: PaymentMethod,
+        amount: Option<Amount>,
         description: Option<String>,
+        extra: Option<String>,
     ) -> Result<MintQuote, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
         let quote = self
             .inner
-            .mint_quote(&cdk_mint_url, amount.into(), description)
+            .mint_quote(
+                &cdk_mint_url,
+                payment_method,
+                amount.map(Into::into),
+                description,
+                extra,
+            )
             .await?;
         Ok(quote.into())
     }
 
-    /// Check a specific mint quote status
-    pub async fn check_mint_quote(
+    /// Refresh a specific mint quote status from the mint.
+    /// Updates local store with current state from mint.
+    /// Does NOT mint tokens - use mint() to mint a specific quote.
+    pub async fn refresh_mint_quote(
         &self,
         mint_url: MintUrl,
         quote_id: String,
@@ -331,7 +382,7 @@ impl MultiMintWallet {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
         let quote = self
             .inner
-            .check_mint_quote(&cdk_mint_url, &quote_id)
+            .refresh_mint_quote(&cdk_mint_url, &quote_id)
             .await?;
         Ok(quote.into())
     }
@@ -417,14 +468,16 @@ impl MultiMintWallet {
     pub async fn melt_quote(
         &self,
         mint_url: MintUrl,
+        payment_method: PaymentMethod,
         request: String,
         options: Option<MeltOptions>,
+        extra: Option<String>,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
         let cdk_options = options.map(Into::into);
         let quote = self
             .inner
-            .melt_quote(&cdk_mint_url, request, cdk_options)
+            .melt_quote(&cdk_mint_url, payment_method, request, cdk_options, extra)
             .await?;
         Ok(quote.into())
     }
@@ -516,10 +569,10 @@ impl MultiMintWallet {
         &self,
         mint_url: MintUrl,
         quote_id: String,
-    ) -> Result<Melted, FfiError> {
+    ) -> Result<FinalizedMelt, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
-        let melted = self.inner.melt_with_mint(&cdk_mint_url, &quote_id).await?;
-        Ok(melted.into())
+        let finalized = self.inner.melt_with_mint(&cdk_mint_url, &quote_id).await?;
+        Ok(finalized.into())
     }
 
     /// Melt specific proofs from a specific mint
@@ -536,23 +589,23 @@ impl MultiMintWallet {
     ///
     /// # Returns
     ///
-    /// A `Melted` result containing the payment details and any change proofs
+    /// A `FinalizedMelt` result containing the payment details and any change proofs
     pub async fn melt_proofs(
         &self,
         mint_url: MintUrl,
         quote_id: String,
         proofs: Proofs,
-    ) -> Result<Melted, FfiError> {
+    ) -> Result<FinalizedMelt, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
         let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
             proofs.into_iter().map(|p| p.try_into()).collect();
         let cdk_proofs = cdk_proofs?;
 
-        let melted = self
+        let finalized = self
             .inner
             .melt_proofs(&cdk_mint_url, &quote_id, cdk_proofs)
             .await?;
-        Ok(melted.into())
+        Ok(finalized.into())
     }
 
     /// Check melt quote status
@@ -562,11 +615,11 @@ impl MultiMintWallet {
         quote_id: String,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
-        let melted = self
+        let quote = self
             .inner
             .check_melt_quote(&cdk_mint_url, &quote_id)
             .await?;
-        Ok(melted.into())
+        Ok(quote.into())
     }
 
     /// Melt tokens (pay a bolt11 invoice)
@@ -575,11 +628,11 @@ impl MultiMintWallet {
         bolt11: String,
         options: Option<MeltOptions>,
         max_fee: Option<Amount>,
-    ) -> Result<Melted, FfiError> {
+    ) -> Result<FinalizedMelt, FfiError> {
         let cdk_options = options.map(Into::into);
         let cdk_max_fee = max_fee.map(Into::into);
-        let melted = self.inner.melt(&bolt11, cdk_options, cdk_max_fee).await?;
-        Ok(melted.into())
+        let finalized = self.inner.melt(&bolt11, cdk_options, cdk_max_fee).await?;
+        Ok(finalized.into())
     }
 
     /// Transfer funds between mints
@@ -645,13 +698,25 @@ impl MultiMintWallet {
         Ok(proofs.into_iter().map(Into::into).collect())
     }
 
-    /// Check all mint quotes and mint if paid
-    pub async fn check_all_mint_quotes(
+    /// Refresh all unissued mint quote states
+    /// Does NOT mint - use mint_unissued_quotes() for that
+    pub async fn refresh_all_mint_quotes(
+        &self,
+        mint_url: Option<MintUrl>,
+    ) -> Result<Vec<MintQuote>, FfiError> {
+        let cdk_mint_url = mint_url.map(|url| url.try_into()).transpose()?;
+        let quotes = self.inner.refresh_all_mint_quotes(cdk_mint_url).await?;
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
+    /// Refresh states and mint all unissued quotes
+    /// Returns total amount minted across all wallets
+    pub async fn mint_unissued_quotes(
         &self,
         mint_url: Option<MintUrl>,
     ) -> Result<Amount, FfiError> {
         let cdk_mint_url = mint_url.map(|url| url.try_into()).transpose()?;
-        let amount = self.inner.check_all_mint_quotes(cdk_mint_url).await?;
+        let amount = self.inner.mint_unissued_quotes(cdk_mint_url).await?;
         Ok(amount.into())
     }
 
@@ -672,7 +737,7 @@ impl MultiMintWallet {
         let wallets = self.inner.get_wallets().await;
         wallets
             .into_iter()
-            .map(|w| Arc::new(crate::wallet::Wallet::from_inner(Arc::new(w))))
+            .map(|w| Arc::new(crate::wallet::Wallet::from_inner(w)))
             .collect()
     }
 
@@ -680,9 +745,7 @@ impl MultiMintWallet {
     pub async fn get_wallet(&self, mint_url: MintUrl) -> Option<Arc<crate::wallet::Wallet>> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into().ok()?;
         let wallet = self.inner.get_wallet(&cdk_mint_url).await?;
-        Some(Arc::new(crate::wallet::Wallet::from_inner(Arc::new(
-            wallet,
-        ))))
+        Some(Arc::new(crate::wallet::Wallet::from_inner(wallet)))
     }
 
     /// Verify token DLEQ proofs
@@ -943,6 +1006,15 @@ impl From<CdkTransferResult> for TransferResult {
             target_balance_after: result.target_balance_after.into(),
         }
     }
+}
+
+/// Represents a pending send operation
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PendingSend {
+    /// The mint URL where the send is pending
+    pub mint_url: MintUrl,
+    /// The operation ID of the pending send
+    pub operation_id: String,
 }
 
 /// Data extracted from a token including mint URL, proofs, and memo

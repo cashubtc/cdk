@@ -40,9 +40,8 @@
         stdenv = pkgs.stdenv;
         isDarwin = stdenv.isDarwin;
         libsDarwin =
-          with pkgs;
           lib.optionals isDarwin [
-            # Additional darwin specific inputs can be set here
+            # Additional drwin specific inputs can be set here
             # Note: Security and SystemConfiguration frameworks are provided by the default SDK
           ];
 
@@ -53,7 +52,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.92.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.93.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
           extensions = [
             "rustfmt"
@@ -307,21 +306,18 @@
           "cashu-no-default" = "-p cashu --no-default-features";
           "cashu-wallet" = "-p cashu --no-default-features --features wallet";
           "cashu-mint" = "-p cashu --no-default-features --features mint";
-          "cashu-auth" = "-p cashu --no-default-features --features auth";
 
           # Core crate: cdk-common
           "cdk-common" = "-p cdk-common";
           "cdk-common-no-default" = "-p cdk-common --no-default-features";
           "cdk-common-wallet" = "-p cdk-common --no-default-features --features wallet";
           "cdk-common-mint" = "-p cdk-common --no-default-features --features mint";
-          "cdk-common-auth" = "-p cdk-common --no-default-features --features auth";
 
           # Core crate: cdk
           "cdk" = "-p cdk";
           "cdk-no-default" = "-p cdk --no-default-features";
           "cdk-wallet" = "-p cdk --no-default-features --features wallet";
           "cdk-mint" = "-p cdk --no-default-features --features mint";
-          "cdk-auth" = "-p cdk --no-default-features --features auth";
 
           # SQL crates
           "cdk-sql-common" = "-p cdk-sql-common";
@@ -375,8 +371,6 @@
           "cdk-mintd-fakewallet-postgres" = "-p cdk-mintd --no-default-features --features fakewallet,postgres";
           "cdk-mintd-grpc-processor-postgres" = "-p cdk-mintd --no-default-features --features grpc-processor,postgres";
           "cdk-mintd-management-rpc-cln-postgres" = "-p cdk-mintd --no-default-features --features management-rpc,cln,postgres";
-          "cdk-mintd-auth-sqlite-fakewallet" = "-p cdk-mintd --no-default-features --features auth,sqlite,fakewallet";
-          "cdk-mintd-auth-postgres-lnd" = "-p cdk-mintd --no-default-features --features auth,postgres,lnd";
 
           # Binaries: cdk-mint-cli (binary name, package is cdk-mint-rpc)
           "cdk-mint-cli" = "-p cdk-mint-rpc";
@@ -387,10 +381,10 @@
         # ========================================
         msrvChecks = {
           # Core library with all features (except swagger which breaks MSRV)
-          "cdk-all-features" = "-p cdk --features \"mint,wallet,auth\"";
+          "cdk-all-features" = "-p cdk --features \"mint,wallet\"";
 
           # Mintd with all backends, databases, and features (no swagger)
-          "cdk-mintd-all" = "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,auth,redis,management-rpc\"";
+          "cdk-mintd-all" = "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
 
           # CLI - default features (excludes redb which breaks MSRV)
           "cdk-cli" = "-p cdk-cli";

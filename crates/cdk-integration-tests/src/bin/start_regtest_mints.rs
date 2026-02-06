@@ -275,11 +275,13 @@ fn create_ldk_settings(
             signatory_url: None,
             signatory_certs: None,
             input_fee_ppk: None,
+            use_keyset_v2: None,
             http_cache: cdk_axum::cache::Config::default(),
             enable_swagger_ui: None,
             logging: LoggingConfig::default(),
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
+        limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::LdkNode,
             invoice_description: None,

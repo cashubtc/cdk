@@ -15,13 +15,14 @@ default = ["mint", "wallet"]
 swagger = ["dep:utoipa", "cashu/swagger"]
 test = []
 bench = []
-wallet = ["cashu/wallet"]
+wallet = ["cashu/wallet", "dep:uuid"]
 mint = ["cashu/mint", "dep:uuid"]
-auth = ["cashu/auth"]
 nostr = ["wallet", "cashu/nostr"]
 prometheus = ["cdk-prometheus/default"]
+http = ["dep:cdk-http-client"]
 
 [dependencies]
+cdk-http-client = { workspace = true, optional = true }
 async-trait.workspace = true
 bitcoin.workspace = true
 cashu.workspace = true
@@ -43,7 +44,6 @@ serde_with.workspace = true
 web-time.workspace = true
 parking_lot = "0.12.5"
 paste = "1.0.15"
-
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "test-util", "sync"] }
