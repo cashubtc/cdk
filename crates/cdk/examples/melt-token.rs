@@ -8,7 +8,7 @@ use bitcoin::hex::prelude::FromHex;
 use bitcoin::secp256k1::Secp256k1;
 use cdk::error::Error;
 use cdk::nuts::{CurrencyUnit, PaymentMethod, SecretKey};
-use cdk::wallet::{MeltResult, Wallet};
+use cdk::wallet::{MeltOutcome, Wallet};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
@@ -131,11 +131,11 @@ async fn main() -> Result<(), Error> {
         prepared2.total_fee()
     );
 
-    // confirm_async waits for the mint's response, which may be quick if async is supported
-    let result = prepared2.confirm_async().await?;
+    // confirm_prefer_async waits for the mint's response, which may be quick if async is supported
+    let result = prepared2.confirm_prefer_async().await?;
 
     match result {
-        MeltResult::Paid(finalized) => {
+        MeltOutcome::Paid(finalized) => {
             println!(
                 "Async melt completed immediately: state={:?}, amount={}, fee_paid={}",
                 finalized.state(),
@@ -143,10 +143,11 @@ async fn main() -> Result<(), Error> {
                 finalized.fee_paid()
             );
         }
-        MeltResult::Pending(pending) => {
+        MeltOutcome::Pending(pending) => {
             println!("Melt is pending, waiting for completion via WebSocket...");
             // You can either await the pending melt directly:
-            let finalized = (*pending).await?;
+
+            let finalized = pending.await?;
             println!(
                 "Async melt completed after waiting: state={:?}, amount={}, fee_paid={}",
                 finalized.state(),

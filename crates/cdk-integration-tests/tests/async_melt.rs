@@ -15,7 +15,7 @@ use bip39::Mnemonic;
 use cashu::PaymentMethod;
 use cdk::amount::SplitTarget;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, State};
-use cdk::wallet::{MeltResult, Wallet};
+use cdk::wallet::{MeltOutcome, Wallet};
 use cdk::StreamExt;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_sqlite::wallet::memory;
@@ -296,12 +296,12 @@ async fn test_sync_melt_completes_fully() {
     }
 }
 
-/// Test: confirm_async returns Pending when mint supports async
+/// Test: confirm_prefer_async returns Pending when mint supports async
 ///
-/// This test validates that confirm_async() returns MeltResult::Pending
+/// This test validates that confirm_prefer_async() returns MeltOutcome::Pending
 /// when the mint accepts the async request and returns PENDING state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_confirm_async_returns_pending_immediately() {
+async fn test_confirm_prefer_async_returns_pending_immediately() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
@@ -345,18 +345,18 @@ async fn test_confirm_async_returns_pending_immediately() {
         .await
         .unwrap();
 
-    // Step 3: Call confirm_async
+    // Step 3: Call confirm_prefer_async
     let prepared = wallet
         .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
         .await
         .unwrap();
 
-    let result = prepared.confirm_async().await.unwrap();
+    let result = prepared.confirm_prefer_async().await.unwrap();
 
     // Step 4: Verify we got Pending result
     assert!(
-        matches!(result, MeltResult::Pending(_)),
-        "confirm_async should return MeltResult::Pending when mint supports async"
+        matches!(result, MeltOutcome::Pending(_)),
+        "confirm_prefer_async should return MeltOutcome::Pending when mint supports async"
     );
 
     // Step 5: Verify proofs are in pending state
@@ -370,16 +370,16 @@ async fn test_confirm_async_returns_pending_immediately() {
     );
 
     // Note: Fake wallet may complete immediately even with Pending state configured.
-    // The key assertion is that confirm_async returns MeltResult::Pending,
+    // The key assertion is that confirm_prefer_async returns MeltOutcome::Pending,
     // which proves the API is working correctly.
 }
 
-/// Test: Pending melt from confirm_async can be awaited
+/// Test: Pending melt from confirm_prefer_async can be awaited
 ///
-/// This test validates that when confirm_async() returns MeltResult::Pending,
+/// This test validates that when confirm_prefer_async() returns MeltOutcome::Pending,
 /// the pending melt can be awaited to completion.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_confirm_async_pending_can_be_awaited() {
+async fn test_confirm_prefer_async_pending_can_be_awaited() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
@@ -425,7 +425,7 @@ async fn test_confirm_async_pending_can_be_awaited() {
         .await
         .unwrap();
 
-    // Step 3: Call confirm_async
+    // Step 3: Call confirm_prefer_async
     let prepared = wallet
         .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
         .await
@@ -439,14 +439,14 @@ async fn test_confirm_async_pending_can_be_awaited() {
         .map(|p| p.y().expect("Invalid proof Y value").clone())
         .collect();
 
-    let result = prepared.confirm_async().await.unwrap();
+    let result = prepared.confirm_prefer_async().await.unwrap();
 
     // Step 4: If we got Pending, await it
     let finalized = match result {
-        MeltResult::Paid(_melt) => panic!("We expect it to be pending"),
-        MeltResult::Pending(pending) => {
+        MeltOutcome::Paid(_melt) => panic!("We expect it to be pending"),
+        MeltOutcome::Pending(pending) => {
             // This is the key test - awaiting the pending melt
-            let melt = (*pending).await.unwrap();
+            let melt = pending.await.unwrap();
             melt
         }
     };
@@ -513,10 +513,10 @@ async fn test_confirm_async_pending_can_be_awaited() {
 
 /// Test: Pending melt can be dropped and polled elsewhere
 ///
-/// This test validates that when confirm_async() returns MeltResult::Pending,
+/// This test validates that when confirm_prefer_async() returns MeltOutcome::Pending,
 /// the caller can drop the pending handle and poll the status via check_melt_quote_status().
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_confirm_async_pending_can_be_dropped_and_polled() {
+async fn test_confirm_prefer_async_pending_can_be_dropped_and_polled() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
@@ -565,7 +565,7 @@ async fn test_confirm_async_pending_can_be_dropped_and_polled() {
 
     let quote_id = melt_quote.id.clone();
 
-    // Step 3: Call confirm_async
+    // Step 3: Call confirm_prefer_async
     let prepared = wallet
         .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
         .await
@@ -579,14 +579,14 @@ async fn test_confirm_async_pending_can_be_dropped_and_polled() {
         .map(|p| p.y().expect("Invalid proof Y value").clone())
         .collect();
 
-    let result = prepared.confirm_async().await.unwrap();
+    let result = prepared.confirm_prefer_async().await.unwrap();
 
     // Step 4: Drop the pending handle (simulating caller not awaiting)
     match result {
-        MeltResult::Paid(_) => {
+        MeltOutcome::Paid(_) => {
             panic!("We expect it to be pending");
         }
-        MeltResult::Pending(_) => {
+        MeltOutcome::Pending(_) => {
             // Drop the pending handle - don't await
         }
     }
@@ -668,12 +668,12 @@ async fn test_confirm_async_pending_can_be_dropped_and_polled() {
     }
 }
 
-/// Test: Compare confirm() vs confirm_async() behavior
+/// Test: Compare confirm() vs confirm_prefer_async() behavior
 ///
 /// This test validates the difference between blocking confirm() and
-/// non-blocking confirm_async() methods.
+/// non-blocking confirm_prefer_async() methods.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_confirm_vs_confirm_async_behavior() {
+async fn test_confirm_vs_confirm_prefer_async_behavior() {
     // Create two wallets for the comparison
     let wallet_a = Wallet::new(
         MINT_URL,
@@ -777,7 +777,7 @@ async fn test_confirm_vs_confirm_async_behavior() {
 
     let finalized_a = prepared_a.confirm().await.unwrap();
 
-    // Step 4: Wallet B uses confirm_async() - returns immediately
+    // Step 4: Wallet B uses confirm_prefer_async() - returns immediately
     let prepared_b = wallet_b
         .prepare_melt(&melt_quote_b.id, std::collections::HashMap::new())
         .await
@@ -791,7 +791,7 @@ async fn test_confirm_vs_confirm_async_behavior() {
         .map(|p| p.y().expect("Invalid proof Y value").clone())
         .collect();
 
-    let result_b = prepared_b.confirm_async().await.unwrap();
+    let result_b = prepared_b.confirm_prefer_async().await.unwrap();
 
     // Step 5: Both should complete successfully
     assert_eq!(
@@ -801,14 +801,14 @@ async fn test_confirm_vs_confirm_async_behavior() {
     );
 
     let finalized_b = match result_b {
-        MeltResult::Paid(melt) => melt,
-        MeltResult::Pending(pending) => (*pending).await.unwrap(),
+        MeltOutcome::Paid(melt) => melt,
+        MeltOutcome::Pending(pending) => pending.await.unwrap(),
     };
 
     assert_eq!(
         finalized_b.state(),
         MeltQuoteState::Paid,
-        "Wallet B (confirm_async) should complete successfully"
+        "Wallet B (confirm_prefer_async) should complete successfully"
     );
 
     // Step 6: Verify both wallets have reduced balances

@@ -76,9 +76,9 @@ async fn test_fake_tokens_pending() {
         .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
         .await
         .unwrap();
-    let _res = prepared.confirm_async().await.unwrap();
+    let _res = prepared.confirm_prefer_async().await.unwrap();
 
-    // matches!(_res, MeltResult::Pending);
+    // matches!(_res, MeltOutcome::Pending);
 
     // melt failed, but there is new code to reclaim unspent proofs
     assert!(!wallet
@@ -212,7 +212,7 @@ async fn test_fake_melt_payment_fail_and_check() {
         .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
         .await
         .unwrap();
-    prepared.confirm_async().await.unwrap();
+    prepared.confirm_prefer_async().await.unwrap();
 
     assert!(!wallet
         .localstore

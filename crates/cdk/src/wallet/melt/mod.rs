@@ -64,19 +64,19 @@ pub(crate) mod saga;
 use saga::state::Prepared;
 use saga::{MeltSaga, MeltSagaResult};
 
-/// Result of a melt operation using async support (NUT-05).
+/// Outcome of a melt operation using async support (NUT-05).
 #[derive(Debug)]
-pub enum MeltResult<'a> {
+pub enum MeltOutcome<'a> {
     /// Melt completed immediately
     Paid(FinalizedMelt),
     /// Melt is pending - can be awaited or dropped to poll elsewhere
-    Pending(Box<PendingMelt<'a>>),
+    Pending(PendingMelt<'a>),
 }
 
 /// A pending melt operation that can be awaited.
 #[derive(Debug)]
 pub struct PendingMelt<'a> {
-    saga: MeltSaga<'a, saga::state::PaymentPending>,
+    saga: Box<MeltSaga<'a, saga::state::PaymentPending>>,
     metadata: HashMap<String, String>,
 }
 
@@ -382,45 +382,47 @@ impl<'a> PreparedMelt<'a> {
         self,
         options: MeltConfirmOptions,
     ) -> Result<FinalizedMelt, Error> {
-        match self.confirm_async_with_options(options).await? {
-            MeltResult::Paid(finalized) => Ok(finalized),
-            MeltResult::Pending(pending) => (*pending).await,
+        match self.confirm_prefer_async_with_options(options).await? {
+            MeltOutcome::Paid(finalized) => Ok(finalized),
+            MeltOutcome::Pending(pending) => pending.await,
         }
     }
 
     /// Confirm the prepared melt using async support (NUT-05).
     ///
-    /// Sends the melt request with a `Prefer: async` header and waits for the mint's
-    /// response. Returns `Paid` if the payment completed immediately, or `Pending` if
-    /// the mint accepted the async request and will process it in the background.
+    /// Sends the melt request with a `Prefer: respond-async` header and waits for the
+    /// mint's response. Returns `Paid` if the payment completed immediately, or
+    /// `Pending` if the mint accepted the async request and will process it in the
+    /// background.
     ///
     /// Note: This waits for the mint's initial response, which may block if the mint
     /// does not support async payments. Only returns `Pending` if the mint explicitly
     /// supports and accepts async melt requests.
-    pub async fn confirm_async(self) -> Result<MeltResult<'a>, Error> {
-        self.confirm_async_with_options(MeltConfirmOptions::default())
+    pub async fn confirm_prefer_async(self) -> Result<MeltOutcome<'a>, Error> {
+        self.confirm_prefer_async_with_options(MeltConfirmOptions::default())
             .await
     }
 
     /// Confirm with async support and custom options.
     ///
-    /// Sends the melt request with a `Prefer: async` header and waits for the mint's
-    /// response. Returns `Paid` if the payment completed immediately, or `Pending` if
-    /// the mint accepted the async request and will process it in the background.
+    /// Sends the melt request with a `Prefer: respond-async` header and waits for the
+    /// mint's response. Returns `Paid` if the payment completed immediately, or
+    /// `Pending` if the mint accepted the async request and will process it in the
+    /// background.
     ///
     /// Note: This waits for the mint's initial response, which may block if the mint
     /// does not support async payments. Only returns `Pending` if the mint explicitly
     /// supports and accepts async melt requests.
-    pub async fn confirm_async_with_options(
+    pub async fn confirm_prefer_async_with_options(
         self,
         options: MeltConfirmOptions,
-    ) -> Result<MeltResult<'a>, Error> {
+    ) -> Result<MeltOutcome<'a>, Error> {
         let melt_requested = self.saga.request_melt_with_options(options).await?;
 
         let result = melt_requested.execute_async(self.metadata.clone()).await?;
 
         match result {
-            MeltSagaResult::Finalized(finalized) => Ok(MeltResult::Paid(FinalizedMelt::new(
+            MeltSagaResult::Finalized(finalized) => Ok(MeltOutcome::Paid(FinalizedMelt::new(
                 finalized.quote_id().to_string(),
                 finalized.state(),
                 finalized.payment_proof().map(|s| s.to_string()),
@@ -429,10 +431,10 @@ impl<'a> PreparedMelt<'a> {
                 finalized.into_change(),
             ))),
             MeltSagaResult::Pending(pending_saga) => {
-                Ok(MeltResult::Pending(Box::new(PendingMelt {
-                    saga: pending_saga,
+                Ok(MeltOutcome::Pending(PendingMelt {
+                    saga: Box::new(pending_saga),
                     metadata: self.metadata,
-                })))
+                }))
             }
         }
     }
@@ -618,7 +620,7 @@ impl Wallet {
             )),
             MeltSagaResult::Pending(pending_saga) => {
                 let pending = PendingMelt {
-                    saga: pending_saga,
+                    saga: Box::new(pending_saga),
                     metadata,
                 };
                 pending.wait().await
