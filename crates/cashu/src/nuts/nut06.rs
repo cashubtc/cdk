@@ -9,9 +9,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::nut01::PublicKey;
 use super::nut17::SupportedMethods;
 use super::nut19::CachedEndpoint;
-use super::{nut04, nut05, nut15, nut19, MppMethodSettings};
-#[cfg(feature = "auth")]
-use super::{AuthRequired, BlindAuthSettings, ClearAuthSettings, ProtectedEndpoint};
+use super::{
+    nut04, nut05, nut15, nut19, AuthRequired, BlindAuthSettings, ClearAuthSettings,
+    MppMethodSettings, ProtectedEndpoint,
+};
 use crate::util::serde_helpers::deserialize_empty_string_as_none;
 use crate::CurrencyUnit;
 

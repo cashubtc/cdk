@@ -12,7 +12,7 @@ use anyhow::Result;
 use cdk_common::database::WalletDatabase;
 use cdk_common::task::spawn;
 use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection, TransactionId};
-use cdk_common::{database, KeySetInfo, PaymentMethod};
+use cdk_common::{database, KeySetInfo};
 use tokio::sync::RwLock;
 use tracing::instrument;
 use uuid::Uuid;
