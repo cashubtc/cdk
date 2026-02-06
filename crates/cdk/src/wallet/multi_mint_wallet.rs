@@ -1642,6 +1642,31 @@ impl MultiMintWallet {
         Ok(quote)
     }
 
+    /// Fetch a mint quote from the mint and store it locally
+    ///
+    /// Works with all payment methods (Bolt11, Bolt12, and custom payment methods).
+    ///
+    /// # Arguments
+    /// * `mint_url` - The URL of the mint
+    /// * `quote_id` - The ID of the quote to fetch
+    /// * `payment_method` - The payment method for the quote. Required if the quote
+    ///   is not already stored locally. If the quote exists locally, the stored
+    ///   payment method will be used and this parameter is ignored.
+    #[instrument(skip(self))]
+    pub async fn fetch_mint_quote(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+        payment_method: Option<PaymentMethod>,
+    ) -> Result<MintQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.fetch_mint_quote(quote_id, payment_method).await
+    }
+
     /// Mint tokens at a specific mint
     #[instrument(skip(self))]
     pub async fn mint(
