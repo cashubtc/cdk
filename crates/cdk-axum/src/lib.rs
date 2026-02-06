@@ -167,7 +167,7 @@ async fn cors_middleware(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Response {
-    let allowed_headers = "Content-Type, Clear-auth, Blind-auth";
+    let allowed_headers = "Content-Type, Clear-auth, Blind-auth, Prefer";
 
     // Handle preflight requests
     if req.method() == axum::http::Method::OPTIONS {
