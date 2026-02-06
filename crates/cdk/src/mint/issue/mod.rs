@@ -20,7 +20,6 @@ use tracing::instrument;
 use crate::mint::Verification;
 use crate::Mint;
 
-#[cfg(feature = "auth")]
 mod auth;
 
 /// Request for creating a mint quote
@@ -673,6 +672,16 @@ impl Mint {
                 return Err(err);
             }
         };
+
+        // Check max outputs limit
+        let outputs_count = mint_request.outputs.len();
+        if outputs_count > self.max_outputs {
+            tracing::warn!("Mint request exceeds max outputs limit: {} > {}", outputs_count, self.max_outputs);
+            return Err(Error::MaxOutputsExceeded {
+                actual: outputs_count,
+                max: self.max_outputs,
+            });
+        }
 
         // Get unit from the typed outputs amount
         let unit = outputs_amount.unit().clone();

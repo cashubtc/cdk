@@ -92,18 +92,11 @@ async fn get_access_token(mint_info: &MintInfo, user: &str, password: &str) -> (
     ];
 
     // Make the token request directly
-    let client = reqwest::Client::new();
-    let response = client
-        .post(token_url)
-        .form(&params)
-        .send()
+    let client = cdk_common::HttpClient::new();
+    let token_response: serde_json::Value = client
+        .post_form(&token_url, &params)
         .await
         .expect("Failed to send token request");
-
-    let token_response: serde_json::Value = response
-        .json()
-        .await
-        .expect("Failed to parse token response");
 
     let access_token = token_response["access_token"]
         .as_str()

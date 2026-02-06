@@ -4,8 +4,8 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 use cdk_common::{
-    MeltQuoteBolt12Request, MeltQuoteCustomResponse, MintQuoteBolt12Request,
-    MintQuoteBolt12Response,
+    MeltQuoteBolt12Request, MeltQuoteBolt12Response, MeltQuoteCustomResponse,
+    MintQuoteBolt12Request, MintQuoteBolt12Response,
 };
 
 use super::Error;
@@ -17,14 +17,19 @@ use crate::nuts::{
     MintQuoteBolt11Response, MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest,
     MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
-#[cfg(feature = "auth")]
 use crate::wallet::AuthWallet;
 
 pub mod http_client;
 pub mod transport;
 
+/// Melt Options
+#[derive(Debug, Clone, Default)]
+pub struct MeltOptions {
+    /// Prefer respond-async
+    pub async_melt: bool,
+}
+
 /// Auth HTTP Client with async transport
-#[cfg(feature = "auth")]
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
 /// Default Http Client with async transport (non-Tor)
 pub type HttpClient = http_client::HttpClient<transport::Async>;
@@ -93,6 +98,17 @@ pub trait MintConnector: Debug {
         &self,
         method: &PaymentMethod,
         request: MeltRequest<String>,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        self.post_melt_with_options(method, request, MeltOptions::default())
+            .await
+    }
+
+    /// Melt [NUT-05] with options (e.g. async)
+    async fn post_melt_with_options(
+        &self,
+        method: &PaymentMethod,
+        request: MeltRequest<String>,
+        options: MeltOptions,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
 
     /// Split Token [NUT-06]
@@ -108,11 +124,9 @@ pub trait MintConnector: Debug {
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error>;
 
     /// Get the auth wallet for the client
-    #[cfg(feature = "auth")]
     async fn get_auth_wallet(&self) -> Option<AuthWallet>;
 
     /// Set auth wallet on client
-    #[cfg(feature = "auth")]
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>);
     /// Mint Quote [NUT-04]
     async fn post_mint_bolt12_quote(
@@ -128,12 +142,12 @@ pub trait MintConnector: Debug {
     async fn post_melt_bolt12_quote(
         &self,
         request: MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+    ) -> Result<MeltQuoteBolt12Response<String>, Error>;
     /// Melt Quote Status [NUT-23]
     async fn get_melt_bolt12_quote_status(
         &self,
         quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+    ) -> Result<MeltQuoteBolt12Response<String>, Error>;
 
     /// Mint Quote for Custom Payment Method
     async fn post_mint_custom_quote(

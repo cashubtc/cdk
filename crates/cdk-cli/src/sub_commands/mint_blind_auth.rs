@@ -165,10 +165,10 @@ async fn refresh_access_token(
     ];
 
     // Make the token refresh request
-    let client = reqwest::Client::new();
-    let response = client.post(token_url).form(&params).send().await?;
+    let client = cdk_common::HttpClient::new();
+    let response = client.post(&token_url).form(&params).send().await?;
 
-    if !response.status().is_success() {
+    if !response.is_success() {
         return Err(anyhow::anyhow!(
             "Token refresh failed with status: {}",
             response.status()

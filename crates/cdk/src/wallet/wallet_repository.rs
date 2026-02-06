@@ -75,7 +75,6 @@ pub struct WalletConfig {
     /// Custom mint connector implementation
     pub mint_connector: Option<Arc<dyn super::MintConnector + Send + Sync>>,
     /// Custom auth connector implementation
-    #[cfg(feature = "auth")]
     pub auth_connector: Option<Arc<dyn super::auth::AuthMintConnector + Send + Sync>>,
     /// Target number of proofs to maintain at each denomination
     pub target_proof_count: Option<usize>,
@@ -106,7 +105,6 @@ impl WalletConfig {
     }
 
     /// Set custom auth connector
-    #[cfg(feature = "auth")]
     pub fn with_auth_connector(
         mut self,
         connector: Arc<dyn super::auth::AuthMintConnector + Send + Sync>,
@@ -446,56 +444,25 @@ impl WalletRepository {
                         true,
                     )
                     .unwrap_or_else(|_| {
-                        #[cfg(feature = "auth")]
-                        {
-                            crate::wallet::HttpClient::new(mint_url.clone(), None)
-                        }
-                        #[cfg(not(feature = "auth"))]
-                        {
-                            crate::wallet::HttpClient::new(mint_url.clone())
-                        }
+                        crate::wallet::HttpClient::new(mint_url.clone(), None)
                     }),
                 )
             } else {
                 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
                 if let Some(tor) = &self.shared_tor_transport {
                     let transport = tor.clone();
-                    #[cfg(feature = "auth")]
-                    {
-                        Arc::new(crate::wallet::TorHttpClient::with_transport(
-                            mint_url.clone(),
-                            transport,
-                            None,
-                        ))
-                    }
-                    #[cfg(not(feature = "auth"))]
-                    {
-                        Arc::new(crate::wallet::TorHttpClient::with_transport(
-                            mint_url.clone(),
-                            transport,
-                        ))
-                    }
+                    Arc::new(crate::wallet::TorHttpClient::with_transport(
+                        mint_url.clone(),
+                        transport,
+                        None,
+                    ))
                 } else {
-                    #[cfg(feature = "auth")]
-                    {
-                        Arc::new(crate::wallet::HttpClient::new(mint_url.clone(), None))
-                    }
-                    #[cfg(not(feature = "auth"))]
-                    {
-                        Arc::new(crate::wallet::HttpClient::new(mint_url.clone()))
-                    }
+                    Arc::new(crate::wallet::HttpClient::new(mint_url.clone(), None))
                 }
 
                 #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
                 {
-                    #[cfg(feature = "auth")]
-                    {
-                        Arc::new(crate::wallet::HttpClient::new(mint_url.clone(), None))
-                    }
-                    #[cfg(not(feature = "auth"))]
-                    {
-                        Arc::new(crate::wallet::HttpClient::new(mint_url.clone()))
-                    }
+                    Arc::new(crate::wallet::HttpClient::new(mint_url.clone(), None))
                 }
             };
 
@@ -546,16 +513,7 @@ impl WalletRepository {
                 None,
                 true,
             )
-            .unwrap_or_else(|_| {
-                #[cfg(feature = "auth")]
-                {
-                    crate::wallet::HttpClient::new(mint_url.clone(), None)
-                }
-                #[cfg(not(feature = "auth"))]
-                {
-                    crate::wallet::HttpClient::new(mint_url.clone())
-                }
-            });
+            .unwrap_or_else(|_| crate::wallet::HttpClient::new(mint_url.clone(), None));
             let mut builder = WalletBuilder::new()
                 .mint_url(mint_url.clone())
                 .unit(unit.clone())
@@ -573,21 +531,11 @@ impl WalletRepository {
             #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
             if let Some(tor) = &self.shared_tor_transport {
                 // Create wallet with Tor transport client, cloning the shared transport
-                let client = {
-                    let transport = tor.clone();
-                    #[cfg(feature = "auth")]
-                    {
-                        crate::wallet::TorHttpClient::with_transport(
-                            mint_url.clone(),
-                            transport,
-                            None,
-                        )
-                    }
-                    #[cfg(not(feature = "auth"))]
-                    {
-                        crate::wallet::TorHttpClient::with_transport(mint_url.clone(), transport)
-                    }
-                };
+                let client = crate::wallet::TorHttpClient::with_transport(
+                    mint_url.clone(),
+                    tor.clone(),
+                    None,
+                );
 
                 let mut builder = WalletBuilder::new()
                     .mint_url(mint_url.clone())

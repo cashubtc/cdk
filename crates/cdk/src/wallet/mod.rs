@@ -12,8 +12,10 @@ use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::ProofInfo;
 use getrandom::getrandom;
+pub use mint_connector::http_client::{
+    AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
+};
 use subscription::{ActiveSubscription, SubscriptionManager};
-#[cfg(any(feature = "auth", feature = "npubcash"))]
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
@@ -31,11 +33,8 @@ use crate::nuts::{
 };
 use crate::util::unix_time;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
-use crate::Amount;
-#[cfg(feature = "auth")]
-use crate::OidcClient;
+use crate::{Amount, OidcClient};
 
-#[cfg(feature = "auth")]
 mod auth;
 #[cfg(feature = "nostr")]
 mod nostr_backup;
@@ -66,18 +65,15 @@ mod transactions;
 pub mod util;
 pub mod wallet_repository;
 
-#[cfg(feature = "auth")]
 pub use auth::{AuthMintConnector, AuthWallet};
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
-pub use melt::{MeltConfirmOptions, PreparedMelt};
-#[cfg(feature = "auth")]
-pub use mint_connector::http_client::AuthHttpClient as BaseAuthHttpClient;
-pub use mint_connector::http_client::HttpClient as BaseHttpClient;
+pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
-#[cfg(feature = "auth")]
-pub use mint_connector::AuthHttpClient;
-pub use mint_connector::{HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector};
+pub use mint_connector::{
+    AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MeltOptions,
+    MintConnector,
+};
 #[cfg(feature = "nostr")]
 pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResult};
 pub use payment_request::CreateRequestParams;
@@ -113,7 +109,6 @@ pub struct Wallet {
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
     metadata_cache_ttl: Arc<RwLock<Option<Duration>>>,
-    #[cfg(feature = "auth")]
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
     #[cfg(feature = "npubcash")]
     npubcash_client: Arc<TokioRwLock<Option<Arc<cdk_npubcash::NpubCashClient>>>>,
@@ -133,8 +128,12 @@ pub enum WalletSubscription {
     Bolt11MintQuoteState(Vec<String>),
     /// Melt quote subscription
     Bolt11MeltQuoteState(Vec<String>),
+    /// Melt bolt12 quote subscription
+    Bolt12MeltQuoteState(Vec<String>),
     /// Mint bolt12 quote subscription
     Bolt12MintQuoteState(Vec<String>),
+    /// Custom melt quote subscription
+    MeltQuoteCustom(String, Vec<String>),
 }
 
 impl From<WalletSubscription> for WalletParams {
@@ -172,6 +171,16 @@ impl From<WalletSubscription> for WalletParams {
             WalletSubscription::Bolt12MintQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt12MintQuote,
+                id,
+            },
+            WalletSubscription::Bolt12MeltQuoteState(filters) => WalletParams {
+                filters,
+                kind: Kind::Bolt12MeltQuote,
+                id,
+            },
+            WalletSubscription::MeltQuoteCustom(method, filters) => WalletParams {
+                filters,
+                kind: Kind::Custom(format!("{}_melt_quote", method)),
                 id,
             },
         }
@@ -338,7 +347,6 @@ impl Wallet {
         }
 
         // Create or update auth wallet
-        #[cfg(feature = "auth")]
         {
             let mut auth_wallet = self.auth_wallet.write().await;
             match &*auth_wallet {

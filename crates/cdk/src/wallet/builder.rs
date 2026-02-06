@@ -2,18 +2,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk_common::database;
 use cdk_common::parking_lot::RwLock;
-#[cfg(feature = "auth")]
-use cdk_common::AuthToken;
-#[cfg(any(feature = "auth", feature = "npubcash"))]
+use cdk_common::{database, AuthToken};
 use tokio::sync::RwLock as TokioRwLock;
 
 use crate::cdk_database::WalletDatabase;
 use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
-#[cfg(feature = "auth")]
 use crate::wallet::auth::AuthWallet;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::{HttpClient, MintConnector, SubscriptionManager, Wallet};
@@ -24,7 +20,6 @@ pub struct WalletBuilder {
     unit: Option<CurrencyUnit>,
     localstore: Option<Arc<dyn WalletDatabase<database::Error> + Send + Sync>>,
     target_proof_count: Option<usize>,
-    #[cfg(feature = "auth")]
     auth_wallet: Option<AuthWallet>,
     seed: Option<[u8; 64]>,
     use_http_subscription: bool,
@@ -51,7 +46,6 @@ impl Default for WalletBuilder {
             unit: None,
             localstore: None,
             target_proof_count: Some(3),
-            #[cfg(feature = "auth")]
             auth_wallet: None,
             seed: None,
             client: None,
@@ -123,7 +117,6 @@ impl WalletBuilder {
     }
 
     /// Set the auth wallet
-    #[cfg(feature = "auth")]
     pub fn auth_wallet(mut self, auth_wallet: AuthWallet) -> Self {
         self.auth_wallet = Some(auth_wallet);
         self
@@ -174,7 +167,6 @@ impl WalletBuilder {
     /// # Errors
     ///
     /// Returns an error if `mint_url` or `localstore` have not been set on the builder.
-    #[cfg(feature = "auth")]
     pub fn set_auth_cat(mut self, cat: String) -> Result<Self, Error> {
         let mint_url = self
             .mint_url
@@ -223,19 +215,8 @@ impl WalletBuilder {
 
         let client = match self.client {
             Some(client) => client,
-            None => {
-                #[cfg(feature = "auth")]
-                {
-                    Arc::new(HttpClient::new(mint_url.clone(), self.auth_wallet.clone()))
-                        as Arc<dyn MintConnector + Send + Sync>
-                }
-
-                #[cfg(not(feature = "auth"))]
-                {
-                    Arc::new(HttpClient::new(mint_url.clone()))
-                        as Arc<dyn MintConnector + Send + Sync>
-                }
-            }
+            None => Arc::new(HttpClient::new(mint_url.clone(), self.auth_wallet.clone()))
+                as Arc<dyn MintConnector + Send + Sync>,
         };
 
         let metadata_cache_ttl = self.metadata_cache_ttl;
@@ -257,7 +238,6 @@ impl WalletBuilder {
             metadata_cache,
             metadata_cache_ttl: Arc::new(RwLock::new(metadata_cache_ttl)),
             target_proof_count: self.target_proof_count.unwrap_or(3),
-            #[cfg(feature = "auth")]
             auth_wallet: Arc::new(TokioRwLock::new(self.auth_wallet)),
             #[cfg(feature = "npubcash")]
             npubcash_client: Arc::new(TokioRwLock::new(None)),

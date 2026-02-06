@@ -4,24 +4,20 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use cdk_common::{
-    nut19, MeltQuoteBolt12Request, MeltQuoteCustomResponse, MintQuoteBolt12Request,
-    MintQuoteBolt12Response,
+    nut19, MeltQuoteBolt12Request, MeltQuoteBolt12Response, MeltQuoteCustomResponse, Method,
+    MintQuoteBolt12Request, MintQuoteBolt12Response, ProtectedEndpoint, RoutePath,
 };
-#[cfg(feature = "auth")]
-use cdk_common::{Method, ProtectedEndpoint, RoutePath};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-#[cfg(feature = "auth")]
 use tokio::sync::RwLock;
 use tracing::instrument;
 use url::Url;
 use web_time::{Duration, Instant};
 
 use super::transport::Transport;
-use super::{Error, MintConnector};
+use super::{Error, MeltOptions, MintConnector};
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::{KnownMethod, PaymentMethod};
-#[cfg(feature = "auth")]
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
@@ -30,7 +26,6 @@ use crate::nuts::{
     MintQuoteCustomResponse, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
     SwapRequest, SwapResponse,
 };
-#[cfg(feature = "auth")]
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 
 type Cache = (u64, HashSet<(nut19::Method, nut19::Path)>);
@@ -44,7 +39,6 @@ where
     transport: Arc<T>,
     mint_url: MintUrl,
     cache_support: Arc<StdRwLock<Cache>>,
-    #[cfg(feature = "auth")]
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
 }
 
@@ -53,7 +47,6 @@ where
     T: Transport + Send + Sync + 'static,
 {
     /// Create new [`HttpClient`] with a provided transport implementation.
-    #[cfg(feature = "auth")]
     pub fn with_transport(
         mint_url: MintUrl,
         transport: T,
@@ -67,18 +60,7 @@ where
         }
     }
 
-    /// Create new [`HttpClient`] with a provided transport implementation.
-    #[cfg(not(feature = "auth"))]
-    pub fn with_transport(mint_url: MintUrl, transport: T) -> Self {
-        Self {
-            transport: transport.into(),
-            mint_url,
-            cache_support: Default::default(),
-        }
-    }
-
     /// Create new [`HttpClient`]
-    #[cfg(feature = "auth")]
     pub fn new(mint_url: MintUrl, auth_wallet: Option<AuthWallet>) -> Self {
         Self {
             transport: T::default().into(),
@@ -88,18 +70,7 @@ where
         }
     }
 
-    #[cfg(not(feature = "auth"))]
-    /// Create new [`HttpClient`]
-    pub fn new(mint_url: MintUrl) -> Self {
-        Self {
-            transport: T::default().into(),
-            cache_support: Default::default(),
-            mint_url,
-        }
-    }
-
     /// Get auth token for a protected endpoint
-    #[cfg(feature = "auth")]
     #[instrument(skip(self))]
     pub async fn get_auth_token(
         &self,
@@ -131,7 +102,6 @@ where
         Ok(Self {
             transport: transport.into(),
             mint_url,
-            #[cfg(feature = "auth")]
             auth_wallet: Arc::new(RwLock::new(None)),
             cache_support: Default::default(),
         })
@@ -146,6 +116,7 @@ where
         method: nut19::Method,
         path: nut19::Path,
         auth_token: Option<AuthToken>,
+        custom_headers: &[(&str, &str)],
         payload: &P,
     ) -> Result<R, Error>
     where
@@ -181,8 +152,16 @@ where
             };
 
             let result = match method {
-                nut19::Method::Get => transport.http_get(url, auth_token.clone()).await,
-                nut19::Method::Post => transport.http_post(url, auth_token.clone(), payload).await,
+                nut19::Method::Get => {
+                    transport
+                        .http_get_with_headers(url, auth_token.clone(), custom_headers)
+                        .await
+                }
+                nut19::Method::Post => {
+                    transport
+                        .http_post_with_headers(url, auth_token.clone(), custom_headers, payload)
+                        .await
+                }
             };
 
             if result.is_ok() {
@@ -289,16 +268,12 @@ where
             .mint_url
             .join_paths(&["v1", "mint", "quote", "bolt11"])?;
 
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(
                 Method::Post,
                 RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
             )
             .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
 
         self.transport.http_post(url, auth_token, &request).await
     }
@@ -313,7 +288,6 @@ where
             .mint_url
             .join_paths(&["v1", "mint", "quote", "bolt11", quote_id])?;
 
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(
                 Method::Get,
@@ -321,8 +295,6 @@ where
             )
             .await?;
 
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
         self.transport.http_get(url, auth_token).await
     }
 
@@ -333,13 +305,9 @@ where
         method: &PaymentMethod,
         request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::Mint(method.to_string()))
             .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
 
         let path = match method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
@@ -351,7 +319,7 @@ where
             PaymentMethod::Custom(m) => nut19::Path::custom_mint(m),
         };
 
-        self.retriable_http_request(nut19::Method::Post, path, auth_token, &request)
+        self.retriable_http_request(nut19::Method::Post, path, auth_token, &[], &request)
             .await
     }
 
@@ -364,7 +332,6 @@ where
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt11"])?;
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(
                 Method::Post,
@@ -372,8 +339,6 @@ where
             )
             .await?;
 
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
         self.transport.http_post(url, auth_token, &request).await
     }
 
@@ -387,7 +352,6 @@ where
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt11", quote_id])?;
 
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(
                 Method::Get,
@@ -395,26 +359,21 @@ where
             )
             .await?;
 
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
         self.transport.http_get(url, auth_token).await
     }
 
     /// Melt [NUT-05]
     /// [Nut-08] Lightning fee return if outputs defined
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_melt(
+    async fn post_melt_with_options(
         &self,
         method: &PaymentMethod,
         request: MeltRequest<String>,
+        options: MeltOptions,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::Melt(method.to_string()))
             .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
 
         let path = match method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
@@ -426,23 +385,32 @@ where
             PaymentMethod::Custom(m) => nut19::Path::custom_melt(m),
         };
 
-        self.retriable_http_request(nut19::Method::Post, path, auth_token, &request)
-            .await
+        let custom_headers = if options.async_melt {
+            vec![("Prefer", "respond-async")]
+        } else {
+            vec![]
+        };
+
+        self.retriable_http_request(
+            nut19::Method::Post,
+            path,
+            auth_token,
+            &custom_headers,
+            &request,
+        )
+        .await
     }
 
     /// Swap Token [NUT-03]
     #[instrument(skip(self, swap_request), fields(mint_url = %self.mint_url))]
     async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
-        #[cfg(feature = "auth")]
         let auth_token = self.get_auth_token(Method::Post, RoutePath::Swap).await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
 
         self.retriable_http_request(
             nut19::Method::Post,
             nut19::Path::Swap,
             auth_token,
+            &[],
             &swap_request,
         )
         .await
@@ -470,12 +438,10 @@ where
         Ok(info)
     }
 
-    #[cfg(feature = "auth")]
     async fn get_auth_wallet(&self) -> Option<AuthWallet> {
         self.auth_wallet.read().await.clone()
     }
 
-    #[cfg(feature = "auth")]
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>) {
         *self.auth_wallet.write().await = wallet;
     }
@@ -487,13 +453,10 @@ where
         request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "checkstate"])?;
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::Checkstate)
             .await?;
 
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
         self.transport.http_post(url, auth_token, &request).await
     }
 
@@ -501,13 +464,10 @@ where
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "restore"])?;
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::Restore)
             .await?;
 
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
         self.transport.http_post(url, auth_token, &request).await
     }
 
@@ -521,16 +481,12 @@ where
             .mint_url
             .join_paths(&["v1", "mint", "quote", "bolt12"])?;
 
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(
                 Method::Post,
                 RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
             )
             .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
 
         self.transport.http_post(url, auth_token, &request).await
     }
@@ -545,7 +501,6 @@ where
             .mint_url
             .join_paths(&["v1", "mint", "quote", "bolt12", quote_id])?;
 
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(
                 Method::Get,
@@ -553,8 +508,6 @@ where
             )
             .await?;
 
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
         self.transport.http_get(url, auth_token).await
     }
 
@@ -563,11 +516,10 @@ where
     async fn post_melt_bolt12_quote(
         &self,
         request: MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+    ) -> Result<MeltQuoteBolt12Response<String>, Error> {
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt12"])?;
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(
                 Method::Post,
@@ -575,8 +527,6 @@ where
             )
             .await?;
 
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
         self.transport.http_post(url, auth_token, &request).await
     }
 
@@ -585,12 +535,11 @@ where
     async fn get_melt_bolt12_quote_status(
         &self,
         quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+    ) -> Result<MeltQuoteBolt12Response<String>, Error> {
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt12", quote_id])?;
 
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(
                 Method::Get,
@@ -598,8 +547,6 @@ where
             )
             .await?;
 
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
         self.transport.http_get(url, auth_token).await
     }
 
@@ -614,13 +561,9 @@ where
             .mint_url
             .join_paths(&["v1", "mint", "quote", &method.to_string()])?;
 
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::MintQuote(method.to_string()))
             .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
 
         self.transport.http_post(url, auth_token, &request).await
     }
@@ -636,13 +579,9 @@ where
             .mint_url
             .join_paths(&["v1", "mint", "quote", method, quote_id])?;
 
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Get, RoutePath::MintQuote(method.to_string()))
             .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
 
         self.transport.http_get(url, auth_token).await
     }
@@ -657,13 +596,9 @@ where
             .mint_url
             .join_paths(&["v1", "melt", "quote", &request.method])?;
 
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::MeltQuote(request.method.clone()))
             .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
 
         self.transport.http_post(url, auth_token, &request).await
     }
@@ -679,13 +614,9 @@ where
             .mint_url
             .join_paths(&["v1", "melt", "quote", method, quote_id])?;
 
-        #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Get, RoutePath::MeltQuote(method.to_string()))
             .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
 
         self.transport.http_get(url, auth_token).await
     }
@@ -694,7 +625,6 @@ where
 /// Http Client
 
 #[derive(Debug, Clone)]
-#[cfg(feature = "auth")]
 pub struct AuthHttpClient<T>
 where
     T: Transport + Send + Sync + 'static,
@@ -704,7 +634,6 @@ where
     cat: Arc<RwLock<AuthToken>>,
 }
 
-#[cfg(feature = "auth")]
 impl<T> AuthHttpClient<T>
 where
     T: Transport + Send + Sync + 'static,
@@ -723,7 +652,6 @@ where
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg(feature = "auth")]
 impl<T> AuthMintConnector for AuthHttpClient<T>
 where
     T: Transport + Send + Sync + 'static,

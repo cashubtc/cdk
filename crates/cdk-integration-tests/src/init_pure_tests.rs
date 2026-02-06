@@ -139,10 +139,11 @@ impl MintConnector for DirectMintConnection {
             .map(Into::into)
     }
 
-    async fn post_melt(
+    async fn post_melt_with_options(
         &self,
         _method: &PaymentMethod,
         request: MeltRequest<String>,
+        _options: cdk::wallet::MeltOptions,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let request_uuid = request.try_into().unwrap();
         self.mint.melt(&request_uuid).await.map(Into::into)
@@ -282,6 +283,10 @@ pub fn setup_tracing() {
 }
 
 pub async fn create_and_start_test_mint() -> Result<Mint> {
+    create_mint_with_limits(None).await
+}
+
+pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<Mint> {
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
@@ -329,6 +334,12 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         .with_name("pure test mint".to_string())
         .with_description("pure test mint".to_string())
         .with_urls(vec!["https://aaa".to_string()]);
+
+    if let Some((max_inputs, max_outputs)) = limits {
+        mint_builder = mint_builder.with_limits(max_inputs, max_outputs);
+    } else {
+        mint_builder = mint_builder.with_limits(2000, 2000);
+    }
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 

@@ -233,6 +233,7 @@ async fn test_melt_saga_includes_input_fees() -> Result<()> {
         CurrencyUnit::Sat,
         cdk_integration_tests::standard_keyset_amounts(32),
         1000, // 1 sat per proof input fee
+        true,
     )
     .await
     .expect("Failed to rotate keyset");
@@ -324,6 +325,7 @@ async fn test_melt_with_swap_non_optimal_proofs() -> Result<()> {
         CurrencyUnit::Sat,
         cdk_integration_tests::standard_keyset_amounts(32),
         100, // 0.1 sat per proof input fee
+        true,
     )
     .await
     .expect("Failed to rotate keyset");
@@ -420,6 +422,7 @@ async fn test_melt_swap_gap_recovery() -> Result<()> {
         CurrencyUnit::Sat,
         cdk_integration_tests::standard_keyset_amounts(32),
         1000,
+        true,
     )
     .await
     .expect("Failed to rotate keyset");

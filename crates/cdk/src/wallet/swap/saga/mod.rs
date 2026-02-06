@@ -297,9 +297,14 @@ impl<'a> SwapSaga<'a, Prepared> {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
         added_proofs.extend(keep_proofs);
 
+        // Add new proofs and mark input proofs as Spent (don't delete them)
         self.wallet
             .localstore
-            .update_proofs(added_proofs, self.state_data.input_ys.clone())
+            .update_proofs(added_proofs, vec![])
+            .await?;
+        self.wallet
+            .localstore
+            .update_proofs_state(self.state_data.input_ys.clone(), State::Spent)
             .await?;
 
         clear_compensations(&mut self.compensations).await;

@@ -661,14 +661,12 @@ impl Mint {
             }
         });
 
-        debug_assert!(quote.state == MeltQuoteState::Pending);
-
         // Return immediately with the quote in PENDING state
         Ok(MeltQuoteBolt11Response {
             quote: quote_id,
             amount: quote.amount().into(),
             fee_reserve: quote.fee_reserve().into(),
-            state: quote.state,
+            state: MeltQuoteState::Pending,
             expiry: quote.expiry,
             payment_preimage: None,
             change: None,

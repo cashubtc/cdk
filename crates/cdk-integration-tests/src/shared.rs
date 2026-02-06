@@ -35,6 +35,7 @@ pub async fn wait_for_mint_ready_with_shutdown(
 ) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}/v1/info");
     let start_time = std::time::Instant::now();
+    let http_client = cdk_common::HttpClient::new();
 
     println!("Waiting for mint on port {port} to be ready...");
 
@@ -50,10 +51,10 @@ pub async fn wait_for_mint_ready_with_shutdown(
 
         tokio::select! {
             // Try to make a request to the mint info endpoint
-            result = reqwest::get(&url) => {
+            result = http_client.get_raw(&url) => {
                 match result {
                     Ok(response) => {
-                        if response.status().is_success() {
+                        if response.is_success() {
                             println!("Mint on port {port} is ready");
                             return Ok(());
                         } else {
@@ -207,6 +208,7 @@ pub fn create_fake_wallet_settings(
                 .as_ref()
                 .map(|(_, certs_dir)| certs_dir.clone()),
             input_fee_ppk: None,
+            use_keyset_v2: None,
             http_cache: cache::Config::default(),
             logging: cdk_mintd::config::LoggingConfig {
                 output: cdk_mintd::config::LoggingOutput::Both,
@@ -216,6 +218,7 @@ pub fn create_fake_wallet_settings(
             enable_swagger_ui: None,
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
+        limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::FakeWallet,
             invoice_description: None,
@@ -260,6 +263,7 @@ pub fn create_cln_settings(
             signatory_url: None,
             signatory_certs: None,
             input_fee_ppk: None,
+            use_keyset_v2: None,
             http_cache: cache::Config::default(),
             logging: cdk_mintd::config::LoggingConfig {
                 output: cdk_mintd::config::LoggingOutput::Both,
@@ -269,6 +273,7 @@ pub fn create_cln_settings(
             enable_swagger_ui: None,
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
+        limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::Cln,
             invoice_description: None,
@@ -308,6 +313,7 @@ pub fn create_lnd_settings(
             signatory_url: None,
             signatory_certs: None,
             input_fee_ppk: None,
+            use_keyset_v2: None,
             http_cache: cache::Config::default(),
             logging: cdk_mintd::config::LoggingConfig {
                 output: cdk_mintd::config::LoggingOutput::Both,
@@ -317,6 +323,7 @@ pub fn create_lnd_settings(
             enable_swagger_ui: None,
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
+        limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::Lnd,
             invoice_description: None,

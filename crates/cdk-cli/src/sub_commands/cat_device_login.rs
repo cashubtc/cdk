@@ -79,21 +79,17 @@ async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
     let device_auth_url = oidc_config.device_authorization_endpoint;
 
     // Make the device code request
-    let client = reqwest::Client::new();
-    let device_code_response = client
-        .post(device_auth_url)
-        .form(&[
-            ("client_id", client_id.clone().as_str()),
-            ("scope", "openid offline_access"),
-        ])
-        .send()
+    let client = cdk_common::HttpClient::new();
+    let device_code_data: serde_json::Value = client
+        .post_form(
+            &device_auth_url,
+            &[
+                ("client_id", client_id.clone().as_str()),
+                ("scope", "openid offline_access"),
+            ],
+        )
         .await
         .expect("Failed to send device code request");
-
-    let device_code_data: serde_json::Value = device_code_response
-        .json()
-        .await
-        .expect("Failed to parse device code response");
 
     let device_code = device_code_data["device_code"]
         .as_str()
@@ -137,7 +133,7 @@ async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
             .await
             .expect("Failed to send token request");
 
-        if token_response.status().is_success() {
+        if token_response.is_success() {
             let token_data: serde_json::Value = token_response
                 .json()
                 .await
