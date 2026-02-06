@@ -7,6 +7,7 @@ use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::PaymentMethod;
 use cdk::wallet::MultiMintWallet;
 use cdk::{Amount, StreamExt};
+use cdk_common::nut00::KnownMethod;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
@@ -51,33 +52,83 @@ pub async fn mint(
 
     let quote = match &sub_command_args.quote_id {
         None => match payment_method {
-            PaymentMethod::Bolt11 => {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
                 let amount = sub_command_args
                     .amount
                     .ok_or(anyhow!("Amount must be defined"))?;
-                let quote = wallet.mint_quote(Amount::from(amount), description).await?;
+                let quote = wallet
+                    .mint_quote(
+                        PaymentMethod::BOLT11,
+                        Some(Amount::from(amount)),
+                        description,
+                        None,
+                    )
+                    .await?;
 
-                println!("Quote: {quote:#?}");
+                println!(
+                    "Quote: id={}, state={}, amount={}, expiry={}",
+                    quote.id,
+                    quote.state,
+                    quote.amount.map_or("none".to_string(), |a| a.to_string()),
+                    quote.expiry
+                );
 
                 println!("Please pay: {}", quote.request);
 
                 quote
             }
-            PaymentMethod::Bolt12 => {
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
                 let amount = sub_command_args.amount;
-                println!("{:?}", sub_command_args.single_use);
+                println!(
+                    "Single use: {}",
+                    sub_command_args
+                        .single_use
+                        .map_or("none".to_string(), |b| b.to_string())
+                );
                 let quote = wallet
-                    .mint_bolt12_quote(amount.map(|a| a.into()), description)
+                    .mint_quote(
+                        payment_method.clone(),
+                        amount.map(|a| a.into()),
+                        description,
+                        None,
+                    )
                     .await?;
 
-                println!("Quote: {quote:#?}");
+                println!(
+                    "Quote: id={}, state={}, amount={}, expiry={}",
+                    quote.id,
+                    quote.state,
+                    quote.amount.map_or("none".to_string(), |a| a.to_string()),
+                    quote.expiry
+                );
 
                 println!("Please pay: {}", quote.request);
 
                 quote
             }
             _ => {
-                todo!()
+                let amount = sub_command_args.amount;
+                println!(
+                    "Single use: {}",
+                    sub_command_args
+                        .single_use
+                        .map_or("none".to_string(), |b| b.to_string())
+                );
+                let quote = wallet
+                    .mint_quote(payment_method.clone(), amount.map(|a| a.into()), None, None)
+                    .await?;
+
+                println!(
+                    "Quote: id={}, state={}, amount={}, expiry={}",
+                    quote.id,
+                    quote.state,
+                    quote.amount.map_or("none".to_string(), |a| a.to_string()),
+                    quote.expiry
+                );
+
+                println!("Please pay: {}", quote.request);
+
+                quote
             }
         },
         Some(quote_id) => wallet

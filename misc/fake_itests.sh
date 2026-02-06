@@ -57,7 +57,7 @@ echo "Temp directory created: $CDK_ITESTS_DIR"
 # Check if a database type was provided as first argument, default to sqlite
 export CDK_MINTD_DATABASE="${1:-sqlite}"
 
-cargo build -p cdk-integration-tests
+cargo build --bin start_fake_mint
 
 # Start the fake mint binary with the new Rust-based approach
 echo "Starting fake mint using Rust binary..."
@@ -187,6 +187,17 @@ status3=$?
 if [ $status3 -ne 0 ]; then
     echo "Third test (async_melt) failed with status $status3, exiting"
     exit $status3
+fi
+
+# Run fourth test (multi_mint_wallet) only if previous tests succeeded
+echo "Running multi_mint_wallet test"
+cargo test -p cdk-integration-tests --test multi_mint_wallet -- --nocapture
+status4=$?
+
+# Exit with the status of the fourth test
+if [ $status4 -ne 0 ]; then
+    echo "Fourth test (multi_mint_wallet) failed with status $status4, exiting"
+    exit $status4
 fi
 
 # All tests passed

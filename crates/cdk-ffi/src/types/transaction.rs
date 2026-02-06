@@ -1,13 +1,16 @@
 //! Transaction-related FFI types
 
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::amount::{Amount, CurrencyUnit};
 use super::keys::PublicKey;
 use super::mint::MintUrl;
 use super::proof::Proofs;
+use super::quote::PaymentMethod;
 use crate::error::FfiError;
 
 /// FFI-compatible Transaction
@@ -39,6 +42,10 @@ pub struct Transaction {
     pub payment_request: Option<String>,
     /// Payment proof (e.g., preimage for Lightning melt transactions)
     pub payment_proof: Option<String>,
+    /// Payment method (e.g., Bolt11, Bolt12) for mint/melt transactions
+    pub payment_method: Option<PaymentMethod>,
+    /// Saga ID if this transaction was part of a saga
+    pub saga_id: Option<String>,
 }
 
 impl From<cdk::wallet::types::Transaction> for Transaction {
@@ -57,6 +64,8 @@ impl From<cdk::wallet::types::Transaction> for Transaction {
             quote_id: tx.quote_id,
             payment_request: tx.payment_request,
             payment_proof: tx.payment_proof,
+            payment_method: tx.payment_method.map(Into::into),
+            saga_id: tx.saga_id.map(|id| id.to_string()),
         }
     }
 }
@@ -83,6 +92,8 @@ impl TryFrom<Transaction> for cdk::wallet::types::Transaction {
             quote_id: tx.quote_id,
             payment_request: tx.payment_request,
             payment_proof: tx.payment_proof,
+            payment_method: tx.payment_method.map(Into::into),
+            saga_id: tx.saga_id.and_then(|id| Uuid::from_str(&id).ok()),
         })
     }
 }
@@ -161,16 +172,16 @@ impl TransactionId {
     pub fn from_hex(hex: String) -> Result<Self, FfiError> {
         // Validate hex string length (should be 64 characters for 32 bytes)
         if hex.len() != 64 {
-            return Err(FfiError::InvalidHex {
-                msg: "Transaction ID hex must be exactly 64 characters (32 bytes)".to_string(),
-            });
+            return Err(FfiError::internal(
+                "Transaction ID hex must be exactly 64 characters (32 bytes)",
+            ));
         }
 
         // Validate hex format
         if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(FfiError::InvalidHex {
-                msg: "Transaction ID hex contains invalid characters".to_string(),
-            });
+            return Err(FfiError::internal(
+                "Transaction ID hex contains invalid characters",
+            ));
         }
 
         Ok(Self { hex })
@@ -201,7 +212,7 @@ impl TryFrom<TransactionId> for cdk::wallet::types::TransactionId {
 
     fn try_from(id: TransactionId) -> Result<Self, Self::Error> {
         cdk::wallet::types::TransactionId::from_hex(&id.hex)
-            .map_err(|e| FfiError::InvalidHex { msg: e.to_string() })
+            .map_err(|e| FfiError::internal(format!("Invalid transaction ID: {}", e)))
     }
 }
 
@@ -239,14 +250,14 @@ impl TryFrom<AuthProof> for cdk::nuts::AuthProof {
         use std::str::FromStr;
         Ok(Self {
             keyset_id: cdk::nuts::Id::from_str(&auth_proof.keyset_id)
-                .map_err(|e| FfiError::Serialization { msg: e.to_string() })?,
+                .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             secret: {
                 use std::str::FromStr;
                 cdk::secret::Secret::from_str(&auth_proof.secret)
-                    .map_err(|e| FfiError::Serialization { msg: e.to_string() })?
+                    .map_err(|e| FfiError::internal(format!("Invalid secret: {}", e)))?
             },
             c: cdk::nuts::PublicKey::from_str(&auth_proof.c)
-                .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?,
+                .map_err(|e| FfiError::internal(format!("Invalid public key: {}", e)))?,
             dleq: None, // FFI doesn't expose DLEQ proofs for simplicity
         })
     }

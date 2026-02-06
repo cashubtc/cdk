@@ -57,6 +57,8 @@ pub struct Info {
     pub signatory_url: Option<String>,
     pub signatory_certs: Option<String>,
     pub input_fee_ppk: Option<u64>,
+    /// Use keyset v2
+    pub use_keyset_v2: Option<bool>,
 
     pub http_cache: cache::Config,
 
@@ -88,6 +90,7 @@ impl Default for Info {
             signatory_url: None,
             signatory_certs: None,
             input_fee_ppk: None,
+            use_keyset_v2: None,
             http_cache: cache::Config::default(),
             enable_swagger_ui: None,
             logging: LoggingConfig::default(),
@@ -114,6 +117,7 @@ impl std::fmt::Debug for Info {
             .field("listen_port", &self.listen_port)
             .field("mnemonic", &mnemonic_display)
             .field("input_fee_ppk", &self.input_fee_ppk)
+            .field("use_keyset_v2", &self.use_keyset_v2)
             .field("http_cache", &self.http_cache)
             .field("logging", &self.logging)
             .field("enable_swagger_ui", &self.enable_swagger_ui)
@@ -383,10 +387,12 @@ impl Default for FakeWallet {
 
 // Helper functions to provide default values
 // Common fee defaults for all backends
+#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
 fn default_fee_percent() -> f32 {
     0.02
 }
 
+#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
 fn default_reserve_fee_min() -> Amount {
     2.into()
 }
@@ -563,6 +569,9 @@ pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
     pub ln: Ln,
+    /// Transaction limits for DoS protection
+    #[serde(default)]
+    pub limits: Limits,
     #[cfg(feature = "cln")]
     pub cln: Option<Cln>,
     #[cfg(feature = "lnbits")]
@@ -575,7 +584,6 @@ pub struct Settings {
     pub fake_wallet: Option<FakeWallet>,
     pub grpc_processor: Option<GrpcProcessor>,
     pub database: Database,
-    #[cfg(feature = "auth")]
     pub auth_database: Option<AuthDatabase>,
     #[cfg(feature = "management-rpc")]
     pub mint_management_rpc: Option<MintManagementRpc>,
@@ -590,6 +598,34 @@ pub struct Prometheus {
     pub enabled: bool,
     pub address: Option<String>,
     pub port: Option<u16>,
+}
+
+/// Transaction limits configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Limits {
+    /// Maximum number of inputs allowed per transaction (swap/melt)
+    #[serde(default = "default_max_inputs")]
+    pub max_inputs: usize,
+    /// Maximum number of outputs allowed per transaction (mint/swap/melt)
+    #[serde(default = "default_max_outputs")]
+    pub max_outputs: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_inputs: 1000,
+            max_outputs: 1000,
+        }
+    }
+}
+
+fn default_max_inputs() -> usize {
+    1000
+}
+
+fn default_max_outputs() -> usize {
+    1000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

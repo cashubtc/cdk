@@ -42,10 +42,12 @@ impl From<CurrencyUnit> for KeysetIdentifier {
 pub struct RotateKeyArguments {
     /// Unit
     pub unit: CurrencyUnit,
-    /// Max order
+    /// List of amounts to support
     pub amounts: Vec<u64>,
     /// Input fee
     pub input_fee_ppk: u64,
+    /// KeySet Version
+    pub use_keyset_v2: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +75,7 @@ pub struct SignatoryKeySet {
     pub keys: Keys,
     /// Amounts supported by the keyset
     pub amounts: Vec<u64>,
-    /// Information about the fee per public key
+    /// Input fee for the keyset (parts per thousand)
     pub input_fee_ppk: u64,
     /// Final expiry of the keyset (unix timestamp in the future)
     pub final_expiry: Option<u64>,
@@ -90,7 +92,9 @@ impl From<SignatoryKeySet> for KeySet {
         KeySet {
             id: val.id,
             unit: val.unit,
+            active: Some(val.active),
             keys: val.keys,
+            input_fee_ppk: val.input_fee_ppk,
             final_expiry: val.final_expiry,
         }
     }

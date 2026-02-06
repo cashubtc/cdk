@@ -316,6 +316,7 @@ impl TryInto<cdk_common::KeySet> for KeySet {
                 .ok_or(cdk_common::error::Error::Custom(INTERNAL_ERROR.to_owned()))?
                 .try_into()
                 .map_err(|_| cdk_common::Error::Custom("Invalid unit encoding".to_owned()))?,
+            active: Some(self.active),
             keys: cdk_common::Keys::new(
                 self.keys
                     .ok_or(cdk_common::error::Error::Custom(INTERNAL_ERROR.to_owned()))?
@@ -324,6 +325,7 @@ impl TryInto<cdk_common::KeySet> for KeySet {
                     .map(|(k, v)| cdk_common::PublicKey::from_slice(&v).map(|pk| (k.into(), pk)))
                     .collect::<Result<BTreeMap<cdk_common::Amount, cdk_common::PublicKey>, _>>()?,
             ),
+            input_fee_ppk: self.input_fee_ppk,
             final_expiry: self.final_expiry,
         })
     }
@@ -335,6 +337,7 @@ impl From<crate::signatory::RotateKeyArguments> for RotationRequest {
             unit: Some(value.unit.into()),
             amounts: value.amounts,
             input_fee_ppk: value.input_fee_ppk,
+            use_keyset_v2: value.use_keyset_v2,
         }
     }
 }
@@ -350,6 +353,7 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
                 .try_into()?,
             amounts: self.amounts,
             input_fee_ppk: self.input_fee_ppk,
+            use_keyset_v2: self.use_keyset_v2,
         })
     }
 }

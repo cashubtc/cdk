@@ -84,11 +84,11 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
         Ok(Self {
             amount: proof.amount.into(),
             secret: cdk::secret::Secret::from_str(&proof.secret)
-                .map_err(|e| FfiError::Serialization { msg: e.to_string() })?,
+                .map_err(|e| FfiError::internal(format!("Invalid secret: {}", e)))?,
             c: cdk::nuts::PublicKey::from_str(&proof.c)
-                .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?,
+                .map_err(|e| FfiError::internal(format!("Invalid public key: {}", e)))?,
             keyset_id: Id::from_str(&proof.keyset_id)
-                .map_err(|e| FfiError::Serialization { msg: e.to_string() })?,
+                .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             witness: proof.witness.map(|w| w.into()),
             dleq: proof.dleq.map(|d| d.into()),
         })
@@ -130,9 +130,7 @@ pub fn proof_has_dleq(proof: &Proof) -> bool {
 #[uniffi::export]
 pub fn proof_verify_htlc(proof: &Proof) -> Result<(), FfiError> {
     let cdk_proof: cdk::nuts::Proof = proof.clone().try_into()?;
-    cdk_proof
-        .verify_htlc()
-        .map_err(|e| FfiError::Generic { msg: e.to_string() })
+    cdk_proof.verify_htlc().map_err(FfiError::internal)
 }
 
 /// Verify DLEQ proof on a proof
@@ -145,7 +143,7 @@ pub fn proof_verify_dleq(
     let cdk_pubkey: cdk::nuts::PublicKey = mint_pubkey.try_into()?;
     cdk_proof
         .verify_dleq(cdk_pubkey)
-        .map_err(|e| FfiError::Generic { msg: e.to_string() })
+        .map_err(FfiError::internal)
 }
 
 /// Sign a P2PK proof with a secret key, returning a new signed proof
@@ -153,11 +151,11 @@ pub fn proof_verify_dleq(
 pub fn proof_sign_p2pk(proof: Proof, secret_key_hex: String) -> Result<Proof, FfiError> {
     let mut cdk_proof: cdk::nuts::Proof = proof.try_into()?;
     let secret_key = cdk::nuts::SecretKey::from_hex(&secret_key_hex)
-        .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
+        .map_err(|e| FfiError::internal(format!("Invalid secret key: {}", e)))?;
 
     cdk_proof
         .sign_p2pk(secret_key)
-        .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+        .map_err(FfiError::internal)?;
 
     Ok(cdk_proof.into())
 }
@@ -288,9 +286,8 @@ impl TryFrom<Conditions> for cdk::nuts::nut11::Conditions {
                     .pubkeys
                     .into_iter()
                     .map(|s| {
-                        s.parse().map_err(|e| FfiError::InvalidCryptographicKey {
-                            msg: format!("Invalid pubkey: {}", e),
-                        })
+                        s.parse()
+                            .map_err(|e| FfiError::internal(format!("Invalid pubkey: {}", e)))
                     })
                     .collect::<Result<Vec<_>, _>>()?,
             )
@@ -304,9 +301,8 @@ impl TryFrom<Conditions> for cdk::nuts::nut11::Conditions {
                     .refund_keys
                     .into_iter()
                     .map(|s| {
-                        s.parse().map_err(|e| FfiError::InvalidCryptographicKey {
-                            msg: format!("Invalid refund key: {}", e),
-                        })
+                        s.parse()
+                            .map_err(|e| FfiError::internal(format!("Invalid refund key: {}", e)))
                     })
                     .collect::<Result<Vec<_>, _>>()?,
             )
@@ -315,11 +311,7 @@ impl TryFrom<Conditions> for cdk::nuts::nut11::Conditions {
         let sig_flag = match conditions.sig_flag {
             0 => cdk::nuts::nut11::SigFlag::SigInputs,
             1 => cdk::nuts::nut11::SigFlag::SigAll,
-            _ => {
-                return Err(FfiError::Generic {
-                    msg: "Invalid sig_flag value".to_string(),
-                })
-            }
+            _ => return Err(FfiError::internal("Invalid sig_flag value")),
         };
 
         Ok(Self {
@@ -442,9 +434,7 @@ impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
             SpendingConditions::P2PK { pubkey, conditions } => {
                 let pubkey = pubkey
                     .parse()
-                    .map_err(|e| FfiError::InvalidCryptographicKey {
-                        msg: format!("Invalid pubkey: {}", e),
-                    })?;
+                    .map_err(|e| FfiError::internal(format!("Invalid pubkey: {}", e)))?;
                 let conditions = conditions.map(|c| c.try_into()).transpose()?;
                 Ok(Self::P2PKConditions {
                     data: pubkey,
@@ -454,9 +444,7 @@ impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
             SpendingConditions::HTLC { hash, conditions } => {
                 let hash = hash
                     .parse()
-                    .map_err(|e| FfiError::InvalidCryptographicKey {
-                        msg: format!("Invalid hash: {}", e),
-                    })?;
+                    .map_err(|e| FfiError::internal(format!("Invalid hash: {}", e)))?;
                 let conditions = conditions.map(|c| c.try_into()).transpose()?;
                 Ok(Self::HTLCConditions {
                     data: hash,
@@ -482,6 +470,10 @@ pub struct ProofInfo {
     pub spending_condition: Option<SpendingConditions>,
     /// Currency unit
     pub unit: CurrencyUnit,
+    /// Operation ID that is using/spending this proof
+    pub used_by_operation: Option<String>,
+    /// Operation ID that created this proof
+    pub created_by_operation: Option<String>,
 }
 
 impl From<cdk::types::ProofInfo> for ProofInfo {
@@ -493,6 +485,8 @@ impl From<cdk::types::ProofInfo> for ProofInfo {
             state: info.state.into(),
             spending_condition: info.spending_condition.map(Into::into),
             unit: info.unit.into(),
+            used_by_operation: info.used_by_operation.map(|u| u.to_string()),
+            created_by_operation: info.created_by_operation.map(|u| u.to_string()),
         }
     }
 }
@@ -507,6 +501,7 @@ pub fn decode_proof_info(json: String) -> Result<ProofInfo, FfiError> {
 /// Encode ProofInfo to JSON string
 #[uniffi::export]
 pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
+    use std::str::FromStr;
     // Convert to cdk::types::ProofInfo for serialization
     let cdk_info = cdk::types::ProofInfo {
         proof: info.proof.try_into()?,
@@ -515,6 +510,16 @@ pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
         state: info.state.into(),
         spending_condition: info.spending_condition.and_then(|c| c.try_into().ok()),
         unit: info.unit.into(),
+        used_by_operation: info
+            .used_by_operation
+            .map(|id| uuid::Uuid::from_str(&id))
+            .transpose()
+            .map_err(|e| FfiError::internal(e.to_string()))?,
+        created_by_operation: info
+            .created_by_operation
+            .map(|id| uuid::Uuid::from_str(&id))
+            .transpose()
+            .map_err(|e| FfiError::internal(e.to_string()))?,
     };
     Ok(serde_json::to_string(&cdk_info)?)
 }

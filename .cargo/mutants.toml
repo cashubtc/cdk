@@ -37,7 +37,43 @@ exclude_re = [
     # amount.rs:331 - Sub returning Default/0 causes infinite loops
     "crates/cashu/src/amount.rs:331:.*replace.*sub.*with Default",
 
-    # Trivial getters - not worth testing
+    # Trivial getters/setters - not worth testing
     "FeeAndAmounts::fee",
     "FeeAndAmounts::amounts",
+    "BlindedMessage::witness",
+    "crates/cashu/src/amount.rs:.*to_u64",
+
+    # Trivial trait implementations - unrealistic mutations
+    "crates/cashu/src/amount.rs.*impl From<&u64> for Amount.*from",
+    "crates/cashu/src/amount.rs.*impl AsRef<u64> for Amount.*as_ref",
+    "crates/cashu/src/amount.rs.*impl std::ops::Mul for Amount.*mul",
+    "crates/cashu/src/amount.rs.*impl std::ops::Div for Amount.*div",
+    "crates/cashu/src/amount.rs.*impl From<Amount> for u64.*from",
+    "crates/cashu/src/amount.rs.*impl Default for Amount",
+    "crates/cashu/src/amount.rs.*impl Default for &Amount",
+    "crates/cashu/src/amount.rs.*impl.*Display for Amount.*fmt",
+
+    # amount_for_offer requires constructing lightning Offer objects which is complex
+    "crates/cashu/src/amount.rs.*amount_for_offer",
+
+    # hash_to_curve boundary check - would require finding a message that needs exactly 2^16
+    # iterations which is impractical. The < vs <= mutation is not realistically testable.
+    "crates/cashu/src/dhke.rs:49:.*replace < with",
+
+    # Secret::drop zeroizes memory for security. Testing this properly requires unsafe memory
+    # inspection. The security guarantee comes from using the zeroize crate correctly.
+    "crates/cashu/src/secret.rs.*impl Drop for Secret.*drop",
+
+    # serialize_to_cbor_diag is only used for CLI diagnostic output (decode_token, decode_request).
+    # Not part of any critical path - purely human-readable debugging output.
+    "crates/cashu/src/util/mod.rs.*serialize_to_cbor_diag",
+
+    # PartialOrd canonical implementation - just delegates to Ord::cmp, this is standard Rust idiom
+    "crates/cashu/src/nuts/nut00/mod.rs:.*impl PartialOrd for Proof.*partial_cmp",
+
+    # Trivial getters in nut00
+    "crates/cashu/src/nuts/nut00/mod.rs:.*PaymentMethod::is_known",
+    "crates/cashu/src/nuts/nut00/mod.rs:.*PaymentMethod::is_custom",
+    "crates/cashu/src/nuts/nut00/mod.rs:.*PaymentMethod::is_bolt11",
+    "crates/cashu/src/nuts/nut00/mod.rs:.*impl fmt::Display for KnownMethod.*fmt",
 ]

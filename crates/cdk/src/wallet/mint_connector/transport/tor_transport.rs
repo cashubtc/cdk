@@ -1,4 +1,4 @@
-///! Tor transport implementation (non-wasm32 only)
+//! Tor transport implementation (non-wasm32 only)
 use std::sync::Arc;
 
 use arti_client::{TorClient, TorClientConfig};
@@ -149,6 +149,7 @@ impl TorAsync {
         method: http::Method,
         url: Url,
         auth: Option<AuthToken>,
+        custom_headers: &[(&str, &str)],
         mut body: Option<Vec<u8>>,
     ) -> Result<R, Error>
     where
@@ -174,6 +175,10 @@ impl TorAsync {
 
         let mut builder = Request::builder().method(method).uri(uri);
         builder = builder.header(header::ACCEPT, "application/json");
+
+        for (key, value) in custom_headers {
+            builder = builder.header(*key, *value);
+        }
 
         let mut req = if let Some(b) = body.take() {
             builder
@@ -232,21 +237,24 @@ impl Transport for TorAsync {
         panic!("not supported with TorAsync transport");
     }
 
-    async fn http_get<R>(
+    async fn http_get_with_headers<R>(
         &self,
         url: url::Url,
         auth: Option<cdk_common::AuthToken>,
+        custom_headers: &[(&str, &str)],
     ) -> Result<R, super::super::Error>
     where
         R: serde::de::DeserializeOwned,
     {
-        self.request::<R>(Method::GET, url, auth, None).await
+        self.request::<R>(Method::GET, url, auth, custom_headers, None)
+            .await
     }
 
-    async fn http_post<P, R>(
+    async fn http_post_with_headers<P, R>(
         &self,
         url: url::Url,
         auth_token: Option<cdk_common::AuthToken>,
+        custom_headers: &[(&str, &str)],
         payload: &P,
     ) -> Result<R, super::super::Error>
     where
@@ -254,7 +262,7 @@ impl Transport for TorAsync {
         R: serde::de::DeserializeOwned,
     {
         let body = serde_json::to_vec(payload).map_err(|e| Error::Custom(e.to_string()))?;
-        self.request::<R>(Method::POST, url, auth_token, Some(body))
+        self.request::<R>(Method::POST, url, auth_token, custom_headers, Some(body))
             .await
     }
 
@@ -315,7 +323,7 @@ impl Transport for TorAsync {
         }
 
         let resp: DnsResp = self
-            .request::<DnsResp>(Method::GET, url, None, None::<Vec<u8>>)
+            .request::<DnsResp>(Method::GET, url, None, &[], None::<Vec<u8>>)
             .await?;
 
         let answers = resp.Answer.unwrap_or_default();

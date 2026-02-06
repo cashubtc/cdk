@@ -19,7 +19,7 @@ pub async fn mint_info(proxy: Option<Url>, sub_command_args: &MintInfoSubcommand
 
     let info = client.get_mint_info().await?;
 
-    println!("{info:#?}");
+    println!("{}", serde_json::to_string_pretty(&info)?);
 
     Ok(())
 }

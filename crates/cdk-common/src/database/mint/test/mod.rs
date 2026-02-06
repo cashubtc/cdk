@@ -2,26 +2,30 @@
 //!
 //! This set is generic and checks the default and expected behaviour for a mint database
 //! implementation
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::missing_panics_doc)]
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // For derivation path parsing
 use bitcoin::bip32::DerivationPath;
-use cashu::secret::Secret;
-use cashu::{Amount, CurrencyUnit, SecretKey};
+use cashu::CurrencyUnit;
 
 use super::*;
-use crate::database::MintKVStoreDatabase;
+use crate::database::KVStoreDatabase;
 use crate::mint::MintKeySetInfo;
 
-mod kvstore;
+mod keys;
 mod mint;
 mod proofs;
+mod saga;
+mod signatures;
 
+pub use self::keys::*;
 pub use self::mint::*;
 pub use self::proofs::*;
+pub use self::saga::*;
+pub use self::signatures::*;
 
 /// Generate standard keyset amounts as powers of 2
 #[inline]
@@ -52,56 +56,10 @@ where
     keyset_id
 }
 
-/// State transition test
-pub async fn state_transition<DB>(db: DB)
-where
-    DB: Database<crate::database::Error> + KeysDatabase<Err = crate::database::Error>,
-{
-    let keyset_id = setup_keyset(&db).await;
-
-    let proofs = vec![
-        Proof {
-            amount: Amount::from(100),
-            keyset_id,
-            secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
-            witness: None,
-            dleq: None,
-        },
-        Proof {
-            amount: Amount::from(200),
-            keyset_id,
-            secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
-            witness: None,
-            dleq: None,
-        },
-    ];
-
-    // Add proofs to database
-    let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs.clone(), None, &Operation::new_swap())
-        .await
-        .unwrap();
-
-    // Mark one proof as `pending`
-    assert!(tx
-        .update_proofs_states(&[proofs[0].y().unwrap()], State::Pending)
-        .await
-        .is_ok());
-
-    // Attempt to select the `pending` proof, as `pending` again (which should fail)
-    assert!(tx
-        .update_proofs_states(&[proofs[0].y().unwrap()], State::Pending)
-        .await
-        .is_err());
-    tx.commit().await.unwrap();
-}
-
 /// Test KV store functionality including write, read, list, update, and remove operations
 pub async fn kvstore_functionality<DB>(db: DB)
 where
-    DB: Database<crate::database::Error> + MintKVStoreDatabase<Err = crate::database::Error>,
+    DB: Database<crate::database::Error> + KVStoreDatabase<Err = crate::database::Error>,
 {
     // Test basic read/write operations in transaction
     {
@@ -229,7 +187,6 @@ macro_rules! mint_db_test {
     ($make_db_fn:ident) => {
         mint_db_test!(
             $make_db_fn,
-            state_transition,
             add_and_find_proofs,
             add_duplicate_proofs,
             kvstore_functionality,
@@ -247,7 +204,60 @@ macro_rules! mint_db_test {
             add_melt_request_unique_blinded_messages,
             reject_melt_duplicate_blinded_signature,
             reject_duplicate_blinded_message_db_constraint,
-            cleanup_melt_request_after_processing
+            cleanup_melt_request_after_processing,
+            add_and_get_melt_quote,
+            add_melt_quote_only_once,
+            update_melt_quote_state_transition,
+            update_melt_quote_request_lookup_id,
+            get_all_mint_quotes,
+            get_all_melt_quotes,
+            get_mint_quote_by_request,
+            get_mint_quote_by_request_lookup_id,
+            delete_blinded_messages,
+            add_and_get_blind_signatures,
+            get_blind_signatures_for_keyset,
+            get_blind_signatures_for_quote,
+            get_total_issued,
+            get_nonexistent_blind_signatures,
+            add_duplicate_blind_signatures,
+            add_and_get_keyset_info,
+            add_duplicate_keyset_info,
+            get_all_keyset_infos,
+            set_and_get_active_keyset,
+            get_all_active_keysets,
+            update_active_keyset,
+            get_nonexistent_keyset_info,
+            get_active_keyset_when_none_set,
+            get_proofs_states,
+            get_nonexistent_proof_states,
+            get_proofs_by_nonexistent_ys,
+            proof_transaction_isolation,
+            proof_rollback,
+            multiple_proofs_same_keyset,
+            add_and_get_saga,
+            add_duplicate_saga,
+            update_saga_state,
+            delete_saga,
+            get_incomplete_swap_sagas,
+            get_incomplete_melt_sagas,
+            get_nonexistent_saga,
+            update_nonexistent_saga,
+            delete_nonexistent_saga,
+            saga_with_quote_id,
+            saga_transaction_rollback,
+            multiple_sagas_different_states,
+            increment_mint_quote_amount_paid,
+            increment_mint_quote_amount_issued,
+            get_mint_quote_in_transaction,
+            get_melt_quote_in_transaction,
+            get_mint_quote_by_request_in_transaction,
+            get_mint_quote_by_request_lookup_id_in_transaction,
+            get_blind_signatures_in_transaction,
+            reject_duplicate_payment_ids,
+            remove_spent_proofs_should_fail,
+            get_proofs_with_inconsistent_states_fails,
+            get_proofs_fails_when_some_not_found,
+            update_proofs_state_updates_proofs_with_state,
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

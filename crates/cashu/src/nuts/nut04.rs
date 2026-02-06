@@ -12,11 +12,13 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
+use crate::nut00::KnownMethod;
+use crate::nut23::QuoteState;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteIdError;
-use crate::Amount;
+use crate::{Amount, PublicKey};
 
 /// NUT04 Error
 #[derive(Debug, Error)]
@@ -79,7 +81,7 @@ pub struct MintResponse {
 }
 
 /// Mint Method Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintMethodSettings {
     /// Payment Method e.g. bolt11
@@ -214,7 +216,7 @@ impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
         let unit = unit.ok_or_else(|| de::Error::missing_field("unit"))?;
 
         // Create options based on the method and the description flag
-        let options = if method == PaymentMethod::Bolt11 {
+        let options = if method == PaymentMethod::Known(KnownMethod::Bolt11) {
             description.map(|description| MintMethodOptions::Bolt11 { description })
         } else {
             None
@@ -249,6 +251,8 @@ pub enum MintMethodOptions {
         /// Mint supports setting bolt11 description
         description: bool,
     },
+    /// Custom Options
+    Custom {},
 }
 
 /// Mint Settings
@@ -305,11 +309,126 @@ impl Settings {
     }
 }
 
+/// Custom payment method mint quote request
+///
+/// This is a generic request type that works for any custom payment method.
+/// The method name is provided in the URL path, not in the request body.
+///
+/// The `extra` field allows payment-method-specific fields to be included
+/// without being nested. When serialized, extra fields merge into the parent JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct MintQuoteCustomRequest {
+    /// Amount to mint
+    pub amount: Amount,
+    /// Currency unit
+    pub unit: CurrencyUnit,
+    /// Optional description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// NUT-19 Pubkey
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<PublicKey>,
+    /// Extra payment-method-specific fields
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data (e.g., ehash share).
+    /// This enables proper validation layering: the mint verifies well-defined
+    /// fields while passing extra through to the payment processor.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
+    #[cfg_attr(feature = "swagger", schema(value_type = Object, additional_properties = true))]
+    pub extra: serde_json::Value,
+}
+
+/// Custom payment method mint quote response
+///
+/// This is a generic response type for custom payment methods.
+///
+/// The `extra` field allows payment-method-specific fields to be included
+/// without being nested. When serialized, extra fields merge into the parent JSON:
+/// ```json
+/// {
+///   "quote": "abc123",
+///   "state": "UNPAID",
+///   "amount": 1000,
+///   "paypal_link": "https://paypal.me/merchant",
+///   "paypal_email": "merchant@example.com"
+/// }
+/// ```
+///
+/// This separation enables proper validation layering: the mint verifies
+/// well-defined fields (amount, unit, state, etc.) while passing extra through
+/// to the gRPC payment processor for method-specific validation.
+///
+/// It also provides a clean upgrade path: when a payment method becomes speced,
+/// its fields can be promoted from `extra` to well-defined struct fields without
+/// breaking existing clients (e.g., bolt12's `amount_paid` and `amount_issued`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+#[serde(bound = "Q: Serialize + for<'a> Deserialize<'a>")]
+pub struct MintQuoteCustomResponse<Q> {
+    /// Quote ID
+    pub quote: Q,
+    /// Payment request string (method-specific format)
+    pub request: String,
+    /// Amount
+    pub amount: Option<Amount>,
+    /// Currency unit
+    pub unit: Option<CurrencyUnit>,
+    /// Quote State
+    pub state: QuoteState,
+    /// Unix timestamp until the quote is valid
+    pub expiry: Option<u64>,
+    /// NUT-19 Pubkey
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<PublicKey>,
+    /// Extra payment-method-specific fields
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data without nesting.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
+    #[cfg_attr(feature = "swagger", schema(value_type = Object, additional_properties = true))]
+    pub extra: serde_json::Value,
+}
+
+#[cfg(feature = "mint")]
+impl<Q: ToString> MintQuoteCustomResponse<Q> {
+    /// Convert the MintQuoteCustomResponse with a quote type Q to a String
+    pub fn to_string_id(&self) -> MintQuoteCustomResponse<String> {
+        MintQuoteCustomResponse {
+            quote: self.quote.to_string(),
+            request: self.request.clone(),
+            amount: self.amount,
+            state: self.state,
+            unit: self.unit.clone(),
+            expiry: self.expiry,
+            pubkey: self.pubkey,
+            extra: self.extra.clone(),
+        }
+    }
+}
+
+#[cfg(feature = "mint")]
+impl From<MintQuoteCustomResponse<QuoteId>> for MintQuoteCustomResponse<String> {
+    fn from(value: MintQuoteCustomResponse<QuoteId>) -> Self {
+        Self {
+            quote: value.quote.to_string(),
+            request: value.request,
+            amount: value.amount,
+            unit: value.unit,
+            expiry: value.expiry,
+            state: value.state,
+            pubkey: value.pubkey,
+            extra: value.extra,
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use serde_json::{from_str, json, to_string};
 
     use super::*;
+    use crate::nut00::KnownMethod;
 
     #[test]
     fn test_mint_method_settings_top_level_description() {
@@ -326,7 +445,7 @@ mod tests {
         let settings: MintMethodSettings = from_str(json_str).unwrap();
 
         // Check that description was correctly moved to options
-        assert_eq!(settings.method, PaymentMethod::Bolt11);
+        assert_eq!(settings.method, PaymentMethod::Known(KnownMethod::Bolt11));
         assert_eq!(settings.unit, CurrencyUnit::Sat);
         assert_eq!(settings.min_amount, Some(Amount::from(0)));
         assert_eq!(settings.max_amount, Some(Amount::from(10000)));

@@ -22,6 +22,7 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, Signatory
 ///
 /// The private keys and the all key-related data is stored in memory, in the same process, but it
 /// is not accessible from the outside.
+#[allow(missing_debug_implementations)]
 pub struct DbSignatory {
     keysets: RwLock<HashMap<Id, (MintKeySetInfo, MintKeySet)>>,
     active_keysets: RwLock<HashMap<CurrencyUnit, Id>>,
@@ -34,6 +35,10 @@ pub struct DbSignatory {
 
 impl DbSignatory {
     /// Creates a new MemorySignatory instance
+    ///
+    /// # Panics
+    ///
+    /// Panics if the seed produces an invalid master key (should never happen with valid entropy).
     pub async fn new(
         localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
         seed: &[u8],
@@ -43,52 +48,9 @@ impl DbSignatory {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
 
-        let (mut active_keysets, active_keyset_units) = init_keysets(
-            xpriv,
-            &secp_ctx,
-            &localstore,
-            &supported_units,
-            &custom_paths,
-        )
-        .await?;
+        init_keysets(xpriv, &secp_ctx, &localstore, &supported_units).await?;
 
         supported_units.entry(CurrencyUnit::Auth).or_insert((0, 1));
-        let mut tx = localstore.begin_transaction().await?;
-
-        // Create new keysets for supported units that aren't covered by the current keysets
-        for (unit, (fee, max_order)) in supported_units {
-            if !active_keyset_units.contains(&unit) {
-                let derivation_path = match custom_paths.get(&unit) {
-                    Some(path) => path.clone(),
-                    None => {
-                        derivation_path_from_unit(unit.clone(), 0).ok_or(Error::UnsupportedUnit)?
-                    }
-                };
-
-                let amounts = (0..max_order)
-                    .map(|i| 2_u64.pow(i as u32))
-                    .collect::<Vec<_>>();
-
-                let (keyset, keyset_info) = create_new_keyset(
-                    &secp_ctx,
-                    xpriv,
-                    derivation_path,
-                    Some(0),
-                    unit.clone(),
-                    &amounts,
-                    fee,
-                    // TODO: add and connect settings for this
-                    None,
-                );
-
-                let id = keyset_info.id;
-                tx.add_keyset_info(keyset_info).await?;
-                tx.set_active_keyset(unit, id).await?;
-                active_keysets.insert(id, keyset);
-            }
-        }
-
-        tx.commit().await?;
 
         let keys = Self {
             keysets: Default::default(),
@@ -139,6 +101,7 @@ impl DbSignatory {
             &keyset_info.amounts,
             keyset_info.unit.clone(),
             keyset_info.derivation_path.clone(),
+            keyset_info.input_fee_ppk,
             keyset_info.final_expiry,
             keyset_info.id.get_version(),
         )
@@ -219,7 +182,7 @@ impl Signatory for DbSignatory {
     /// Generate new keyset
     #[tracing::instrument(skip(self))]
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
-        let path_index = if let Some(current_keyset_id) =
+        let (path_index, amounts) = if let Some(current_keyset_id) =
             self.localstore.get_active_keyset_id(&args.unit).await?
         {
             let keyset_info = self
@@ -228,9 +191,12 @@ impl Signatory for DbSignatory {
                 .await?
                 .ok_or(Error::UnknownKeySet)?;
 
-            keyset_info.derivation_path_index.unwrap_or(1) + 1
+            (
+                keyset_info.derivation_path_index.unwrap_or(1) + 1,
+                keyset_info.amounts,
+            )
         } else {
-            1
+            (1, vec![])
         };
 
         let derivation_path = match self.custom_paths.get(&args.unit) {
@@ -239,16 +205,26 @@ impl Signatory for DbSignatory {
                 .ok_or(Error::UnsupportedUnit)?,
         };
 
+        let amounts = if args.amounts.is_empty() {
+            if amounts.is_empty() {
+                return Err(Error::Custom("Amounts cannot be empty".to_string()));
+            }
+            amounts
+        } else {
+            args.amounts
+        };
+
         let (keyset, info) = create_new_keyset(
             &self.secp_ctx,
             self.xpriv,
             derivation_path,
             Some(path_index),
             args.unit.clone(),
-            &args.amounts,
+            &amounts,
             args.input_fee_ppk,
             // TODO: add and connect settings for this
             None,
+            args.use_keyset_v2,
         );
         let id = info.id;
         let mut tx = self.localstore.begin_transaction().await?;
@@ -281,6 +257,7 @@ mod test {
             &[1, 2],
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
+            0,
             None,
             cdk_common::nut02::KeySetVersion::Version00,
         );
@@ -327,6 +304,7 @@ mod test {
             &[1, 2],
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
+            0,
             None,
             cdk_common::nut02::KeySetVersion::Version00,
         );

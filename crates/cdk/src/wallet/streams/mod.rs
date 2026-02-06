@@ -14,8 +14,15 @@ pub mod payment;
 pub mod proof;
 mod wait;
 
+#[cfg(feature = "npubcash")]
+pub mod npubcash;
+
 /// Shared type
+#[cfg(not(target_arch = "wasm32"))]
 type RecvFuture<'a, Ret> = Pin<Box<dyn Future<Output = Ret> + Send + 'a>>;
+
+#[cfg(target_arch = "wasm32")]
+type RecvFuture<'a, Ret> = Pin<Box<dyn Future<Output = Ret> + 'a>>;
 
 #[allow(private_bounds)]
 #[allow(clippy::enum_variant_names)]
@@ -63,10 +70,10 @@ impl WaitableEvent {
                 let (bolt11, bolt12) = quotes.into_iter().fold(
                     (Vec::new(), Vec::new()),
                     |mut acc, (quote_id, payment_method)| {
-                        match payment_method {
-                            PaymentMethod::Bolt11 => acc.0.push(quote_id),
-                            PaymentMethod::Bolt12 => acc.1.push(quote_id),
-                            PaymentMethod::Custom(_) => acc.0.push(quote_id),
+                        match payment_method.as_str() {
+                            "bolt11" => acc.0.push(quote_id),
+                            "bolt12" => acc.1.push(quote_id),
+                            _ => acc.0.push(quote_id),
                         }
                         acc
                     },

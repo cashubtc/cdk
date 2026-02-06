@@ -34,7 +34,7 @@ pub enum Error {
     #[error(transparent)]
     HexError(#[from] hex::Error),
     /// Keyset length error
-    #[error("NUT02: ID length invalid")]
+    #[error("NUT02: ID length invalid, expected 8 bytes (short/v1) or 33 bytes (v2)")]
     Length,
     /// Unknown version
     #[error("NUT02: Unknown Version")]
@@ -92,7 +92,7 @@ impl fmt::Display for KeySetVersion {
 }
 
 /// Keyset ID bytes
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum IdBytes {
     /// Bytes for v1
@@ -157,27 +157,40 @@ impl Id {
     /// 4 - If a final expiration is specified, convert it into a radix-10 string and concatenate it (e.g "final_expiry:1896187313")
     /// 5 - HASH_SHA256 the concatenated byte array and take the first 31 bytes
     /// 6 - prefix it with a keyset ID version byte
-    pub fn v2_from_data(map: &Keys, unit: &CurrencyUnit, expiry: Option<u64>) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances as the hash output
+    /// is always valid hex and the correct length.
+    pub fn v2_from_data(
+        map: &Keys,
+        unit: &CurrencyUnit,
+        input_fee_ppk: u64,
+        expiry: Option<u64>,
+    ) -> Self {
         let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
         keys.sort_by_key(|(amt, _v)| *amt);
 
-        let mut pubkeys_concat: Vec<u8> = keys
+        let keys_string = keys
             .iter()
-            .map(|(_, pubkey)| pubkey.to_bytes())
-            .collect::<Vec<[u8; 33]>>()
-            .concat();
+            .map(|(amt, pubkey)| format!("{}:{}", amt, hex::encode(pubkey.to_bytes())))
+            .collect::<Vec<String>>()
+            .join(",");
 
-        // Add the unit
-        pubkeys_concat.extend(b"unit:");
-        pubkeys_concat.extend(unit.to_string().to_lowercase().as_bytes());
+        let mut data = keys_string;
+        data.push_str(&format!("|unit:{}", unit));
 
-        // Add the expiration
-        if let Some(expiry) = expiry {
-            pubkeys_concat.extend(b"final_expiry:");
-            pubkeys_concat.extend(expiry.to_string().as_bytes());
+        if input_fee_ppk > 0 {
+            data.push_str(&format!("|input_fee_ppk:{}", input_fee_ppk));
         }
 
-        let hash = Sha256::hash(&pubkeys_concat);
+        if let Some(expiry) = expiry {
+            if expiry > 0 {
+                data.push_str(&format!("|final_expiry:{}", expiry));
+            }
+        }
+
+        let hash = Sha256::hash(data.as_bytes());
         let hex_of_hash = hex::encode(hash.to_byte_array());
 
         Self {
@@ -198,6 +211,11 @@ impl Id {
     ///   3. HASH_SHA256 the concatenated public keys
     ///   4. take the first 14 characters of the hex-encoded hash
     ///   5. prefix it with a keyset ID version byte
+    ///
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances as the hash output
+    /// is always valid hex and the correct length.
     pub fn v1_from_keys(map: &Keys) -> Self {
         let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
         keys.sort_by_key(|(amt, _v)| *amt);
@@ -293,6 +311,16 @@ impl TryFrom<String> for Id {
     type Error = Error;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
+        // Check that string is ASCII (required for hex) to avoid panics on byte slicing
+        // with multi-byte UTF-8 characters
+        ensure_cdk!(
+            s.is_ascii(),
+            Error::HexError(hex::Error::InvalidHexCharacter {
+                c: s.chars().find(|c| !c.is_ascii()).unwrap_or('\0'),
+                index: s.chars().position(|c| !c.is_ascii()).unwrap_or(0),
+            })
+        );
+
         ensure_cdk!(
             s.len() == Self::STRLEN_V1 + 2 || s.len() == Self::STRLEN_V2 + 2,
             Error::Length
@@ -350,6 +378,10 @@ impl ShortKeysetId {
 
     /// [`ShortKeysetId`] from bytes
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.is_empty() {
+            return Err(Error::Length);
+        }
+
         let version = KeySetVersion::from_byte(&bytes[0])?;
         let prefix = bytes[1..].to_vec();
         Ok(Self { version, prefix })
@@ -392,6 +424,16 @@ impl TryFrom<String> for ShortKeysetId {
     type Error = Error;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
+        // Check that string is ASCII (required for hex) to avoid panics on byte slicing
+        // with multi-byte UTF-8 characters
+        ensure_cdk!(
+            s.is_ascii(),
+            Error::HexError(hex::Error::InvalidHexCharacter {
+                c: s.chars().find(|c| !c.is_ascii()).unwrap_or('\0'),
+                index: s.chars().position(|c| !c.is_ascii()).unwrap_or(0),
+            })
+        );
+
         ensure_cdk!(s.len() == 16, Error::Length);
 
         let version: KeySetVersion = KeySetVersion::from_byte(&hex::decode(&s[..2])?[0])?;
@@ -435,8 +477,14 @@ pub struct KeySet {
     pub id: Id,
     /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
+    /// Keyset state - indicates whether the mint will sign new outputs with this keyset
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
     /// Keyset [`Keys`]
     pub keys: Keys,
+    /// Input Fee PPK
+    #[serde(default)]
+    pub input_fee_ppk: u64,
     /// Expiry
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_expiry: Option<u64>,
@@ -447,7 +495,12 @@ impl KeySet {
     pub fn verify_id(&self) -> Result<(), Error> {
         let keys_id = match self.id.version {
             KeySetVersion::Version00 => Id::v1_from_keys(&self.keys),
-            KeySetVersion::Version01 => Id::v2_from_data(&self.keys, &self.unit, self.final_expiry),
+            KeySetVersion::Version01 => Id::v2_from_data(
+                &self.keys,
+                &self.unit,
+                self.input_fee_ppk,
+                self.final_expiry,
+            ),
         };
 
         ensure_cdk!(
@@ -458,18 +511,6 @@ impl KeySet {
         ensure_cdk!(keys_id == self.id, Error::IncorrectKeysetId);
 
         Ok(())
-    }
-}
-
-#[cfg(feature = "mint")]
-impl From<MintKeySet> for KeySet {
-    fn from(keyset: MintKeySet) -> Self {
-        Self {
-            id: keyset.id,
-            unit: keyset.unit,
-            keys: Keys::from(keyset.keys),
-            final_expiry: keyset.final_expiry,
-        }
     }
 }
 
@@ -541,6 +582,9 @@ pub struct MintKeySet {
     pub unit: CurrencyUnit,
     /// Keyset [`MintKeys`]
     pub keys: MintKeys,
+    /// Input Fee PPK
+    #[serde(default)]
+    pub input_fee_ppk: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Expiry [`Option<u64>`]
     pub final_expiry: Option<u64>,
@@ -549,11 +593,17 @@ pub struct MintKeySet {
 #[cfg(feature = "mint")]
 impl MintKeySet {
     /// Generate new [`MintKeySet`]
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the RNG fails or if key derivation fails,
+    /// which should not happen under normal circumstances.
     pub fn generate<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         xpriv: Xpriv,
         unit: CurrencyUnit,
         amounts: &[u64],
+        input_fee_ppk: u64,
         final_expiry: Option<u64>,
         version: KeySetVersion,
     ) -> Self {
@@ -579,23 +629,33 @@ impl MintKeySet {
         let keys = MintKeys::new(map);
         let id = match version {
             KeySetVersion::Version00 => Id::v1_from_keys(&keys.clone().into()),
-            KeySetVersion::Version01 => Id::v2_from_data(&keys.clone().into(), &unit, final_expiry),
+            KeySetVersion::Version01 => {
+                Id::v2_from_data(&keys.clone().into(), &unit, input_fee_ppk, final_expiry)
+            }
         };
         Self {
             id,
             unit,
             keys,
+            input_fee_ppk,
             final_expiry,
         }
     }
 
     /// Generate new [`MintKeySet`] from seed
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the RNG fails or if key derivation fails,
+    /// which should not happen under normal circumstances.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_from_seed<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         seed: &[u8],
         amounts: &[u64],
         currency_unit: CurrencyUnit,
         derivation_path: DerivationPath,
+        input_fee_ppk: u64,
         final_expiry: Option<u64>,
         version: KeySetVersion,
     ) -> Self {
@@ -607,18 +667,26 @@ impl MintKeySet {
                 .expect("RNG busted"),
             currency_unit,
             amounts,
+            input_fee_ppk,
             final_expiry,
             version,
         )
     }
 
     /// Generate new [`MintKeySet`] from xpriv
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the RNG fails or if key derivation fails,
+    /// which should not happen under normal circumstances.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_from_xpriv<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         xpriv: Xpriv,
         amounts: &[u64],
         currency_unit: CurrencyUnit,
         derivation_path: DerivationPath,
+        input_fee_ppk: u64,
         final_expiry: Option<u64>,
         version: KeySetVersion,
     ) -> Self {
@@ -629,6 +697,7 @@ impl MintKeySet {
                 .expect("RNG busted"),
             currency_unit,
             amounts,
+            input_fee_ppk,
             final_expiry,
             version,
         )
@@ -638,10 +707,15 @@ impl MintKeySet {
 #[cfg(feature = "mint")]
 impl From<MintKeySet> for Id {
     fn from(keyset: MintKeySet) -> Id {
-        let keys: super::KeySet = keyset.into();
-        match keys.id.version {
-            KeySetVersion::Version00 => Id::v1_from_keys(&keys.keys),
-            KeySetVersion::Version01 => Id::v2_from_data(&keys.keys, &keys.unit, keys.final_expiry),
+        let keys: Keys = keyset.keys.into();
+        match keyset.id.version {
+            KeySetVersion::Version00 => Id::v1_from_keys(&keys),
+            KeySetVersion::Version01 => Id::v2_from_data(
+                &keys,
+                &keyset.unit,
+                keyset.input_fee_ppk,
+                keyset.final_expiry,
+            ),
         }
     }
 }
@@ -768,24 +842,25 @@ mod test {
     fn test_v2_deserialization_and_id_generation() {
         let unit: CurrencyUnit = CurrencyUnit::from_str("sat").unwrap();
         let expiry: u64 = 2059210353; // +10 years from now
+        let input_fee_ppk = 100;
 
         let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
         let id_from_str =
-            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+            Id::from_str("015ba18a8adcd02e715a58358eb618da4a4b3791151a4bee5e968bb88406ccf76a")
                 .unwrap();
-        let id = Id::v2_from_data(&keys, &unit, Some(expiry));
+        let id = Id::v2_from_data(&keys, &unit, input_fee_ppk, Some(expiry));
         assert_eq!(id, id_from_str);
 
         let keys: Keys = serde_json::from_str(KEYSET).unwrap();
         let id_from_str =
-            Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9e0")
+            Id::from_str("01ab6aa4ff30390da34986d84be5274b48ad7a74265d791095bfc39f4098d9764f")
                 .unwrap();
-        let id = Id::v2_from_data(&keys, &unit, Some(expiry));
+        let id = Id::v2_from_data(&keys, &unit, 0, Some(expiry));
         assert_eq!(id, id_from_str);
 
-        let id = Id::v2_from_data(&keys, &unit, None);
+        let id = Id::v2_from_data(&keys, &unit, 0, None);
         let id_from_str =
-            Id::from_str("016d72f27c8d22808ad66d1959b3dab83af17e2510db7ffd57d2365d9eec3ced75")
+            Id::from_str("012fbb01a4e200c76df911eeba3b8fe1831202914b24664f4bccbd25852a6708f8")
                 .unwrap();
         assert_eq!(id, id_from_str);
     }
@@ -920,5 +995,19 @@ mod test {
 
         assert!(short_id_1.to_string() == "009a1f293253e41e");
         assert!(short_id_2.to_string() == "01adc013fa9d8517");
+    }
+
+    #[test]
+    fn test_id_with_non_ascii_chars() {
+        // Test that non-ASCII characters in ID strings don't cause panics
+        // but instead return proper errors. This was found by fuzzing.
+        // The character 'ǝ' is a 2-byte UTF-8 sequence that could cause
+        // panics when slicing by byte index.
+        let id_with_non_ascii = Id::from_str("0ǝfa73302d12ff{");
+        assert!(matches!(id_with_non_ascii, Err(Error::HexError(_))));
+
+        // Also test ShortKeysetId
+        let short_id_with_non_ascii = ShortKeysetId::from_str("0ǝfa73302d12ff");
+        assert!(matches!(short_id_with_non_ascii, Err(Error::HexError(_))));
     }
 }

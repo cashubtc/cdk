@@ -37,23 +37,22 @@ impl Wallet {
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
         let m = Mnemonic::parse(&mnemonic)
-            .map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
         let seed = m.to_seed_normalized("");
-
+        tracing::info!("creating ffi wallet");
         // Convert the FFI database trait to a CDK database implementation
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
-        let wallet =
-            CdkWalletBuilder::new()
-                .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
-                    FfiError::InvalidUrl { msg: e.to_string() }
-                })?)
-                .unit(unit.into())
-                .localstore(localstore)
-                .seed(seed)
-                .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
-                .build()
-                .map_err(FfiError::from)?;
+        let wallet = CdkWalletBuilder::new()
+            .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
+                FfiError::internal(format!("Invalid URL: {}", e))
+            })?)
+            .unit(unit.into())
+            .localstore(localstore)
+            .seed(seed)
+            .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
+            .build()
+            .map_err(FfiError::from)?;
 
         Ok(Self {
             inner: Arc::new(wallet),
@@ -111,8 +110,8 @@ impl Wallet {
         Ok(balance.into())
     }
 
-    /// Get mint info
-    pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
+    /// Get mint info from mint
+    pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
         let info = self.inner.fetch_mint_info().await?;
         Ok(info.map(Into::into))
     }
@@ -139,9 +138,9 @@ impl Wallet {
     }
 
     /// Restore wallet from seed
-    pub async fn restore(&self) -> Result<Amount, FfiError> {
-        let amount = self.inner.restore().await?;
-        Ok(amount.into())
+    pub async fn restore(&self) -> Result<Restored, FfiError> {
+        let restored = self.inner.restore().await?;
+        Ok(restored.into())
     }
 
     /// Verify token DLEQ proofs
@@ -157,6 +156,7 @@ impl Wallet {
         proofs: Proofs,
         options: ReceiveOptions,
         memo: Option<String>,
+        token: Option<String>,
     ) -> Result<Amount, FfiError> {
         let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
             proofs.into_iter().map(|p| p.try_into()).collect();
@@ -164,9 +164,31 @@ impl Wallet {
 
         let amount = self
             .inner
-            .receive_proofs(cdk_proofs, options.into(), memo)
+            .receive_proofs(cdk_proofs, options.into(), memo, token)
             .await?;
         Ok(amount.into())
+    }
+
+    /// Get all pending send operations
+    pub async fn get_pending_sends(&self) -> Result<Vec<String>, FfiError> {
+        let sends = self.inner.get_pending_sends().await?;
+        Ok(sends.into_iter().map(|id| id.to_string()).collect())
+    }
+
+    /// Revoke a pending send operation
+    pub async fn revoke_send(&self, operation_id: String) -> Result<Amount, FfiError> {
+        let uuid = uuid::Uuid::parse_str(&operation_id)
+            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
+        let amount = self.inner.revoke_send(uuid).await?;
+        Ok(amount.into())
+    }
+
+    /// Check status of a pending send operation
+    pub async fn check_send_status(&self, operation_id: String) -> Result<bool, FfiError> {
+        let uuid = uuid::Uuid::parse_str(&operation_id)
+            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
+        let claimed = self.inner.check_send_status(uuid).await?;
+        Ok(claimed)
     }
 
     /// Prepare a send operation
@@ -179,16 +201,35 @@ impl Wallet {
             .inner
             .prepare_send(amount.into(), options.into())
             .await?;
-        Ok(std::sync::Arc::new(prepared.into()))
+        Ok(std::sync::Arc::new(PreparedSend::new(
+            self.inner.clone(),
+            &prepared,
+        )))
     }
 
     /// Get a mint quote
     pub async fn mint_quote(
         &self,
-        amount: Amount,
+        payment_method: PaymentMethod,
+        amount: Option<Amount>,
         description: Option<String>,
+        extra: Option<String>,
     ) -> Result<MintQuote, FfiError> {
-        let quote = self.inner.mint_quote(amount.into(), description).await?;
+        let quote = self
+            .inner
+            .mint_quote(payment_method, amount.map(Into::into), description, extra)
+            .await?;
+        Ok(quote.into())
+    }
+
+    /// Refresh a specific mint quote status from the mint.
+    /// Updates local store with current state from mint.
+    /// Does NOT mint tokens - use mint() to mint a specific quote.
+    pub async fn refresh_mint_quote(
+        &self,
+        quote_id: String,
+    ) -> Result<MintQuoteBolt11Response, FfiError> {
+        let quote = self.inner.refresh_mint_quote_status(&quote_id).await?;
         Ok(quote.into())
     }
 
@@ -209,24 +250,18 @@ impl Wallet {
         Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
-    /// Get a melt quote
-    pub async fn melt_quote(
-        &self,
-        request: String,
-        options: Option<MeltOptions>,
-    ) -> Result<MeltQuote, FfiError> {
-        let cdk_options = options.map(Into::into);
-        let quote = self.inner.melt_quote(request, cdk_options).await?;
-        Ok(quote.into())
+    /// Prepare a melt operation
+    ///
+    /// Returns a `PreparedMelt` that can be confirmed or cancelled.
+    pub async fn prepare_melt(&self, quote_id: String) -> Result<PreparedMelt, FfiError> {
+        let prepared = self
+            .inner
+            .prepare_melt(&quote_id, std::collections::HashMap::new())
+            .await?;
+        Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
 
-    /// Melt tokens
-    pub async fn melt(&self, quote_id: String) -> Result<Melted, FfiError> {
-        let melted = self.inner.melt(&quote_id).await?;
-        Ok(melted.into())
-    }
-
-    /// Melt specific proofs
+    /// Prepare a melt operation with specific proofs
     ///
     /// This method allows melting proofs that may not be in the wallet's database,
     /// similar to how `receive_proofs` handles external proofs. The proofs will be
@@ -239,34 +274,26 @@ impl Wallet {
     ///
     /// # Returns
     ///
-    /// A `Melted` result containing the payment details and any change proofs
-    pub async fn melt_proofs(&self, quote_id: String, proofs: Proofs) -> Result<Melted, FfiError> {
+    /// A `PreparedMelt` that can be confirmed or cancelled
+    pub async fn prepare_melt_proofs(
+        &self,
+        quote_id: String,
+        proofs: Proofs,
+    ) -> Result<PreparedMelt, FfiError> {
         let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
             proofs.into_iter().map(|p| p.try_into()).collect();
         let cdk_proofs = cdk_proofs?;
 
-        let melted = self.inner.melt_proofs(&quote_id, cdk_proofs).await?;
-        Ok(melted.into())
-    }
-
-    /// Get a quote for a bolt12 mint
-    pub async fn mint_bolt12_quote(
-        &self,
-        amount: Option<Amount>,
-        description: Option<String>,
-    ) -> Result<MintQuote, FfiError> {
-        let quote = self
+        let prepared = self
             .inner
-            .mint_bolt12_quote(amount.map(Into::into), description)
+            .prepare_melt_proofs(&quote_id, cdk_proofs, std::collections::HashMap::new())
             .await?;
-        Ok(quote.into())
+        Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
 
-    /// Mint tokens using bolt12
-    pub async fn mint_bolt12(
+    pub async fn mint_unified(
         &self,
         quote_id: String,
-        amount: Option<Amount>,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, FfiError> {
@@ -274,28 +301,36 @@ impl Wallet {
 
         let proofs = self
             .inner
-            .mint_bolt12(
-                &quote_id,
-                amount.map(Into::into),
-                amount_split_target.into(),
-                conditions,
-            )
+            .mint(&quote_id, amount_split_target.into(), conditions)
             .await?;
 
         Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
-
-    /// Get a quote for a bolt12 melt
-    pub async fn melt_bolt12_quote(
+    /// Get a melt quote using a unified interface for any payment method
+    ///
+    /// This method supports bolt11, bolt12, and custom payment methods.
+    /// For custom methods, you can pass extra JSON data that will be forwarded
+    /// to the payment processor.
+    ///
+    /// # Arguments
+    /// * `method` - Payment method to use (bolt11, bolt12, or custom)
+    /// * `request` - Payment request string (invoice, offer, or custom format)
+    /// * `options` - Optional melt options (MPP, amountless, etc.)
+    /// * `extra` - Optional JSON string with extra payment-method-specific fields (for custom methods)
+    pub async fn melt_quote(
         &self,
+        method: PaymentMethod,
         request: String,
         options: Option<MeltOptions>,
+        extra: Option<String>,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_options = options.map(Into::into);
-        let quote = self.inner.melt_bolt12_quote(request, cdk_options).await?;
+        let quote = self
+            .inner
+            .melt_quote::<cdk::nuts::PaymentMethod, _>(method.into(), request, cdk_options, extra)
+            .await?;
         Ok(quote.into())
     }
-
     /// Swap proofs
     pub async fn swap(
         &self,
@@ -418,7 +453,7 @@ impl Wallet {
     ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
         let cdk_params: cdk::nuts::nut17::Params<Arc<String>> = params.clone().into();
         let sub_id = cdk_params.id.to_string();
-        let active_sub = self.inner.subscribe(cdk_params).await;
+        let active_sub = self.inner.subscribe(cdk_params).await?;
         Ok(std::sync::Arc::new(ActiveSubscription::new(
             active_sub, sub_id,
         )))
@@ -438,8 +473,7 @@ impl Wallet {
 
     /// Get fees for a specific keyset ID
     pub async fn get_keyset_fees_by_id(&self, keyset_id: String) -> Result<u64, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id)
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
         Ok(self
             .inner
             .get_keyset_fees_and_amounts_by_id(id)
@@ -447,16 +481,10 @@ impl Wallet {
             .fee())
     }
 
-    /// Reclaim unspent proofs (mark them as unspent in the database)
-    pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), FfiError> {
-        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
-            proofs.iter().map(|p| p.clone().try_into()).collect();
-        let cdk_proofs = cdk_proofs?;
-        self.inner.reclaim_unspent(cdk_proofs).await?;
-        Ok(())
-    }
-
-    /// Check all pending proofs and return the total amount reclaimed
+    /// Check all pending proofs and return the total amount still pending
+    ///
+    /// This function checks orphaned pending proofs (not managed by active sagas)
+    /// with the mint and marks spent proofs accordingly.
     pub async fn check_all_pending_proofs(&self) -> Result<Amount, FfiError> {
         let amount = self.inner.check_all_pending_proofs().await?;
         Ok(amount.into())
@@ -468,8 +496,7 @@ impl Wallet {
         proof_count: u32,
         keyset_id: String,
     ) -> Result<Amount, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id)
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
         let fee = self
             .inner
             .get_keyset_count_fee(&id, proof_count as u64)
@@ -605,15 +632,15 @@ pub struct WalletConfig {
 /// Generates a new random mnemonic phrase
 #[uniffi::export]
 pub fn generate_mnemonic() -> Result<String, FfiError> {
-    let mnemonic =
-        Mnemonic::generate(12).map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+    let mnemonic = Mnemonic::generate(12)
+        .map_err(|e| FfiError::internal(format!("Failed to generate mnemonic: {}", e)))?;
     Ok(mnemonic.to_string())
 }
 
 /// Converts a mnemonic phrase to its entropy bytes
 #[uniffi::export]
 pub fn mnemonic_to_entropy(mnemonic: String) -> Result<Vec<u8>, FfiError> {
-    let m =
-        Mnemonic::parse(&mnemonic).map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+    let m = Mnemonic::parse(&mnemonic)
+        .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
     Ok(m.to_entropy())
 }

@@ -25,20 +25,21 @@ cdk = { workspace = true, features = [
 ] }
 cdk-common.workspace = true
 clap.workspace = true
-tonic = { workspace = true, features = ["transport"] }
+tonic = { workspace = true, features = ["transport", "tls-ring", "codegen", "router"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tonic-prost.workspace = true
 prost.workspace = true
 home.workspace = true
 rustls.workspace = true
 
 
 [build-dependencies]
-tonic-build.workspace = true
+tonic-prost-build.workspace = true
 
 [lints]
 workspace = true

@@ -26,6 +26,9 @@ pub enum Error {
     /// Cannot convert units
     #[error("Cannot convert units")]
     CannotConvertUnits,
+    /// Cannot perform operation on amounts with different units
+    #[error("Unit mismatch: cannot operate on {0} and {1}")]
+    UnitMismatch(CurrencyUnit, CurrencyUnit),
     /// Invalid amount
     #[error("Invalid Amount: {0}")]
     InvalidAmount(String),
@@ -35,13 +38,21 @@ pub enum Error {
     /// Utf8 parse error
     #[error(transparent)]
     Utf8ParseError(#[from] std::string::FromUtf8Error),
+    /// Cannot represent amount with available denominations
+    #[error("Cannot represent amount {0} with available denominations (got {1})")]
+    CannotSplitAmount(u64, u64),
 }
 
 /// Amount can be any unit
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+///
+/// Note: `PartialOrd` is implemented manually for `Amount<CurrencyUnit>` to return `None`
+/// when comparing amounts with different units. `Ord` is only implemented for `Amount<()>`.
+#[derive(Debug, Hash, PartialEq, Eq)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-#[serde(transparent)]
-pub struct Amount(u64);
+pub struct Amount<U = ()> {
+    value: u64,
+    unit: U,
+}
 
 /// Fees and and amount type, it can be casted just as a reference to the inner amounts, or a single
 /// u64 which is the fee
@@ -77,37 +88,136 @@ impl FeeAndAmounts {
 /// Fees and Amounts for each Keyset
 pub type KeysetFeeAndAmounts = HashMap<Id, FeeAndAmounts>;
 
-impl FromStr for Amount {
+// Copy and Clone implementations for Amount<()>
+impl Copy for Amount<()> {}
+
+impl Clone for Amount<()> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+// Clone implementation for Amount<CurrencyUnit>
+impl Clone for Amount<CurrencyUnit> {
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value,
+            unit: self.unit.clone(),
+        }
+    }
+}
+
+// PartialOrd implementation for Amount<()> - always comparable
+impl PartialOrd for Amount<()> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+// Ord implementation for Amount<()> - total ordering on value
+impl Ord for Amount<()> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.value.cmp(&other.value)
+    }
+}
+
+// PartialOrd implementation for Amount<CurrencyUnit> - returns None if units differ
+impl PartialOrd for Amount<CurrencyUnit> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if self.unit != other.unit {
+            // Different units are not comparable
+            None
+        } else {
+            Some(self.value.cmp(&other.value))
+        }
+    }
+}
+
+// Note: We intentionally do NOT implement Ord for Amount<CurrencyUnit>
+// because amounts with different units cannot have a total ordering.
+
+// Serialization - both variants serialize as just the u64 value
+impl<U> Serialize for Amount<U> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.value.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Amount<()> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u64::deserialize(deserializer)?;
+        Ok(Amount { value, unit: () })
+    }
+}
+
+impl FromStr for Amount<()> {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let value = s
             .parse::<u64>()
             .map_err(|_| Error::InvalidAmount(s.to_owned()))?;
-        Ok(Amount(value))
+        Ok(Amount { value, unit: () })
     }
 }
 
-impl Amount {
+impl Amount<()> {
     /// Amount zero
-    pub const ZERO: Amount = Amount(0);
+    pub const ZERO: Amount<()> = Amount { value: 0, unit: () };
 
     /// Amount one
-    pub const ONE: Amount = Amount(1);
+    pub const ONE: Amount<()> = Amount { value: 1, unit: () };
+
+    /// Convert an untyped amount to a typed one by adding a unit
+    ///
+    /// This is used at the boundary between protocol and application layers.
+    /// Protocol types use `Amount<()>` (no unit), while application types
+    /// use `Amount<CurrencyUnit>` (with unit from keyset).
+    ///
+    /// # Example
+    /// ```
+    /// # use cashu::{Amount, nuts::CurrencyUnit};
+    /// let untyped = Amount::from(100);
+    /// let typed = untyped.with_unit(CurrencyUnit::Sat);
+    /// assert_eq!(typed.value(), 100);
+    /// assert_eq!(typed.unit(), &CurrencyUnit::Sat);
+    /// ```
+    pub fn with_unit(self, unit: CurrencyUnit) -> Amount<CurrencyUnit> {
+        Amount {
+            value: self.value,
+            unit,
+        }
+    }
 
     /// Split into parts that are powers of two
-    pub fn split(&self, fee_and_amounts: &FeeAndAmounts) -> Vec<Self> {
-        fee_and_amounts
+    ///
+    /// Returns an error if the amount cannot be fully represented
+    /// with the available denominations.
+    pub fn split(&self, fee_and_amounts: &FeeAndAmounts) -> Result<Vec<Self>, Error> {
+        let parts: Vec<Self> = fee_and_amounts
             .amounts
             .iter()
             .rev()
-            .fold((Vec::new(), self.0), |(mut acc, total), &amount| {
+            .fold((Vec::new(), self.value), |(mut acc, total), &amount| {
                 if total >= amount {
                     acc.push(Self::from(amount));
                 }
                 (acc, total % amount)
             })
-            .0
+            .0;
+
+        let sum: u64 = parts.iter().map(|a| a.value).sum();
+        if sum != self.value {
+            return Err(Error::CannotSplitAmount(self.value, sum));
+        }
+
+        Ok(parts)
     }
 
     /// Split into parts that are powers of two by target
@@ -117,25 +227,26 @@ impl Amount {
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Vec<Self>, Error> {
         let mut parts = match target {
-            SplitTarget::None => self.split(fee_and_amounts),
+            SplitTarget::None => self.split(fee_and_amounts)?,
             SplitTarget::Value(amount) => {
                 if self.le(amount) {
-                    return Ok(self.split(fee_and_amounts));
+                    return self.split(fee_and_amounts);
                 }
 
                 let mut parts_total = Amount::ZERO;
                 let mut parts = Vec::new();
 
                 // The powers of two that are need to create target value
-                let parts_of_value = amount.split(fee_and_amounts);
+                let parts_of_value = amount.split(fee_and_amounts)?;
 
                 while parts_total.lt(self) {
                     for part in parts_of_value.iter().copied() {
-                        if (part + parts_total).le(self) {
+                        if (part.checked_add(parts_total).ok_or(Error::AmountOverflow)?).le(self) {
                             parts.push(part);
                         } else {
-                            let amount_left = *self - parts_total;
-                            parts.extend(amount_left.split(fee_and_amounts));
+                            let amount_left =
+                                self.checked_sub(parts_total).ok_or(Error::AmountOverflow)?;
+                            parts.extend(amount_left.split(fee_and_amounts)?);
                         }
 
                         parts_total = Amount::try_sum(parts.clone().iter().copied())?;
@@ -157,8 +268,10 @@ impl Amount {
                         return Err(Error::SplitValuesGreater);
                     }
                     Ordering::Greater => {
-                        let extra = *self - values_total;
-                        let mut extra_amount = extra.split(fee_and_amounts);
+                        let extra = self
+                            .checked_sub(values_total)
+                            .ok_or(Error::AmountOverflow)?;
+                        let mut extra_amount = extra.split(fee_and_amounts)?;
                         let mut values = values.clone();
 
                         values.append(&mut extra_amount);
@@ -174,7 +287,7 @@ impl Amount {
 
     /// Splits amount into powers of two while accounting for the swap fee
     pub fn split_with_fee(&self, fee_and_amounts: &FeeAndAmounts) -> Result<Vec<Self>, Error> {
-        let without_fee_amounts = self.split(fee_and_amounts);
+        let without_fee_amounts = self.split(fee_and_amounts)?;
         let total_fee_ppk = fee_and_amounts
             .fee
             .checked_mul(without_fee_amounts.len() as u64)
@@ -182,7 +295,7 @@ impl Amount {
         let fee = Amount::from(total_fee_ppk.div_ceil(1000));
         let new_amount = self.checked_add(fee).ok_or(Error::AmountOverflow)?;
 
-        let split = new_amount.split(fee_and_amounts);
+        let split = new_amount.split(fee_and_amounts)?;
         let split_fee_ppk = (split.len() as u64)
             .checked_mul(fee_and_amounts.fee)
             .ok_or(Error::AmountOverflow)?;
@@ -199,23 +312,40 @@ impl Amount {
     }
 
     /// Checked addition for Amount. Returns None if overflow occurs.
-    pub fn checked_add(self, other: Amount) -> Option<Amount> {
-        self.0.checked_add(other.0).map(Amount)
+    pub fn checked_add(self, other: Amount<()>) -> Option<Amount<()>> {
+        self.value
+            .checked_add(other.value)
+            .map(|v| Amount { value: v, unit: () })
     }
 
     /// Checked subtraction for Amount. Returns None if overflow occurs.
-    pub fn checked_sub(self, other: Amount) -> Option<Amount> {
-        self.0.checked_sub(other.0).map(Amount)
+    pub fn checked_sub(self, other: Amount<()>) -> Option<Amount<()>> {
+        self.value
+            .checked_sub(other.value)
+            .map(|v| Amount { value: v, unit: () })
     }
 
     /// Checked multiplication for Amount. Returns None if overflow occurs.
-    pub fn checked_mul(self, other: Amount) -> Option<Amount> {
-        self.0.checked_mul(other.0).map(Amount)
+    pub fn checked_mul(self, other: Amount<()>) -> Option<Amount<()>> {
+        self.value
+            .checked_mul(other.value)
+            .map(|v| Amount { value: v, unit: () })
     }
 
     /// Checked division for Amount. Returns None if overflow occurs.
-    pub fn checked_div(self, other: Amount) -> Option<Amount> {
-        self.0.checked_div(other.0).map(Amount)
+    pub fn checked_div(self, other: Amount<()>) -> Option<Amount<()>> {
+        self.value
+            .checked_div(other.value)
+            .map(|v| Amount { value: v, unit: () })
+    }
+
+    /// Subtracts `other` from `self`, returning zero if the result would be negative.
+    pub fn saturating_sub(self, other: Self) -> Self {
+        if other > self {
+            Self::ZERO
+        } else {
+            self - other
+        }
     }
 
     /// Try sum to check for overflow
@@ -233,19 +363,21 @@ impl Amount {
         &self,
         current_unit: &CurrencyUnit,
         target_unit: &CurrencyUnit,
-    ) -> Result<Amount, Error> {
-        to_unit(self.0, current_unit, target_unit)
+    ) -> Result<Amount<()>, Error> {
+        Amount::new(self.value, current_unit.clone())
+            .convert_to(target_unit)
+            .map(Into::into)
     }
-    ///
+
     /// Convert to u64
     pub fn to_u64(self) -> u64 {
-        self.0
+        self.value
     }
 
     /// Convert to i64
     pub fn to_i64(self) -> Option<i64> {
-        if self.0 <= i64::MAX as u64 {
-            Some(self.0 as i64)
+        if self.value <= i64::MAX as u64 {
+            Some(self.value as i64)
         } else {
             None
         }
@@ -254,69 +386,233 @@ impl Amount {
     /// Create from i64, returning None if negative
     pub fn from_i64(value: i64) -> Option<Self> {
         if value >= 0 {
-            Some(Amount(value as u64))
+            Some(Amount {
+                value: value as u64,
+                unit: (),
+            })
         } else {
             None
         }
     }
 }
 
-impl Default for Amount {
+impl Default for Amount<()> {
     fn default() -> Self {
         Amount::ZERO
     }
 }
 
-impl Default for &Amount {
+impl Default for &Amount<()> {
     fn default() -> Self {
         &Amount::ZERO
     }
 }
 
-impl fmt::Display for Amount {
+impl Amount<CurrencyUnit> {
+    /// Create a new Amount with an explicit unit
+    ///
+    /// This is the primary constructor for typed amounts. It works with all
+    /// CurrencyUnit variants including Custom.
+    ///
+    /// # Example
+    /// ```
+    /// # use cashu::{Amount, nuts::CurrencyUnit};
+    /// let sat_amount = Amount::new(1000, CurrencyUnit::Sat);
+    /// let custom = Amount::new(50, CurrencyUnit::Custom("BTC".into()));
+    /// ```
+    pub fn new(value: u64, unit: CurrencyUnit) -> Self {
+        Self { value, unit }
+    }
+
+    /// Get the numeric value
+    ///
+    /// # Example
+    /// ```
+    /// # use cashu::{Amount, nuts::CurrencyUnit};
+    /// let amount = Amount::new(1000, CurrencyUnit::Sat);
+    /// assert_eq!(amount.value(), 1000);
+    /// ```
+    pub fn value(&self) -> u64 {
+        self.value
+    }
+
+    /// Convert to u64
+    pub fn to_u64(self) -> u64 {
+        self.value
+    }
+
+    /// Convert to i64
+    pub fn to_i64(self) -> Option<i64> {
+        if self.value <= i64::MAX as u64 {
+            Some(self.value as i64)
+        } else {
+            None
+        }
+    }
+
+    /// Get a reference to the unit
+    ///
+    /// # Example
+    /// ```
+    /// # use cashu::{Amount, nuts::CurrencyUnit};
+    /// let amount = Amount::new(1000, CurrencyUnit::Sat);
+    /// assert_eq!(amount.unit(), &CurrencyUnit::Sat);
+    /// ```
+    pub fn unit(&self) -> &CurrencyUnit {
+        &self.unit
+    }
+
+    /// Consume self and return both value and unit
+    ///
+    /// # Example
+    /// ```
+    /// # use cashu::{Amount, nuts::CurrencyUnit};
+    /// let amount = Amount::new(1000, CurrencyUnit::Sat);
+    /// let (value, unit) = amount.into_parts();
+    /// assert_eq!(value, 1000);
+    /// assert_eq!(unit, CurrencyUnit::Sat);
+    /// ```
+    pub fn into_parts(self) -> (u64, CurrencyUnit) {
+        (self.value, self.unit)
+    }
+
+    /// Checked addition with unit verification
+    ///
+    /// Returns an error if units don't match or if overflow occurs.
+    ///
+    /// # Example
+    /// ```
+    /// # use cashu::{Amount, nuts::CurrencyUnit};
+    /// let a = Amount::new(100, CurrencyUnit::Sat);
+    /// let b = Amount::new(50, CurrencyUnit::Sat);
+    /// let sum = a.checked_add(&b).unwrap();
+    /// assert_eq!(sum.value(), 150);
+    ///
+    /// // Different units cause an error
+    /// let c = Amount::new(100, CurrencyUnit::Msat);
+    /// assert!(a.checked_add(&c).is_err());
+    /// ```
+    pub fn checked_add(&self, other: &Self) -> Result<Self, Error> {
+        if self.unit != other.unit {
+            return Err(Error::UnitMismatch(self.unit.clone(), other.unit.clone()));
+        }
+        self.value
+            .checked_add(other.value)
+            .map(|v| Amount::new(v, self.unit.clone()))
+            .ok_or(Error::AmountOverflow)
+    }
+
+    /// Checked subtraction with unit verification
+    ///
+    /// Returns an error if units don't match or if underflow occurs.
+    ///
+    /// # Example
+    /// ```
+    /// # use cashu::{Amount, nuts::CurrencyUnit};
+    /// let a = Amount::new(100, CurrencyUnit::Sat);
+    /// let b = Amount::new(30, CurrencyUnit::Sat);
+    /// let diff = a.checked_sub(&b).unwrap();
+    /// assert_eq!(diff.value(), 70);
+    /// ```
+    pub fn checked_sub(&self, other: &Self) -> Result<Self, Error> {
+        if self.unit != other.unit {
+            return Err(Error::UnitMismatch(self.unit.clone(), other.unit.clone()));
+        }
+        self.value
+            .checked_sub(other.value)
+            .map(|v| Amount::new(v, self.unit.clone()))
+            .ok_or(Error::AmountOverflow)
+    }
+
+    /// Convert to a different unit
+    ///
+    /// # Example
+    /// ```
+    /// # use cashu::{Amount, nuts::CurrencyUnit};
+    /// let sat = Amount::new(1000, CurrencyUnit::Sat);
+    /// let msat = sat.convert_to(&CurrencyUnit::Msat).unwrap();
+    /// assert_eq!(msat.value(), 1_000_000);
+    /// assert_eq!(msat.unit(), &CurrencyUnit::Msat);
+    /// ```
+    pub fn convert_to(&self, target_unit: &CurrencyUnit) -> Result<Self, Error> {
+        if &self.unit == target_unit {
+            return Ok(self.clone());
+        }
+
+        let converted_value = match (&self.unit, target_unit) {
+            (CurrencyUnit::Sat, CurrencyUnit::Msat) => self
+                .value
+                .checked_mul(MSAT_IN_SAT)
+                .ok_or(Error::AmountOverflow)?,
+            (CurrencyUnit::Msat, CurrencyUnit::Sat) => self.value / MSAT_IN_SAT,
+            _ => return Err(Error::CannotConvertUnits),
+        };
+
+        Ok(Amount::new(converted_value, target_unit.clone()))
+    }
+
+    /// Returns a string representation that includes the unit
+    pub fn display_with_unit(&self) -> String {
+        format!("{} {}", self.value, self.unit)
+    }
+}
+
+impl<U> fmt::Display for Amount<U> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(width) = f.width() {
-            write!(f, "{:width$}", self.0, width = width)
+            write!(f, "{:width$}", self.value, width = width)
         } else {
-            write!(f, "{}", self.0)
+            write!(f, "{}", self.value)
         }
     }
 }
 
-impl From<u64> for Amount {
+impl From<u64> for Amount<()> {
     fn from(value: u64) -> Self {
-        Self(value)
+        Amount { value, unit: () }
     }
 }
 
-impl From<&u64> for Amount {
+impl From<&u64> for Amount<()> {
     fn from(value: &u64) -> Self {
-        Self(*value)
+        Amount {
+            value: *value,
+            unit: (),
+        }
     }
 }
 
-impl From<Amount> for u64 {
-    fn from(value: Amount) -> Self {
-        value.0
+impl From<Amount<()>> for u64 {
+    fn from(value: Amount<()>) -> Self {
+        value.value
     }
 }
 
-impl AsRef<u64> for Amount {
+impl From<Amount<CurrencyUnit>> for Amount<()> {
+    fn from(value: Amount<CurrencyUnit>) -> Self {
+        Amount {
+            value: value.value,
+            unit: (),
+        }
+    }
+}
+
+impl AsRef<u64> for Amount<()> {
     fn as_ref(&self) -> &u64 {
-        &self.0
+        &self.value
     }
 }
 
-impl std::ops::Add for Amount {
-    type Output = Amount;
+impl std::ops::Add for Amount<()> {
+    type Output = Amount<()>;
 
-    fn add(self, rhs: Amount) -> Self::Output {
+    fn add(self, rhs: Amount<()>) -> Self::Output {
         self.checked_add(rhs)
             .expect("Addition overflow: the sum of the amounts exceeds the maximum value")
     }
 }
 
-impl std::ops::AddAssign for Amount {
+impl std::ops::AddAssign for Amount<()> {
     fn add_assign(&mut self, rhs: Self) {
         *self = self
             .checked_add(rhs)
@@ -324,16 +620,16 @@ impl std::ops::AddAssign for Amount {
     }
 }
 
-impl std::ops::Sub for Amount {
-    type Output = Amount;
+impl std::ops::Sub for Amount<()> {
+    type Output = Amount<()>;
 
-    fn sub(self, rhs: Amount) -> Self::Output {
+    fn sub(self, rhs: Amount<()>) -> Self::Output {
         self.checked_sub(rhs)
             .expect("Subtraction underflow: cannot subtract a larger amount from a smaller amount")
     }
 }
 
-impl std::ops::SubAssign for Amount {
+impl std::ops::SubAssign for Amount<()> {
     fn sub_assign(&mut self, other: Self) {
         *self = self
             .checked_sub(other)
@@ -341,7 +637,7 @@ impl std::ops::SubAssign for Amount {
     }
 }
 
-impl std::ops::Mul for Amount {
+impl std::ops::Mul for Amount<()> {
     type Output = Self;
 
     fn mul(self, other: Self) -> Self::Output {
@@ -350,7 +646,7 @@ impl std::ops::Mul for Amount {
     }
 }
 
-impl std::ops::Div for Amount {
+impl std::ops::Div for Amount<()> {
     type Output = Self;
 
     fn div(self, other: Self) -> Self::Output {
@@ -372,12 +668,15 @@ pub fn amount_for_offer(offer: &Offer, unit: &CurrencyUnit) -> Result<Amount, Er
             amount,
         } => (
             amount,
-            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.to_vec())?)
+            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.as_bytes().to_vec())?)
                 .map_err(|_| Error::CannotConvertUnits)?,
         ),
     };
 
-    to_unit(amount, &currency, unit).map_err(|_err| Error::CannotConvertUnits)
+    Amount::new(amount, currency)
+        .convert_to(unit)
+        .map(Into::into)
+        .map_err(|_err| Error::CannotConvertUnits)
 }
 
 /// Kinds of targeting that are supported
@@ -395,30 +694,6 @@ pub enum SplitTarget {
 /// Msats in sat
 pub const MSAT_IN_SAT: u64 = 1000;
 
-/// Helper function to convert units
-pub fn to_unit<T>(
-    amount: T,
-    current_unit: &CurrencyUnit,
-    target_unit: &CurrencyUnit,
-) -> Result<Amount, Error>
-where
-    T: Into<u64>,
-{
-    let amount = amount.into();
-    match (current_unit, target_unit) {
-        (CurrencyUnit::Sat, CurrencyUnit::Sat) => Ok(amount.into()),
-        (CurrencyUnit::Msat, CurrencyUnit::Msat) => Ok(amount.into()),
-        (CurrencyUnit::Sat, CurrencyUnit::Msat) => amount
-            .checked_mul(MSAT_IN_SAT)
-            .map(Amount::from)
-            .ok_or(Error::AmountOverflow),
-        (CurrencyUnit::Msat, CurrencyUnit::Sat) => Ok((amount / MSAT_IN_SAT).into()),
-        (CurrencyUnit::Usd, CurrencyUnit::Usd) => Ok(amount.into()),
-        (CurrencyUnit::Eur, CurrencyUnit::Eur) => Ok(amount.into()),
-        _ => Err(Error::CannotConvertUnits),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,52 +703,55 @@ mod tests {
         let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
 
         assert_eq!(
-            Amount::from(1).split(&fee_and_amounts),
+            Amount::from(1).split(&fee_and_amounts).unwrap(),
             vec![Amount::from(1)]
         );
         assert_eq!(
-            Amount::from(2).split(&fee_and_amounts),
+            Amount::from(2).split(&fee_and_amounts).unwrap(),
             vec![Amount::from(2)]
         );
         assert_eq!(
-            Amount::from(3).split(&fee_and_amounts),
+            Amount::from(3).split(&fee_and_amounts).unwrap(),
             vec![Amount::from(2), Amount::from(1)]
         );
         let amounts: Vec<Amount> = [8, 2, 1].iter().map(|a| Amount::from(*a)).collect();
-        assert_eq!(Amount::from(11).split(&fee_and_amounts), amounts);
+        assert_eq!(Amount::from(11).split(&fee_and_amounts).unwrap(), amounts);
         let amounts: Vec<Amount> = [128, 64, 32, 16, 8, 4, 2, 1]
             .iter()
             .map(|a| Amount::from(*a))
             .collect();
-        assert_eq!(Amount::from(255).split(&fee_and_amounts), amounts);
+        assert_eq!(Amount::from(255).split(&fee_and_amounts).unwrap(), amounts);
     }
 
     #[test]
     fn test_split_target_amount() {
         let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
-        let amount = Amount(65);
+        let amount = Amount::from(65);
 
         let split = amount
-            .split_targeted(&SplitTarget::Value(Amount(32)), &fee_and_amounts)
+            .split_targeted(&SplitTarget::Value(Amount::from(32)), &fee_and_amounts)
             .unwrap();
-        assert_eq!(vec![Amount(1), Amount(32), Amount(32)], split);
+        assert_eq!(
+            vec![Amount::from(1), Amount::from(32), Amount::from(32)],
+            split
+        );
 
-        let amount = Amount(150);
+        let amount = Amount::from(150);
 
         let split = amount
             .split_targeted(&SplitTarget::Value(Amount::from(50)), &fee_and_amounts)
             .unwrap();
         assert_eq!(
             vec![
-                Amount(2),
-                Amount(2),
-                Amount(2),
-                Amount(16),
-                Amount(16),
-                Amount(16),
-                Amount(32),
-                Amount(32),
-                Amount(32)
+                Amount::from(2),
+                Amount::from(2),
+                Amount::from(2),
+                Amount::from(16),
+                Amount::from(16),
+                Amount::from(16),
+                Amount::from(32),
+                Amount::from(32),
+                Amount::from(32)
             ],
             split
         );
@@ -485,12 +763,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             vec![
-                Amount(1),
-                Amount(2),
-                Amount(4),
-                Amount(8),
-                Amount(16),
-                Amount(32)
+                Amount::from(1),
+                Amount::from(2),
+                Amount::from(4),
+                Amount::from(8),
+                Amount::from(16),
+                Amount::from(32)
             ],
             split
         );
@@ -499,30 +777,30 @@ mod tests {
     #[test]
     fn test_split_with_fee() {
         let fee_and_amounts = (1, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
-        let amount = Amount(2);
+        let amount = Amount::from(2);
 
         let split = amount.split_with_fee(&fee_and_amounts).unwrap();
-        assert_eq!(split, vec![Amount(2), Amount(1)]);
+        assert_eq!(split, vec![Amount::from(2), Amount::from(1)]);
 
-        let amount = Amount(3);
+        let amount = Amount::from(3);
 
         let split = amount.split_with_fee(&fee_and_amounts).unwrap();
-        assert_eq!(split, vec![Amount(4)]);
+        assert_eq!(split, vec![Amount::from(4)]);
 
-        let amount = Amount(3);
+        let amount = Amount::from(3);
         let fee_and_amounts = (1000, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
 
         let split = amount.split_with_fee(&fee_and_amounts).unwrap();
         // With fee_ppk=1000 (100%), amount 3 requires proofs totaling at least 5
         // to cover both the amount (3) and fees (~2 for 2 proofs)
-        assert_eq!(split, vec![Amount(4), Amount(1)]);
+        assert_eq!(split, vec![Amount::from(4), Amount::from(1)]);
     }
 
     #[test]
     fn test_split_with_fee_reported_issue() {
         let fee_and_amounts = (100, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
         // Test the reported issue: mint 600, send 300 with fee_ppk=100
-        let amount = Amount(300);
+        let amount = Amount::from(300);
 
         let split = amount.split_with_fee(&fee_and_amounts).unwrap();
 
@@ -533,7 +811,7 @@ mod tests {
         // The split should cover the amount plus fees
         let split_total = Amount::try_sum(split.iter().copied()).unwrap();
         assert!(
-            split_total >= amount + total_fee,
+            split_total >= amount.checked_add(total_fee).unwrap(),
             "Split total {} should be >= amount {} + fee {}",
             split_total,
             amount,
@@ -545,17 +823,17 @@ mod tests {
     fn test_split_with_fee_edge_cases() {
         // Test various amounts with fee_ppk=100
         let test_cases = vec![
-            (Amount(1), 100),
-            (Amount(10), 100),
-            (Amount(50), 100),
-            (Amount(100), 100),
-            (Amount(200), 100),
-            (Amount(300), 100),
-            (Amount(500), 100),
-            (Amount(600), 100),
-            (Amount(1000), 100),
-            (Amount(1337), 100),
-            (Amount(5000), 100),
+            (Amount::from(1), 100),
+            (Amount::from(10), 100),
+            (Amount::from(50), 100),
+            (Amount::from(100), 100),
+            (Amount::from(200), 100),
+            (Amount::from(300), 100),
+            (Amount::from(500), 100),
+            (Amount::from(600), 100),
+            (Amount::from(1000), 100),
+            (Amount::from(1337), 100),
+            (Amount::from(5000), 100),
         ];
 
         for (amount, fee_ppk) in test_cases {
@@ -600,12 +878,12 @@ mod tests {
     fn test_split_with_fee_high_fees() {
         // Test with very high fees
         let test_cases = vec![
-            (Amount(10), 500),  // 50% fee
-            (Amount(10), 1000), // 100% fee
-            (Amount(10), 2000), // 200% fee
-            (Amount(100), 500),
-            (Amount(100), 1000),
-            (Amount(100), 2000),
+            (Amount::from(10), 500),  // 50% fee
+            (Amount::from(10), 1000), // 100% fee
+            (Amount::from(10), 2000), // 200% fee
+            (Amount::from(100), 500),
+            (Amount::from(100), 1000),
+            (Amount::from(100), 2000),
         ];
 
         for (amount, fee_ppk) in test_cases {
@@ -638,7 +916,7 @@ mod tests {
     fn test_split_with_fee_recursion_limit() {
         // Test that the recursion doesn't go infinite
         // This tests the edge case where the method keeps adding Amount::ONE
-        let amount = Amount(1);
+        let amount = Amount::from(1);
         let fee_ppk = 10000;
         let fee_and_amounts = (fee_ppk, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
 
@@ -652,9 +930,9 @@ mod tests {
     #[test]
     fn test_split_values() {
         let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
-        let amount = Amount(10);
+        let amount = Amount::from(10);
 
-        let target = vec![Amount(2), Amount(4), Amount(4)];
+        let target = vec![Amount::from(2), Amount::from(4), Amount::from(4)];
 
         let split_target = SplitTarget::Values(target.clone());
 
@@ -664,9 +942,9 @@ mod tests {
 
         assert_eq!(target, values);
 
-        let target = vec![Amount(2), Amount(4), Amount(4)];
+        let target = vec![Amount::from(2), Amount::from(4), Amount::from(4)];
 
-        let split_target = SplitTarget::Values(vec![Amount(2), Amount(4)]);
+        let split_target = SplitTarget::Values(vec![Amount::from(2), Amount::from(4)]);
 
         let values = amount
             .split_targeted(&split_target, &fee_and_amounts)
@@ -674,7 +952,7 @@ mod tests {
 
         assert_eq!(target, values);
 
-        let split_target = SplitTarget::Values(vec![Amount(2), Amount(10)]);
+        let split_target = SplitTarget::Values(vec![Amount::from(2), Amount::from(10)]);
 
         let values = amount.split_targeted(&split_target, &fee_and_amounts);
 
@@ -712,46 +990,55 @@ mod tests {
     }
 
     #[test]
-    fn test_amount_to_unit() {
-        let amount = Amount::from(1000);
-        let current_unit = CurrencyUnit::Sat;
-        let target_unit = CurrencyUnit::Msat;
+    fn test_amount_convert_to() {
+        // Sat -> Msat
+        let amount = Amount::new(1000, CurrencyUnit::Sat);
+        let converted = amount.convert_to(&CurrencyUnit::Msat).unwrap();
+        assert_eq!(converted.value(), 1000000);
+        assert_eq!(converted.unit(), &CurrencyUnit::Msat);
 
-        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
+        // Msat -> Sat
+        let amount = Amount::new(1000, CurrencyUnit::Msat);
+        let converted = amount.convert_to(&CurrencyUnit::Sat).unwrap();
+        assert_eq!(converted.value(), 1);
+        assert_eq!(converted.unit(), &CurrencyUnit::Sat);
 
-        assert_eq!(converted, 1000000.into());
+        // Usd -> Usd identity conversion
+        let amount = Amount::new(1, CurrencyUnit::Usd);
+        let converted = amount.convert_to(&CurrencyUnit::Usd).unwrap();
+        assert_eq!(converted.value(), 1);
+        assert_eq!(converted.unit(), &CurrencyUnit::Usd);
 
-        let amount = Amount::from(1000);
-        let current_unit = CurrencyUnit::Msat;
-        let target_unit = CurrencyUnit::Sat;
+        // Eur -> Eur identity conversion
+        let amount = Amount::new(1, CurrencyUnit::Eur);
+        let converted = amount.convert_to(&CurrencyUnit::Eur).unwrap();
+        assert_eq!(converted.value(), 1);
+        assert_eq!(converted.unit(), &CurrencyUnit::Eur);
 
-        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
-
-        assert_eq!(converted, 1.into());
-
-        let amount = Amount::from(1);
-        let current_unit = CurrencyUnit::Usd;
-        let target_unit = CurrencyUnit::Usd;
-
-        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
-
-        assert_eq!(converted, 1.into());
-
-        let amount = Amount::from(1);
-        let current_unit = CurrencyUnit::Eur;
-        let target_unit = CurrencyUnit::Eur;
-
-        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
-
-        assert_eq!(converted, 1.into());
-
-        let amount = Amount::from(1);
-        let current_unit = CurrencyUnit::Sat;
-        let target_unit = CurrencyUnit::Eur;
-
-        let converted = to_unit(amount, &current_unit, &target_unit);
-
+        // Sat -> Eur should fail (no conversion path)
+        let amount = Amount::new(1, CurrencyUnit::Sat);
+        let converted = amount.convert_to(&CurrencyUnit::Eur);
         assert!(converted.is_err());
+
+        // Sat -> Sat identity conversion
+        let amount = Amount::new(500, CurrencyUnit::Sat);
+        let converted = amount.convert_to(&CurrencyUnit::Sat).unwrap();
+        assert_eq!(converted.value(), 500);
+        assert_eq!(converted.unit(), &CurrencyUnit::Sat);
+
+        // Msat -> Msat identity conversion
+        let amount = Amount::new(5000, CurrencyUnit::Msat);
+        let converted = amount.convert_to(&CurrencyUnit::Msat).unwrap();
+        assert_eq!(converted.value(), 5000);
+        assert_eq!(converted.unit(), &CurrencyUnit::Msat);
+    }
+
+    #[test]
+    fn test_amount_from_typed_to_untyped() {
+        // Test From<Amount<CurrencyUnit>> for Amount<()>
+        let typed = Amount::new(1000, CurrencyUnit::Sat);
+        let untyped: Amount<()> = typed.into();
+        assert_eq!(u64::from(untyped), 1000);
     }
 
     /// Tests that the subtraction operator correctly computes the difference between amounts.
@@ -769,19 +1056,19 @@ mod tests {
         let amount1 = Amount::from(100);
         let amount2 = Amount::from(30);
 
-        let result = amount1 - amount2;
+        let result = amount1.checked_sub(amount2).unwrap();
         assert_eq!(result, Amount::from(70));
 
         let amount1 = Amount::from(1000);
         let amount2 = Amount::from(1);
 
-        let result = amount1 - amount2;
+        let result = amount1.checked_sub(amount2).unwrap();
         assert_eq!(result, Amount::from(999));
 
         let amount1 = Amount::from(255);
         let amount2 = Amount::from(128);
 
-        let result = amount1 - amount2;
+        let result = amount1.checked_sub(amount2).unwrap();
         assert_eq!(result, Amount::from(127));
     }
 
@@ -894,17 +1181,17 @@ mod tests {
         let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
 
         let amount = Amount::from(11);
-        let result = amount.split(&fee_and_amounts);
+        let result = amount.split(&fee_and_amounts).unwrap();
         assert!(!result.is_empty());
         assert_eq!(Amount::try_sum(result.iter().copied()).unwrap(), amount);
 
         let amount = Amount::from(255);
-        let result = amount.split(&fee_and_amounts);
+        let result = amount.split(&fee_and_amounts).unwrap();
         assert!(!result.is_empty());
         assert_eq!(Amount::try_sum(result.iter().copied()).unwrap(), amount);
 
         let amount = Amount::from(7);
-        let result = amount.split(&fee_and_amounts);
+        let result = amount.split(&fee_and_amounts).unwrap();
         assert_eq!(
             result,
             vec![Amount::from(4), Amount::from(2), Amount::from(1)]
@@ -926,7 +1213,7 @@ mod tests {
         let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
 
         let amount = Amount::from(15);
-        let result = amount.split(&fee_and_amounts);
+        let result = amount.split(&fee_and_amounts).unwrap();
 
         assert_eq!(
             result,
@@ -942,6 +1229,69 @@ mod tests {
         assert_eq!(total, amount);
     }
 
+    /// Tests that split returns an error when the amount cannot be represented
+    /// with the available denominations.
+    #[test]
+    fn test_split_cannot_represent_amount() {
+        // Only denomination 32 available - the split algorithm can only use each denomination once
+        let fee_and_amounts: FeeAndAmounts = (0, vec![32]).into();
+
+        // 100 cannot be exactly represented: 100 >= 32, push(32), 100 % 32 = 4, result = [32]
+        let amount = Amount::from(100);
+        let result = amount.split(&fee_and_amounts);
+        assert!(result.is_err());
+        match result {
+            Err(Error::CannotSplitAmount(requested, got)) => {
+                assert_eq!(requested, 100);
+                assert_eq!(got, 32); // Only one 32 can be taken
+            }
+            _ => panic!("Expected CannotSplitAmount error"),
+        }
+
+        // 32 can be exactly represented
+        let amount = Amount::from(32);
+        let result = amount.split(&fee_and_amounts);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![Amount::from(32)]);
+
+        // Missing denominations: only have 32 and 64, trying to split 100
+        // 100 >= 64, push(64), 100 % 64 = 36
+        // 36 >= 32, push(32), 36 % 32 = 4
+        // Result: [64, 32] = 96, missing 4
+        let fee_and_amounts: FeeAndAmounts = (0, vec![32, 64]).into();
+        let amount = Amount::from(100);
+        let result = amount.split(&fee_and_amounts);
+        assert!(result.is_err());
+        match result {
+            Err(Error::CannotSplitAmount(requested, got)) => {
+                assert_eq!(requested, 100);
+                assert_eq!(got, 96);
+            }
+            _ => panic!("Expected CannotSplitAmount error"),
+        }
+    }
+
+    #[test]
+    fn test_split_amount_exceeds_keyset_capacity() {
+        // Keyset with denominations 2^0 to 2^31
+        let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
+
+        // Attempt to split 2^63 (way larger than sum of keyset)
+        let amount = Amount::from(2u64.pow(63));
+        let result = amount.split(&fee_and_amounts);
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::CannotSplitAmount(requested, got)) => {
+                assert_eq!(requested, 2u64.pow(63));
+                // The algorithm greedily takes 2^31, and since 2^63 % 2^31 == 0, it stops there.
+                // So "got" should be 2^31.
+                assert_eq!(got, 2u64.pow(31));
+            }
+            _ => panic!("Expected CannotSplitAmount error, got {:?}", result),
+        }
+    }
+
     /// Tests that From<u64> correctly converts values to Amount.
     ///
     /// This conversion is used throughout the codebase including in loops and split operations.
@@ -952,11 +1302,11 @@ mod tests {
     #[test]
     fn test_from_u64_returns_correct_value() {
         let amount = Amount::from(100u64);
-        assert_eq!(amount, Amount(100));
+        assert_eq!(amount, Amount::from(100));
         assert_ne!(amount, Amount::ZERO);
 
         let amount = Amount::from(1u64);
-        assert_eq!(amount, Amount(1));
+        assert_eq!(amount, Amount::from(1));
         assert_eq!(amount, Amount::ONE);
 
         let amount = Amount::from(1337u64);
@@ -1181,5 +1531,516 @@ mod tests {
         let below_max = Amount::from(i64::MAX as u64 - 1);
         assert!(below_max.to_i64().is_some());
         assert_eq!(below_max.to_i64().unwrap(), i64::MAX - 1);
+    }
+
+    /// Tests Amount::from_i64 returns the correct value.
+    ///
+    /// Mutant testing: Catches mutations that:
+    /// - Replace return with None
+    /// - Replace return with Some(Default::default())
+    /// - Replace >= with < in the condition
+    #[test]
+    fn test_amount_from_i64() {
+        // Positive value - should return Some with correct value
+        let result = Amount::from_i64(100);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), Amount::from(100));
+        assert_ne!(result, None);
+        assert_ne!(result, Some(Amount::ZERO));
+
+        // Zero - boundary case for >= vs <
+        // If >= becomes <, this would return None instead of Some
+        let result = Amount::from_i64(0);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), Amount::ZERO);
+
+        // Negative value - should return None
+        let result = Amount::from_i64(-1);
+        assert!(result.is_none());
+
+        let result = Amount::from_i64(-100);
+        assert!(result.is_none());
+
+        // Large positive value
+        let result = Amount::from_i64(i64::MAX);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), Amount::from(i64::MAX as u64));
+        assert_ne!(result, Some(Amount::ZERO));
+
+        // Value 1 - catches Some(Default::default()) mutation
+        let result = Amount::from_i64(1);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), Amount::ONE);
+        assert_ne!(result, Some(Amount::ZERO));
+    }
+
+    /// Tests AddAssign actually modifies the value.
+    ///
+    /// Mutant testing: Catches mutation that replaces add_assign with ().
+    #[test]
+    fn test_add_assign() {
+        let mut amount = Amount::from(100);
+        amount += Amount::from(50);
+        assert_eq!(amount, Amount::from(150));
+        assert_ne!(amount, Amount::from(100)); // Should have changed
+
+        let mut amount = Amount::from(1);
+        amount += Amount::from(1);
+        assert_eq!(amount, Amount::from(2));
+        assert_ne!(amount, Amount::ONE); // Should have changed
+
+        let mut amount = Amount::ZERO;
+        amount += Amount::from(42);
+        assert_eq!(amount, Amount::from(42));
+        assert_ne!(amount, Amount::ZERO); // Should have changed
+    }
+
+    /// Tests SubAssign actually modifies the value.
+    ///
+    /// Mutant testing: Catches mutation that replaces sub_assign with ().
+    #[test]
+    fn test_sub_assign() {
+        let mut amount = Amount::from(100);
+        amount -= Amount::from(30);
+        assert_eq!(amount, Amount::from(70));
+        assert_ne!(amount, Amount::from(100)); // Should have changed
+
+        let mut amount = Amount::from(50);
+        amount -= Amount::from(1);
+        assert_eq!(amount, Amount::from(49));
+        assert_ne!(amount, Amount::from(50)); // Should have changed
+
+        let mut amount = Amount::from(10);
+        amount -= Amount::from(10);
+        assert_eq!(amount, Amount::ZERO);
+        assert_ne!(amount, Amount::from(10)); // Should have changed
+    }
+
+    // Phase 2 tests: Amount<CurrencyUnit> methods
+
+    #[test]
+    fn test_amount_with_currency_unit() {
+        let amount = Amount::new(1000, CurrencyUnit::Sat);
+        assert_eq!(amount.value(), 1000);
+        assert_eq!(amount.unit(), &CurrencyUnit::Sat);
+    }
+
+    #[test]
+    fn test_amount_new_with_custom_unit() {
+        let custom_unit = CurrencyUnit::Custom("BTC".to_string());
+        let amount = Amount::new(50, custom_unit.clone());
+
+        assert_eq!(amount.value(), 50);
+        assert_eq!(amount.unit(), &custom_unit);
+    }
+
+    #[test]
+    fn test_amount_into_parts() {
+        let amount = Amount::new(1234, CurrencyUnit::Msat);
+        let (value, unit) = amount.into_parts();
+
+        assert_eq!(value, 1234);
+        assert_eq!(unit, CurrencyUnit::Msat);
+    }
+
+    #[test]
+    fn test_amount_with_unit_conversion() {
+        let untyped: Amount<()> = Amount::from(100);
+        let typed = untyped.with_unit(CurrencyUnit::Sat);
+
+        assert_eq!(typed.value(), 100);
+        assert_eq!(typed.unit(), &CurrencyUnit::Sat);
+    }
+
+    #[test]
+    fn test_amount_with_unit_all_variants() {
+        let untyped = Amount::from(500);
+
+        let sat = untyped.with_unit(CurrencyUnit::Sat);
+        assert_eq!(sat.unit(), &CurrencyUnit::Sat);
+
+        let msat = untyped.with_unit(CurrencyUnit::Msat);
+        assert_eq!(msat.unit(), &CurrencyUnit::Msat);
+
+        let usd = untyped.with_unit(CurrencyUnit::Usd);
+        assert_eq!(usd.unit(), &CurrencyUnit::Usd);
+
+        let eur = untyped.with_unit(CurrencyUnit::Eur);
+        assert_eq!(eur.unit(), &CurrencyUnit::Eur);
+
+        let custom = untyped.with_unit(CurrencyUnit::Custom("TEST".into()));
+        assert_eq!(custom.unit(), &CurrencyUnit::Custom("TEST".into()));
+    }
+
+    #[test]
+    fn test_typed_amount_is_clone_not_copy() {
+        let amount = Amount::new(100, CurrencyUnit::Sat);
+        let cloned = amount.clone();
+        // If this compiles, Clone works. Cannot test Copy directly without moving.
+        assert_eq!(cloned.value(), 100);
+        assert_eq!(cloned.unit(), &CurrencyUnit::Sat);
+    }
+
+    // Phase 3 tests: Protocol types verification
+
+    #[test]
+    fn test_untyped_amount_is_copy() {
+        // Verify Amount<()> is Copy (required for protocol types)
+        let amount: Amount<()> = Amount::from(100);
+        let copy1 = amount;
+        let copy2 = amount; // Should not move - verifies Copy
+        assert_eq!(copy1, copy2);
+    }
+
+    #[test]
+    fn test_amount_serialization_transparent() {
+        // Verify Amount<()> serializes as just the number (protocol compatibility)
+        let amount = Amount::from(1234);
+        let json = serde_json::to_string(&amount).unwrap();
+        assert_eq!(json, "1234");
+
+        // Verify deserialization works
+        let deserialized: Amount<()> = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, Amount::from(1234));
+    }
+
+    #[test]
+    fn test_typed_amount_serialization() {
+        // Verify Amount<CurrencyUnit> also serializes as just the number
+        let amount = Amount::new(5678, CurrencyUnit::Sat);
+        let json = serde_json::to_string(&amount).unwrap();
+        assert_eq!(json, "5678");
+
+        // Note: Cannot deserialize Amount<CurrencyUnit> directly
+        // Unit must come from context (e.g., keyset)
+    }
+
+    #[test]
+    fn test_protocol_type_pattern() {
+        // Simulate protocol type usage pattern
+
+        // Protocol layer: Amount<()> is Copy and serializes transparently
+        let protocol_amount: Amount<()> = Amount::from(1000);
+        let _copied = protocol_amount; // Copy works
+
+        // Application layer: Convert to typed when needed
+        let typed = protocol_amount.with_unit(CurrencyUnit::Sat);
+        assert_eq!(typed.value(), 1000);
+
+        // Back to protocol: Extract value
+        let back_to_protocol = Amount::from(typed.value());
+        assert_eq!(back_to_protocol, protocol_amount);
+    }
+
+    // Phase 4 tests: Unit-aware arithmetic
+
+    #[test]
+    fn test_typed_amount_checked_add() {
+        let a = Amount::new(100, CurrencyUnit::Sat);
+        let b = Amount::new(50, CurrencyUnit::Sat);
+
+        let sum = a.checked_add(&b).unwrap();
+        assert_eq!(sum.value(), 150);
+        assert_eq!(sum.unit(), &CurrencyUnit::Sat);
+    }
+
+    #[test]
+    fn test_typed_amount_add_unit_mismatch() {
+        let sat = Amount::new(100, CurrencyUnit::Sat);
+        let msat = Amount::new(100, CurrencyUnit::Msat);
+
+        let result = sat.checked_add(&msat);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            Error::UnitMismatch(u1, u2) => {
+                assert_eq!(u1, CurrencyUnit::Sat);
+                assert_eq!(u2, CurrencyUnit::Msat);
+            }
+            _ => panic!("Expected UnitMismatch error"),
+        }
+    }
+
+    #[test]
+    fn test_typed_amount_checked_sub() {
+        let a = Amount::new(100, CurrencyUnit::Sat);
+        let b = Amount::new(30, CurrencyUnit::Sat);
+
+        let diff = a.checked_sub(&b).unwrap();
+        assert_eq!(diff.value(), 70);
+        assert_eq!(diff.unit(), &CurrencyUnit::Sat);
+    }
+
+    #[test]
+    fn test_typed_amount_sub_unit_mismatch() {
+        let sat = Amount::new(100, CurrencyUnit::Sat);
+        let usd = Amount::new(30, CurrencyUnit::Usd);
+
+        let result = sat.checked_sub(&usd);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_typed_amount_convert_to() {
+        // Sat to Msat
+        let sat = Amount::new(1000, CurrencyUnit::Sat);
+        let msat = sat.convert_to(&CurrencyUnit::Msat).unwrap();
+        assert_eq!(msat.value(), 1_000_000);
+        assert_eq!(msat.unit(), &CurrencyUnit::Msat);
+
+        // Msat to Sat
+        let msat = Amount::new(5000, CurrencyUnit::Msat);
+        let sat = msat.convert_to(&CurrencyUnit::Sat).unwrap();
+        assert_eq!(sat.value(), 5);
+        assert_eq!(sat.unit(), &CurrencyUnit::Sat);
+
+        // Same unit (optimization check)
+        let sat = Amount::new(100, CurrencyUnit::Sat);
+        let same = sat.convert_to(&CurrencyUnit::Sat).unwrap();
+        assert_eq!(same.value(), 100);
+        assert_eq!(same.unit(), &CurrencyUnit::Sat);
+    }
+
+    #[test]
+    fn test_typed_amount_convert_invalid() {
+        let sat = Amount::new(100, CurrencyUnit::Sat);
+        let result = sat.convert_to(&CurrencyUnit::Eur);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            Error::CannotConvertUnits => {}
+            _ => panic!("Expected CannotConvertUnits error"),
+        }
+    }
+
+    #[test]
+    fn test_typed_amount_add_overflow() {
+        let a = Amount::new(u64::MAX, CurrencyUnit::Sat);
+        let b = Amount::new(1, CurrencyUnit::Sat);
+
+        let result = a.checked_add(&b);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            Error::AmountOverflow => {}
+            _ => panic!("Expected AmountOverflow error"),
+        }
+    }
+
+    #[test]
+    fn test_typed_amount_sub_underflow() {
+        let a = Amount::new(50, CurrencyUnit::Sat);
+        let b = Amount::new(100, CurrencyUnit::Sat);
+
+        let result = a.checked_sub(&b);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            Error::AmountOverflow => {} // Underflow also returns AmountOverflow
+            _ => panic!("Expected AmountOverflow error"),
+        }
+    }
+
+    // Phase 5 tests: PartialOrd behavior for Amount<CurrencyUnit>
+
+    /// Tests that equality works correctly for typed amounts with the same unit.
+    #[test]
+    fn test_typed_amount_equality_same_unit() {
+        let a = Amount::new(100, CurrencyUnit::Sat);
+        let b = Amount::new(100, CurrencyUnit::Sat);
+
+        assert_eq!(a, b);
+        assert!(a == b);
+
+        let c = Amount::new(50, CurrencyUnit::Sat);
+        assert_ne!(a, c);
+        assert!(a != c);
+    }
+
+    /// Tests that equality returns false for typed amounts with different units.
+    #[test]
+    fn test_typed_amount_equality_different_units() {
+        let sat = Amount::new(100, CurrencyUnit::Sat);
+        let msat = Amount::new(100, CurrencyUnit::Msat);
+
+        // Same value, different units - should NOT be equal
+        assert_ne!(sat, msat);
+        assert!(sat != msat);
+
+        let usd = Amount::new(100, CurrencyUnit::Usd);
+        assert_ne!(sat, usd);
+        assert_ne!(msat, usd);
+    }
+
+    /// Tests that comparison operators work correctly for typed amounts with the same unit.
+    #[test]
+    fn test_typed_amount_comparison_same_unit() {
+        let small = Amount::new(50, CurrencyUnit::Sat);
+        let large = Amount::new(100, CurrencyUnit::Sat);
+
+        // Greater than
+        assert!(large > small);
+        assert!(!(small > large));
+
+        // Less than
+        assert!(small < large);
+        assert!(!(large < small));
+
+        // Greater than or equal
+        assert!(large >= small);
+        assert!(large >= Amount::new(100, CurrencyUnit::Sat));
+
+        // Less than or equal
+        assert!(small <= large);
+        assert!(small <= Amount::new(50, CurrencyUnit::Sat));
+
+        // partial_cmp returns Some
+        assert_eq!(large.partial_cmp(&small), Some(std::cmp::Ordering::Greater));
+        assert_eq!(small.partial_cmp(&large), Some(std::cmp::Ordering::Less));
+        assert_eq!(
+            small.partial_cmp(&Amount::new(50, CurrencyUnit::Sat)),
+            Some(std::cmp::Ordering::Equal)
+        );
+    }
+
+    /// Tests that partial_cmp returns None for typed amounts with different units.
+    /// This ensures that comparisons between different units are not accidentally valid.
+    #[test]
+    fn test_typed_amount_comparison_different_units_returns_none() {
+        let sat = Amount::new(100, CurrencyUnit::Sat);
+        let msat = Amount::new(50, CurrencyUnit::Msat);
+
+        // partial_cmp should return None for different units
+        assert_eq!(sat.partial_cmp(&msat), None);
+        assert_eq!(msat.partial_cmp(&sat), None);
+
+        // Different unit combinations
+        let usd = Amount::new(100, CurrencyUnit::Usd);
+        assert_eq!(sat.partial_cmp(&usd), None);
+        assert_eq!(usd.partial_cmp(&sat), None);
+
+        let eur = Amount::new(100, CurrencyUnit::Eur);
+        assert_eq!(usd.partial_cmp(&eur), None);
+
+        let custom = Amount::new(100, CurrencyUnit::Custom("BTC".into()));
+        assert_eq!(sat.partial_cmp(&custom), None);
+    }
+
+    /// Tests that comparison operators return false when comparing different units.
+    /// Since partial_cmp returns None, all comparisons should be false.
+    #[test]
+    fn test_typed_amount_comparison_operators_different_units() {
+        let sat = Amount::new(100, CurrencyUnit::Sat);
+        let msat = Amount::new(50, CurrencyUnit::Msat);
+
+        // When partial_cmp returns None:
+        // - > returns false
+        // - < returns false
+        // - >= returns false
+        // - <= returns false
+
+        assert!(!(sat > msat));
+        assert!(!(sat < msat));
+        assert!(!(sat >= msat));
+        assert!(!(sat <= msat));
+
+        assert!(!(msat > sat));
+        assert!(!(msat < sat));
+        assert!(!(msat >= sat));
+        assert!(!(msat <= sat));
+
+        // Even with same value, different units should return false
+        let sat100 = Amount::new(100, CurrencyUnit::Sat);
+        let msat100 = Amount::new(100, CurrencyUnit::Msat);
+
+        assert!(!(sat100 > msat100));
+        assert!(!(sat100 < msat100));
+        assert!(!(sat100 >= msat100));
+        assert!(!(sat100 <= msat100));
+    }
+
+    /// Tests that Amount<()> (untyped) has total ordering and implements Ord.
+    #[test]
+    fn test_untyped_amount_has_total_ordering() {
+        use std::cmp::Ordering;
+
+        let a: Amount<()> = Amount::from(50);
+        let b: Amount<()> = Amount::from(100);
+        let c: Amount<()> = Amount::from(50);
+
+        // Ord::cmp is available for Amount<()>
+        assert_eq!(a.cmp(&b), Ordering::Less);
+        assert_eq!(b.cmp(&a), Ordering::Greater);
+        assert_eq!(a.cmp(&c), Ordering::Equal);
+
+        // PartialOrd returns Some (total ordering)
+        assert_eq!(a.partial_cmp(&b), Some(Ordering::Less));
+        assert_eq!(b.partial_cmp(&a), Some(Ordering::Greater));
+        assert_eq!(a.partial_cmp(&c), Some(Ordering::Equal));
+    }
+
+    /// Tests that Amount<()> can be sorted (requires Ord).
+    #[test]
+    fn test_untyped_amount_sorting() {
+        let mut amounts: Vec<Amount<()>> = vec![
+            Amount::from(100),
+            Amount::from(25),
+            Amount::from(75),
+            Amount::from(50),
+        ];
+
+        amounts.sort();
+
+        assert_eq!(
+            amounts,
+            vec![
+                Amount::from(25),
+                Amount::from(50),
+                Amount::from(75),
+                Amount::from(100),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_amount_currency_unit_to_i64() {
+        let amount = Amount::new(100, CurrencyUnit::Sat);
+        assert_eq!(amount.to_i64(), Some(100));
+
+        let amount = Amount::new(i64::MAX as u64, CurrencyUnit::Sat);
+        assert_eq!(amount.to_i64(), Some(i64::MAX));
+
+        let amount = Amount::new(i64::MAX as u64 + 1, CurrencyUnit::Sat);
+        assert_eq!(amount.to_i64(), None);
+
+        let amount = Amount::new(0, CurrencyUnit::Sat);
+        assert_eq!(amount.to_i64(), Some(0));
+
+        let amount = Amount::new(1, CurrencyUnit::Sat);
+        assert_eq!(amount.to_i64(), Some(1));
+    }
+
+    #[test]
+    fn test_display_with_unit() {
+        let amount = Amount::new(100, CurrencyUnit::Sat);
+        assert_eq!(amount.display_with_unit(), "100 sat");
+
+        let amount = Amount::new(50, CurrencyUnit::Msat);
+        assert_eq!(amount.display_with_unit(), "50 msat");
+
+        let amount = Amount::new(100, CurrencyUnit::Usd);
+        assert_eq!(amount.display_with_unit(), "100 usd");
+
+        let amount = Amount::new(123, CurrencyUnit::Custom("BTC".to_string()));
+        assert_eq!(amount.display_with_unit(), "123 btc");
+    }
+
+    #[test]
+    fn test_amount_add_operator() {
+        let a = Amount::from(100);
+        let b = Amount::from(50);
+        let sum = a + b;
+        assert_eq!(sum, Amount::from(150));
+        assert_ne!(sum, Amount::ZERO);
     }
 }

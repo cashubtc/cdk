@@ -14,6 +14,10 @@ fn to_pgsql_error(err: PgError) -> Error {
         if code == SqlState::INTEGRITY_CONSTRAINT_VIOLATION || code == SqlState::UNIQUE_VIOLATION {
             return Error::Duplicate;
         }
+
+        if code == SqlState::T_R_DEADLOCK_DETECTED {
+            return Error::Locked;
+        }
     }
 
     Error::Database(Box::new(err))

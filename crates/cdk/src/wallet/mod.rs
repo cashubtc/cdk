@@ -3,17 +3,19 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
 use cdk_common::amount::FeeAndAmounts;
-use cdk_common::database::{self, DynWalletDatabaseTransaction, WalletDatabase};
+use cdk_common::database::{self, WalletDatabase};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
+use cdk_common::wallet::ProofInfo;
 use getrandom::getrandom;
+pub use mint_connector::http_client::{
+    AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
+};
 use subscription::{ActiveSubscription, SubscriptionManager};
-#[cfg(feature = "auth")]
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
@@ -26,18 +28,16 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::nut17::Kind;
 use crate::nuts::{
-    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proof, Proofs,
+    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
 };
-use crate::types::ProofInfo;
 use crate::util::unix_time;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
-use crate::Amount;
-#[cfg(feature = "auth")]
-use crate::OidcClient;
+use crate::{Amount, OidcClient};
 
-#[cfg(feature = "auth")]
 mod auth;
+#[cfg(feature = "nostr")]
+mod nostr_backup;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub use mint_connector::TorHttpClient;
 mod balance;
@@ -48,31 +48,40 @@ mod melt;
 mod mint_connector;
 mod mint_metadata_cache;
 pub mod multi_mint_wallet;
+#[cfg(feature = "npubcash")]
+mod npubcash;
 pub mod payment_request;
 mod proofs;
 mod receive;
 mod reclaim;
+mod recovery;
+pub(crate) mod saga;
 mod send;
 #[cfg(not(target_arch = "wasm32"))]
 mod streams;
 pub mod subscription;
 mod swap;
+pub mod test_utils;
 mod transactions;
 pub mod util;
 
-#[cfg(feature = "auth")]
 pub use auth::{AuthMintConnector, AuthWallet};
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
-#[cfg(feature = "auth")]
-pub use mint_connector::http_client::AuthHttpClient as BaseAuthHttpClient;
-pub use mint_connector::http_client::HttpClient as BaseHttpClient;
+pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
-#[cfg(feature = "auth")]
-pub use mint_connector::AuthHttpClient;
-pub use mint_connector::{HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector};
+pub use mint_connector::{
+    AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MeltOptions,
+    MintConnector,
+};
 pub use multi_mint_wallet::{MultiMintReceiveOptions, MultiMintSendOptions, MultiMintWallet};
+#[cfg(feature = "nostr")]
+pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResult};
+pub use payment_request::CreateRequestParams;
+#[cfg(feature = "nostr")]
+pub use payment_request::NostrWaitInfo;
 pub use receive::ReceiveOptions;
+pub use recovery::RecoveryReport;
 pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
 
@@ -90,18 +99,18 @@ pub struct Wallet {
     /// Unit
     pub unit: CurrencyUnit,
     /// Storage backend
-    pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+    pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     /// Mint metadata cache for this mint (lock-free cached access to keys, keysets, and mint info)
     pub metadata_cache: Arc<MintMetadataCache>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
     metadata_cache_ttl: Arc<RwLock<Option<Duration>>>,
-    #[cfg(feature = "auth")]
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
+    #[cfg(feature = "npubcash")]
+    npubcash_client: Arc<TokioRwLock<Option<Arc<cdk_npubcash::NpubCashClient>>>>,
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
-    in_error_swap_reverted_proofs: Arc<AtomicBool>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -115,8 +124,12 @@ pub enum WalletSubscription {
     Bolt11MintQuoteState(Vec<String>),
     /// Melt quote subscription
     Bolt11MeltQuoteState(Vec<String>),
+    /// Melt bolt12 quote subscription
+    Bolt12MeltQuoteState(Vec<String>),
     /// Mint bolt12 quote subscription
     Bolt12MintQuoteState(Vec<String>),
+    /// Custom melt quote subscription
+    MeltQuoteCustom(String, Vec<String>),
 }
 
 impl From<WalletSubscription> for WalletParams {
@@ -156,17 +169,38 @@ impl From<WalletSubscription> for WalletParams {
                 kind: Kind::Bolt12MintQuote,
                 id,
             },
+            WalletSubscription::Bolt12MeltQuoteState(filters) => WalletParams {
+                filters,
+                kind: Kind::Bolt12MeltQuote,
+                id,
+            },
+            WalletSubscription::MeltQuoteCustom(method, filters) => WalletParams {
+                filters,
+                kind: Kind::Custom(format!("{}_melt_quote", method)),
+                id,
+            },
         }
     }
+}
+
+/// Amount that are recovered during restore operation
+#[derive(Debug, Hash, PartialEq, Eq, Default)]
+pub struct Restored {
+    /// Amount in the restore that has already been spent
+    pub spent: Amount,
+    /// Amount restored that is unspent
+    pub unspent: Amount,
+    /// Amount restored that is pending
+    pub pending: Amount,
 }
 
 impl Wallet {
     /// Create new [`Wallet`] using the builder pattern
     /// # Synopsis
     /// ```rust
-    /// use bitcoin::bip32::Xpriv;
     /// use std::sync::Arc;
     ///
+    /// use bitcoin::bip32::Xpriv;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::{Wallet, WalletBuilder};
     /// use cdk_sqlite::wallet::memory;
@@ -190,7 +224,7 @@ impl Wallet {
     pub fn new(
         mint_url: &str,
         unit: CurrencyUnit,
-        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         seed: [u8; 64],
         target_proof_count: Option<usize>,
     ) -> Result<Self, Error> {
@@ -206,24 +240,30 @@ impl Wallet {
     }
 
     /// Subscribe to events
-    pub async fn subscribe<T: Into<WalletParams>>(&self, query: T) -> ActiveSubscription {
+    pub async fn subscribe<T: Into<WalletParams>>(
+        &self,
+        query: T,
+    ) -> Result<ActiveSubscription, Error> {
         self.subscription
             .subscribe(self.mint_url.clone(), query.into())
-            .expect("FIXME")
+            .map_err(|e| Error::SubscriptionError(e.to_string()))
     }
 
-    /// Fee required for proof set
+    /// Fee required to redeem proof set
     #[instrument(skip_all)]
-    pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
+    pub async fn get_proofs_fee(
+        &self,
+        proofs: &Proofs,
+    ) -> Result<crate::fees::ProofsFeeBreakdown, Error> {
         let proofs_per_keyset = proofs.count_by_keyset();
         self.get_proofs_fee_by_count(proofs_per_keyset).await
     }
 
-    /// Fee required for proof set by count
+    /// Fee required to redeem proof set by count
     pub async fn get_proofs_fee_by_count(
         &self,
         proofs_per_keyset: HashMap<Id, u64>,
-    ) -> Result<Amount, Error> {
+    ) -> Result<crate::fees::ProofsFeeBreakdown, Error> {
         let mut fee_per_keyset = HashMap::new();
         let metadata = self
             .metadata_cache
@@ -241,9 +281,9 @@ impl Wallet {
             fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk);
         }
 
-        let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
+        let fee_breakdown = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
 
-        Ok(fee)
+        Ok(fee_breakdown)
     }
 
     /// Get fee for count of proofs in a keyset
@@ -270,13 +310,10 @@ impl Wallet {
     /// its URL
     #[instrument(skip(self))]
     pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
-        // Update the mint URL in the wallet DB
-        let mut tx = self.localstore.begin_db_transaction().await?;
-        tx.update_mint_url(self.mint_url.clone(), new_mint_url.clone())
+        self.localstore
+            .update_mint_url(self.mint_url.clone(), new_mint_url.clone())
             .await?;
-        tx.commit().await?;
 
-        // Update the mint URL in the wallet struct field
         self.mint_url = new_mint_url;
 
         Ok(())
@@ -306,7 +343,6 @@ impl Wallet {
         }
 
         // Create or update auth wallet
-        #[cfg(feature = "auth")]
         {
             let mut auth_wallet = self.auth_wallet.write().await;
             match &*auth_wallet {
@@ -337,7 +373,13 @@ impl Wallet {
                     );
                     *auth_wallet = Some(new_auth_wallet.clone());
 
-                    self.client.set_auth_wallet(Some(new_auth_wallet)).await;
+                    self.client
+                        .set_auth_wallet(Some(new_auth_wallet.clone()))
+                        .await;
+
+                    if let Err(e) = new_auth_wallet.refresh_keysets().await {
+                        tracing::error!("Could not fetch auth keysets: {}", e);
+                    }
                 }
             }
         }
@@ -368,14 +410,13 @@ impl Wallet {
     }
 
     /// Get amounts needed to refill proof state
-    #[instrument(skip(self, tx))]
+    #[instrument(skip(self))]
     pub(crate) async fn amounts_needed_for_state_target(
         &self,
-        tx: &mut DynWalletDatabaseTransaction,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Vec<Amount>, Error> {
         let unspent_proofs = self
-            .get_proofs_with(Some(tx), Some(vec![State::Unspent]), None)
+            .get_proofs_with(Some(vec![State::Unspent]), None)
             .await?;
 
         let amounts_count: HashMap<u64, u64> =
@@ -406,15 +447,14 @@ impl Wallet {
     }
 
     /// Determine [`SplitTarget`] for amount based on state
-    #[instrument(skip(self, tx))]
+    #[instrument(skip(self))]
     async fn determine_split_target_values(
         &self,
-        tx: &mut DynWalletDatabaseTransaction,
         change_amount: Amount,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<SplitTarget, Error> {
         let mut amounts_needed_refill = self
-            .amounts_needed_for_state_target(tx, fee_and_amounts)
+            .amounts_needed_for_state_target(fee_and_amounts)
             .await?;
 
         amounts_needed_refill.sort();
@@ -433,7 +473,7 @@ impl Wallet {
 
     /// Restore
     #[instrument(skip(self))]
-    pub async fn restore(&self) -> Result<Amount, Error> {
+    pub async fn restore(&self) -> Result<Restored, Error> {
         // Check that mint is in store of mints
         if self
             .localstore
@@ -446,12 +486,14 @@ impl Wallet {
 
         let keysets = self.load_mint_keysets().await?;
 
-        let mut restored_value = Amount::ZERO;
+        let mut restored_result = Restored::default();
 
         for keyset in keysets {
             let keys = self.load_keyset_keys(keyset.id).await?;
             let mut empty_batch = 0;
             let mut start_counter = 0;
+            // Track the highest counter value that had a signature
+            let mut highest_counter: Option<u32> = None;
 
             while empty_batch.lt(&3) {
                 let premint_secrets = PreMintSecrets::restore_batch(
@@ -481,63 +523,119 @@ impl Wallet {
                     continue;
                 }
 
-                let premint_secrets: Vec<_> = premint_secrets
+                // Build a map from blinded_secret to signature for O(1) lookup
+                // This ensures we match signatures to secrets correctly regardless of response order
+                let signature_map: HashMap<_, _> = response
+                    .outputs
+                    .iter()
+                    .zip(response.signatures.iter())
+                    .map(|(output, sig)| (output.blinded_secret, sig.clone()))
+                    .collect();
+
+                // Enumerate secrets to track their original index (which corresponds to counter value)
+                // and match signatures by blinded_secret to ensure correct pairing
+                let matched_secrets: Vec<_> = premint_secrets
                     .secrets
                     .iter()
-                    .filter(|p| response.outputs.contains(&p.blinded_message))
+                    .enumerate()
+                    .filter_map(|(idx, p)| {
+                        signature_map
+                            .get(&p.blinded_message.blinded_secret)
+                            .map(|sig| (idx, p, sig.clone()))
+                    })
                     .collect();
+
+                // Update highest counter based on matched indices
+                if let Some(&(max_idx, _, _)) = matched_secrets.last() {
+                    let counter_value = start_counter + max_idx as u32;
+                    highest_counter =
+                        Some(highest_counter.map_or(counter_value, |c| c.max(counter_value)));
+                }
 
                 // the response outputs and premint secrets should be the same after filtering
                 // blinded messages the mint did not have signatures for
-                assert_eq!(response.outputs.len(), premint_secrets.len());
+                if response.outputs.len() != matched_secrets.len() {
+                    return Err(Error::InvalidMintResponse(format!(
+                        "restore response outputs ({}) does not match premint secrets ({})",
+                        response.outputs.len(),
+                        matched_secrets.len()
+                    )));
+                }
 
+                // Extract signatures, rs, and secrets in matching order
+                // Each tuple (idx, premint, signature) ensures correct pairing
                 let proofs = construct_proofs(
-                    response.signatures,
-                    premint_secrets.iter().map(|p| p.r.clone()).collect(),
-                    premint_secrets.iter().map(|p| p.secret.clone()).collect(),
+                    matched_secrets
+                        .iter()
+                        .map(|(_, _, sig)| sig.clone())
+                        .collect(),
+                    matched_secrets
+                        .iter()
+                        .map(|(_, p, _)| p.r.clone())
+                        .collect(),
+                    matched_secrets
+                        .iter()
+                        .map(|(_, p, _)| p.secret.clone())
+                        .collect(),
                     &keys,
                 )?;
 
                 tracing::debug!("Restored {} proofs", proofs.len());
 
-                let mut tx = self.localstore.begin_db_transaction().await?;
-                tx.increment_keyset_counter(&keyset.id, proofs.len() as u32)
-                    .await?;
-                tx.commit().await?;
-
                 let states = self.check_proofs_spent(proofs.clone()).await?;
 
-                let unspent_proofs: Vec<Proof> = proofs
-                    .iter()
-                    .zip(states)
-                    .filter(|(_, state)| !state.state.eq(&State::Spent))
-                    .map(|(p, _)| p)
-                    .cloned()
-                    .collect();
-
-                restored_value += unspent_proofs.total_amount()?;
-
-                let unspent_proofs = unspent_proofs
+                let (unspent_proofs, updated_restored) = proofs
                     .into_iter()
-                    .map(|proof| {
-                        ProofInfo::new(
-                            proof,
-                            self.mint_url.clone(),
-                            State::Unspent,
-                            keyset.unit.clone(),
-                        )
+                    .zip(states)
+                    .filter_map(|(p, state)| {
+                        ProofInfo::new(p, self.mint_url.clone(), state.state, keyset.unit.clone())
+                            .ok()
                     })
-                    .collect::<Result<Vec<ProofInfo>, _>>()?;
+                    .try_fold(
+                        (Vec::new(), restored_result),
+                        |(mut proofs, mut restored_result), proof_info| {
+                            match proof_info.state {
+                                State::Spent => {
+                                    restored_result.spent += proof_info.proof.amount;
+                                }
+                                State::Unspent =>  {
+                                    restored_result.unspent += proof_info.proof.amount;
+                                    proofs.push(proof_info);
+                                }
+                                State::Pending => {
+                                    restored_result.pending += proof_info.proof.amount;
+                                    proofs.push(proof_info);
+                                }
+                                _ => {
+                                    unreachable!("These states are unknown to the mint and cannot be returned")
+                                }
+                            }
+                            Ok::<(Vec<ProofInfo>, Restored), Error>((proofs, restored_result))
+                        },
+                    )?;
 
-                let mut tx = self.localstore.begin_db_transaction().await?;
-                tx.update_proofs(unspent_proofs, vec![]).await?;
-                tx.commit().await?;
+                restored_result = updated_restored;
+
+                self.localstore
+                    .update_proofs(unspent_proofs, vec![])
+                    .await?;
 
                 empty_batch = 0;
                 start_counter += 100;
             }
+
+            if let Some(highest) = highest_counter {
+                self.localstore
+                    .increment_keyset_counter(&keyset.id, highest + 1)
+                    .await?;
+                tracing::debug!(
+                    "Set keyset {} counter to {} after restore",
+                    keyset.id,
+                    highest + 1
+                );
+            }
         }
-        Ok(restored_value)
+        Ok(restored_result)
     }
 
     /// Verify all proofs in token have meet the required spend
@@ -735,5 +833,296 @@ impl Wallet {
 impl Drop for Wallet {
     fn drop(&mut self) {
         self.seed.zeroize();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nuts::{BlindSignature, BlindedMessage, PreMint, PreMintSecrets};
+    use crate::secret::Secret;
+
+    /// Test that restore signature matching works correctly when response is in order
+    #[test]
+    fn test_restore_signature_matching_in_order() {
+        // Create test data with 3 premint secrets
+        let keyset_id = Id::from_bytes(&[0u8; 8]).unwrap();
+
+        // Generate deterministic keys for testing
+        let secret1 = Secret::generate();
+        let secret2 = Secret::generate();
+        let secret3 = Secret::generate();
+
+        let (blinded1, r1) = crate::dhke::blind_message(&secret1.to_bytes(), None).unwrap();
+        let (blinded2, r2) = crate::dhke::blind_message(&secret2.to_bytes(), None).unwrap();
+        let (blinded3, r3) = crate::dhke::blind_message(&secret3.to_bytes(), None).unwrap();
+
+        let premint1 = PreMint {
+            blinded_message: BlindedMessage::new(Amount::from(1), keyset_id, blinded1),
+            secret: secret1.clone(),
+            r: r1.clone(),
+            amount: Amount::from(1),
+        };
+        let premint2 = PreMint {
+            blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
+            secret: secret2.clone(),
+            r: r2.clone(),
+            amount: Amount::from(2),
+        };
+        let premint3 = PreMint {
+            blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
+            secret: secret3.clone(),
+            r: r3.clone(),
+            amount: Amount::from(4),
+        };
+
+        let premint_secrets = PreMintSecrets {
+            secrets: vec![premint1.clone(), premint2.clone(), premint3.clone()],
+            keyset_id,
+        };
+
+        // Create mock signatures (just need the structure, not real signatures)
+        let sig1 = BlindSignature {
+            amount: Amount::from(1),
+            keyset_id,
+            c: blinded1, // Using blinded as placeholder for signature
+            dleq: None,
+        };
+        let sig2 = BlindSignature {
+            amount: Amount::from(2),
+            keyset_id,
+            c: blinded2,
+            dleq: None,
+        };
+        let sig3 = BlindSignature {
+            amount: Amount::from(4),
+            keyset_id,
+            c: blinded3,
+            dleq: None,
+        };
+
+        // Response in same order as request
+        let response_outputs = vec![
+            premint1.blinded_message.clone(),
+            premint2.blinded_message.clone(),
+            premint3.blinded_message.clone(),
+        ];
+        let response_signatures = vec![sig1.clone(), sig2.clone(), sig3.clone()];
+
+        // Apply the matching logic (same as in restore)
+        let signature_map: HashMap<_, _> = response_outputs
+            .iter()
+            .zip(response_signatures.iter())
+            .map(|(output, sig)| (output.blinded_secret, sig.clone()))
+            .collect();
+
+        let matched_secrets: Vec<_> = premint_secrets
+            .secrets
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, p)| {
+                signature_map
+                    .get(&p.blinded_message.blinded_secret)
+                    .map(|sig| (idx, p, sig.clone()))
+            })
+            .collect();
+
+        // Verify all 3 matched
+        assert_eq!(matched_secrets.len(), 3);
+
+        // Verify correct pairing by checking amounts match
+        assert_eq!(matched_secrets[0].2.amount, Amount::from(1));
+        assert_eq!(matched_secrets[1].2.amount, Amount::from(2));
+        assert_eq!(matched_secrets[2].2.amount, Amount::from(4));
+
+        // Verify indices are preserved
+        assert_eq!(matched_secrets[0].0, 0);
+        assert_eq!(matched_secrets[1].0, 1);
+        assert_eq!(matched_secrets[2].0, 2);
+    }
+
+    /// Test that restore signature matching works correctly when response is OUT of order
+    /// This is the critical test that verifies the fix for TokenNotVerified
+    #[test]
+    fn test_restore_signature_matching_out_of_order() {
+        let keyset_id = Id::from_bytes(&[0u8; 8]).unwrap();
+
+        let secret1 = Secret::generate();
+        let secret2 = Secret::generate();
+        let secret3 = Secret::generate();
+
+        let (blinded1, r1) = crate::dhke::blind_message(&secret1.to_bytes(), None).unwrap();
+        let (blinded2, r2) = crate::dhke::blind_message(&secret2.to_bytes(), None).unwrap();
+        let (blinded3, r3) = crate::dhke::blind_message(&secret3.to_bytes(), None).unwrap();
+
+        let premint1 = PreMint {
+            blinded_message: BlindedMessage::new(Amount::from(1), keyset_id, blinded1),
+            secret: secret1.clone(),
+            r: r1.clone(),
+            amount: Amount::from(1),
+        };
+        let premint2 = PreMint {
+            blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
+            secret: secret2.clone(),
+            r: r2.clone(),
+            amount: Amount::from(2),
+        };
+        let premint3 = PreMint {
+            blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
+            secret: secret3.clone(),
+            r: r3.clone(),
+            amount: Amount::from(4),
+        };
+
+        let premint_secrets = PreMintSecrets {
+            secrets: vec![premint1.clone(), premint2.clone(), premint3.clone()],
+            keyset_id,
+        };
+
+        let sig1 = BlindSignature {
+            amount: Amount::from(1),
+            keyset_id,
+            c: blinded1,
+            dleq: None,
+        };
+        let sig2 = BlindSignature {
+            amount: Amount::from(2),
+            keyset_id,
+            c: blinded2,
+            dleq: None,
+        };
+        let sig3 = BlindSignature {
+            amount: Amount::from(4),
+            keyset_id,
+            c: blinded3,
+            dleq: None,
+        };
+
+        // Response in REVERSED order (simulating out-of-order response from mint)
+        let response_outputs = vec![
+            premint3.blinded_message.clone(), // index 2 first
+            premint1.blinded_message.clone(), // index 0 second
+            premint2.blinded_message.clone(), // index 1 third
+        ];
+        let response_signatures = vec![sig3.clone(), sig1.clone(), sig2.clone()];
+
+        // Apply the matching logic (same as in restore)
+        let signature_map: HashMap<_, _> = response_outputs
+            .iter()
+            .zip(response_signatures.iter())
+            .map(|(output, sig)| (output.blinded_secret, sig.clone()))
+            .collect();
+
+        let matched_secrets: Vec<_> = premint_secrets
+            .secrets
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, p)| {
+                signature_map
+                    .get(&p.blinded_message.blinded_secret)
+                    .map(|sig| (idx, p, sig.clone()))
+            })
+            .collect();
+
+        // Verify all 3 matched
+        assert_eq!(matched_secrets.len(), 3);
+
+        // Critical: Even though response was out of order, signatures should be
+        // correctly paired with their corresponding premint secrets
+        // matched_secrets should be in premint order (0, 1, 2) with correct signatures
+        assert_eq!(matched_secrets[0].0, 0); // First premint (amount 1)
+        assert_eq!(matched_secrets[0].2.amount, Amount::from(1)); // Correct signature
+
+        assert_eq!(matched_secrets[1].0, 1); // Second premint (amount 2)
+        assert_eq!(matched_secrets[1].2.amount, Amount::from(2)); // Correct signature
+
+        assert_eq!(matched_secrets[2].0, 2); // Third premint (amount 4)
+        assert_eq!(matched_secrets[2].2.amount, Amount::from(4)); // Correct signature
+    }
+
+    /// Test that restore handles partial responses correctly
+    #[test]
+    fn test_restore_signature_matching_partial_response() {
+        let keyset_id = Id::from_bytes(&[0u8; 8]).unwrap();
+
+        let secret1 = Secret::generate();
+        let secret2 = Secret::generate();
+        let secret3 = Secret::generate();
+
+        let (blinded1, r1) = crate::dhke::blind_message(&secret1.to_bytes(), None).unwrap();
+        let (blinded2, r2) = crate::dhke::blind_message(&secret2.to_bytes(), None).unwrap();
+        let (blinded3, r3) = crate::dhke::blind_message(&secret3.to_bytes(), None).unwrap();
+
+        let premint1 = PreMint {
+            blinded_message: BlindedMessage::new(Amount::from(1), keyset_id, blinded1),
+            secret: secret1.clone(),
+            r: r1.clone(),
+            amount: Amount::from(1),
+        };
+        let premint2 = PreMint {
+            blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
+            secret: secret2.clone(),
+            r: r2.clone(),
+            amount: Amount::from(2),
+        };
+        let premint3 = PreMint {
+            blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
+            secret: secret3.clone(),
+            r: r3.clone(),
+            amount: Amount::from(4),
+        };
+
+        let premint_secrets = PreMintSecrets {
+            secrets: vec![premint1.clone(), premint2.clone(), premint3.clone()],
+            keyset_id,
+        };
+
+        let sig1 = BlindSignature {
+            amount: Amount::from(1),
+            keyset_id,
+            c: blinded1,
+            dleq: None,
+        };
+        let sig3 = BlindSignature {
+            amount: Amount::from(4),
+            keyset_id,
+            c: blinded3,
+            dleq: None,
+        };
+
+        // Response only has signatures for premint1 and premint3 (gap at premint2)
+        // Also out of order
+        let response_outputs = vec![
+            premint3.blinded_message.clone(),
+            premint1.blinded_message.clone(),
+        ];
+        let response_signatures = vec![sig3.clone(), sig1.clone()];
+
+        let signature_map: HashMap<_, _> = response_outputs
+            .iter()
+            .zip(response_signatures.iter())
+            .map(|(output, sig)| (output.blinded_secret, sig.clone()))
+            .collect();
+
+        let matched_secrets: Vec<_> = premint_secrets
+            .secrets
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, p)| {
+                signature_map
+                    .get(&p.blinded_message.blinded_secret)
+                    .map(|sig| (idx, p, sig.clone()))
+            })
+            .collect();
+
+        // Only 2 should match
+        assert_eq!(matched_secrets.len(), 2);
+
+        // Verify correct pairing despite gap and out-of-order response
+        assert_eq!(matched_secrets[0].0, 0); // First premint (amount 1)
+        assert_eq!(matched_secrets[0].2.amount, Amount::from(1));
+
+        assert_eq!(matched_secrets[1].0, 2); // Third premint (amount 4), index 1 skipped
+        assert_eq!(matched_secrets[1].2.amount, Amount::from(4));
     }
 }

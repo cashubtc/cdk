@@ -21,8 +21,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
-use cashu::Bolt11Invoice;
+use cashu::{Bolt11Invoice, PaymentMethod};
 use cdk::amount::{Amount, SplitTarget};
+use cdk::nuts::{
+    MeltQuoteBolt11Response, MeltRequest, MintRequest, MintResponse, PreMintSecrets, Proofs,
+};
+use cdk::wallet::{HttpClient, MintConnector, MintQuote};
 use cdk::{StreamExt, Wallet};
 use cdk_fake_wallet::create_fake_invoice;
 use init_regtest::{get_lnd_dir, LND_RPC_ADDR};
@@ -49,7 +53,7 @@ pub fn standard_keyset_amounts(max_order: u32) -> Vec<u64> {
 
 pub async fn fund_wallet(wallet: Arc<Wallet>, amount: Amount) {
     let quote = wallet
-        .mint_quote(amount, None)
+        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
         .await
         .expect("Could not get mint quote");
 
@@ -219,4 +223,55 @@ async fn create_cln_client_with_retry() -> ClnClient {
             }
         }
     }
+}
+
+pub async fn attempt_manual_mint(
+    wallet: &Wallet,
+    mint_url: &str,
+    mint_quote: &MintQuote,
+    mint_amount: Amount,
+    payment_method: PaymentMethod,
+) -> Result<MintResponse, cdk::Error> {
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+    let http_client = HttpClient::new(mint_url.parse().unwrap(), None);
+
+    let premint_secrets = PreMintSecrets::random(
+        active_keyset_id,
+        mint_amount,
+        &SplitTarget::default(),
+        &fee_and_amounts,
+    )
+    .unwrap();
+
+    let mut request = MintRequest {
+        quote: mint_quote.id.clone(),
+        outputs: premint_secrets.blinded_messages(),
+        signature: None,
+    };
+
+    request
+        .sign(
+            mint_quote
+                .secret_key
+                .as_ref()
+                .expect("Secret key on quote")
+                .clone(),
+        )
+        .unwrap();
+
+    http_client.post_mint(&payment_method, request).await
+}
+
+pub async fn attempt_manual_melt(
+    mint_url: &str,
+    quote_id: String,
+    inputs: Proofs,
+    payment_method: PaymentMethod,
+) -> Result<MeltQuoteBolt11Response<String>, cdk::Error> {
+    let http_client = HttpClient::new(mint_url.parse().unwrap(), None);
+
+    let request = MeltRequest::new(quote_id, inputs, None);
+
+    http_client.post_melt(&payment_method, request).await
 }

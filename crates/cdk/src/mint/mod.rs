@@ -5,11 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use cdk_common::amount::to_unit;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
-#[cfg(feature = "auth")]
-use cdk_common::database::DynMintAuthDatabase;
-use cdk_common::database::{self, DynMintDatabase};
+use cdk_common::database::mint::Acquired;
+use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
@@ -17,7 +15,6 @@ pub use cdk_common::quote_id::QuoteId;
 use cdk_prometheus::global;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
-#[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
 use tokio::sync::{Mutex, Notify};
@@ -27,11 +24,8 @@ use tracing::instrument;
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
-use crate::Amount;
-#[cfg(feature = "auth")]
-use crate::OidcClient;
+use crate::{Amount, OidcClient};
 
-#[cfg(feature = "auth")]
 pub(crate) mod auth;
 mod builder;
 mod check_spendable;
@@ -39,6 +33,8 @@ mod issue;
 mod keysets;
 mod ln;
 mod melt;
+mod proofs;
+mod saga_recovery;
 mod start_up_check;
 mod subscription;
 mod swap;
@@ -46,6 +42,7 @@ mod verification;
 
 pub use builder::{MintBuilder, MintMeltLimits};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
+pub use issue::{MintQuoteRequest, MintQuoteResponse};
 pub use verification::Verification;
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
@@ -64,18 +61,26 @@ pub struct Mint {
     /// Mint Storage backend
     localstore: DynMintDatabase,
     /// Auth Storage backend (only available with auth feature)
-    #[cfg(feature = "auth")]
     auth_localstore: Option<DynMintAuthDatabase>,
     /// Payment processors for mint
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
     /// Subscription manager
     pubsub_manager: Arc<PubSubManager>,
-    #[cfg(feature = "auth")]
     oidc_client: Option<OidcClient>,
     /// In-memory keyset
     keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
+    /// Maximum number of inputs allowed per transaction
+    max_inputs: usize,
+    /// Maximum number of outputs allowed per transaction
+    max_outputs: usize,
+}
+
+impl std::fmt::Debug for Mint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mint").finish_non_exhaustive()
+    }
 }
 
 /// State for managing background tasks
@@ -94,26 +99,30 @@ impl Mint {
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: DynMintDatabase,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        max_inputs: usize,
+        max_outputs: usize,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
             signatory,
             localstore,
-            #[cfg(feature = "auth")]
             None,
             payment_processors,
+            max_inputs,
+            max_outputs,
         )
         .await
     }
 
     /// Create new [`Mint`] with authentication support
-    #[cfg(feature = "auth")]
     pub async fn new_with_auth(
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: DynMintDatabase,
         auth_localstore: DynMintAuthDatabase,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        max_inputs: usize,
+        max_outputs: usize,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -121,6 +130,8 @@ impl Mint {
             localstore,
             Some(auth_localstore),
             payment_processors,
+            max_inputs,
+            max_outputs,
         )
         .await
     }
@@ -131,8 +142,10 @@ impl Mint {
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: DynMintDatabase,
-        #[cfg(feature = "auth")] auth_localstore: Option<DynMintAuthDatabase>,
+        auth_localstore: Option<DynMintAuthDatabase>,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        max_inputs: usize,
+        max_outputs: usize,
     ) -> Result<Self, Error> {
         let keysets = signatory.keysets().await?;
         if !keysets
@@ -174,6 +187,20 @@ impl Mint {
                     stored.pubkey = computed_info.pubkey;
                     mutated = true;
                 }
+
+                // Merge auth settings from computed_info if stored doesn't have them
+                // Protected endpoints will be populated dynamically from auth database
+                {
+                    if stored.nuts.nut21.is_none() && computed_info.nuts.nut21.is_some() {
+                        stored.nuts.nut21 = computed_info.nuts.nut21.clone();
+                        mutated = true;
+                    }
+                    if stored.nuts.nut22.is_none() && computed_info.nuts.nut22.is_some() {
+                        stored.nuts.nut22 = computed_info.nuts.nut22.clone();
+                        mutated = true;
+                    }
+                }
+
                 if mutated {
                     let updated = serde_json::to_vec(&stored)?;
                     let mut tx = localstore.begin_transaction().await?;
@@ -207,7 +234,6 @@ impl Mint {
             signatory,
             pubsub_manager: PubSubManager::new((localstore.clone(), payment_processors.clone())),
             localstore,
-            #[cfg(feature = "auth")]
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
                 OidcClient::new(
                     nut21.openid_discovery.clone(),
@@ -215,10 +241,11 @@ impl Mint {
                 )
             }),
             payment_processors,
-            #[cfg(feature = "auth")]
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
+            max_inputs,
+            max_outputs,
         })
     }
 
@@ -398,6 +425,37 @@ impl Mint {
         Ok(())
     }
 
+    /// Get all custom payment methods supported by registered payment processors
+    ///
+    /// This queries all payment processors for their supported custom methods
+    /// and returns a deduplicated list.
+    pub async fn get_custom_payment_methods(&self) -> Result<Vec<String>, Error> {
+        use std::collections::HashSet;
+        let mut custom_methods = HashSet::new();
+        let mut seen_processors = Vec::new();
+
+        for processor in self.payment_processors.values() {
+            // Skip if we've already queried this processor instance
+            if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
+                continue;
+            }
+            seen_processors.push(Arc::clone(processor));
+
+            match processor.get_settings().await {
+                Ok(settings) => {
+                    for (method, _) in settings.custom {
+                        custom_methods.insert(method);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to get settings from payment processor: {}", e);
+                }
+            }
+        }
+
+        Ok(custom_methods.into_iter().collect())
+    }
+
     /// Get the payment processor for the given unit and payment method
     pub fn get_payment_processor(
         &self,
@@ -440,7 +498,6 @@ impl Mint {
 
         let mint_info: MintInfo = serde_json::from_slice(&mint_info)?;
 
-        #[cfg(feature = "auth")]
         let mint_info = if let Some(auth_db) = self.auth_localstore.as_ref() {
             let mut mint_info = mint_info;
             let auth_endpoints = auth_db.get_auth_for_endpoints().await?;
@@ -674,7 +731,7 @@ impl Mint {
         pubsub_manager: &Arc<PubSubManager>,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
-        if wait_payment_response.payment_amount == Amount::ZERO {
+        if wait_payment_response.payment_amount.value() == 0 {
             tracing::warn!(
                 "Received payment response with 0 amount with payment id {}.",
                 wait_payment_response.payment_id
@@ -684,13 +741,13 @@ impl Mint {
 
         let mut tx = localstore.begin_transaction().await?;
 
-        if let Ok(Some(mint_quote)) = tx
+        if let Ok(Some(mut mint_quote)) = tx
             .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
             .await
         {
             Self::handle_mint_quote_payment(
                 &mut tx,
-                &mint_quote,
+                &mut mint_quote,
                 wait_payment_response,
                 pubsub_manager,
             )
@@ -709,15 +766,15 @@ impl Mint {
     /// Handle payment for a specific mint quote (extracted from pay_mint_quote)
     #[instrument(skip_all)]
     async fn handle_mint_quote_payment(
-        tx: &mut Box<dyn database::MintTransaction<'_, database::Error> + Send + Sync + '_>,
-        mint_quote: &MintQuote,
+        tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
+        mint_quote: &mut Acquired<MintQuote>,
         wait_payment_response: WaitPaymentResponse,
         pubsub_manager: &Arc<PubSubManager>,
     ) -> Result<(), Error> {
         tracing::debug!(
-            "Received payment notification of {} {} for mint quote {} with payment id {}",
+            "Received payment notification of {} {:?} for mint quote {} with payment id {}",
             wait_payment_response.payment_amount,
-            wait_payment_response.unit,
+            wait_payment_response.unit(),
             mint_quote.id,
             wait_payment_response.payment_id.to_string()
         );
@@ -727,18 +784,16 @@ impl Mint {
             .payment_ids()
             .contains(&&wait_payment_response.payment_id)
         {
-            if mint_quote.payment_method == PaymentMethod::Bolt11
+            if mint_quote.payment_method.is_bolt11()
                 && (quote_state == MintQuoteState::Issued || quote_state == MintQuoteState::Paid)
             {
                 tracing::info!("Received payment notification for already issued quote.");
             } else {
-                let payment_amount_quote_unit = to_unit(
-                    wait_payment_response.payment_amount,
-                    &wait_payment_response.unit,
-                    &mint_quote.unit,
-                )?;
+                let payment_amount_quote_unit: Amount<CurrencyUnit> = wait_payment_response
+                    .payment_amount
+                    .convert_to(&mint_quote.unit)?;
 
-                if payment_amount_quote_unit == Amount::ZERO {
+                if payment_amount_quote_unit.value() == 0 {
                     tracing::error!("Zero amount payments should not be recorded.");
                     return Err(Error::AmountUndefined);
                 }
@@ -749,25 +804,23 @@ impl Mint {
                     payment_amount_quote_unit
                 );
 
-                match tx
-                    .increment_mint_quote_amount_paid(
-                        &mint_quote.id,
-                        payment_amount_quote_unit,
-                        wait_payment_response.payment_id.clone(),
-                    )
-                    .await
-                {
-                    Ok(total_paid) => {
-                        pubsub_manager.mint_quote_payment(mint_quote, total_paid);
+                match mint_quote.add_payment(
+                    payment_amount_quote_unit,
+                    wait_payment_response.payment_id.clone(),
+                    None,
+                ) {
+                    Ok(()) => {
+                        tx.update_mint_quote(mint_quote).await?;
+                        pubsub_manager.mint_quote_payment(mint_quote, mint_quote.amount_paid());
                     }
-                    Err(database::Error::Duplicate) => {
+                    Err(Error::DuplicatePaymentId) => {
                         tracing::info!(
                             "Payment ID {} already processed (caught race condition)",
                             wait_payment_response.payment_id
                         );
                         // This is fine - another concurrent request already processed this payment
                     }
-                    Err(e) => return Err(e.into()),
+                    Err(e) => return Err(e),
                 }
             }
         } else {
@@ -779,7 +832,10 @@ impl Mint {
 
     /// Fee required for proof set
     #[instrument(skip_all)]
-    pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
+    pub async fn get_proofs_fee(
+        &self,
+        proofs: &Proofs,
+    ) -> Result<crate::fees::ProofsFeeBreakdown, Error> {
         let mut proofs_per_keyset = HashMap::new();
         let mut fee_per_keyset = HashMap::new();
 
@@ -799,9 +855,9 @@ impl Mint {
                 .or_insert(1);
         }
 
-        let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
+        let fee_breakdown = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
 
-        Ok(fee)
+        Ok(fee_breakdown)
     }
 
     /// Get active keysets
@@ -892,6 +948,14 @@ impl Mint {
             let mut outputs = Vec::with_capacity(output_len);
             let mut signatures = Vec::with_capacity(output_len);
 
+            // Build a position map to track original request order for verification
+            let position_map: HashMap<PublicKey, usize> = request
+                .outputs
+                .iter()
+                .enumerate()
+                .map(|(idx, output)| (output.blinded_secret, idx))
+                .collect();
+
             let blinded_message: Vec<PublicKey> =
                 request.outputs.iter().map(|b| b.blinded_secret).collect();
 
@@ -900,7 +964,9 @@ impl Mint {
                 .get_blind_signatures(&blinded_message)
                 .await?;
 
-            assert_eq!(blinded_signatures.len(), output_len);
+            if blinded_signatures.len() != output_len {
+                return Err(Error::Internal);
+            }
 
             for (blinded_message, blinded_signature) in
                 request.outputs.into_iter().zip(blinded_signatures)
@@ -909,6 +975,29 @@ impl Mint {
                     outputs.push(blinded_message);
                     signatures.push(blinded_signature);
                 }
+            }
+
+            // Verify response outputs maintain the same relative order as the request
+            // This ensures the NUT-09 spec requirement that outputs[i] corresponds to signatures[i]
+            let mut last_position: Option<usize> = None;
+            for output in &outputs {
+                let current_position =
+                    position_map.get(&output.blinded_secret).ok_or_else(|| {
+                        tracing::error!("Restore response contains output not in original request");
+                        Error::Internal
+                    })?;
+
+                if let Some(last_pos) = last_position {
+                    if *current_position <= last_pos {
+                        tracing::error!(
+                            "Restore response outputs are out of order: position {} after {}",
+                            current_position,
+                            last_pos
+                        );
+                        return Err(Error::Internal);
+                    }
+                }
+                last_position = Some(*current_position);
             }
 
             Ok(RestoreResponse {
@@ -979,6 +1068,7 @@ mod tests {
 
     use std::str::FromStr;
 
+    use cdk_signatory::signatory::RotateKeyArguments;
     use cdk_sqlite::mint::memory::new_with_state;
 
     use super::*;
@@ -1015,16 +1105,36 @@ mod tests {
             cdk_signatory::db_signatory::DbSignatory::new(
                 localstore.clone(),
                 config.seed,
-                config.supported_units,
+                config.supported_units.clone(),
                 HashMap::new(),
             )
             .await
             .expect("Failed to create signatory"),
         );
 
-        Mint::new(MintInfo::default(), signatory, localstore, HashMap::new())
-            .await
-            .unwrap()
+        for (unit, (fee, max_order)) in &config.supported_units {
+            let amounts: Vec<u64> = (0..*max_order).map(|i| 2_u64.pow(i as u32)).collect();
+            signatory
+                .rotate_keyset(RotateKeyArguments {
+                    unit: unit.clone(),
+                    amounts,
+                    input_fee_ppk: *fee,
+                    use_keyset_v2: true,
+                })
+                .await
+                .unwrap();
+        }
+
+        Mint::new(
+            MintInfo::default(),
+            signatory,
+            localstore,
+            HashMap::new(),
+            1000,
+            1000,
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
@@ -1071,7 +1181,7 @@ mod tests {
         let first_keyset_id = keysets.keysets[0].id;
 
         // set the first keyset to inactive and generate a new keyset
-        mint.rotate_keyset(CurrencyUnit::default(), vec![1], 1)
+        mint.rotate_keyset(CurrencyUnit::default(), vec![1], 1, true)
             .await
             .expect("test");
 
@@ -1105,7 +1215,7 @@ mod tests {
 
         let keys = mint.pubkeys();
 
-        let expected_keys = r#"{"keysets":[{"id":"005f6e8c540c9e61","unit":"sat","keys":{"1":"03e8aded7525acee36e3394e28f2dcbc012533ef2a2b085a55fc291d311afee3ef","1024":"0351a68a667c5fc21d66c187baecefa1d65529d06b7ae13112d432b6bca16b0e8c","1048576":"02b016346e5a322d371c6e6164b28b31b4d93a51572351ca2f26cdc12e916d9ac3","1073741824":"03f12e6a0903ed0db87485a296b1dca9d953a8a6919ff88732238fbc672d6bd125","128":"0351e33a076f415c2cadc945bc9bcb75bf4a774b28df8a0605dea1557e5897fed8","131072":"027cdf7be8b20a49ac7f2f065f7c53764c8926799877858c6b00b888a8aa6741a5","134217728":"0380658e5163fcf274e1ace6c696d1feef4c6068e0d03083d676dc5ef21804f22d","16":"031dbab0e4f7fb4fb0030f0e1a1dc80668eadd0b1046df3337bb13a7b9c982d392","16384":"028e9c6ce70f34cd29aad48656bf8345bb5ba2cb4f31fdd978686c37c93f0ab411","16777216":"02f2508e7df981c32f7b0008a273e2a1f19c23bb60a1561dba6b2a95ed1251eb90","2":"02628c0919e5cb8ce9aed1f81ce313f40e1ab0b33439d5be2abc69d9bb574902e0","2048":"0376166d8dcf97d8b0e9f11867ff0dafd439c90255b36a25be01e37e14741b9c6a","2097152":"028f25283e36a11df7713934a5287267381f8304aca3c1eb1b89fddce973ef1436","2147483648":"02cece3fb38a54581e0646db4b29242b6d78e49313dda46764094f9d128c1059c1","256":"0314b9f4300367c7e64fa85770da90839d2fc2f57d63660f08bb3ebbf90ed76840","262144":"026939b8f766c3ebaf26408e7e54fc833805563e2ef14c8ee4d0435808b005ec4c","268435456":"031526f03de945c638acccb879de837ac3fabff8590057cfb8552ebcf51215f3aa","32":"037241f7ad421374eb764a48e7769b5e2473582316844fda000d6eef28eea8ffb8","32768":"0253e34bab4eec93e235c33994e01bf851d5caca4559f07d37b5a5c266de7cf840","33554432":"0381883a1517f8c9979a84fcd5f18437b1a2b0020376ecdd2e515dc8d5a157a318","4":"039e7c7f274e1e8a90c61669e961c944944e6154c0794fccf8084af90252d2848f","4096":"03d40f47b4e5c4d72f2a977fab5c66b54d945b2836eb888049b1dd9334d1d70304","4194304":"03e5841d310819a49ec42dfb24839c61f68bbfc93ac68f6dad37fd5b2d204cc535","512":"030d95abc7e881d173f4207a3349f4ee442b9e51cc461602d3eb9665b9237e8db3","524288":"03772542057493a46eed6513b40386e766eedada16560ffde2f776b65794e9f004","536870912":"035eb3e7262e126c5503e1b402db05f87de6556773ae709cb7aa1c3b0986b87566","64":"02bc9767b4abf88becdac47a59e67ee9a9a80b9864ef57d16084575273ac63c0e7","65536":"02684ede207f9ace309b796b5259fc81ef0d4492b4fb5d66cf866b0b4a6f27bec9","67108864":"02aa648d39c9a725ef5927db15af6895f0d43c17f0a31faff4406314fc80180086","8":"02ca0e563ae941700aefcb16a7fb820afbb3258ae924ab520210cb730227a76ca3","8192":"03be18afaf35a29d7bcd5dfd1936d82c1c14691a63f8aa6ece258e16b0c043049b","8388608":"0307ebfeb87b7bca9baa03fad00499e5cc999fa5179ef0b7ad4f555568bcb946f5"}}]}"#;
+        let expected_keys = r#"{"keysets":[{"id":"0189b01ca2ba7320cc876dab22142a03715a69f94ce4b0b6b40495b181f7c84987","unit":"sat","active":true,"keys":{"1":"03ce4b803140715740d78f75ac6d3d45a65869a131e5ecc30e6a82fa28d6a20c92","1024":"025ba80cb0976ffb41a489ab0802b8d800f0ed98610a383cf50c4976ba2304f522","1048576":"0393b48556736402981d593ef65b2cf515a3a3c47fafcdf53d8d760c8e408a3f15","1073741824":"0347232765cef64efad0d5ce6d6284ee0f30159560c1c99b1d5b03997e71601458","128":"0387657827149eecc59f3e9ad005c6921d146918aad2d621fcd607da491647f7af","131072":"021336ad827102d1cc3f38593e3678db3ad541c501eb00edfd2e7e3273490a907d","134217728":"0307a702d8e33120d14c4be4a7e59f2bdca85fc9a0aa44d03f046ee2e381b17370","16":"029fd0c57ea3413c6513786ce24fd9bc3d271c5dd289d44a62a4f238d249f487c1","16384":"0205e262dec067013a410be5a40db16747f63a9666ed0cd6d919dfb8414a5c0dfc","16777216":"0365e8c8e449a8505b99b385eddc6537aeef065047bfe1011174b440394b44119c","2":"030baaed63a0f7e70b8d67b6e71b0a08bbea9a76003a3202171a39f23c1b7a6cfe","2048":"03177255abc417bdfd2cc0b3f01d74721c60001d3eda5c9229741aff09e8318b44","2097152":"03c0c77353f25ced0eb614613ae71ad79953a5b6d0d2453c67261fe7b810b0d49b","2147483648":"0236fd16a9269bf9125bcfb60df63b28b45a20b95520b000364feb2028f7da35fb","256":"028e68e298c203a9234f419fe26d395943191cce026d31be93f1d0eb0087acf0a6","262144":"02e7e2a871b5b02fb3070450be5f3dc329ed759f14d6a60ec12098209fba2177e1","268435456":"037795e574ea67518bfab1a871c65db8fb7f9f330853a0ad2126441598fe2aaffb","32":"0364d5774ba9cd0a26dacc48ca162f9f2117daf76140cedd0022a4086be44b9771","32768":"02202ab81477b68d35ada9645626ca2d1ed1d03405e07204a21ef76179b953b5d9","33554432":"02669a53f43c897fc1e3fd0537a2fef7cd0028b9c17ba8b19f260f1d3d8987a680","4":"038c299183d2c117fd6f7481ff20b89c1eddf32c4bf35d0e6739fa791b8cbcdcd5","4096":"02c86b0d5a85472c8eca02ee050a0aabc22713b2f393ad8e30f236650d6f6fa44a","4194304":"03a00ff9c25e6dcf06dc2fafc3f0ca24de53d1b125852613a80c609b39482bc557","512":"02308dda7d4c70c68acd531dd3505fb5aa0d12dfa7d185b8a6ef56b9448d019e1b","524288":"0375be62f8ea713636f81d16b57d29c224219bb1ad56befd447ef2bcf08a4342ea","536870912":"0346f1c1d1deb0697afdbb1f3aee035b144d24c90a91000bc3fd0c5acabdaf8381","64":"0347c66658e7e2df639cdd6532a4f1aabf9bd331f0e3010ea9c736cb17750de18e","65536":"02c28e5d2aa58fc68297d1e4c56cbe63ea39dff243fb87c4ad1b61d54288539548","67108864":"03d17eff1ce29b40c41a9733702ad4888b1b04eaaa30967a3e91fcb5ddae32b255","8":"02177b2d66b5b3b5271252b75ebb8eb577f433889153152ec9334dba4915adab30","8192":"02c861553ac0d05415b81e0c75200306407a30242e2495e31e6c216650780f1830","8388608":"031189128904ca7473698bc1fd9435df8aece3f9915f06d5ecc82eaf117d9c71f4"},"input_fee_ppk":0}]}"#;
 
         assert_eq!(expected_keys, serde_json::to_string(&keys.clone()).unwrap());
     }

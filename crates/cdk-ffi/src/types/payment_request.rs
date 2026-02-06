@@ -5,11 +5,15 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::amount::{Amount, CurrencyUnit};
+use super::mint::MintUrl;
+use super::proof::Proof;
 use crate::error::FfiError;
 
 /// Transport type for payment request delivery
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum TransportType {
+    /// In-band transport (tokens returned directly in response)
+    InBand,
     /// Nostr transport (privacy-preserving)
     Nostr,
     /// HTTP POST transport
@@ -19,6 +23,7 @@ pub enum TransportType {
 impl From<cdk::nuts::TransportType> for TransportType {
     fn from(t: cdk::nuts::TransportType) -> Self {
         match t {
+            cdk::nuts::TransportType::InBand => TransportType::InBand,
             cdk::nuts::TransportType::Nostr => TransportType::Nostr,
             cdk::nuts::TransportType::HttpPost => TransportType::HttpPost,
         }
@@ -28,6 +33,7 @@ impl From<cdk::nuts::TransportType> for TransportType {
 impl From<TransportType> for cdk::nuts::TransportType {
     fn from(t: TransportType) -> Self {
         match t {
+            TransportType::InBand => cdk::nuts::TransportType::InBand,
             TransportType::Nostr => cdk::nuts::TransportType::Nostr,
             TransportType::HttpPost => cdk::nuts::TransportType::HttpPost,
         }
@@ -92,8 +98,7 @@ impl PaymentRequest {
     #[uniffi::constructor]
     pub fn from_string(encoded: String) -> Result<Arc<Self>, FfiError> {
         use std::str::FromStr;
-        let inner = cdk::nuts::PaymentRequest::from_str(&encoded)
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+        let inner = cdk::nuts::PaymentRequest::from_str(&encoded).map_err(FfiError::internal)?;
         Ok(Arc::new(Self { inner }))
     }
 
@@ -287,9 +292,111 @@ pub struct CreateRequestResult {
     pub nostr_wait_info: Option<Arc<NostrWaitInfo>>,
 }
 
+/// Payment Request Payload
+///
+/// Sent over Nostr or other transports.
+#[derive(uniffi::Object)]
+pub struct PaymentRequestPayload {
+    inner: cdk::nuts::PaymentRequestPayload,
+}
+
+#[uniffi::export]
+impl PaymentRequestPayload {
+    /// Decode PaymentRequestPayload from JSON string
+    #[uniffi::constructor]
+    pub fn from_string(json: String) -> Result<Arc<PaymentRequestPayload>, FfiError> {
+        let inner: cdk::nuts::PaymentRequestPayload = serde_json::from_str(&json)?;
+        Ok(Arc::new(PaymentRequestPayload { inner }))
+    }
+
+    /// Get the ID
+    pub fn id(&self) -> Option<String> {
+        self.inner.id.clone()
+    }
+
+    /// Get the memo
+    pub fn memo(&self) -> Option<String> {
+        self.inner.memo.clone()
+    }
+
+    /// Get the mint URL
+    pub fn mint(&self) -> MintUrl {
+        self.inner.mint.clone().into()
+    }
+
+    /// Get the currency unit
+    pub fn unit(&self) -> CurrencyUnit {
+        self.inner.unit.clone().into()
+    }
+
+    /// Get the proofs
+    pub fn proofs(&self) -> Vec<Proof> {
+        self.inner.proofs.iter().map(|p| p.clone().into()).collect()
+    }
+}
+
+impl std::fmt::Display for PaymentRequestPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            serde_json::to_string(&self.inner).map_err(|_| std::fmt::Error)?
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_payment_request_payload() {
+        use std::str::FromStr;
+        // Create a sample payload using inner types
+        let mint_url = cdk::mint_url::MintUrl::from_str("https://mint.example.com").unwrap();
+        let unit = cdk::nuts::CurrencyUnit::Sat;
+        let proofs = vec![];
+
+        let inner = cdk::nuts::PaymentRequestPayload {
+            id: Some("test-id".to_string()),
+            memo: Some("test-memo".to_string()),
+            mint: mint_url.clone(),
+            unit: unit.clone(),
+            proofs: proofs.clone(),
+        };
+
+        let payload = PaymentRequestPayload { inner };
+
+        assert_eq!(payload.id(), Some("test-id".to_string()));
+        assert_eq!(payload.memo(), Some("test-memo".to_string()));
+        assert_eq!(payload.mint().url, "https://mint.example.com");
+        assert!(matches!(payload.unit(), CurrencyUnit::Sat));
+        assert!(payload.proofs().is_empty());
+    }
+
+    #[test]
+    fn test_payment_request_payload_json() {
+        use std::str::FromStr;
+        let mint_url = cdk::mint_url::MintUrl::from_str("https://mint.example.com").unwrap();
+        let unit = cdk::nuts::CurrencyUnit::Sat;
+
+        let inner = cdk::nuts::PaymentRequestPayload {
+            id: Some("test-id".to_string()),
+            memo: Some("test-memo".to_string()),
+            mint: mint_url,
+            unit,
+            proofs: vec![],
+        };
+
+        let payload = PaymentRequestPayload { inner };
+
+        let json = payload.to_string();
+        let decoded = PaymentRequestPayload::from_string(json).unwrap();
+
+        assert_eq!(decoded.id(), payload.id());
+        assert_eq!(decoded.memo(), payload.memo());
+        assert_eq!(decoded.mint().url, payload.mint().url);
+    }
 
     const PAYMENT_REQUEST: &str = "creqApWF0gaNhdGVub3N0cmFheKlucHJvZmlsZTFxeTI4d3VtbjhnaGo3dW45ZDNzaGp0bnl2OWtoMnVld2Q5aHN6OW1od2RlbjV0ZTB3ZmprY2N0ZTljdXJ4dmVuOWVlaHFjdHJ2NWhzenJ0aHdkZW41dGUwZGVoaHh0bnZkYWtxcWd5ZGFxeTdjdXJrNDM5eWtwdGt5c3Y3dWRoZGh1NjhzdWNtMjk1YWtxZWZkZWhrZjBkNDk1Y3d1bmw1YWeBgmFuYjE3YWloYjdhOTAxNzZhYQphdWNzYXRhbYF4Imh0dHBzOi8vbm9mZWVzLnRlc3RudXQuY2FzaHUuc3BhY2U=";
 

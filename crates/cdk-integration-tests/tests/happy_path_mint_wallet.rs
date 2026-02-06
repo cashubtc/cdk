@@ -21,8 +21,8 @@ use bip39::Mnemonic;
 use cashu::{MeltRequest, PreMintSecrets};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, State};
+use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
+use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, PaymentMethod, State};
 use cdk::wallet::{HttpClient, MintConnector, MultiMintWallet, Wallet};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
@@ -109,7 +109,10 @@ async fn test_happy_mint_melt_round_trip() {
     .expect("Failed to connect");
     let (mut write, mut reader) = ws_stream.split();
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice)
@@ -132,7 +135,10 @@ async fn test_happy_mint_melt_round_trip() {
 
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
-    let melt = wallet.melt_quote(invoice, None).await.unwrap();
+    let melt = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice, None, None)
+        .await
+        .unwrap();
 
     write
         .send(Message::Text(
@@ -168,15 +174,29 @@ async fn test_happy_mint_melt_round_trip() {
 
     assert_eq!(response_json, expected_json);
 
+    // Read the initial state notification before starting the melt to ensure we capture Unpaid
+    let initial_notification =
+        get_notifications(&mut reader, Duration::from_millis(15000), 1).await;
+    let (sub_id, payload) = &initial_notification[0];
+    assert_eq!("test-sub", sub_id);
+    let initial_melt = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(m) => m,
+        _ => panic!("Wrong payload"),
+    };
+    assert_eq!(initial_melt.state, MeltQuoteState::Unpaid);
+    assert_eq!(initial_melt.quote.to_string(), melt.id);
+
+    // Now start the melt
     let mut metadata = HashMap::new();
     metadata.insert("test".to_string(), "value".to_string());
 
-    let melt_response = wallet
-        .melt_with_metadata(&melt.id, metadata.clone())
+    let prepared = wallet
+        .prepare_melt(&melt.id, metadata.clone())
         .await
         .unwrap();
-    assert!(melt_response.preimage.is_some());
-    assert_eq!(melt_response.state, MeltQuoteState::Paid);
+    let melt_response = prepared.confirm().await.unwrap();
+    assert!(melt_response.payment_proof().is_some());
+    assert_eq!(melt_response.state(), MeltQuoteState::Paid);
 
     let txs = wallet.list_transactions(None).await.unwrap();
     let tx = txs
@@ -186,42 +206,27 @@ async fn test_happy_mint_melt_round_trip() {
     assert_eq!(tx.amount, melt.amount);
     assert_eq!(tx.metadata, metadata);
 
-    let mut notifications = get_notifications(&mut reader, Duration::from_millis(15000), 3).await;
-    notifications.reverse();
+    // Read remaining notifications (Pending -> Paid)
+    let notifications = get_notifications(&mut reader, Duration::from_millis(15000), 2).await;
 
-    let (sub_id, payload) = notifications.pop().unwrap();
-
-    // first message is the current state
+    let (sub_id, payload) = &notifications[0];
     assert_eq!("test-sub", sub_id);
-    let payload = match payload {
-        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
+    let pending_melt = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(m) => m,
         _ => panic!("Wrong payload"),
     };
+    assert_eq!(pending_melt.state, MeltQuoteState::Pending);
+    assert_eq!(pending_melt.quote.to_string(), melt.id);
 
-    // assert_eq!(payload.amount + payload.fee_reserve, 50.into());
-    assert_eq!(payload.quote.to_string(), melt.id);
-    assert_eq!(payload.state, MeltQuoteState::Unpaid);
-
-    // get current state
-    let (sub_id, payload) = notifications.pop().unwrap();
+    let (sub_id, payload) = &notifications[1];
     assert_eq!("test-sub", sub_id);
-    let payload = match payload {
-        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
+    let final_melt = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(m) => m,
         _ => panic!("Wrong payload"),
     };
-    assert_eq!(payload.quote.to_string(), melt.id);
-    assert_eq!(payload.state, MeltQuoteState::Pending);
-
-    // get current state
-    let (sub_id, payload) = notifications.pop().unwrap();
-    assert_eq!("test-sub", sub_id);
-    let payload = match payload {
-        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
-        _ => panic!("Wrong payload"),
-    };
-    assert_eq!(payload.amount, 50.into());
-    assert_eq!(payload.quote.to_string(), melt.id);
-    assert_eq!(payload.state, MeltQuoteState::Paid);
+    assert_eq!(final_melt.state, MeltQuoteState::Paid);
+    assert_eq!(final_melt.amount, 50.into());
+    assert_eq!(final_melt.quote.to_string(), melt.id);
 }
 
 /// Tests basic minting functionality with payment verification
@@ -247,7 +252,10 @@ async fn test_happy_mint() {
 
     let mint_amount = Amount::from(100);
 
-    let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+        .await
+        .unwrap();
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
@@ -297,7 +305,10 @@ async fn test_restore() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice)
@@ -332,13 +343,13 @@ async fn test_restore() {
 
     assert!(!proofs.is_empty());
 
-    let expected_fee = wallet.get_proofs_fee(&proofs).await.unwrap();
+    let expected_fee = wallet.get_proofs_fee(&proofs).await.unwrap().total;
     wallet_2
         .swap(None, SplitTarget::default(), proofs, None, false)
         .await
         .unwrap();
 
-    assert_eq!(restored, 100.into());
+    assert_eq!(restored.unspent, 100.into());
 
     // Since we have to do a swap we expect to restore amount - fee
     assert_eq!(
@@ -353,6 +364,262 @@ async fn test_restore() {
     for state in states {
         if state.state != State::Spent {
             panic!("All proofs should be spent");
+        }
+    }
+}
+
+/// Tests wallet restoration with a large number of proofs (3000)
+///
+/// This test verifies the restore process works correctly with many proofs,
+/// which is important for testing database performance (especially PostgreSQL)
+/// and ensuring the restore batching logic handles large proof sets:
+/// 1. Creates a wallet and mints 3000 sats as individual 1-sat proofs
+/// 2. Creates a new wallet instance with the same seed but empty storage
+/// 3. Restores the wallet state from the mint (requires ~30 restore batches)
+/// 4. Verifies all 3000 proofs are correctly restored
+/// 5. Swaps the proofs to ensure they're valid
+/// 6. Checks that the original proofs are now marked as spent
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_restore_large_proof_count() {
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        seed,
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_amount: u64 = 3000;
+    let batch_size: u64 = 999; // Keep under 1000 outputs per request
+
+    // Mint in batches to avoid exceeding the 1000 output limit per request
+    let mut total_proofs = 0usize;
+    let mut remaining = mint_amount;
+
+    while remaining > 0 {
+        let batch = remaining.min(batch_size);
+
+        let mint_quote = wallet
+            .mint_quote(PaymentMethod::BOLT11, Some(batch.into()), None, None)
+            .await
+            .unwrap();
+
+        let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
+        pay_if_regtest(&get_test_temp_dir(), &invoice)
+            .await
+            .unwrap();
+
+        // Mint with SplitTarget::Value(1) to create individual 1-sat proofs
+        let proofs = wallet
+            .wait_and_mint_quote(
+                mint_quote.clone(),
+                SplitTarget::Value(1.into()),
+                None,
+                tokio::time::Duration::from_secs(120),
+            )
+            .await
+            .expect("payment");
+
+        total_proofs += proofs.len();
+        remaining -= batch;
+    }
+
+    assert_eq!(total_proofs, mint_amount as usize);
+    assert_eq!(wallet.total_balance().await.unwrap(), mint_amount.into());
+
+    let wallet_2 = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        seed,
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    assert_eq!(wallet_2.total_balance().await.unwrap(), 0.into());
+
+    let restored = wallet_2.restore().await.unwrap();
+    let proofs = wallet_2.get_unspent_proofs().await.unwrap();
+
+    assert_eq!(proofs.len(), mint_amount as usize);
+    assert_eq!(restored.unspent, mint_amount.into());
+
+    // Swap in batches to avoid exceeding the 1000 input limit per request
+    let mut total_fee = Amount::ZERO;
+    for batch in proofs.chunks(batch_size as usize) {
+        let batch_vec = batch.to_vec();
+        let batch_fee = wallet_2.get_proofs_fee(&batch_vec).await.unwrap().total;
+        total_fee += batch_fee;
+        wallet_2
+            .swap(None, SplitTarget::default(), batch.to_vec(), None, false)
+            .await
+            .unwrap();
+    }
+
+    // Since we have to do a swap we expect to restore amount - fee
+    assert_eq!(
+        wallet_2.total_balance().await.unwrap(),
+        Amount::from(mint_amount) - total_fee
+    );
+
+    let proofs = wallet.get_unspent_proofs().await.unwrap();
+
+    // Check proofs in batches to avoid large queries
+    for batch in proofs.chunks(100) {
+        let states = wallet.check_proofs_spent(batch.to_vec()).await.unwrap();
+        for state in states {
+            if state.state != State::Spent {
+                panic!("All proofs should be spent");
+            }
+        }
+    }
+}
+
+/// Tests that wallet restore correctly handles non-sequential counter values
+///
+/// This test verifies that after restoring a wallet where there were gaps in the
+/// counter sequence (e.g., due to failed operations or multi-device usage), the
+/// wallet can continue to operate without errors.
+///
+/// Test scenario:
+/// 1. Wallet mints proofs using counters 0-N
+/// 2. Counter is incremented to simulate failed operations that consumed counter values
+/// 3. Wallet mints more proofs using counters at higher values
+/// 4. New wallet restores from seed and finds proofs at non-sequential counter positions
+/// 5. Wallet should be able to continue normal operations (swaps) after restore
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_restore_with_counter_gap() {
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        seed,
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    // Mint first batch of proofs (uses counters starting at 0)
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
+    let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
+    pay_if_regtest(&get_test_temp_dir(), &invoice)
+        .await
+        .unwrap();
+
+    let _proofs1 = wallet
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("first mint failed");
+
+    assert_eq!(wallet.total_balance().await.unwrap(), 100.into());
+
+    // Get the active keyset ID to increment counter
+    let active_keyset = wallet.fetch_active_keyset().await.unwrap();
+    let keyset_id = active_keyset.id;
+
+    // Create a gap in the counter sequence
+    // This simulates failed operations or multi-device usage where counter values
+    // were consumed but no signatures were obtained
+    let gap_size = 50u32;
+    wallet
+        .localstore
+        .increment_keyset_counter(&keyset_id, gap_size)
+        .await
+        .unwrap();
+
+    // Mint second batch of proofs (uses counters after the gap)
+    let mint_quote2 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
+    let invoice2 = Bolt11Invoice::from_str(&mint_quote2.request).unwrap();
+    pay_if_regtest(&get_test_temp_dir(), &invoice2)
+        .await
+        .unwrap();
+
+    let _proofs2 = wallet
+        .wait_and_mint_quote(
+            mint_quote2.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("second mint failed");
+
+    assert_eq!(wallet.total_balance().await.unwrap(), 200.into());
+
+    // Create a new wallet with the same seed (simulating wallet restore scenario)
+    let wallet_restored = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        seed,
+        None,
+    )
+    .expect("failed to create restored wallet");
+
+    assert_eq!(wallet_restored.total_balance().await.unwrap(), 0.into());
+
+    // Restore the wallet - this should find proofs at non-sequential counter positions
+    let restored = wallet_restored.restore().await.unwrap();
+    assert_eq!(restored.unspent, 200.into());
+
+    let proofs = wallet_restored.get_unspent_proofs().await.unwrap();
+    assert!(!proofs.is_empty());
+
+    // Swap the restored proofs to verify they are valid
+    let expected_fee = wallet_restored.get_proofs_fee(&proofs).await.unwrap().total;
+    wallet_restored
+        .swap(None, SplitTarget::default(), proofs, None, false)
+        .await
+        .expect("first swap after restore failed");
+
+    let balance_after_first_swap = Amount::from(200) - expected_fee;
+    assert_eq!(
+        wallet_restored.total_balance().await.unwrap(),
+        balance_after_first_swap
+    );
+
+    // Perform multiple swaps to verify the wallet can continue operating
+    // after restore with non-sequential counter values
+    for i in 0..gap_size {
+        let proofs = wallet_restored.get_unspent_proofs().await.unwrap();
+        if proofs.is_empty() {
+            break;
+        }
+
+        let swap_result = wallet_restored
+            .swap(None, SplitTarget::default(), proofs.clone(), None, false)
+            .await;
+
+        match swap_result {
+            Ok(_) => {
+                // Swap succeeded, continue
+            }
+            Err(e) => {
+                let error_str = format!("{:?}", e);
+                if error_str.contains("BlindedMessageAlreadySigned") {
+                    panic!(
+                        "Got 'blinded message already signed' error on swap {} after restore. \
+                         Counter was not correctly set after restoring with non-sequential values.",
+                        i + 1
+                    );
+                } else {
+                    // Some other error - might be expected (e.g., insufficient funds due to fees)
+                    break;
+                }
+            }
         }
     }
 }
@@ -377,7 +644,10 @@ async fn test_melt_quote_status_after_melt() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_test_temp_dir(), &invoice)
@@ -399,12 +669,22 @@ async fn test_melt_quote_status_after_melt() {
 
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
-    let melt_quote = wallet.melt_quote(invoice, None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice, None, None)
+        .await
+        .unwrap();
 
-    let melt_response = wallet.melt(&melt_quote.id).await.unwrap();
-    assert_eq!(melt_response.state, MeltQuoteState::Paid);
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melt_response = prepared.confirm().await.unwrap();
+    assert_eq!(melt_response.state(), MeltQuoteState::Paid);
 
-    let quote_status = wallet.melt_quote_status(&melt_quote.id).await.unwrap();
+    let quote_status = wallet
+        .check_melt_quote_status(&melt_quote.id)
+        .await
+        .unwrap();
     assert_eq!(
         quote_status.state,
         MeltQuoteState::Paid,
@@ -450,7 +730,13 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .expect("failed to add mint");
 
     let mint_quote = multi_mint_wallet
-        .mint_quote(&mint_url, 100.into(), None)
+        .mint_quote(
+            &mint_url,
+            PaymentMethod::BOLT11,
+            Some(100.into()),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -460,7 +746,13 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .unwrap();
 
     let _proofs = multi_mint_wallet
-        .wait_for_mint_quote(&mint_url, &mint_quote.id, SplitTarget::default(), None, 60)
+        .wait_for_mint_quote(
+            &mint_url,
+            &mint_quote.id,
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(60),
+        )
         .await
         .expect("mint failed");
 
@@ -470,7 +762,7 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
     let melt_quote = multi_mint_wallet
-        .melt_quote(&mint_url, invoice, None)
+        .melt_quote(&mint_url, PaymentMethod::BOLT11, invoice, None, None)
         .await
         .unwrap();
 
@@ -478,7 +770,7 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .melt_with_mint(&mint_url, &melt_quote.id)
         .await
         .unwrap();
-    assert_eq!(melt_response.state, MeltQuoteState::Paid);
+    assert_eq!(melt_response.state(), MeltQuoteState::Paid);
 
     let quote_status = multi_mint_wallet
         .check_melt_quote(&mint_url, &melt_quote.id)
@@ -526,7 +818,10 @@ async fn test_fake_melt_change_in_quote() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
 
     let bolt11 = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
 
@@ -546,7 +841,10 @@ async fn test_fake_melt_change_in_quote() {
 
     let proofs = wallet.get_unspent_proofs().await.unwrap();
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
 
     let keyset = wallet.fetch_active_keyset().await.unwrap();
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
@@ -567,11 +865,14 @@ async fn test_fake_melt_change_in_quote() {
         Some(premint_secrets.blinded_messages()),
     );
 
-    let melt_response = client.post_melt(melt_request).await.unwrap();
+    let melt_response = client
+        .post_melt(&PaymentMethod::Known(KnownMethod::Bolt11), melt_request)
+        .await
+        .unwrap();
 
     assert!(melt_response.change.is_some());
 
-    let check = wallet.melt_quote_status(&melt_quote.id).await.unwrap();
+    let check = client.get_melt_quote_status(&melt_quote.id).await.unwrap();
     let mut melt_change = melt_response.change.unwrap();
     melt_change.sort_by(|a, b| a.amount.cmp(&b.amount));
 
@@ -602,7 +903,10 @@ async fn test_pay_invoice_twice() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
 
     pay_if_regtest(&get_test_temp_dir(), &mint_quote.request.parse().unwrap())
         .await
@@ -624,16 +928,32 @@ async fn test_pay_invoice_twice() {
 
     let invoice = create_invoice_for_env(Some(25)).await.unwrap();
 
-    let melt_quote = wallet.melt_quote(invoice.clone(), None).await.unwrap();
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.clone(), None, None)
+        .await
+        .unwrap();
 
-    let melt = wallet.melt(&melt_quote.id).await.unwrap();
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let melt = prepared.confirm().await.unwrap();
 
     // Creating a second quote for the same invoice is allowed
-    let melt_quote_two = wallet.melt_quote(invoice, None).await.unwrap();
+    let melt_quote_two = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice, None, None)
+        .await
+        .unwrap();
 
     // But attempting to melt (pay) the second quote should fail
     // since the first quote with the same lookup_id is already paid
-    let melt_two = wallet.melt(&melt_quote_two.id).await;
+    let melt_two = async {
+        let prepared = wallet
+            .prepare_melt(&melt_quote_two.id, std::collections::HashMap::new())
+            .await?;
+        prepared.confirm().await
+    }
+    .await;
 
     match melt_two {
         Err(err) => {
@@ -655,5 +975,8 @@ async fn test_pay_invoice_twice() {
 
     let balance = wallet.total_balance().await.unwrap();
 
-    assert_eq!(balance, (Amount::from(100) - melt.fee_paid - melt.amount));
+    assert_eq!(
+        balance,
+        (Amount::from(100) - melt.fee_paid() - melt.amount())
+    );
 }

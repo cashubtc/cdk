@@ -1,7 +1,6 @@
 //! Wallet-related FFI types
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -192,16 +191,16 @@ impl SecretKey {
     pub fn from_hex(hex: String) -> Result<Self, FfiError> {
         // Validate hex string length (should be 64 characters for 32 bytes)
         if hex.len() != 64 {
-            return Err(FfiError::InvalidHex {
-                msg: "Secret key hex must be exactly 64 characters (32 bytes)".to_string(),
-            });
+            return Err(FfiError::internal(
+                "Secret key hex must be exactly 64 characters (32 bytes)",
+            ));
         }
 
         // Validate hex format
         if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(FfiError::InvalidHex {
-                msg: "Secret key hex contains invalid characters".to_string(),
-            });
+            return Err(FfiError::internal(
+                "Secret key hex contains invalid characters",
+            ));
         }
 
         Ok(Self { hex })
@@ -298,38 +297,55 @@ pub fn encode_receive_options(options: ReceiveOptions) -> Result<String, FfiErro
 }
 
 /// FFI-compatible PreparedSend
-#[derive(Debug, uniffi::Object)]
+///
+/// This wraps the data from a prepared send operation along with a reference
+/// to the wallet. The actual PreparedSend<'a> from cdk has a lifetime parameter
+/// that doesn't work with FFI, so we store the wallet and cached data separately.
+#[derive(uniffi::Object)]
 pub struct PreparedSend {
-    inner: Mutex<Option<cdk::wallet::PreparedSend>>,
-    id: String,
+    wallet: std::sync::Arc<cdk::Wallet>,
+    operation_id: uuid::Uuid,
     amount: Amount,
-    proofs: Proofs,
+    options: cdk::wallet::SendOptions,
+    proofs_to_swap: cdk::nuts::Proofs,
+    proofs_to_send: cdk::nuts::Proofs,
+    swap_fee: Amount,
+    send_fee: Amount,
 }
 
-impl From<cdk::wallet::PreparedSend> for PreparedSend {
-    fn from(prepared: cdk::wallet::PreparedSend) -> Self {
-        let id = format!("{:?}", prepared); // Use debug format as ID
-        let amount = prepared.amount().into();
-        let proofs = prepared
-            .proofs()
-            .iter()
-            .cloned()
-            .map(|p| p.into())
-            .collect();
+impl std::fmt::Debug for PreparedSend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedSend")
+            .field("operation_id", &self.operation_id)
+            .field("amount", &self.amount)
+            .finish()
+    }
+}
+
+impl PreparedSend {
+    /// Create a new FFI PreparedSend from a cdk::wallet::PreparedSend and wallet
+    pub fn new(
+        wallet: std::sync::Arc<cdk::Wallet>,
+        prepared: &cdk::wallet::PreparedSend<'_>,
+    ) -> Self {
         Self {
-            inner: Mutex::new(Some(prepared)),
-            id,
-            amount,
-            proofs,
+            wallet,
+            operation_id: prepared.operation_id(),
+            amount: prepared.amount().into(),
+            options: prepared.options().clone(),
+            proofs_to_swap: prepared.proofs_to_swap().clone(),
+            proofs_to_send: prepared.proofs_to_send().clone(),
+            swap_fee: prepared.swap_fee().into(),
+            send_fee: prepared.send_fee().into(),
         }
     }
 }
 
 #[uniffi::export(async_runtime = "tokio")]
 impl PreparedSend {
-    /// Get the prepared send ID
-    pub fn id(&self) -> String {
-        self.id.clone()
+    /// Get the operation ID for this prepared send
+    pub fn operation_id(&self) -> String {
+        self.operation_id.to_string()
     }
 
     /// Get the amount to send
@@ -339,20 +355,19 @@ impl PreparedSend {
 
     /// Get the proofs that will be used
     pub fn proofs(&self) -> Proofs {
-        self.proofs.clone()
+        let mut all_proofs: Vec<_> = self
+            .proofs_to_swap
+            .iter()
+            .cloned()
+            .map(|p| p.into())
+            .collect();
+        all_proofs.extend(self.proofs_to_send.iter().cloned().map(|p| p.into()));
+        all_proofs
     }
 
     /// Get the total fee for this send operation
     pub fn fee(&self) -> Amount {
-        if let Ok(guard) = self.inner.lock() {
-            if let Some(ref inner) = *guard {
-                inner.fee().into()
-            } else {
-                Amount::new(0)
-            }
-        } else {
-            Amount::new(0)
-        }
+        Amount::new(self.swap_fee.value + self.send_fee.value)
     }
 
     /// Confirm the prepared send and create a token
@@ -360,53 +375,41 @@ impl PreparedSend {
         self: std::sync::Arc<Self>,
         memo: Option<String>,
     ) -> Result<Token, FfiError> {
-        let inner = {
-            if let Ok(mut guard) = self.inner.lock() {
-                guard.take()
-            } else {
-                return Err(FfiError::Generic {
-                    msg: "Failed to acquire lock on PreparedSend".to_string(),
-                });
-            }
-        };
+        let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
+        let token = self
+            .wallet
+            .confirm_send(
+                self.operation_id,
+                self.amount.into(),
+                self.options.clone(),
+                self.proofs_to_swap.clone(),
+                self.proofs_to_send.clone(),
+                self.swap_fee.into(),
+                self.send_fee.into(),
+                send_memo,
+            )
+            .await?;
 
-        if let Some(inner) = inner {
-            let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
-            let token = inner.confirm(send_memo).await?;
-            Ok(token.into())
-        } else {
-            Err(FfiError::Generic {
-                msg: "PreparedSend has already been consumed or cancelled".to_string(),
-            })
-        }
+        Ok(token.into())
     }
 
     /// Cancel the prepared send operation
     pub async fn cancel(self: std::sync::Arc<Self>) -> Result<(), FfiError> {
-        let inner = {
-            if let Ok(mut guard) = self.inner.lock() {
-                guard.take()
-            } else {
-                return Err(FfiError::Generic {
-                    msg: "Failed to acquire lock on PreparedSend".to_string(),
-                });
-            }
-        };
-
-        if let Some(inner) = inner {
-            inner.cancel().await?;
-            Ok(())
-        } else {
-            Err(FfiError::Generic {
-                msg: "PreparedSend has already been consumed or cancelled".to_string(),
-            })
-        }
+        self.wallet
+            .cancel_send(
+                self.operation_id,
+                self.proofs_to_swap.clone(),
+                self.proofs_to_send.clone(),
+            )
+            .await?;
+        Ok(())
     }
 }
 
-/// FFI-compatible Melted result
+/// FFI-compatible FinalizedMelt result
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct Melted {
+pub struct FinalizedMelt {
+    pub quote_id: String,
     pub state: super::quote::QuoteState,
     pub preimage: Option<String>,
     pub change: Option<Proofs>,
@@ -414,19 +417,191 @@ pub struct Melted {
     pub fee_paid: Amount,
 }
 
-// MeltQuoteState is just an alias for nut05::QuoteState, so we don't need a separate implementation
-
-impl From<cdk::types::Melted> for Melted {
-    fn from(melted: cdk::types::Melted) -> Self {
+impl From<cdk_common::common::FinalizedMelt> for FinalizedMelt {
+    fn from(finalized: cdk_common::common::FinalizedMelt) -> Self {
         Self {
-            state: melted.state.into(),
-            preimage: melted.preimage,
-            change: melted
-                .change
-                .map(|proofs| proofs.into_iter().map(|p| p.into()).collect()),
-            amount: melted.amount.into(),
-            fee_paid: melted.fee_paid.into(),
+            quote_id: finalized.quote_id().to_string(),
+            state: finalized.state().into(),
+            preimage: finalized.payment_proof().map(|s: &str| s.to_string()),
+            change: finalized
+                .change()
+                .map(|proofs| proofs.iter().cloned().map(|p| p.into()).collect()),
+            amount: finalized.amount().into(),
+            fee_paid: finalized.fee_paid().into(),
         }
+    }
+}
+
+/// FFI-compatible PreparedMelt
+///
+/// This wraps the data from a prepared melt operation along with a reference
+/// to the wallet. The actual PreparedMelt<'a> from cdk has a lifetime parameter
+/// that doesn't work with FFI, so we store the wallet and cached data separately.
+#[derive(uniffi::Object)]
+pub struct PreparedMelt {
+    wallet: std::sync::Arc<cdk::Wallet>,
+    operation_id: uuid::Uuid,
+    quote: cdk_common::wallet::MeltQuote,
+    proofs: cdk::nuts::Proofs,
+    proofs_to_swap: cdk::nuts::Proofs,
+    swap_fee: Amount,
+    input_fee: Amount,
+    input_fee_without_swap: Amount,
+    metadata: HashMap<String, String>,
+}
+
+impl std::fmt::Debug for PreparedMelt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedMelt")
+            .field("operation_id", &self.operation_id)
+            .field("quote_id", &self.quote.id)
+            .field("amount", &self.quote.amount)
+            .finish()
+    }
+}
+
+impl PreparedMelt {
+    /// Create a new FFI PreparedMelt from a cdk::wallet::PreparedMelt and wallet
+    pub fn new(
+        wallet: std::sync::Arc<cdk::Wallet>,
+        prepared: &cdk::wallet::PreparedMelt<'_>,
+    ) -> Self {
+        Self {
+            wallet,
+            operation_id: prepared.operation_id(),
+            quote: prepared.quote().clone(),
+            proofs: prepared.proofs().clone(),
+            proofs_to_swap: prepared.proofs_to_swap().clone(),
+            swap_fee: prepared.swap_fee().into(),
+            input_fee: prepared.input_fee().into(),
+            input_fee_without_swap: prepared.input_fee_without_swap().into(),
+            metadata: HashMap::new(),
+        }
+    }
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl PreparedMelt {
+    /// Get the operation ID for this prepared melt
+    pub fn operation_id(&self) -> String {
+        self.operation_id.to_string()
+    }
+
+    /// Get the quote ID
+    pub fn quote_id(&self) -> String {
+        self.quote.id.clone()
+    }
+
+    /// Get the amount to be melted
+    pub fn amount(&self) -> Amount {
+        self.quote.amount.into()
+    }
+
+    /// Get the fee reserve from the quote
+    pub fn fee_reserve(&self) -> Amount {
+        self.quote.fee_reserve.into()
+    }
+
+    /// Get the swap fee
+    pub fn swap_fee(&self) -> Amount {
+        self.swap_fee
+    }
+
+    /// Get the input fee
+    pub fn input_fee(&self) -> Amount {
+        self.input_fee
+    }
+
+    /// Get the total fee (swap fee + input fee)
+    pub fn total_fee(&self) -> Amount {
+        Amount::new(self.swap_fee.value + self.input_fee.value)
+    }
+
+    /// Returns true if a swap would be performed (proofs_to_swap is not empty)
+    pub fn requires_swap(&self) -> bool {
+        !self.proofs_to_swap.is_empty()
+    }
+
+    /// Get the total fee if swap is performed (current default behavior)
+    pub fn total_fee_with_swap(&self) -> Amount {
+        Amount::new(self.swap_fee.value + self.input_fee.value)
+    }
+
+    /// Get the input fee if swap is skipped (fee on all proofs sent directly)
+    pub fn input_fee_without_swap(&self) -> Amount {
+        self.input_fee_without_swap
+    }
+
+    /// Get the fee savings from skipping the swap
+    pub fn fee_savings_without_swap(&self) -> Amount {
+        let total_with = self.swap_fee.value + self.input_fee.value;
+        let total_without = self.input_fee_without_swap.value;
+        if total_with > total_without {
+            Amount::new(total_with - total_without)
+        } else {
+            Amount::new(0)
+        }
+    }
+
+    /// Get the expected change amount if swap is skipped
+    pub fn change_amount_without_swap(&self) -> Amount {
+        use cdk::nuts::nut00::ProofsMethods;
+        let all_proofs_total = self.proofs.total_amount().unwrap_or(cdk::Amount::ZERO)
+            + self
+                .proofs_to_swap
+                .total_amount()
+                .unwrap_or(cdk::Amount::ZERO);
+        let needed =
+            self.quote.amount + self.quote.fee_reserve + self.input_fee_without_swap.into();
+        all_proofs_total
+            .checked_sub(needed)
+            .map(|a| a.into())
+            .unwrap_or(Amount::new(0))
+    }
+
+    /// Get the proofs that will be used
+    pub fn proofs(&self) -> Proofs {
+        self.proofs.iter().cloned().map(|p| p.into()).collect()
+    }
+
+    /// Confirm the prepared melt and execute the payment
+    pub async fn confirm(&self) -> Result<FinalizedMelt, FfiError> {
+        self.confirm_with_options(MeltConfirmOptions::default())
+            .await
+    }
+
+    /// Confirm the prepared melt with custom options
+    pub async fn confirm_with_options(
+        &self,
+        options: MeltConfirmOptions,
+    ) -> Result<FinalizedMelt, FfiError> {
+        let finalized = self
+            .wallet
+            .confirm_prepared_melt_with_options(
+                self.operation_id,
+                self.quote.clone(),
+                self.proofs.clone(),
+                self.proofs_to_swap.clone(),
+                self.input_fee.into(),
+                self.input_fee_without_swap.into(),
+                self.metadata.clone(),
+                options.into(),
+            )
+            .await?;
+
+        Ok(finalized.into())
+    }
+
+    /// Cancel the prepared melt and release reserved proofs
+    pub async fn cancel(&self) -> Result<(), FfiError> {
+        self.wallet
+            .cancel_prepared_melt(
+                self.operation_id,
+                self.proofs.clone(),
+                self.proofs_to_swap.clone(),
+            )
+            .await?;
+        Ok(())
     }
 }
 
@@ -463,6 +638,48 @@ impl From<cdk::nuts::MeltOptions> for MeltOptions {
             cdk::nuts::MeltOptions::Amountless { amountless } => MeltOptions::Amountless {
                 amount_msat: amountless.amount_msat.into(),
             },
+        }
+    }
+}
+
+/// Restored Data
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Restored {
+    pub spent: Amount,
+    pub unspent: Amount,
+    pub pending: Amount,
+}
+
+impl From<cdk::wallet::Restored> for Restored {
+    fn from(restored: cdk::wallet::Restored) -> Self {
+        Self {
+            spent: restored.spent.into(),
+            unspent: restored.unspent.into(),
+            pending: restored.pending.into(),
+        }
+    }
+}
+
+/// FFI-compatible options for confirming a melt operation
+#[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
+pub struct MeltConfirmOptions {
+    /// Skip the pre-melt swap and send proofs directly to melt.
+    /// When true, saves swap input fees but gets change from melt instead.
+    pub skip_swap: bool,
+}
+
+impl From<MeltConfirmOptions> for cdk::wallet::MeltConfirmOptions {
+    fn from(opts: MeltConfirmOptions) -> Self {
+        cdk::wallet::MeltConfirmOptions {
+            skip_swap: opts.skip_swap,
+        }
+    }
+}
+
+impl From<cdk::wallet::MeltConfirmOptions> for MeltConfirmOptions {
+    fn from(opts: cdk::wallet::MeltConfirmOptions) -> Self {
+        Self {
+            skip_swap: opts.skip_swap,
         }
     }
 }

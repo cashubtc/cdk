@@ -18,6 +18,7 @@ use super::{RecvFuture, WaitableEvent};
 use crate::Wallet;
 
 /// Proofs for many mint quotes, as they are minted, in streams
+#[allow(missing_debug_implementations)]
 pub struct MultipleMintQuoteProofStream<'a> {
     payment_stream: PaymentStream<'a>,
     wallet: &'a Wallet,
@@ -110,17 +111,12 @@ impl Stream for MultipleMintQuoteProofStream<'_> {
 
                     let mut minting_future = Box::pin(async move {
                         match mint_quote.payment_method {
-                            PaymentMethod::Bolt11 => wallet
+                            PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => wallet
                                 .mint(&mint_quote.id, amount_split_target, spending_conditions)
                                 .await
                                 .map(|proofs| (mint_quote, proofs)),
-                            PaymentMethod::Bolt12 => wallet
-                                .mint_bolt12(
-                                    &mint_quote.id,
-                                    amount,
-                                    amount_split_target,
-                                    spending_conditions,
-                                )
+                            PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => wallet
+                                .mint(&mint_quote.id, amount_split_target, spending_conditions)
                                 .await
                                 .map(|proofs| (mint_quote, proofs)),
                             _ => Err(Error::UnsupportedPaymentMethod),
@@ -141,6 +137,7 @@ impl Stream for MultipleMintQuoteProofStream<'_> {
 }
 
 /// Proofs for a single mint quote
+#[allow(missing_debug_implementations)]
 pub struct SingleMintQuoteProofStream<'a>(MultipleMintQuoteProofStream<'a>);
 
 impl<'a> SingleMintQuoteProofStream<'a> {

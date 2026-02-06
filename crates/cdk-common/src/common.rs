@@ -3,34 +3,55 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::mint_url::MintUrl;
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::{
-    CurrencyUnit, MeltQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SpendingConditions,
-    State,
-};
+use crate::nuts::{CurrencyUnit, MeltQuoteState, PaymentMethod, Proofs};
+// Re-export ProofInfo from wallet module for backwards compatibility
+#[cfg(feature = "wallet")]
+pub use crate::wallet::ProofInfo;
 use crate::Amount;
 
-/// Melt response with proofs
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct Melted {
+/// Result of a finalized melt operation
+#[derive(Clone, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct FinalizedMelt {
+    /// Quote ID
+    quote_id: String,
     /// State of quote
-    pub state: MeltQuoteState,
-    /// Preimage of melt payment
-    pub preimage: Option<String>,
+    state: MeltQuoteState,
+    /// Payment proof (e.g., Lightning preimage)
+    payment_proof: Option<String>,
     /// Melt change
-    pub change: Option<Proofs>,
+    change: Option<Proofs>,
     /// Melt amount
-    pub amount: Amount,
+    amount: Amount,
     /// Fee paid
-    pub fee_paid: Amount,
+    fee_paid: Amount,
 }
 
-impl Melted {
-    /// Create new [`Melted`]
-    pub fn from_proofs(
+impl FinalizedMelt {
+    /// Create new [`FinalizedMelt`]
+    pub fn new(
+        quote_id: String,
         state: MeltQuoteState,
-        preimage: Option<String>,
+        payment_proof: Option<String>,
+        amount: Amount,
+        fee_paid: Amount,
+        change: Option<Proofs>,
+    ) -> Self {
+        Self {
+            quote_id,
+            state,
+            payment_proof,
+            change,
+            amount,
+            fee_paid,
+        }
+    }
+
+    /// Create new [`FinalizedMelt`] calculating fee from proofs
+    pub fn from_proofs(
+        quote_id: String,
+        state: MeltQuoteState,
+        payment_proof: Option<String>,
         quote_amount: Amount,
         proofs: Proofs,
         change_proofs: Option<Proofs>,
@@ -49,105 +70,87 @@ impl Melted {
         );
 
         let fee_paid = proofs_amount
-            .checked_sub(quote_amount + change_amount)
+            .checked_sub(
+                quote_amount
+                    .checked_add(change_amount)
+                    .ok_or(Error::AmountOverflow)?,
+            )
             .ok_or(Error::AmountOverflow)?;
 
         Ok(Self {
+            quote_id,
             state,
-            preimage,
+            payment_proof,
             change: change_proofs,
             amount: quote_amount,
             fee_paid,
         })
     }
 
-    /// Total amount melted
+    /// Get the quote ID
+    #[inline]
+    pub fn quote_id(&self) -> &str {
+        &self.quote_id
+    }
+
+    /// Get the state of the melt
+    #[inline]
+    pub fn state(&self) -> MeltQuoteState {
+        self.state
+    }
+
+    /// Get the payment proof (e.g., Lightning preimage)
+    #[inline]
+    pub fn payment_proof(&self) -> Option<&str> {
+        self.payment_proof.as_deref()
+    }
+
+    /// Get the change proofs
+    #[inline]
+    pub fn change(&self) -> Option<&Proofs> {
+        self.change.as_ref()
+    }
+
+    /// Consume self and return the change proofs
+    #[inline]
+    pub fn into_change(self) -> Option<Proofs> {
+        self.change
+    }
+
+    /// Get the amount melted
+    #[inline]
+    pub fn amount(&self) -> Amount {
+        self.amount
+    }
+
+    /// Get the fee paid
+    #[inline]
+    pub fn fee_paid(&self) -> Amount {
+        self.fee_paid
+    }
+
+    /// Total amount melted (amount + fee)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the sum of `amount` and `fee_paid` overflows. This should not
+    /// happen as the fee is validated when calculated.
+    #[inline]
     pub fn total_amount(&self) -> Amount {
-        self.amount + self.fee_paid
+        self.amount
+            .checked_add(self.fee_paid)
+            .expect("We check when calc fee paid")
     }
 }
 
-/// Prooinfo
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProofInfo {
-    /// Proof
-    pub proof: Proof,
-    /// y
-    pub y: PublicKey,
-    /// Mint Url
-    pub mint_url: MintUrl,
-    /// Proof State
-    pub state: State,
-    /// Proof Spending Conditions
-    pub spending_condition: Option<SpendingConditions>,
-    /// Unit
-    pub unit: CurrencyUnit,
-}
-
-impl ProofInfo {
-    /// Create new [`ProofInfo`]
-    pub fn new(
-        proof: Proof,
-        mint_url: MintUrl,
-        state: State,
-        unit: CurrencyUnit,
-    ) -> Result<Self, Error> {
-        let y = proof.y()?;
-
-        let spending_condition: Option<SpendingConditions> = (&proof.secret).try_into().ok();
-
-        Ok(Self {
-            proof,
-            y,
-            mint_url,
-            state,
-            spending_condition,
-            unit,
-        })
-    }
-
-    /// Check if [`Proof`] matches conditions
-    pub fn matches_conditions(
-        &self,
-        mint_url: &Option<MintUrl>,
-        unit: &Option<CurrencyUnit>,
-        state: &Option<Vec<State>>,
-        spending_conditions: &Option<Vec<SpendingConditions>>,
-    ) -> bool {
-        if let Some(mint_url) = mint_url {
-            if mint_url.ne(&self.mint_url) {
-                return false;
-            }
-        }
-
-        if let Some(unit) = unit {
-            if unit.ne(&self.unit) {
-                return false;
-            }
-        }
-
-        if let Some(state) = state {
-            if !state.contains(&self.state) {
-                return false;
-            }
-        }
-
-        if let Some(spending_conditions) = spending_conditions {
-            match &self.spending_condition {
-                None => {
-                    if !spending_conditions.is_empty() {
-                        return false;
-                    }
-                }
-                Some(s) => {
-                    if !spending_conditions.contains(s) {
-                        return false;
-                    }
-                }
-            }
-        }
-
-        true
+impl std::fmt::Debug for FinalizedMelt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FinalizedMelt")
+            .field("quote_id", &self.quote_id)
+            .field("state", &self.state)
+            .field("amount", &self.amount)
+            .field("fee_paid", &self.fee_paid)
+            .finish()
     }
 }
 
@@ -197,16 +200,13 @@ impl Default for QuoteTTL {
 mod tests {
     use std::str::FromStr;
 
-    use cashu::SecretKey;
-
-    use super::{Melted, ProofInfo};
-    use crate::mint_url::MintUrl;
-    use crate::nuts::{CurrencyUnit, Id, Proof, PublicKey, SpendingConditions, State};
+    use super::FinalizedMelt;
+    use crate::nuts::{Id, Proof, PublicKey};
     use crate::secret::Secret;
     use crate::Amount;
 
     #[test]
-    fn test_melted() {
+    fn test_finalized_melt() {
         let keyset_id = Id::from_str("00deadbeef123456").unwrap();
         let proof = Proof::new(
             Amount::from(64),
@@ -217,7 +217,8 @@ mod tests {
             )
             .unwrap(),
         );
-        let melted = Melted::from_proofs(
+        let finalized = FinalizedMelt::from_proofs(
+            "test_quote_id".to_string(),
             super::MeltQuoteState::Paid,
             Some("preimage".to_string()),
             Amount::from(64),
@@ -225,13 +226,14 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(melted.amount, Amount::from(64));
-        assert_eq!(melted.fee_paid, Amount::ZERO);
-        assert_eq!(melted.total_amount(), Amount::from(64));
+        assert_eq!(finalized.quote_id(), "test_quote_id");
+        assert_eq!(finalized.amount(), Amount::from(64));
+        assert_eq!(finalized.fee_paid(), Amount::ZERO);
+        assert_eq!(finalized.total_amount(), Amount::from(64));
     }
 
     #[test]
-    fn test_melted_with_change() {
+    fn test_finalized_melt_with_change() {
         let keyset_id = Id::from_str("00deadbeef123456").unwrap();
         let proof = Proof::new(
             Amount::from(64),
@@ -251,7 +253,8 @@ mod tests {
             )
             .unwrap(),
         );
-        let melted = Melted::from_proofs(
+        let finalized = FinalizedMelt::from_proofs(
+            "test_quote_id".to_string(),
             super::MeltQuoteState::Paid,
             Some("preimage".to_string()),
             Amount::from(31),
@@ -259,93 +262,10 @@ mod tests {
             Some(vec![change_proof.clone()]),
         )
         .unwrap();
-        assert_eq!(melted.amount, Amount::from(31));
-        assert_eq!(melted.fee_paid, Amount::from(1));
-        assert_eq!(melted.total_amount(), Amount::from(32));
-    }
-
-    #[test]
-    fn test_matches_conditions() {
-        let keyset_id = Id::from_str("00deadbeef123456").unwrap();
-        let proof = Proof::new(
-            Amount::from(64),
-            keyset_id,
-            Secret::new("test_secret"),
-            PublicKey::from_hex(
-                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-            )
-            .unwrap(),
-        );
-
-        let mint_url = MintUrl::from_str("https://example.com").unwrap();
-        let proof_info =
-            ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat).unwrap();
-
-        // Test matching mint_url
-        assert!(proof_info.matches_conditions(&Some(mint_url.clone()), &None, &None, &None));
-        assert!(!proof_info.matches_conditions(
-            &Some(MintUrl::from_str("https://different.com").unwrap()),
-            &None,
-            &None,
-            &None
-        ));
-
-        // Test matching unit
-        assert!(proof_info.matches_conditions(&None, &Some(CurrencyUnit::Sat), &None, &None));
-        assert!(!proof_info.matches_conditions(&None, &Some(CurrencyUnit::Msat), &None, &None));
-
-        // Test matching state
-        assert!(proof_info.matches_conditions(&None, &None, &Some(vec![State::Unspent]), &None));
-        assert!(proof_info.matches_conditions(
-            &None,
-            &None,
-            &Some(vec![State::Unspent, State::Spent]),
-            &None
-        ));
-        assert!(!proof_info.matches_conditions(&None, &None, &Some(vec![State::Spent]), &None));
-
-        // Test with no conditions (should match)
-        assert!(proof_info.matches_conditions(&None, &None, &None, &None));
-
-        // Test with multiple conditions
-        assert!(proof_info.matches_conditions(
-            &Some(mint_url),
-            &Some(CurrencyUnit::Sat),
-            &Some(vec![State::Unspent]),
-            &None
-        ));
-    }
-
-    #[test]
-    fn test_matches_conditions_with_spending_conditions() {
-        // This test would need to be expanded with actual SpendingConditions
-        // implementation, but we can test the basic case where no spending
-        // conditions are present
-
-        let keyset_id = Id::from_str("00deadbeef123456").unwrap();
-        let proof = Proof::new(
-            Amount::from(64),
-            keyset_id,
-            Secret::new("test_secret"),
-            PublicKey::from_hex(
-                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-            )
-            .unwrap(),
-        );
-
-        let mint_url = MintUrl::from_str("https://example.com").unwrap();
-        let proof_info =
-            ProofInfo::new(proof, mint_url, State::Unspent, CurrencyUnit::Sat).unwrap();
-
-        // Test with empty spending conditions (should match when proof has none)
-        assert!(proof_info.matches_conditions(&None, &None, &None, &Some(vec![])));
-
-        // Test with non-empty spending conditions (should not match when proof has none)
-        let dummy_condition = SpendingConditions::P2PKConditions {
-            data: SecretKey::generate().public_key(),
-            conditions: None,
-        };
-        assert!(!proof_info.matches_conditions(&None, &None, &None, &Some(vec![dummy_condition])));
+        assert_eq!(finalized.quote_id(), "test_quote_id");
+        assert_eq!(finalized.amount(), Amount::from(31));
+        assert_eq!(finalized.fee_paid(), Amount::from(1));
+        assert_eq!(finalized.total_amount(), Amount::from(32));
     }
 }
 

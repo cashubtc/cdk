@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bip39::Mnemonic;
-use cdk_common::amount::to_unit;
 use cdk_common::common::FeeReserve;
 use cdk_common::payment::{self, *};
 use cdk_common::util::{hex, unix_time};
@@ -19,12 +18,12 @@ use ldk_node::bitcoin::hashes::Hash;
 use ldk_node::bitcoin::Network;
 use ldk_node::lightning::ln::channelmanager::PaymentId;
 use ldk_node::lightning::ln::msgs::SocketAddress;
+use ldk_node::lightning::routing::router::RouteParametersConfig;
 use ldk_node::lightning_invoice::{Bolt11InvoiceDescription, Description};
 use ldk_node::lightning_types::payment::PaymentHash;
 use ldk_node::logger::{LogLevel, LogWriter};
-use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus, SendingParameters};
+use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus};
 use ldk_node::{Builder, Event, Node};
-use tokio::runtime::Runtime;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
@@ -49,8 +48,16 @@ pub struct CdkLdkNode {
     sender: tokio::sync::broadcast::Sender<WaitPaymentResponse>,
     receiver: Arc<tokio::sync::broadcast::Receiver<WaitPaymentResponse>>,
     events_cancel_token: CancellationToken,
-    runtime: Option<Arc<Runtime>>,
     web_addr: Option<SocketAddr>,
+}
+
+impl std::fmt::Debug for CdkLdkNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CdkLdkNode")
+            .field("fee_reserve", &self.fee_reserve)
+            .field("web_addr", &self.web_addr)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Configuration for connecting to Bitcoin RPC
@@ -100,6 +107,7 @@ pub enum GossipSource {
     RapidGossipSync(String),
 }
 /// A builder for an [`CdkLdkNode`] instance.
+#[derive(Debug)]
 pub struct CdkLdkNodeBuilder {
     network: Network,
     chain_source: ChainSource,
@@ -108,7 +116,6 @@ pub struct CdkLdkNodeBuilder {
     storage_dir_path: String,
     fee_reserve: FeeReserve,
     listening_addresses: Vec<SocketAddress>,
-    runtime: Option<Arc<Runtime>>,
     seed: Option<Mnemonic>,
     announcement_addresses: Option<Vec<SocketAddress>>,
 }
@@ -130,17 +137,10 @@ impl CdkLdkNodeBuilder {
             storage_dir_path,
             fee_reserve,
             listening_addresses,
-            runtime: None,
             seed: None,
             announcement_addresses: None,
             log_dir_path: None,
         }
-    }
-    /// Configures the [`CdkLdkNode`] to use the provided runtime
-    /// deprecated
-    pub fn with_runtime(mut self, runtime: Arc<Runtime>) -> Self {
-        self.runtime = Some(runtime);
-        self
     }
 
     /// Configures the [`CdkLdkNode`] to use the Mnemonic for entropy source configuration
@@ -252,7 +252,6 @@ impl CdkLdkNode {
             sender,
             receiver: Arc::new(receiver),
             events_cancel_token: CancellationToken::new(),
-            runtime: builder.runtime,
             web_addr: None,
         })
     }
@@ -284,16 +283,8 @@ impl CdkLdkNode {
     /// # Errors
     /// Returns an error if the LDK node fails to start or event handling setup fails
     pub fn start_ldk_node(&self) -> Result<(), Error> {
-        match &self.runtime {
-            Some(runtime) => {
-                tracing::info!("Starting cdk-ldk node with existing runtime");
-                self.inner.start_with_runtime(Arc::clone(runtime))?
-            }
-            None => {
-                tracing::info!("Starting cdk-ldk-node with new runtime");
-                self.inner.start()?
-            }
-        };
+        tracing::info!("Starting cdk-ldk node");
+        self.inner.start()?;
         let node_config = self.inner.config();
 
         tracing::info!("Starting node with network {}", node_config.network);
@@ -428,8 +419,7 @@ impl CdkLdkNode {
 
         let wait_payment_response = WaitPaymentResponse {
             payment_identifier,
-            payment_amount: amount_msat.into(),
-            unit: CurrencyUnit::Msat,
+            payment_amount: Amount::new(amount_msat, CurrencyUnit::Msat),
             payment_id,
         };
 
@@ -539,15 +529,18 @@ impl MintPayment for CdkLdkNode {
     }
 
     /// Base Settings
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
-        let settings = Bolt11Settings {
-            mpp: false,
-            unit: CurrencyUnit::Msat,
-            invoice_description: true,
-            amountless: true,
-            bolt12: true,
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        let settings = SettingsResponse {
+            unit: CurrencyUnit::Msat.to_string(),
+            bolt11: Some(payment::Bolt11Settings {
+                mpp: false,
+                amountless: true,
+                invoice_description: true,
+            }),
+            bolt12: Some(payment::Bolt12Settings { amountless: true }),
+            custom: std::collections::HashMap::new(),
         };
-        Ok(serde_json::to_value(settings)?)
+        Ok(settings)
     }
 
     /// Create a new invoice
@@ -559,7 +552,9 @@ impl MintPayment for CdkLdkNode {
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
             IncomingPaymentOptions::Bolt11(bolt11_options) => {
-                let amount_msat = to_unit(bolt11_options.amount, unit, &CurrencyUnit::Msat)?;
+                let amount_msat: Amount = Amount::new(bolt11_options.amount.into(), unit.clone())
+                    .convert_to(&CurrencyUnit::Msat)?
+                    .into();
                 let description = bolt11_options.description.unwrap_or_default();
                 let time = bolt11_options
                     .unix_expiry
@@ -587,6 +582,7 @@ impl MintPayment for CdkLdkNode {
                     request_lookup_id: payment_identifier,
                     request: payment.to_string(),
                     expiry: Some(unix_time() + time),
+                    extra_json: None,
                 })
             }
             IncomingPaymentOptions::Bolt12(bolt12_options) => {
@@ -600,7 +596,9 @@ impl MintPayment for CdkLdkNode {
 
                 let offer = match amount {
                     Some(amount) => {
-                        let amount_msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+                        let amount_msat: Amount = Amount::new(amount.into(), unit.clone())
+                            .convert_to(&CurrencyUnit::Msat)?
+                            .into();
 
                         self.inner
                             .bolt12_payment()
@@ -624,7 +622,11 @@ impl MintPayment for CdkLdkNode {
                     request_lookup_id: payment_identifier,
                     request: offer.to_string(),
                     expiry: time.map(|a| a as u64),
+                    extra_json: None,
                 })
+            }
+            cdk_common::payment::IncomingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
         }
     }
@@ -638,6 +640,9 @@ impl MintPayment for CdkLdkNode {
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         match options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let bolt11 = bolt11_options.bolt11;
 
@@ -649,10 +654,11 @@ impl MintPayment for CdkLdkNode {
                         .into(),
                 };
 
-                let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+                let amount =
+                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
 
                 let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
 
                 let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
 
@@ -669,9 +675,8 @@ impl MintPayment for CdkLdkNode {
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: Some(PaymentIdentifier::PaymentHash(payment_hash_bytes)),
                     amount,
-                    fee: fee.into(),
+                    fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -690,10 +695,11 @@ impl MintPayment for CdkLdkNode {
                         }
                     }
                 };
-                let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+                let amount =
+                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
 
                 let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
 
                 let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
 
@@ -705,9 +711,8 @@ impl MintPayment for CdkLdkNode {
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: None,
                     amount,
-                    fee: fee.into(),
+                    fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
         }
@@ -721,18 +726,21 @@ impl MintPayment for CdkLdkNode {
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         match options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let bolt11 = bolt11_options.bolt11;
 
                 let send_params = match bolt11_options
                     .max_fee_amount
                     .map(|f| {
-                        to_unit(f, unit, &CurrencyUnit::Msat).map(|amount_msat| SendingParameters {
-                            max_total_routing_fee_msat: Some(Some(amount_msat.into())),
-                            max_channel_saturation_power_of_half: None,
-                            max_total_cltv_expiry_delta: None,
-                            max_path_count: None,
-                        })
+                        Amount::new(f.into(), unit.clone())
+                            .convert_to(&CurrencyUnit::Msat)
+                            .map(|amount_msat| RouteParametersConfig {
+                                max_total_routing_fee_msat: Some(amount_msat.value()),
+                                ..Default::default()
+                            })
                     })
                     .transpose()
                 {
@@ -806,7 +814,7 @@ impl MintPayment for CdkLdkNode {
                     .ok_or(Error::CouldNotGetAmountSpent)?
                     + payment_details.fee_paid_msat.unwrap_or_default();
 
-                let total_spent = to_unit(total_spent, &CurrencyUnit::Msat, unit)?;
+                let total_spent = Amount::new(total_spent, CurrencyUnit::Msat).convert_to(unit)?;
 
                 Ok(MakePaymentResponse {
                     payment_lookup_id: PaymentIdentifier::PaymentHash(
@@ -815,7 +823,6 @@ impl MintPayment for CdkLdkNode {
                     payment_proof,
                     status,
                     total_spent,
-                    unit: unit.clone(),
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -825,12 +832,12 @@ impl MintPayment for CdkLdkNode {
                     Some(MeltOptions::Amountless { amountless }) => self
                         .inner
                         .bolt12_payment()
-                        .send_using_amount(&offer, amountless.amount_msat.into(), None, None)
+                        .send_using_amount(&offer, amountless.amount_msat.into(), None, None, None)
                         .map_err(Error::LdkNode)?,
                     None => self
                         .inner
                         .bolt12_payment()
-                        .send(&offer, None, None)
+                        .send(&offer, None, None, None)
                         .map_err(Error::LdkNode)?,
                     _ => return Err(payment::Error::UnsupportedPaymentOption),
                 };
@@ -881,14 +888,13 @@ impl MintPayment for CdkLdkNode {
                     .ok_or(Error::CouldNotGetAmountSpent)?
                     + payment_details.fee_paid_msat.unwrap_or_default();
 
-                let total_spent = to_unit(total_spent, &CurrencyUnit::Msat, unit)?;
+                let total_spent = Amount::new(total_spent, CurrencyUnit::Msat).convert_to(unit)?;
 
                 Ok(MakePaymentResponse {
                     payment_lookup_id: PaymentIdentifier::PaymentId(payment_id.0),
                     payment_proof,
                     status,
                     total_spent,
-                    unit: unit.clone(),
                 })
             }
         }
@@ -987,8 +993,7 @@ impl MintPayment for CdkLdkNode {
 
         let response = WaitPaymentResponse {
             payment_identifier: payment_identifier.clone(),
-            payment_amount: amount.into(),
-            unit: CurrencyUnit::Msat,
+            payment_amount: Amount::new(amount, CurrencyUnit::Msat),
             payment_id: payment_id_str,
         };
 
@@ -1016,10 +1021,9 @@ impl MintPayment for CdkLdkNode {
             _ => {
                 return Ok(MakePaymentResponse {
                     payment_lookup_id: request_lookup_id.clone(),
-                    status: MeltQuoteState::Unknown,
                     payment_proof: None,
-                    total_spent: Amount::ZERO,
-                    unit: CurrencyUnit::Msat,
+                    status: MeltQuoteState::Unknown,
+                    total_spent: Amount::new(0, CurrencyUnit::Msat),
                 });
             }
         }
@@ -1053,8 +1057,7 @@ impl MintPayment for CdkLdkNode {
             payment_lookup_id: request_lookup_id.clone(),
             payment_proof,
             status,
-            total_spent: total_spent.into(),
-            unit: CurrencyUnit::Msat,
+            total_spent: Amount::new(total_spent, CurrencyUnit::Msat),
         })
     }
 }

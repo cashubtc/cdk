@@ -2,29 +2,32 @@
 members = [
     "crates/*",
 ]
+exclude = [
+    "fuzz",
+]
 resolver = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
 # unreachable_pub = "warn"
-# missing_debug_implementations = "warn"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
 
 [workspace.lints.clippy]
 # pedantic = { level = "warn", priority = -1 }
+# nursery = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 # clone_on_ref_ptr = "warn"
 # missing_errors_doc = "warn"
-# missing_panics_doc = "warn"
+missing_panics_doc = "warn"
 missing_safety_doc = "warn"
-# nursery = { level = "warn", priority = -1 }
 # redundant_else = "warn"
 # redundant_closure_for_method_calls = "warn"
 # unneeded_field_pattern = "warn"
-# use_debug = "warn"
+use_debug = "warn"
 large_enum_variant = "warn"
 
 [workspace.lints.rustdoc]
-missing_docs = "warn"
 bare_urls = "warn"
 
 [workspace.package]
@@ -62,15 +65,17 @@ cdk-postgres = { path = "./crates/cdk-postgres", default-features = true, versio
 cdk-signatory = { path = "./crates/cdk-signatory", version = "=0.14.0", default-features = false }
 cdk-mintd = { path = "./crates/cdk-mintd", version = "=0.14.0", default-features = false }
 cdk-prometheus = { path = "./crates/cdk-prometheus", version = "=0.14.0", default-features = false }
+cdk-npubcash = { path = "./crates/cdk-npubcash", version = "=0.14.0" }
+cdk-http-client = { path = "./crates/cdk-http-client", version = "=0.14.0" }
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"
 config = { version = "0.15.11", features = ["toml"] }
 criterion = "0.6.0"
 futures = { version = "0.3.28", default-features = false, features = ["async-await"] }
-lightning-invoice = { version = "0.33.0", features = ["serde", "std"] }
-lightning = { version = "0.1.2", default-features = false, features = ["std"]}
-ldk-node = "0.6.2"
+lightning-invoice = { version = "0.34.0", features = ["serde", "std"] }
+lightning = { version = "0.2.0", default-features = false, features = ["std"]}
+ldk-node = "0.7.0"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = { version = "2" }
@@ -105,14 +110,15 @@ web-time = "1.1.0"
 rand = "0.9.1"
 regex = "1"
 home = "0.5.5"
-tonic = { version = "0.13.1", features = ["tls-ring", "codegen", "prost", "transport"], default-features = false }
-prost = "0.13.1"
-tonic-build = "0.13.1"
+tonic = { version = "0.14.2", default-features = false }
+tonic-prost = "0.14.2"
+tonic-prost-build = "0.14.2"
+prost = "0.14"
 strum = "0.27.1"
 strum_macros = "0.27.1"
 rustls = { version = "0.23.27", default-features = false, features = ["ring"] }
 prometheus = { version = "0.13.4", features = ["process"], default-features = false }
-nostr-sdk = { version = "0.43.0", default-features = false, features = [
+nostr-sdk = { version = "0.44.1", default-features = false, features = [
     "nip04",
     "nip44",
     "nip59"

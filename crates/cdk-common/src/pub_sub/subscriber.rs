@@ -24,6 +24,7 @@ pub trait SubscriptionRequest {
 }
 
 /// Active Subscription
+#[allow(missing_debug_implementations)]
 pub struct ActiveSubscription<S>
 where
     S: Spec + 'static,
@@ -64,7 +65,7 @@ where
         self.receiver.as_mut()?.recv().await.map(|(_, event)| event)
     }
 
-    /// Try receive an event or return Noen right away
+    /// Try receive an event or return None right away
     pub fn try_recv(&mut self) -> Option<S::Event> {
         self.receiver
             .as_mut()?

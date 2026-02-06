@@ -1,6 +1,7 @@
 **/target
 .DS_Store
 .direnv
+.jj
 .vscode/
 .idea/
 *.redb
@@ -8,7 +9,6 @@
 config.toml
 .pre-commit-config.yaml
 result
-Cargo.lock
 .aider*
 **/postgres_data/
 .pg_data/
@@ -19,8 +19,15 @@ mutants.out/
 mutants-*.log
 .mutants.lock
 
+# Fuzzing artifacts and runtime corpus (seeds/ is committed)
+fuzz/artifacts/
+fuzz/corpus/
+
 
 # Python ffi
 __pycache__
 libcdk_ffi*
 cdk_ffi.py
+
+# llm artifacts
+AGENTS.md

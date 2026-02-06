@@ -1,3 +1,5 @@
+//! CDK Postgres
+
 use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
@@ -20,11 +22,15 @@ mod db;
 mod value;
 
 #[derive(Debug)]
+/// Postgres connection pool
 pub struct PgConnectionPool;
 
 #[derive(Clone)]
+/// SSL Mode
 pub enum SslMode {
+    /// No TLS
     NoTls(NoTls),
+    /// Native TLS
     NativeTls(postgres_native_tls::MakeTlsConnector),
 }
 const SSLMODE_VERIFY_FULL: &str = "sslmode=verify-full";
@@ -316,7 +322,6 @@ impl DatabaseExecutor for PostgresConnection {
 pub type MintPgDatabase = SQLMintDatabase<PgConnectionPool>;
 
 /// Mint Auth database with Postgres
-#[cfg(feature = "auth")]
 pub type MintPgAuthDatabase = SQLMintAuthDatabase<PgConnectionPool>;
 
 /// Wallet DB implementation with PostgreSQL
@@ -330,11 +335,11 @@ pub async fn new_wallet_pg_database(conn_str: &str) -> Result<WalletPgDatabase, 
 
 #[cfg(test)]
 mod test {
-    use cdk_common::mint_db_test;
+    use cdk_common::{mint_db_test, wallet_db_test};
 
     use super::*;
 
-    async fn provide_db(test_id: String) -> MintPgDatabase {
+    async fn provide_mint_db(test_id: String) -> MintPgDatabase {
         let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
             .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility
             .unwrap_or("host=localhost user=test password=test dbname=testdb port=5433".to_owned());
@@ -346,5 +351,19 @@ mod test {
             .expect("database")
     }
 
-    mint_db_test!(provide_db);
+    mint_db_test!(provide_mint_db);
+
+    async fn provide_wallet_db(test_id: String) -> WalletPgDatabase {
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility
+            .unwrap_or("host=localhost user=test password=test dbname=testdb port=5433".to_owned());
+
+        let db_url = format!("{db_url} schema={test_id}");
+
+        WalletPgDatabase::new(db_url.as_str())
+            .await
+            .expect("database")
+    }
+
+    wallet_db_test!(provide_wallet_db);
 }

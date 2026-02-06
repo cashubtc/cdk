@@ -1,95 +1,126 @@
 //! CDK Database
 
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 
 use async_trait::async_trait;
 use cashu::quote_id::QuoteId;
 use cashu::Amount;
 
 use super::{DbTransactionFinalizer, Error};
-use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote, Operation};
+use crate::mint::{
+    self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
+};
 use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
     State,
 };
 use crate::payment::PaymentIdentifier;
 
-#[cfg(feature = "auth")]
 mod auth;
 
 #[cfg(feature = "test")]
 pub mod test;
 
-#[cfg(feature = "auth")]
 pub use auth::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
 
-/// Valid ASCII characters for namespace and key strings in KV store
-pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str =
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+// Re-export KVStore types from shared module for backward compatibility
+pub use super::kvstore::{
+    validate_kvstore_params, validate_kvstore_string, KVStore, KVStoreDatabase, KVStoreTransaction,
+    KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
+};
 
-/// Maximum length for namespace and key strings in KV store
-pub const KVSTORE_NAMESPACE_KEY_MAX_LEN: usize = 120;
-
-/// Validates that a string contains only valid KV store characters and is within length limits
-pub fn validate_kvstore_string(s: &str) -> Result<(), Error> {
-    if s.len() > KVSTORE_NAMESPACE_KEY_MAX_LEN {
-        return Err(Error::KVStoreInvalidKey(format!(
-            "{KVSTORE_NAMESPACE_KEY_MAX_LEN} exceeds maximum length of key characters"
-        )));
-    }
-
-    if !s
-        .chars()
-        .all(|c| KVSTORE_NAMESPACE_KEY_ALPHABET.contains(c))
-    {
-        return Err(Error::KVStoreInvalidKey("key contains invalid characters. Only ASCII letters, numbers, underscore, and hyphen are allowed".to_string()));
-    }
-
-    Ok(())
+/// A wrapper indicating that a resource has been acquired with a database lock.
+///
+/// This type is returned by database operations that lock rows for update
+/// (e.g., `SELECT ... FOR UPDATE`). It serves as a compile-time marker that
+/// the wrapped resource was properly locked before being returned, ensuring
+/// that subsequent modifications are safe from race conditions.
+///
+/// # Usage
+///
+/// When you need to modify a database record, first acquire it using a locking
+/// query method. The returned `Acquired<T>` guarantees the row is locked for
+/// the duration of the transaction.
+///
+/// ```ignore
+/// // Acquire a quote with a row lock
+/// let mut quote: Acquired<MintQuote> = tx.get_mint_quote_for_update(&quote_id).await?;
+///
+/// // Safely modify the quote (row is locked)
+/// quote.state = QuoteState::Paid;
+///
+/// // Persist the changes
+/// tx.update_mint_quote(&mut quote).await?;
+/// ```
+///
+/// # Deref Behavior
+///
+/// `Acquired<T>` implements `Deref` and `DerefMut`, allowing transparent access
+/// to the inner value's methods and fields.
+#[derive(Debug)]
+pub struct Acquired<T> {
+    inner: T,
 }
 
-/// Validates namespace and key parameters for KV store operations
-pub fn validate_kvstore_params(
-    primary_namespace: &str,
-    secondary_namespace: &str,
-    key: &str,
-) -> Result<(), Error> {
-    // Validate primary namespace
-    validate_kvstore_string(primary_namespace)?;
-
-    // Validate secondary namespace
-    validate_kvstore_string(secondary_namespace)?;
-
-    // Validate key
-    validate_kvstore_string(key)?;
-
-    // Check empty namespace rules
-    if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
-        return Err(Error::KVStoreInvalidKey(
-            "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
-        ));
+impl<T> From<T> for Acquired<T> {
+    /// Wraps a value to indicate it has been acquired with a lock.
+    ///
+    /// This is typically called by database layer implementations after
+    /// executing a locking query.
+    fn from(value: T) -> Self {
+        Acquired { inner: value }
     }
+}
 
-    // Check for potential collisions between keys and namespaces in the same namespace
-    let namespace_key = format!("{primary_namespace}/{secondary_namespace}");
-    if key == primary_namespace || key == secondary_namespace || key == namespace_key {
-        return Err(Error::KVStoreInvalidKey(format!(
-            "Key '{key}' conflicts with namespace names"
-        )));
+impl<T> Acquired<T> {
+    /// Consumes the wrapper and returns the inner resource.
+    ///
+    /// Use this when you need to take ownership of the inner value,
+    /// for example when passing it to a function that doesn't accept
+    /// `Acquired<T>`.
+    pub fn inner(self) -> T {
+        self.inner
     }
+}
 
-    Ok(())
+impl<T> Deref for Acquired<T> {
+    type Target = T;
+
+    /// Returns a reference to the inner resource.
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T> DerefMut for Acquired<T> {
+    /// Returns a mutable reference to the inner resource.
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
 }
 
 /// Information about a melt request stored in the database
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeltRequestInfo {
     /// Total amount of all input proofs in the melt request
-    pub inputs_amount: Amount,
+    pub inputs_amount: Amount<CurrencyUnit>,
     /// Fee amount associated with the input proofs
-    pub inputs_fee: Amount,
+    pub inputs_fee: Amount<CurrencyUnit>,
     /// Blinded messages for change outputs
     pub change_outputs: Vec<BlindedMessage>,
+}
+
+/// Result of locking a melt quote and all related quotes atomically.
+///
+/// This struct is returned by [`QuotesTransaction::lock_melt_quote_and_related`]
+/// and contains both the target quote and all quotes sharing the same `request_lookup_id`.
+#[derive(Debug)]
+pub struct LockedMeltQuotes {
+    /// The target quote that was requested, if found
+    pub target: Option<Acquired<MeltQuote>>,
+    /// All quotes sharing the same `request_lookup_id` (including the target)
+    pub all_related: Vec<Acquired<MeltQuote>>,
 }
 
 /// KeysDatabaseWriter
@@ -128,7 +159,7 @@ pub trait KeysDatabase {
 
 /// Mint Quote Database writer trait
 #[async_trait]
-pub trait QuotesTransaction<'a> {
+pub trait QuotesTransaction {
     /// Mint Quotes Database Error
     type Err: Into<Error> + From<Error>;
 
@@ -136,8 +167,8 @@ pub trait QuotesTransaction<'a> {
     async fn add_melt_request(
         &mut self,
         quote_id: &QuoteId,
-        inputs_amount: Amount,
-        inputs_fee: Amount,
+        inputs_amount: Amount<CurrencyUnit>,
+        inputs_fee: Amount<CurrencyUnit>,
     ) -> Result<(), Self::Err>;
 
     /// Add blinded_messages for a quote_id
@@ -167,59 +198,128 @@ pub trait QuotesTransaction<'a> {
     async fn get_mint_quote(
         &mut self,
         quote_id: &QuoteId,
-    ) -> Result<Option<MintMintQuote>, Self::Err>;
+    ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
+
     /// Add [`MintMintQuote`]
-    async fn add_mint_quote(&mut self, quote: MintMintQuote) -> Result<(), Self::Err>;
-    /// Increment amount paid [`MintMintQuote`]
-    async fn increment_mint_quote_amount_paid(
+    async fn add_mint_quote(
         &mut self,
-        quote_id: &QuoteId,
-        amount_paid: Amount,
-        payment_id: String,
-    ) -> Result<Amount, Self::Err>;
-    /// Increment amount paid [`MintMintQuote`]
-    async fn increment_mint_quote_amount_issued(
+        quote: MintMintQuote,
+    ) -> Result<Acquired<MintMintQuote>, Self::Err>;
+
+    /// Persists any pending changes made to the mint quote.
+    ///
+    /// This method extracts changes accumulated in the quote (via [`mint::MintQuote::take_changes`])
+    /// and persists them to the database. Changes may include new payments received or new
+    /// issuances recorded against the quote.
+    ///
+    /// If no changes are pending, this method returns successfully without performing
+    /// any database operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote` - A mutable reference to an acquired (row-locked) mint quote. The quote
+    ///   must be locked to ensure transactional consistency when persisting changes.
+    ///
+    /// # Implementation Notes
+    ///
+    /// Implementations should call [`mint::MintQuote::take_changes`] to retrieve pending
+    /// changes, then persist each payment and issuance record, and finally update the
+    /// quote's aggregate counters (`amount_paid`, `amount_issued`) in the database.
+    async fn update_mint_quote(
         &mut self,
-        quote_id: &QuoteId,
-        amount_issued: Amount,
-    ) -> Result<Amount, Self::Err>;
+        quote: &mut Acquired<mint::MintQuote>,
+    ) -> Result<(), Self::Err>;
 
     /// Get [`mint::MeltQuote`] and lock it for update in this transaction
     async fn get_melt_quote(
         &mut self,
         quote_id: &QuoteId,
-    ) -> Result<Option<mint::MeltQuote>, Self::Err>;
+    ) -> Result<Option<Acquired<mint::MeltQuote>>, Self::Err>;
+
     /// Add [`mint::MeltQuote`]
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err>;
 
-    /// Updates the request lookup id for a melt quote
-    async fn update_melt_quote_request_lookup_id(
+    /// Retrieves all melt quotes matching a payment lookup identifier and locks them for update.
+    ///
+    /// This method returns multiple quotes because certain payment methods (notably BOLT12 offers)
+    /// can generate multiple payment attempts that share the same lookup identifier. Locking all
+    /// related quotes prevents race conditions where concurrent melt operations could interfere
+    /// with each other, potentially leading to double-spending or state inconsistencies.
+    ///
+    /// The returned quotes are locked within the current transaction to ensure safe concurrent
+    /// modification. This is essential during melt saga initiation and finalization to guarantee
+    /// atomic state transitions across all related quotes.
+    ///
+    /// # Arguments
+    ///
+    /// * `request_lookup_id` - The payment identifier used by the Lightning backend to track
+    ///   payment state (e.g., payment hash, offer ID, or label).
+    async fn get_melt_quotes_by_request_lookup_id(
+        &mut self,
+        request_lookup_id: &PaymentIdentifier,
+    ) -> Result<Vec<Acquired<MeltQuote>>, Self::Err>;
+
+    /// Locks a melt quote and all related quotes sharing the same request_lookup_id atomically.
+    ///
+    /// This method prevents deadlocks by acquiring all locks in a single query with consistent
+    /// ordering, rather than locking the target quote first and then related quotes separately.
+    ///
+    /// # Deadlock Prevention
+    ///
+    /// When multiple transactions try to melt quotes sharing the same `request_lookup_id`,
+    /// acquiring locks in two steps (first the target quote, then all related quotes) can cause
+    /// circular wait deadlocks. This method avoids that by:
+    /// 1. Using a subquery to find the `request_lookup_id` for the target quote
+    /// 2. Locking ALL quotes with that `request_lookup_id` in one atomic operation
+    /// 3. Ordering locks consistently by quote ID
+    ///
+    /// # Arguments
+    ///
+    /// * `quote_id` - The ID of the target melt quote
+    ///
+    /// # Returns
+    ///
+    /// A [`LockedMeltQuotes`] containing:
+    /// - `target`: The target quote (if found)
+    /// - `all_related`: All quotes sharing the same `request_lookup_id` (including the target)
+    ///
+    /// If the quote has no `request_lookup_id`, only the target quote is returned and locked.
+    async fn lock_melt_quote_and_related(
         &mut self,
         quote_id: &QuoteId,
+    ) -> Result<LockedMeltQuotes, Self::Err>;
+
+    /// Updates the request lookup id for a melt quote.
+    ///
+    /// Requires an [`Acquired`] melt quote to ensure the row is locked before modification.
+    async fn update_melt_quote_request_lookup_id(
+        &mut self,
+        quote: &mut Acquired<mint::MeltQuote>,
         new_request_lookup_id: &PaymentIdentifier,
     ) -> Result<(), Self::Err>;
 
-    /// Update [`mint::MeltQuote`] state
+    /// Update [`mint::MeltQuote`] state.
     ///
-    /// It is expected for this function to fail if the state is already set to the new state
+    /// Requires an [`Acquired`] melt quote to ensure the row is locked before modification.
+    /// Returns the previous state.
     async fn update_melt_quote_state(
         &mut self,
-        quote_id: &QuoteId,
+        quote: &mut Acquired<mint::MeltQuote>,
         new_state: MeltQuoteState,
         payment_proof: Option<String>,
-    ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err>;
+    ) -> Result<MeltQuoteState, Self::Err>;
 
     /// Get all [`MintMintQuote`]s and lock it for update in this transaction
     async fn get_mint_quote_by_request(
         &mut self,
         request: &str,
-    ) -> Result<Option<MintMintQuote>, Self::Err>;
+    ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
 
     /// Get all [`MintMintQuote`]s
     async fn get_mint_quote_by_request_lookup_id(
         &mut self,
         request_lookup_id: &PaymentIdentifier,
-    ) -> Result<Option<MintMintQuote>, Self::Err>;
+    ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
 }
 
 /// Mint Quote Database trait
@@ -254,7 +354,7 @@ pub trait QuotesDatabase {
 
 /// Mint Proof Transaction trait
 #[async_trait]
-pub trait ProofsTransaction<'a> {
+pub trait ProofsTransaction {
     /// Mint Proof Database Error
     type Err: Into<Error> + From<Error>;
 
@@ -267,13 +367,23 @@ pub trait ProofsTransaction<'a> {
         proof: Proofs,
         quote_id: Option<QuoteId>,
         operation: &Operation,
+    ) -> Result<Acquired<ProofsWithState>, Self::Err>;
+
+    /// Updates the proofs to the given state in the database.
+    ///
+    /// Also updates the `state` field on the [`ProofsWithState`] wrapper to reflect
+    /// the new state after the database update succeeds.
+    async fn update_proofs_state(
+        &mut self,
+        proofs: &mut Acquired<ProofsWithState>,
+        new_state: State,
     ) -> Result<(), Self::Err>;
-    /// Updates the proofs to a given states and return the previous states
-    async fn update_proofs_states(
+
+    /// get proofs states
+    async fn get_proofs(
         &mut self,
         ys: &[PublicKey],
-        proofs_state: State,
-    ) -> Result<Vec<Option<State>>, Self::Err>;
+    ) -> Result<Acquired<ProofsWithState>, Self::Err>;
 
     /// Remove [`Proofs`]
     async fn remove_proofs(
@@ -284,8 +394,14 @@ pub trait ProofsTransaction<'a> {
 
     /// Get ys by quote id
     async fn get_proof_ys_by_quote_id(
-        &self,
+        &mut self,
         quote_id: &QuoteId,
+    ) -> Result<Vec<PublicKey>, Self::Err>;
+
+    /// Get proof ys by operation id
+    async fn get_proof_ys_by_operation_id(
+        &mut self,
+        operation_id: &uuid::Uuid,
     ) -> Result<Vec<PublicKey>, Self::Err>;
 }
 
@@ -313,11 +429,17 @@ pub trait ProofsDatabase {
 
     /// Get total proofs redeemed by keyset id
     async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
+
+    /// Get proof ys by operation id
+    async fn get_proof_ys_by_operation_id(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err>;
 }
 
 #[async_trait]
 /// Mint Signatures Transaction trait
-pub trait SignaturesTransaction<'a> {
+pub trait SignaturesTransaction {
     /// Mint Signature Database Error
     type Err: Into<Error> + From<Error>;
 
@@ -362,11 +484,17 @@ pub trait SignaturesDatabase {
 
     /// Get total amount issued by keyset id
     async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
+
+    /// Get blinded secrets (B values) by operation id
+    async fn get_blinded_secrets_by_operation_id(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err>;
 }
 
 #[async_trait]
 /// Saga Transaction trait
-pub trait SagaTransaction<'a> {
+pub trait SagaTransaction {
     /// Saga Database Error
     type Err: Into<Error> + From<Error>;
 
@@ -403,86 +531,53 @@ pub trait SagaDatabase {
     ) -> Result<Vec<mint::Saga>, Self::Err>;
 }
 
-/// Key-Value Store Transaction trait
 #[async_trait]
-pub trait KVStoreTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
-    /// Read value from key-value store
-    async fn kv_read(
-        &mut self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-    ) -> Result<Option<Vec<u8>>, Error>;
+/// Completed Operations Transaction trait
+pub trait CompletedOperationsTransaction {
+    /// Completed Operations Database Error
+    type Err: Into<Error> + From<Error>;
 
-    /// Write value to key-value store
-    async fn kv_write(
+    /// Add completed operation
+    async fn add_completed_operation(
         &mut self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-        value: &[u8],
-    ) -> Result<(), Error>;
+        operation: &mint::Operation,
+        fee_by_keyset: &std::collections::HashMap<crate::nuts::Id, crate::Amount>,
+    ) -> Result<(), Self::Err>;
+}
 
-    /// Remove value from key-value store
-    async fn kv_remove(
-        &mut self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-    ) -> Result<(), Error>;
+#[async_trait]
+/// Completed Operations Database trait
+pub trait CompletedOperationsDatabase {
+    /// Completed Operations Database Error
+    type Err: Into<Error> + From<Error>;
 
-    /// List keys in a namespace
-    async fn kv_list(
-        &mut self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-    ) -> Result<Vec<String>, Error>;
+    /// Get completed operation by operation_id
+    async fn get_completed_operation(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Option<mint::Operation>, Self::Err>;
+
+    /// Get completed operations by operation kind
+    async fn get_completed_operations_by_kind(
+        &self,
+        operation_kind: mint::OperationKind,
+    ) -> Result<Vec<mint::Operation>, Self::Err>;
+
+    /// Get all completed operations
+    async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err>;
 }
 
 /// Base database writer
-pub trait Transaction<'a, Error>:
+pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>
-    + QuotesTransaction<'a, Err = Error>
-    + SignaturesTransaction<'a, Err = Error>
-    + ProofsTransaction<'a, Err = Error>
-    + KVStoreTransaction<'a, Error>
-    + SagaTransaction<'a, Err = Error>
+    + QuotesTransaction<Err = Error>
+    + SignaturesTransaction<Err = Error>
+    + ProofsTransaction<Err = Error>
+    + KVStoreTransaction<Error>
+    + SagaTransaction<Err = Error>
+    + CompletedOperationsTransaction<Err = Error>
 {
 }
-
-/// Key-Value Store Database trait
-#[async_trait]
-pub trait KVStoreDatabase {
-    /// KV Store Database Error
-    type Err: Into<Error> + From<Error>;
-
-    /// Read value from key-value store
-    async fn kv_read(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-    ) -> Result<Option<Vec<u8>>, Self::Err>;
-
-    /// List keys in a namespace
-    async fn kv_list(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-    ) -> Result<Vec<String>, Self::Err>;
-}
-
-/// Key-Value Store Database trait
-#[async_trait]
-pub trait KVStore: KVStoreDatabase {
-    /// Begins a KV transaction
-    async fn begin_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn KVStoreTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>;
-}
-
-/// Type alias for Mint Kv store
-pub type DynMintKVStore = std::sync::Arc<dyn KVStore<Err = Error> + Send + Sync>;
 
 /// Mint Database trait
 #[async_trait]
@@ -492,12 +587,14 @@ pub trait Database<Error>:
     + ProofsDatabase<Err = Error>
     + SignaturesDatabase<Err = Error>
     + SagaDatabase<Err = Error>
+    + CompletedOperationsDatabase<Err = Error>
 {
     /// Begins a transaction
-    async fn begin_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn Transaction<'a, Error> + Send + Sync + 'a>, Error>;
+    async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;
 }
 
 /// Type alias for Mint Database
 pub type DynMintDatabase = std::sync::Arc<dyn Database<Error> + Send + Sync>;
+
+/// Type alias for Mint Transaction
+pub type DynMintTransaction = Box<dyn Transaction<Error> + Send + Sync>;

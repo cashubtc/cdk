@@ -11,9 +11,7 @@ use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
-
-use cdk::cdk_database::MintKVStore;
-
+use cdk::cdk_database::KVStore;
 use cdk::cdk_payment::MintPayment;
 use cdk::nuts::CurrencyUnit;
 #[cfg(any(
@@ -37,7 +35,7 @@ pub trait LnBackendSetup {
         unit: CurrencyUnit,
         runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
-        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<impl MintPayment>;
 }
 
@@ -50,7 +48,7 @@ impl LnBackendSetup for config::Cln {
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
-        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_cln::Cln> {
         // Validate required connection field
         if self.rpc_path.as_os_str().is_empty() {
@@ -91,7 +89,7 @@ impl LnBackendSetup for config::LNbits {
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
-        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_lnbits::LNbits> {
         // Validate required connection fields
         if self.admin_api_key.is_empty() {
@@ -138,7 +136,7 @@ impl LnBackendSetup for config::Lnd {
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
-        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_lnd::Lnd> {
         // Validate required connection fields
         if self.address.is_empty() {
@@ -184,7 +182,7 @@ impl LnBackendSetup for config::FakeWallet {
         unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
-        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_fake_wallet::FakeWallet> {
         let fee_reserve = FeeReserve {
             min_fee_reserve: self.reserve_fee_min,
@@ -216,7 +214,7 @@ impl LnBackendSetup for config::GrpcProcessor {
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
-        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_payment_processor::PaymentProcessorClient> {
         let payment_processor = cdk_payment_processor::PaymentProcessorClient::new(
             &self.addr,
@@ -236,13 +234,13 @@ impl LnBackendSetup for config::LdkNode {
         &self,
         settings: &Settings,
         _unit: CurrencyUnit,
-        runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
-        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_ldk_node::CdkLdkNode> {
-        use bip39::Mnemonic;
         use std::net::SocketAddr;
 
+        use bip39::Mnemonic;
         use bitcoin::Network;
 
         let fee_reserve = FeeReserve {
@@ -384,8 +382,6 @@ impl LnBackendSetup for config::LdkNode {
             ldk_node_builder = ldk_node_builder.with_seed(mnemonic);
         }
 
-        ldk_node_builder = ldk_node_builder
-            .with_runtime(runtime.ok_or_else(|| anyhow!("runtime is required for ldk-node"))?);
         if !announce_addrs.is_empty() {
             ldk_node_builder = ldk_node_builder.with_announcement_address(announce_addrs)
         }
@@ -404,7 +400,10 @@ impl LnBackendSetup for config::LdkNode {
             Some(cdk_ldk_node::CdkLdkNode::default_web_addr())
         };
 
-        println!("webserver: {:?}", webserver_addr);
+        println!(
+            "webserver: {}",
+            webserver_addr.map_or("none".to_string(), |a| a.to_string())
+        );
         if let Some(log_dir_path) = ldk_node_settings.log_dir_path.as_ref() {
             ldk_node_builder = ldk_node_builder.with_log_dir_path(log_dir_path.clone());
         }

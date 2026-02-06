@@ -6,8 +6,11 @@ use std::sync::Arc;
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cashu::amount::SplitTarget;
+use cashu::nut00::KnownMethod;
 use cashu::nut23::Amountless;
-use cashu::{Amount, CurrencyUnit, MintRequest, MintUrl, PreMintSecrets, ProofsMethods};
+use cashu::{
+    Amount, CurrencyUnit, MintRequest, MintUrl, PaymentMethod, PreMintSecrets, ProofsMethods,
+};
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletBuilder};
 use cdk_integration_tests::get_mint_url_from_env;
 use cdk_integration_tests::init_regtest::{get_cln_dir, get_temp_dir};
@@ -67,7 +70,7 @@ async fn test_regtest_bolt12_mint() {
     let mint_amount = Amount::from(100);
 
     let mint_quote = wallet
-        .mint_bolt12_quote(Some(mint_amount), None)
+        .mint_quote(PaymentMethod::BOLT12, Some(mint_amount), None, None)
         .await
         .unwrap();
 
@@ -114,7 +117,9 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
         .use_http_subscription()
         .build()?;
 
-    let mint_quote = wallet.mint_bolt12_quote(None, None).await?;
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, None, None, None)
+        .await?;
 
     let work_dir = get_test_temp_dir();
     let cln_one_dir = get_cln_dir(&work_dir, "one");
@@ -185,7 +190,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
     let cln_client = create_cln_client_with_retry(cln_one_dir.clone()).await?;
     // First wallet payment
     let quote_one = wallet_one
-        .mint_bolt12_quote(Some(10_000.into()), None)
+        .mint_quote(PaymentMethod::BOLT12, Some(10_000.into()), None, None)
         .await?;
     cln_client
         .pay_bolt12_offer(None, quote_one.request.clone())
@@ -204,7 +209,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
 
     // Second wallet payment
     let quote_two = wallet_two
-        .mint_bolt12_quote(Some(15_000.into()), None)
+        .mint_quote(PaymentMethod::BOLT12, Some(15_000.into()), None, None)
         .await?;
     cln_client
         .pay_bolt12_offer(None, quote_two.request.clone())
@@ -226,34 +231,44 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
         .await?;
 
     let wallet_one_melt_quote = wallet_one
-        .melt_bolt12_quote(
+        .melt_quote(
+            PaymentMethod::BOLT12,
             offer.to_string(),
             Some(cashu::MeltOptions::Amountless {
                 amountless: Amountless {
                     amount_msat: 1500.into(),
                 },
             }),
+            None,
         )
         .await?;
 
     let wallet_two_melt_quote = wallet_two
-        .melt_bolt12_quote(
+        .melt_quote(
+            PaymentMethod::BOLT12,
             offer.to_string(),
             Some(cashu::MeltOptions::Amountless {
                 amountless: Amountless {
                     amount_msat: 1000.into(),
                 },
             }),
+            None,
         )
         .await?;
 
-    let melted = wallet_one.melt(&wallet_one_melt_quote.id).await?;
+    let prepared_one = wallet_one
+        .prepare_melt(&wallet_one_melt_quote.id, std::collections::HashMap::new())
+        .await?;
+    let melted = prepared_one.confirm().await?;
 
-    assert!(melted.preimage.is_some());
+    assert!(melted.payment_proof().is_some());
 
-    let melted_two = wallet_two.melt(&wallet_two_melt_quote.id).await?;
+    let prepared_two = wallet_two
+        .prepare_melt(&wallet_two_melt_quote.id, std::collections::HashMap::new())
+        .await?;
+    let melted_two = prepared_two.confirm().await?;
 
-    assert!(melted_two.preimage.is_some());
+    assert!(melted_two.payment_proof().is_some());
 
     Ok(())
 }
@@ -276,7 +291,9 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
     let mint_amount = Amount::from(20_000);
 
     // Create a single-use BOLT12 quote
-    let mint_quote = wallet.mint_bolt12_quote(Some(mint_amount), None).await?;
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, Some(mint_amount), None, None)
+        .await?;
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
     // Pay the quote
@@ -300,11 +317,16 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
         .get_bolt12_offer(Some(10_000), true, "hhhhhhhh".to_string())
         .await?;
 
-    let quote = wallet.melt_bolt12_quote(offer.to_string(), None).await?;
+    let quote = wallet
+        .melt_quote(PaymentMethod::BOLT12, offer.to_string(), None, None)
+        .await?;
 
-    let melt = wallet.melt(&quote.id).await?;
+    let prepared = wallet
+        .prepare_melt(&quote.id, std::collections::HashMap::new())
+        .await?;
+    let melt = prepared.confirm().await?;
 
-    assert_eq!(melt.amount, 10.into());
+    assert_eq!(melt.amount(), 10.into());
 
     Ok(())
 }
@@ -328,9 +350,11 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
     )?;
 
     // Create a single-use BOLT12 quote
-    let mint_quote = wallet.mint_bolt12_quote(None, None).await?;
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, None, None, None)
+        .await?;
 
-    let state = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
+    let state = wallet.refresh_mint_quote_status(&mint_quote.id).await?;
 
     assert_eq!(state.amount_paid, Amount::ZERO);
     assert_eq!(state.amount_issued, Amount::ZERO);
@@ -351,7 +375,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         .await?
         .unwrap();
 
-    let state = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
+    let state = wallet.refresh_mint_quote_status(&mint_quote.id).await?;
 
     assert_eq!(payment, state.amount_paid);
     assert_eq!(state.amount_paid, (pay_amount_msats / 1_000).into());
@@ -384,7 +408,12 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
 
     let http_client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);
 
-    let response = http_client.post_mint(mint_request.clone()).await;
+    let response = http_client
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            mint_request.clone(),
+        )
+        .await;
 
     match response {
         Err(err) => match err {
@@ -415,14 +444,30 @@ async fn test_attempt_to_mint_unpaid() {
     let mint_amount = Amount::from(100);
 
     let mint_quote = wallet
-        .mint_bolt12_quote(Some(mint_amount), None)
+        .mint_quote(PaymentMethod::BOLT12, Some(mint_amount), None, None)
         .await
         .unwrap();
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
+    let mut mint_quote = wallet
+        .localstore
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    // Since the wallet checks how much it can mint
+    // we manually set it in the db to fake like it was paid to the wallet
+    // so it tries to mint
+    mint_quote.amount_paid = mint_amount;
+    wallet
+        .localstore
+        .add_mint_quote(mint_quote.clone())
+        .await
+        .unwrap();
+
     let proofs = wallet
-        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await;
 
     match proofs {
@@ -437,19 +482,34 @@ async fn test_attempt_to_mint_unpaid() {
     }
 
     let mint_quote = wallet
-        .mint_bolt12_quote(Some(mint_amount), None)
+        .mint_quote(PaymentMethod::BOLT12, Some(mint_amount), None, None)
         .await
         .unwrap();
 
     let state = wallet
-        .mint_bolt12_quote_state(&mint_quote.id)
+        .refresh_mint_quote_status(&mint_quote.id)
         .await
         .unwrap();
 
     assert!(state.amount_paid == Amount::ZERO);
+    let mut mint_quote = wallet
+        .localstore
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    // Since the wallet checks how much it can mint
+    // we manually set it in the db to fake like it was paid to the wallet
+    // so it tries to mint
+    mint_quote.amount_paid = mint_amount;
+    wallet
+        .localstore
+        .add_mint_quote(mint_quote.clone())
+        .await
+        .unwrap();
 
     let proofs = wallet
-        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await;
 
     match proofs {
@@ -462,4 +522,150 @@ async fn test_attempt_to_mint_unpaid() {
             panic!("Minting should not be allowed");
         }
     }
+}
+
+/// Tests the check_all_mint_quotes functionality for Bolt12 quotes
+///
+/// This test verifies that:
+/// 1. Paid Bolt12 quotes are automatically minted when check_all_mint_quotes is called
+/// 2. The method correctly handles the Bolt12-specific logic (amount_paid > amount_issued)
+/// 3. Quote state is properly updated after minting
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_check_all_mint_quotes_bolt12() -> Result<()> {
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await?),
+        Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_amount = Amount::from(100);
+
+    // Create a Bolt12 quote
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, Some(mint_amount), None, None)
+        .await?;
+
+    assert_eq!(mint_quote.amount, Some(mint_amount));
+
+    // Verify the quote is in unissued quotes before payment
+    let unissued_before = wallet.get_unissued_mint_quotes().await?;
+    assert!(
+        unissued_before.iter().any(|q| q.id == mint_quote.id),
+        "Bolt12 quote should be in unissued quotes before payment"
+    );
+
+    // Pay the quote
+    let work_dir = get_test_temp_dir();
+    let cln_one_dir = get_cln_dir(&work_dir, "one");
+    let cln_client = create_cln_client_with_retry(cln_one_dir.clone()).await?;
+    cln_client
+        .pay_bolt12_offer(None, mint_quote.request.clone())
+        .await?;
+
+    // Wait for payment to be recognized
+    wallet
+        .wait_for_payment(&mint_quote, tokio::time::Duration::from_secs(30))
+        .await?;
+
+    // Verify initial balance is zero
+    assert_eq!(wallet.total_balance().await?, Amount::ZERO);
+
+    // Call mint_unissued_quotes - this should mint the paid Bolt12 quote
+    let total_minted = wallet.mint_unissued_quotes().await?;
+
+    // Verify the amount minted is correct
+    assert_eq!(
+        total_minted, mint_amount,
+        "mint_unissued_quotes should have minted the Bolt12 quote"
+    );
+
+    // Verify wallet balance matches
+    assert_eq!(wallet.total_balance().await?, mint_amount);
+
+    // Calling mint_unissued_quotes again should return 0 (quote already fully issued)
+    let second_check = wallet.mint_unissued_quotes().await?;
+    assert_eq!(
+        second_check,
+        Amount::ZERO,
+        "Second check should return 0 as quote is fully issued"
+    );
+
+    Ok(())
+}
+
+/// Tests that Bolt12 quote state (amount_issued) is properly updated after minting
+///
+/// This test verifies that:
+/// 1. amount_issued starts at 0
+/// 2. amount_issued is updated after minting
+/// 3. The quote correctly tracks issued vs paid amounts
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_bolt12_quote_amount_issued_tracking() -> Result<()> {
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await?),
+        Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    // Create an open-ended Bolt12 quote (no amount specified)
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, None, None, None)
+        .await?;
+
+    // Verify initial state
+    let state_before = wallet.refresh_mint_quote_status(&mint_quote.id).await?;
+    assert_eq!(state_before.amount_paid, Amount::ZERO);
+    assert_eq!(state_before.amount_issued, Amount::ZERO);
+
+    // Pay the quote with a specific amount
+    let pay_amount_msats = 50_000; // 50 sats
+    let work_dir = get_test_temp_dir();
+    let cln_one_dir = get_cln_dir(&work_dir, "one");
+    let cln_client = create_cln_client_with_retry(cln_one_dir.clone()).await?;
+    cln_client
+        .pay_bolt12_offer(Some(pay_amount_msats), mint_quote.request.clone())
+        .await?;
+
+    // Wait for payment
+    let payment = wallet
+        .wait_for_payment(&mint_quote, tokio::time::Duration::from_secs(30))
+        .await?
+        .expect("Should receive payment notification");
+
+    // Check state after payment but before minting
+    let state_after_payment = wallet.refresh_mint_quote_status(&mint_quote.id).await?;
+    assert_eq!(
+        state_after_payment.amount_paid,
+        Amount::from(pay_amount_msats / 1000)
+    );
+    assert_eq!(
+        state_after_payment.amount_issued,
+        Amount::ZERO,
+        "amount_issued should still be 0 before minting"
+    );
+
+    // Now mint the tokens
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await?;
+
+    let minted_amount = proofs.total_amount()?;
+    assert_eq!(minted_amount, payment);
+
+    // Check state after minting
+    let state_after_mint = wallet.refresh_mint_quote_status(&mint_quote.id).await?;
+    assert_eq!(
+        state_after_mint.amount_issued, minted_amount,
+        "amount_issued should be updated after minting"
+    );
+    assert_eq!(
+        state_after_mint.amount_paid, state_after_mint.amount_issued,
+        "For a single payment, amount_paid should equal amount_issued after minting"
+    );
+
+    Ok(())
 }

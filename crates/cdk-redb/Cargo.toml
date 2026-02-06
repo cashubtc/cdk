@@ -12,9 +12,8 @@ readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-default = ["wallet", "auth"]
+default = ["wallet"]
 wallet = ["cdk-common/wallet"]
-auth = ["cdk-common/auth"]
 
 [dependencies]
 async-trait.workspace = true
@@ -26,6 +25,7 @@ serde.workspace = true
 serde_json.workspace = true
 lightning-invoice.workspace = true
 uuid.workspace = true
+paste = "1.0.15"
 
 [dev-dependencies]
 tempfile = "3.17.1"

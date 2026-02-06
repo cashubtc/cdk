@@ -6,15 +6,16 @@ use bip39::Mnemonic;
 use cashu::{MintAuthRequest, MintInfo};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::ProofsMethods;
+use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{
     AuthProof, AuthToken, BlindAuthToken, CheckStateRequest, CurrencyUnit, MeltQuoteBolt11Request,
-    MeltQuoteState, MeltRequest, MintQuoteBolt11Request, MintRequest, RestoreRequest, State,
-    SwapRequest,
+    MeltQuoteState, MeltRequest, MintQuoteBolt11Request, MintRequest, PaymentMethod,
+    RestoreRequest, State, SwapRequest,
 };
 use cdk::wallet::{AuthHttpClient, AuthMintConnector, HttpClient, MintConnector, WalletBuilder};
 use cdk::{Error, OidcClient};
 use cdk_fake_wallet::create_fake_invoice;
+use cdk_http_client::HttpClient as CommonHttpClient;
 use cdk_integration_tests::fund_wallet;
 use cdk_sqlite::wallet::memory;
 
@@ -115,7 +116,9 @@ async fn test_mint_without_auth() {
             signature: None,
         };
 
-        let mint_res = client.post_mint(request).await;
+        let mint_res = client
+            .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request)
+            .await;
 
         assert!(
             matches!(mint_res, Err(Error::BlindAuthRequired)),
@@ -213,7 +216,9 @@ async fn test_melt_without_auth() {
             None,
         );
 
-        let melt_res = client.post_melt(request).await;
+        let melt_res = client
+            .post_melt(&PaymentMethod::Known(KnownMethod::Bolt11), request)
+            .await;
 
         assert!(
             matches!(melt_res, Err(Error::BlindAuthRequired)),
@@ -329,7 +334,10 @@ async fn test_mint_with_auth() {
 
     let mint_amount: Amount = 100.into();
 
-    let quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+        .await
+        .unwrap();
 
     let proofs = wallet
         .wait_and_mint_quote(
@@ -428,13 +436,17 @@ async fn test_melt_with_auth() {
     let bolt11 = create_fake_invoice(2_000, "".to_string());
 
     let melt_quote = wallet
-        .melt_quote(bolt11.to_string(), None)
+        .melt_quote(PaymentMethod::BOLT11, bolt11.to_string(), None, None)
         .await
         .expect("Could not get melt quote");
 
-    let after_melt = wallet.melt(&melt_quote.id).await.expect("Could not melt");
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .expect("Could not prepare melt");
+    let after_melt = prepared.confirm().await.expect("Could not melt");
 
-    assert!(after_melt.state == MeltQuoteState::Paid);
+    assert!(after_melt.state() == MeltQuoteState::Paid);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -508,19 +520,23 @@ async fn test_reuse_auth_proof() {
 
     {
         let quote = wallet
-            .mint_quote(10.into(), None)
+            .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
             .await
             .expect("Quote should be allowed");
 
         assert!(quote.amount == Some(10.into()));
     }
 
-    let mut tx = wallet.localstore.begin_db_transaction().await.unwrap();
-    tx.update_proofs(proofs, vec![]).await.unwrap();
-    tx.commit().await.unwrap();
+    wallet
+        .localstore
+        .update_proofs(proofs, vec![])
+        .await
+        .unwrap();
 
     {
-        let quote_res = wallet.mint_quote(10.into(), None).await;
+        let quote_res = wallet
+            .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
+            .await;
         assert!(
             matches!(quote_res, Err(Error::TokenAlreadySpent)),
             "Expected AuthRequired error, got {:?}",
@@ -637,7 +653,7 @@ async fn test_refresh_access_token() {
 
     // Try to get a mint quote with the refreshed token
     let mint_quote = wallet
-        .mint_quote(mint_amount, None)
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
         .await
         .expect("failed to get mint quote with refreshed token");
 
@@ -723,7 +739,7 @@ async fn test_auth_token_spending_order() {
     // Use tokens and verify they're used in the expected order (FIFO)
     for i in 0..3 {
         let mint_quote = wallet
-            .mint_quote(10.into(), None)
+            .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
             .await
             .expect("failed to get mint quote");
 
@@ -746,7 +762,7 @@ async fn get_access_token(mint_info: &MintInfo) -> (String, String) {
         .nuts
         .nut21
         .clone()
-        .expect("Nutxx defined")
+        .expect("Nut21 defined")
         .openid_discovery;
 
     let oidc_client = OidcClient::new(openid_discovery, None);
@@ -768,15 +784,13 @@ async fn get_access_token(mint_info: &MintInfo) -> (String, String) {
     ];
 
     // Make the token request directly
-    let client = reqwest::Client::new();
-    let response = client
-        .post(token_url)
+    let client = CommonHttpClient::new();
+    let token_response: serde_json::Value = client
+        .post(&token_url)
         .form(&params)
         .send()
         .await
-        .expect("Failed to send token request");
-
-    let token_response: serde_json::Value = response
+        .expect("Failed to send token request")
         .json()
         .await
         .expect("Failed to parse token response");
@@ -804,7 +818,7 @@ async fn get_custom_access_token(
         .nuts
         .nut21
         .clone()
-        .expect("Nutxx defined")
+        .expect("Nut21 defined")
         .openid_discovery;
 
     let oidc_client = OidcClient::new(openid_discovery, None);
@@ -825,15 +839,15 @@ async fn get_custom_access_token(
     ];
 
     // Make the token request directly
-    let client = reqwest::Client::new();
+    let client = CommonHttpClient::new();
     let response = client
-        .post(token_url)
+        .post(&token_url)
         .form(&params)
         .send()
         .await
         .map_err(|_| Error::Custom("Failed to send token request".to_string()))?;
 
-    if !response.status().is_success() {
+    if !response.is_success() {
         return Err(Error::Custom(format!(
             "Token request failed with status: {}",
             response.status()

@@ -31,6 +31,11 @@ pub struct MintQuote {
     pub payment_method: PaymentMethod,
     /// Secret key (optional, hex-encoded)
     pub secret_key: Option<String>,
+    /// Operation ID that reserved this quote
+    pub used_by_operation: Option<String>,
+    /// Version for optimistic locking
+    #[serde(default)]
+    pub version: u32,
 }
 
 impl From<cdk::wallet::MintQuote> for MintQuote {
@@ -47,6 +52,8 @@ impl From<cdk::wallet::MintQuote> for MintQuote {
             amount_paid: quote.amount_paid.into(),
             payment_method: quote.payment_method.into(),
             secret_key: quote.secret_key.map(|sk| sk.to_secret_hex()),
+            used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
+            version: quote.version,
         }
     }
 }
@@ -59,7 +66,7 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             .secret_key
             .map(|hex| cdk::nuts::SecretKey::from_hex(&hex))
             .transpose()
-            .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
+            .map_err(|e| FfiError::internal(format!("Invalid secret key: {}", e)))?;
 
         Ok(Self {
             id: quote.id,
@@ -73,6 +80,8 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             amount_paid: quote.amount_paid.into(),
             payment_method: quote.payment_method.into(),
             secret_key,
+            used_by_operation: quote.used_by_operation,
+            version: quote.version,
         })
     }
 }
@@ -144,6 +153,68 @@ impl From<cdk::nuts::MintQuoteBolt11Response<String>> for MintQuoteBolt11Respons
     }
 }
 
+impl From<cdk::wallet::MintQuote> for MintQuoteBolt11Response {
+    fn from(quote: cdk::wallet::MintQuote) -> Self {
+        Self {
+            quote: quote.id,
+            request: quote.request,
+            state: quote.state.into(),
+            expiry: Some(quote.expiry),
+            amount: quote.amount.map(Into::into),
+            unit: Some(quote.unit.into()),
+            pubkey: quote.secret_key.map(|sk| sk.public_key().to_string()),
+        }
+    }
+}
+
+/// FFI-compatible MintQuoteCustomResponse
+///
+/// This is a unified response type for custom payment methods that includes
+/// extra fields for method-specific data (e.g., ehash share).
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct MintQuoteCustomResponse {
+    /// Quote ID
+    pub quote: String,
+    /// Request string
+    pub request: String,
+    /// State of the quote
+    pub state: QuoteState,
+    /// Expiry timestamp (optional)
+    pub expiry: Option<u64>,
+    /// Amount (optional)
+    pub amount: Option<Amount>,
+    /// Unit (optional)
+    pub unit: Option<CurrencyUnit>,
+    /// Pubkey (optional)
+    pub pubkey: Option<String>,
+    /// Extra payment-method-specific fields as JSON string
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data without nesting.
+    pub extra: Option<String>,
+}
+
+impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomResponse {
+    fn from(response: cdk::nuts::MintQuoteCustomResponse<String>) -> Self {
+        let extra = if response.extra.is_null() {
+            None
+        } else {
+            Some(response.extra.to_string())
+        };
+
+        Self {
+            quote: response.quote,
+            request: response.request,
+            state: response.state.into(),
+            expiry: response.expiry,
+            amount: response.amount.map(Into::into),
+            unit: response.unit.map(Into::into),
+            pubkey: response.pubkey.map(|p| p.to_string()),
+            extra,
+        }
+    }
+}
+
 /// FFI-compatible MeltQuoteBolt11Response
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltQuoteBolt11Response {
@@ -179,6 +250,58 @@ impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Respons
         }
     }
 }
+
+/// FFI-compatible MeltQuoteCustomResponse
+///
+/// This is a unified response type for custom payment methods that includes
+/// extra fields for method-specific data.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct MeltQuoteCustomResponse {
+    /// Quote ID
+    pub quote: String,
+    /// Amount
+    pub amount: Amount,
+    /// Fee reserve
+    pub fee_reserve: Amount,
+    /// State of the quote
+    pub state: QuoteState,
+    /// Expiry timestamp
+    pub expiry: u64,
+    /// Payment preimage (optional)
+    pub payment_preimage: Option<String>,
+    /// Request string (optional)
+    pub request: Option<String>,
+    /// Unit (optional)
+    pub unit: Option<CurrencyUnit>,
+    /// Extra payment-method-specific fields as JSON string
+    ///
+    /// These fields are flattened into the JSON representation, allowing
+    /// custom payment methods to include additional data without nesting.
+    pub extra: Option<String>,
+}
+
+impl From<cdk::nuts::MeltQuoteCustomResponse<String>> for MeltQuoteCustomResponse {
+    fn from(response: cdk::nuts::MeltQuoteCustomResponse<String>) -> Self {
+        let extra = if response.extra.is_null() {
+            None
+        } else {
+            Some(response.extra.to_string())
+        };
+
+        Self {
+            quote: response.quote,
+            amount: response.amount.into(),
+            fee_reserve: response.fee_reserve.into(),
+            state: response.state.into(),
+            expiry: response.expiry,
+            payment_preimage: response.payment_preimage,
+            request: response.request,
+            unit: response.unit.map(Into::into),
+            extra,
+        }
+    }
+}
+
 /// FFI-compatible PaymentMethod
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum PaymentMethod {
@@ -192,10 +315,12 @@ pub enum PaymentMethod {
 
 impl From<cdk::nuts::PaymentMethod> for PaymentMethod {
     fn from(method: cdk::nuts::PaymentMethod) -> Self {
-        match method {
-            cdk::nuts::PaymentMethod::Bolt11 => Self::Bolt11,
-            cdk::nuts::PaymentMethod::Bolt12 => Self::Bolt12,
-            cdk::nuts::PaymentMethod::Custom(s) => Self::Custom { method: s },
+        match method.as_str() {
+            "bolt11" => Self::Bolt11,
+            "bolt12" => Self::Bolt12,
+            s => Self::Custom {
+                method: s.to_string(),
+            },
         }
     }
 }
@@ -203,9 +328,9 @@ impl From<cdk::nuts::PaymentMethod> for PaymentMethod {
 impl From<PaymentMethod> for cdk::nuts::PaymentMethod {
     fn from(method: PaymentMethod) -> Self {
         match method {
-            PaymentMethod::Bolt11 => Self::Bolt11,
-            PaymentMethod::Bolt12 => Self::Bolt12,
-            PaymentMethod::Custom { method } => Self::Custom(method),
+            PaymentMethod::Bolt11 => Self::from("bolt11"),
+            PaymentMethod::Bolt12 => Self::from("bolt12"),
+            PaymentMethod::Custom { method } => Self::from(method),
         }
     }
 }
@@ -231,6 +356,11 @@ pub struct MeltQuote {
     pub payment_preimage: Option<String>,
     /// Payment method
     pub payment_method: PaymentMethod,
+    /// Operation ID that reserved this quote
+    pub used_by_operation: Option<String>,
+    /// Version for optimistic locking
+    #[serde(default)]
+    pub version: u32,
 }
 
 impl From<cdk::wallet::MeltQuote> for MeltQuote {
@@ -245,6 +375,8 @@ impl From<cdk::wallet::MeltQuote> for MeltQuote {
             expiry: quote.expiry,
             payment_preimage: quote.payment_preimage.clone(),
             payment_method: quote.payment_method.into(),
+            used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
+            version: quote.version,
         }
     }
 }
@@ -263,6 +395,8 @@ impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
             expiry: quote.expiry,
             payment_preimage: quote.payment_preimage,
             payment_method: quote.payment_method.into(),
+            used_by_operation: quote.used_by_operation,
+            version: quote.version,
         })
     }
 }

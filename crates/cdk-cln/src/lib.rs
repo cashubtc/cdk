@@ -12,14 +12,15 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
-use cdk_common::amount::{to_unit, Amount};
+use cdk_common::amount::Amount;
 use cdk_common::common::FeeReserve;
-use cdk_common::database::mint::DynMintKVStore;
+use cdk_common::database::DynKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
+    self, Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions,
     CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse, MintPayment,
-    OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
+    OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
+    WaitPaymentResponse,
 };
 use cdk_common::util::{hex, unix_time};
 use cdk_common::Bolt11Invoice;
@@ -35,7 +36,6 @@ use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny, Sha256};
 use cln_rpc::ClnRpc;
 use error::Error;
 use futures::{Stream, StreamExt};
-use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
@@ -54,7 +54,16 @@ pub struct Cln {
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
-    kv_store: DynMintKVStore,
+    kv_store: DynKVStore,
+}
+
+impl std::fmt::Debug for Cln {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cln")
+            .field("rpc_socket", &self.rpc_socket)
+            .field("fee_reserve", &self.fee_reserve)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Cln {
@@ -62,7 +71,7 @@ impl Cln {
     pub async fn new(
         rpc_socket: PathBuf,
         fee_reserve: FeeReserve,
-        kv_store: DynMintKVStore,
+        kv_store: DynKVStore,
     ) -> Result<Self, Error> {
         Ok(Self {
             rpc_socket,
@@ -78,14 +87,18 @@ impl Cln {
 impl MintPayment for Cln {
     type Err = payment::Error;
 
-    async fn get_settings(&self) -> Result<Value, Self::Err> {
-        Ok(serde_json::to_value(Bolt11Settings {
-            mpp: true,
-            unit: CurrencyUnit::Msat,
-            invoice_description: true,
-            amountless: true,
-            bolt12: true,
-        })?)
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        use std::collections::HashMap;
+        Ok(SettingsResponse {
+            unit: CurrencyUnit::Msat.to_string(),
+            bolt11: Some(payment::Bolt11Settings {
+                mpp: true,
+                amountless: true,
+                invoice_description: true,
+            }),
+            bolt12: Some(payment::Bolt12Settings { amountless: true }),
+            custom: HashMap::new(),
+        })
     }
 
     /// Is wait invoice active
@@ -178,11 +191,11 @@ impl MintPayment for Cln {
                             // We only want to yield invoices that have been paid
                             match wait_any_response.status {
                                 WaitanyinvoiceStatus::PAID => {
-                                    tracing::info!("CLN: Invoice with payment index {} is PAID", 
+                                    tracing::info!("CLN: Invoice with payment index {} is PAID",
                                                  wait_any_response.pay_index.unwrap_or_default());
                                 }
                                 WaitanyinvoiceStatus::EXPIRED => {
-                                    tracing::debug!("CLN: Invoice with payment index {} is EXPIRED, skipping", 
+                                    tracing::debug!("CLN: Invoice with payment index {} is EXPIRED, skipping",
                                                   wait_any_response.pay_index.unwrap_or_default());
                                     continue;
                                 }
@@ -213,7 +226,7 @@ impl MintPayment for Cln {
 
                             let amount_msats = match wait_any_response.amount_received_msat {
                                 Some(amt) => {
-                                    tracing::info!("CLN: Received payment of {} msats for {}", 
+                                    tracing::info!("CLN: Received payment of {} msats for {}",
                                                  amt.msat(), payment_hash);
                                     amt
                                 }
@@ -239,7 +252,7 @@ impl MintPayment for Cln {
                                     {
                                         Ok(Some(invoice)) => {
                                             if let Some(local_offer_id) = invoice.local_offer_id {
-                                                tracing::info!("CLN: Received bolt12 payment of {} msats for offer {}", 
+                                                tracing::info!("CLN: Received bolt12 payment of {} msats for offer {}",
                                                              amount_msats.msat(), local_offer_id);
                                                 PaymentIdentifier::OfferId(local_offer_id.to_string())
                                             } else {
@@ -267,9 +280,8 @@ impl MintPayment for Cln {
 
                             let response = WaitPaymentResponse {
                                 payment_identifier: request_lookup_id,
-                                payment_amount: amount_msats.msat().into(),
-                                unit: CurrencyUnit::Msat,
-                                payment_id: payment_hash.to_string()
+                                payment_amount: Amount::new(amount_msats.msat(), CurrencyUnit::Msat),
+                                payment_id: payment_hash.to_string(),
                             };
                             tracing::info!("CLN: Created WaitPaymentResponse with amount {} msats", amount_msats.msat());
                             let event = Event::PaymentReceived(response);
@@ -300,6 +312,9 @@ impl MintPayment for Cln {
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         match options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 // If we have specific amount options, use those
                 let amount_msat: Amount = if let Some(melt_options) = bolt11_options.melt_options {
@@ -327,11 +342,12 @@ impl MintPayment for Cln {
                         .into()
                 };
                 // Convert to target unit
-                let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+                let amount =
+                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
 
                 // Calculate fee
                 let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
                 let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
@@ -340,9 +356,8 @@ impl MintPayment for Cln {
                         *bolt11_options.bolt11.payment_hash().as_ref(),
                     )),
                     amount,
-                    fee: fee.into(),
+                    fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -361,20 +376,19 @@ impl MintPayment for Cln {
                 };
 
                 // Convert to target unit
-                let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+                let amount = Amount::new(amount_msat, CurrencyUnit::Msat).convert_to(unit)?;
 
                 // Calculate fee
                 let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
                 let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: None,
                     amount,
-                    fee: fee.into(),
+                    fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
         }
@@ -467,8 +481,14 @@ impl MintPayment for Cln {
 
                 cln_response.invoice
             }
+            _ => {
+                max_fee_msat = None;
+                "".to_string()
+            }
         };
-
+        if invoice.is_empty() {
+            return Err(Error::UnknownInvoice.into());
+        }
         let cln_response = cln_client
             .call_typed(&PayRequest {
                 bolt11: invoice,
@@ -496,6 +516,9 @@ impl MintPayment for Cln {
                 };
 
                 let payment_identifier = match options {
+                    cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
+                        PaymentIdentifier::PaymentHash(*pay_response.payment_hash.as_ref())
+                    }
                     OutgoingPaymentOptions::Bolt11(_) => {
                         PaymentIdentifier::PaymentHash(*pay_response.payment_hash.as_ref())
                     }
@@ -505,15 +528,14 @@ impl MintPayment for Cln {
                 };
 
                 MakePaymentResponse {
-                    payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                     payment_lookup_id: payment_identifier,
+                    payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                     status,
-                    total_spent: to_unit(
+                    total_spent: Amount::new(
                         pay_response.amount_sent_msat.msat(),
-                        &CurrencyUnit::Msat,
-                        unit,
-                    )?,
-                    unit: unit.clone(),
+                        CurrencyUnit::Msat,
+                    )
+                    .convert_to(unit)?,
                 }
             }
             Err(err) => {
@@ -532,6 +554,9 @@ impl MintPayment for Cln {
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
+            cdk_common::payment::IncomingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
             IncomingPaymentOptions::Bolt11(Bolt11IncomingPaymentOptions {
                 description,
                 amount,
@@ -543,8 +568,10 @@ impl MintPayment for Cln {
 
                 let label = Uuid::new_v4().to_string();
 
-                let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
-                let amount_msat = AmountOrAny::Amount(CLN_Amount::from_msat(amount.into()));
+                let amount_converted =
+                    Amount::new(amount.into(), unit.clone()).convert_to(&CurrencyUnit::Msat)?;
+                let amount_msat =
+                    AmountOrAny::Amount(CLN_Amount::from_msat(amount_converted.value()));
 
                 let invoice_response = cln_client
                     .call_typed(&InvoiceRequest {
@@ -569,6 +596,7 @@ impl MintPayment for Cln {
                     request_lookup_id: PaymentIdentifier::PaymentHash(*payment_hash.as_ref()),
                     request: request.to_string(),
                     expiry,
+                    extra_json: None,
                 })
             }
             IncomingPaymentOptions::Bolt12(bolt12_options) => {
@@ -584,9 +612,10 @@ impl MintPayment for Cln {
                 // Match like this until we change to option
                 let amount = match amount {
                     Some(amount) => {
-                        let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+                        let amount = Amount::new(amount.into(), unit.clone())
+                            .convert_to(&CurrencyUnit::Msat)?;
 
-                        amount.to_string()
+                        amount.value().to_string()
                     }
                     None => "any".to_string(),
                 };
@@ -619,6 +648,7 @@ impl MintPayment for Cln {
                     ),
                     request: offer_response.bolt12,
                     expiry: unix_expiry,
+                    extra_json: None,
                 })
             }
         }
@@ -690,13 +720,13 @@ impl MintPayment for Cln {
             .filter(|p| p.amount_msat.is_some()) // Filter out invoices without an amount
             .map(|p| WaitPaymentResponse {
                 payment_identifier: payment_identifier.clone(),
-                payment_amount: p
-                    .amount_msat
-                    // Safe to expect since we filtered for Some
-                    .expect("We have filter out those without amounts")
-                    .msat()
-                    .into(),
-                unit: CurrencyUnit::Msat,
+                payment_amount: Amount::new(
+                    p.amount_msat
+                        // Safe to expect since we filtered for Some
+                        .expect("We have filter out those without amounts")
+                        .msat(),
+                    CurrencyUnit::Msat,
+                ),
                 payment_id: p.payment_hash.to_string(),
             })
             .collect())
@@ -740,16 +770,16 @@ impl MintPayment for Cln {
                     status,
                     total_spent: pays_response
                         .amount_sent_msat
-                        .map_or(Amount::ZERO, |a| a.msat().into()),
-                    unit: CurrencyUnit::Msat,
+                        .map_or(Amount::new(0, CurrencyUnit::Msat), |a| {
+                            Amount::new(a.msat(), CurrencyUnit::Msat)
+                        }),
                 })
             }
             None => Ok(MakePaymentResponse {
                 payment_lookup_id: payment_identifier.clone(),
                 payment_proof: None,
                 status: MeltQuoteState::Unknown,
-                total_spent: Amount::ZERO,
-                unit: CurrencyUnit::Msat,
+                total_spent: Amount::new(0, CurrencyUnit::Msat),
             }),
         }
     }

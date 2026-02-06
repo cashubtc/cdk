@@ -4,6 +4,7 @@
 //! but it will eventually error on a Timeout.
 //!
 //! Bolt11 will emit a single event.
+use std::sync::Arc;
 use std::task::Poll;
 
 use cdk_common::{Amount, Error, MeltQuoteState, MintQuoteState, NotificationPayload};
@@ -21,8 +22,10 @@ type SubscribeReceived = (Option<MintEvent<String>>, Vec<ActiveSubscription>);
 type PaymentValue = (String, Option<Amount>);
 
 /// PaymentWaiter
+#[allow(missing_debug_implementations)]
 pub struct PaymentStream<'a> {
-    wallet: Option<(&'a Wallet, Vec<WalletSubscription>)>,
+    wallet: &'a Wallet,
+    filters: Option<Vec<WalletSubscription>>,
     is_finalized: bool,
     active_subscription: Option<Vec<ActiveSubscription>>,
 
@@ -38,7 +41,8 @@ impl<'a> PaymentStream<'a> {
     /// Creates a new instance of the
     pub fn new(wallet: &'a Wallet, filters: Vec<WalletSubscription>) -> Self {
         Self {
-            wallet: Some((wallet, filters)),
+            wallet,
+            filters: Some(filters),
             is_finalized: false,
             active_subscription: None,
             cancel_token: Default::default(),
@@ -57,9 +61,21 @@ impl<'a> PaymentStream<'a> {
     /// creating a new Subscription should be polled, as any other async event. This function will
     /// return None if the subscription is already active, Some(()) otherwise
     fn poll_init_subscription(&mut self, cx: &mut std::task::Context<'_>) -> Option<()> {
-        if let Some((wallet, filters)) = self.wallet.take() {
+        if let Some(filters) = self.filters.take() {
+            let wallet = self.wallet;
             self.subscriber_future = Some(Box::pin(async move {
-                join_all(filters.into_iter().map(|w| wallet.subscribe(w))).await
+                let results = join_all(filters.into_iter().map(|w| wallet.subscribe(w))).await;
+                // Collect successful subscriptions, log errors
+                results
+                    .into_iter()
+                    .filter_map(|r| match r {
+                        Ok(sub) => Some(sub),
+                        Err(e) => {
+                            tracing::warn!("Failed to create subscription: {}", e);
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
             }));
         }
 
@@ -109,6 +125,8 @@ impl<'a> PaymentStream<'a> {
             return Poll::Ready(Some(Err(Error::Internal)));
         }
 
+        let localstore = Arc::clone(&self.wallet.localstore);
+
         let mut receiver = subscription_receiver_future.unwrap_or_else(|| {
             let mut subscription_receiver =
                 active_subscription.expect("active subscription object");
@@ -119,9 +137,40 @@ impl<'a> PaymentStream<'a> {
                     .map(|sub| sub.recv())
                     .collect();
 
-                if let Some(Some(winner)) = futures.next().await {
+                if let Some(res) = futures.next().await {
                     drop(futures);
-                    return (Some(winner), subscription_receiver);
+
+                    if let Some(event) = &res {
+                        match event.inner() {
+                            NotificationPayload::MintQuoteBolt11Response(info) => {
+                                let quote_id = info.quote.clone();
+                                if let Ok(Some(mut quote)) =
+                                    localstore.get_mint_quote(&quote_id).await
+                                {
+                                    quote.state = info.state;
+                                    quote.amount_paid = info.amount.unwrap_or(Amount::ZERO);
+                                    if let Err(e) = localstore.add_mint_quote(quote).await {
+                                        tracing::warn!("Failed to update quote state: {}", e);
+                                    }
+                                }
+                            }
+                            NotificationPayload::MintQuoteBolt12Response(info) => {
+                                let quote_id = info.quote.clone();
+                                if let Ok(Some(mut quote)) =
+                                    localstore.get_mint_quote(&quote_id).await
+                                {
+                                    quote.amount_paid = info.amount_paid;
+                                    // quote.amount_issued = info.amount_issued;
+                                    if let Err(e) = localstore.add_mint_quote(quote).await {
+                                        tracing::warn!("Failed to update quote state: {}", e);
+                                    }
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
+
+                    return (res, subscription_receiver);
                 }
 
                 drop(futures);

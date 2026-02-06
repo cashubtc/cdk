@@ -15,8 +15,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bip39::Mnemonic;
+use cashu::nut00::KnownMethod;
+use cashu::PaymentMethod;
 use cdk::mint::{MintBuilder, MintMeltLimits};
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use cdk::nuts::CurrencyUnit;
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk_fake_wallet::FakeWallet;
 use cdk_sqlite::mint::memory;
@@ -51,7 +53,7 @@ async fn test_correct_keyset() {
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::Bolt11,
+            PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 5_000),
             Arc::new(fake_wallet),
         )
@@ -78,6 +80,7 @@ async fn test_correct_keyset() {
         CurrencyUnit::Sat,
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
+        true,
     )
     .await
     .unwrap();
@@ -96,6 +99,7 @@ async fn test_correct_keyset() {
         CurrencyUnit::Sat,
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
+        true,
     )
     .await
     .unwrap();
@@ -152,7 +156,7 @@ async fn test_concurrent_duplicate_payment_handling() {
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::Bolt11,
+            PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 5_000),
             Arc::new(fake_wallet),
         )
@@ -173,16 +177,17 @@ async fn test_concurrent_duplicate_payment_handling() {
         None,
         "concurrent_test_invoice".to_string(),
         CurrencyUnit::Sat,
-        Some(Amount::from(1000)),
+        Some(Amount::from(1000).with_unit(CurrencyUnit::Sat)),
         current_time + 3600, // expires in 1 hour
         PaymentIdentifier::CustomId("test_lookup_id".to_string()),
         None,
-        Amount::ZERO,
-        Amount::ZERO,
-        PaymentMethod::Bolt11,
+        Amount::ZERO.with_unit(CurrencyUnit::Sat),
+        Amount::ZERO.with_unit(CurrencyUnit::Sat),
+        PaymentMethod::Known(KnownMethod::Bolt11),
         current_time,
         vec![],
         vec![],
+        None, // extra_json
     );
 
     // Add the quote to the database
@@ -203,9 +208,23 @@ async fn test_concurrent_duplicate_payment_handling() {
 
         join_set.spawn(async move {
             let mut tx = MintDatabase::begin_transaction(&*db_clone).await.unwrap();
-            let result = tx
-                .increment_mint_quote_amount_paid(&quote_id, Amount::from(10), payment_id_clone)
-                .await;
+            let mut quote_from_db = tx
+                .get_mint_quote(&quote_id)
+                .await
+                .expect("no error")
+                .expect("some value");
+
+            let result = if let Err(err) = quote_from_db.add_payment(
+                Amount::from(10).with_unit(CurrencyUnit::Sat),
+                payment_id_clone,
+                None,
+            ) {
+                Err(err)
+            } else {
+                tx.update_mint_quote(&mut quote_from_db)
+                    .await
+                    .map_err(|err| cdk_common::Error::Database(err))
+            };
 
             if result.is_ok() {
                 tx.commit().await.unwrap();
@@ -241,15 +260,15 @@ async fn test_concurrent_duplicate_payment_handling() {
         "Exactly one task should successfully process the payment (got {})",
         success_count
     );
-    assert_eq!(
-        duplicate_errors, 9,
-        "Nine tasks should receive Duplicate error (got {})",
-        duplicate_errors
-    );
     assert!(
         other_errors.is_empty(),
         "No unexpected errors should occur. Got: {:?}",
         other_errors
+    );
+    assert_eq!(
+        duplicate_errors, 9,
+        "Nine tasks should receive Duplicate error (got {})",
+        duplicate_errors
     );
 
     // Verify the quote was incremented exactly once
@@ -260,7 +279,7 @@ async fn test_concurrent_duplicate_payment_handling() {
 
     assert_eq!(
         final_quote.amount_paid(),
-        Amount::from(10),
+        Amount::from(10).with_unit(CurrencyUnit::Sat),
         "Quote amount should be incremented exactly once"
     );
     assert_eq!(

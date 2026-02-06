@@ -3,10 +3,15 @@
 //! UniFFI bindings for the CDK Wallet and related types.
 
 #![warn(clippy::unused_async)]
+#![allow(missing_docs)]
+#![allow(missing_debug_implementations)]
 
 pub mod database;
 pub mod error;
+pub mod logging;
 pub mod multi_mint_wallet;
+#[cfg(feature = "npubcash")]
+pub mod npubcash;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 pub mod sqlite;
@@ -16,7 +21,10 @@ pub mod wallet;
 
 pub use database::*;
 pub use error::*;
+pub use logging::*;
 pub use multi_mint_wallet::*;
+#[cfg(feature = "npubcash")]
+pub use npubcash::*;
 pub use types::*;
 pub use wallet::*;
 

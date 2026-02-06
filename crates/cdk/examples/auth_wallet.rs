@@ -1,8 +1,10 @@
+#![allow(missing_docs)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::error::Error;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::{SendOptions, Wallet};
 use cdk::{Amount, OidcClient};
 use cdk_common::amount::SplitTarget;
@@ -43,7 +45,9 @@ async fn main() -> Result<(), Error> {
         .expect("could not get mint info");
 
     // Request a mint quote from the wallet
-    let quote = wallet.mint_quote(amount, None).await;
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
+        .await;
 
     println!("Minting nuts ... {:?}", quote);
 
@@ -58,7 +62,10 @@ async fn main() -> Result<(), Error> {
         .await
         .expect("Could not mint blind auth");
 
-    let quote = wallet.mint_quote(amount, None).await.unwrap();
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
+        .await
+        .unwrap();
     let proofs = wallet
         .wait_and_mint_quote(quote, SplitTarget::default(), None, Duration::from_secs(10))
         .await
@@ -120,18 +127,11 @@ async fn get_access_token(mint_info: &MintInfo) -> String {
     ];
 
     // Make the token request directly
-    let client = reqwest::Client::new();
-    let response = client
-        .post(token_url)
-        .form(&params)
-        .send()
+    let client = cdk_common::HttpClient::new();
+    let token_response: serde_json::Value = client
+        .post_form(&token_url, &params)
         .await
         .expect("Failed to send token request");
-
-    let token_response: serde_json::Value = response
-        .json()
-        .await
-        .expect("Failed to parse token response");
 
     token_response["access_token"]
         .as_str()

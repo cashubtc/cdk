@@ -1,27 +1,34 @@
 //! CDK Database
 
+mod kvstore;
+
 #[cfg(feature = "mint")]
 pub mod mint;
 #[cfg(feature = "wallet")]
-mod wallet;
+pub mod wallet;
+
+// Re-export shared KVStore types at the top level for both mint and wallet
+pub use kvstore::{
+    validate_kvstore_params, validate_kvstore_string, KVStore, KVStoreDatabase, KVStoreTransaction,
+    KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
+};
+
+/// Arc-wrapped KV store for shared ownership
+pub type DynKVStore = std::sync::Arc<dyn KVStore<Err = Error> + Send + Sync>;
 
 #[cfg(feature = "mint")]
 pub use mint::{
-    Database as MintDatabase, DynMintDatabase, KVStore as MintKVStore,
-    KVStoreDatabase as MintKVStoreDatabase, KVStoreTransaction as MintKVStoreTransaction,
+    Database as MintDatabase, DynMintDatabase, DynMintTransaction,
     KeysDatabase as MintKeysDatabase, KeysDatabaseTransaction as MintKeyDatabaseTransaction,
     ProofsDatabase as MintProofsDatabase, ProofsTransaction as MintProofsTransaction,
     QuotesDatabase as MintQuotesDatabase, QuotesTransaction as MintQuotesTransaction,
     SignaturesDatabase as MintSignaturesDatabase,
     SignaturesTransaction as MintSignatureTransaction, Transaction as MintTransaction,
 };
-#[cfg(all(feature = "mint", feature = "auth"))]
+#[cfg(feature = "mint")]
 pub use mint::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
 #[cfg(feature = "wallet")]
-pub use wallet::{
-    Database as WalletDatabase, DatabaseTransaction as WalletDatabaseTransaction,
-    DynWalletDatabaseTransaction,
-};
+pub use wallet::Database as WalletDatabase;
 
 /// Data conversion error
 #[derive(thiserror::Error, Debug)]
@@ -107,6 +114,11 @@ pub enum Error {
     /// Duplicate entry
     #[error("Duplicate entry")]
     Duplicate,
+
+    /// Locked resource
+    #[error("Locked resource")]
+    Locked,
+
     /// Amount overflow
     #[error("Amount overflow")]
     AmountOverflow,
@@ -128,7 +140,6 @@ pub enum Error {
     NUT02(#[from] crate::nuts::nut02::Error),
     /// NUT22 Error
     #[error(transparent)]
-    #[cfg(feature = "auth")]
     NUT22(#[from] crate::nuts::nut22::Error),
     /// NUT04 Error
     #[error(transparent)]
@@ -152,6 +163,12 @@ pub enum Error {
     /// Proof not found
     #[error("Proof not found")]
     ProofNotFound,
+    /// Proof not in unspent state (may be reserved, pending, or spent)
+    #[error("Proof not in unspent state")]
+    ProofNotUnspent,
+    /// Quote is already in use by another operation
+    #[error("Quote already in use by another operation")]
+    QuoteAlreadyInUse,
     /// Invalid keyset
     #[error("Unknown or invalid keyset")]
     InvalidKeysetId,
@@ -195,6 +212,10 @@ pub enum Error {
     /// KV Store invalid key or namespace
     #[error("Invalid KV store key or namespace: {0}")]
     KVStoreInvalidKey(String),
+
+    /// Concurrent update detected
+    #[error("Concurrent update detected")]
+    ConcurrentUpdate,
 }
 
 #[cfg(feature = "mint")]

@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
-use bip39::Mnemonic;
 use cashu::Amount;
 use cdk_integration_tests::cli::CommonArgs;
 use cdk_integration_tests::init_regtest::start_regtest_end;
@@ -283,11 +282,13 @@ fn create_ldk_settings(
             signatory_url: None,
             signatory_certs: None,
             input_fee_ppk: None,
+            use_keyset_v2: None,
             http_cache: cdk_axum::cache::Config::default(),
             enable_swagger_ui: None,
             logging: LoggingConfig::default(),
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
+        limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::LdkNode,
             invoice_description: None,
@@ -364,18 +365,14 @@ fn main() -> Result<()> {
                 addr: [127, 0, 0, 1],
                 port: 8092,
             }],
-        )
-        .with_seed(
-            Mnemonic::parse(
-                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-            )
-            .unwrap(),
-        )
-        .with_log_dir_path(ldk_work_dir.join("logs").join("ldk_node.log").to_string_lossy().to_string());
+        );
         let cdk_ldk = match node_builder.build() {
             Ok(node) => node,
             Err(e) => {
-                tracing::warn!("Failed to start LDK node: {}. Attempting to wipe data and restart...", e);
+                tracing::warn!(
+                    "Failed to start LDK node: {}. Attempting to wipe data and restart...",
+                    e
+                );
                 // Clean up the storage directory
                 if ldk_work_dir.exists() {
                     fs::remove_dir_all(&ldk_work_dir)?;
@@ -400,14 +397,7 @@ fn main() -> Result<()> {
                         addr: [127, 0, 0, 1],
                         port: 8092,
                     }],
-                )
-                .with_seed(
-                    Mnemonic::parse(
-                        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-                    )
-                    .unwrap(),
-                )
-                .with_log_dir_path(ldk_work_dir.join("logs").join("ldk_node.log").to_string_lossy().to_string());
+                );
 
                 node_builder.build()?
             }
