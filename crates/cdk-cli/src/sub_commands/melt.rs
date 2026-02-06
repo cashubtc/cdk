@@ -351,8 +351,7 @@ async fn pay_mpp(
         bail!("MPP is only supported for BOLT11 invoices");
     }
 
-    let bolt11_str =
-        input_or_prompt(sub_command_args.invoice.as_ref(), "Enter bolt11 invoice")?;
+    let bolt11_str = input_or_prompt(sub_command_args.invoice.as_ref(), "Enter bolt11 invoice")?;
     // Validate invoice format
     let _bolt11 = Bolt11Invoice::from_str(&bolt11_str)?;
 
@@ -362,14 +361,16 @@ async fn pay_mpp(
 
     println!("\nAvailable mints and balances:");
     for (i, (key, balance)) in balances_vec.iter().enumerate() {
-        println!("  {}: {} ({}) - {} {}", i, key.mint_url, key.unit, balance, unit);
+        println!(
+            "  {}: {} ({}) - {} {}",
+            i, key.mint_url, key.unit, balance, unit
+        );
     }
 
     // Collect mint selections and amounts from user
     let mut mint_amounts: Vec<(MintUrl, Amount)> = Vec::new();
     loop {
-        let mint_input =
-            get_user_input("Enter mint number to use (or 'done' to finish)")?;
+        let mint_input = get_user_input("Enter mint number to use (or 'done' to finish)")?;
 
         if mint_input.to_lowercase() == "done" || mint_input.is_empty() {
             break;
@@ -380,10 +381,8 @@ async fn pay_mpp(
             .get(mint_index)
             .ok_or_else(|| anyhow::anyhow!("Invalid mint index"))?;
 
-        let amount: u64 = get_number_input(&format!(
-            "Enter amount to use from this mint ({})",
-            unit
-        ))?;
+        let amount: u64 =
+            get_number_input(&format!("Enter amount to use from this mint ({})", unit))?;
         mint_amounts.push((key.mint_url.clone(), Amount::from(amount)));
     }
 
@@ -395,8 +394,7 @@ async fn pay_mpp(
     println!("\nGetting melt quotes...");
     let mut quotes = Vec::new();
     for (mint_url, amount) in &mint_amounts {
-        let wallet =
-            get_or_create_wallet(wallet_repository, mint_url, unit).await?;
+        let wallet = get_or_create_wallet(wallet_repository, mint_url, unit).await?;
 
         // Convert amount to millisats for MPP
         let amount_msat = u64::from(*amount) * MSAT_IN_SAT;

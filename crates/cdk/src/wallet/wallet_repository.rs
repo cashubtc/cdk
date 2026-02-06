@@ -443,9 +443,7 @@ impl WalletRepository {
                         None,
                         true,
                     )
-                    .unwrap_or_else(|_| {
-                        crate::wallet::HttpClient::new(mint_url.clone(), None)
-                    }),
+                    .unwrap_or_else(|_| crate::wallet::HttpClient::new(mint_url.clone(), None)),
                 )
             } else {
                 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
