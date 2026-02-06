@@ -139,10 +139,11 @@ impl MintConnector for DirectMintConnection {
             .map(Into::into)
     }
 
-    async fn post_melt(
+    async fn post_melt_with_options(
         &self,
         _method: &PaymentMethod,
         request: MeltRequest<String>,
+        _options: cdk::wallet::MeltOptions,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let request_uuid = request.try_into().unwrap();
         self.mint.melt(&request_uuid).await.map(Into::into)

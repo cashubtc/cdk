@@ -406,7 +406,7 @@ impl MeltSaga<Initial> {
 
         // Publish melt quote status change AFTER transaction commits
         self.pubsub
-            .melt_quote_status(&*quote, None, None, MeltQuoteState::Pending);
+            .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
 
         // Store blinded messages for state
         let blinded_messages_vec = melt_request.outputs().clone().unwrap_or_default();
@@ -1014,7 +1014,7 @@ impl MeltSaga<PaymentConfirmed> {
         tx.commit().await?;
 
         self.pubsub.melt_quote_status(
-            &self.state_data.quote,
+            &quote,
             payment_preimage.clone(),
             change.clone(),
             MeltQuoteState::Paid,
