@@ -1,6 +1,7 @@
 //! Cashu utils
 
 pub mod hex;
+pub mod serde_helpers;
 
 use bitcoin::secp256k1::{rand, All, Secp256k1};
 use once_cell::sync::Lazy;
