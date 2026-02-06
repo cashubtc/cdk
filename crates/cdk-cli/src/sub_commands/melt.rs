@@ -26,8 +26,11 @@ pub enum PaymentType {
 
 #[derive(Args)]
 pub struct MeltSubCommand {
+    /// Use Multi-Path Payment (split payment across multiple mints, BOLT11 only)
+    #[arg(short, long, conflicts_with = "mint_url")]
+    mpp: bool,
     /// Mint URL to use for melting
-    #[arg(long)]
+    #[arg(long, conflicts_with = "mpp")]
     mint_url: Option<String>,
     /// Payment method (bolt11, bolt12, or bip353)
     #[arg(long, default_value = "bolt11")]
@@ -86,6 +89,11 @@ pub async fn pay(
     let total_balance = wallet_repository.total_balance().await?;
     if total_balance == Amount::ZERO {
         bail!("No funds available");
+    }
+
+    // Handle MPP mode separately
+    if sub_command_args.mpp {
+        return pay_mpp(wallet_repository, sub_command_args, unit).await;
     }
 
     // Determine which mint to use for melting
@@ -329,6 +337,113 @@ pub async fn pay(
             }
         }
     }
+
+    Ok(())
+}
+
+/// Handle Multi-Path Payment (MPP) - split a BOLT11 payment across multiple mints
+async fn pay_mpp(
+    wallet_repository: &WalletRepository,
+    sub_command_args: &MeltSubCommand,
+    unit: &CurrencyUnit,
+) -> Result<()> {
+    if !matches!(sub_command_args.method, PaymentType::Bolt11) {
+        bail!("MPP is only supported for BOLT11 invoices");
+    }
+
+    let bolt11_str =
+        input_or_prompt(sub_command_args.invoice.as_ref(), "Enter bolt11 invoice")?;
+    // Validate invoice format
+    let _bolt11 = Bolt11Invoice::from_str(&bolt11_str)?;
+
+    // Show available mints and balances
+    let balances = wallet_repository.get_balances().await?;
+    let balances_vec: Vec<(WalletKey, Amount)> = balances.into_iter().collect();
+
+    println!("\nAvailable mints and balances:");
+    for (i, (key, balance)) in balances_vec.iter().enumerate() {
+        println!("  {}: {} ({}) - {} {}", i, key.mint_url, key.unit, balance, unit);
+    }
+
+    // Collect mint selections and amounts from user
+    let mut mint_amounts: Vec<(MintUrl, Amount)> = Vec::new();
+    loop {
+        let mint_input =
+            get_user_input("Enter mint number to use (or 'done' to finish)")?;
+
+        if mint_input.to_lowercase() == "done" || mint_input.is_empty() {
+            break;
+        }
+
+        let mint_index: usize = mint_input.parse()?;
+        let (key, _) = balances_vec
+            .get(mint_index)
+            .ok_or_else(|| anyhow::anyhow!("Invalid mint index"))?;
+
+        let amount: u64 = get_number_input(&format!(
+            "Enter amount to use from this mint ({})",
+            unit
+        ))?;
+        mint_amounts.push((key.mint_url.clone(), Amount::from(amount)));
+    }
+
+    if mint_amounts.is_empty() {
+        bail!("No mints selected for MPP payment");
+    }
+
+    // Get quotes from each mint with MPP options
+    println!("\nGetting melt quotes...");
+    let mut quotes = Vec::new();
+    for (mint_url, amount) in &mint_amounts {
+        let wallet =
+            get_or_create_wallet(wallet_repository, mint_url, unit).await?;
+
+        // Convert amount to millisats for MPP
+        let amount_msat = u64::from(*amount) * MSAT_IN_SAT;
+        let options = Some(MeltOptions::new_mpp(amount_msat));
+
+        let quote = wallet
+            .melt_quote(
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                bolt11_str.clone(),
+                options,
+                None,
+            )
+            .await?;
+
+        println!("  {} - Quote ID: {}", mint_url, quote.id);
+        println!("    Amount: {}, Fee: {}", quote.amount, quote.fee_reserve);
+        quotes.push((mint_url.clone(), wallet, quote));
+    }
+
+    // Execute all melts
+    println!("\nExecuting MPP payment...");
+    let mut total_paid = Amount::ZERO;
+    let mut total_fees = Amount::ZERO;
+
+    for (mint_url, wallet, quote) in quotes {
+        let melted = wallet
+            .prepare_melt(&quote.id, HashMap::new())
+            .await?
+            .confirm()
+            .await?;
+
+        println!(
+            "  {} - Paid: {}, Fee: {}",
+            mint_url,
+            melted.amount(),
+            melted.fee_paid()
+        );
+        total_paid += melted.amount();
+        total_fees += melted.fee_paid();
+
+        if let Some(preimage) = melted.payment_proof() {
+            println!("    Preimage: {}", preimage);
+        }
+    }
+
+    println!("\nTotal paid: {} {}", total_paid, unit);
+    println!("Total fees: {} {}", total_fees, unit);
 
     Ok(())
 }
