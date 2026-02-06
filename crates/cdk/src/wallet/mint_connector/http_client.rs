@@ -15,7 +15,7 @@ use url::Url;
 use web_time::{Duration, Instant};
 
 use super::transport::Transport;
-use super::{Error, MintConnector};
+use super::{Error, MeltOptions, MintConnector};
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::{KnownMethod, PaymentMethod};
 use crate::nuts::nut22::MintAuthRequest;
@@ -365,10 +365,11 @@ where
     /// Melt [NUT-05]
     /// [Nut-08] Lightning fee return if outputs defined
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_melt(
+    async fn post_melt_with_options(
         &self,
         method: &PaymentMethod,
         request: MeltRequest<String>,
+        options: MeltOptions,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::Melt(method.to_string()))
@@ -384,8 +385,20 @@ where
             PaymentMethod::Custom(m) => nut19::Path::custom_melt(m),
         };
 
-        self.retriable_http_request(nut19::Method::Post, path, auth_token, &[], &request)
-            .await
+        let custom_headers = if options.async_melt {
+            vec![("Prefer", "respond-async")]
+        } else {
+            vec![]
+        };
+
+        self.retriable_http_request(
+            nut19::Method::Post,
+            path,
+            auth_token,
+            &custom_headers,
+            &request,
+        )
+        .await
     }
 
     /// Swap Token [NUT-03]

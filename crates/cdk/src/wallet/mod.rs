@@ -12,6 +12,9 @@ use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::ProofInfo;
 use getrandom::getrandom;
+pub use mint_connector::http_client::{
+    AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
+};
 use subscription::{ActiveSubscription, SubscriptionManager};
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::instrument;
@@ -65,13 +68,11 @@ pub mod util;
 pub use auth::{AuthMintConnector, AuthWallet};
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
-pub use melt::{MeltConfirmOptions, PreparedMelt};
-pub use mint_connector::http_client::{
-    AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
-};
+pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{
-    AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector,
+    AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MeltOptions,
+    MintConnector,
 };
 pub use multi_mint_wallet::{MultiMintReceiveOptions, MultiMintSendOptions, MultiMintWallet};
 #[cfg(feature = "nostr")]
@@ -123,8 +124,12 @@ pub enum WalletSubscription {
     Bolt11MintQuoteState(Vec<String>),
     /// Melt quote subscription
     Bolt11MeltQuoteState(Vec<String>),
+    /// Melt bolt12 quote subscription
+    Bolt12MeltQuoteState(Vec<String>),
     /// Mint bolt12 quote subscription
     Bolt12MintQuoteState(Vec<String>),
+    /// Custom melt quote subscription
+    MeltQuoteCustom(String, Vec<String>),
 }
 
 impl From<WalletSubscription> for WalletParams {
@@ -162,6 +167,16 @@ impl From<WalletSubscription> for WalletParams {
             WalletSubscription::Bolt12MintQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt12MintQuote,
+                id,
+            },
+            WalletSubscription::Bolt12MeltQuoteState(filters) => WalletParams {
+                filters,
+                kind: Kind::Bolt12MeltQuote,
+                id,
+            },
+            WalletSubscription::MeltQuoteCustom(method, filters) => WalletParams {
+                filters,
+                kind: Kind::Custom(format!("{}_melt_quote", method)),
                 id,
             },
         }

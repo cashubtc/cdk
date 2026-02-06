@@ -62,8 +62,6 @@ pub struct MeltRequested {
     pub final_proofs: Proofs,
     /// Pre-mint secrets for change
     pub premint_secrets: PreMintSecrets,
-    /// The persisted saga for optimistic locking (contains recovery data)
-    pub saga: WalletSaga,
 }
 
 /// Finalized state - melt completed successfully.
@@ -80,4 +78,16 @@ pub struct Finalized {
     pub payment_proof: Option<String>,
     /// Change proofs returned from the melt
     pub change: Option<Proofs>,
+}
+
+/// PaymentPending state - melt is asynchronous and pending at the mint.
+pub struct PaymentPending {
+    /// Unique operation identifier
+    pub operation_id: Uuid,
+    /// The melt quote
+    pub quote: MeltQuote,
+    /// The proofs used for payment
+    pub final_proofs: Proofs,
+    /// Pre-mint secrets for change
+    pub premint_secrets: PreMintSecrets,
 }

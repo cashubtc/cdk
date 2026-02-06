@@ -158,7 +158,7 @@ pub async fn rollback_melt_quote(
     }
 
     if let Some(quote) = quote_option {
-        pubsub.melt_quote_status(&*quote, None, None, MeltQuoteState::Unpaid);
+        pubsub.melt_quote_status(&quote, None, None, MeltQuoteState::Unpaid);
     }
 
     tracing::info!(
@@ -453,6 +453,8 @@ pub async fn finalize_melt_core(
     tx.update_melt_quote_state(quote, MeltQuoteState::Paid, payment_preimage.clone())
         .await?;
 
+    quote.state = MeltQuoteState::Paid;
+
     // Update payment lookup ID if changed
     if quote.request_lookup_id.as_ref() != Some(payment_lookup_id) {
         tracing::info!(
@@ -579,7 +581,7 @@ pub async fn finalize_melt_quote(
 
     // Publish quote status change
     pubsub.melt_quote_status(
-        quote,
+        &locked_quote,
         payment_preimage,
         change_sigs.clone(),
         MeltQuoteState::Paid,
