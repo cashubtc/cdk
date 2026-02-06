@@ -9,19 +9,22 @@ use cdk_common::database::WalletDatabase;
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::{
-    CheckStateResponse, CurrencyUnit, Id, KeysetResponse, MeltQuoteBolt11Response,
-    MeltQuoteCustomRequest, MeltQuoteCustomResponse, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest,
-    MintResponse, Proof, RestoreResponse, SwapRequest, SwapResponse,
+    CheckStateResponse, CurrencyUnit, Id, KeysetResponse, MeltQuoteCustomRequest,
+    MeltQuoteCustomResponse, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest, MintResponse, Proof,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{
     Amount, MeltQuoteBolt12Request, MeltQuoteState, MintQuoteBolt12Request,
-    MintQuoteBolt12Response, PaymentMethod, SecretKey, State,
+    MintQuoteBolt12Response, SecretKey, State,
 };
 
-use crate::nuts::{CheckStateRequest, MeltQuoteBolt11Request, MeltRequest, RestoreRequest};
+use crate::nuts::{
+    CheckStateRequest, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, PaymentMethod,
+    RestoreRequest,
+};
 use crate::wallet::{MintConnector, Wallet};
 use crate::Error;
 
@@ -250,14 +253,6 @@ impl MintConnector for MockMintConnector {
             .expect("MockMintConnector: get_melt_quote_status called without configured response")
     }
 
-    async fn post_melt(
-        &self,
-        _method: &PaymentMethod,
-        _request: MeltRequest<String>,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        unimplemented!()
-    }
-
     async fn post_swap(&self, _request: SwapRequest) -> Result<SwapResponse, Error> {
         self.post_swap_response
             .lock()
@@ -351,6 +346,15 @@ impl MintConnector for MockMintConnector {
         &self,
         _request: MeltQuoteCustomRequest,
     ) -> Result<MeltQuoteCustomResponse<String>, Error> {
+        unimplemented!()
+    }
+
+    async fn post_melt_with_options(
+        &self,
+        _method: &PaymentMethod,
+        _request: MeltRequest<String>,
+        _options: crate::wallet::MeltOptions,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         unimplemented!()
     }
 }
