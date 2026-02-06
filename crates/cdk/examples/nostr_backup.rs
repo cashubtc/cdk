@@ -24,7 +24,6 @@
 
 use std::sync::Arc;
 
-use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{BackupOptions, RestoreOptions, WalletRepository};
 use cdk_sqlite::wallet::memory;
 use rand::random;
@@ -42,9 +41,6 @@ async fn main() -> anyhow::Result<()> {
     // Generate a random seed for the wallet
     // In production, this would be derived from a BIP-39 mnemonic
     let seed: [u8; 64] = random();
-
-    // Currency unit for the wallet
-    let unit = CurrencyUnit::Sat;
 
     // Initialize the memory store for the first wallet
     let localstore = Arc::new(memory::empty().await?);

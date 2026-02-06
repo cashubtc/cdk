@@ -306,6 +306,7 @@ async fn main() -> Result<()> {
                 &wallet_repository,
                 sub_command_args,
                 &work_dir,
+                &currency_unit,
             )
             .await
         }

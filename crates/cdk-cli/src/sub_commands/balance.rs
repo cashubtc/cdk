@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
@@ -9,11 +11,24 @@ pub async fn balance(wallet_repository: &WalletRepository) -> Result<()> {
     // Show individual mint balances
     let mint_balances = mint_balances(wallet_repository).await?;
 
-    // Show total balance using the new unified interface
-    let total = wallet_repository.total_balance().await?;
     if !mint_balances.is_empty() {
+        // Aggregate totals per currency unit
+        let mut unit_totals: BTreeMap<CurrencyUnit, Amount> = BTreeMap::new();
+        for (_, unit, amount) in &mint_balances {
+            *unit_totals.entry(unit.clone()).or_insert(Amount::ZERO) += *amount;
+        }
+
         println!();
-        println!("Total balance across all wallets: {}", total);
+        if unit_totals.len() == 1 {
+            if let Some((unit, total)) = unit_totals.into_iter().next() {
+                println!("Total balance across all wallets: {} {}", total, unit);
+            }
+        } else {
+            println!("Total balance across all wallets:");
+            for (unit, total) in &unit_totals {
+                println!("  {} {}", total, unit);
+            }
+        }
     }
 
     Ok(())

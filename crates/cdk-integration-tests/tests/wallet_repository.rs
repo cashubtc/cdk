@@ -143,7 +143,7 @@ async fn test_wallet_repository_mint() {
             .unwrap();
     }
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    quote_status = wallet
+    let _ = wallet
         .refresh_mint_quote_status(&mint_quote.id)
         .await
         .unwrap();
@@ -608,7 +608,7 @@ async fn test_wallet_repository_check_all_mint_quotes() {
             .unwrap();
     }
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    quote_status = wallet
+    let _ = wallet
         .refresh_mint_quote_status(&mint_quote.id)
         .await
         .unwrap();

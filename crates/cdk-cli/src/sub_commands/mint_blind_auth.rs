@@ -25,6 +25,7 @@ pub async fn mint_blind_auth(
     wallet_repository: &WalletRepository,
     sub_command_args: &MintBlindAuthSubCommand,
     work_dir: &Path,
+    unit: &CurrencyUnit,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
 
@@ -35,9 +36,9 @@ pub async fn mint_blind_auth(
 
     wallet_repository.fetch_mint_info(&mint_url).await?;
 
-    // Get a wallet for this mint (use Sat as default unit for blind auth)
+    // Get a wallet for this mint
     let wallet = wallet_repository
-        .get_or_create_wallet(&mint_url, CurrencyUnit::Sat)
+        .get_or_create_wallet(&mint_url, unit.clone())
         .await?;
 
     // Try to get the token from the provided argument or from the stored file
