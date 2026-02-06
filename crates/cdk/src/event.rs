@@ -113,10 +113,11 @@ where
     fn get_topics(&self) -> Vec<Self::Topic> {
         match &self.0 {
             NotificationPayload::MeltQuoteBolt11Response(r) => {
-                // HACK: MeltQuoteBolt12Response is a type alias for MeltQuoteBolt11Response.
+                // TODO: MeltQuoteBolt12Response is a type alias for MeltQuoteBolt11Response.
                 // Since NotificationPayload uses untagged serde, all melt responses are
                 // deserialized as Bolt11. We broadcast to both topics to ensure Bolt12
-                // subscribers receive the event.
+                // subscribers receive the event. This workaround should be addressed by
+                // properly distinguishing the response types in the protocol.
                 vec![
                     NotificationId::MeltQuoteBolt11(r.quote.to_owned()),
                     NotificationId::MeltQuoteBolt12(r.quote.to_owned()),

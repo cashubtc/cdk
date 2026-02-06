@@ -144,10 +144,18 @@ impl<'a> PendingMelt<'a> {
 
                     match state {
                         MeltQuoteState::Paid => {
-                            // Mints **SHOULD** return change on the WS but it testing it seems nutshell may not.
-                            // So in the event there is no change in the WS we call the check
-                            // This does mean an extra request in the case there is truly no change but this is usually not the case
-                            // Nutshell 0.18.2 and below have this issue should be fixed in the next release
+                            // TODO: Remove this workaround once Nutshell 0.18.3+ is widely deployed
+                            //
+                            // Per NUT-05, mints SHOULD include change in WebSocket notifications when
+                            // available. However, Nutshell 0.18.2 and below have a bug where change
+                            // is omitted from WS notifications even when proofs were provided.
+                            //
+                            // Workaround: When WS shows Paid but has no change, we make an extra HTTP
+                            // request to get the full response with change. This adds latency and
+                            // unnecessary network traffic for the common case where change exists.
+                            //
+                            // Impact: One extra HTTP request per melt until Nutshell versions < 0.18.3
+                            // are no longer widely used.
                             let change = if change.is_none() {
                                 tracing::debug!("Received WS with no change checking with HTTP");
 
@@ -429,6 +437,8 @@ impl<'a> PreparedMelt<'a> {
     /// # Example
     ///
     /// ```rust,no_run
+    /// # async fn example(wallet: &cdk::wallet::Wallet) -> anyhow::Result<()> {
+    /// use std::collections::HashMap;
     /// use cdk::nuts::PaymentMethod;
     /// use cdk::wallet::MeltOutcome;
     ///
@@ -466,6 +476,8 @@ impl<'a> PreparedMelt<'a> {
     ///         //    wallet.finalize_pending_melts().await?
     ///     }
     /// }
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn confirm_prefer_async(self) -> Result<MeltOutcome<'a>, Error> {
         self.confirm_prefer_async_with_options(MeltConfirmOptions::default())
