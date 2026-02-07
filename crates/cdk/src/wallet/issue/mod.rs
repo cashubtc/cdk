@@ -366,4 +366,123 @@ impl Wallet {
 
         Ok(saga.into_proofs())
     }
+
+    /// Fetch a mint quote from the mint and store it locally
+    ///
+    /// This method contacts the mint to get the current state of a quote,
+    /// creates or updates the quote in local storage, and returns the stored quote.
+    ///
+    /// Works with all payment methods (Bolt11, Bolt12, and custom payment methods).
+    ///
+    /// # Arguments
+    /// * `quote_id` - The ID of the quote to fetch
+    /// * `payment_method` - The payment method for the quote. Required if the quote
+    ///   is not already stored locally. If the quote exists locally, the stored
+    ///   payment method will be used and this parameter is ignored.
+    ///
+    /// # Errors
+    /// Returns `Error::PaymentMethodRequired` if the quote is not found locally
+    /// and no payment method is provided.
+    #[instrument(skip(self, quote_id))]
+    pub async fn fetch_mint_quote(
+        &self,
+        quote_id: &str,
+        payment_method: Option<PaymentMethod>,
+    ) -> Result<MintQuote, Error> {
+        // Check if we already have this quote stored locally
+        let existing_quote = self.localstore.get_mint_quote(quote_id).await?;
+
+        // Determine the payment method to use
+        let method = match (&existing_quote, &payment_method) {
+            (Some(q), _) => q.payment_method.clone(),
+            (None, Some(m)) => m.clone(),
+            (None, None) => return Err(Error::PaymentMethodRequired),
+        };
+
+        // Fetch the quote status from the mint based on payment method
+        let quote = match &method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                let response = self.client.get_mint_quote_status(quote_id).await?;
+
+                match existing_quote {
+                    Some(mut existing) => {
+                        // Update the existing quote with new state
+                        existing.state = response.state;
+                        existing
+                    }
+                    None => {
+                        // Create a new quote from the response
+                        MintQuote::new(
+                            quote_id.to_string(),
+                            self.mint_url.clone(),
+                            method,
+                            response.amount,
+                            response.unit.unwrap_or(self.unit.clone()),
+                            response.request,
+                            response.expiry.unwrap_or(0),
+                            None,
+                        )
+                    }
+                }
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                let response = self.client.get_mint_quote_bolt12_status(quote_id).await?;
+
+                match existing_quote {
+                    Some(mut existing) => {
+                        // Update the existing quote with new state from bolt12 response
+                        existing.amount_paid = response.amount_paid;
+                        existing.amount_issued = response.amount_issued;
+                        existing
+                    }
+                    None => {
+                        // Create a new quote from the response
+                        MintQuote::new(
+                            quote_id.to_string(),
+                            self.mint_url.clone(),
+                            method,
+                            response.amount,
+                            response.unit,
+                            response.request,
+                            response.expiry.unwrap_or(0),
+                            None,
+                        )
+                    }
+                }
+            }
+            PaymentMethod::Custom(custom_method) => {
+                let response = self
+                    .client
+                    .get_mint_quote_custom_status(custom_method, quote_id)
+                    .await?;
+
+                match existing_quote {
+                    Some(mut existing) => {
+                        // Update the existing quote with new state
+                        existing.amount_paid = response.amount.unwrap_or_default();
+                        existing.amount_issued = response.amount.unwrap_or_default();
+                        existing
+                    }
+                    None => {
+                        // Create a new quote from the response
+                        MintQuote::new(
+                            quote_id.to_string(),
+                            self.mint_url.clone(),
+                            method,
+                            response.amount,
+                            response.unit.unwrap_or(self.unit.clone()),
+                            response.request,
+                            response.expiry.unwrap_or(0),
+                            None,
+                        )
+                    }
+                }
+            }
+        };
+
+        // Store the quote
+        self.localstore.add_mint_quote(quote.clone()).await?;
+
+        Ok(quote)
+    }
 }
