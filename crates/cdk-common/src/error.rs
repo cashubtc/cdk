@@ -1243,6 +1243,18 @@ impl From<ErrorResponse> for Error {
     }
 }
 
+#[cfg(feature = "http")]
+impl From<crate::HttpError> for Error {
+    fn from(err: crate::HttpError) -> Self {
+        match &err {
+            crate::HttpError::Status { status, message } => {
+                Self::HttpError(Some(*status), message.clone())
+            }
+            _ => Self::HttpError(None, err.to_string()),
+        }
+    }
+}
+
 /// Possible Error Codes
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum ErrorCode {

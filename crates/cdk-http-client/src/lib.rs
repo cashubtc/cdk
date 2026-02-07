@@ -1,7 +1,8 @@
 //! HTTP client abstraction for CDK
 //!
-//! This crate provides an HTTP client wrapper that abstracts the underlying HTTP library (reqwest).
-//! Using this crate allows other CDK crates to avoid direct dependencies on reqwest.
+//! This crate provides an HTTP client wrapper that abstracts the underlying HTTP library.
+//! Using this crate allows other CDK crates to avoid direct dependencies on a specific backend.
+//! Backend selection is feature-based: enable either `bitreq` (default) or `reqwest`.
 //!
 //! # Example
 //!
@@ -20,13 +21,31 @@
 //! }
 //! ```
 
+mod backends;
 mod client;
 mod error;
 mod request;
+mod request_builder_ext;
 mod response;
+mod transport;
 pub mod ws;
 
+#[cfg(all(feature = "bitreq", not(target_arch = "wasm32")))]
+pub use backends::BitreqRequestBuilder;
+#[cfg(all(feature = "reqwest", not(target_arch = "wasm32")))]
+pub use backends::ReqwestRequestBuilder;
+#[cfg(target_arch = "wasm32")]
+pub use backends::WasmRequestBuilder;
 pub use client::{fetch, HttpClient, HttpClientBuilder};
 pub use error::HttpError;
-pub use request::RequestBuilder;
+pub use request::{RequestBuilder, RequestBuilderExt};
 pub use response::{RawResponse, Response};
+#[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
+pub use transport::Async;
+#[cfg(all(feature = "bitreq", not(target_arch = "wasm32")))]
+pub use transport::BitreqTransport;
+#[cfg(all(feature = "reqwest", not(target_arch = "wasm32")))]
+pub use transport::ReqwestTransport;
+#[cfg(feature = "tor")]
+pub use transport::TorAsync;
+pub use transport::Transport;
