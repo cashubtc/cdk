@@ -12,7 +12,7 @@ pub struct RequestBuilder {
     #[cfg(target_arch = "wasm32")]
     inner: reqwest::RequestBuilder,
     #[cfg(not(target_arch = "wasm32"))]
-    inner: Option<bitreq::Request>,
+    inner: bitreq::Request,
     #[cfg(not(target_arch = "wasm32"))]
     error: Option<HttpError>,
 }
@@ -73,26 +73,27 @@ impl RequestBuilder {
     /// Create a new RequestBuilder from a bitreq::Request
     pub(crate) fn new(inner: bitreq::Request) -> Self {
         Self {
-            inner: Some(inner),
+            inner: inner,
             error: None,
         }
     }
 
     /// Add a header to the request
-    pub fn header(mut self, key: impl AsRef<str>, value: impl AsRef<str>) -> Self {
-        if let Some(req) = self.inner.take() {
-            self.inner = Some(req.with_header(key.as_ref(), value.as_ref()));
+    pub fn header(self, key: impl AsRef<str>, value: impl AsRef<str>) -> Self {
+        Self {
+            inner: self.inner.with_header(key.as_ref(), value.as_ref()),
+            error: None,
         }
-        self
     }
 
     /// Set the request body as JSON
     pub fn json<T: Serialize>(mut self, body: &T) -> Self {
-        if let Some(req) = self.inner.take() {
-            match req.with_json(body) {
-                Ok(req) => self.inner = Some(req),
-                Err(e) => self.error = Some(HttpError::from(e)),
+        match self.inner.clone().with_json(body) {
+            Ok(req) => {
+                self.inner = req;
+                self.error = None;
             }
+            Err(e) => self.error = Some(HttpError::from(e)),
         }
         self
     }
@@ -101,9 +102,7 @@ impl RequestBuilder {
     pub fn form<T: Serialize>(mut self, body: &T) -> Self {
         match serde_urlencoded::to_string(body) {
             Ok(form_str) => {
-                if let Some(req) = self.inner.take() {
-                    self.inner = Some(req.with_body(form_str.into_bytes()));
-                }
+                self.inner = self.inner.with_body(form_str.into_bytes());
             }
             Err(e) => self.error = Some(HttpError::Serialization(e.to_string())),
         }
@@ -111,28 +110,20 @@ impl RequestBuilder {
     }
 
     /// Send the request and return a raw response
-    pub async fn send(mut self) -> Response<RawResponse> {
+    pub async fn send(self) -> Response<RawResponse> {
         if let Some(err) = self.error {
             return Err(err);
         }
-        let req = self
-            .inner
-            .take()
-            .ok_or_else(|| HttpError::Other("Request already consumed".to_string()))?;
-        let response = req.send_async().await.map_err(HttpError::from)?;
+        let response = self.inner.send_async().await.map_err(HttpError::from)?;
         Ok(RawResponse::new(response))
     }
 
     /// Send the request and deserialize the response as JSON
-    pub async fn send_json<R: DeserializeOwned>(mut self) -> Response<R> {
+    pub async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
         if let Some(err) = self.error {
             return Err(err);
         }
-        let req = self
-            .inner
-            .take()
-            .ok_or_else(|| HttpError::Other("Request already consumed".to_string()))?;
-        let response = req.send_async().await.map_err(HttpError::from)?;
+        let response = self.inner.send_async().await.map_err(HttpError::from)?;
         let status = response.status_code;
 
         if !(200..300).contains(&status) {
