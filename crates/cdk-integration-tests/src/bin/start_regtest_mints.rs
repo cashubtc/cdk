@@ -17,11 +17,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
+use bip39::Mnemonic;
 use cashu::Amount;
 use cdk_integration_tests::cli::CommonArgs;
 use cdk_integration_tests::init_regtest::start_regtest_end;
 use cdk_integration_tests::shared;
-use bip39::Mnemonic;
 use cdk_ldk_node::{CdkLdkNode, CdkLdkNodeBuilder};
 use cdk_mintd::config::LoggingConfig;
 use clap::Parser;
