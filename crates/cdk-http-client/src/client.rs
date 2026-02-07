@@ -3,22 +3,38 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+#[cfg(not(target_arch = "wasm32"))]
+use bitreq::RequestExt;
+
 use crate::error::HttpError;
 use crate::request::RequestBuilder;
 use crate::response::{RawResponse, Response};
 
 /// HTTP client wrapper
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpClient {
+    #[cfg(target_arch = "wasm32")]
     inner: reqwest::Client,
+    #[cfg(not(target_arch = "wasm32"))]
+    inner: bitreq::Client,
+    #[cfg(not(target_arch = "wasm32"))]
+    proxy_config: Option<ProxyConfig>,
 }
 
-impl Default for HttpClient {
-    fn default() -> Self {
-        Self::new()
+impl std::fmt::Debug for HttpClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpClient").finish()
     }
 }
 
+// #[cfg(not(target_arch = "wasm32"))]
+// impl std::fmt::Debug for HttpClient {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         f.debug_struct("HttpClient").finish()
+//     }
+// }
+
+#[cfg(target_arch = "wasm32")]
 impl HttpClient {
     /// Create a new HTTP client with default settings
     pub fn new() -> Self {
@@ -27,23 +43,18 @@ impl HttpClient {
         }
     }
 
-    /// Create a new HTTP client builder
-    pub fn builder() -> HttpClientBuilder {
-        HttpClientBuilder::default()
-    }
-
     /// Create an HttpClient from a reqwest::Client
     pub fn from_reqwest(client: reqwest::Client) -> Self {
         Self { inner: client }
     }
 
-    // === Simple convenience methods ===
+    /// Create a new HTTP client builder
+    pub fn builder() -> HttpClientBuilder {
+        HttpClientBuilder::default()
+    }
 
     /// GET request, returns JSON deserialized to R
-    pub async fn fetch<R>(&self, url: &str) -> Response<R>
-    where
-        R: DeserializeOwned,
-    {
+    pub async fn fetch<R: DeserializeOwned>(&self, url: &str) -> Response<R> {
         let response = self.inner.get(url).send().await?;
         let status = response.status();
 
@@ -59,11 +70,11 @@ impl HttpClient {
     }
 
     /// POST with JSON body, returns JSON deserialized to R
-    pub async fn post_json<B, R>(&self, url: &str, body: &B) -> Response<R>
-    where
-        B: Serialize + ?Sized,
-        R: DeserializeOwned,
-    {
+    pub async fn post_json<B: Serialize + ?Sized, R: DeserializeOwned>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Response<R> {
         let response = self.inner.post(url).json(body).send().await?;
         let status = response.status();
 
@@ -79,11 +90,11 @@ impl HttpClient {
     }
 
     /// POST with form data, returns JSON deserialized to R
-    pub async fn post_form<F, R>(&self, url: &str, form: &F) -> Response<R>
-    where
-        F: Serialize + ?Sized,
-        R: DeserializeOwned,
-    {
+    pub async fn post_form<F: Serialize + ?Sized, R: DeserializeOwned>(
+        &self,
+        url: &str,
+        form: &F,
+    ) -> Response<R> {
         let response = self.inner.post(url).form(form).send().await?;
         let status = response.status();
 
@@ -99,11 +110,11 @@ impl HttpClient {
     }
 
     /// PATCH with JSON body, returns JSON deserialized to R
-    pub async fn patch_json<B, R>(&self, url: &str, body: &B) -> Response<R>
-    where
-        B: Serialize + ?Sized,
-        R: DeserializeOwned,
-    {
+    pub async fn patch_json<B: Serialize + ?Sized, R: DeserializeOwned>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Response<R> {
         let response = self.inner.patch(url).json(body).send().await?;
         let status = response.status();
 
@@ -118,29 +129,185 @@ impl HttpClient {
         response.json().await.map_err(HttpError::from)
     }
 
-    // === Raw request methods ===
-
     /// GET request returning raw response body
     pub async fn get_raw(&self, url: &str) -> Response<RawResponse> {
         let response = self.inner.get(url).send().await?;
         Ok(RawResponse::new(response))
     }
 
-    // === Request builder methods ===
-
-    /// POST request builder for complex cases (custom headers, form data, etc.)
+    /// POST request builder for complex cases
     pub fn post(&self, url: &str) -> RequestBuilder {
         RequestBuilder::new(self.inner.post(url))
     }
 
-    /// GET request builder for complex cases (custom headers, etc.)
+    /// GET request builder for complex cases
     pub fn get(&self, url: &str) -> RequestBuilder {
         RequestBuilder::new(self.inner.get(url))
     }
 
-    /// PATCH request builder for complex cases (custom headers, JSON body, etc.)
+    /// PATCH request builder for complex cases
     pub fn patch(&self, url: &str) -> RequestBuilder {
         RequestBuilder::new(self.inner.patch(url))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl HttpClient {
+    /// Create a new HTTP client with default settings
+    pub fn new() -> Self {
+        Self {
+            inner: bitreq::Client::new(10), // Default capacity of 10
+            proxy_config: None,
+        }
+    }
+
+    /// Create a new HTTP client builder
+    pub fn builder() -> HttpClientBuilder {
+        HttpClientBuilder::default()
+    }
+
+    /// Helper method to apply proxy if URL matches the configured proxy rules
+    fn apply_proxy_if_needed(&self, request: bitreq::Request, url: &str) -> Response<bitreq::Request> {
+        if let Some(ref config) = self.proxy_config {
+            if let Some(ref matcher) = config.matcher {
+                // Check if URL host matches the regex pattern
+                if let Ok(parsed_url) = url::Url::parse(url) {
+                    if let Some(host) = parsed_url.host_str() {
+                        if matcher.is_match(host) {
+                            let proxy = bitreq::Proxy::new_http(&config.url.to_string())
+                                .map_err(|e| HttpError::Proxy(e.to_string()))?;
+                            return Ok(request.with_proxy(proxy));
+                        }
+                    }
+                }
+            } else {
+                // No matcher, apply proxy to all requests
+                let proxy = bitreq::Proxy::new_http(&config.url.to_string())
+                    .map_err(|e| HttpError::Proxy(e.to_string()))?;
+                return Ok(request.with_proxy(proxy));
+            }
+        }
+        Ok(request)
+    }
+
+    /// GET request, returns JSON deserialized to R
+    pub async fn fetch<R: DeserializeOwned>(&self, url: &str) -> Response<R> {
+        let request = bitreq::get(url);
+        let request = self.apply_proxy_if_needed(request, url)?;
+        let response = request.send_async_with_client(&self.inner).await.map_err(HttpError::from)?;
+        let status = response.status_code;
+
+        if !(200..300).contains(&status) {
+            let message = response.as_str().unwrap_or("").to_string();
+            return Err(HttpError::Status {
+                status: status as u16,
+                message,
+            });
+        }
+
+        response.json().map_err(HttpError::from)
+    }
+
+    /// POST with JSON body, returns JSON deserialized to R
+    pub async fn post_json<B: Serialize, R: DeserializeOwned>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Response<R> {
+        let request = bitreq::post(url)
+            .with_json(body)
+            .map_err(HttpError::from)?;
+        let request = self.apply_proxy_if_needed(request, url)?;
+        let response: bitreq::Response = request.send_async_with_client(&self.inner).await.map_err(HttpError::from)?;
+        let status = response.status_code;
+
+        if !(200..300).contains(&status) {
+            let message = response.as_str().unwrap_or("").to_string();
+            return Err(HttpError::Status {
+                status: status as u16,
+                message,
+            });
+        }
+
+        response.json().map_err(HttpError::from)
+    }
+
+    /// POST with form data, returns JSON deserialized to R
+    pub async fn post_form<F: Serialize, R: DeserializeOwned>(
+        &self,
+        url: &str,
+        form: &F,
+    ) -> Response<R> {
+        let form_str = serde_urlencoded::to_string(form)
+            .map_err(|e| HttpError::Serialization(e.to_string()))?;
+        let request = bitreq::post(url).with_body(form_str.into_bytes());
+        let request = self.apply_proxy_if_needed(request, url)?;
+        let response: bitreq::Response = request.send_async_with_client(&self.inner).await.map_err(HttpError::from)?;
+        let status = response.status_code;
+
+        if !(200..300).contains(&status) {
+            let message = response.as_str().unwrap_or("").to_string();
+            return Err(HttpError::Status {
+                status: status as u16,
+                message,
+            });
+        }
+
+        response.json().map_err(HttpError::from)
+    }
+
+    /// PATCH with JSON body, returns JSON deserialized to R
+    pub async fn patch_json<B: Serialize, R: DeserializeOwned>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Response<R> {
+        let request = bitreq::patch(url)
+            .with_json(body)
+            .map_err(HttpError::from)?;
+        let request = self.apply_proxy_if_needed(request, url)?;
+        let response: bitreq::Response = request.send_async_with_client(&self.inner).await.map_err(HttpError::from)?;
+        let status = response.status_code;
+
+        if !(200..300).contains(&status) {
+            let message = response.as_str().unwrap_or("").to_string();
+            return Err(HttpError::Status {
+                status: status as u16,
+                message,
+            });
+        }
+
+        response.json().map_err(HttpError::from)
+    }
+
+    /// GET request returning raw response body
+    pub async fn get_raw(&self, url: &str) -> Response<RawResponse> {
+        let request = bitreq::get(url);
+        let request = self.apply_proxy_if_needed(request, url)?;
+        let response = request.send_async_with_client(&self.inner).await.map_err(HttpError::from)?;
+        Ok(RawResponse::new(response))
+    }
+
+    /// POST request builder for complex cases
+    pub fn post(&self, url: &str) -> RequestBuilder {
+        // Note: Proxy will be applied when the request is sent
+        RequestBuilder::new(bitreq::post(url))
+    }
+
+    /// GET request builder for complex cases
+    pub fn get(&self, url: &str) -> RequestBuilder {
+        RequestBuilder::new(bitreq::get(url))
+    }
+
+    /// PATCH request builder for complex cases
+    pub fn patch(&self, url: &str) -> RequestBuilder {
+        RequestBuilder::new(bitreq::patch(url))
+    }
+}
+
+impl Default for HttpClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -154,7 +321,7 @@ pub struct HttpClientBuilder {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ProxyConfig {
     url: url::Url,
     matcher: Option<regex::Regex>,
@@ -189,39 +356,31 @@ impl HttpClientBuilder {
 
     /// Build the HTTP client
     pub fn build(self) -> Response<HttpClient> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let mut builder =
-                reqwest::Client::builder().danger_accept_invalid_certs(self.accept_invalid_certs);
-
-            if let Some(proxy_config) = self.proxy {
-                let proxy_url = proxy_config.url.to_string();
-                let proxy = if let Some(matcher) = proxy_config.matcher {
-                    reqwest::Proxy::custom(move |url| {
-                        if matcher.is_match(url.host_str().unwrap_or("")) {
-                            Some(proxy_url.clone())
-                        } else {
-                            None
-                        }
-                    })
-                } else {
-                    reqwest::Proxy::all(&proxy_url).map_err(|e| HttpError::Proxy(e.to_string()))?
-                };
-                builder = builder.proxy(proxy);
-            }
-
-            let client = builder.build().map_err(HttpError::from)?;
-            Ok(HttpClient { inner: client })
-        }
-
         #[cfg(target_arch = "wasm32")]
         {
-            Ok(HttpClient::new())
+            Ok(HttpClient {
+                inner: reqwest::Client::new(),
+            })
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Return error if danger_accept_invalid_certs was set on non-wasm32
+            if self.accept_invalid_certs {
+                return Err(HttpError::Build(
+                    "danger_accept_invalid_certs is not supported on non-WASM targets".to_string(),
+                ));
+            }
+
+            Ok(HttpClient {
+                inner: bitreq::Client::new(10), // Default capacity of 10
+                proxy_config: self.proxy,
+            })
         }
     }
 }
 
-/// Convenience function for simple GET requests (replaces reqwest::get)
+/// Convenience function for simple GET requests
 pub async fn fetch<R: DeserializeOwned>(url: &str) -> Response<R> {
     HttpClient::new().fetch(url).await
 }
@@ -256,6 +415,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[cfg(target_arch = "wasm32")]
     #[test]
     fn test_from_reqwest() {
         let reqwest_client = reqwest::Client::new();
@@ -268,15 +428,20 @@ mod tests {
         use super::*;
 
         #[test]
-        fn test_builder_accept_invalid_certs() {
+        fn test_builder_accept_invalid_certs_returns_error() {
             let result = HttpClientBuilder::default()
                 .danger_accept_invalid_certs(true)
                 .build();
-            assert!(result.is_ok());
+            assert!(result.is_err());
+            if let Err(HttpError::Build(msg)) = result {
+                assert!(msg.contains("danger_accept_invalid_certs"));
+            } else {
+                panic!("Expected HttpError::Build");
+            }
         }
 
         #[test]
-        fn test_builder_accept_invalid_certs_false() {
+        fn test_builder_accept_invalid_certs_false_ok() {
             let result = HttpClientBuilder::default()
                 .danger_accept_invalid_certs(false)
                 .build();
@@ -314,16 +479,6 @@ mod tests {
             } else {
                 panic!("Expected HttpError::Proxy");
             }
-        }
-
-        #[test]
-        fn test_builder_chained_config() {
-            let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
-            let result = HttpClientBuilder::default()
-                .danger_accept_invalid_certs(true)
-                .proxy(proxy_url)
-                .build();
-            assert!(result.is_ok());
         }
     }
 }

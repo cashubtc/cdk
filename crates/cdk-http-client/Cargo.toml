@@ -17,7 +17,8 @@ thiserror.workspace = true
 url.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest = { workspace = true }
+bitreq = { version = "0.3.1", features = ["async", "async-https-rustls", "json-using-serde", "proxy"] }
+serde_urlencoded = "0.7"
 regex = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
