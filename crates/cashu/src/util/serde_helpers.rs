@@ -26,9 +26,8 @@ where
 mod tests {
     use serde::Deserialize;
 
-    use crate::PublicKey;
-
     use super::*;
+    use crate::PublicKey;
 
     #[derive(Debug, Deserialize, PartialEq)]
     struct TestStruct {
