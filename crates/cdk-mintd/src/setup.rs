@@ -7,7 +7,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::bail;
 use async_trait::async_trait;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
@@ -91,6 +90,8 @@ impl LnBackendSetup for config::LNbits {
         _work_dir: &Path,
         _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_lnbits::LNbits> {
+        use anyhow::bail;
+
         // Validate required connection fields
         if self.admin_api_key.is_empty() {
             bail!("LNbits admin_api_key must be set via config or CDK_MINTD_LNBITS_ADMIN_API_KEY env var");
@@ -138,6 +139,7 @@ impl LnBackendSetup for config::Lnd {
         _work_dir: &Path,
         kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_lnd::Lnd> {
+        use anyhow::bail;
         // Validate required connection fields
         if self.address.is_empty() {
             bail!("LND address must be set via config or CDK_MINTD_LND_ADDRESS env var");
@@ -240,6 +242,7 @@ impl LnBackendSetup for config::LdkNode {
     ) -> anyhow::Result<cdk_ldk_node::CdkLdkNode> {
         use std::net::SocketAddr;
 
+        use anyhow::bail;
         use bip39::Mnemonic;
         use bitcoin::Network;
 

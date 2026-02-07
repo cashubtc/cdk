@@ -160,35 +160,16 @@ impl CdkLdkNodeBuilder {
     }
 
     /// Builds the [`CdkLdkNode`] instance
-    pub fn build(self) -> Result<CdkLdkNode, Error> {
-        CdkLdkNode::new(self)
-    }
-}
-
-impl CdkLdkNode {
-    /// Create a new CDK LDK Node instance
-    ///
-    /// # Arguments
-    /// * `network` - Bitcoin network (mainnet, testnet, regtest, signet)
-    /// * `chain_source` - Source of blockchain data (Esplora or Bitcoin RPC)
-    /// * `gossip_source` - Source of Lightning network gossip data
-    /// * `storage_dir_path` - Directory path for node data storage
-    /// * `fee_reserve` - Fee reserve configuration for payments
-    /// * `listening_address` - Socket addresses for peer connections
-    /// * `runtime` - Optional Tokio runtime to use for starting the node
-    ///
-    /// # Returns
-    /// A new `CdkLdkNode` instance ready to be started
     ///
     /// # Errors
     /// Returns an error if the LDK node builder fails to create the node
-    pub fn new(builder: CdkLdkNodeBuilder) -> Result<Self, Error> {
+    pub fn build(self) -> Result<CdkLdkNode, Error> {
         let mut ldk = Builder::new();
-        ldk.set_network(builder.network);
-        tracing::info!("Storage dir of node is {}", builder.storage_dir_path);
-        ldk.set_storage_dir_path(builder.storage_dir_path);
+        ldk.set_network(self.network);
+        tracing::info!("Storage dir of node is {}", self.storage_dir_path);
+        ldk.set_storage_dir_path(self.storage_dir_path);
 
-        match builder.chain_source {
+        match self.chain_source {
             ChainSource::Esplora(esplora_url) => {
                 ldk.set_chain_source_esplora(esplora_url, None);
             }
@@ -202,7 +183,7 @@ impl CdkLdkNode {
             }
         }
 
-        match builder.gossip_source {
+        match self.gossip_source {
             GossipSource::P2P => {
                 ldk.set_gossip_source_p2p();
             }
@@ -211,20 +192,20 @@ impl CdkLdkNode {
             }
         }
 
-        ldk.set_listening_addresses(builder.listening_addresses)?;
-        if builder.log_dir_path.is_some() {
-            ldk.set_filesystem_logger(builder.log_dir_path, Some(LogLevel::Info));
+        ldk.set_listening_addresses(self.listening_addresses)?;
+        if self.log_dir_path.is_some() {
+            ldk.set_filesystem_logger(self.log_dir_path, Some(LogLevel::Info));
         } else {
             ldk.set_custom_logger(Arc::new(StdoutLogWriter));
         }
 
         ldk.set_node_alias("cdk-ldk-node".to_string())?;
         // set the seed as bip39 entropy mnemonic
-        if let Some(seed) = builder.seed {
+        if let Some(seed) = self.seed {
             ldk.set_entropy_bip39_mnemonic(seed, None);
         }
         // set the announcement addresses
-        if let Some(announcement_addresses) = builder.announcement_addresses {
+        if let Some(announcement_addresses) = self.announcement_addresses {
             ldk.set_announcement_addresses(announcement_addresses)?;
         }
 
@@ -241,12 +222,12 @@ impl CdkLdkNode {
             "Created node {} with address {:?} on network {}",
             id,
             adr,
-            builder.network
+            self.network
         );
 
-        Ok(Self {
+        Ok(CdkLdkNode {
             inner: node.into(),
-            fee_reserve: builder.fee_reserve,
+            fee_reserve: self.fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             sender,
@@ -255,7 +236,9 @@ impl CdkLdkNode {
             web_addr: None,
         })
     }
+}
 
+impl CdkLdkNode {
     /// Set the web server address for the LDK node management interface
     ///
     /// # Arguments
