@@ -33,6 +33,7 @@ pub enum HttpError {
     Other(String),
 }
 
+#[cfg(target_arch = "wasm32")]
 impl From<reqwest::Error> for HttpError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
@@ -45,12 +46,35 @@ impl From<reqwest::Error> for HttpError {
                 message: err.to_string(),
             }
         } else {
-            // is_connect() is not available on wasm32
-            #[cfg(not(target_arch = "wasm32"))]
-            if err.is_connect() {
-                return HttpError::Connection(err.to_string());
-            }
             HttpError::Other(err.to_string())
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<bitreq::Error> for HttpError {
+    fn from(err: bitreq::Error) -> Self {
+        use bitreq::Error;
+        use std::io;
+
+        match err {
+            Error::InvalidUtf8InBody(_) => HttpError::Serialization(err.to_string()),
+            Error::InvalidUtf8InResponse => HttpError::Serialization(err.to_string()),
+            Error::IoError(io_err) => {
+                if io_err.kind() == io::ErrorKind::TimedOut {
+                    HttpError::Timeout
+                } else if io_err.kind() == io::ErrorKind::ConnectionRefused
+                    || io_err.kind() == io::ErrorKind::ConnectionReset
+                    || io_err.kind() == io::ErrorKind::ConnectionAborted
+                    || io_err.kind() == io::ErrorKind::NotConnected
+                {
+                    HttpError::Connection(io_err.to_string())
+                } else {
+                    HttpError::Other(io_err.to_string())
+                }
+            }
+            Error::AddressNotFound => HttpError::Connection(err.to_string()),
+            _ => HttpError::Other(err.to_string()),
         }
     }
 }

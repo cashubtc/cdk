@@ -963,6 +963,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitreq"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bf88316bfce42d7db313826acfa4325857c085e26f163c3e8c1cfb38fef4007"
+dependencies = [
+ "base64 0.22.1",
+ "rustls 0.21.12",
+ "rustls-webpki 0.101.7",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls 0.24.1",
+ "webpki-roots 0.25.4",
+]
+
+[[package]]
 name = "bitvec"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1387,11 +1403,13 @@ dependencies = [
 name = "cdk-http-client"
 version = "0.15.1"
 dependencies = [
+ "bitreq",
  "mockito",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "thiserror 2.0.18",
  "tokio",
  "url",
