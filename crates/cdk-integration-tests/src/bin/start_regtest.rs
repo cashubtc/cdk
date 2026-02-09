@@ -9,7 +9,7 @@ use anyhow::Result;
 use cashu::Amount;
 use cdk_integration_tests::cli::{init_logging, CommonArgs};
 use cdk_integration_tests::init_regtest::start_regtest_end;
-use cdk_ldk_node::CdkLdkNode;
+use cdk_ldk_node::CdkLdkNodeBuilder;
 use clap::Parser;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use tokio::signal;
@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
     let shutdown_clone_two = Arc::clone(&shutdown_regtest);
 
     let ldk_work_dir = temp_dir.join("ldk_mint");
-    let cdk_ldk = CdkLdkNode::new(
+    let node_builder = CdkLdkNodeBuilder::new(
         bitcoin::Network::Regtest,
         cdk_ldk_node::ChainSource::BitcoinRpc(cdk_ldk_node::BitcoinRpcConfig {
             host: "127.0.0.1".to_string(),
@@ -69,7 +69,8 @@ async fn main() -> Result<()> {
             addr: [127, 0, 0, 1],
             port: 8092,
         }],
-    )?;
+    );
+    let cdk_ldk = node_builder.build()?;
 
     let inner_node = cdk_ldk.node();
 

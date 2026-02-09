@@ -290,10 +290,14 @@ pub struct LdkNode {
     pub bitcoind_rpc_password: Option<String>,
     /// Storage directory path
     pub storage_dir_path: Option<String>,
+    /// Log directory path (logging stdout if omitted)
+    pub log_dir_path: Option<String>,
     /// LDK node listening host
     pub ldk_node_host: Option<String>,
     /// LDK node listening port
     pub ldk_node_port: Option<u16>,
+    /// LDK node announcement addresses
+    pub ldk_node_announce_addresses: Option<Vec<String>>,
     /// Gossip source type (p2p or rgs)
     pub gossip_source_type: Option<String>,
     /// Rapid Gossip Sync URL (when gossip_source_type = "rgs")
@@ -304,6 +308,9 @@ pub struct LdkNode {
     /// Webserver port
     #[serde(default = "default_webserver_port")]
     pub webserver_port: Option<u16>,
+    /// LDK node mnemonic
+    /// If not set, LDK node will use its default seed storage mechanism
+    pub ldk_node_mnemonic: Option<String>,
 }
 
 #[cfg(feature = "ldk-node")]
@@ -318,14 +325,17 @@ impl Default for LdkNode {
             bitcoind_rpc_host: None,
             bitcoind_rpc_port: None,
             bitcoind_rpc_user: None,
+            ldk_node_announce_addresses: None,
             bitcoind_rpc_password: None,
             storage_dir_path: None,
             ldk_node_host: None,
+            log_dir_path: None,
             ldk_node_port: None,
             gossip_source_type: None,
             rgs_url: None,
             webserver_host: default_webserver_host(),
             webserver_port: default_webserver_port(),
+            ldk_node_mnemonic: None,
         }
     }
 }

@@ -6,13 +6,12 @@ use std::str::FromStr;
 use lightning_invoice::Bolt11Invoice;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-
-use crate::util::serde_helpers::deserialize_empty_string_as_none;
 use thiserror::Error;
 
 use super::{BlindSignature, CurrencyUnit, MeltQuoteState, Mpp, PublicKey};
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
+use crate::util::serde_helpers::deserialize_empty_string_as_none;
 use crate::Amount;
 
 /// NUT023 Error
