@@ -26,7 +26,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 bitcoin.workspace = true
 cashu.workspace = true
-cdk-common = { workspace = true, features = ["mint"] }
+cdk-common = { workspace = true, features = ["mint", "grpc"] }
 cdk-cln = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
