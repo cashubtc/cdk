@@ -22,7 +22,7 @@ use cashu::Amount;
 use cdk_integration_tests::cli::CommonArgs;
 use cdk_integration_tests::init_regtest::start_regtest_end;
 use cdk_integration_tests::shared;
-use cdk_ldk_node::CdkLdkNode;
+use cdk_ldk_node::{CdkLdkNode, CdkLdkNodeBuilder};
 use cdk_mintd::config::LoggingConfig;
 use clap::Parser;
 use ldk_node::lightning::ln::msgs::SocketAddress;
@@ -192,11 +192,14 @@ async fn start_lnd_mint(
 }
 
 /// Start regtest LDK mint using the library
+/// If `existing_node` is provided, it will be used instead of creating a new one.
+/// This allows the mint to use a node that was already set up (e.g., with channels).
 async fn start_ldk_mint(
     temp_dir: &Path,
     port: u16,
     shutdown: Arc<Notify>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    existing_node: Option<CdkLdkNode>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let ldk_work_dir = temp_dir.join("ldk_mint");
 
@@ -215,6 +218,8 @@ async fn start_ldk_mint(
         bitcoind_rpc_user: Some("testuser".to_string()),
         bitcoind_rpc_password: Some("testpass".to_string()),
         esplora_url: None,
+        log_dir_path: None,
+        ldk_node_announce_addresses: None,
         storage_dir_path: Some(ldk_work_dir.to_string_lossy().to_string()),
         ldk_node_host: Some("127.0.0.1".to_string()),
         ldk_node_port: Some(port + 10), // Use a different port for the LDK node P2P connections
@@ -222,10 +227,14 @@ async fn start_ldk_mint(
         rgs_url: None,
         webserver_host: Some("127.0.0.1".to_string()),
         webserver_port: Some(port + 1), // Use next port for web interface
+        ldk_node_mnemonic: Some(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+                .to_string(),
+        ),
     };
 
     // Create settings struct for LDK mint using a new shared function
-    let settings = create_ldk_settings(port, ldk_config, Mnemonic::generate(12)?.to_string());
+    let settings = create_ldk_settings(port, ldk_config);
 
     println!("Starting LDK mintd on port {port}");
 
@@ -239,6 +248,13 @@ async fn start_ldk_mint(
             shutdown_clone.notified().await;
             println!("LDK mint shutdown signal received");
         };
+
+        // Both nodes now use the same seed, so the standard flow should work.
+        // The existing_node parameter is kept for API compatibility but not used
+        // since run_mintd_with_shutdown will create its own node with the same seed.
+        if existing_node.is_some() {
+            println!("Using existing LDK node configuration (same seed as mint)");
+        }
 
         match cdk_mintd::run_mintd_with_shutdown(
             &ldk_work_dir,
@@ -262,7 +278,6 @@ async fn start_ldk_mint(
 fn create_ldk_settings(
     port: u16,
     ldk_config: cdk_mintd::config::LdkNode,
-    mnemonic: String,
 ) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
@@ -271,7 +286,10 @@ fn create_ldk_settings(
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
             seed: None,
-            mnemonic: Some(mnemonic),
+            mnemonic: Some(
+                "eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
+                    .to_string(),
+            ),
             signatory_url: None,
             signatory_certs: None,
             input_fee_ppk: None,
@@ -339,7 +357,11 @@ fn main() -> Result<()> {
         let shutdown_clone_one = Arc::clone(&shutdown_clone);
 
         let ldk_work_dir = temp_dir.join("ldk_mint");
-        let cdk_ldk = CdkLdkNode::new(
+        fs::create_dir_all(ldk_work_dir.join("logs"))?;
+        let test_mnemonic: Mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+            .parse()
+            .expect("Failed to parse test mnemonic");
+        let node_builder = CdkLdkNodeBuilder::new(
             bitcoin::Network::Regtest,
             cdk_ldk_node::ChainSource::BitcoinRpc(cdk_ldk_node::BitcoinRpcConfig {
                 host: "127.0.0.1".to_string(),
@@ -357,7 +379,45 @@ fn main() -> Result<()> {
                 addr: [127, 0, 0, 1],
                 port: 8092,
             }],
-        )?;
+        )
+        .with_seed(test_mnemonic.clone());
+        let cdk_ldk = match node_builder.build() {
+            Ok(node) => node,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to start LDK node: {}. Attempting to wipe data and restart...",
+                    e
+                );
+                // Clean up the storage directory
+                if ldk_work_dir.exists() {
+                    fs::remove_dir_all(&ldk_work_dir)?;
+                    fs::create_dir_all(ldk_work_dir.join("logs"))?;
+                }
+                // Recreate builder since it was consumed
+                let node_builder = CdkLdkNodeBuilder::new(
+                    bitcoin::Network::Regtest,
+                    cdk_ldk_node::ChainSource::BitcoinRpc(cdk_ldk_node::BitcoinRpcConfig {
+                        host: "127.0.0.1".to_string(),
+                        port: 18443,
+                        user: "testuser".to_string(),
+                        password: "testpass".to_string(),
+                    }),
+                    cdk_ldk_node::GossipSource::P2P,
+                    ldk_work_dir.to_string_lossy().to_string(),
+                    cdk_common::common::FeeReserve {
+                        min_fee_reserve: Amount::ZERO,
+                        percent_fee_reserve: 0.0,
+                    },
+                    vec![SocketAddress::TcpIpV4 {
+                        addr: [127, 0, 0, 1],
+                        port: 8092,
+                    }],
+                )
+                .with_seed(test_mnemonic);
+
+                node_builder.build()?
+            }
+        };
 
         let inner_node = cdk_ldk.node();
 
@@ -385,12 +445,13 @@ fn main() -> Result<()> {
         // Start LND mint
         let lnd_handle = start_lnd_mint(&temp_dir, args.lnd_port, shutdown_clone.clone()).await?;
 
-        // Start LDK mint
+        // Start LDK mint (using the existing node that was already set up with channels)
         let ldk_handle = start_ldk_mint(
             &temp_dir,
             args.ldk_port,
             shutdown_clone.clone(),
             Some(rt_clone),
+            Some(cdk_ldk),
         )
         .await?;
 

@@ -439,6 +439,7 @@ impl<'a> PreparedMelt<'a> {
     /// ```rust,no_run
     /// # async fn example(wallet: &cdk::wallet::Wallet) -> anyhow::Result<()> {
     /// use std::collections::HashMap;
+    ///
     /// use cdk::nuts::PaymentMethod;
     /// use cdk::wallet::MeltOutcome;
     ///

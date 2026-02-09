@@ -127,11 +127,20 @@ ln_backend = "fakewallet"
 # bitcoin_network = "signet"  # mainnet, testnet, signet, regtest
 # chain_source_type = "esplora"  # esplora, bitcoinrpc  
 # 
+# # IMPORTANT: LDK Node Seed Configuration
+# # For NEW nodes: ldk_node_mnemonic MUST be set. This is the BIP39 mnemonic used to derive
+# # the LDK node's keys. Keep this secure and backed up!
+# # For EXISTING nodes: If omitted, the node will use its stored seed from the storage directory.
+# # This maintains backward compatibility with nodes created before this configuration was added.
+# ldk_node_mnemonic = "your twelve or twenty-four word mnemonic phrase here"
+# 
 # # Mutinynet configuration (recommended for testing)
 # esplora_url = "https://mutinynet.com/api"
 # gossip_source_type = "rgs"  # Use RGS for better performance
 # rgs_url = "https://rgs.mutinynet.com/snapshot/0"
 # storage_dir_path = "~/.cdk-ldk-node/mutinynet"
+# log_dir_path = ".cdk-ldk-node/ldk-node/ldk_node.log"
+
 # 
 # # Testnet configuration
 # # bitcoin_network = "testnet"
@@ -154,6 +163,7 @@ ln_backend = "fakewallet"
 # # Node configuration
 # ldk_node_host = "127.0.0.1"
 # ldk_node_port = 8090
+
 # 
 # # Gossip source configuration  
 # gossip_source_type = "p2p"  # p2p (direct peer-to-peer) or rgs (rapid gossip sync)

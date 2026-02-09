@@ -1445,6 +1445,7 @@ version = "0.14.0"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
+ "bip39",
  "cdk-common",
  "futures",
  "ldk-node",
