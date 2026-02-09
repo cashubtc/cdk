@@ -18,7 +18,8 @@ use tracing::instrument;
 use crate::proto::cdk_payment_processor_client::CdkPaymentProcessorClient;
 use crate::proto::{
     CheckIncomingPaymentRequest, CheckOutgoingPaymentRequest, CreatePaymentRequest, EmptyRequest,
-    IncomingPaymentOptions, MakePaymentRequest, OutgoingPaymentRequestType, PaymentQuoteRequest,
+    IncomingPaymentOptions, IntoProtoAmount, MakePaymentRequest, OutgoingPaymentRequestType,
+    PaymentQuoteRequest,
 };
 
 /// Payment Processor
@@ -146,7 +147,7 @@ impl MintPayment for PaymentProcessorClient {
                 options: Some(super::incoming_payment_options::Options::Bolt11(
                     super::Bolt11IncomingPaymentOptions {
                         description: opts.description,
-                        amount: opts.amount.into(),
+                        amount: Some(opts.amount.into()),
                         unix_expiry: opts.unix_expiry,
                     },
                 )),
@@ -232,7 +233,11 @@ impl MintPayment for PaymentProcessorClient {
 
         let response = response.into_inner();
 
-        Ok(response.into())
+        Ok(response.try_into().map_err(|_| {
+            cdk_common::payment::Error::Custom(
+                "Failed to convert payment quote response".to_string(),
+            )
+        })?)
     }
 
     async fn make_payment(
@@ -247,7 +252,7 @@ impl MintPayment for PaymentProcessorClient {
                     options: Some(super::outgoing_payment_variant::Options::Custom(
                         super::CustomOutgoingPaymentOptions {
                             offer: opts.request.to_string(),
-                            max_fee_amount: opts.max_fee_amount.map(Into::into),
+                            max_fee_amount: opts.max_fee_amount.into_proto(),
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),
                             extra_json: opts.extra_json.clone(),
@@ -260,7 +265,7 @@ impl MintPayment for PaymentProcessorClient {
                     options: Some(super::outgoing_payment_variant::Options::Bolt11(
                         super::Bolt11OutgoingPaymentOptions {
                             bolt11: opts.bolt11.to_string(),
-                            max_fee_amount: opts.max_fee_amount.map(Into::into),
+                            max_fee_amount: opts.max_fee_amount.into_proto(),
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),
                         },
@@ -272,7 +277,7 @@ impl MintPayment for PaymentProcessorClient {
                     options: Some(super::outgoing_payment_variant::Options::Bolt12(
                         super::Bolt12OutgoingPaymentOptions {
                             offer: opts.offer.to_string(),
-                            max_fee_amount: opts.max_fee_amount.map(Into::into),
+                            max_fee_amount: opts.max_fee_amount.into_proto(),
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),
                         },

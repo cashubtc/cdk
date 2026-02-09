@@ -555,6 +555,22 @@ impl Amount<CurrencyUnit> {
     pub fn display_with_unit(&self) -> String {
         format!("{} {}", self.value, self.unit)
     }
+
+    /// Convert to millisatoshis and return the raw u64 value
+    ///
+    /// Returns an error if the unit cannot be converted to Msat
+    /// (i.e., the unit is not Sat or Msat).
+    pub fn to_msat(&self) -> Result<u64, Error> {
+        self.convert_to(&CurrencyUnit::Msat).map(|a| a.value())
+    }
+
+    /// Convert to satoshis and return the raw u64 value
+    ///
+    /// Returns an error if the unit cannot be converted to Sat
+    /// (i.e., the unit is not Sat or Msat).
+    pub fn to_sat(&self) -> Result<u64, Error> {
+        self.convert_to(&CurrencyUnit::Sat).map(|a| a.value())
+    }
 }
 
 impl<U> fmt::Display for Amount<U> {
