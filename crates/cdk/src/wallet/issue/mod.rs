@@ -270,6 +270,12 @@ impl Wallet {
 
     /// Refresh states and mint all unissued quotes that have mintable amounts.
     /// Returns the total amount minted across all quotes.
+    ///
+    /// # Privacy
+    ///
+    /// This method retrieves all unissued mint quotes from the local store and
+    /// checks their state with the mint. This has a negative privacy effect of
+    /// linking all these quotes to a single wallet session.
     #[instrument(skip(self))]
     pub async fn mint_unissued_quotes(&self) -> Result<Amount, Error> {
         let mint_quotes = self.localstore.get_unissued_mint_quotes().await?;
