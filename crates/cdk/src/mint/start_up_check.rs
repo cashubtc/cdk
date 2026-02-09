@@ -362,6 +362,56 @@ impl Mint {
                             );
                             true
                         }
+                        cdk_common::mint::MeltSagaState::Finalizing => {
+                            // TX1 committed (proofs Spent, quote Paid) - finalize change + cleanup
+                            tracing::info!(
+                                "Saga {} in Finalizing state - TX1 completed, will finalize change and cleanup",
+                                saga.operation_id
+                            );
+
+                            let total_spent = quote.amount();
+                            let payment_lookup_id =
+                                quote.request_lookup_id.clone().unwrap_or_else(|| {
+                                    cdk_common::payment::PaymentIdentifier::CustomId(
+                                        quote.id.to_string(),
+                                    )
+                                });
+
+                            if let Err(err) = self
+                                .finalize_paid_melt_quote(
+                                    &quote,
+                                    total_spent,
+                                    None,
+                                    &payment_lookup_id,
+                                )
+                                .await
+                            {
+                                tracing::error!(
+                                    "Failed to finalize Finalizing saga {}: {}. Will retry.",
+                                    saga.operation_id,
+                                    err
+                                );
+                                continue;
+                            }
+
+                            // Delete saga after successful finalization
+                            let mut tx = self.localstore.begin_transaction().await?;
+                            if let Err(e) = tx.delete_saga(&saga.operation_id).await {
+                                tracing::error!(
+                                    "Failed to delete saga {}: {}. Will retry on next recovery cycle.",
+                                    saga.operation_id,
+                                    e
+                                );
+                                tx.rollback().await?;
+                                continue;
+                            }
+                            tx.commit().await?;
+                            tracing::info!(
+                                "Successfully recovered Finalizing saga {}",
+                                saga.operation_id
+                            );
+                            continue;
+                        }
                         cdk_common::mint::MeltSagaState::PaymentAttempted => {
                             // Payment was attempted - check for internal settlement first, then LN backend
                             tracing::info!(
