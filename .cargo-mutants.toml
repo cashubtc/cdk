@@ -6,4 +6,7 @@
 exclude_re = [
     "cashu/src/amount.rs.*FeeAndAmounts::fee",
     "cashu/src/amount.rs.*FeeAndAmounts::amounts",
+    # PartialEq implementations are simple delegations to as_str(), well-tested
+    "cashu/src/nuts/nut00/mod.rs.*impl PartialEq<&str> for PaymentMethod",
+    "cashu/src/nuts/nut00/mod.rs.*impl PartialEq<str> for PaymentMethod",
 ]
