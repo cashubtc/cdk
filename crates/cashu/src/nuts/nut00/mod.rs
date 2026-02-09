@@ -1195,6 +1195,56 @@ mod tests {
         }
     }
 
+    /// Tests that is_bolt12 correctly identifies BOLT12 payment methods.
+    ///
+    /// This is critical for code that needs to distinguish between BOLT11 and BOLT12.
+    /// If is_bolt12 always returns true or false, the wrong payment flow may be used.
+    ///
+    /// Mutant testing: Kills mutations that:
+    /// - Replace is_bolt12 with true
+    /// - Replace is_bolt12 with false
+    #[test]
+    fn test_is_bolt12_with_bolt12() {
+        // BOLT12 should return true
+        let method = PaymentMethod::BOLT12;
+        assert!(method.is_bolt12());
+
+        // Known BOLT12 should also return true
+        let method = PaymentMethod::Known(KnownMethod::Bolt12);
+        assert!(method.is_bolt12());
+    }
+
+    #[test]
+    fn test_is_bolt12_with_non_bolt12() {
+        // BOLT11 should return false
+        let method = PaymentMethod::BOLT11;
+        assert!(!method.is_bolt12());
+
+        // Known BOLT11 should return false
+        let method = PaymentMethod::Known(KnownMethod::Bolt11);
+        assert!(!method.is_bolt12());
+
+        // Custom methods should return false
+        let method = PaymentMethod::Custom("paypal".to_string());
+        assert!(!method.is_bolt12());
+
+        let method = PaymentMethod::Custom("bolt12".to_string());
+        assert!(!method.is_bolt12()); // String match is not the same as actual BOLT12
+    }
+
+    /// Tests that is_bolt12 correctly distinguishes between all payment method variants.
+    #[test]
+    fn test_is_bolt12_comprehensive() {
+        // Test all variants
+        assert!(PaymentMethod::BOLT12.is_bolt12());
+        assert!(PaymentMethod::Known(KnownMethod::Bolt12).is_bolt12());
+
+        assert!(!PaymentMethod::BOLT11.is_bolt12());
+        assert!(!PaymentMethod::Known(KnownMethod::Bolt11).is_bolt12());
+        assert!(!PaymentMethod::Custom("anything".to_string()).is_bolt12());
+        assert!(!PaymentMethod::Custom("bolt12".to_string()).is_bolt12());
+    }
+
     #[test]
     fn test_witness_serialization() {
         let htlc_witness = HTLCWitness {

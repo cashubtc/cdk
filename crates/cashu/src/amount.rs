@@ -2043,4 +2043,85 @@ mod tests {
         assert_eq!(sum, Amount::from(150));
         assert_ne!(sum, Amount::ZERO);
     }
+
+    /// Tests that saturating_sub correctly subtracts amounts without underflow.
+    ///
+    /// This is critical for any saturating subtraction operations. If it returns
+    /// Default::default() (Amount::ZERO) always, or changes the comparison or
+    /// subtraction operation, calculations will be wrong.
+    ///
+    /// Mutant testing: Kills mutations that:
+    /// - Replace saturating_sub with Default::default()
+    /// - Replace > with ==, <, or >= in the comparison
+    /// - Replace - with + or / in the subtraction
+    #[test]
+    fn test_saturating_sub_normal_case() {
+        // Normal subtraction: larger - smaller
+        let amount1 = Amount::from(100);
+        let amount2 = Amount::from(30);
+        let result = amount1.saturating_sub(amount2);
+        assert_eq!(result, Amount::from(70));
+        assert_ne!(result, Amount::ZERO);
+
+        // Another normal case
+        let amount1 = Amount::from(1000);
+        let amount2 = Amount::from(1);
+        let result = amount1.saturating_sub(amount2);
+        assert_eq!(result, Amount::from(999));
+
+        // Edge case: subtraction resulting in 1
+        let amount1 = Amount::from(2);
+        let amount2 = Amount::from(1);
+        let result = amount1.saturating_sub(amount2);
+        assert_eq!(result, Amount::from(1));
+        assert_ne!(result, Amount::ZERO);
+    }
+
+    /// Tests that saturating_sub returns ZERO when subtracting a larger amount.
+    ///
+    /// This catches mutations that change the comparison operator (>, ==, <, >=)
+    /// or that don't return ZERO on underflow.
+    #[test]
+    fn test_saturating_sub_saturates_at_zero() {
+        // Subtracting larger from smaller should return ZERO
+        let amount1 = Amount::from(30);
+        let amount2 = Amount::from(100);
+        let result = amount1.saturating_sub(amount2);
+        assert_eq!(result, Amount::ZERO);
+        assert_ne!(result, Amount::from(30)); // Should not be the original value
+
+        // Another case
+        let amount1 = Amount::from(5);
+        let amount2 = Amount::from(10);
+        let result = amount1.saturating_sub(amount2);
+        assert_eq!(result, Amount::ZERO);
+
+        // Edge case: subtracting from zero
+        let amount1 = Amount::ZERO;
+        let amount2 = Amount::from(1);
+        let result = amount1.saturating_sub(amount2);
+        assert_eq!(result, Amount::ZERO);
+    }
+
+    /// Tests that saturating_sub returns ZERO when amounts are equal.
+    ///
+    /// This is a boundary case that catches comparison operator mutations.
+    #[test]
+    fn test_saturating_sub_equal_amounts() {
+        // Equal amounts should return ZERO (other > self is false when equal)
+        let amount1 = Amount::from(100);
+        let amount2 = Amount::from(100);
+        let result = amount1.saturating_sub(amount2);
+        assert_eq!(result, Amount::ZERO);
+
+        // Another equal case
+        let amount1 = Amount::from(1);
+        let amount2 = Amount::from(1);
+        let result = amount1.saturating_sub(amount2);
+        assert_eq!(result, Amount::ZERO);
+
+        // Edge case: both zero
+        let result = Amount::ZERO.saturating_sub(Amount::ZERO);
+        assert_eq!(result, Amount::ZERO);
+    }
 }
