@@ -1,23 +1,26 @@
 //! Signatory CLI main logic
 //!
 //! This logic is in this file to be excluded for wasm
-use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::{env, fs};
 
-use anyhow::{anyhow, bail, Result};
-use bip39::rand::{thread_rng, Rng};
-use bip39::Mnemonic;
-use cdk_common::database::MintKeysDatabase;
-use cdk_common::CurrencyUnit;
-use cdk_signatory::{db_signatory, start_grpc_server};
-#[cfg(feature = "sqlite")]
-use cdk_sqlite::MintSqliteDatabase;
+use anyhow::{bail, Result};
 use clap::Parser;
-use tracing_subscriber::EnvFilter;
+#[cfg(feature = "sqlite")]
+use {
+    anyhow::anyhow,
+    bip39::rand::{thread_rng, Rng},
+    bip39::Mnemonic,
+    cdk_common::database::MintKeysDatabase,
+    cdk_common::CurrencyUnit,
+    cdk_signatory::{db_signatory, start_grpc_server},
+    cdk_sqlite::MintSqliteDatabase,
+    std::collections::HashMap,
+    std::net::SocketAddr,
+    std::str::FromStr,
+    std::sync::Arc,
+    std::{env, fs},
+    tracing_subscriber::EnvFilter,
+};
 
 /// Common CLI arguments for CDK binaries
 #[derive(Parser, Debug)]
@@ -32,6 +35,7 @@ pub struct CommonArgs {
 }
 
 /// Initialize logging based on CLI arguments
+#[cfg(feature = "sqlite")]
 pub fn init_logging(enable_logging: bool, log_level: tracing::Level) {
     if enable_logging {
         let default_filter = log_level.to_string();
@@ -55,7 +59,9 @@ pub fn init_logging(enable_logging: bool, log_level: tracing::Level) {
     }
 }
 
+#[cfg(feature = "sqlite")]
 const DEFAULT_WORK_DIR: &str = ".cdk-signatory";
+#[cfg(feature = "sqlite")]
 const ENV_MNEMONIC: &str = "CDK_MINTD_MNEMONIC";
 
 /// Simple CLI application to interact with cashu
@@ -89,11 +95,47 @@ struct Cli {
 }
 
 /// Main function for the signatory standalone binary
+#[cfg(not(feature = "sqlite"))]
+pub async fn cli_main() -> Result<()> {
+    bail!("No database feature enabled. Enable the 'sqlite' feature to use this binary.");
+}
+
+/// Main function for the signatory standalone binary
+#[cfg(feature = "sqlite")]
 pub async fn cli_main() -> Result<()> {
     let args: Cli = Cli::parse();
 
     // Initialize logging based on CLI arguments
     init_logging(args.common.enable_logging, args.common.log_level);
+
+    let work_dir = match &args.work_dir {
+        Some(work_dir) => work_dir.clone(),
+        None => {
+            let home_dir = home::home_dir().ok_or(anyhow!("Unknown how"))?;
+            home_dir.join(DEFAULT_WORK_DIR)
+        }
+    };
+
+    fs::create_dir_all(&work_dir)?;
+
+    let localstore: Arc<dyn MintKeysDatabase<Err = cdk_common::database::Error> + Send + Sync> =
+        match args.engine.as_str() {
+            "sqlite" => {
+                let sql_path = work_dir.join("cdk-cli.sqlite");
+                #[cfg(not(feature = "sqlcipher"))]
+                let db = MintSqliteDatabase::new(&sql_path).await?;
+                #[cfg(feature = "sqlcipher")]
+                let db = {
+                    match args.password {
+                        Some(pass) => MintSqliteDatabase::new((sql_path.clone(), pass)).await?,
+                        None => bail!("Missing database password"),
+                    }
+                };
+
+                Arc::new(db)
+            }
+            _ => bail!("Unknown DB engine"),
+        };
 
     let supported_units = args
         .units
@@ -112,47 +154,11 @@ pub async fn cli_main() -> Result<()> {
         })
         .collect::<Result<HashMap<_, _>, _>>()?;
 
-    let work_dir = match &args.work_dir {
-        Some(work_dir) => work_dir.clone(),
-        None => {
-            let home_dir = home::home_dir().ok_or(anyhow!("Unknown how"))?;
-            home_dir.join(DEFAULT_WORK_DIR)
-        }
-    };
-
     let certs = Some(
         args.certs
             .map(|x| x.into())
             .unwrap_or_else(|| work_dir.clone()),
     );
-
-    fs::create_dir_all(&work_dir)?;
-
-    let localstore: Arc<dyn MintKeysDatabase<Err = cdk_common::database::Error> + Send + Sync> =
-        match args.engine.as_str() {
-            "sqlite" => {
-                #[cfg(feature = "sqlite")]
-                {
-                    let sql_path = work_dir.join("cdk-cli.sqlite");
-                    #[cfg(not(feature = "sqlcipher"))]
-                    let db = MintSqliteDatabase::new(&sql_path).await?;
-                    #[cfg(feature = "sqlcipher")]
-                    let db = {
-                        match args.password {
-                            Some(pass) => MintSqliteDatabase::new((sql_path.clone(), pass)).await?,
-                            None => bail!("Missing database password"),
-                        }
-                    };
-
-                    Arc::new(db)
-                }
-                #[cfg(not(feature = "sqlite"))]
-                {
-                    bail!("sqlite feature not enabled");
-                }
-            }
-            _ => bail!("Unknown DB engine"),
-        };
 
     let seed_path = work_dir.join("seed");
 

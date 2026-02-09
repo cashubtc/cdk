@@ -46,7 +46,7 @@ axum = { version = "0.8.1", features = ["ws"] }
 bitcoin = { version = "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
 bip39 = { version = "2.0", features = ["rand"] }
 jsonwebtoken = "9.2.0"
-cashu = { path = "./crates/cashu", version = "=0.14.0" }
+cashu = { path = "./crates/cashu", default-features = false, version = "=0.14.0" }
 cdk = { path = "./crates/cdk", default-features = false, version = "=0.14.0" }
 cdk-common = { path = "./crates/cdk-common", default-features = false, version = "=0.14.0" }
 cdk-axum = { path = "./crates/cdk-axum", default-features = false, version = "=0.14.0" }
