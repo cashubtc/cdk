@@ -1119,7 +1119,6 @@ dependencies = [
  "lightning-invoice 0.34.0",
  "nostr-sdk",
  "once_cell",
- "regex",
  "serde",
  "serde_json",
  "serde_with",
