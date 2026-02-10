@@ -347,7 +347,8 @@ impl From<crate::signatory::RotateKeyArguments> for RotationRequest {
             unit: Some(value.unit.into()),
             amounts: value.amounts,
             input_fee_ppk: value.input_fee_ppk,
-            keyset_id_type: value.keyset_id_type.to_byte() as i32,
+            // added a plus one to be correct with the keyset enum
+            keyset_id_type: (value.keyset_id_type.to_byte() as i32 + 1),
             final_expiry: value.final_expiry,
         }
     }
