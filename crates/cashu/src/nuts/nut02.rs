@@ -58,25 +58,25 @@ pub enum Error {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum KeySetVersion {
     /// Version 00
-    Version01,
+    Version00,
     /// Version 01
-    Version02,
+    Version01,
 }
 
 impl KeySetVersion {
     /// [`KeySetVersion`] to byte
     pub fn to_byte(&self) -> u8 {
         match self {
+            Self::Version00 => 0,
             Self::Version01 => 1,
-            Self::Version02 => 2,
         }
     }
 
     /// [`KeySetVersion`] from byte
     pub fn from_byte(byte: &u8) -> Result<Self, Error> {
         match byte {
+            0 => Ok(Self::Version00),
             1 => Ok(Self::Version01),
-            2 => Ok(Self::Version02),
             _ => Err(Error::UnknownVersion),
         }
     }
@@ -85,10 +85,8 @@ impl KeySetVersion {
 impl fmt::Display for KeySetVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            // the str are a unit less that they should because of a spec error where we call the "00" version 1
-            KeySetVersion::Version01 => f.write_str("00"),
-            // the str are a unit less that they should because of a spec error where we call the "00" version 1
-            KeySetVersion::Version02 => f.write_str("01"),
+            KeySetVersion::Version00 => f.write_str("00"),
+            KeySetVersion::Version01 => f.write_str("01"),
         }
     }
 }
@@ -140,8 +138,8 @@ impl Id {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         let version = KeySetVersion::from_byte(&bytes[0])?;
         let id = match version {
-            KeySetVersion::Version01 => IdBytes::V1(bytes[1..].try_into()?),
-            KeySetVersion::Version02 => IdBytes::V2(bytes[1..].try_into()?),
+            KeySetVersion::Version00 => IdBytes::V1(bytes[1..].try_into()?),
+            KeySetVersion::Version01 => IdBytes::V2(bytes[1..].try_into()?),
         };
         Ok(Self { version, id })
     }
@@ -196,7 +194,7 @@ impl Id {
         let hex_of_hash = hex::encode(hash.to_byte_array());
 
         Self {
-            version: KeySetVersion::Version02,
+            version: KeySetVersion::Version01,
             id: IdBytes::V2(
                 hex::decode(&hex_of_hash[0..Self::STRLEN_V2])
                     .expect("Keys hash could not be hex decoded")
@@ -232,7 +230,7 @@ impl Id {
         let hex_of_hash = hex::encode(hash.to_byte_array());
 
         Self {
-            version: KeySetVersion::Version01,
+            version: KeySetVersion::Version00,
             id: IdBytes::V1(
                 hex::decode(&hex_of_hash[0..Self::STRLEN_V1])
                     .expect("Keys hash could not be hex decoded")
@@ -254,7 +252,7 @@ impl Id {
         }
 
         match short_id.version {
-            KeySetVersion::Version01 => {
+            KeySetVersion::Version00 => {
                 let mut idbytes: [u8; Self::BYTELEN_V1] = [0u8; Self::BYTELEN_V1];
                 idbytes.copy_from_slice(&short_id.prefix[..Self::BYTELEN_V1]);
                 Ok(Self {
@@ -262,7 +260,7 @@ impl Id {
                     id: IdBytes::V1(idbytes),
                 })
             }
-            KeySetVersion::Version02 => {
+            KeySetVersion::Version01 => {
                 // We return the first match or error
                 for keyset_info in keysets_info.iter() {
                     if keyset_info.id.id.to_vec()[..short_id.prefix.len()] == short_id.prefix {
@@ -330,12 +328,12 @@ impl TryFrom<String> for Id {
 
         let version: KeySetVersion = KeySetVersion::from_byte(&hex::decode(&s[..2])?[0])?;
         let id = match version {
-            KeySetVersion::Version01 => IdBytes::V1(
+            KeySetVersion::Version00 => IdBytes::V1(
                 hex::decode(&s[2..])?
                     .try_into()
                     .map_err(|_| Error::Length)?,
             ),
-            KeySetVersion::Version02 => IdBytes::V2(
+            KeySetVersion::Version01 => IdBytes::V2(
                 hex::decode(&s[2..])?
                     .try_into()
                     .map_err(|_| Error::Length)?,
@@ -394,11 +392,11 @@ impl From<Id> for ShortKeysetId {
     fn from(id: Id) -> Self {
         let version = id.version;
         let prefix: Vec<u8> = match id.version {
-            KeySetVersion::Version01 => match id.id {
+            KeySetVersion::Version00 => match id.id {
                 IdBytes::V1(idbytes) => Vec::from(&idbytes),
                 _ => panic!("Unexpected IdBytes length"),
             },
-            KeySetVersion::Version02 => match id.id {
+            KeySetVersion::Version01 => match id.id {
                 IdBytes::V2(idbytes) => Vec::from(&idbytes[..7]),
                 _ => panic!("Unexpected IdBytes length"),
             },
@@ -496,8 +494,8 @@ impl KeySet {
     /// Verify the keyset id matches keys
     pub fn verify_id(&self) -> Result<(), Error> {
         let keys_id = match self.id.version {
-            KeySetVersion::Version01 => Id::v1_from_keys(&self.keys),
-            KeySetVersion::Version02 => Id::v2_from_data(
+            KeySetVersion::Version00 => Id::v1_from_keys(&self.keys),
+            KeySetVersion::Version01 => Id::v2_from_data(
                 &self.keys,
                 &self.unit,
                 self.input_fee_ppk,
@@ -630,8 +628,8 @@ impl MintKeySet {
 
         let keys = MintKeys::new(map);
         let id = match version {
-            KeySetVersion::Version01 => Id::v1_from_keys(&keys.clone().into()),
-            KeySetVersion::Version02 => {
+            KeySetVersion::Version00 => Id::v1_from_keys(&keys.clone().into()),
+            KeySetVersion::Version01 => {
                 Id::v2_from_data(&keys.clone().into(), &unit, input_fee_ppk, final_expiry)
             }
         };
@@ -711,8 +709,8 @@ impl From<MintKeySet> for Id {
     fn from(keyset: MintKeySet) -> Id {
         let keys: Keys = keyset.keys.into();
         match keyset.id.version {
-            KeySetVersion::Version01 => Id::v1_from_keys(&keys),
-            KeySetVersion::Version02 => Id::v2_from_data(
+            KeySetVersion::Version00 => Id::v1_from_keys(&keys),
+            KeySetVersion::Version01 => Id::v2_from_data(
                 &keys,
                 &keyset.unit,
                 keyset.input_fee_ppk,
@@ -933,14 +931,14 @@ mod test {
 
     fn generate_random_id(version: KeySetVersion) -> Id {
         match version {
-            KeySetVersion::Version01 => {
+            KeySetVersion::Version00 => {
                 let mut rand_bytes = vec![0u8; 8];
                 rand::thread_rng().fill_bytes(&mut rand_bytes[1..]);
                 Id::from_bytes(&rand_bytes).unwrap_or_else(|e| {
                     panic!("Failed to create Id from {}: {e}", hex::encode(rand_bytes))
                 })
             }
-            KeySetVersion::Version02 => {
+            KeySetVersion::Version01 => {
                 let mut rand_bytes = vec![1u8; 33];
                 rand::thread_rng().fill_bytes(&mut rand_bytes[1..]);
                 Id::from_bytes(&rand_bytes).unwrap_or_else(|e| {
@@ -952,7 +950,7 @@ mod test {
 
     #[test]
     fn test_id_serialization() {
-        let id = generate_random_id(KeySetVersion::Version01);
+        let id = generate_random_id(KeySetVersion::Version00);
         let id_str = id.to_string();
 
         assert!(id_str.chars().all(|c| c.is_ascii_hexdigit()));
@@ -962,7 +960,7 @@ mod test {
 
     #[test]
     fn test_id_v2_serialization() {
-        let id = generate_random_id(KeySetVersion::Version02);
+        let id = generate_random_id(KeySetVersion::Version01);
         let id_str = id.to_string();
 
         assert!(id_str.chars().all(|c| c.is_ascii_hexdigit()));
