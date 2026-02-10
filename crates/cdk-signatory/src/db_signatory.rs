@@ -225,9 +225,12 @@ impl Signatory for DbSignatory {
             args.input_fee_ppk,
             // TODO: add and connect settings for this
             None,
-            args.use_keyset_v2,
+            args.keyset_id_type,
         );
-        
+
+        let keysets = self.keysets().await?;
+        check_unit_string_collision(keysets.keysets, &info)?;
+
         let id = info.id;
         let mut tx = self.localstore.begin_transaction().await?;
         tx.add_keyset_info(info.clone()).await?;
@@ -263,7 +266,7 @@ mod test {
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
             0,
             None,
-            cdk_common::nut02::KeySetVersion::Version00,
+            cdk_common::nut02::KeySetVersion::Version01,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
@@ -311,7 +314,7 @@ mod test {
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
             0,
             None,
-            cdk_common::nut02::KeySetVersion::Version00,
+            cdk_common::nut02::KeySetVersion::Version01,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
@@ -424,7 +427,7 @@ mod test {
             derivation_path_from_unit(CurrencyUnit::Sat, 1).unwrap(),
             0,
             None,
-            cdk_common::nut02::KeySetVersion::Version00,
+            cdk_common::nut02::KeySetVersion::Version01,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
@@ -721,7 +724,7 @@ mod test {
             derivation_path_from_unit(CurrencyUnit::Auth, 1).unwrap(),
             0,
             None,
-            cdk_common::nut02::KeySetVersion::Version00,
+            cdk_common::nut02::KeySetVersion::Version01,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Auth);

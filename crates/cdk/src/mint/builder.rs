@@ -430,7 +430,7 @@ impl MintBuilder {
                 // Check if version matches explicit preference
                 if let Some(want_v2) = self.use_keyset_v2 {
                     let is_v2 =
-                        keyset.id.get_version() == cdk_common::nut02::KeySetVersion::Version01;
+                        keyset.id.get_version() == cdk_common::nut02::KeySetVersion::Version02;
                     if want_v2 && !is_v2 {
                         tracing::info!("Rotating keyset for unit {} due to explicit V2 preference (current is V1)", unit);
                         rotate = true;
@@ -452,7 +452,12 @@ impl MintBuilder {
                         unit: unit.clone(),
                         amounts,
                         input_fee_ppk: *fee,
-                        use_keyset_v2: self.use_keyset_v2.unwrap_or(true),
+                        keyset_id_type: if self.use_keyset_v2.unwrap_or(true) {
+                            cdk_common::nut02::KeySetVersion::Version02
+                        } else {
+                            cdk_common::nut02::KeySetVersion::Version01
+                        },
+                        final_expiry: None,
                     })
                     .await?;
             }

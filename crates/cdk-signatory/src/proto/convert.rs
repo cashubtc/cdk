@@ -1,6 +1,7 @@
 //! Type conversions between Rust types and the generated protobuf types.
 use std::collections::BTreeMap;
 
+use cdk_common::nut02::KeySetVersion;
 use cdk_common::secret::Secret;
 use cdk_common::util::hex;
 use cdk_common::{Amount, Id, PublicKey};
@@ -88,7 +89,7 @@ impl From<crate::signatory::SignatoryKeySet> for KeySet {
     }
 }
 
-impl From<cdk_common::Error> for Error {
+impl From<cdk_common::Error> for super::Error {
     fn from(err: cdk_common::Error) -> Self {
         let code = match err {
             cdk_common::Error::AmountError(_) => ErrorCode::AmountOutsideLimit,
@@ -99,15 +100,15 @@ impl From<cdk_common::Error> for Error {
             _ => ErrorCode::Unspecified,
         };
 
-        Error {
+        super::Error {
             code: code.into(),
             detail: err.to_string(),
         }
     }
 }
 
-impl From<Error> for cdk_common::Error {
-    fn from(val: Error) -> Self {
+impl From<super::Error> for cdk_common::Error {
+    fn from(val: super::Error) -> Self {
         match val.code.try_into().expect("valid code") {
             ErrorCode::AmountOutsideLimit => {
                 cdk_common::Error::AmountError(cdk_common::amount::Error::AmountOverflow)
@@ -338,7 +339,8 @@ impl From<crate::signatory::RotateKeyArguments> for RotationRequest {
             unit: Some(value.unit.into()),
             amounts: value.amounts,
             input_fee_ppk: value.input_fee_ppk,
-            use_keyset_v2: value.use_keyset_v2,
+            keyset_id_type: value.keyset_id_type.to_byte() as i32,
+            final_expiry: value.final_expiry,
         }
     }
 }
@@ -347,6 +349,7 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
     type Error = Status;
 
     fn try_into(self) -> Result<crate::signatory::RotateKeyArguments, Self::Error> {
+        let keyset_id_type: u8 = self.keyset_id_type as u8;
         Ok(crate::signatory::RotateKeyArguments {
             unit: self
                 .unit
@@ -354,7 +357,9 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
                 .try_into()?,
             amounts: self.amounts,
             input_fee_ppk: self.input_fee_ppk,
-            use_keyset_v2: self.use_keyset_v2,
+            final_expiry: self.final_expiry,
+            keyset_id_type: KeySetVersion::from_byte(&keyset_id_type)
+                .map_err(|err| Status::invalid_argument(err.to_string()))?,
         })
     }
 }
