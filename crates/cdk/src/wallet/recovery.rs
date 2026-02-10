@@ -36,16 +36,16 @@ struct OutputRecoveryParams<'a> {
     counter_end: u32,
 }
 
-/// Report of recovery operations performed
+/// Report of recovery operations performed by [`Wallet::recover_incomplete_sagas`].
 #[derive(Debug, Default)]
 pub struct RecoveryReport {
-    /// Number of sagas that were successfully recovered
+    /// Operations successfully completed after crash
     pub recovered: usize,
-    /// Number of sagas that were compensated (rolled back)
+    /// Operations rolled back (resources released)
     pub compensated: usize,
-    /// Number of sagas that were skipped (e.g., pending external state)
+    /// Operations still pending (will retry on next call)
     pub skipped: usize,
-    /// Number of sagas that failed to recover
+    /// Operations that could not be recovered
     pub failed: usize,
 }
 
@@ -274,14 +274,10 @@ impl RecoveryHelpers for Wallet {
 }
 
 impl Wallet {
-    /// Recover from incomplete sagas.
+    /// Recover from incomplete operations after a crash. Call on startup.
     ///
-    /// This method should be called on wallet initialization to recover from
-    /// any incomplete operations that were interrupted by a crash.
-    ///
-    /// # Returns
-    ///
-    /// A report of the recovery operations performed.
+    /// Handles interrupted swap, send, receive, and melt operations to prevent
+    /// proofs from being stuck in reserved states. Requires network connection.
     #[instrument(skip(self))]
     pub async fn recover_incomplete_sagas(&self) -> Result<RecoveryReport, Error> {
         self.cleanup_orphaned_quote_reservations().await?;

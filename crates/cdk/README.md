@@ -55,9 +55,7 @@ use cdk::amount::SplitTarget;
 use cdk_sqlite::wallet::memory;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
 #[cfg(feature = "wallet")]
-use cdk::wallet::Wallet;
-#[cfg(feature = "wallet")]
-use cdk::wallet::SendOptions;
+use cdk::wallet::{RecoveryReport, SendOptions, Wallet};
 use cdk::Amount;
 use rand::random;
 use tokio::time::sleep;
@@ -75,6 +73,13 @@ async fn main() {
         let localstore = memory::empty().await.unwrap();
 
         let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None).unwrap();
+
+        // Required: Recover from interrupted operations (swap, send, receive, melt)
+        let recovery: RecoveryReport = wallet.recover_incomplete_sagas().await.unwrap();
+        println!("Recovered {} operations", recovery.recovered);
+
+        // Optional: Check and mint pending mint quotes (requires network)
+        let _minted = wallet.mint_unissued_quotes().await.unwrap();
 
         let quote = wallet.mint_quote(PaymentMethod::BOLT11, Some(amount), None, None).await.unwrap();
 

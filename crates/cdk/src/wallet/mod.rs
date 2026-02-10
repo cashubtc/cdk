@@ -92,6 +92,15 @@ use crate::nuts::nut00::ProofsMethods;
 /// The CDK [`Wallet`] is a high level cashu wallet.
 ///
 /// A [`Wallet`] is for a single mint and single unit.
+///
+/// # Initialization
+///
+/// After creating a wallet, call [`Wallet::recover_incomplete_sagas`] to recover
+/// from interrupted operations (swap, send, receive, melt). This is required to
+/// prevent proofs from being stuck in reserved states after a crash.
+///
+/// For pending mint quotes, call [`Wallet::mint_unissued_quotes`] which checks
+/// quote states with the mint and mints available tokens. This makes network calls.
 #[derive(Debug, Clone)]
 pub struct Wallet {
     /// Mint Url
