@@ -1131,7 +1131,7 @@ mod tests {
                     unit: unit.clone(),
                     amounts,
                     input_fee_ppk: *fee,
-                    keyset_id_type: cdk_common::nut02::KeySetVersion::Version02,
+                    keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
                     final_expiry: None,
                 })
                 .await
@@ -1276,7 +1276,7 @@ mod tests {
             unit: currency_unit,
             amounts,
             input_fee_ppk: 100,
-            keyset_id_type: cdk_common::nut02::KeySetVersion::Version02,
+            keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
             final_expiry: None,
         };
         let rotation_result = mint.signatory.rotate_keyset(rotate_argument).await;
