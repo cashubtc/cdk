@@ -164,8 +164,6 @@ impl From<Vec<cdk_common::Proof>> for Proofs {
     fn from(value: Vec<cdk_common::Proof>) -> Self {
         Proofs {
             proof: value.into_iter().map(|x| x.into()).collect(),
-            operation: Operation::Unspecified.into(),
-            correlation_id: "".to_owned(),
         }
     }
 }

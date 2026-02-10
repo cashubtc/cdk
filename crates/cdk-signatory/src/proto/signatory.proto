@@ -11,11 +11,10 @@ service Signatory {
   rpc RotateKeyset(RotationRequest) returns (KeyRotationResponse);
 }
 
-enum Operation {
-  OPERATION_UNSPECIFIED = 0;
-  OPERATION_MINT = 1;
-  OPERATION_MELT = 2;
-  OPERATION_SWAP = 3;
+enum Constants {
+  CONSTANTS_UNSPECIFIED = 0;
+  // this constant should be sent on the header of the grpc code for verification
+  CONSTANTS_VERSION = 1;
 }
 
 message BlindSignResponse {
@@ -25,8 +24,6 @@ message BlindSignResponse {
 
 message BlindedMessages {
   repeated BlindedMessage blinded_messages = 1;
-  Operation operation = 2;
-  string correlation_id = 3;
 }
 
 // Represents a blinded message
@@ -102,8 +99,6 @@ message CurrencyUnit {
 
 message Proofs {
   repeated Proof proof = 1;
-  Operation operation = 3;
-  string correlation_id = 4;
 }
 
 message Proof {
