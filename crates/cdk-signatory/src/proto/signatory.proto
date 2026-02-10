@@ -71,11 +71,17 @@ message Keys {
   map<uint64, bytes> keys = 1;
 }
 
+enum KeysetVersion {
+  KEYSET_VERSION_UNSPECIFIED = 0;
+  KEYSET_VERSION_V1 = 1;
+  KEYSET_VERSION_V2 = 2;
+}
 message RotationRequest {
   CurrencyUnit unit = 1;
   uint64 input_fee_ppk = 2;
   repeated uint64 amounts = 3;
-  bool use_keyset_v2 = 4;
+  optional uint64 final_expiry = 4;
+  KeysetVersion keyset_id_type = 5;
 }
 
 enum CurrencyUnitType {

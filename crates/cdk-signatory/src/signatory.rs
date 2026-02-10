@@ -9,6 +9,7 @@
 use cdk_common::common::IssuerVersion;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
+use cdk_common::nuts::nut02::KeySetVersion;
 use cdk_common::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
 };
@@ -48,7 +49,9 @@ pub struct RotateKeyArguments {
     /// Input fee
     pub input_fee_ppk: u64,
     /// KeySet Version
-    pub use_keyset_v2: bool,
+    pub keyset_id_type: KeySetVersion,
+    /// FinalExpiry
+    pub final_expiry: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
