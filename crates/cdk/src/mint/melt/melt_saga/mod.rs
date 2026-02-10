@@ -972,6 +972,12 @@ impl MeltSaga<PaymentConfirmed> {
         } else {
             // We commit tx here as process_change can make external call to blind sign
             // We do not want to hold db txs across external calls
+            // Persist Finalizing state so recovery knows TX1 completed
+            tx.update_saga(
+                &self.operation_id,
+                cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::Finalizing),
+            )
+            .await?;
             tx.commit().await?;
             super::shared::process_melt_change(
                 &self.mint,

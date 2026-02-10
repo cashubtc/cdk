@@ -155,6 +155,8 @@ pub enum MeltSagaState {
     SetupComplete,
     /// Payment attempted to Lightning network (may or may not have succeeded)
     PaymentAttempted,
+    /// TX1 committed (proofs Spent, quote Paid) - change signing + cleanup pending
+    Finalizing,
 }
 
 impl fmt::Display for MeltSagaState {
@@ -162,6 +164,7 @@ impl fmt::Display for MeltSagaState {
         match self {
             MeltSagaState::SetupComplete => write!(f, "setup_complete"),
             MeltSagaState::PaymentAttempted => write!(f, "payment_attempted"),
+            MeltSagaState::Finalizing => write!(f, "finalizing"),
         }
     }
 }
@@ -173,6 +176,7 @@ impl FromStr for MeltSagaState {
         match value.as_str() {
             "setup_complete" => Ok(MeltSagaState::SetupComplete),
             "payment_attempted" => Ok(MeltSagaState::PaymentAttempted),
+            "finalizing" => Ok(MeltSagaState::Finalizing),
             _ => Err(Error::Custom(format!("Invalid melt saga state: {}", value))),
         }
     }
@@ -210,6 +214,7 @@ impl SagaStateEnum {
             SagaStateEnum::Melt(state) => match state {
                 MeltSagaState::SetupComplete => "setup_complete",
                 MeltSagaState::PaymentAttempted => "payment_attempted",
+                MeltSagaState::Finalizing => "finalizing",
             },
         }
     }

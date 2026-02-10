@@ -544,34 +544,61 @@ pub async fn finalize_melt_quote(
         return Ok(None);
     }
 
-    // Core finalization (marks proofs spent, updates quote)
-    finalize_melt_core(
-        &mut tx,
-        pubsub,
-        &mut locked_quote,
-        &input_ys,
-        melt_request_info.inputs_amount.clone(),
-        melt_request_info.inputs_fee.clone(),
-        total_spent.clone(),
-        payment_preimage.clone(),
-        payment_lookup_id,
-    )
-    .await?;
+    // Check if TX1 already completed (e.g., crash between TX1 commit and TX2 commit).
+    // If the quote is already Paid, proofs are already Spent — calling finalize_melt_core
+    // would fail on the Paid→Paid and Spent→Spent state transitions. Skip directly to
+    // change signing and cleanup so the user receives their change.
+    if locked_quote.state == MeltQuoteState::Paid {
+        tracing::info!(
+            "Melt quote {} already Paid — TX1 previously committed, skipping to change/cleanup",
+            quote.id
+        );
+        tx.commit().await?;
+    } else {
+        // Core finalization (marks proofs spent, updates quote)
+        finalize_melt_core(
+            &mut tx,
+            pubsub,
+            &mut locked_quote,
+            &input_ys,
+            melt_request_info.inputs_amount.clone(),
+            melt_request_info.inputs_fee.clone(),
+            total_spent.clone(),
+            payment_preimage.clone(),
+            payment_lookup_id,
+        )
+        .await?;
 
-    // Close transaction before external call
-    tx.commit().await?;
+        // Close transaction before external call
+        tx.commit().await?;
+    }
+
+    // Check if change signatures already exist from a previous attempt
+    let existing_sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
+    let needs_change = melt_request_info.inputs_amount > total_spent;
 
     // Process change (if needed) - opens new transaction
-    let (change_sigs, mut tx) = process_melt_change(
-        mint,
-        db,
-        &quote.id,
-        melt_request_info.inputs_amount,
-        total_spent,
-        melt_request_info.inputs_fee,
-        melt_request_info.change_outputs.clone(),
-    )
-    .await?;
+    let (change_sigs, mut tx) = if needs_change && !existing_sigs.is_empty() {
+        // Change already signed from a previous attempt — skip re-signing
+        tracing::info!(
+            "Change signatures already exist for quote {} ({} sigs), skipping re-sign",
+            quote.id,
+            existing_sigs.len()
+        );
+        let tx = db.begin_transaction().await?;
+        (Some(existing_sigs), tx)
+    } else {
+        process_melt_change(
+            mint,
+            db,
+            &quote.id,
+            melt_request_info.inputs_amount,
+            total_spent,
+            melt_request_info.inputs_fee,
+            melt_request_info.change_outputs.clone(),
+        )
+        .await?
+    };
 
     // Delete melt request tracking
     tx.delete_melt_request(&quote.id).await?;
