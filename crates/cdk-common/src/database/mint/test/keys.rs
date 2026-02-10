@@ -5,7 +5,7 @@ use std::str::FromStr;
 use bitcoin::bip32::DerivationPath;
 use cashu::{CurrencyUnit, Id};
 
-use crate::common::CdkVersion;
+use crate::common::IssuerVersion;
 use crate::database::mint::{Database, Error, KeysDatabase};
 use crate::mint::MintKeySetInfo;
 
@@ -30,7 +30,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        cdk_version: CdkVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
     };
 
     // Add keyset info
@@ -46,7 +46,7 @@ where
     assert_eq!(retrieved.unit, keyset_info.unit);
     assert_eq!(retrieved.active, keyset_info.active);
     assert_eq!(retrieved.amounts, keyset_info.amounts);
-    assert_eq!(retrieved.cdk_version, keyset_info.cdk_version);
+    assert_eq!(retrieved.issuer_version, keyset_info.issuer_version);
 }
 
 /// Test adding duplicate keyset info is idempotent
@@ -65,7 +65,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        cdk_version: CdkVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
     };
 
     // Add keyset info first time
@@ -101,7 +101,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        cdk_version: CdkVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
     };
 
     let keyset_id2 = Id::from_str("00916bbf7ef91a37").unwrap();
@@ -115,7 +115,7 @@ where
         derivation_path_index: Some(1),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        cdk_version: CdkVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
     };
 
     // Add keyset infos
@@ -147,7 +147,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        cdk_version: CdkVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
     };
 
     // Add keyset info
@@ -180,7 +180,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        cdk_version: CdkVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
     };
 
     let keyset_id_usd = Id::from_str("00916bbf7ef91a37").unwrap();
@@ -194,7 +194,7 @@ where
         derivation_path_index: Some(1),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        cdk_version: CdkVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
     };
 
     // Add keyset infos and set as active
@@ -232,7 +232,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        cdk_version: CdkVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
     };
 
     let keyset_id2 = Id::from_str("00916bbf7ef91a37").unwrap();
@@ -246,7 +246,7 @@ where
         derivation_path_index: Some(1),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        cdk_version: CdkVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
     };
 
     // Add both keysets and set first as active

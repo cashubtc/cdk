@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::payment::PaymentIdentifier;
-use crate::{common::CdkVersion, Amount, CurrencyUnit, Error, Id, KeySetInfo, PublicKey};
+use crate::{common::IssuerVersion, Amount, CurrencyUnit, Error, Id, KeySetInfo, PublicKey};
 
 /// Operation kind for saga persistence
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -880,8 +880,8 @@ pub struct MintKeySetInfo {
     pub input_fee_ppk: u64,
     /// Final expiry
     pub final_expiry: Option<u64>,
-    /// CDK Version
-    pub cdk_version: Option<CdkVersion>,
+    /// Issuer Version
+    pub issuer_version: Option<IssuerVersion>,
 }
 
 /// Default fee
