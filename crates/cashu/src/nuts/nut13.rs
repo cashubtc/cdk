@@ -47,8 +47,8 @@ impl Secret {
     /// Create new [`Secret`] from seed
     pub fn from_seed(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         match keyset_id.get_version() {
-            super::nut02::KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
-            super::nut02::KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
+            super::nut02::KeySetVersion::Version01 => Self::legacy_derive(seed, keyset_id, counter),
+            super::nut02::KeySetVersion::Version02 => Self::derive(seed, keyset_id, counter),
         }
     }
 
@@ -84,8 +84,8 @@ impl SecretKey {
     /// Create new [`SecretKey`] from seed
     pub fn from_seed(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         match keyset_id.get_version() {
-            super::nut02::KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
-            super::nut02::KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
+            super::nut02::KeySetVersion::Version01 => Self::legacy_derive(seed, keyset_id, counter),
+            super::nut02::KeySetVersion::Version02 => Self::derive(seed, keyset_id, counter),
         }
     }
 
@@ -503,7 +503,7 @@ mod tests {
             // Verify keyset ID version
             assert_eq!(
                 pre_mint.blinded_message.keyset_id.get_version(),
-                super::super::nut02::KeySetVersion::Version01
+                super::super::nut02::KeySetVersion::Version02
             );
         }
     }
