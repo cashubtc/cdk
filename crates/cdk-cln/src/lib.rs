@@ -422,7 +422,14 @@ impl MintPayment for Cln {
                     }
                 }
 
-                max_fee_msat = bolt11_options.max_fee_amount.map(|a| a.into());
+                max_fee_msat = bolt11_options
+                    .max_fee_amount
+                    .map(|a| {
+                        Amount::new(a.into(), unit.clone())
+                            .convert_to(&CurrencyUnit::Msat)
+                            .map(|a| a.value())
+                    })
+                    .transpose()?;
 
                 bolt11_options.bolt11.to_string()
             }
@@ -477,7 +484,14 @@ impl MintPayment for Cln {
 
                 self.check_outgoing_unpaided(&payment_identifier).await?;
 
-                max_fee_msat = bolt12_options.max_fee_amount.map(|a| a.into());
+                max_fee_msat = bolt12_options
+                    .max_fee_amount
+                    .map(|a| {
+                        Amount::new(a.into(), unit.clone())
+                            .convert_to(&CurrencyUnit::Msat)
+                            .map(|a| a.value())
+                    })
+                    .transpose()?;
 
                 cln_response.invoice
             }
@@ -489,6 +503,9 @@ impl MintPayment for Cln {
         if invoice.is_empty() {
             return Err(Error::UnknownInvoice.into());
         }
+
+        tracing::debug!("Attempting payment with max fee: {:?}", max_fee_msat);
+
         let cln_response = cln_client
             .call_typed(&PayRequest {
                 bolt11: invoice,

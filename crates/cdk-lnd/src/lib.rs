@@ -398,7 +398,7 @@ impl MintPayment for Lnd {
     #[instrument(skip_all)]
     async fn make_payment(
         &self,
-        _unit: &CurrencyUnit,
+        unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         match options {
@@ -446,10 +446,15 @@ impl MintPayment for Lnd {
                                 let route_req = lnrpc::QueryRoutesRequest {
                                     pub_key: hex::encode(pub_key.serialize()),
                                     amt_msat: u64::from(partial_amount_msat) as i64,
-                                    fee_limit: max_fee.map(|f| {
-                                        let limit = Limit::Fixed(u64::from(f) as i64);
-                                        FeeLimit { limit: Some(limit) }
-                                    }),
+                                    fee_limit: max_fee
+                                        .map(|f| {
+                                            let fee_msat = Amount::new(f.into(), unit.clone())
+                                                .convert_to(&CurrencyUnit::Msat)?
+                                                .value();
+                                            let limit = Limit::FixedMsat(fee_msat as i64);
+                                            Ok::<_, Error>(FeeLimit { limit: Some(limit) })
+                                        })
+                                        .transpose()?,
                                     use_mission_control: true,
                                     ..Default::default()
                                 };
@@ -542,10 +547,15 @@ impl MintPayment for Lnd {
 
                         let pay_req = lnrpc::SendRequest {
                             payment_request: bolt11.to_string(),
-                            fee_limit: max_fee.map(|f| {
-                                let limit = Limit::Fixed(u64::from(f) as i64);
-                                FeeLimit { limit: Some(limit) }
-                            }),
+                            fee_limit: max_fee
+                                .map(|f| {
+                                    let fee_msat = Amount::new(f.into(), unit.clone())
+                                        .convert_to(&CurrencyUnit::Msat)?
+                                        .value();
+                                    let limit = Limit::FixedMsat(fee_msat as i64);
+                                    Ok::<_, Error>(FeeLimit { limit: Some(limit) })
+                                })
+                                .transpose()?,
                             amt_msat: amount_msat as i64,
                             ..Default::default()
                         };
