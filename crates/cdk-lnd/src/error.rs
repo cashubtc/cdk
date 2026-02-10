@@ -6,6 +6,9 @@ use tonic::Status;
 /// LND Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Amount Error
+    #[error(transparent)]
+    Amount(#[from] cdk_common::amount::Error),
     /// Invoice amount not defined
     #[error("Unknown invoice amount")]
     UnknownInvoiceAmount,
