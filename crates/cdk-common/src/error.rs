@@ -947,7 +947,14 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::ConcurrentUpdate,
                 detail: err.to_string(),
             },
-
+            Error::MaxInputsExceeded { .. } => ErrorResponse {
+                code: ErrorCode::MaxInputsExceeded,
+                detail: err.to_string()
+            },
+            Error::MaxOutputsExceeded { .. } => ErrorResponse {
+                code: ErrorCode::MaxOutputsExceeded,
+                detail: err.to_string()
+            },
             // Fallback for any remaining errors - use Unknown(99999) instead of TokenNotVerified
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(50000),
@@ -1065,6 +1072,10 @@ pub enum ErrorCode {
     IncorrectQuoteAmount,
     /// Unit in request is not supported (11013)
     UnsupportedUnit,
+    /// The max number of inputs is exceeded
+    MaxInputsExceeded,
+    /// The max number of outputs is exceeded
+    MaxOutputsExceeded,
 
     // 12xxx - Keyset errors
     /// Keyset is not known (12001)
@@ -1135,6 +1146,8 @@ impl ErrorCode {
             11011 => Self::AmountlessInvoiceNotSupported,
             11012 => Self::IncorrectQuoteAmount,
             11013 => Self::UnsupportedUnit,
+            11014 => Self::MaxInputsExceeded,
+            11015 => Self::MaxOutputsExceeded,
             // 12xxx - Keyset errors
             12001 => Self::KeysetNotFound,
             12002 => Self::KeysetInactive,
@@ -1179,6 +1192,8 @@ impl ErrorCode {
             Self::AmountlessInvoiceNotSupported => 11011,
             Self::IncorrectQuoteAmount => 11012,
             Self::UnsupportedUnit => 11013,
+            Self::MaxInputsExceeded => 11014,
+            Self::MaxOutputsExceeded => 11015,
             // 12xxx - Keyset errors
             Self::KeysetNotFound => 12001,
             Self::KeysetInactive => 12002,
