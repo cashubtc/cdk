@@ -157,7 +157,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
         derivation_path_index,
         amounts: amounts.to_owned(),
         input_fee_ppk,
-        issuer_version: IssuerVersion::from_str(env!("CARGO_PKG_VERSION")).ok(),
+        issuer_version: IssuerVersion::from_str(&format!("cdk/{}", env!("CARGO_PKG_VERSION"))).ok(),
     };
     (keyset, keyset_info)
 }

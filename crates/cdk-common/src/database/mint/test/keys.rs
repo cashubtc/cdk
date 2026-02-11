@@ -30,7 +30,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
     };
 
     // Add keyset info
@@ -65,7 +65,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
     };
 
     // Add keyset info first time
@@ -101,7 +101,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
     };
 
     let keyset_id2 = Id::from_str("00916bbf7ef91a37").unwrap();
@@ -115,7 +115,7 @@ where
         derivation_path_index: Some(1),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
     };
 
     // Add keyset infos
@@ -147,7 +147,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
     };
 
     // Add keyset info
@@ -180,7 +180,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
     };
 
     let keyset_id_usd = Id::from_str("00916bbf7ef91a37").unwrap();
@@ -194,7 +194,7 @@ where
         derivation_path_index: Some(1),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
     };
 
     // Add keyset infos and set as active
@@ -232,7 +232,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
     };
 
     let keyset_id2 = Id::from_str("00916bbf7ef91a37").unwrap();
@@ -246,7 +246,7 @@ where
         derivation_path_index: Some(1),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
-        issuer_version: IssuerVersion::from_str("0.1.0").ok(),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
     };
 
     // Add both keysets and set first as active

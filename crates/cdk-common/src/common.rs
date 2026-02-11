@@ -268,10 +268,10 @@ impl std::str::FromStr for IssuerVersion {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (implementation, version_str) = match s.split_once('/') {
-            Some((impl_str, ver_str)) => (impl_str.to_string(), ver_str),
-            None => ("cdk".to_string(), s),
-        };
+        let (implementation, version_str) = s
+            .split_once('/')
+            .ok_or(Error::Custom(format!("Invalid version string: {}", s)))?;
+        let implementation = implementation.to_string();
 
         let parts: Vec<&str> = version_str.splitn(3, '.').collect();
         if parts.len() != 3 {
@@ -481,14 +481,6 @@ mod tests {
 
     #[test]
     fn test_version_parsing() {
-        // Test legacy format (defaults to cdk)
-        let v = IssuerVersion::from_str("0.1.0").unwrap();
-        assert_eq!(v.implementation, "cdk");
-        assert_eq!(v.major, 0);
-        assert_eq!(v.minor, 1);
-        assert_eq!(v.patch, 0);
-        assert_eq!(v.to_string(), "cdk/0.1.0");
-
         // Test explicit cdk format
         let v = IssuerVersion::from_str("cdk/1.2.3").unwrap();
         assert_eq!(v.implementation, "cdk");
@@ -534,19 +526,11 @@ mod tests {
 
         let v_deserialized: IssuerVersion = serde_json::from_str(&json).unwrap();
         assert_eq!(v, v_deserialized);
-
-        // Legacy deserialization (string without prefix)
-        let json_legacy = "\"0.14.2\"";
-        let v_legacy: IssuerVersion = serde_json::from_str(json_legacy).unwrap();
-        assert_eq!(v_legacy.implementation, "cdk");
-        assert_eq!(v_legacy.major, 0);
-        assert_eq!(v_legacy.minor, 14);
-        assert_eq!(v_legacy.patch, 2);
     }
 
     #[test]
     fn test_cdk_version_parsing_with_suffix() {
-        let version_str = "0.15.0-rc1";
+        let version_str = "cdk/0.15.0-rc1";
         let version = IssuerVersion::from_str(version_str).unwrap();
         assert_eq!(version.implementation, "cdk");
         assert_eq!(version.major, 0);
@@ -556,7 +540,7 @@ mod tests {
 
     #[test]
     fn test_cdk_version_parsing_standard() {
-        let version_str = "0.15.0";
+        let version_str = "cdk/0.15.0";
         let version = IssuerVersion::from_str(version_str).unwrap();
         assert_eq!(version.implementation, "cdk");
         assert_eq!(version.major, 0);
@@ -566,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_cdk_version_parsing_complex_suffix() {
-        let version_str = "0.15.0-beta.1+build123";
+        let version_str = "cdk/0.15.0-beta.1+build123";
         let version = IssuerVersion::from_str(version_str).unwrap();
         assert_eq!(version.implementation, "cdk");
         assert_eq!(version.major, 0);
@@ -576,10 +560,15 @@ mod tests {
 
     #[test]
     fn test_cdk_version_parsing_invalid() {
-        let version_str = "0.15";
+        // Missing prefix
+        let version_str = "0.15.0";
         assert!(IssuerVersion::from_str(version_str).is_err());
 
-        let version_str = "0.15.a";
+        // Invalid version format
+        let version_str = "cdk/0.15";
+        assert!(IssuerVersion::from_str(version_str).is_err());
+
+        let version_str = "cdk/0.15.a";
         assert!(IssuerVersion::from_str(version_str).is_err());
     }
 
