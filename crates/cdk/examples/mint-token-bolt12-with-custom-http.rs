@@ -56,22 +56,12 @@ impl HttpTransport for CustomHttp {
         panic!("Not supported");
     }
 
-    async fn http_get_with_headers<R>(
-        &self,
-        url: Url,
-        _auth: Option<AuthToken>,
-        custom_headers: &[(&str, &str)],
-    ) -> Result<R, Error>
+    async fn http_get<R>(&self, url: Url, _auth: Option<AuthToken>) -> Result<R, Error>
     where
         R: DeserializeOwned,
     {
-        let mut request = self.agent.get(url.as_str());
-
-        for (key, value) in custom_headers {
-            request = request.header(*key, *value);
-        }
-
-        request
+        self.agent
+            .get(url.as_str())
             .call()
             .map_err(|e| Error::HttpError(None, e.to_string()))?
             .body_mut()
@@ -79,25 +69,18 @@ impl HttpTransport for CustomHttp {
             .map_err(|e| Error::HttpError(None, e.to_string()))
     }
 
-    /// HTTP Post request
-    async fn http_post_with_headers<P, R>(
+    async fn http_post<P, R>(
         &self,
         url: Url,
         _auth_token: Option<AuthToken>,
-        custom_headers: &[(&str, &str)],
         payload: &P,
     ) -> Result<R, Error>
     where
         P: Serialize + ?Sized + Send + Sync,
         R: DeserializeOwned,
     {
-        let mut request = self.agent.post(url.as_str());
-
-        for (key, value) in custom_headers {
-            request = request.header(*key, *value);
-        }
-
-        request
+        self.agent
+            .post(url.as_str())
             .send_json(payload)
             .map_err(|e| Error::HttpError(None, e.to_string()))?
             .body_mut()

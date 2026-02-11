@@ -338,7 +338,10 @@ pub async fn post_melt_custom(
         .await
         .map_err(into_response)?;
 
-    let res = if prefer.respond_async {
+    // Check for async preference in either the Prefer header or the request body
+    let respond_async = prefer.respond_async || payload.is_prefer_async();
+
+    let res = if respond_async {
         // Asynchronous processing - return immediately after setup
         state
             .mint

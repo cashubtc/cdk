@@ -15,7 +15,7 @@ use url::Url;
 use web_time::{Duration, Instant};
 
 use super::transport::Transport;
-use super::{Error, MeltOptions, MintConnector};
+use super::{Error, MintConnector};
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::{KnownMethod, PaymentMethod};
 use crate::nuts::nut22::MintAuthRequest;
@@ -116,7 +116,6 @@ where
         method: nut19::Method,
         path: nut19::Path,
         auth_token: Option<AuthToken>,
-        custom_headers: &[(&str, &str)],
         payload: &P,
     ) -> Result<R, Error>
     where
@@ -152,16 +151,8 @@ where
             };
 
             let result = match method {
-                nut19::Method::Get => {
-                    transport
-                        .http_get_with_headers(url, auth_token.clone(), custom_headers)
-                        .await
-                }
-                nut19::Method::Post => {
-                    transport
-                        .http_post_with_headers(url, auth_token.clone(), custom_headers, payload)
-                        .await
-                }
+                nut19::Method::Get => transport.http_get(url, auth_token.clone()).await,
+                nut19::Method::Post => transport.http_post(url, auth_token.clone(), payload).await,
             };
 
             if result.is_ok() {
@@ -319,7 +310,7 @@ where
             PaymentMethod::Custom(m) => nut19::Path::custom_mint(m),
         };
 
-        self.retriable_http_request(nut19::Method::Post, path, auth_token, &[], &request)
+        self.retriable_http_request(nut19::Method::Post, path, auth_token, &request)
             .await
     }
 
@@ -365,11 +356,10 @@ where
     /// Melt [NUT-05]
     /// [Nut-08] Lightning fee return if outputs defined
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_melt_with_options(
+    async fn post_melt(
         &self,
         method: &PaymentMethod,
         request: MeltRequest<String>,
-        options: MeltOptions,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::Melt(method.to_string()))
@@ -385,20 +375,8 @@ where
             PaymentMethod::Custom(m) => nut19::Path::custom_melt(m),
         };
 
-        let custom_headers = if options.async_melt {
-            vec![("Prefer", "respond-async")]
-        } else {
-            vec![]
-        };
-
-        self.retriable_http_request(
-            nut19::Method::Post,
-            path,
-            auth_token,
-            &custom_headers,
-            &request,
-        )
-        .await
+        self.retriable_http_request(nut19::Method::Post, path, auth_token, &request)
+            .await
     }
 
     /// Swap Token [NUT-03]
@@ -410,7 +388,6 @@ where
             nut19::Method::Post,
             nut19::Path::Swap,
             auth_token,
-            &[],
             &swap_request,
         )
         .await

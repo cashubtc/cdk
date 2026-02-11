@@ -349,11 +349,10 @@ impl MintConnector for MockMintConnector {
         unimplemented!()
     }
 
-    async fn post_melt_with_options(
+    async fn post_melt(
         &self,
         _method: &PaymentMethod,
         _request: MeltRequest<String>,
-        _options: crate::wallet::MeltOptions,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         unimplemented!()
     }

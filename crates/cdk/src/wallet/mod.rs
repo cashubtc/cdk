@@ -71,8 +71,7 @@ pub use cdk_common::wallet as types;
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{
-    AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MeltOptions,
-    MintConnector,
+    AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector,
 };
 pub use multi_mint_wallet::{MultiMintReceiveOptions, MultiMintSendOptions, MultiMintWallet};
 #[cfg(feature = "nostr")]
