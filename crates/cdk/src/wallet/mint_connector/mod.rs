@@ -22,13 +22,6 @@ use crate::wallet::AuthWallet;
 pub mod http_client;
 pub mod transport;
 
-/// Melt Options
-#[derive(Debug, Clone, Default)]
-pub struct MeltOptions {
-    /// Prefer respond-async
-    pub async_melt: bool,
-}
-
 /// Auth HTTP Client with async transport
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
 /// Default Http Client with async transport (non-Tor)
@@ -98,17 +91,6 @@ pub trait MintConnector: Debug {
         &self,
         method: &PaymentMethod,
         request: MeltRequest<String>,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        self.post_melt_with_options(method, request, MeltOptions::default())
-            .await
-    }
-
-    /// Melt [NUT-05] with options (e.g. async)
-    async fn post_melt_with_options(
-        &self,
-        method: &PaymentMethod,
-        request: MeltRequest<String>,
-        options: MeltOptions,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
 
     /// Split Token [NUT-06]

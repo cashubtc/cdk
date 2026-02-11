@@ -50,7 +50,6 @@ use super::MeltConfirmOptions;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, State};
 use crate::util::unix_time;
-use crate::wallet::mint_connector::MeltOptions;
 use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
@@ -872,16 +871,13 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             quote_info.id.clone(),
             self.state_data.final_proofs.clone(),
             Some(self.state_data.premint_secrets.blinded_messages()),
-        );
+        )
+        .prefer_async(true);
 
         let melt_result = self
             .wallet
             .client
-            .post_melt_with_options(
-                &quote_info.payment_method,
-                request,
-                MeltOptions { async_melt: true },
-            )
+            .post_melt(&quote_info.payment_method, request)
             .await;
 
         let melt_response = match melt_result {

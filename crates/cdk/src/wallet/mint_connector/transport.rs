@@ -38,19 +38,6 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
         auth: Option<cdk_common::AuthToken>,
     ) -> Result<R, super::Error>
     where
-        R: serde::de::DeserializeOwned,
-    {
-        self.http_get_with_headers(url, auth, &[]).await
-    }
-
-    /// HTTP Get request with custom headers
-    async fn http_get_with_headers<R>(
-        &self,
-        url: url::Url,
-        auth: Option<cdk_common::AuthToken>,
-        custom_headers: &[(&str, &str)],
-    ) -> Result<R, super::Error>
-    where
         R: serde::de::DeserializeOwned;
 
     /// HTTP Post request
@@ -58,22 +45,6 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
         &self,
         url: url::Url,
         auth_token: Option<cdk_common::AuthToken>,
-        payload: &P,
-    ) -> Result<R, super::Error>
-    where
-        P: serde::Serialize + ?Sized + Send + Sync,
-        R: serde::de::DeserializeOwned,
-    {
-        self.http_post_with_headers(url, auth_token, &[], payload)
-            .await
-    }
-
-    /// HTTP Post request with custom headers
-    async fn http_post_with_headers<P, R>(
-        &self,
-        url: url::Url,
-        auth_token: Option<cdk_common::AuthToken>,
-        custom_headers: &[(&str, &str)],
         payload: &P,
     ) -> Result<R, super::Error>
     where
@@ -164,12 +135,7 @@ impl Transport for Async {
             .collect::<Vec<_>>())
     }
 
-    async fn http_get_with_headers<R>(
-        &self,
-        url: Url,
-        auth: Option<AuthToken>,
-        custom_headers: &[(&str, &str)],
-    ) -> Result<R, Error>
+    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
     where
         R: DeserializeOwned,
     {
@@ -178,10 +144,6 @@ impl Transport for Async {
 
         if let Some(auth) = auth {
             request = request.header(auth.header_key(), auth.to_string());
-        }
-
-        for (key, value) in custom_headers {
-            request = request.header(*key, *value);
         }
 
         let response = request
@@ -201,11 +163,10 @@ impl Transport for Async {
         })
     }
 
-    async fn http_post_with_headers<P, R>(
+    async fn http_post<P, R>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
-        custom_headers: &[(&str, &str)],
         payload: &P,
     ) -> Result<R, Error>
     where
@@ -217,10 +178,6 @@ impl Transport for Async {
 
         if let Some(auth) = auth_token {
             request = request.header(auth.header_key(), auth.to_string());
-        }
-
-        for (key, value) in custom_headers {
-            request = request.header(*key, *value);
         }
 
         let response = request
