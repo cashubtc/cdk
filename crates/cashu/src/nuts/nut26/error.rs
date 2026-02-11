@@ -7,7 +7,12 @@ use std::fmt;
 pub enum Error {
     /// Invalid bech32m prefix (expected "creqb")
     InvalidPrefix,
-    /// Invalid TLV structure
+    /// Invalid TLV structure (missing required fields, unexpected values, malformed TLV)
+    InvalidStructure,
+    /// Invalid length of a TLV field or the overall structure
+    InvalidLength,
+    /// Invalid TLV structure (deprecated, use InvalidStructure)
+    #[deprecated(since = "0.1.0", note = "Use InvalidStructure instead")]
     InvalidTlvStructure,
     /// Invalid UTF-8 in string field
     InvalidUtf8,
@@ -29,6 +34,8 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::InvalidPrefix => write!(f, "Invalid bech32m prefix, expected 'creqb'"),
+            Error::InvalidStructure => write!(f, "Invalid TLV structure"),
+            Error::InvalidLength => write!(f, "Invalid TLV field length"),
             Error::InvalidTlvStructure => write!(f, "Invalid TLV structure"),
             Error::InvalidUtf8 => write!(f, "Invalid UTF-8 encoding in string field"),
             Error::InvalidPubkey => write!(f, "Invalid public key"),

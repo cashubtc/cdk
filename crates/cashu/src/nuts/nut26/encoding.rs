@@ -63,7 +63,7 @@ impl<'a> TlvReader<'a> {
         Self { data, position: 0 }
     }
 
-    fn read_tlv(&mut self) -> Result<Option<(u8, Vec<u8>)>, &'static str> {
+    fn read_tlv(&mut self) -> Result<Option<(u8, Vec<u8>)>, Error> {
         if self.position + 3 > self.data.len() {
             return Ok(None);
         }
@@ -74,7 +74,7 @@ impl<'a> TlvReader<'a> {
         self.position += 3;
 
         if self.position + len > self.data.len() {
-            return Err("TLV value extends beyond buffer");
+            return Err(Error::InvalidLength);
         }
 
         let value = self.data[self.position..self.position + len].to_vec();
@@ -156,11 +156,11 @@ impl PaymentRequest {
     /// ```
     pub fn to_bech32_string(&self) -> Result<String, Error> {
         let tlv_bytes = self.encode_tlv()?;
-        let hrp = Hrp::parse(CREQ_B_HRP).map_err(|_| Error::InvalidPrefix)?;
+        let hrp = Hrp::parse(CREQ_B_HRP).map_err(|_| Error::InvalidStructure)?;
 
         // Always emit uppercase for QR compatibility
-        let encoded =
-            bech32::encode_upper::<Bech32m>(hrp, &tlv_bytes).map_err(|_| Error::InvalidPrefix)?;
+        let encoded = bech32::encode_upper::<Bech32m>(hrp, &tlv_bytes)
+            .map_err(|_| Error::InvalidStructure)?;
         Ok(encoded)
     }
 
@@ -204,7 +204,7 @@ impl PaymentRequest {
     /// # Ok::<(), cashu::nuts::nut26::Error>(())
     /// ```
     pub fn from_bech32_string(s: &str) -> Result<Self, Error> {
-        let (hrp, data) = bech32::decode(s).map_err(|_| Error::InvalidPrefix)?;
+        let (hrp, data) = bech32::decode(s).map_err(|e| Error::Bech32Error(e))?;
         if !hrp.as_str().eq_ignore_ascii_case(CREQ_B_HRP) {
             return Err(Error::InvalidPrefix);
         }
@@ -225,16 +225,22 @@ impl PaymentRequest {
         let mut transports: Vec<Transport> = Vec::new();
         let mut nut10: Option<Nut10SecretRequest> = None;
 
-        while let Some((tag, value)) = reader.read_tlv().map_err(|_| Error::InvalidPrefix)? {
+        while let Some((tag, value)) = reader.read_tlv()? {
             match tag {
                 0x01 => {
                     // id: string
-                    id = Some(String::from_utf8(value).map_err(|_| Error::InvalidPrefix)?);
+                    if id.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
+                    id = Some(String::from_utf8(value).map_err(|_| Error::InvalidUtf8)?);
                 }
                 0x02 => {
                     // amount: u64
+                    if amount.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     if value.len() != 8 {
-                        return Err(Error::InvalidPrefix);
+                        return Err(Error::InvalidLength);
                     }
                     let amount_val = u64::from_be_bytes([
                         value[0], value[1], value[2], value[3], value[4], value[5], value[6],
@@ -244,30 +250,38 @@ impl PaymentRequest {
                 }
                 0x03 => {
                     // unit: u8 or string
+                    if unit.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     if value.len() == 1 && value[0] == 0 {
                         unit = Some(CurrencyUnit::Sat);
                     } else {
-                        let unit_str =
-                            String::from_utf8(value).map_err(|_| Error::InvalidPrefix)?;
+                        let unit_str = String::from_utf8(value).map_err(|_| Error::InvalidUtf8)?;
                         unit = Some(TlvUnit::Custom(unit_str).into());
                     }
                 }
                 0x04 => {
                     // single_use: u8 (0 or 1)
+                    if single_use.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     if !value.is_empty() {
                         single_use = Some(value[0] != 0);
                     }
                 }
                 0x05 => {
                     // mint: string (repeatable)
-                    let mint_str = String::from_utf8(value).map_err(|_| Error::InvalidPrefix)?;
+                    let mint_str = String::from_utf8(value).map_err(|_| Error::InvalidUtf8)?;
                     let mint_url =
-                        MintUrl::from_str(&mint_str).map_err(|_| Error::InvalidPrefix)?;
+                        MintUrl::from_str(&mint_str).map_err(|_| Error::InvalidStructure)?;
                     mints.push(mint_url);
                 }
                 0x06 => {
                     // description: string
-                    description = Some(String::from_utf8(value).map_err(|_| Error::InvalidPrefix)?);
+                    if description.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
+                    description = Some(String::from_utf8(value).map_err(|_| Error::InvalidUtf8)?);
                 }
                 0x07 => {
                     // transport: sub-TLV (repeatable)
@@ -366,12 +380,15 @@ impl PaymentRequest {
         let mut tags: Vec<(String, Vec<String>)> = Vec::new();
         let mut http_target: Option<String> = None;
 
-        while let Some((tag, value)) = reader.read_tlv().map_err(|_| Error::InvalidPrefix)? {
+        while let Some((tag, value)) = reader.read_tlv()? {
             match tag {
                 0x01 => {
                     // kind: u8
+                    if kind.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     if value.len() != 1 {
-                        return Err(Error::InvalidPrefix);
+                        return Err(Error::InvalidLength);
                     }
                     kind = Some(value[0]);
                 }
@@ -381,19 +398,19 @@ impl PaymentRequest {
                         Some(0x00) => {
                             // nostr: 32-byte x-only pubkey
                             if value.len() != 32 {
-                                return Err(Error::InvalidPrefix);
+                                return Err(Error::InvalidLength);
                             }
                             pubkey = Some(value);
                         }
                         Some(0x01) => {
                             // http_post: UTF-8 URL string
                             http_target =
-                                Some(String::from_utf8(value).map_err(|_| Error::InvalidPrefix)?);
+                                Some(String::from_utf8(value).map_err(|_| Error::InvalidUtf8)?);
                         }
                         None => {
                             // kind should always be present if there's a target
                         }
-                        _ => return Err(Error::InvalidPrefix),
+                        _ => return Err(Error::InvalidStructure),
                     }
                 }
                 0x03 => {
@@ -409,10 +426,10 @@ impl PaymentRequest {
 
         // In-band transport is represented by absence of transport tag (0x07)
         // If we're here, we have a transport tag, so it must be nostr or http_post
-        let transport_type = match kind.ok_or(Error::InvalidPrefix)? {
+        let transport_type = match kind.ok_or(Error::InvalidStructure)? {
             0x00 => TransportType::Nostr,
             0x01 => TransportType::HttpPost,
-            _ => return Err(Error::InvalidPrefix),
+            _ => return Err(Error::InvalidStructure),
         };
 
         // Extract relays from "r" tag tuples for Nostr transport
@@ -429,29 +446,19 @@ impl PaymentRequest {
                 if let Some(pk) = pubkey {
                     Self::encode_nprofile(&pk, &relays)?
                 } else {
-                    return Err(Error::InvalidPrefix);
+                    return Err(Error::InvalidStructure);
                 }
             }
-            TransportType::HttpPost => http_target.ok_or(Error::InvalidPrefix)?,
+            TransportType::HttpPost => http_target.ok_or(Error::InvalidStructure)?,
             TransportType::InBand => {
                 // This case should not be reachable since InBand is not decoded from transport tag
                 unreachable!("InBand transport should not be decoded from transport tag")
             }
         };
 
-        // Convert tags to the Transport format
-        // For Nostr: keep "n" tags as-is, convert "r" tags to "relay" for compatibility
-        let mut final_tags: Vec<(String, Vec<String>)> = Vec::new();
-        for (key, values) in tags {
-            if key == "r" {
-                // Convert "r" tag tuples to "relay" tags for compatibility
-                for relay in values {
-                    final_tags.push(("relay".to_string(), vec![relay]));
-                }
-            } else {
-                final_tags.push((key, values));
-            }
-        }
+        // Keep tags as-is per NUT-26 spec (no "r" to "relay" conversion)
+        // "r" tags are part of the transport encoding and should be preserved
+        let final_tags: Vec<(String, Vec<String>)> = tags;
 
         Ok(Transport {
             _type: transport_type,
@@ -483,7 +490,7 @@ impl PaymentRequest {
         let kind = match transport._type {
             TransportType::InBand => {
                 // In-band is represented by absence of transport tag, not by encoding
-                return Err(Error::InvalidPrefix);
+                return Err(Error::InvalidStructure);
             }
             TransportType::Nostr => 0x00u8,
             TransportType::HttpPost => 0x01u8,
@@ -561,20 +568,26 @@ impl PaymentRequest {
         let mut data: Option<Vec<u8>> = None;
         let mut tags: Vec<(String, Vec<String>)> = Vec::new();
 
-        while let Some((tag, value)) = reader.read_tlv().map_err(|_| Error::InvalidPrefix)? {
+        while let Some((tag, value)) = reader.read_tlv()? {
             match tag {
                 0x01 => {
                     // kind: u8
+                    if kind.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     if value.len() != 1 {
-                        return Err(Error::InvalidPrefix);
+                        return Err(Error::InvalidLength);
                     }
                     kind = Some(value[0]);
                 }
                 0x02 => {
                     // data: bytes
+                    if data.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     data = Some(value);
                 }
-                0x03 | 0x05 => {
+                0x03 => {
                     // tag_tuple: generic tuple (repeatable)
                     let tag_tuple = Self::decode_tag_tuple(&value)?;
                     tags.push(tag_tuple);
@@ -585,7 +598,7 @@ impl PaymentRequest {
             }
         }
 
-        let kind_val = kind.ok_or(Error::InvalidPrefix)?;
+        let kind_val = kind.ok_or(Error::InvalidStructure)?;
         let data_val = data.unwrap_or_default();
 
         // Convert kind u8 to Kind enum
@@ -645,16 +658,16 @@ impl PaymentRequest {
     /// Decode tag tuple
     fn decode_tag_tuple(bytes: &[u8]) -> Result<(String, Vec<String>), Error> {
         if bytes.is_empty() {
-            return Err(Error::InvalidPrefix);
+            return Err(Error::InvalidLength);
         }
 
         let key_len = bytes[0] as usize;
         if bytes.len() < 1 + key_len {
-            return Err(Error::InvalidPrefix);
+            return Err(Error::InvalidLength);
         }
 
         let key =
-            String::from_utf8(bytes[1..1 + key_len].to_vec()).map_err(|_| Error::InvalidPrefix)?;
+            String::from_utf8(bytes[1..1 + key_len].to_vec()).map_err(|_| Error::InvalidUtf8)?;
 
         let mut values = Vec::new();
         let mut pos = 1 + key_len;
@@ -664,11 +677,11 @@ impl PaymentRequest {
             pos += 1;
 
             if pos + val_len > bytes.len() {
-                return Err(Error::InvalidPrefix);
+                return Err(Error::InvalidLength);
             }
 
             let value = String::from_utf8(bytes[pos..pos + val_len].to_vec())
-                .map_err(|_| Error::InvalidPrefix)?;
+                .map_err(|_| Error::InvalidUtf8)?;
             values.push(value);
             pos += val_len;
         }
@@ -679,7 +692,7 @@ impl PaymentRequest {
     /// Encode tag tuple
     fn encode_tag_tuple(tag: &[String]) -> Result<Vec<u8>, Error> {
         if tag.is_empty() {
-            return Err(Error::InvalidPrefix);
+            return Err(Error::InvalidStructure);
         }
 
         let mut bytes = Vec::new();
@@ -703,9 +716,9 @@ impl PaymentRequest {
     /// - Type 0: 32-byte pubkey (required, only one)
     /// - Type 1: relay URL string (optional, repeatable)
     fn decode_nprofile(nprofile: &str) -> Result<(Vec<u8>, Vec<String>), Error> {
-        let (hrp, data) = bech32::decode(nprofile).map_err(|_| Error::InvalidPrefix)?;
+        let (hrp, data) = bech32::decode(nprofile).map_err(|e| Error::Bech32Error(e))?;
         if hrp.as_str() != "nprofile" {
-            return Err(Error::InvalidPrefix);
+            return Err(Error::InvalidStructure);
         }
 
         // Parse NIP-19 TLV format (Type: 1 byte, Length: 1 byte, Value: variable)
@@ -723,7 +736,7 @@ impl PaymentRequest {
             pos += 2;
 
             if pos + len > data.len() {
-                return Err(Error::InvalidPrefix);
+                return Err(Error::InvalidLength);
             }
 
             let value = &data[pos..pos + len];
@@ -733,14 +746,14 @@ impl PaymentRequest {
                 0 => {
                     // pubkey: 32 bytes
                     if value.len() != 32 {
-                        return Err(Error::InvalidPrefix);
+                        return Err(Error::InvalidLength);
                     }
                     pubkey = Some(value.to_vec());
                 }
                 1 => {
                     // relay: UTF-8 string
                     let relay =
-                        String::from_utf8(value.to_vec()).map_err(|_| Error::InvalidPrefix)?;
+                        String::from_utf8(value.to_vec()).map_err(|_| Error::InvalidUtf8)?;
                     relays.push(relay);
                 }
                 _ => {
@@ -749,7 +762,7 @@ impl PaymentRequest {
             }
         }
 
-        let pubkey = pubkey.ok_or(Error::InvalidPrefix)?;
+        let pubkey = pubkey.ok_or(Error::InvalidStructure)?;
         Ok((pubkey, relays))
     }
 
@@ -757,7 +770,7 @@ impl PaymentRequest {
     /// NIP-19 nprofile TLV format (Type: 1 byte, Length: 1 byte, Value: variable)
     fn encode_nprofile(pubkey: &[u8], relays: &[String]) -> Result<String, Error> {
         if pubkey.len() != 32 {
-            return Err(Error::InvalidPrefix);
+            return Err(Error::InvalidLength);
         }
 
         let mut tlv_bytes = Vec::new();
@@ -770,15 +783,15 @@ impl PaymentRequest {
         // Type 1: relays (repeatable) - Length must fit in 1 byte
         for relay in relays {
             if relay.len() > 255 {
-                return Err(Error::InvalidPrefix); // Relay URL too long for NIP-19
+                return Err(Error::TagTooLong); // Relay URL too long for NIP-19
             }
             tlv_bytes.push(1); // type
             tlv_bytes.push(relay.len() as u8); // length
             tlv_bytes.extend_from_slice(relay.as_bytes());
         }
 
-        let hrp = Hrp::parse("nprofile").map_err(|_| Error::InvalidPrefix)?;
-        bech32::encode::<Bech32>(hrp, &tlv_bytes).map_err(|_| Error::InvalidPrefix)
+        let hrp = Hrp::parse("nprofile").map_err(|_| Error::InvalidStructure)?;
+        bech32::encode::<Bech32>(hrp, &tlv_bytes).map_err(|_| Error::InvalidStructure)
     }
 }
 
@@ -1186,11 +1199,11 @@ mod tests {
         // Should be encoded back as nprofile since it has relays
         assert!(decoded.transports[0].target.starts_with("nprofile"));
 
-        // Check that relay was preserved in tags
+        // Check that relay was preserved in tags as "r" per NUT-26 spec
         let tags = decoded.transports[0].tags.as_ref().unwrap();
         assert!(tags
             .iter()
-            .any(|t| t.len() >= 2 && t[0] == "relay" && t[1] == "wss://relay.example.com"));
+            .any(|t| t.len() >= 2 && t[0] == "r" && t[1] == "wss://relay.example.com"));
     }
 
     #[test]
@@ -1245,7 +1258,7 @@ mod tests {
             .any(|t| t.len() >= 2 && t[0] == "n" && t[1] == "17"));
         assert!(tags
             .iter()
-            .any(|t| t.len() >= 2 && t[0] == "relay" && t[1] == "wss://relay.damus.io"));
+            .any(|t| t.len() >= 2 && t[0] == "r" && t[1] == "wss://relay.damus.io"));
     }
 
     #[test]
@@ -1379,10 +1392,10 @@ mod tests {
             .any(|t| t.len() >= 2 && t[0] == "n" && t[1] == "44"));
         assert!(tags2
             .iter()
-            .any(|t| t.len() >= 2 && t[0] == "relay" && t[1] == "wss://relay.damus.io"));
+            .any(|t| t.len() >= 2 && t[0] == "r" && t[1] == "wss://relay.damus.io"));
         assert!(tags2
             .iter()
-            .any(|t| t.len() >= 2 && t[0] == "relay" && t[1] == "wss://nos.lol"));
+            .any(|t| t.len() >= 2 && t[0] == "r" && t[1] == "wss://nos.lol"));
     }
 
     // Test vectors from NUT-26 specification
@@ -1710,7 +1723,7 @@ mod tests {
 
     #[test]
     fn test_relay_tag_extraction_from_nprofile() {
-        // Test that relays are properly extracted from nprofile and converted to "relay" tags
+        // Test that relays are properly extracted from nprofile as "r" tags per NUT-26 spec
         let json = r#"{
             "i": "relay_test",
             "a": 100,
@@ -1739,16 +1752,16 @@ mod tests {
         // Decode and verify round-trip
         let decoded = PaymentRequest::from_bech32_string(&encoded).expect("decoding should work");
 
-        // Verify relays were extracted and converted to "relay" tags
+        // Verify relays were extracted as "r" tags per NUT-26 spec
         let tags = decoded.transports[0]
             .tags
             .as_ref()
             .expect("should have tags");
 
-        // Check all three relays are present as "relay" tags
+        // Check all three relays are present as "r" tags per NUT-26 spec
         let relay_tags: Vec<&Vec<String>> = tags
             .iter()
-            .filter(|t| !t.is_empty() && t[0] == "relay")
+            .filter(|t| !t.is_empty() && t[0] == "r")
             .collect();
         assert_eq!(relay_tags.len(), 3);
 
