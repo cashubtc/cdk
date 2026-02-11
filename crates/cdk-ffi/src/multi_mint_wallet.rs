@@ -777,6 +777,30 @@ impl MultiMintWallet {
         }
         Ok(result)
     }
+
+    /// Get the latest generated P2PK signing key (most recently created)
+    pub async fn get_latest_public_key(&self) -> Result<Option<P2PKSigningKey>, FfiError> {
+        let result = self
+            .inner
+            .get_latest_public_key()
+            .await
+            .map_err(FfiError::database)?;
+        Ok(result.map(Into::into))
+    }
+
+    pub async fn generate_public_key(&self) -> Result<PublicKey, FfiError> {
+        let result = self.inner.generate_public_key().await?;
+        Ok(result.into())
+    }
+
+    pub async fn get_public_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError> {
+        let result = self
+            .inner
+            .get_public_keys()
+            .await
+            .map_err(FfiError::database)?;
+        Ok(result.into_iter().map(Into::into).collect())
+    }
 }
 
 /// Payment request methods for MultiMintWallet

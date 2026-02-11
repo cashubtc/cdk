@@ -6,11 +6,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bitcoin::bip32::Xpriv;
+use bitcoin::Network;
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::ProofInfo;
+use cdk_common::{PublicKey, SecretKey, SECP256K1};
 use getrandom::getrandom;
 pub use mint_connector::http_client::{
     AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
@@ -50,6 +53,7 @@ mod mint_metadata_cache;
 pub mod multi_mint_wallet;
 #[cfg(feature = "npubcash")]
 mod npubcash;
+pub mod p2pk;
 pub mod payment_request;
 mod proofs;
 mod receive;
@@ -835,6 +839,48 @@ impl Wallet {
     /// This controls how many proofs of each denomination the wallet tries to maintain.
     pub fn set_target_proof_count(&mut self, count: usize) {
         self.target_proof_count = count;
+    }
+
+    /// generates and stores public key in database
+    pub async fn generate_public_key(&self) -> Result<PublicKey, Error> {
+        p2pk::generate_public_key(&self.localstore, &self.seed).await
+    }
+
+    /// gets public key by it's hex value
+    pub async fn get_public_key(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, database::Error> {
+        p2pk::get_public_key(&self.localstore, pubkey).await
+    }
+
+    /// gets list of stored public keys in database
+    pub async fn get_public_keys(
+        &self,
+    ) -> Result<Vec<cdk_common::wallet::P2PKSigningKey>, database::Error> {
+        p2pk::get_public_keys(&self.localstore).await
+    }
+
+    /// Gets the latest generated P2PK signing key (most recently created)
+    pub async fn get_latest_public_key(
+        &self,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, database::Error> {
+        p2pk::get_latest_public_key(&self.localstore).await
+    }
+
+    /// try to get secret key from p2pk signing key in localstore
+    async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Error> {
+        let signing = self.localstore.get_p2pk_key(pubkey).await?;
+        if let Some(signing) = signing {
+            let xpriv = Xpriv::new_master(Network::Bitcoin, &self.seed)?;
+            return Ok(Some(SecretKey::from(
+                xpriv
+                    .derive_priv(&SECP256K1, &signing.derivation_path)?
+                    .private_key,
+            )));
+        }
+
+        Ok(None)
     }
 }
 
