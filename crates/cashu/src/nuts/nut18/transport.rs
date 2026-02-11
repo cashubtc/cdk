@@ -12,9 +12,6 @@ use crate::nuts::nut18::error::Error;
 /// Transport Type
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransportType {
-    /// In-band transport (tokens sent directly in the payment request response)
-    #[serde(rename = "in_band")]
-    InBand,
     /// Nostr
     #[serde(rename = "nostr")]
     Nostr,
@@ -36,7 +33,6 @@ impl FromStr for TransportType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "in_band" => Ok(Self::InBand),
             "nostr" => Ok(Self::Nostr),
             "post" => Ok(Self::HttpPost),
             _ => Err(Error::InvalidPrefix),

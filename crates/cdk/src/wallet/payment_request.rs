@@ -182,14 +182,6 @@ impl Wallet {
                         Err(Error::HttpError(Some(status), body))
                     }
                 }
-                TransportType::InBand => {
-                    // In-band transport means tokens should be returned directly
-                    // in the payment request response, not sent via this method.
-                    // The caller should handle the proofs directly.
-                    Err(Error::Custom(
-                        "In-band transport: tokens should be returned directly, not sent via pay_payment_request".to_string(),
-                    ))
-                }
             }
         } else {
             // If no transport is available, return an error instead of printing the token
