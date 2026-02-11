@@ -78,7 +78,3 @@ pub use cdk_common::subscription;
 /// Re-export futures::Stream
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub use futures::{Stream, StreamExt};
-/// Payment Request
-
-#[cfg(test)]
-mod cdk_version_test;

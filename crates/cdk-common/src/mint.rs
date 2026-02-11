@@ -16,9 +16,10 @@ use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use uuid::Uuid;
 
+use crate::common::IssuerVersion;
 use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::payment::PaymentIdentifier;
-use crate::{common::IssuerVersion, Amount, CurrencyUnit, Error, Id, KeySetInfo, PublicKey};
+use crate::{Amount, CurrencyUnit, Error, Id, KeySetInfo, PublicKey};
 
 /// Operation kind for saga persistence
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

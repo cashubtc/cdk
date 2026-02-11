@@ -6,11 +6,11 @@
 //! There is an in memory implementation, when the keys are stored in memory, in the same process,
 //! but it is isolated from the rest of the application, and they communicate through a channel with
 //! the defined API.
+use cdk_common::common::IssuerVersion;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::{
-    common::IssuerVersion, BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet,
-    Proof, PublicKey,
+    BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
 };
 
 #[derive(Debug)]

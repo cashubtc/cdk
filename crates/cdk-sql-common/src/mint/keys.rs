@@ -49,8 +49,8 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
         amounts,
         input_fee_ppk: column_as_nullable_number!(row_keyset_ppk).unwrap_or(0),
         final_expiry: column_as_nullable_number!(valid_to),
-        issuer_version: column_as_nullable_string!(issuer_version).and_then(
-            |v| match IssuerVersion::from_str(&v) {
+        issuer_version: column_as_nullable_string!(issuer_version).and_then(|v| {
+            match IssuerVersion::from_str(&v) {
                 Ok(ver) => Some(ver),
                 Err(e) => {
                     tracing::warn!(
@@ -60,8 +60,8 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
                     );
                     None
                 }
-            },
-        ),
+            }
+        }),
     })
 }
 
@@ -103,7 +103,10 @@ where
         .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
         .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
         .bind("derivation_path_index", keyset.derivation_path_index)
-        .bind("issuer_version", keyset.issuer_version.map(|v| v.to_string()))
+        .bind(
+            "issuer_version",
+            keyset.issuer_version.map(|v| v.to_string()),
+        )
         .execute(&self.inner)
         .await?;
 
