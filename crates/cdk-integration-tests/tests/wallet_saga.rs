@@ -11,7 +11,7 @@
 use anyhow::Result;
 use cashu::{MeltQuoteState, PaymentMethod};
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::wallet::SendOptions;
+use cdk::wallet::{SendOptions, WalletTrait};
 use cdk::Amount;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;

@@ -20,7 +20,7 @@ use bip39::Mnemonic;
 use cdk_ffi::sqlite::WalletSqliteDatabase;
 use cdk_ffi::types::{encode_mint_quote, Amount, CurrencyUnit, QuoteState, SplitTarget};
 use cdk_ffi::wallet::Wallet as FfiWallet;
-use cdk_ffi::{PaymentMethod, WalletConfig};
+use cdk_ffi::{PaymentMethod, WalletConfig, WalletTrait};
 use cdk_integration_tests::{get_mint_url_from_env, pay_if_regtest};
 use lightning_invoice::Bolt11Invoice;
 use tokio::time::timeout;

@@ -27,7 +27,7 @@ use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::subscription::Params;
 use cdk::wallet::types::{TransactionDirection, TransactionId};
-use cdk::wallet::{ReceiveOptions, SendMemo, SendOptions};
+use cdk::wallet::{ReceiveOptions, SendMemo, SendOptions, WalletTrait};
 use cdk::Amount;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;

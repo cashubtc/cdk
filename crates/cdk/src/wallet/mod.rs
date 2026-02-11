@@ -28,12 +28,11 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::nut17::Kind;
 use crate::nuts::{
-    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
-    RestoreRequest, SpendingConditions, State,
+    nut10, CurrencyUnit, Id, Keys, MintQuoteState, PreMintSecrets, Proofs, RestoreRequest,
+    SpendingConditions, State,
 };
-use crate::util::unix_time;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
-use crate::{Amount, OidcClient};
+use crate::Amount;
 
 mod auth;
 #[cfg(feature = "nostr")]
@@ -64,10 +63,12 @@ mod swap;
 pub mod test_utils;
 mod transactions;
 pub mod util;
+mod wallet_trait;
 
 pub use auth::{AuthMintConnector, AuthWallet};
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
+pub use cdk_common::wallet::Wallet as WalletTrait;
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{
@@ -192,7 +193,7 @@ impl From<WalletSubscription> for WalletParams {
 }
 
 /// Amount that are recovered during restore operation
-#[derive(Debug, Hash, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
 pub struct Restored {
     /// Amount in the restore that has already been spent
     pub spent: Amount,
@@ -327,95 +328,8 @@ impl Wallet {
         Ok(())
     }
 
-    /// Query mint for current mint information
-    #[instrument(skip(self))]
-    pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, Error> {
-        let mint_info = self
-            .metadata_cache
-            .load_from_mint(&self.localstore, &self.client)
-            .await?
-            .mint_info
-            .clone();
-
-        // If mint provides time make sure it is accurate
-        if let Some(mint_unix_time) = mint_info.time {
-            let current_unix_time = unix_time();
-            if current_unix_time.abs_diff(mint_unix_time) > 30 {
-                tracing::warn!(
-                    "Mint time does match wallet time. Mint: {}, Wallet: {}",
-                    mint_unix_time,
-                    current_unix_time
-                );
-                return Err(Error::MintTimeExceedsTolerance);
-            }
-        }
-
-        // Create or update auth wallet
-        {
-            let mut auth_wallet = self.auth_wallet.write().await;
-            match &*auth_wallet {
-                Some(auth_wallet) => {
-                    let mut protected_endpoints = auth_wallet.protected_endpoints.write().await;
-                    *protected_endpoints = mint_info.protected_endpoints();
-
-                    if let Some(oidc_client) = mint_info
-                        .openid_discovery()
-                        .map(|url| OidcClient::new(url, None))
-                    {
-                        auth_wallet.set_oidc_client(Some(oidc_client)).await;
-                    }
-                }
-                None => {
-                    tracing::info!("Mint has auth enabled creating auth wallet");
-
-                    let oidc_client = mint_info
-                        .openid_discovery()
-                        .map(|url| OidcClient::new(url, None));
-                    let new_auth_wallet = AuthWallet::new(
-                        self.mint_url.clone(),
-                        None,
-                        self.localstore.clone(),
-                        self.metadata_cache.clone(),
-                        mint_info.protected_endpoints(),
-                        oidc_client,
-                    );
-                    *auth_wallet = Some(new_auth_wallet.clone());
-
-                    self.client
-                        .set_auth_wallet(Some(new_auth_wallet.clone()))
-                        .await;
-
-                    if let Err(e) = new_auth_wallet.refresh_keysets().await {
-                        tracing::error!("Could not fetch auth keysets: {}", e);
-                    }
-                }
-            }
-        }
-
-        tracing::trace!("Mint info updated for {}", self.mint_url);
-
-        Ok(Some(mint_info))
-    }
-
-    /// Load mint info from cache
-    ///
-    /// This is a helper function that loads the mint info from the metadata cache
-    /// using the configured TTL. Unlike `fetch_mint_info()`, this does not make
-    /// a network call if the cache is fresh.
-    #[instrument(skip(self))]
-    pub async fn load_mint_info(&self) -> Result<MintInfo, Error> {
-        let mint_info = self
-            .metadata_cache
-            .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.read();
-                *ttl
-            })
-            .await?
-            .mint_info
-            .clone();
-
-        Ok(mint_info)
-    }
+    // fetch_mint_info() and load_mint_info() are now implemented via the
+    // WalletMintInfo trait in traits.rs
 
     /// Get amounts needed to refill proof state
     #[instrument(skip(self))]

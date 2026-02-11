@@ -4,7 +4,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
-use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
+use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder, WalletTrait};
 
 use crate::error::FfiError;
 use crate::token::Token;
@@ -21,6 +21,11 @@ impl Wallet {
     /// Create a Wallet from an existing CDK wallet (internal use only)
     pub(crate) fn from_inner(inner: Arc<CdkWallet>) -> Self {
         Self { inner }
+    }
+
+    /// Get reference to the inner CDK wallet
+    pub(crate) fn inner(&self) -> &Arc<CdkWallet> {
+        &self.inner
     }
 }
 
@@ -92,37 +97,9 @@ impl Wallet {
         self.inner.set_metadata_cache_ttl(ttl);
     }
 
-    /// Get total balance
-    pub async fn total_balance(&self) -> Result<Amount, FfiError> {
-        let balance = self.inner.total_balance().await?;
-        Ok(balance.into())
-    }
-
-    /// Get total pending balance
-    pub async fn total_pending_balance(&self) -> Result<Amount, FfiError> {
-        let balance = self.inner.total_pending_balance().await?;
-        Ok(balance.into())
-    }
-
-    /// Get total reserved balance
-    pub async fn total_reserved_balance(&self) -> Result<Amount, FfiError> {
-        let balance = self.inner.total_reserved_balance().await?;
-        Ok(balance.into())
-    }
-
-    /// Get mint info from mint
-    pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
-        let info = self.inner.fetch_mint_info().await?;
-        Ok(info.map(Into::into))
-    }
-
-    /// Load mint info
-    ///
-    /// This will get mint info from cache if it is fresh
-    pub async fn load_mint_info(&self) -> Result<MintInfo, FfiError> {
-        let info = self.inner.load_mint_info().await?;
-        Ok(info.into())
-    }
+    // total_balance(), total_pending_balance(), total_reserved_balance(),
+    // fetch_mint_info(), load_mint_info() are now available via wallet traits
+    // (WalletBalance, WalletMintInfo) in wallet_traits.rs
 
     /// Receive tokens
     pub async fn receive(
@@ -215,10 +192,14 @@ impl Wallet {
         description: Option<String>,
         extra: Option<String>,
     ) -> Result<MintQuote, FfiError> {
-        let quote = self
-            .inner
-            .mint_quote(payment_method, amount.map(Into::into), description, extra)
-            .await?;
+        let quote = <CdkWallet as WalletTrait>::mint_quote(
+            self.inner.as_ref(),
+            payment_method.into(),
+            amount.map(Into::into),
+            description,
+            extra,
+        )
+        .await?;
         Ok(quote.into())
     }
 
@@ -480,13 +461,13 @@ impl Wallet {
 
     /// Refresh keysets from the mint
     pub async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
-        let keysets = self.inner.refresh_keysets().await?;
+        let keysets = <CdkWallet as WalletTrait>::refresh_keysets(self.inner.as_ref()).await?;
         Ok(keysets.into_iter().map(Into::into).collect())
     }
 
     /// Get the active keyset for the wallet's unit
     pub async fn get_active_keyset(&self) -> Result<KeySetInfo, FfiError> {
-        let keyset = self.inner.get_active_keyset().await?;
+        let keyset = <CdkWallet as WalletTrait>::get_active_keyset(self.inner.as_ref()).await?;
         Ok(keyset.into())
     }
 

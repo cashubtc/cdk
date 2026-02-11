@@ -20,7 +20,7 @@ use std::time::Duration;
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::Wallet;
+use cdk::wallet::{Wallet, WalletTrait};
 use cdk::StreamExt;
 use cdk_sqlite::wallet::memory;
 use nostr_sdk::{Keys, ToBech32};
