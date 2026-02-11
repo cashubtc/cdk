@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{WalletBuilder, WalletConfig, WalletRepository};
+use cdk::wallet::{WalletBuilder, WalletConfig, WalletRepositoryBuilder};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -49,7 +49,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== WalletRepository Configuration ===");
 
     // Create the WalletRepository
-    let multi_wallet = WalletRepository::new(localstore.clone(), seed).await?;
+    let multi_wallet = WalletRepositoryBuilder::new()
+        .localstore(localstore.clone())
+        .seed(seed)
+        .build()
+        .await?;
 
     // Define configuration for a new mint
     // This config uses a very short 1-minute TTL
@@ -59,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Add the mint with the custom configuration
     multi_wallet
-        .add_mint_with_config(mint_url_2.clone(), Some(config.clone()))
+        .add_wallet_with_config(mint_url_2.clone(), Some(config.clone()))
         .await?;
     println!("Added mint {} with 1 minute TTL", mint_url_2);
 
@@ -67,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Let's disable auto-refresh (set to None) for the first mint
     let no_refresh_config = WalletConfig::new().with_metadata_cache_ttl(None); // Never expire
 
-    multi_wallet.add_mint(mint_url.clone()).await?; // Add first mint with default settings
+    multi_wallet.add_wallet(mint_url.clone()).await?; // Add first mint with default settings
     multi_wallet
         .set_mint_config(mint_url.clone(), unit.clone(), no_refresh_config)
         .await?;

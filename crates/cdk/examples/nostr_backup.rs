@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use cdk::wallet::{BackupOptions, RestoreOptions, WalletRepository};
+use cdk::wallet::{BackupOptions, RestoreOptions, WalletRepositoryBuilder};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -46,7 +46,11 @@ async fn main() -> anyhow::Result<()> {
     let localstore = Arc::new(memory::empty().await?);
 
     // Create a new WalletRepository
-    let wallet = WalletRepository::new(localstore.clone(), seed).await?;
+    let wallet = WalletRepositoryBuilder::new()
+        .localstore(localstore.clone())
+        .seed(seed)
+        .build()
+        .await?;
 
     // ============================================================================
     // Step 1: Add test mints to the wallet
@@ -62,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
 
     for mint_url in &mints {
         println!("  Adding mint: {}", mint_url);
-        match wallet.add_mint(mint_url.parse()?).await {
+        match wallet.add_wallet(mint_url.parse()?).await {
             Ok(_) => println!("    + Added successfully"),
             Err(e) => println!("    x Failed to add: {}", e),
         }
@@ -124,7 +128,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Create a fresh wallet with the same seed (simulating a new device)
     let new_localstore = Arc::new(memory::empty().await?);
-    let new_wallet = WalletRepository::new(new_localstore, seed).await?;
+    let new_wallet = WalletRepositoryBuilder::new()
+        .localstore(new_localstore)
+        .seed(seed)
+        .build()
+        .await?;
 
     // Verify the new wallet is empty
     let new_wallets: Vec<cdk::Wallet> = new_wallet.get_wallets().await;

@@ -18,7 +18,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, PaymentMethod, Token};
-use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepository};
+use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepository, WalletRepositoryBuilder};
 use cdk_common::wallet::WalletKey;
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
@@ -33,11 +33,14 @@ fn get_test_temp_dir() -> PathBuf {
 }
 
 // Helper to create a WalletRepository with a fresh seed and in-memory database
-async fn create_test_wallet_repository() -> WalletRepository {
+async fn create_test_wallet_repository() -> cdk::wallet::WalletRepository {
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
     let localstore = Arc::new(memory::empty().await.unwrap());
 
-    WalletRepository::new(localstore, seed)
+    WalletRepositoryBuilder::new()
+        .localstore(localstore)
+        .seed(seed)
+        .build()
         .await
         .expect("failed to create wallet repository")
 }
@@ -94,7 +97,7 @@ async fn test_wallet_repository_mint() {
 
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
     wallet_repository
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -158,7 +161,11 @@ async fn test_wallet_repository_mint() {
     assert_eq!(minted_amount, 100.into(), "Should mint exactly 100 sats");
 
     // Verify balance
-    let balance = wallet_repository.total_balance().await.unwrap();
+    let balances = wallet_repository.total_balance().await.unwrap();
+    let balance = balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     assert_eq!(balance, 100.into(), "Total balance should be 100 sats");
 }
 
@@ -174,7 +181,7 @@ async fn test_wallet_repository_melt_auto_select() {
 
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
     wallet_repository
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -215,7 +222,11 @@ async fn test_wallet_repository_melt_auto_select() {
     assert_eq!(melt_result.amount(), 50.into(), "Should melt 50 sats");
 
     // Verify balance
-    let balance = wallet_repository.total_balance().await.unwrap();
+    let balances = wallet_repository.total_balance().await.unwrap();
+    let balance = balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     assert!(
         balance < 100.into(),
         "Balance should be less than 100 after melt"
@@ -234,7 +245,7 @@ async fn test_wallet_repository_receive() {
     let sender_repo = create_test_wallet_repository().await;
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
     sender_repo
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -258,7 +269,7 @@ async fn test_wallet_repository_receive() {
     let receiver_repo = create_test_wallet_repository().await;
     // Add the same mint as trusted
     receiver_repo
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -280,14 +291,22 @@ async fn test_wallet_repository_receive() {
     );
 
     // Verify receiver balance
-    let receiver_balance = receiver_repo.total_balance().await.unwrap();
+    let receiver_balances = receiver_repo.total_balance().await.unwrap();
+    let receiver_balance = receiver_balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     assert!(
         receiver_balance > Amount::ZERO,
         "Receiver should have balance"
     );
 
     // Verify sender balance decreased
-    let sender_balance = sender_repo.total_balance().await.unwrap();
+    let sender_balances = sender_repo.total_balance().await.unwrap();
+    let sender_balance = sender_balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     assert!(
         sender_balance < 100.into(),
         "Sender balance should be less than 100 after send"
@@ -306,7 +325,7 @@ async fn test_wallet_repository_receive_untrusted() {
     let sender_repo = create_test_wallet_repository().await;
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
     sender_repo
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -332,7 +351,7 @@ async fn test_wallet_repository_receive_untrusted() {
     // Add the mint first, then receive (untrusted receive would require the
     // WalletRepository to auto-add mints, which it doesn't support directly)
     receiver_repo
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -368,7 +387,7 @@ async fn test_wallet_repository_prepare_send_happy_path() {
 
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
     wallet_repository
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -403,7 +422,11 @@ async fn test_wallet_repository_prepare_send_happy_path() {
     assert_eq!(token_data.value, 50.into(), "Token value should be 50 sats");
 
     // Verify wallet balance decreased
-    let balance = wallet_repository.total_balance().await.unwrap();
+    let balances = wallet_repository.total_balance().await.unwrap();
+    let balance = balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     assert_eq!(balance, 50.into(), "Remaining balance should be 50 sats");
 }
 
@@ -419,7 +442,7 @@ async fn test_wallet_repository_get_balances() {
 
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
     wallet_repository
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -443,7 +466,11 @@ async fn test_wallet_repository_get_balances() {
     assert_eq!(balance, 100.into(), "Balance should be 100 sats");
 
     // Verify total_balance matches
-    let total = wallet_repository.total_balance().await.unwrap();
+    let total_balances = wallet_repository.total_balance().await.unwrap();
+    let total = total_balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     assert_eq!(total, 100.into(), "Total balance should match");
 }
 
@@ -458,7 +485,7 @@ async fn test_wallet_repository_list_proofs() {
 
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
     wallet_repository
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -508,7 +535,7 @@ async fn test_wallet_repository_mint_management() {
 
     // Add the mint
     wallet_repository
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -559,7 +586,7 @@ async fn test_wallet_repository_check_all_mint_quotes() {
 
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
     wallet_repository
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -626,7 +653,11 @@ async fn test_wallet_repository_check_all_mint_quotes() {
     );
 
     // Verify balance
-    let balance = wallet_repository.total_balance().await.unwrap();
+    let balances = wallet_repository.total_balance().await.unwrap();
+    let balance = balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     assert_eq!(balance, 100.into(), "Balance should be 100 sats");
 }
 
@@ -644,12 +675,15 @@ async fn test_wallet_repository_restore() {
     // Create first wallet and fund it
     {
         let localstore = Arc::new(memory::empty().await.unwrap());
-        let wallet1 = WalletRepository::new(localstore, seed)
+        let wallet1 = WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed(seed)
+            .build()
             .await
             .expect("failed to create wallet");
 
         wallet1
-            .add_mint(mint_url.clone())
+            .add_wallet(mint_url.clone())
             .await
             .expect("failed to add mint");
 
@@ -660,17 +694,24 @@ async fn test_wallet_repository_restore() {
 
     // Create second wallet with same seed but fresh storage
     let localstore2 = Arc::new(memory::empty().await.unwrap());
-    let wallet2 = WalletRepository::new(localstore2, seed)
+    let wallet2 = WalletRepositoryBuilder::new()
+        .localstore(localstore2)
+        .seed(seed)
+        .build()
         .await
         .expect("failed to create wallet");
 
     wallet2
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
     // Initially should have no balance
-    let balance_before = wallet2.total_balance().await.unwrap();
+    let balances_before = wallet2.total_balance().await.unwrap();
+    let balance_before = balances_before
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     assert_eq!(balance_before, Amount::ZERO, "Should start with no balance");
 
     // Restore from mint using the individual wallet
@@ -695,7 +736,7 @@ async fn test_wallet_repository_melt_with_mint() {
 
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
     wallet_repository
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -760,7 +801,7 @@ async fn test_wallet_repository_list_transactions() {
 
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
     wallet_repository
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 

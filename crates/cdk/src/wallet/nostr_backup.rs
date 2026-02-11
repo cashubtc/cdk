@@ -236,8 +236,8 @@ impl WalletRepository {
             for mint_url in &backup.mints {
                 if !self.has_mint(mint_url).await {
                     // Ignore errors for individual mints to continue restoring others
-                    // add_mint now fetches mint info and creates wallets for all supported units
-                    if self.add_mint(mint_url.clone()).await.is_ok() {
+                    // add_wallet fetches mint info and creates wallets for all supported units
+                    if self.add_wallet(mint_url.clone()).await.is_ok() {
                         mints_added += 1;
                     }
                 }

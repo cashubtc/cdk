@@ -22,14 +22,20 @@ async fn get_wallet_for_mint(
     // Check if wallet exists for this mint
     if !wallet_repository.has_mint(&mint_url).await {
         // Add the mint to the wallet
-        wallet_repository.add_mint(mint_url.clone()).await?;
+        wallet_repository.add_wallet(mint_url.clone()).await?;
     }
 
-    Ok(Arc::new(
-        wallet_repository
-            .get_or_create_wallet(&mint_url, CurrencyUnit::Sat)
-            .await?,
-    ))
+    match wallet_repository
+        .get_wallet(&mint_url, &CurrencyUnit::Sat)
+        .await
+    {
+        Ok(wallet) => Ok(Arc::new(wallet)),
+        Err(_) => Ok(Arc::new(
+            wallet_repository
+                .create_wallet(mint_url, CurrencyUnit::Sat, None)
+                .await?,
+        )),
+    }
 }
 
 #[derive(Subcommand)]

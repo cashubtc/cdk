@@ -9,6 +9,7 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 
 use crate::token_storage;
+use crate::utils::get_or_create_wallet;
 
 #[derive(Args, Serialize, Deserialize)]
 pub struct MintBlindAuthSubCommand {
@@ -31,15 +32,13 @@ pub async fn mint_blind_auth(
 
     // Ensure the mint exists
     if !wallet_repository.has_mint(&mint_url).await {
-        wallet_repository.add_mint(mint_url.clone()).await?;
+        wallet_repository.add_wallet(mint_url.clone()).await?;
     }
 
     wallet_repository.fetch_mint_info(&mint_url).await?;
 
     // Get a wallet for this mint
-    let wallet = wallet_repository
-        .get_or_create_wallet(&mint_url, unit.clone())
-        .await?;
+    let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
 
     // Try to get the token from the provided argument or from the stored file
     let cat = match &sub_command_args.cat {

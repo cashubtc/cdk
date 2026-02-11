@@ -11,7 +11,6 @@ use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::WalletRepository;
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
@@ -210,27 +209,22 @@ async fn main() -> Result<()> {
     let currency_unit = CurrencyUnit::from_str(&args.unit)
         .unwrap_or_else(|_| CurrencyUnit::Custom(args.unit.clone()));
 
-    // Create WalletRepository
-    // Individual wallets will be created with their own currency units
-    let wallet_repository = match &args.proxy {
-        Some(proxy_url) => {
-            WalletRepository::new_with_proxy(localstore.clone(), seed, proxy_url.clone()).await?
+    // Create WalletRepository using builder pattern
+    let wallet_repository = {
+        let mut builder = cdk::wallet::WalletRepositoryBuilder::new()
+            .localstore(localstore.clone())
+            .seed(seed);
+
+        if let Some(proxy_url) = &args.proxy {
+            builder = builder.proxy_url(proxy_url.clone());
         }
-        None => {
-            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
-            {
-                match args.transport {
-                    TorToggle::On => {
-                        WalletRepository::new_with_tor(localstore.clone(), seed).await?
-                    }
-                    TorToggle::Off => WalletRepository::new(localstore.clone(), seed).await?,
-                }
-            }
-            #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
-            {
-                WalletRepository::new(localstore.clone(), seed).await?
-            }
+
+        #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+        if matches!(args.transport, TorToggle::On) {
+            builder = builder.tor();
         }
+
+        builder.build().await?
     };
 
     match &args.command {

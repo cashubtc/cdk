@@ -29,7 +29,7 @@ pub async fn cat_login(
 
     // Ensure the mint exists
     if !wallet_repository.has_mint(&mint_url).await {
-        wallet_repository.add_mint(mint_url.clone()).await?;
+        wallet_repository.add_wallet(mint_url.clone()).await?;
     }
 
     let mint_info = wallet_repository.fetch_mint_info(&mint_url).await?;

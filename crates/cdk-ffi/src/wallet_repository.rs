@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
-use cdk::wallet::wallet_repository::WalletRepository as CdkWalletRepository;
+use cdk::wallet::wallet_repository::{
+    WalletRepository as CdkWalletRepository, WalletRepositoryBuilder,
+};
 
 use crate::error::FfiError;
 use crate::types::*;
@@ -33,13 +35,25 @@ impl WalletRepository {
 
         let wallet = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| {
-                handle.block_on(async move { CdkWalletRepository::new(localstore, seed).await })
+                handle.block_on(async move {
+                    WalletRepositoryBuilder::new()
+                        .localstore(localstore)
+                        .seed(seed)
+                        .build()
+                        .await
+                })
             }),
             Err(_) => {
                 // No current runtime, create a new one
                 tokio::runtime::Runtime::new()
                     .map_err(|e| FfiError::internal(format!("Failed to create runtime: {}", e)))?
-                    .block_on(async move { CdkWalletRepository::new(localstore, seed).await })
+                    .block_on(async move {
+                        WalletRepositoryBuilder::new()
+                            .localstore(localstore)
+                            .seed(seed)
+                            .build()
+                            .await
+                    })
             }
         }?;
 
@@ -70,7 +84,12 @@ impl WalletRepository {
         let wallet = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| {
                 handle.block_on(async move {
-                    CdkWalletRepository::new_with_proxy(localstore, seed, proxy_url).await
+                    WalletRepositoryBuilder::new()
+                        .localstore(localstore)
+                        .seed(seed)
+                        .proxy_url(proxy_url)
+                        .build()
+                        .await
                 })
             }),
             Err(_) => {
@@ -78,7 +97,12 @@ impl WalletRepository {
                 tokio::runtime::Runtime::new()
                     .map_err(|e| FfiError::internal(format!("Failed to create runtime: {}", e)))?
                     .block_on(async move {
-                        CdkWalletRepository::new_with_proxy(localstore, seed, proxy_url).await
+                        WalletRepositoryBuilder::new()
+                            .localstore(localstore)
+                            .seed(seed)
+                            .proxy_url(proxy_url)
+                            .build()
+                            .await
                     })
             }
         }?;

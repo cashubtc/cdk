@@ -85,9 +85,7 @@ pub use send::{PreparedSend, SendMemo, SendOptions};
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
 pub use streams::npubcash::NpubCashProofStream;
 pub use types::{MeltQuote, MintQuote, SendKind};
-pub use wallet_repository::{
-    TokenData, TransferMode, TransferResult, WalletConfig, WalletRepository,
-};
+pub use wallet_repository::{TokenData, WalletConfig, WalletRepository, WalletRepositoryBuilder};
 
 use crate::nuts::nut00::ProofsMethods;
 

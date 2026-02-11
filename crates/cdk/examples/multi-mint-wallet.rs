@@ -10,7 +10,7 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepository};
+use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepositoryBuilder};
 use cdk::Amount;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_sqlite::wallet::memory;
@@ -38,15 +38,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create the WalletRepository
     let localstore = Arc::new(memory::empty().await?);
-    let wallet = WalletRepository::new(localstore, seed).await?;
+    let wallet = WalletRepositoryBuilder::new()
+        .localstore(localstore)
+        .seed(seed)
+        .build()
+        .await?;
     println!("\nCreated WalletRepository");
 
     // Add a mint to the wallet
-    wallet.add_mint(mint_url.clone()).await?;
+    wallet.add_wallet(mint_url.clone()).await?;
     println!("Added mint: {}", mint_url);
 
     // Get the wallet for this mint
-    let mint_wallet = wallet.get_or_create_wallet(&mint_url, unit.clone()).await?;
+    let mint_wallet = wallet
+        .create_wallet(mint_url.clone(), unit.clone(), None)
+        .await?;
 
     // ========================================
     // MINT: Create proofs from Lightning invoice
@@ -80,7 +86,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Minted {} sats", minted_amount);
 
     // Check balance
-    let balance = wallet.total_balance().await?;
+    let balances = wallet.total_balance().await?;
+    let balance = balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     println!("Total balance: {} sats", balance);
 
     // ========================================
@@ -97,7 +107,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Token created:\n{}", token);
 
     // Check balance after send
-    let balance = wallet.total_balance().await?;
+    let balances = wallet.total_balance().await?;
+    let balance = balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     println!("Balance after send: {} sats", balance);
 
     // ========================================
@@ -108,12 +122,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a second wallet to receive the token
     let receiver_seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let receiver_store = Arc::new(memory::empty().await?);
-    let receiver_wallet = WalletRepository::new(receiver_store, receiver_seed).await?;
+    let receiver_wallet = WalletRepositoryBuilder::new()
+        .localstore(receiver_store)
+        .seed(receiver_seed)
+        .build()
+        .await?;
 
     // Add the mint (or use allow_untrusted)
-    receiver_wallet.add_mint(mint_url.clone()).await?;
+    receiver_wallet.add_wallet(mint_url.clone()).await?;
     let receiver_mint_wallet = receiver_wallet
-        .get_or_create_wallet(&mint_url, unit)
+        .create_wallet(mint_url.clone(), unit, None)
         .await?;
 
     // Receive the token
@@ -123,7 +141,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Receiver got {} sats", received);
 
     // Check receiver balance
-    let receiver_balance = receiver_wallet.total_balance().await?;
+    let receiver_balances = receiver_wallet.total_balance().await?;
+    let receiver_balance = receiver_balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     println!("Receiver balance: {} sats", receiver_balance);
 
     // ========================================
@@ -163,8 +185,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================
     println!("\n--- BALANCES ---");
 
-    let total = wallet.total_balance().await?;
-    println!("Total balance: {} sats", total);
+    let total_balances = wallet.total_balance().await?;
+    for (unit, amount) in &total_balances {
+        println!("  {}: {} sats", unit, amount);
+    }
 
     let per_mint = wallet.get_balances().await?;
     for (key, amount) in per_mint {

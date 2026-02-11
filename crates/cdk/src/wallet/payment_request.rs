@@ -665,7 +665,10 @@ impl WalletRepository {
 
                     // Get or create wallet for the token's mint
                     let unit = payload.unit.clone();
-                    let wallet = self.get_or_create_wallet(&payload.mint, unit).await?;
+                    let wallet = match self.get_wallet(&payload.mint, &unit).await {
+                        Ok(w) => w,
+                        Err(_) => self.create_wallet(payload.mint.clone(), unit, None).await?,
+                    };
 
                     // Receive using the individual wallet
                     let token_str = token.to_string();
@@ -737,7 +740,12 @@ impl WalletRepository {
 
                                 // Get or create wallet for the token's mint
                                 let unit = payload.unit.clone();
-                                let wallet = self.get_or_create_wallet(&payload.mint, unit).await?;
+                                let wallet = match self.get_wallet(&payload.mint, &unit).await {
+                                    Ok(w) => w,
+                                    Err(_) => {
+                                        self.create_wallet(payload.mint.clone(), unit, None).await?
+                                    }
+                                };
 
                                 // Receive using the individual wallet
                                 let token_str = token.to_string();

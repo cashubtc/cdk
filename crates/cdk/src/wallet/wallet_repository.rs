@@ -22,30 +22,6 @@ use crate::nuts::CurrencyUnit;
 use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
 use crate::Wallet;
 
-/// Transfer mode
-#[derive(Debug, Clone)]
-pub enum TransferMode {
-    /// Transfer entire balance
-    FullBalance,
-    /// Transfer specific amount (amount to be received at target)
-    ExactReceive(cdk_common::Amount),
-}
-
-/// Result of a transfer operation
-#[derive(Debug, Clone)]
-pub struct TransferResult {
-    /// Amount sent from source (including fees)
-    pub amount_sent: cdk_common::Amount,
-    /// Amount received at target
-    pub amount_received: cdk_common::Amount,
-    /// Fees paid
-    pub fees_paid: cdk_common::Amount,
-    /// Source balance after transfer
-    pub source_balance_after: cdk_common::Amount,
-    /// Target balance after transfer
-    pub target_balance_after: cdk_common::Amount,
-}
-
 /// Data extracted from a token
 ///
 /// Contains the mint URL, proofs, and metadata from a parsed token.
@@ -133,6 +109,112 @@ impl WalletConfig {
     }
 }
 
+/// Builder for creating [`WalletRepository`] instances
+///
+/// # Example
+/// ```no_run
+/// # use std::sync::Arc;
+/// # use cdk::wallet::WalletRepositoryBuilder;
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await?);
+/// let seed = [0u8; 64];
+/// let wallet_repo = WalletRepositoryBuilder::new()
+///     .localstore(localstore)
+///     .seed(seed)
+///     .build()
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct WalletRepositoryBuilder {
+    localstore: Option<Arc<dyn WalletDatabase<database::Error> + Send + Sync>>,
+    seed: Option<[u8; 64]>,
+    proxy_config: Option<url::Url>,
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    use_tor: bool,
+}
+
+impl std::fmt::Debug for WalletRepositoryBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalletRepositoryBuilder")
+            .field("localstore", &self.localstore.as_ref().map(|_| "..."))
+            .field("seed", &"[REDACTED]")
+            .field("proxy_config", &self.proxy_config)
+            .finish()
+    }
+}
+
+impl Default for WalletRepositoryBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WalletRepositoryBuilder {
+    /// Create a new builder
+    pub fn new() -> Self {
+        Self {
+            localstore: None,
+            seed: None,
+            proxy_config: None,
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            use_tor: false,
+        }
+    }
+
+    /// Set the storage backend
+    pub fn localstore(
+        mut self,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+    ) -> Self {
+        self.localstore = Some(localstore);
+        self
+    }
+
+    /// Set the wallet seed
+    pub fn seed(mut self, seed: [u8; 64]) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
+    /// Set the proxy URL for HTTP clients
+    pub fn proxy_url(mut self, proxy_url: url::Url) -> Self {
+        self.proxy_config = Some(proxy_url);
+        self
+    }
+
+    /// Enable Tor transport
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    pub fn tor(mut self) -> Self {
+        self.use_tor = true;
+        self
+    }
+
+    /// Build the WalletRepository and load existing wallets from database
+    pub async fn build(self) -> Result<WalletRepository, Error> {
+        let localstore = self
+            .localstore
+            .ok_or(Error::Custom("localstore is required".into()))?;
+        let seed = self.seed.ok_or(Error::Custom("seed is required".into()))?;
+
+        let wallet = WalletRepository {
+            localstore,
+            seed,
+            wallets: Arc::new(RwLock::new(BTreeMap::new())),
+            proxy_config: self.proxy_config,
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            shared_tor_transport: if self.use_tor {
+                Some(TorAsync::new())
+            } else {
+                None
+            },
+        };
+
+        wallet.load_wallets().await?;
+        Ok(wallet)
+    }
+}
+
 /// Repository for managing Wallet instances by mint URL and currency unit
 ///
 /// Simple container that bootstraps wallets from database and provides
@@ -159,70 +241,9 @@ impl std::fmt::Debug for WalletRepository {
 }
 
 impl WalletRepository {
-    /// Create new repository and load existing wallets from database
-    pub async fn new(
-        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
-        seed: [u8; 64],
-    ) -> Result<Self, Error> {
-        let wallet = Self {
-            localstore,
-            seed,
-            wallets: Arc::new(RwLock::new(BTreeMap::new())),
-            proxy_config: None,
-            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
-            shared_tor_transport: None,
-        };
-
-        // Automatically load wallets from database
-        wallet.load_wallets().await?;
-
-        Ok(wallet)
-    }
-
     /// Get the wallet seed
     pub fn seed(&self) -> &[u8; 64] {
         &self.seed
-    }
-
-    /// Create with proxy configuration
-    pub async fn new_with_proxy(
-        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
-        seed: [u8; 64],
-        proxy_url: url::Url,
-    ) -> Result<Self, Error> {
-        let wallet = Self {
-            localstore,
-            seed,
-            wallets: Arc::new(RwLock::new(BTreeMap::new())),
-            proxy_config: Some(proxy_url),
-            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
-            shared_tor_transport: None,
-        };
-
-        // Automatically load wallets from database
-        wallet.load_wallets().await?;
-
-        Ok(wallet)
-    }
-
-    /// Create with Tor transport (feature-gated)
-    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
-    pub async fn new_with_tor(
-        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
-        seed: [u8; 64],
-    ) -> Result<Self, Error> {
-        let wallet = Self {
-            localstore,
-            seed,
-            wallets: Arc::new(RwLock::new(BTreeMap::new())),
-            proxy_config: None,
-            shared_tor_transport: Some(TorAsync::new()),
-        };
-
-        // Automatically load wallets from database
-        wallet.load_wallets().await?;
-
-        Ok(wallet)
     }
 
     /// Get wallet for a mint URL and currency unit
@@ -262,21 +283,21 @@ impl WalletRepository {
         self.wallets.read().await.contains_key(&key)
     }
 
-    /// Add a mint to the repository
+    /// Add wallets for a mint to the repository
     ///
     /// Fetches the mint info to discover all supported currency units and creates
     /// a wallet for each unit. Returns all created wallets.
     #[instrument(skip(self))]
-    pub async fn add_mint(&self, mint_url: MintUrl) -> Result<Vec<Wallet>, Error> {
-        self.add_mint_with_config(mint_url, None).await
+    pub async fn add_wallet(&self, mint_url: MintUrl) -> Result<Vec<Wallet>, Error> {
+        self.add_wallet_with_config(mint_url, None).await
     }
 
-    /// Add a mint to the repository with a custom configuration
+    /// Add wallets for a mint to the repository with a custom configuration
     ///
     /// Fetches the mint info to discover all supported currency units and creates
     /// a wallet for each unit with the given configuration. Returns all created wallets.
     #[instrument(skip(self))]
-    pub async fn add_mint_with_config(
+    pub async fn add_wallet_with_config(
         &self,
         mint_url: MintUrl,
         config: Option<WalletConfig>,
@@ -345,25 +366,22 @@ impl WalletRepository {
         Ok(wallet)
     }
 
-    /// Remove a wallet from the repository
+    /// Remove a wallet from the in-memory repository
+    ///
+    /// This only removes the wallet from the in-memory map. It does not remove
+    /// the mint from the database. Use the database directly if you need to
+    /// explicitly remove persisted mint data.
     #[instrument(skip(self))]
     pub async fn remove_wallet(
         &self,
         mint_url: MintUrl,
         currency_unit: CurrencyUnit,
     ) -> Result<(), Error> {
-        let key = WalletKey::new(mint_url.clone(), currency_unit.clone());
+        let key = WalletKey::new(mint_url, currency_unit);
         let mut wallets = self.wallets.write().await;
 
         if !wallets.contains_key(&key) {
             return Err(Error::UnknownWallet(key));
-        }
-
-        // Check if this is the last wallet for the mint
-        let is_last_wallet = wallets.keys().filter(|k| k.mint_url == mint_url).count() == 1;
-
-        if is_last_wallet {
-            self.localstore.remove_mint(mint_url).await?;
         }
 
         wallets.remove(&key);
@@ -400,29 +418,18 @@ impl WalletRepository {
 
         Ok(balances)
     }
-    /// Get total balance across all wallets
-    #[instrument(skip(self))]
-    pub async fn total_balance(&self) -> Result<cdk_common::Amount, Error> {
-        let balances = self.get_balances().await?;
-        Ok(balances
-            .values()
-            .fold(cdk_common::Amount::ZERO, |acc, &x| acc + x))
-    }
-    /// Get or create a wallet for a mint URL and currency unit
+    /// Get total balance across all wallets, grouped by currency unit
     ///
-    /// If a wallet for the mint URL and unit already exists, returns it.
-    /// Otherwise creates a new wallet with the specified unit and adds it to the repository.
+    /// Returns a map of currency unit to total balance for that unit across all mints.
     #[instrument(skip(self))]
-    pub async fn get_or_create_wallet(
-        &self,
-        mint_url: &MintUrl,
-        unit: CurrencyUnit,
-    ) -> Result<Wallet, Error> {
-        if let Ok(wallet) = self.get_wallet(mint_url, &unit).await {
-            return Ok(wallet);
+    pub async fn total_balance(&self) -> Result<BTreeMap<CurrencyUnit, cdk_common::Amount>, Error> {
+        let balances = self.get_balances().await?;
+        let mut by_unit: BTreeMap<CurrencyUnit, cdk_common::Amount> = BTreeMap::new();
+        for (key, amount) in balances {
+            let entry = by_unit.entry(key.unit).or_insert(cdk_common::Amount::ZERO);
+            *entry = *entry + amount;
         }
-
-        self.create_wallet(mint_url.clone(), unit, None).await
+        Ok(by_unit)
     }
 
     /// Fetch mint info from a mint URL
@@ -841,7 +848,10 @@ mod tests {
                 .expect("Failed to create in-memory database"),
         );
         let seed = [0u8; 64];
-        WalletRepository::new(localstore, seed)
+        WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed(seed)
+            .build()
             .await
             .expect("Failed to create WalletRepository")
     }
@@ -918,14 +928,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_remove_wallet_persists_to_db() {
+    async fn test_remove_wallet_does_not_touch_db() {
         let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
             cdk_sqlite::wallet::memory::empty()
                 .await
                 .expect("Failed to create in-memory database"),
         );
         let seed = [0u8; 64];
-        let repo = WalletRepository::new(localstore.clone(), seed)
+        let repo = WalletRepositoryBuilder::new()
+            .localstore(localstore.clone())
+            .seed(seed)
+            .build()
             .await
             .expect("Failed to create WalletRepository");
 
@@ -934,28 +947,24 @@ mod tests {
         // Add mint to DB manually to simulate existing state
         localstore.add_mint(mint_url.clone(), None).await.unwrap();
 
-        // Verify mint is in DB
-        assert!(localstore
-            .get_mint(mint_url.clone())
-            .await
-            .unwrap()
-            .is_some());
-
         // Create wallet in repo
         repo.create_wallet(mint_url.clone(), CurrencyUnit::Sat, None)
             .await
             .expect("Failed to create wallet");
 
-        // Remove wallet
+        // Remove wallet from in-memory repo
         repo.remove_wallet(mint_url.clone(), CurrencyUnit::Sat)
             .await
             .expect("Failed to remove wallet");
 
-        // Verify mint is REMOVED from DB
+        // Verify wallet is gone from in-memory repo
+        assert!(!repo.has_wallet(&mint_url, &CurrencyUnit::Sat).await);
+
+        // Verify mint is still in DB (remove_wallet does not touch DB)
         assert!(localstore
             .get_mint(mint_url.clone())
             .await
             .unwrap()
-            .is_none());
+            .is_some());
     }
 }

@@ -64,10 +64,11 @@ pub async fn transfer(
     sub_command_args: &TransferSubCommand,
     unit: &cdk::nuts::CurrencyUnit,
 ) -> Result<()> {
-    // Check total balance across all wallets
-    let total_balance = wallet_repository.total_balance().await?;
+    // Check total balance for the requested unit
+    let balances_by_unit = wallet_repository.total_balance().await?;
+    let total_balance = balances_by_unit.get(unit).copied().unwrap_or(Amount::ZERO);
     if total_balance == Amount::ZERO {
-        bail!("No funds available");
+        bail!("No funds available for unit {}", unit);
     }
 
     // Get source mint URL either from args or by prompting user
@@ -129,12 +130,8 @@ pub async fn transfer(
     }
 
     // Get source and target wallets
-    let source_wallet = wallet_repository
-        .get_or_create_wallet(&source_mint_url, unit.clone())
-        .await?;
-    let target_wallet = wallet_repository
-        .get_or_create_wallet(&target_mint_url, unit.clone())
-        .await?;
+    let source_wallet = wallet_repository.get_wallet(&source_mint_url, unit).await?;
+    let target_wallet = wallet_repository.get_wallet(&target_mint_url, unit).await?;
 
     // Determine transfer mode and execute
     if sub_command_args.full_balance {

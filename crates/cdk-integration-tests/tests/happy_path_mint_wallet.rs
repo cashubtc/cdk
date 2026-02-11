@@ -23,7 +23,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, PaymentMethod, State};
-use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletRepository};
+use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletRepositoryBuilder};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
 use futures::{SinkExt, StreamExt};
@@ -729,13 +729,16 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
     let localstore = Arc::new(memory::empty().await.unwrap());
 
-    let multi_mint_wallet = WalletRepository::new(localstore.clone(), seed)
+    let multi_mint_wallet = WalletRepositoryBuilder::new()
+        .localstore(localstore.clone())
+        .seed(seed)
+        .build()
         .await
         .expect("failed to create multi mint wallet");
 
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
     multi_mint_wallet
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
@@ -770,7 +773,11 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .await
         .expect("mint failed");
 
-    let balance = multi_mint_wallet.total_balance().await.unwrap();
+    let balances = multi_mint_wallet.total_balance().await.unwrap();
+    let balance = balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     assert_eq!(balance, 100.into());
 
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();

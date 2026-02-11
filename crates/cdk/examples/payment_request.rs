@@ -30,7 +30,7 @@ use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::payment_request::CreateRequestParams;
-use cdk::wallet::WalletRepository;
+use cdk::wallet::WalletRepositoryBuilder;
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -51,10 +51,14 @@ async fn main() -> anyhow::Result<()> {
     let localstore = Arc::new(memory::empty().await?);
 
     // Create a new WalletRepository
-    let wallet = WalletRepository::new(localstore, seed).await?;
+    let wallet = WalletRepositoryBuilder::new()
+        .localstore(localstore)
+        .seed(seed)
+        .build()
+        .await?;
 
     // Add the mint to our wallet
-    wallet.add_mint(mint_url.parse()?).await?;
+    wallet.add_wallet(mint_url.parse()?).await?;
 
     println!("Using mint: {}", mint_url);
 
@@ -65,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
 
     // We need to get the wallet for the specific mint to create a request
     let mint_wallet = wallet
-        .get_or_create_wallet(&mint_url.parse()?, unit.clone())
+        .create_wallet(mint_url.parse()?, unit.clone(), None)
         .await?;
     let mint_quote = mint_wallet
         .mint_quote(
@@ -93,7 +97,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
 
-    let balance = wallet.total_balance().await?;
+    let balances = wallet.total_balance().await?;
+    let balance = balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(cdk::Amount::ZERO);
     println!("Wallet funded with {} sats\n", balance);
 
     // ============================================================================

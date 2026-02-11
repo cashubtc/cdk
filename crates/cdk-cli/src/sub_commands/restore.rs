@@ -4,6 +4,8 @@ use cdk::nuts::CurrencyUnit;
 use cdk::wallet::WalletRepository;
 use clap::Args;
 
+use crate::utils::get_or_create_wallet;
+
 #[derive(Args)]
 pub struct RestoreSubCommand {
     /// Mint Url
@@ -17,9 +19,7 @@ pub async fn restore(
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
 
-    let wallet = wallet_repository
-        .get_or_create_wallet(&mint_url, unit.clone())
-        .await?;
+    let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
 
     let restored = wallet.restore().await?;
 

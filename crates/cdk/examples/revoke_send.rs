@@ -9,7 +9,7 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepository};
+use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepositoryBuilder};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 
@@ -34,15 +34,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create the WalletRepository
     let localstore = Arc::new(memory::empty().await?);
-    let wallet = WalletRepository::new(localstore, seed).await?;
+    let wallet = WalletRepositoryBuilder::new()
+        .localstore(localstore)
+        .seed(seed)
+        .build()
+        .await?;
     println!("Created WalletRepository");
 
     // Add a mint to the wallet
-    wallet.add_mint(mint_url.clone()).await?;
+    wallet.add_wallet(mint_url.clone()).await?;
     println!("Added mint: {}", mint_url);
 
     // Get the wallet for this mint
-    let mint_wallet = wallet.get_or_create_wallet(&mint_url, unit.clone()).await?;
+    let mint_wallet = wallet
+        .create_wallet(mint_url.clone(), unit.clone(), None)
+        .await?;
 
     // ========================================
     // 1. FUND: Mint some tokens to start
@@ -70,7 +76,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    let balance = wallet.total_balance().await?;
+    let balances = wallet.total_balance().await?;
+    let balance = balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     println!("Wallet funded. Balance: {} sats", balance);
 
     // ========================================
@@ -91,7 +101,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Token created (Send Operation ID: {})", operation_id);
     println!("Token: {}", token);
 
-    let balance_after_send = wallet.total_balance().await?;
+    let balances_after_send = wallet.total_balance().await?;
+    let balance_after_send = balances_after_send
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     println!("Balance after send: {} sats", balance_after_send);
 
     // ========================================
@@ -137,7 +151,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Pending sends after revocation: {}", pending_after.len());
 
     // Check final balance
-    let final_balance = wallet.total_balance().await?;
+    let final_balances = wallet.total_balance().await?;
+    let final_balance = final_balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     println!("Final balance: {} sats", final_balance);
 
     if final_balance > balance_after_send {
@@ -170,10 +188,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Creating receiver wallet...");
     let receiver_seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let receiver_store = Arc::new(memory::empty().await?);
-    let receiver_wallet = WalletRepository::new(receiver_store, receiver_seed).await?;
-    receiver_wallet.add_mint(mint_url.clone()).await?;
+    let receiver_wallet = WalletRepositoryBuilder::new()
+        .localstore(receiver_store)
+        .seed(receiver_seed)
+        .build()
+        .await?;
+    receiver_wallet.add_wallet(mint_url.clone()).await?;
     let receiver_mint_wallet = receiver_wallet
-        .get_or_create_wallet(&mint_url, unit)
+        .create_wallet(mint_url.clone(), unit, None)
         .await?;
 
     // Receiver claims the token

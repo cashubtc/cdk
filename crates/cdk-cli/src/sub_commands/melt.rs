@@ -85,10 +85,11 @@ pub async fn pay(
     sub_command_args: &MeltSubCommand,
     unit: &CurrencyUnit,
 ) -> Result<()> {
-    // Check total balance across all wallets
-    let total_balance = wallet_repository.total_balance().await?;
+    // Check total balance for the requested unit
+    let balances_by_unit = wallet_repository.total_balance().await?;
+    let total_balance = balances_by_unit.get(unit).copied().unwrap_or(Amount::ZERO);
     if total_balance == Amount::ZERO {
-        bail!("No funds available");
+        bail!("No funds available for unit {}", unit);
     }
 
     // Handle MPP mode separately
