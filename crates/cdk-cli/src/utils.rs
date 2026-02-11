@@ -3,7 +3,8 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
-use cdk::wallet::multi_mint_wallet::MultiMintWallet;
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::WalletRepository;
 
 /// Helper function to get user input with a prompt
 pub fn get_user_input(prompt: &str) -> Result<String> {
@@ -25,20 +26,17 @@ where
     Ok(number)
 }
 
-/// Helper function to create or get a wallet
+/// Helper function to get an existing wallet or create one if it doesn't exist
 pub async fn get_or_create_wallet(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     mint_url: &MintUrl,
-) -> Result<std::sync::Arc<cdk::wallet::Wallet>> {
-    match multi_mint_wallet.get_wallet(mint_url).await {
-        Some(wallet) => Ok(wallet),
-        None => {
-            tracing::debug!("Wallet does not exist creating..");
-            multi_mint_wallet.add_mint(mint_url.clone()).await?;
-            Ok(multi_mint_wallet
-                .get_wallet(mint_url)
-                .await
-                .expect("Wallet should exist after adding mint"))
-        }
+    unit: &CurrencyUnit,
+) -> Result<cdk::wallet::Wallet> {
+    match wallet_repository.get_wallet(mint_url, unit).await {
+        Ok(wallet) => Ok(wallet),
+        Err(_) => wallet_repository
+            .create_wallet(mint_url.clone(), unit.clone(), None)
+            .await
+            .map_err(Into::into),
     }
 }

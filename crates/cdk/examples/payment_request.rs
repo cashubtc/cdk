@@ -1,7 +1,7 @@
 //! # Payment Request Example (NUT-18)
 //!
 //! This example demonstrates how to create and receive payments using NUT-18
-//! payment requests with the MultiMintWallet. It shows both HTTP and Nostr
+//! payment requests with the WalletRepository. It shows both HTTP and Nostr
 //! transport options.
 //!
 //! ## Payment Request Flow
@@ -26,11 +26,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::anyhow;
 use cdk::amount::SplitTarget;
+use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::wallet::payment_request::CreateRequestParams;
+use cdk::wallet::WalletRepositoryBuilder;
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -50,22 +50,34 @@ async fn main() -> anyhow::Result<()> {
     // Initialize the memory store
     let localstore = Arc::new(memory::empty().await?);
 
-    // Create a new MultiMintWallet
-    let wallet = MultiMintWallet::new(localstore, seed, unit.clone()).await?;
+    // Create a new WalletRepository
+    let wallet = WalletRepositoryBuilder::new()
+        .localstore(localstore)
+        .seed(seed)
+        .build()
+        .await?;
 
     // Add the mint to our wallet
-    wallet.add_mint(mint_url.parse()?).await?;
+    wallet.add_wallet(mint_url.parse()?).await?;
 
-    println!("Step 1: Funding the wallet");
-    println!("---------------------------");
+    println!("Using mint: {}", mint_url);
 
-    // Get a wallet for our mint to create a mint quote
+    // ============================================================================
+    // Step 1: Create a payment request (as the receiver)
+    // ============================================================================
+    println!("\nStep 1: Creating payment request...");
+
+    // We need to get the wallet for the specific mint to create a request
     let mint_wallet = wallet
-        .get_wallet(&mint_url.parse()?)
-        .await
-        .ok_or_else(|| anyhow!("Wallet not found for mint"))?;
+        .create_wallet(mint_url.parse()?, unit.clone(), None)
+        .await?;
     let mint_quote = mint_wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(initial_amount), None, None)
+        .mint_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            Some(initial_amount),
+            None,
+            None,
+        )
         .await?;
 
     println!(
@@ -85,7 +97,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
 
-    let balance = wallet.total_balance().await?;
+    let balances = wallet.total_balance().await?;
+    let balance = balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(cdk::Amount::ZERO);
     println!("Wallet funded with {} sats\n", balance);
 
     // ============================================================================
