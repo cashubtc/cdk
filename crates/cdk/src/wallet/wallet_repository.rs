@@ -427,7 +427,7 @@ impl WalletRepository {
         let mut by_unit: BTreeMap<CurrencyUnit, cdk_common::Amount> = BTreeMap::new();
         for (key, amount) in balances {
             let entry = by_unit.entry(key.unit).or_insert(cdk_common::Amount::ZERO);
-            *entry = *entry + amount;
+            *entry += amount;
         }
         Ok(by_unit)
     }
