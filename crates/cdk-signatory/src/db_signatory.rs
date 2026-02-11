@@ -314,7 +314,7 @@ mod test {
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
             0,
             None,
-            cdk_common::nut02::KeySetVersion::Version01,
+            cdk_common::nut02::KeySetVersion::Version00,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
@@ -427,7 +427,7 @@ mod test {
             derivation_path_from_unit(CurrencyUnit::Sat, 1).unwrap(),
             0,
             None,
-            cdk_common::nut02::KeySetVersion::Version01,
+            cdk_common::nut02::KeySetVersion::Version00,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
@@ -724,7 +724,7 @@ mod test {
             derivation_path_from_unit(CurrencyUnit::Auth, 1).unwrap(),
             0,
             None,
-            cdk_common::nut02::KeySetVersion::Version01,
+            cdk_common::nut02::KeySetVersion::Version00,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Auth);
