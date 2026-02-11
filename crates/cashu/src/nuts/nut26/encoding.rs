@@ -204,7 +204,7 @@ impl PaymentRequest {
     /// # Ok::<(), cashu::nuts::nut26::Error>(())
     /// ```
     pub fn from_bech32_string(s: &str) -> Result<Self, Error> {
-        let (hrp, data) = bech32::decode(s).map_err(|e| Error::Bech32Error(e))?;
+        let (hrp, data) = bech32::decode(s).map_err(Error::Bech32Error)?;
         if !hrp.as_str().eq_ignore_ascii_case(CREQ_B_HRP) {
             return Err(Error::InvalidPrefix);
         }
@@ -352,12 +352,8 @@ impl PaymentRequest {
         }
 
         // 0x07 transport: sub-TLV (repeatable, order = priority)
-        // In-band transports are represented by the absence of a transport tag (NUT-18 semantics)
+        // Note: In-band transport is represented by absence of transport tag per NUT-26
         for transport in &self.transports {
-            if transport._type == TransportType::InBand {
-                // Skip in-band transports - absence of transport tag means in-band
-                continue;
-            }
             let transport_bytes = Self::encode_transport(transport)?;
             writer.write_tlv(0x07, &transport_bytes);
         }
@@ -450,10 +446,6 @@ impl PaymentRequest {
                 }
             }
             TransportType::HttpPost => http_target.ok_or(Error::InvalidStructure)?,
-            TransportType::InBand => {
-                // This case should not be reachable since InBand is not decoded from transport tag
-                unreachable!("InBand transport should not be decoded from transport tag")
-            }
         };
 
         // Keep tags as-is per NUT-26 spec (no "r" to "relay" conversion)
@@ -485,20 +477,13 @@ impl PaymentRequest {
         let mut writer = TlvWriter::new();
 
         // 0x01 kind: u8
-        // Note: InBand transports should not reach here (filtered out in encode_tlv)
-        // but we handle it defensively
         let kind = match transport._type {
-            TransportType::InBand => {
-                // In-band is represented by absence of transport tag, not by encoding
-                return Err(Error::InvalidStructure);
-            }
             TransportType::Nostr => 0x00u8,
             TransportType::HttpPost => 0x01u8,
         };
         writer.write_tlv(0x01, &[kind]);
 
         // 0x02 target: bytes
-        // Note: InBand already returned error above, so only Nostr and HttpPost reach here
         match transport._type {
             TransportType::Nostr => {
                 // For nostr, decode nprofile to extract pubkey and relays
@@ -550,10 +535,6 @@ impl PaymentRequest {
                         }
                     }
                 }
-            }
-            TransportType::InBand => {
-                // This case is unreachable since we return early with error for InBand
-                unreachable!("InBand transport should not reach target encoding")
             }
         }
 
@@ -716,7 +697,7 @@ impl PaymentRequest {
     /// - Type 0: 32-byte pubkey (required, only one)
     /// - Type 1: relay URL string (optional, repeatable)
     fn decode_nprofile(nprofile: &str) -> Result<(Vec<u8>, Vec<String>), Error> {
-        let (hrp, data) = bech32::decode(nprofile).map_err(|e| Error::Bech32Error(e))?;
+        let (hrp, data) = bech32::decode(nprofile).map_err(Error::Bech32Error)?;
         if hrp.as_str() != "nprofile" {
             return Err(Error::InvalidStructure);
         }
@@ -2111,14 +2092,8 @@ mod tests {
 
     #[test]
     fn test_in_band_transport_implicit() {
-        // Test in-band transport: absence of transport tag means in-band (NUT-18 semantics)
-        // In-band transports are NOT encoded - they're represented by the absence of a transport tag
-
-        let transport = Transport {
-            _type: TransportType::InBand,
-            target: String::new(), // In-band has no target
-            tags: None,
-        };
+        // Test that in-band transport is represented by absence of transport tag
+        // Per NUT-26: in-band transport means no transport entries in the list
 
         let payment_request = PaymentRequest {
             payment_id: Some("in_band_test".to_string()),
@@ -2127,7 +2102,7 @@ mod tests {
             single_use: None,
             mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
             description: None,
-            transports: vec![transport],
+            transports: vec![], // Empty transports = in-band per NUT-26
             nut10: None,
         };
 
@@ -2138,8 +2113,7 @@ mod tests {
         // Decode the encoded string
         let decoded = PaymentRequest::from_bech32_string(&encoded).expect("decoding should work");
 
-        // In-band transports are not encoded, so when decoded, transports should be empty
-        // (absence of transport tag = in-band is implicit)
+        // Empty transports list means in-band transport per NUT-26
         assert_eq!(decoded.transports.len(), 0);
         assert_eq!(decoded.payment_id, Some("in_band_test".to_string()));
         assert_eq!(decoded.amount, Some(Amount::from(100)));

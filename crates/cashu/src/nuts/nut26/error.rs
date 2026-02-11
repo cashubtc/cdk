@@ -11,9 +11,6 @@ pub enum Error {
     InvalidStructure,
     /// Invalid length of a TLV field or the overall structure
     InvalidLength,
-    /// Invalid TLV structure (deprecated, use InvalidStructure)
-    #[deprecated(since = "0.1.0", note = "Use InvalidStructure instead")]
-    InvalidTlvStructure,
     /// Invalid UTF-8 in string field
     InvalidUtf8,
     /// Invalid public key
@@ -36,7 +33,6 @@ impl fmt::Display for Error {
             Error::InvalidPrefix => write!(f, "Invalid bech32m prefix, expected 'creqb'"),
             Error::InvalidStructure => write!(f, "Invalid TLV structure"),
             Error::InvalidLength => write!(f, "Invalid TLV field length"),
-            Error::InvalidTlvStructure => write!(f, "Invalid TLV structure"),
             Error::InvalidUtf8 => write!(f, "Invalid UTF-8 encoding in string field"),
             Error::InvalidPubkey => write!(f, "Invalid public key"),
             Error::UnknownKind(kind) => write!(f, "Unknown NUT-10 kind: {}", kind),
