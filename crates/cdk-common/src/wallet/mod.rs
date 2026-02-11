@@ -278,7 +278,9 @@ impl MintQuote {
             }
         } else {
             // Other payment methods track incremental payments
-            self.amount_paid.saturating_sub(self.amount_issued)
+            self.amount_paid
+                .checked_sub(self.amount_issued)
+                .unwrap_or(Amount::ZERO)
         }
     }
 }

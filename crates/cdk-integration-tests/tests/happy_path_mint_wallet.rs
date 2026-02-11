@@ -23,7 +23,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, PaymentMethod, State};
-use cdk::wallet::{HttpClient, MintConnector, MultiMintWallet, Wallet};
+use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletRepositoryBuilder};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
 use futures::{SinkExt, StreamExt};
@@ -136,7 +136,12 @@ async fn test_happy_mint_melt_round_trip() {
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
     let melt = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice, None, None)
+        .melt_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -670,7 +675,12 @@ async fn test_melt_quote_status_after_melt() {
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
     let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice, None, None)
+        .melt_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -719,20 +729,28 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
     let localstore = Arc::new(memory::empty().await.unwrap());
 
-    let multi_mint_wallet = MultiMintWallet::new(localstore.clone(), seed, CurrencyUnit::Sat)
+    let multi_mint_wallet = WalletRepositoryBuilder::new()
+        .localstore(localstore.clone())
+        .seed(seed)
+        .build()
         .await
         .expect("failed to create multi mint wallet");
 
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
     multi_mint_wallet
-        .add_mint(mint_url.clone())
+        .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
-    let mint_quote = multi_mint_wallet
+    // Get the wallet from the repository to call methods directly
+    let wallet = multi_mint_wallet
+        .get_wallet(&mint_url, &CurrencyUnit::Sat)
+        .await
+        .expect("failed to get wallet");
+
+    let mint_quote = wallet
         .mint_quote(
-            &mint_url,
-            PaymentMethod::BOLT11,
+            PaymentMethod::Known(KnownMethod::Bolt11),
             Some(100.into()),
             None,
             None,
@@ -745,10 +763,9 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .await
         .unwrap();
 
-    let _proofs = multi_mint_wallet
-        .wait_for_mint_quote(
-            &mint_url,
-            &mint_quote.id,
+    let _proofs = wallet
+        .wait_and_mint_quote(
+            mint_quote.clone(),
             SplitTarget::default(),
             None,
             Duration::from_secs(60),
@@ -756,24 +773,36 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .await
         .expect("mint failed");
 
-    let balance = multi_mint_wallet.total_balance().await.unwrap();
+    let balances = multi_mint_wallet.total_balance().await.unwrap();
+    let balance = balances
+        .get(&CurrencyUnit::Sat)
+        .copied()
+        .unwrap_or(Amount::ZERO);
     assert_eq!(balance, 100.into());
 
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
-    let melt_quote = multi_mint_wallet
-        .melt_quote(&mint_url, PaymentMethod::BOLT11, invoice, None, None)
+    let melt_quote = wallet
+        .melt_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
-    let melt_response = multi_mint_wallet
-        .melt_with_mint(&mint_url, &melt_quote.id)
+    let melt_response: cdk::types::FinalizedMelt = wallet
+        .prepare_melt(&melt_quote.id, HashMap::new())
+        .await
+        .unwrap()
+        .confirm()
         .await
         .unwrap();
     assert_eq!(melt_response.state(), MeltQuoteState::Paid);
 
-    let quote_status = multi_mint_wallet
-        .check_melt_quote(&mint_url, &melt_quote.id)
+    let quote_status = wallet
+        .check_melt_quote_status(&melt_quote.id)
         .await
         .unwrap();
     assert_eq!(
@@ -842,7 +871,12 @@ async fn test_fake_melt_change_in_quote() {
     let proofs = wallet.get_unspent_proofs().await.unwrap();
 
     let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .melt_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -929,7 +963,12 @@ async fn test_pay_invoice_twice() {
     let invoice = create_invoice_for_env(Some(25)).await.unwrap();
 
     let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.clone(), None, None)
+        .melt_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -941,7 +980,12 @@ async fn test_pay_invoice_twice() {
 
     // Creating a second quote for the same invoice is allowed
     let melt_quote_two = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice, None, None)
+        .melt_quote(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            invoice.to_string(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 

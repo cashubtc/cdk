@@ -6,28 +6,36 @@ use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::wallet::{MultiMintWallet, Wallet};
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::{Wallet, WalletRepository};
 use cdk::StreamExt;
 use clap::Subcommand;
 use nostr_sdk::ToBech32;
 
 /// Helper function to get wallet for a specific mint URL
 async fn get_wallet_for_mint(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     mint_url_str: &str,
 ) -> Result<Arc<Wallet>> {
     let mint_url = MintUrl::from_str(mint_url_str)?;
 
     // Check if wallet exists for this mint
-    if !multi_mint_wallet.has_mint(&mint_url).await {
+    if !wallet_repository.has_mint(&mint_url).await {
         // Add the mint to the wallet
-        multi_mint_wallet.add_mint(mint_url.clone()).await?;
+        wallet_repository.add_wallet(mint_url.clone()).await?;
     }
 
-    multi_mint_wallet
-        .get_wallet(&mint_url)
+    match wallet_repository
+        .get_wallet(&mint_url, &CurrencyUnit::Sat)
         .await
-        .ok_or_else(|| anyhow::anyhow!("Failed to get wallet for mint: {}", mint_url_str))
+    {
+        Ok(wallet) => Ok(Arc::new(wallet)),
+        Err(_) => Ok(Arc::new(
+            wallet_repository
+                .create_wallet(mint_url, CurrencyUnit::Sat, None)
+                .await?,
+        )),
+    }
 }
 
 #[derive(Subcommand)]
@@ -55,7 +63,7 @@ pub enum NpubCashSubCommand {
 }
 
 pub async fn npubcash(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     mint_url: &str,
     sub_command: &NpubCashSubCommand,
     npubcash_url: Option<String>,
@@ -64,23 +72,23 @@ pub async fn npubcash(
     let base_url = npubcash_url.unwrap_or_else(|| "https://npubx.cash".to_string());
 
     match sub_command {
-        NpubCashSubCommand::Sync => sync(multi_mint_wallet, mint_url, &base_url).await,
+        NpubCashSubCommand::Sync => sync(wallet_repository, mint_url, &base_url).await,
         NpubCashSubCommand::List { since, format } => {
-            list(multi_mint_wallet, mint_url, &base_url, *since, format).await
+            list(wallet_repository, mint_url, &base_url, *since, format).await
         }
-        NpubCashSubCommand::Subscribe => subscribe(multi_mint_wallet, mint_url, &base_url).await,
+        NpubCashSubCommand::Subscribe => subscribe(wallet_repository, mint_url, &base_url).await,
         NpubCashSubCommand::SetMint { url } => {
-            set_mint(multi_mint_wallet, mint_url, &base_url, url).await
+            set_mint(wallet_repository, mint_url, &base_url, url).await
         }
-        NpubCashSubCommand::ShowKeys => show_keys(multi_mint_wallet, mint_url).await,
+        NpubCashSubCommand::ShowKeys => show_keys(wallet_repository, mint_url).await,
     }
 }
 
 /// Helper function to ensure active mint consistency
-async fn ensure_active_mint(multi_mint_wallet: &MultiMintWallet, mint_url: &str) -> Result<()> {
+async fn ensure_active_mint(wallet_repository: &WalletRepository, mint_url: &str) -> Result<()> {
     let mint_url_struct = MintUrl::from_str(mint_url)?;
 
-    match multi_mint_wallet.get_active_npubcash_mint().await? {
+    match wallet_repository.get_active_npubcash_mint().await? {
         Some(active_mint) => {
             if active_mint != mint_url_struct {
                 bail!(
@@ -96,7 +104,7 @@ async fn ensure_active_mint(multi_mint_wallet: &MultiMintWallet, mint_url: &str)
         }
         None => {
             // No active mint set, set this one as active
-            multi_mint_wallet
+            wallet_repository
                 .set_active_npubcash_mint(mint_url_struct)
                 .await?;
             println!("✓ Set {} as active NpubCash mint", mint_url);
@@ -105,12 +113,12 @@ async fn ensure_active_mint(multi_mint_wallet: &MultiMintWallet, mint_url: &str)
     Ok(())
 }
 
-async fn sync(multi_mint_wallet: &MultiMintWallet, mint_url: &str, base_url: &str) -> Result<()> {
-    ensure_active_mint(multi_mint_wallet, mint_url).await?;
+async fn sync(wallet_repository: &WalletRepository, mint_url: &str, base_url: &str) -> Result<()> {
+    ensure_active_mint(wallet_repository, mint_url).await?;
 
     println!("Syncing quotes from NpubCash...");
 
-    let wallet = get_wallet_for_mint(multi_mint_wallet, mint_url).await?;
+    let wallet = get_wallet_for_mint(wallet_repository, mint_url).await?;
 
     // Enable NpubCash if not already enabled
     wallet.enable_npubcash(base_url.to_string()).await?;
@@ -122,15 +130,15 @@ async fn sync(multi_mint_wallet: &MultiMintWallet, mint_url: &str, base_url: &st
 }
 
 async fn list(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     mint_url: &str,
     base_url: &str,
     since: Option<u64>,
     format: &str,
 ) -> Result<()> {
-    ensure_active_mint(multi_mint_wallet, mint_url).await?;
+    ensure_active_mint(wallet_repository, mint_url).await?;
 
-    let wallet = get_wallet_for_mint(multi_mint_wallet, mint_url).await?;
+    let wallet = get_wallet_for_mint(wallet_repository, mint_url).await?;
 
     // Enable NpubCash if not already enabled
     wallet.enable_npubcash(base_url.to_string()).await?;
@@ -170,15 +178,15 @@ async fn list(
 }
 
 async fn subscribe(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     mint_url: &str,
     base_url: &str,
 ) -> Result<()> {
-    ensure_active_mint(multi_mint_wallet, mint_url).await?;
+    ensure_active_mint(wallet_repository, mint_url).await?;
 
     println!("=== NpubCash Quote Subscription ===\n");
 
-    let wallet = get_wallet_for_mint(multi_mint_wallet, mint_url).await?;
+    let wallet = get_wallet_for_mint(wallet_repository, mint_url).await?;
 
     // Enable NpubCash if not already enabled
     wallet.enable_npubcash(base_url.to_string()).await?;
@@ -241,7 +249,7 @@ async fn subscribe(
 }
 
 async fn set_mint(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     mint_url: &str,
     base_url: &str,
     url: &str,
@@ -250,11 +258,11 @@ async fn set_mint(
 
     // Update active mint in KV store
     let mint_url_struct = MintUrl::from_str(mint_url)?;
-    multi_mint_wallet
+    wallet_repository
         .set_active_npubcash_mint(mint_url_struct)
         .await?;
 
-    let wallet = get_wallet_for_mint(multi_mint_wallet, mint_url).await?;
+    let wallet = get_wallet_for_mint(wallet_repository, mint_url).await?;
 
     // Enable NpubCash if not already enabled
     wallet.enable_npubcash(base_url.to_string()).await?;
@@ -290,8 +298,8 @@ async fn set_mint(
     Ok(())
 }
 
-async fn show_keys(multi_mint_wallet: &MultiMintWallet, mint_url: &str) -> Result<()> {
-    let wallet = get_wallet_for_mint(multi_mint_wallet, mint_url).await?;
+async fn show_keys(wallet_repository: &WalletRepository, mint_url: &str) -> Result<()> {
+    let wallet = get_wallet_for_mint(wallet_repository, mint_url).await?;
 
     let keys = wallet.get_npubcash_keys()?;
     let npub = keys.public_key().to_bech32()?;

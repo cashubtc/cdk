@@ -1,10 +1,10 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::MintInfo;
-use cdk::wallet::MultiMintWallet;
+use cdk::wallet::WalletRepository;
 use cdk::OidcClient;
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -19,21 +19,18 @@ pub struct CatDeviceLoginSubCommand {
 }
 
 pub async fn cat_device_login(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     sub_command_args: &CatDeviceLoginSubCommand,
     work_dir: &Path,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
 
     // Ensure the mint exists
-    if !multi_mint_wallet.has_mint(&mint_url).await {
-        multi_mint_wallet.add_mint(mint_url.clone()).await?;
+    if !wallet_repository.has_mint(&mint_url).await {
+        wallet_repository.add_wallet(mint_url.clone()).await?;
     }
 
-    let mint_info = multi_mint_wallet
-        .fetch_mint_info(&mint_url)
-        .await?
-        .ok_or(anyhow!("Mint info not found"))?;
+    let mint_info = wallet_repository.fetch_mint_info(&mint_url).await?;
 
     let (access_token, refresh_token) = get_device_code_token(&mint_info).await;
 

@@ -9,7 +9,7 @@ use nostr_sdk::prelude::*;
 use nostr_sdk::{Client as NostrClient, Filter, Keys};
 use tracing::instrument;
 
-use super::multi_mint_wallet::MultiMintWallet;
+use super::wallet_repository::WalletRepository;
 use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut27::{
@@ -86,7 +86,7 @@ pub struct RestoreResult {
     pub mints_added: usize,
 }
 
-impl MultiMintWallet {
+impl WalletRepository {
     /// Derive the Nostr keys used for mint backup from the wallet seed
     ///
     /// These keys can be used to identify and decrypt backup events.
@@ -236,7 +236,8 @@ impl MultiMintWallet {
             for mint_url in &backup.mints {
                 if !self.has_mint(mint_url).await {
                     // Ignore errors for individual mints to continue restoring others
-                    if self.add_mint(mint_url.clone()).await.is_ok() {
+                    // add_wallet fetches mint info and creates wallets for all supported units
+                    if self.add_wallet(mint_url.clone()).await.is_ok() {
                         mints_added += 1;
                     }
                 }

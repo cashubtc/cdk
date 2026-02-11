@@ -17,7 +17,7 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::multi_mint_wallet::MultiMintWallet;
+use cdk::wallet::WalletRepositoryBuilder;
 use cdk::StreamExt;
 use cdk_sqlite::wallet::memory;
 use nostr_sdk::ToBech32;
@@ -50,25 +50,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let localstore = memory::empty().await?;
-    let wallet = MultiMintWallet::new(Arc::new(localstore), seed, CurrencyUnit::Sat).await?;
+    let wallet_repository = WalletRepositoryBuilder::new()
+        .localstore(Arc::new(localstore))
+        .seed(seed)
+        .build()
+        .await?;
 
     let mint_url_1: MintUrl = MINT_URL_1.parse()?;
     let mint_url_2: MintUrl = MINT_URL_2.parse()?;
 
-    wallet.add_mint(mint_url_1.clone()).await?;
-    wallet.add_mint(mint_url_2.clone()).await?;
+    wallet_repository.add_wallet(mint_url_1.clone()).await?;
+    wallet_repository.add_wallet(mint_url_2.clone()).await?;
     println!("   Added mints: {}, {}\n", mint_url_1, mint_url_2);
 
     // -------------------------------------------------------------------------
     // Step 2: Enable NpubCash on mint 1
     // -------------------------------------------------------------------------
     println!("Step 2: Enabling NpubCash on mint 1...\n");
-
-    wallet
-        .enable_npubcash(mint_url_1.clone(), NPUBCASH_URL.to_string())
+    let wallet = wallet_repository
+        .get_wallet(&mint_url_1.clone(), &CurrencyUnit::Sat)
         .await?;
+    wallet.enable_npubcash(NPUBCASH_URL.to_string()).await?;
 
-    let keys = wallet.get_npubcash_keys().await?;
+    let keys = wallet.get_npubcash_keys().unwrap();
     let npub = keys.public_key().to_bech32()?;
     let display_url = NPUBCASH_URL.trim_start_matches("https://");
 
@@ -97,10 +101,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 4: Switch to mint 2 and receive payment
     // -------------------------------------------------------------------------
     println!("Step 4: Switching to mint 2 and receiving payment...\n");
-
-    wallet
-        .enable_npubcash(mint_url_2.clone(), NPUBCASH_URL.to_string())
+    let wallet = wallet_repository
+        .get_wallet(&mint_url_1.clone(), &CurrencyUnit::Sat)
         .await?;
+
+    wallet.enable_npubcash(NPUBCASH_URL.to_string()).await?;
     println!("   Switched to mint: {}", mint_url_2);
 
     request_invoice(&npub, PAYMENT_AMOUNT_MSATS).await?;
@@ -117,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -------------------------------------------------------------------------
     println!("Step 5: Verifying balances...\n");
 
-    let balances = wallet.get_balances().await?;
+    let balances = wallet_repository.get_balances().await?;
     for (mint, balance) in &balances {
         println!("   {}: {} sats", mint, balance);
     }
