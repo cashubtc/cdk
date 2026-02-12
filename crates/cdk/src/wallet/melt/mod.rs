@@ -619,13 +619,10 @@ impl Wallet {
         Ok(results)
     }
 
-    /// Confirm a prepared melt with already-reserved proofs.
+    /// Internal method called by `PreparedMelt::confirm` with cached data.
     ///
-    /// This is used by `MultiMintPreparedMelt::confirm` which holds an `Arc<Wallet>`
-    /// and has already prepared/reserved proofs. For the normal API path, use
-    /// `PreparedMelt::confirm()` which uses the typestate saga.
-    ///
-    /// The `operation_id` and `quote` must correspond to an existing prepared saga.
+    /// Not intended for direct use - use [`PreparedMelt::confirm`] instead.
+    #[doc(hidden)]
     #[instrument(skip(self, proofs, proofs_to_swap, metadata))]
     #[allow(clippy::too_many_arguments)]
     pub async fn confirm_prepared_melt(
@@ -651,10 +648,10 @@ impl Wallet {
         .await
     }
 
-    /// Confirm a prepared melt with already-reserved proofs and custom options.
+    /// Internal method called by `PreparedMelt::confirm_with_options` with cached data.
     ///
-    /// This is used by `MultiMintPreparedMelt::confirm_with_options` which holds an `Arc<Wallet>`
-    /// and has already prepared/reserved proofs.
+    /// Not intended for direct use - use [`PreparedMelt::confirm_with_options`] instead.
+    #[doc(hidden)]
     #[instrument(skip(self, proofs, proofs_to_swap, metadata, options))]
     #[allow(clippy::too_many_arguments)]
     pub async fn confirm_prepared_melt_with_options(
@@ -708,9 +705,10 @@ impl Wallet {
         }
     }
 
-    /// Cancel a prepared melt and release reserved proofs.
+    /// Internal method called by `PreparedMelt::cancel` with cached data.
     ///
-    /// This is used by `MultiMintPreparedMelt::cancel` which holds an `Arc<Wallet>`.
+    /// Not intended for direct use - use [`PreparedMelt::cancel`] instead.
+    #[doc(hidden)]
     #[instrument(skip(self, proofs, proofs_to_swap))]
     pub async fn cancel_prepared_melt(
         &self,

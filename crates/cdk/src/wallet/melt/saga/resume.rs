@@ -28,7 +28,7 @@ impl Wallet {
     /// - `Ok(None)` - The melt was skipped (still pending, mint unreachable)
     /// - `Err(e)` - An error occurred during recovery
     #[instrument(skip(self, saga))]
-    pub async fn resume_melt_saga(
+    pub(crate) async fn resume_melt_saga(
         &self,
         saga: &WalletSaga,
     ) -> Result<Option<FinalizedMelt>, Error> {

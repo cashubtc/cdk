@@ -23,7 +23,7 @@ static INIT: Once = std::sync::Once::new();
 /// ```dart
 /// await CdkFfi.initLogging("debug");
 /// // Now all logs will be visible in stdout
-/// final wallet = await MultiMintWallet.create(...);
+/// final wallet = await WalletRepository.create(...);
 /// ```
 #[uniffi::export]
 pub fn init_logging(level: String) {

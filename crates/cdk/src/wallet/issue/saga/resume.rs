@@ -33,7 +33,10 @@ impl Wallet {
     /// - SecretsPrepared: No mint request sent, safe to compensate.
     /// - MintRequested: Mint request sent, attempt to recover outputs.
     #[instrument(skip(self, saga))]
-    pub async fn resume_issue_saga(&self, saga: &WalletSaga) -> Result<RecoveryAction, Error> {
+    pub(crate) async fn resume_issue_saga(
+        &self,
+        saga: &WalletSaga,
+    ) -> Result<RecoveryAction, Error> {
         let state = match &saga.state {
             cdk_common::wallet::WalletSagaState::Issue(s) => s,
             _ => {

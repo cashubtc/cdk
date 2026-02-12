@@ -1,12 +1,12 @@
-//! Example: MultiMint Wallet with NpubCash - Switching Active Mints
+//! Example: WalletRepository with NpubCash - Switching Active Mints
 //!
 //! This example demonstrates:
-//! 1. Creating a MultiMintWallet with multiple mints
-//! 2. Using NpubCash integration with the MultiMintWallet API
+//! 1. Creating a WalletRepository with multiple mints
+//! 2. Using NpubCash integration with the WalletRepository API
 //! 3. Switching the active mint for NpubCash deposits
 //! 4. Receiving payments to different mints and verifying balances
 //!
-//! Key concept: Since all wallets in a MultiMintWallet share the same seed, they all
+//! Key concept: Since all wallets in a WalletRepository share the same seed, they all
 //! derive the same Nostr keypair. This means your npub.cash address stays the same,
 //! but you can change which mint receives the deposits.
 
@@ -29,12 +29,12 @@ const PAYMENT_AMOUNT_MSATS: u64 = 10000; // 10 sats
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== MultiMint Wallet with NpubCash Example ===\n");
+    println!("=== WalletRepository with NpubCash Example ===\n");
 
     // -------------------------------------------------------------------------
-    // Step 1: Create MultiMintWallet and add mints
+    // Step 1: Create WalletRepository and add mints
     // -------------------------------------------------------------------------
-    println!("Step 1: Setting up MultiMintWallet...\n");
+    println!("Step 1: Setting up WalletRepository...\n");
 
     let seed: [u8; 64] = {
         let mut s = [0u8; 64];
@@ -111,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     request_invoice(&npub, PAYMENT_AMOUNT_MSATS).await?;
     println!("   Waiting for payment...");
 
-    // The stream is for the multimint wallet so it handles switching mints automatically
+    // The stream is for the wallet repository so it handles switching mints automatically
     let (_, proofs_2) = stream.next().await.ok_or("Stream ended unexpectedly")??;
 
     let amount_2: u64 = proofs_2.total_amount()?.into();

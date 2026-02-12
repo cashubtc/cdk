@@ -283,16 +283,7 @@ pub enum Error {
     #[error("Preimage not provided")]
     PreimageNotProvided,
 
-    // MultiMint Wallet Errors
-    /// Currency unit mismatch in MultiMintWallet
-    #[error("Currency unit mismatch: wallet uses {expected}, but {found} provided")]
-    MultiMintCurrencyUnitMismatch {
-        /// Expected currency unit
-        expected: CurrencyUnit,
-        /// Found currency unit
-        found: CurrencyUnit,
-    },
-    /// Unknown mint in MultiMintWallet
+    /// Unknown mint
     #[error("Unknown mint: {mint_url}")]
     UnknownMint {
         /// URL of the unknown mint
@@ -561,7 +552,6 @@ impl Error {
             | Self::IncorrectMint
             | Self::MultiMintTokenNotSupported
             | Self::PreimageNotProvided
-            | Self::MultiMintCurrencyUnitMismatch { .. }
             | Self::UnknownMint { .. }
             | Self::UnexpectedProofState
             | Self::NoActiveKeyset

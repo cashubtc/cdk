@@ -32,7 +32,10 @@ impl Wallet {
     ///   Check the mint to determine if the swap succeeded, then either
     ///   complete the operation or compensate.
     #[instrument(skip(self, saga))]
-    pub async fn resume_swap_saga(&self, saga: &WalletSaga) -> Result<RecoveryAction, Error> {
+    pub(crate) async fn resume_swap_saga(
+        &self,
+        saga: &WalletSaga,
+    ) -> Result<RecoveryAction, Error> {
         let state = match &saga.state {
             cdk_common::wallet::WalletSagaState::Swap(s) => s,
             _ => {

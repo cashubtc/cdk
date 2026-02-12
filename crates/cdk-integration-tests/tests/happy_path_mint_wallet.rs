@@ -715,35 +715,35 @@ async fn test_melt_quote_status_after_melt() {
     );
 }
 
-/// Tests that the melt quote status can be checked via MultiMintWallet after a melt has completed
+/// Tests that the melt quote status can be checked via WalletRepository after a melt has completed
 ///
 /// This test verifies the same flow as test_melt_quote_status_after_melt but using
-/// the MultiMintWallet abstraction:
-/// 1. Create a MultiMintWallet and add a mint
-/// 2. Mint tokens via the multi mint wallet
+/// the WalletRepository abstraction:
+/// 1. Create a WalletRepository and add a mint
+/// 2. Mint tokens via the wallet repository
 /// 3. Create a melt quote and execute the melt
 /// 4. Check the melt quote status via check_melt_quote
 /// 5. Verify the quote is in the Paid state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
+async fn test_melt_quote_status_after_melt_wallet_repository() {
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
     let localstore = Arc::new(memory::empty().await.unwrap());
 
-    let multi_mint_wallet = WalletRepositoryBuilder::new()
+    let wallet_repository = WalletRepositoryBuilder::new()
         .localstore(localstore.clone())
         .seed(seed)
         .build()
         .await
-        .expect("failed to create multi mint wallet");
+        .expect("failed to create wallet repository");
 
     let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
-    multi_mint_wallet
+    wallet_repository
         .add_wallet(mint_url.clone())
         .await
         .expect("failed to add mint");
 
     // Get the wallet from the repository to call methods directly
-    let wallet = multi_mint_wallet
+    let wallet = wallet_repository
         .get_wallet(&mint_url, &CurrencyUnit::Sat)
         .await
         .expect("failed to get wallet");
@@ -773,7 +773,7 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
         .await
         .expect("mint failed");
 
-    let balances = multi_mint_wallet.total_balance().await.unwrap();
+    let balances = wallet_repository.total_balance().await.unwrap();
     let balance = balances
         .get(&CurrencyUnit::Sat)
         .copied()
@@ -808,7 +808,7 @@ async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
     assert_eq!(
         quote_status.state,
         MeltQuoteState::Paid,
-        "Melt quote should be in Paid state after successful melt (via MultiMintWallet)"
+        "Melt quote should be in Paid state after successful melt (via WalletRepository)"
     );
 
     use cdk_common::database::WalletDatabase;
