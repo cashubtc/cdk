@@ -452,7 +452,12 @@ impl MintBuilder {
                         unit: unit.clone(),
                         amounts,
                         input_fee_ppk: *fee,
-                        use_keyset_v2: self.use_keyset_v2.unwrap_or(true),
+                        keyset_id_type: if self.use_keyset_v2.unwrap_or(true) {
+                            cdk_common::nut02::KeySetVersion::Version01
+                        } else {
+                            cdk_common::nut02::KeySetVersion::Version00
+                        },
+                        final_expiry: None,
                     })
                     .await?;
             }

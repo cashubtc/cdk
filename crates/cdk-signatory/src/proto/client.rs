@@ -117,8 +117,6 @@ impl Signatory for SignatoryRpcClient {
                 .into_iter()
                 .map(|blind_message| blind_message.into())
                 .collect(),
-            operation: super::Operation::Unspecified.into(),
-            correlation_id: "".to_owned(),
         };
 
         self.client
