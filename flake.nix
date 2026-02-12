@@ -130,7 +130,7 @@
         commonCraneArgs = {
           inherit src;
           pname = "cdk";
-          version = "0.14.0";
+          version = "0.15.0-rc.0";
 
           nativeBuildInputs = with pkgs; [
             pkg-config
@@ -213,7 +213,7 @@
         mkWasmBuild = name: cargoArgs: craneLib.cargoBuild ({
           inherit src;
           pname = "cdk-wasm-${name}";
-          version = "0.14.0";
+          version = "0.15.0-rc.0";
           cargoArtifacts = workspaceDeps;
           cargoExtraArgs = "${cargoArgs} --target wasm32-unknown-unknown";
           # WASM doesn't need native build inputs
