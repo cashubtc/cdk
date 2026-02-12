@@ -36,7 +36,7 @@ rust-version = "1.85.0"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 readme = "README.md"
 
 [workspace.dependencies]
@@ -46,27 +46,27 @@ axum = { version = "0.8.1", features = ["ws"] }
 bitcoin = { version = "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
 bip39 = { version = "2.0", features = ["rand"] }
 jsonwebtoken = "9.2.0"
-cashu = { path = "./crates/cashu", default-features = false, version = "=0.14.0" }
-cdk = { path = "./crates/cdk", default-features = false, version = "=0.14.0" }
-cdk-common = { path = "./crates/cdk-common", default-features = false, version = "=0.14.0" }
-cdk-axum = { path = "./crates/cdk-axum", default-features = false, version = "=0.14.0" }
-cdk-cln = { path = "./crates/cdk-cln", version = "=0.14.0" }
-cdk-lnbits = { path = "./crates/cdk-lnbits", version = "=0.14.0" }
-cdk-lnd = { path = "./crates/cdk-lnd", version = "=0.14.0" }
-cdk-ldk-node = { path = "./crates/cdk-ldk-node", version = "=0.14.0" }
-cdk-fake-wallet = { path = "./crates/cdk-fake-wallet", version = "=0.14.0" }
-cdk-ffi = { path = "./crates/cdk-ffi", version = "=0.14.0" }
-cdk-payment-processor = { path = "./crates/cdk-payment-processor", default-features = true, version = "=0.14.0" }
-cdk-mint-rpc = { path = "./crates/cdk-mint-rpc", version = "=0.14.0" }
-cdk-redb = { path = "./crates/cdk-redb", default-features = true, version = "=0.14.0" }
-cdk-sql-common = { path = "./crates/cdk-sql-common", default-features = true, version = "=0.14.0" }
-cdk-sqlite = { path = "./crates/cdk-sqlite", default-features = true, version = "=0.14.0" }
-cdk-postgres = { path = "./crates/cdk-postgres", default-features = true, version = "=0.14.0" }
-cdk-signatory = { path = "./crates/cdk-signatory", version = "=0.14.0", default-features = false }
-cdk-mintd = { path = "./crates/cdk-mintd", version = "=0.14.0", default-features = false }
-cdk-prometheus = { path = "./crates/cdk-prometheus", version = "=0.14.0", default-features = false }
-cdk-npubcash = { path = "./crates/cdk-npubcash", version = "=0.14.0" }
-cdk-http-client = { path = "./crates/cdk-http-client", version = "=0.14.0" }
+cashu = { path = "./crates/cashu", default-features = false, version = "=0.15.0-rc.0" }
+cdk = { path = "./crates/cdk", default-features = false, version = "=0.15.0-rc.0" }
+cdk-common = { path = "./crates/cdk-common", default-features = false, version = "=0.15.0-rc.0" }
+cdk-axum = { path = "./crates/cdk-axum", default-features = false, version = "=0.15.0-rc.0" }
+cdk-cln = { path = "./crates/cdk-cln", version = "=0.15.0-rc.0" }
+cdk-lnbits = { path = "./crates/cdk-lnbits", version = "=0.15.0-rc.0" }
+cdk-lnd = { path = "./crates/cdk-lnd", version = "=0.15.0-rc.0" }
+cdk-ldk-node = { path = "./crates/cdk-ldk-node", version = "=0.15.0-rc.0" }
+cdk-fake-wallet = { path = "./crates/cdk-fake-wallet", version = "=0.15.0-rc.0" }
+cdk-ffi = { path = "./crates/cdk-ffi", version = "=0.15.0-rc.0" }
+cdk-payment-processor = { path = "./crates/cdk-payment-processor", default-features = true, version = "=0.15.0-rc.0" }
+cdk-mint-rpc = { path = "./crates/cdk-mint-rpc", version = "=0.15.0-rc.0" }
+cdk-redb = { path = "./crates/cdk-redb", default-features = true, version = "=0.15.0-rc.0" }
+cdk-sql-common = { path = "./crates/cdk-sql-common", default-features = true, version = "=0.15.0-rc.0" }
+cdk-sqlite = { path = "./crates/cdk-sqlite", default-features = true, version = "=0.15.0-rc.0" }
+cdk-postgres = { path = "./crates/cdk-postgres", default-features = true, version = "=0.15.0-rc.0" }
+cdk-signatory = { path = "./crates/cdk-signatory", version = "=0.15.0-rc.0", default-features = false }
+cdk-mintd = { path = "./crates/cdk-mintd", version = "=0.15.0-rc.0", default-features = false }
+cdk-prometheus = { path = "./crates/cdk-prometheus", version = "=0.15.0-rc.0", default-features = false }
+cdk-npubcash = { path = "./crates/cdk-npubcash", version = "=0.15.0-rc.0" }
+cdk-http-client = { path = "./crates/cdk-http-client", version = "=0.15.0-rc.0" }
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"

@@ -1109,7 +1109,7 @@ dependencies = [
 
 [[package]]
 name = "cashu"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "bip39",
  "bitcoin 0.32.8",
@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "cdk"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1235,7 +1235,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-axum"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1257,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cli"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "anyhow",
  "bip39",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cln"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-common"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1335,7 +1335,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-fake-wallet"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "android_logger",
  "async-trait",
@@ -1384,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-http-client"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "mockito",
  "regex",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-integration-tests"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ldk-node"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
@@ -1466,7 +1466,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnbits"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnd"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1509,7 +1509,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mint-rpc"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "anyhow",
  "cdk",
@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mintd"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-npubcash"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-payment-processor"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1630,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-postgres"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1653,7 +1653,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-prometheus"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -1671,7 +1671,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-redb"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "async-trait",
  "cdk-common",
@@ -1689,7 +1689,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-signatory"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1714,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sql-common"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1732,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sqlite"
-version = "0.14.0"
+version = "0.15.0-rc.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
