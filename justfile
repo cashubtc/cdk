@@ -497,6 +497,8 @@ release m="":
     "-p cashu"
     "-p cdk-prometheus"
     "-p cdk-common"
+    "-p cdk-http-client"
+    "-p cdk-npubcash"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"
@@ -530,31 +532,36 @@ release m="":
   echo "📦 Triggering Swift package release for version $VERSION..."
   just ffi-release-swift $VERSION
 
+  # Trigger Kotlin package release after Rust crates are published
+  echo "📦 Triggering Kotlin package release for version $VERSION..."
+  just ffi-release-kotlin $VERSION
+
 check-docs:
   #!/usr/bin/env bash
   set -euo pipefail
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-http-client"
+    "-p cdk-npubcash"
     "-p cdk-sql-common"
-    "-p cdk"
-    "-p cdk-redb"
     "-p cdk-sqlite"
     "-p cdk-postgres"
+    "-p cdk-redb"
+    "-p cdk-signatory"
+    "-p cdk-fake-wallet"
+    "-p cdk"
+    "-p cdk-ffi"
     "-p cdk-axum"
+    "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
     "-p cdk-ldk-node"
-    "-p cdk-fake-wallet"
-    "-p cdk-mint-rpc"
-    "-p cdk-npubcash"
     "-p cdk-prometheus"
     "-p cdk-payment-processor"
-    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
-    "-p cdk-ffi"
   )
 
   for arg in "${args[@]}"; do
@@ -570,25 +577,26 @@ docs-strict:
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-http-client"
+    "-p cdk-npubcash"
     "-p cdk-sql-common"
-    "-p cdk"
-    "-p cdk-redb"
     "-p cdk-sqlite"
     "-p cdk-postgres"
+    "-p cdk-redb"
+    "-p cdk-signatory"
+    "-p cdk-fake-wallet"
+    "-p cdk"
+    "-p cdk-ffi"
     "-p cdk-axum"
+    "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
     "-p cdk-ldk-node"
-    "-p cdk-fake-wallet"
-    "-p cdk-mint-rpc"
-    "-p cdk-npubcash"
     "-p cdk-prometheus"
     "-p cdk-payment-processor"
-    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
-    "-p cdk-ffi"
   )
 
   for arg in "${args[@]}"; do
@@ -748,4 +756,22 @@ ffi-release-swift VERSION:
     --field cdk_repo="cashubtc/cdk" \
     --field cdk_ref="v{{VERSION}}"
   
-  echo "✅ Workflow triggered successfully!"
+  echo "✅ Swift workflow triggered successfully!"
+
+# Trigger Kotlin Package release workflow
+ffi-release-kotlin VERSION:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  
+  echo "🚀 Triggering Publish Kotlin Package workflow..."
+  echo "   Version: {{VERSION}}"
+  echo "   CDK Ref: v{{VERSION}}"
+  
+  # Trigger the workflow using GitHub CLI
+  gh workflow run "Publish Kotlin Package" \
+    --repo cashubtc/cdk-kotlin \
+    --field version="{{VERSION}}" \
+    --field cdk_repo="cashubtc/cdk" \
+    --field cdk_ref="v{{VERSION}}"
+  
+  echo "✅ Kotlin workflow triggered successfully!"
