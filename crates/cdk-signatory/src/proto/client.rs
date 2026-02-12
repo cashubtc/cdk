@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use cdk_common::error::Error;
+use cdk_common::grpc::VERSION_HEADER;
 use cdk_common::{BlindSignature, BlindedMessage, Proof};
+use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 use crate::proto::signatory_client::SignatoryClient;
@@ -32,6 +34,15 @@ pub enum ClientError {
     /// Invalid URL
     #[error("Invalid URL")]
     InvalidUrl,
+}
+
+/// Helper function to add version header to a request
+fn with_version_header<T>(mut request: tonic::Request<T>) -> tonic::Request<T> {
+    request.metadata_mut().insert(
+        VERSION_HEADER,
+        MetadataValue::from_static(cdk_common::SIGNATORY_PROTOCOL_VERSION),
+    );
+    request
 }
 
 impl SignatoryRpcClient {
@@ -112,7 +123,7 @@ impl Signatory for SignatoryRpcClient {
 
         self.client
             .clone()
-            .blind_sign(req)
+            .blind_sign(with_version_header(tonic::Request::new(req)))
             .await
             .map(|response| {
                 handle_error!(response, sigs)
@@ -129,7 +140,7 @@ impl Signatory for SignatoryRpcClient {
         let req: super::Proofs = proofs.into();
         self.client
             .clone()
-            .verify_proofs(req)
+            .verify_proofs(with_version_header(tonic::Request::new(req)))
             .await
             .map(|response| {
                 if handle_error!(response, success, scalar) {
@@ -145,7 +156,9 @@ impl Signatory for SignatoryRpcClient {
     async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
         self.client
             .clone()
-            .keysets(super::EmptyRequest {})
+            .keysets(with_version_header(tonic::Request::new(
+                super::EmptyRequest {},
+            )))
             .await
             .map(|response| handle_error!(response, keysets).try_into())
             .map_err(|e| Error::Custom(e.to_string()))?
@@ -156,7 +169,7 @@ impl Signatory for SignatoryRpcClient {
         let req: super::RotationRequest = args.into();
         self.client
             .clone()
-            .rotate_keyset(req)
+            .rotate_keyset(with_version_header(tonic::Request::new(req)))
             .await
             .map(|response| handle_error!(response, keyset).try_into())
             .map_err(|e| Error::Custom(e.to_string()))?

@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cdk_common::grpc::create_version_check_interceptor;
 use cdk_common::payment::{IncomingPaymentOptions, MintPayment};
 use cdk_common::CurrencyUnit;
 use futures::{Stream, StreamExt};
@@ -103,13 +104,23 @@ impl PaymentProcessorServer {
                     .identity(server_identity)
                     .client_ca_root(client_ca_cert);
 
-                Server::builder()
-                    .tls_config(tls_config)?
-                    .add_service(CdkPaymentProcessorServer::new(self.clone()))
+                Server::builder().tls_config(tls_config)?.add_service(
+                    CdkPaymentProcessorServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::PAYMENT_PROCESSOR_PROTOCOL_VERSION,
+                        ),
+                    ),
+                )
             }
             None => {
                 tracing::warn!("No valid TLS configuration found, starting insecure server");
-                Server::builder().add_service(CdkPaymentProcessorServer::new(self.clone()))
+                Server::builder().add_service(CdkPaymentProcessorServer::with_interceptor(
+                    self.clone(),
+                    create_version_check_interceptor(
+                        cdk_common::PAYMENT_PROCESSOR_PROTOCOL_VERSION,
+                    ),
+                ))
             }
         };
 

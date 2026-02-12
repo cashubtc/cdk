@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package cdk_mint_rpc;
+package cdk_mint_management_v1;
 
 service CdkMint {
     rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {}

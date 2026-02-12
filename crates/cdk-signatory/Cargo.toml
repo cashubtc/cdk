@@ -20,6 +20,7 @@ async-trait.workspace = true
 bitcoin.workspace = true
 cdk-common = { workspace = true, default-features = false, features = [
     "mint",
+    "grpc",
 ] }
 tonic = { workspace = true, optional = true, features = ["transport", "tls-ring", "codegen", "router"] }
 tonic-prost = { workspace = true, optional = true }
