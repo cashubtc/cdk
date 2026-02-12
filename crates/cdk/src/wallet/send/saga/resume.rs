@@ -15,7 +15,10 @@ use crate::{Error, Wallet};
 impl Wallet {
     /// Resume an incomplete send saga after crash recovery.
     #[instrument(skip(self, saga))]
-    pub async fn resume_send_saga(&self, saga: &WalletSaga) -> Result<RecoveryAction, Error> {
+    pub(crate) async fn resume_send_saga(
+        &self,
+        saga: &WalletSaga,
+    ) -> Result<RecoveryAction, Error> {
         let state = match &saga.state {
             cdk_common::wallet::WalletSagaState::Send(s) => s,
             _ => {

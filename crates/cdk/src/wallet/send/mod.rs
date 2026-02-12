@@ -181,7 +181,10 @@ impl Wallet {
         Ok(prepared)
     }
 
-    /// Called by `PreparedSend::confirm` with cached data.
+    /// Internal method called by `PreparedSend::confirm` with cached data.
+    ///
+    /// Not intended for direct use - use [`PreparedSend::confirm`] instead.
+    #[doc(hidden)]
     #[instrument(skip(self, options, proofs_to_swap, proofs_to_send))]
     #[allow(clippy::too_many_arguments)]
     pub async fn confirm_send(
@@ -216,7 +219,10 @@ impl Wallet {
         Ok(token)
     }
 
-    /// Called by `PreparedSend::cancel` with cached data.
+    /// Internal method called by `PreparedSend::cancel` with cached data.
+    ///
+    /// Not intended for direct use - use [`PreparedSend::cancel`] instead.
+    #[doc(hidden)]
     #[instrument(skip(self, proofs_to_swap, proofs_to_send))]
     pub async fn cancel_send(
         &self,

@@ -26,7 +26,10 @@ impl Wallet {
     /// For `SwapRequested` state, checks if input proofs are spent and either
     /// recovers outputs or compensates.
     #[instrument(skip(self, saga))]
-    pub async fn resume_receive_saga(&self, saga: &WalletSaga) -> Result<RecoveryAction, Error> {
+    pub(crate) async fn resume_receive_saga(
+        &self,
+        saga: &WalletSaga,
+    ) -> Result<RecoveryAction, Error> {
         let state = match &saga.state {
             cdk_common::wallet::WalletSagaState::Receive(s) => s,
             _ => {
