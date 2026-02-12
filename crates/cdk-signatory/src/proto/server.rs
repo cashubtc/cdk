@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
+use cdk_common::grpc::create_version_check_interceptor;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_stream::Stream;
 use tonic::metadata::MetadataMap;
@@ -267,8 +268,9 @@ where
     };
 
     server
-        .add_service(signatory_server::SignatoryServer::new(
+        .add_service(signatory_server::SignatoryServer::with_interceptor(
             CdkSignatoryServer::new(signatory_loader),
+            create_version_check_interceptor(cdk_common::SIGNATORY_PROTOCOL_VERSION),
         ))
         .serve(addr)
         .await?;
@@ -288,8 +290,9 @@ where
     IE: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     Server::builder()
-        .add_service(signatory_server::SignatoryServer::new(
+        .add_service(signatory_server::SignatoryServer::with_interceptor(
             CdkSignatoryServer::new(signatory_loader),
+            create_version_check_interceptor(cdk_common::SIGNATORY_PROTOCOL_VERSION),
         ))
         .serve_with_incoming(incoming)
         .await?;
