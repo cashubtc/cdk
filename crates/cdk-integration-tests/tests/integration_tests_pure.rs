@@ -1308,6 +1308,194 @@ async fn test_concurrent_double_spend_melt() {
     }
 }
 
+/// Tests that P2PK send with force_swap works when the mint charges fees.
+///
+/// When a wallet has no proofs matching the P2PK spending conditions,
+/// `prepare_send` sets `force_swap=true` and re-selects from all proofs.
+/// All selected proofs are routed through a swap (which costs a fee).
+///
+/// Bug: `select_proofs` was called with `include_fees=opts.include_fee`
+/// instead of `include_fees=opts.include_fee || force_swap`, so with the
+/// default `include_fee=false`, proofs were selected without accounting
+/// for the swap fee. The swap then couldn't produce enough output,
+/// causing `InsufficientFunds` during confirm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_p2pk_send_force_swap_with_fees() {
+    setup_tracing();
+
+    // Create a mint with fee_ppk=1000 (1 sat per input proof)
+    let mint = create_mint_with_fee(1000)
+        .await
+        .expect("Failed to create test mint with fees");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Fund wallet with 64 sats (normal proofs, no P2PK conditions)
+    fund_wallet(wallet.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+    assert_eq!(
+        Amount::from(64),
+        wallet.total_balance().await.expect("Failed to get balance")
+    );
+
+    // Generate P2PK spending conditions
+    let secret = SecretKey::generate();
+    let spending_conditions = SpendingConditions::new_p2pk(secret.public_key(), None);
+
+    let send_amount = Amount::from(10);
+
+    // Attempt to send with P2PK conditions (triggers force_swap since no proofs match)
+    let prepared = wallet
+        .prepare_send(
+            send_amount,
+            SendOptions {
+                conditions: Some(spending_conditions),
+                ..Default::default() // include_fee: false
+            },
+        )
+        .await
+        .expect("prepare_send should select enough proofs to cover amount + swap fee");
+
+    let swap_fee = prepared.swap_fee();
+    assert!(
+        swap_fee > Amount::ZERO,
+        "Expected non-zero swap fee for force_swap with fee_ppk=1000"
+    );
+
+    // All proofs should be routed through swap (force_swap=true)
+    assert!(
+        !prepared.proofs_to_swap().is_empty(),
+        "Expected proofs_to_swap to be non-empty for force_swap"
+    );
+    assert!(
+        prepared.proofs_to_send().is_empty(),
+        "Expected proofs_to_send to be empty for force_swap"
+    );
+
+    // Confirm the send — this is where the bug manifests: the swap can't
+    // produce enough output because the selected proofs don't cover the fee
+    let token = prepared
+        .confirm(None)
+        .await
+        .expect("confirm should succeed — swap should produce enough output");
+
+    // Verify token contains exactly the requested amount
+    let keysets_info = wallet.get_mint_keysets().await.unwrap();
+    let token_proofs = token.proofs(&keysets_info).unwrap();
+    assert_eq!(
+        send_amount,
+        token_proofs.total_amount().unwrap(),
+        "Token should contain exactly the send amount"
+    );
+
+    // Verify wallet balance decreased by amount + swap_fee
+    let expected_balance = Amount::from(64) - send_amount - swap_fee;
+    assert_eq!(
+        expected_balance,
+        wallet.total_balance().await.unwrap(),
+        "Wallet balance should be reduced by send amount + swap fee"
+    );
+}
+
+/// Tests that P2PK send with force_swap and include_fee=true works when the
+/// mint charges fees.
+///
+/// Same scenario as above, but with `include_fee: true` so the token includes
+/// enough value for the recipient to pay the redemption fee and receive the
+/// full requested amount.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_p2pk_send_force_swap_with_fees_include_fee() {
+    setup_tracing();
+
+    // Create a mint with fee_ppk=1000 (1 sat per input proof)
+    let mint = create_mint_with_fee(1000)
+        .await
+        .expect("Failed to create test mint with fees");
+    let wallet_sender = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create sender wallet");
+    let wallet_receiver = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create receiver wallet");
+
+    // Fund sender with 64 sats
+    fund_wallet(wallet_sender.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    // Generate P2PK spending conditions
+    let secret = SecretKey::generate();
+    let spending_conditions = SpendingConditions::new_p2pk(secret.public_key(), None);
+
+    let send_amount = Amount::from(10);
+
+    // Send with include_fee=true so token covers the redemption fee
+    let prepared = wallet_sender
+        .prepare_send(
+            send_amount,
+            SendOptions {
+                conditions: Some(spending_conditions),
+                include_fee: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("prepare_send should succeed with include_fee and force_swap");
+
+    let swap_fee = prepared.swap_fee();
+    let send_fee = prepared.send_fee();
+    assert!(
+        swap_fee > Amount::ZERO,
+        "Expected non-zero swap fee for force_swap with fee_ppk=1000"
+    );
+    assert!(
+        send_fee > Amount::ZERO,
+        "Expected non-zero send fee with include_fee=true and fee_ppk=1000"
+    );
+
+    let token = prepared
+        .confirm(None)
+        .await
+        .expect("confirm should succeed");
+
+    // Token should include amount + send_fee (so recipient can pay the redemption fee)
+    let keysets_info = wallet_sender.get_mint_keysets().await.unwrap();
+    let token_proofs = token.proofs(&keysets_info).unwrap();
+    assert_eq!(
+        send_amount + send_fee,
+        token_proofs.total_amount().unwrap(),
+        "Token should contain send amount + redemption fee"
+    );
+
+    // Receiver redeems the token using the P2PK signing key
+    let received_amount = wallet_receiver
+        .receive(
+            &token.to_string(),
+            ReceiveOptions {
+                p2pk_signing_keys: vec![secret],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("Receiver should be able to redeem P2PK token");
+
+    // Receiver should get exactly the send_amount after the redemption fee is deducted
+    assert_eq!(
+        send_amount, received_amount,
+        "Receiver should get exactly the requested amount after fees"
+    );
+
+    // Verify sender balance
+    let expected_sender_balance = Amount::from(64) - send_amount - swap_fee - send_fee;
+    assert_eq!(
+        expected_sender_balance,
+        wallet_sender.total_balance().await.unwrap(),
+        "Sender balance should be reduced by amount + swap_fee + send_fee"
+    );
+}
+
 async fn get_keyset_id(mint: &Mint) -> Id {
     let keys = mint.pubkeys().keysets.first().unwrap().clone();
     keys.verify_id()

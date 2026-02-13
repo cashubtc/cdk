@@ -285,6 +285,71 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
     create_mint_with_limits(None).await
 }
 
+pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
+    // Read environment variable to determine database type
+    let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
+
+    let localstore = match db_type.to_lowercase().as_str() {
+        "memory" => Arc::new(cdk_sqlite::mint::memory::empty().await?),
+        _ => {
+            // Create a temporary directory for SQLite database
+            let temp_dir = create_temp_dir("cdk-test-sqlite-mint")?;
+            let path = temp_dir.join("mint.db").to_str().unwrap().to_string();
+            Arc::new(
+                cdk_sqlite::MintSqliteDatabase::new(path.as_str())
+                    .await
+                    .expect("Could not create sqlite db"),
+            )
+        }
+    };
+
+    let mut mint_builder = MintBuilder::new(localstore.clone());
+
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 1.into(),
+        percent_fee_reserve: 0.02,
+    };
+
+    let ln_fake_backend = FakeWallet::new(
+        fee_reserve.clone(),
+        HashMap::default(),
+        HashSet::default(),
+        2,
+        CurrencyUnit::Sat,
+    );
+
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 10_000),
+            Arc::new(ln_fake_backend),
+        )
+        .await?;
+
+    mint_builder.set_unit_fee(&CurrencyUnit::Sat, fee_ppk)?;
+
+    let mnemonic = Mnemonic::generate(12)?;
+
+    mint_builder = mint_builder
+        .with_name("pure test mint".to_string())
+        .with_description("pure test mint".to_string())
+        .with_urls(vec!["https://aaa".to_string()])
+        .with_limits(2000, 2000);
+
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+
+    let mint = mint_builder
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await?;
+
+    mint.set_quote_ttl(quote_ttl).await?;
+
+    mint.start().await?;
+
+    Ok(mint)
+}
+
 pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<Mint> {
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
