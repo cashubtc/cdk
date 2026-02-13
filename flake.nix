@@ -601,6 +601,8 @@
                 buildInputs = buildInputs ++ [
                   stable_toolchain
                   pkgs.postgresql_16
+                  pkgs.wasm-pack
+                  pkgs.nodejs
                   startPostgres
                   stopPostgres
                   pgStatus

@@ -1,7 +1,9 @@
 //! HTTP Transport trait with a default implementation
 use std::fmt::Debug;
 
-use cdk_common::{AuthToken, HttpClient, HttpClientBuilder};
+#[cfg(not(target_arch = "wasm32"))]
+use cdk_common::HttpClientBuilder;
+use cdk_common::{AuthToken, HttpClient};
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use hickory_resolver::config::ResolverConfig;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -60,7 +62,7 @@ pub struct Async {
 
 impl Default for Async {
     fn default() -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "rustls"))]
         if rustls::crypto::CryptoProvider::get_default().is_none() {
             let _ = rustls::crypto::ring::default_provider().install_default();
         }

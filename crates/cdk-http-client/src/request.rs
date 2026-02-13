@@ -4,7 +4,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::error::HttpError;
-use crate::response::{RawResponse, Response};
+use crate::response::RawResponse;
+use crate::Response;
 
 /// HTTP request builder for complex requests
 #[derive(Debug)]
@@ -13,7 +14,6 @@ pub struct RequestBuilder {
 }
 
 impl RequestBuilder {
-    /// Create a new RequestBuilder from a reqwest::RequestBuilder
     pub(crate) fn new(inner: reqwest::RequestBuilder) -> Self {
         Self { inner }
     }

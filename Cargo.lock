@@ -1210,8 +1210,6 @@ dependencies = [
  "lightning-invoice 0.34.0",
  "nostr-sdk",
  "rand 0.9.2",
- "regex",
- "ring 0.17.14",
  "rustls 0.23.36",
  "serde",
  "serde_json",
@@ -1386,6 +1384,7 @@ dependencies = [
 name = "cdk-http-client"
 version = "0.15.1"
 dependencies = [
+ "js-sys",
  "mockito",
  "regex",
  "reqwest",
@@ -1394,6 +1393,9 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -1748,6 +1750,29 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "cdk-wasm"
+version = "0.15.0"
+dependencies = [
+ "async-trait",
+ "bip39",
+ "cdk",
+ "cdk-common",
+ "getrandom 0.2.17",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]
@@ -6595,6 +6620,17 @@ checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
 dependencies = [
  "ordered-float",
  "serde",
+]
+
+[[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
 ]
 
 [[package]]

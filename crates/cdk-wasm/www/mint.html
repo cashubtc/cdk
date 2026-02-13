@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cdk-wasm Mint Example</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      padding: 2rem;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    h1 { color: #f7931a; margin-bottom: 0.5rem; }
+    p.subtitle { color: #888; margin-bottom: 1.5rem; font-size: 0.9rem; }
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .card h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #888;
+      margin-bottom: 0.75rem;
+    }
+    .status {
+      padding: 0.5rem 0.75rem;
+      border-radius: 4px;
+      font-size: 0.9rem;
+      margin-bottom: 0.5rem;
+    }
+    .status.ok { background: #0d2818; color: #4ade80; }
+    .status.err { background: #2d0f0f; color: #f87171; }
+    .status.info { background: #1a1a2e; color: #93c5fd; }
+    .status.loading { background: #1a1a1a; color: #fbbf24; }
+    .detail { color: #aaa; font-size: 0.9rem; line-height: 1.6; }
+    .detail strong { color: #e0e0e0; }
+    pre {
+      background: #111;
+      padding: 0.75rem;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 0.8rem;
+      color: #aaa;
+      margin-top: 0.5rem;
+      word-break: break-all;
+      white-space: pre-wrap;
+    }
+    input, button {
+      font-family: inherit;
+      font-size: 0.9rem;
+      padding: 0.5rem 0.75rem;
+      border-radius: 4px;
+      border: 1px solid #444;
+      background: #222;
+      color: #e0e0e0;
+    }
+    input { width: 100%; margin-bottom: 0.5rem; }
+    button {
+      background: #f7931a;
+      color: #000;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button:hover:not(:disabled) { background: #ffa940; }
+    .row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+    .row input { margin-bottom: 0; }
+    #log {
+      max-height: 300px;
+      overflow-y: auto;
+      font-size: 0.8rem;
+      color: #aaa;
+      background: #111;
+      padding: 0.75rem;
+      border-radius: 4px;
+      margin-top: 0.5rem;
+    }
+    #log div { margin-bottom: 0.25rem; }
+    #log .ts { color: #666; }
+    #log .event { color: #93c5fd; }
+    #log .ok { color: #4ade80; }
+    #log .err { color: #f87171; }
+  </style>
+</head>
+<body>
+  <h1>Mint &amp; Subscribe</h1>
+  <p class="subtitle">Create a mint quote, pay the invoice, and watch the status update in real-time.</p>
+
+  <div class="card">
+    <h2>Setup</h2>
+    <div id="setup-status" class="status loading">Loading WASM...</div>
+    <div class="detail">
+      <div class="row">
+        <input id="mint-url" type="text" value="https://testnut.cashu.space" placeholder="Mint URL">
+      </div>
+      <div class="row">
+        <input id="amount" type="number" value="21" placeholder="Amount (sats)" min="1">
+        <button id="btn-mint" disabled>Create Mint Quote</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Mint Quote</h2>
+    <div id="quote-status" class="status info">Waiting...</div>
+    <pre id="quote-detail" style="display:none"></pre>
+  </div>
+
+  <div class="card">
+    <h2>Invoice</h2>
+    <div id="invoice-status" class="status info">Waiting for quote...</div>
+    <pre id="invoice" style="display:none"></pre>
+  </div>
+
+  <div class="card">
+    <h2>Subscription Log</h2>
+    <div id="sub-status" class="status info">Waiting for quote...</div>
+    <div id="log"></div>
+  </div>
+
+  <div class="card">
+    <h2>Minted Tokens</h2>
+    <div id="mint-status" class="status info">Waiting for payment...</div>
+    <pre id="mint-result" style="display:none"></pre>
+  </div>
+
+  <div class="card">
+    <h2>Balance</h2>
+    <div id="balance-status" class="status info">Waiting...</div>
+  </div>
+
+  <script type="module">
+    import init, { initDefaultLogging, generateMnemonic, Wallet } from '../pkg/cdk_wasm.js';
+
+    // ---- helpers ----------------------------------------------------------
+    const $ = id => document.getElementById(id);
+    function setStatus(id, cls, text) {
+      const el = $(id);
+      el.className = 'status ' + cls;
+      el.textContent = text;
+    }
+    function log(msg, cls = '') {
+      const el = $('log');
+      const ts = new Date().toLocaleTimeString();
+      el.innerHTML += `<div><span class="ts">[${ts}]</span> <span class="${cls}">${msg}</span></div>`;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    // ---- init WASM --------------------------------------------------------
+    try {
+      await init();
+      setStatus('setup-status', 'ok', 'WASM loaded');
+    } catch (e) {
+      setStatus('setup-status', 'err', 'Failed: ' + e.message);
+      throw e;
+    }
+    try { initDefaultLogging(); } catch (_) {}
+
+    // ---- state ------------------------------------------------------------
+    let wallet = null;
+    let currentQuote = null;
+    let polling = false;
+
+    // ---- create quote -----------------------------------------------------
+    $('btn-mint').disabled = false;
+    $('btn-mint').addEventListener('click', async () => {
+      const mintUrl = $('mint-url').value.trim();
+      const amount = parseInt($('amount').value, 10);
+      if (!mintUrl || !amount || amount <= 0) return;
+
+      $('btn-mint').disabled = true;
+      polling = false; // stop any previous poll
+
+      try {
+        // Create wallet
+        setStatus('quote-status', 'loading', 'Creating wallet...');
+        const mnemonic = generateMnemonic();
+        wallet = new Wallet(mintUrl, 'Sat', mnemonic, null, 3);
+        log('Wallet created for ' + mintUrl);
+
+        // Create mint quote
+        setStatus('quote-status', 'loading', 'Requesting mint quote...');
+        currentQuote = await wallet.mintQuote('Bolt11', { value: amount }, null, null);
+        setStatus('quote-status', 'ok', `Quote ${currentQuote.id} created`);
+        $('quote-detail').style.display = 'block';
+        $('quote-detail').textContent = JSON.stringify(currentQuote, null, 2);
+        log(`Quote created: ${currentQuote.id}`, 'event');
+
+        // Show invoice
+        $('invoice').style.display = 'block';
+        $('invoice').textContent = currentQuote.request;
+        setStatus('invoice-status', 'ok', 'Pay this Lightning invoice to continue');
+
+        // Start polling
+        startPolling(currentQuote.id);
+      } catch (e) {
+        setStatus('quote-status', 'err', 'Error: ' + (e.message || e));
+        log('Error: ' + (e.message || e), 'err');
+        $('btn-mint').disabled = false;
+      }
+    });
+
+    // ---- poll for payment -------------------------------------------------
+    async function startPolling(quoteId) {
+      polling = true;
+      setStatus('sub-status', 'loading', 'Polling quote status every 3s...');
+      log('Started polling for quote ' + quoteId, 'event');
+
+      while (polling) {
+        await new Promise(r => setTimeout(r, 3000));
+        if (!polling) break;
+
+        try {
+          const updated = await wallet.refreshMintQuoteStatus(quoteId);
+          const state = updated.state;
+          log(`Status: ${state}`);
+
+          if (state === 'Paid' || state === 'Issued') {
+            polling = false;
+            setStatus('sub-status', 'ok', `Quote is ${state}!`);
+            log(`Invoice paid! State: ${state}`, 'ok');
+            await mintTokens(quoteId);
+            return;
+          }
+        } catch (e) {
+          log('Poll error: ' + (e.message || e), 'err');
+        }
+      }
+    }
+
+    // ---- mint tokens ------------------------------------------------------
+    async function mintTokens(quoteId) {
+      try {
+        setStatus('mint-status', 'loading', 'Minting tokens...');
+        log('Minting tokens...', 'event');
+        const proofs = await wallet.mint(quoteId, 'Default', null);
+        setStatus('mint-status', 'ok', `Minted ${Array.isArray(proofs) ? proofs.length : '?'} proofs`);
+        $('mint-result').style.display = 'block';
+        $('mint-result').textContent = JSON.stringify(proofs, null, 2);
+        log(`Minted ${Array.isArray(proofs) ? proofs.length : '?'} proofs`, 'ok');
+
+        // Show balance
+        const balance = await wallet.totalBalance();
+        setStatus('balance-status', 'ok', `Balance: ${balance.value} sat`);
+        log(`Balance: ${balance.value} sat`, 'ok');
+      } catch (e) {
+        setStatus('mint-status', 'err', 'Mint error: ' + (e.message || e));
+        log('Mint error: ' + (e.message || e), 'err');
+      }
+      $('btn-mint').disabled = false;
+    }
+  </script>
+</body>
+</html>

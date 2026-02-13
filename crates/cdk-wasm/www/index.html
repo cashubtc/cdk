@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cdk-wasm Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      padding: 2rem;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    h1 { color: #f7931a; margin-bottom: 1.5rem; }
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .card h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #888;
+      margin-bottom: 0.75rem;
+    }
+    .status {
+      padding: 0.5rem 0.75rem;
+      border-radius: 4px;
+      font-size: 0.9rem;
+      margin-bottom: 0.5rem;
+    }
+    .status.ok { background: #0d2818; color: #4ade80; }
+    .status.err { background: #2d0f0f; color: #f87171; }
+    .status.info { background: #1a1a2e; color: #93c5fd; }
+    .status.loading { background: #1a1a1a; color: #fbbf24; }
+    .mnemonic {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 1.1rem;
+      word-spacing: 0.3em;
+      line-height: 1.8;
+      color: #f7931a;
+    }
+    .detail { color: #aaa; font-size: 0.9rem; line-height: 1.6; }
+    .detail strong { color: #e0e0e0; }
+    pre {
+      background: #111;
+      padding: 0.75rem;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 0.8rem;
+      color: #aaa;
+      margin-top: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>cdk-wasm Demo</h1>
+
+  <div class="card">
+    <h2>WASM Module</h2>
+    <div id="wasm-status" class="status loading">Loading WASM module...</div>
+  </div>
+
+  <div class="card">
+    <h2>Mnemonic</h2>
+    <div id="mnemonic-status" class="status info">Waiting...</div>
+    <div id="mnemonic" class="mnemonic"></div>
+  </div>
+
+  <div class="card">
+    <h2>Wallet</h2>
+    <div id="wallet-status" class="status info">Waiting...</div>
+    <div id="wallet-detail" class="detail"></div>
+  </div>
+
+  <div class="card">
+    <h2>Balance</h2>
+    <div id="balance-status" class="status info">Waiting...</div>
+  </div>
+
+  <div class="card">
+    <h2>Mint Info</h2>
+    <div id="mintinfo-status" class="status info">Waiting...</div>
+    <pre id="mintinfo-detail" style="display:none"></pre>
+  </div>
+
+  <script type="module">
+    import init, { initDefaultLogging, generateMnemonic, Wallet } from '../pkg/cdk_wasm.js';
+
+    const $ = id => document.getElementById(id);
+    function setStatus(id, cls, text) {
+      const el = $(id);
+      el.className = 'status ' + cls;
+      el.textContent = text;
+    }
+
+    try {
+      await init();
+      setStatus('wasm-status', 'ok', 'WASM module loaded');
+    } catch (e) {
+      setStatus('wasm-status', 'err', 'Failed to load WASM: ' + e.message);
+      throw e;
+    }
+
+    try {
+      initDefaultLogging();
+    } catch (_) {}
+
+    // Generate mnemonic
+    let mnemonic;
+    try {
+      mnemonic = generateMnemonic();
+      setStatus('mnemonic-status', 'ok', 'Generated 12-word mnemonic');
+      $('mnemonic').textContent = mnemonic;
+    } catch (e) {
+      setStatus('mnemonic-status', 'err', 'Failed: ' + e.message);
+      throw e;
+    }
+
+    // Create wallet
+    const mintUrl = 'https://testnut.cashu.space';
+    let wallet;
+    try {
+      setStatus('wallet-status', 'loading', 'Creating wallet...');
+      wallet = new Wallet(mintUrl, 'Sat', mnemonic, null, 3);
+      setStatus('wallet-status', 'ok', 'Wallet created');
+      $('wallet-detail').innerHTML =
+        `<strong>Mint:</strong> ${mintUrl}<br><strong>Unit:</strong> sat`;
+    } catch (e) {
+      setStatus('wallet-status', 'err', 'Failed: ' + (e.message || e));
+      $('wallet-detail').textContent = String(e);
+    }
+
+    // Fetch balance
+    if (wallet) {
+      try {
+        setStatus('balance-status', 'loading', 'Fetching balance...');
+        const balance = await wallet.totalBalance();
+        setStatus('balance-status', 'ok', 'Balance: ' + balance.value + ' sat');
+      } catch (e) {
+        setStatus('balance-status', 'err', 'Balance error: ' + (e.message || e));
+      }
+    }
+
+    // Fetch mint info
+    if (wallet) {
+      try {
+        setStatus('mintinfo-status', 'loading', 'Fetching mint info...');
+        const info = await wallet.fetchMintInfo();
+        if (info) {
+          setStatus('mintinfo-status', 'ok', 'Mint info retrieved');
+          const detail = $('mintinfo-detail');
+          detail.style.display = 'block';
+          detail.textContent = JSON.stringify(info, null, 2);
+        } else {
+          setStatus('mintinfo-status', 'info', 'Mint returned no info');
+        }
+      } catch (e) {
+        setStatus('mintinfo-status', 'err', 'Mint info error: ' + (e.message || e));
+      }
+    }
+  </script>
+</body>
+</html>

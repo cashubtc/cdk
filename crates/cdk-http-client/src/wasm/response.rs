@@ -1,4 +1,4 @@
-//! HTTP response types
+//! WASM HTTP response wrapping `web_sys::Response`
 
 use serde::de::DeserializeOwned;
 
@@ -6,16 +6,24 @@ use crate::error::HttpError;
 use crate::Response;
 
 /// Raw HTTP response with status code and body access
-#[derive(Debug)]
 pub struct RawResponse {
     status: u16,
-    inner: reqwest::Response,
+    inner: web_sys::Response,
+}
+
+impl core::fmt::Debug for RawResponse {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RawResponse")
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 impl RawResponse {
-    pub(crate) fn new(response: reqwest::Response) -> Self {
+    pub(crate) fn new(response: web_sys::Response) -> Self {
+        let status = response.status();
         Self {
-            status: response.status().as_u16(),
+            status,
             inner: response,
         }
     }
@@ -42,20 +50,28 @@ impl RawResponse {
 
     /// Get the response body as text
     pub async fn text(self) -> Response<String> {
-        self.inner.text().await.map_err(HttpError::from)
+        let promise = self.inner.text().map_err(HttpError::from)?;
+        let js_value = wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .map_err(HttpError::from)?;
+        js_value
+            .as_string()
+            .ok_or_else(|| HttpError::Other("Response body is not a string".into()))
     }
 
     /// Get the response body as JSON
     pub async fn json<T: DeserializeOwned>(self) -> Response<T> {
-        self.inner.json().await.map_err(HttpError::from)
+        let text = self.text().await?;
+        serde_json::from_str(&text).map_err(HttpError::from)
     }
 
     /// Get the response body as bytes
     pub async fn bytes(self) -> Response<Vec<u8>> {
-        self.inner
-            .bytes()
+        let promise = self.inner.array_buffer().map_err(HttpError::from)?;
+        let js_value = wasm_bindgen_futures::JsFuture::from(promise)
             .await
-            .map(|b| b.to_vec())
-            .map_err(HttpError::from)
+            .map_err(HttpError::from)?;
+        let array = js_sys::Uint8Array::new(&js_value);
+        Ok(array.to_vec())
     }
 }

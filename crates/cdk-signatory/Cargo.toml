@@ -26,9 +26,9 @@ tonic = { workspace = true, optional = true, features = ["transport", "tls-ring"
 tonic-prost = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 tracing.workspace = true
-rustls = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rustls = { workspace = true }
 # main.rs dependencies
 anyhow.workspace = true
 cdk-sqlite = { workspace = true, features = ["mint"], optional = true }

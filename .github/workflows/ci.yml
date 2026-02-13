@@ -308,6 +308,23 @@ jobs:
       - name: Build WASM
         run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
 
+  wasm-tests:
+    name: "WASM Tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Run WASM tests
+        run: nix develop .#stable --command just wasm-test
+
   fake-mint-auth-itest:
     name: "Integration fake mint auth tests"
     runs-on: self-hosted

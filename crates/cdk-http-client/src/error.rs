@@ -2,6 +2,10 @@
 
 use thiserror::Error;
 
+/// HTTP Response type - generic over the body type R and error type E
+/// This is the primary return type for all HTTP operations
+pub type Response<R, E = HttpError> = Result<R, E>;
+
 /// HTTP errors that can occur during requests
 #[derive(Debug, Error)]
 pub enum HttpError {
@@ -33,6 +37,7 @@ pub enum HttpError {
     Other(String),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<reqwest::Error> for HttpError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
@@ -45,8 +50,6 @@ impl From<reqwest::Error> for HttpError {
                 message: err.to_string(),
             }
         } else {
-            // is_connect() is not available on wasm32
-            #[cfg(not(target_arch = "wasm32"))]
             if err.is_connect() {
                 return HttpError::Connection(err.to_string());
             }
@@ -112,7 +115,6 @@ mod tests {
 
     #[test]
     fn test_from_serde_json_error() {
-        // Create an invalid JSON parse to get a serde_json::Error
         let result: Result<String, _> = serde_json::from_str("not valid json");
         let json_error = result.expect_err("Invalid JSON should produce an error");
         let http_error: HttpError = json_error.into();
@@ -126,5 +128,16 @@ mod tests {
             }
             _ => panic!("Expected HttpError::Serialization"),
         }
+    }
+
+    #[test]
+    fn test_response_type_is_result() {
+        let success: Response<i32> = Ok(42);
+        assert!(success.is_ok());
+        assert!(matches!(success, Ok(42)));
+
+        let error: Response<i32> = Err(HttpError::Timeout);
+        assert!(error.is_err());
+        assert!(matches!(error, Err(HttpError::Timeout)));
     }
 }

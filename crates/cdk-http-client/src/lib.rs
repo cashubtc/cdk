@@ -1,7 +1,7 @@
 //! HTTP client abstraction for CDK
 //!
-//! This crate provides an HTTP client wrapper that abstracts the underlying HTTP library (reqwest).
-//! Using this crate allows other CDK crates to avoid direct dependencies on reqwest.
+//! This crate provides an HTTP client wrapper that abstracts the underlying HTTP library.
+//! On native targets it uses reqwest; on WASM it calls the browser's `fetch()` API directly.
 //!
 //! # Example
 //!
@@ -20,12 +20,27 @@
 //! }
 //! ```
 
-mod client;
 mod error;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod client;
+#[cfg(not(target_arch = "wasm32"))]
 mod request;
+#[cfg(not(target_arch = "wasm32"))]
 mod response;
 
+#[cfg(target_arch = "wasm32")]
+mod wasm;
+
+// Shared
+// Native re-exports
+#[cfg(not(target_arch = "wasm32"))]
 pub use client::{fetch, HttpClient, HttpClientBuilder};
-pub use error::HttpError;
+pub use error::{HttpError, Response};
+#[cfg(not(target_arch = "wasm32"))]
 pub use request::RequestBuilder;
-pub use response::{RawResponse, Response};
+#[cfg(not(target_arch = "wasm32"))]
+pub use response::RawResponse;
+// WASM re-exports
+#[cfg(target_arch = "wasm32")]
+pub use wasm::{fetch, HttpClient, HttpClientBuilder, RawResponse, RequestBuilder};

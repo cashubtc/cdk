@@ -468,6 +468,36 @@ run-examples:
   cargo r --example proof_selection
   cargo r --example wallet
 
+# Build cdk-wasm package for browser use
+wasm-build *ARGS="--dev":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  wasm-pack build crates/cdk-wasm --target web {{ARGS}}
+
+# Run cdk-wasm tests in Node.js
+wasm-test:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  wasm-pack build crates/cdk-wasm --target nodejs --dev
+  node crates/cdk-wasm/tests/test_transactions.js
+  node crates/cdk-wasm/tests/test_kvstore.js
+
+# Build cdk-wasm and serve the demo page at http://localhost:8080/www/
+wasm-serve PORT="8080": wasm-build
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  echo "Serving cdk-wasm demo at http://localhost:{{PORT}}/www/"
+  cd crates/cdk-wasm && python3 -m http.server {{PORT}}
+
 check-wasm *ARGS="--target wasm32-unknown-unknown":
   #!/usr/bin/env bash
   set -euo pipefail
