@@ -205,7 +205,7 @@ impl<'a> SendSaga<'a, Initial> {
             available_proofs,
             &active_keyset_ids,
             &keyset_fees,
-            opts.include_fee,
+            opts.include_fee || force_swap,
         )?;
         let selected_total = selected_proofs.total_amount()?;
 
