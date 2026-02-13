@@ -37,7 +37,9 @@ pub fn init_logging(level: String) {
                 Config::default()
                     .with_max_level(LevelFilter::Trace)
                     .with_tag("cdk")
-                    .with_format(|f, record| write!(f, "{}", record.args()))
+                    .format(|f: &mut dyn std::fmt::Write, record: &log::Record| {
+                        write!(f, "{}", record.args())
+                    })
                     .with_filter(FilterBuilder::new().parse(&level).build()),
             );
         }
