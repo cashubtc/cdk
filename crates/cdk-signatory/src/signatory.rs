@@ -6,6 +6,7 @@
 //! There is an in memory implementation, when the keys are stored in memory, in the same process,
 //! but it is isolated from the rest of the application, and they communicate through a channel with
 //! the defined API.
+use cdk_common::common::IssuerVersion;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::{
@@ -79,6 +80,8 @@ pub struct SignatoryKeySet {
     pub input_fee_ppk: u64,
     /// Final expiry of the keyset (unix timestamp in the future)
     pub final_expiry: Option<u64>,
+    /// Issuer Version
+    pub issuer_version: Option<IssuerVersion>,
 }
 
 impl From<&SignatoryKeySet> for KeySet {
@@ -117,6 +120,7 @@ impl From<SignatoryKeySet> for MintKeySetInfo {
             derivation_path_index: Default::default(),
             amounts: val.amounts,
             final_expiry: val.final_expiry,
+            issuer_version: val.issuer_version,
             valid_from: 0,
         }
     }
@@ -132,6 +136,7 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
             amounts: info.amounts.clone(),
             keys: key.keys.clone().into(),
             final_expiry: key.final_expiry,
+            issuer_version: info.issuer_version.clone(),
         }
     }
 }
