@@ -496,8 +496,8 @@ release m="":
   args=(
     "-p cashu"
     "-p cdk-prometheus"
-    "-p cdk-common"
     "-p cdk-http-client"
+    "-p cdk-common"
     "-p cdk-npubcash"
     "-p cdk-sql-common"
     "-p cdk-sqlite"

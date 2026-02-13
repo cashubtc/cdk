@@ -1,6 +1,8 @@
 [package]
 name = "cdk-npubcash"
 version.workspace = true
+authors = ["CDK Developers"]
+description = "CDK npubcash sdk"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
