@@ -351,9 +351,7 @@ impl MintPayment for LNbits {
                 let expiry = unix_expiry.map(|t| t - time_now);
 
                 let invoice_request = CreateInvoiceRequest {
-                    amount: Amount::new(amount.into(), unit.clone())
-                        .convert_to(&CurrencyUnit::Sat)?
-                        .value(),
+                    amount: amount.to_sat()?,
                     memo: Some(description),
                     unit: unit.to_string(),
                     expiry,

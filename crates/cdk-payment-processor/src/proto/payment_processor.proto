@@ -14,6 +14,11 @@ service CdkPaymentProcessor {
 
 message EmptyRequest {}
 
+message AmountMessage {
+  uint64 value = 1;
+  string unit = 2;
+}
+
 message SettingsResponse {
   string unit = 1;
   Bolt11Settings bolt11 = 2;
@@ -34,12 +39,12 @@ message Bolt11Settings {
 
 message Bolt11IncomingPaymentOptions {
   optional string description = 1;
-  uint64 amount = 2;
+  AmountMessage amount = 2;
   optional uint64 unix_expiry = 3;
 }
 message CustomIncomingPaymentOptions {
   optional string description = 1;
-  optional uint64 amount = 2;
+  optional AmountMessage amount = 2;
   optional uint64 unix_expiry = 3;
   // Extra payment-method-specific fields as JSON string
   // These fields are flattened into the JSON representation on the client side
@@ -47,7 +52,7 @@ message CustomIncomingPaymentOptions {
 }
 message Bolt12IncomingPaymentOptions {
   optional string description = 1;
-  optional uint64 amount = 2;
+  optional AmountMessage amount = 2;
   optional uint64 unix_expiry = 3;
 }
 
@@ -144,31 +149,30 @@ enum QuoteState {
 
 message PaymentQuoteResponse {
   PaymentIdentifier request_identifier = 1;
-  uint64 amount = 2;
-  uint64 fee = 3;
+  AmountMessage amount = 2;
+  AmountMessage fee = 3;
   QuoteState state = 4;
-  string unit = 5;
   // Extra payment-method-specific fields as JSON string
   // For custom payment methods, these fields are flattened into the response
-  optional string extra_json = 6;
+  optional string extra_json = 5;
 }
 
 message Bolt11OutgoingPaymentOptions {
   string bolt11 = 1;
-  optional uint64 max_fee_amount = 2;
+  optional AmountMessage max_fee_amount = 2;
   optional uint64 timeout_secs = 3;
   optional MeltOptions melt_options = 4;
 }
 
 message Bolt12OutgoingPaymentOptions {
   string offer = 1;
-  optional uint64 max_fee_amount = 2;
+  optional AmountMessage max_fee_amount = 2;
   optional uint64 timeout_secs = 3;
   optional MeltOptions melt_options = 5;
 }
 message CustomOutgoingPaymentOptions {
   string offer = 1;
-  optional uint64 max_fee_amount = 2;
+  optional AmountMessage max_fee_amount = 2;
   optional uint64 timeout_secs = 3;
   optional MeltOptions melt_options = 5;
   // Extra payment-method-specific fields as JSON string
@@ -193,19 +197,18 @@ message OutgoingPaymentVariant {
 
 message MakePaymentRequest {
   OutgoingPaymentVariant payment_options = 1;
-  optional uint64 partial_amount = 2;
-  optional uint64 max_fee_amount = 3;
+  optional AmountMessage partial_amount = 2;
+  optional AmountMessage max_fee_amount = 3;
 }
 
 message MakePaymentResponse {
   PaymentIdentifier payment_identifier = 1;
   optional string payment_proof = 2;
   QuoteState status = 3;
-  uint64 total_spent = 4;
-  string unit = 5;
+  AmountMessage total_spent = 4;
   // Extra payment-method-specific fields as JSON string
   // For custom payment methods, these fields are flattened into the response
-  optional string extra_json = 6;
+  optional string extra_json = 5;
 }
 
 message CheckIncomingPaymentRequest {
@@ -222,7 +225,6 @@ message CheckOutgoingPaymentRequest {
 
 message WaitIncomingPaymentResponse {
   PaymentIdentifier payment_identifier = 1;
-  uint64 payment_amount = 2;
-  string unit = 3;
-  string payment_id = 4;
+  AmountMessage payment_amount = 2;
+  string payment_id = 3;
 }
