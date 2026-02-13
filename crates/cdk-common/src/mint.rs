@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use uuid::Uuid;
 
+use crate::common::IssuerVersion;
 use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::payment::PaymentIdentifier;
 use crate::{Amount, CurrencyUnit, Error, Id, KeySetInfo, PublicKey};
@@ -885,6 +886,8 @@ pub struct MintKeySetInfo {
     pub input_fee_ppk: u64,
     /// Final expiry
     pub final_expiry: Option<u64>,
+    /// Issuer Version
+    pub issuer_version: Option<IssuerVersion>,
 }
 
 /// Default fee

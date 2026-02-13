@@ -1,6 +1,8 @@
 //! Type conversions between Rust types and the generated protobuf types.
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
+use cdk_common::common::IssuerVersion;
 use cdk_common::secret::Secret;
 use cdk_common::util::hex;
 use cdk_common::{Amount, Id, PublicKey};
@@ -63,6 +65,11 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
             amounts: keys.keys().map(|x| x.to_u64()).collect::<Vec<_>>(),
             keys: cdk_common::Keys::new(keys),
             final_expiry: self.final_expiry,
+            issuer_version: self
+                .issuer_version
+                .map(|v| IssuerVersion::from_str(&v))
+                .transpose()
+                .map_err(|e| cdk_common::Error::Custom(e.to_string()))?,
         })
     }
 }
@@ -83,6 +90,7 @@ impl From<crate::signatory::SignatoryKeySet> for KeySet {
             }),
             final_expiry: keyset.final_expiry,
             version: Default::default(),
+            issuer_version: keyset.issuer_version.map(|v| v.to_string()),
         }
     }
 }
@@ -368,6 +376,7 @@ impl From<cdk_common::KeySetInfo> for KeySet {
             keys: Default::default(),
             final_expiry: value.final_expiry,
             version: Default::default(),
+            issuer_version: None,
         }
     }
 }
