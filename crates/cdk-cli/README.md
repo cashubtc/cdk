@@ -28,9 +28,20 @@ A command-line Cashu wallet implementation built with the Cashu Development Kit 
 Download the latest release from the [GitHub releases page](https://github.com/cashubtc/cdk/releases).
 
 ### Option 2: Build from Source
+
+This project uses [Nix](https://nixos.org/) to manage development dependencies.
+
 ```bash
 git clone https://github.com/cashubtc/cdk.git
 cd cdk
+
+# Enter lean development environment
+nix develop
+
+# OR enter full regtest environment (with bitcoind, cln, lnd, postgres)
+nix develop .#regtest
+
+# Build binary
 cargo build --bin cdk-cli --release
 # Binary will be at ./target/release/cdk-cli
 ```
