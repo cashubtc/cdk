@@ -209,11 +209,11 @@ impl WalletRepository {
     }
 
     /// Get wallet balances for all mints
-    pub async fn get_balances(&self) -> Result<HashMap<String, Amount>, FfiError> {
+    pub async fn get_balances(&self) -> Result<HashMap<WalletKey, Amount>, FfiError> {
         let balances = self.inner.get_balances().await?;
         let mut balance_map = HashMap::new();
-        for (mint_url, amount) in balances {
-            balance_map.insert(mint_url.to_string(), amount.into());
+        for (wallet_key, amount) in balances {
+            balance_map.insert(wallet_key.into(), amount.into());
         }
         Ok(balance_map)
     }

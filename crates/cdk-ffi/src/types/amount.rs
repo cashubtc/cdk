@@ -91,7 +91,7 @@ impl From<Amount> for CdkAmount {
 }
 
 /// FFI-compatible Currency Unit
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum CurrencyUnit {
     Sat,
     Msat,
