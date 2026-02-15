@@ -354,7 +354,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         .mint_quote(PaymentMethod::BOLT12, None, None, None)
         .await?;
 
-    let state = wallet.refresh_mint_quote_status(&mint_quote.id).await?;
+    let state = wallet.check_mint_quote_status(&mint_quote.id).await?;
 
     assert_eq!(state.amount_paid, Amount::ZERO);
     assert_eq!(state.amount_issued, Amount::ZERO);
@@ -375,7 +375,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         .await?
         .unwrap();
 
-    let state = wallet.refresh_mint_quote_status(&mint_quote.id).await?;
+    let state = wallet.check_mint_quote_status(&mint_quote.id).await?;
 
     assert_eq!(payment, state.amount_paid);
     assert_eq!(state.amount_paid, (pay_amount_msats / 1_000).into());
@@ -487,7 +487,7 @@ async fn test_attempt_to_mint_unpaid() {
         .unwrap();
 
     let state = wallet
-        .refresh_mint_quote_status(&mint_quote.id)
+        .check_mint_quote_status(&mint_quote.id)
         .await
         .unwrap();
 
@@ -617,7 +617,7 @@ async fn test_bolt12_quote_amount_issued_tracking() -> Result<()> {
         .await?;
 
     // Verify initial state
-    let state_before = wallet.refresh_mint_quote_status(&mint_quote.id).await?;
+    let state_before = wallet.check_mint_quote_status(&mint_quote.id).await?;
     assert_eq!(state_before.amount_paid, Amount::ZERO);
     assert_eq!(state_before.amount_issued, Amount::ZERO);
 
@@ -637,7 +637,7 @@ async fn test_bolt12_quote_amount_issued_tracking() -> Result<()> {
         .expect("Should receive payment notification");
 
     // Check state after payment but before minting
-    let state_after_payment = wallet.refresh_mint_quote_status(&mint_quote.id).await?;
+    let state_after_payment = wallet.check_mint_quote_status(&mint_quote.id).await?;
     assert_eq!(
         state_after_payment.amount_paid,
         Amount::from(pay_amount_msats / 1000)
@@ -657,7 +657,7 @@ async fn test_bolt12_quote_amount_issued_tracking() -> Result<()> {
     assert_eq!(minted_amount, payment);
 
     // Check state after minting
-    let state_after_mint = wallet.refresh_mint_quote_status(&mint_quote.id).await?;
+    let state_after_mint = wallet.check_mint_quote_status(&mint_quote.id).await?;
     assert_eq!(
         state_after_mint.amount_issued, minted_amount,
         "amount_issued should be updated after minting"

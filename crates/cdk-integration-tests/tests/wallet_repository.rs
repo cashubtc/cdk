@@ -125,7 +125,7 @@ async fn test_wallet_repository_mint() {
 
     // Poll for quote to be paid (like a real wallet would)
     let mut quote_status = wallet
-        .refresh_mint_quote_status(&mint_quote.id)
+        .check_mint_quote_status(&mint_quote.id)
         .await
         .unwrap();
 
@@ -141,13 +141,13 @@ async fn test_wallet_repository_mint() {
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         quote_status = wallet
-            .refresh_mint_quote_status(&mint_quote.id)
+            .check_mint_quote_status(&mint_quote.id)
             .await
             .unwrap();
     }
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     let _ = wallet
-        .refresh_mint_quote_status(&mint_quote.id)
+        .check_mint_quote_status(&mint_quote.id)
         .await
         .unwrap();
 
@@ -614,7 +614,7 @@ async fn test_wallet_repository_check_all_mint_quotes() {
 
     // Poll for quote to be paid (like a real wallet would)
     let mut quote_status = wallet
-        .refresh_mint_quote_status(&mint_quote.id)
+        .check_mint_quote_status(&mint_quote.id)
         .await
         .unwrap();
 
@@ -630,13 +630,13 @@ async fn test_wallet_repository_check_all_mint_quotes() {
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         quote_status = wallet
-            .refresh_mint_quote_status(&mint_quote.id)
+            .check_mint_quote_status(&mint_quote.id)
             .await
             .unwrap();
     }
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     let _ = wallet
-        .refresh_mint_quote_status(&mint_quote.id)
+        .check_mint_quote_status(&mint_quote.id)
         .await
         .unwrap();
 

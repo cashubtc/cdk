@@ -2255,7 +2255,7 @@ async fn test_get_unissued_mint_quotes_wallet() {
 /// 2. Quote state is updated correctly
 /// 3. The quote is stored properly in the localstore
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_refresh_mint_quote_status_updates_after_minting() {
+async fn test_check_mint_quote_status_updates_after_minting() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,

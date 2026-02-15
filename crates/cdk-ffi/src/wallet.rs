@@ -223,14 +223,17 @@ impl Wallet {
         Ok(quote.into())
     }
 
-    /// Refresh a specific mint quote status from the mint.
+    /// Check a mint quote status from the mint.
+    ///
+    /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04.
     /// Updates local store with current state from mint.
-    /// Does NOT mint tokens - use mint() to mint a specific quote.
-    pub async fn refresh_mint_quote(
+    /// If there was a crashed mid-mint (pending saga), attempts to complete it.
+    /// Does NOT mint tokens directly - use mint() for that.
+    pub async fn check_mint_quote(
         &self,
         quote_id: String,
     ) -> Result<MintQuoteBolt11Response, FfiError> {
-        let quote = self.inner.refresh_mint_quote_status(&quote_id).await?;
+        let quote = self.inner.check_mint_quote_status(&quote_id).await?;
         Ok(quote.into())
     }
 

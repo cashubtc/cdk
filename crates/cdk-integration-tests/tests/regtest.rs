@@ -507,7 +507,7 @@ async fn test_attempt_to_mint_unpaid() {
         .unwrap();
 
     let state = wallet
-        .refresh_mint_quote_status(&mint_quote.id)
+        .check_mint_quote_status(&mint_quote.id)
         .await
         .unwrap();
 
