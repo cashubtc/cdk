@@ -232,11 +232,14 @@ impl Wallet {
         Ok(mint_quote)
     }
 
-    /// Refresh the status of a single mint quote from the mint.
+    /// Check the status of a single mint quote from the mint.
+    ///
+    /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04.
     /// Updates local store with current state from mint.
-    /// Does NOT mint tokens - use mint() to mint a specific quote.
+    /// If there was a crashed mid-mint (pending saga), attempts to complete it.
+    /// Does NOT mint tokens directly - use mint() for that.
     #[instrument(skip(self, quote_id))]
-    pub async fn refresh_mint_quote_status(&self, quote_id: &str) -> Result<MintQuote, Error> {
+    pub async fn check_mint_quote_status(&self, quote_id: &str) -> Result<MintQuote, Error> {
         let mint_quote = self
             .localstore
             .get_mint_quote(quote_id)
@@ -248,11 +251,14 @@ impl Wallet {
         Ok(mint_quote)
     }
 
-    /// Refresh all unissued mint quote states from the mint.
+    /// Check all unissued mint quote states from the mint.
+    ///
+    /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04 for each quote.
     /// Updates local store with current state from mint for each quote.
-    /// Does NOT mint tokens - use mint() or mint_unissued_quotes() for that.
+    /// If there was a crashed mid-mint (pending saga), attempts to complete it.
+    /// Does NOT mint tokens directly - use mint() or mint_unissued_quotes() for that.
     #[instrument(skip(self))]
-    pub async fn refresh_all_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+    pub async fn check_all_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         let mint_quotes = self.localstore.get_unissued_mint_quotes().await?;
         let mut updated_quotes = Vec::new();
 
