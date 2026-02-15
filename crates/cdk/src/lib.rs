@@ -39,6 +39,9 @@ mod oidc_client;
 #[cfg(feature = "mint")]
 #[doc(hidden)]
 pub use cdk_common::payment as cdk_payment;
+#[cfg(feature = "wallet")]
+#[doc(hidden)]
+pub use cdk_common::wallet::WalletKey;
 /// Re-export amount type
 #[doc(hidden)]
 pub use cdk_common::{
