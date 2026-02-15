@@ -77,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
     let start = std::time::Instant::now();
 
     while start.elapsed() < timeout {
-        let status = wallet.refresh_mint_quote_status(&mint_quote.id).await?;
+        let status = wallet.check_mint_quote_status(&mint_quote.id).await?;
 
         if status.amount_paid >= initial_amount {
             break;
