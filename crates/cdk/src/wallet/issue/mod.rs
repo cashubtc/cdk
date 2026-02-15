@@ -238,6 +238,10 @@ impl Wallet {
     /// Updates local store with current state from mint.
     /// If there was a crashed mid-mint (pending saga), attempts to complete it.
     /// Does NOT mint tokens directly - use mint() for that.
+    ///
+    /// **Note:** The mint quote must be known to the wallet (stored locally) for this
+    /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
+    /// instead.
     #[instrument(skip(self, quote_id))]
     pub async fn check_mint_quote_status(&self, quote_id: &str) -> Result<MintQuote, Error> {
         let mint_quote = self

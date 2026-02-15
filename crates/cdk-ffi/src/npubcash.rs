@@ -25,7 +25,7 @@ impl NpubCashClient {
     ///
     /// # Arguments
     ///
-    /// * `base_url` - Base URL of the NpubCash service (e.g., "https://npub.cash")
+    /// * `base_url` - Base URL of the NpubCash service (e.g., <https://npub.cash>)
     /// * `nostr_secret_key` - Nostr secret key for authentication. Accepts either:
     ///   - Hex-encoded secret key (64 characters)
     ///   - Bech32 `nsec` format (e.g., "nsec1...")
@@ -74,7 +74,7 @@ impl NpubCashClient {
     ///
     /// # Arguments
     ///
-    /// * `mint_url` - URL of the Cashu mint to use (e.g., "https://mint.example.com")
+    /// * `mint_url` - URL of the Cashu mint to use (e.g., <https://mint.example.com>)
     ///
     /// # Errors
     ///
