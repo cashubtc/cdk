@@ -159,7 +159,7 @@ impl WalletRepository {
     }
 
     /// Add a mint to this WalletRepository
-    pub async fn add_mint(
+    pub async fn create_wallet(
         &self,
         mint_url: MintUrl,
         unit: Option<CurrencyUnit>,
@@ -182,7 +182,7 @@ impl WalletRepository {
     }
 
     /// Remove mint from WalletRepository
-    pub async fn remove_mint(
+    pub async fn remove_wallet(
         &self,
         mint_url: MintUrl,
         currency_unit: CurrencyUnit,
