@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::str::FromStr;
 
 use cdk_common::error::Error;
 use cdk_common::grpc::VERSION_SIGNATORY_HEADER;
@@ -41,9 +40,10 @@ pub enum ClientError {
 /// Helper function to add version header to a request
 fn with_version_header<T>(mut request: tonic::Request<T>) -> tonic::Request<T> {
     let version_str = (proto::Constants::SchemaVersion as u8).to_string();
+    let version: &'static str = Box::leak(version_str.into_boxed_str());
     request.metadata_mut().insert(
         VERSION_SIGNATORY_HEADER,
-        MetadataValue::from_str(&version_str).expect("valid version string"),
+        MetadataValue::from_static(version),
     );
     request
 }
