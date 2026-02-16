@@ -768,7 +768,7 @@ ffi-release-kotlin VERSION:
   echo "   CDK Ref: v{{VERSION}}"
   
   # Trigger the workflow using GitHub CLI
-  gh workflow run "Publish Kotlin Package" \
+  gh workflow run "Publish Kotlin Bindings" \
     --repo cashubtc/cdk-kotlin \
     --field version="{{VERSION}}" \
     --field cdk_repo="cashubtc/cdk" \
