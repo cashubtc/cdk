@@ -28,11 +28,13 @@ pub fn calculate_fee(
     let mut fee_per_keyset_raw: BTreeMap<Id, u64> = BTreeMap::new();
 
     for (keyset_id, proof_count) in proofs_count {
-        let keyset_fee_ppk = keyset_fee
+        let keyset_fee_ppk = *keyset_fee
             .get(keyset_id)
             .ok_or(Error::KeysetUnknown(*keyset_id))?;
 
-        let proofs_fee = keyset_fee_ppk * proof_count;
+        let proofs_fee = keyset_fee_ppk
+            .checked_mul(*proof_count)
+            .ok_or(Error::AmountOverflow)?;
 
         sum_fee = sum_fee
             .checked_add(proofs_fee)
@@ -41,7 +43,9 @@ pub fn calculate_fee(
         fee_per_keyset_raw.insert(*keyset_id, proofs_fee);
     }
 
-    let total_fee = (sum_fee.checked_add(999).ok_or(Error::AmountOverflow)?) / 1000;
+    let total_fee = (sum_fee.checked_add(999).ok_or(Error::AmountOverflow)?)
+        .checked_div(1000)
+        .ok_or(Error::AmountOverflow)?;
 
     // Calculate fee per keyset proportionally based on the total
     // BTreeMap ensures deterministic iteration order (sorted by keyset ID)
@@ -59,7 +63,10 @@ pub fn calculate_fee(
             // Last keyset gets the remainder to ensure total matches
             total_fee.saturating_sub(distributed_fee)
         } else {
-            (raw_fee * total_fee) / sum_fee
+            (raw_fee.checked_mul(total_fee))
+                .ok_or(Error::AmountOverflow)?
+                .checked_div(sum_fee)
+                .ok_or(Error::AmountOverflow)?
         };
 
         distributed_fee = distributed_fee.saturating_add(keyset_fee);
