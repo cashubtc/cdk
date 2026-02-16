@@ -194,6 +194,11 @@ impl Mint {
     pub async fn verify_inputs(&self, inputs: &Proofs) -> Result<Verification, Error> {
         Mint::check_inputs_unique(inputs)?;
         let unit = self.verify_inputs_keyset(inputs).await?;
+
+        if unit == CurrencyUnit::Auth {
+            return Err(Error::UnsupportedUnit);
+        }
+
         let amount = inputs.total_amount()?.with_unit(unit);
 
         self.verify_proofs(inputs.clone()).await?;
