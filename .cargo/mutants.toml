@@ -76,4 +76,11 @@ exclude_re = [
     "crates/cashu/src/nuts/nut00/mod.rs:.*PaymentMethod::is_custom",
     "crates/cashu/src/nuts/nut00/mod.rs:.*PaymentMethod::is_bolt11",
     "crates/cashu/src/nuts/nut00/mod.rs:.*impl fmt::Display for KnownMethod.*fmt",
+
+    # Trivial PartialEq implementations - simple delegation for ergonomic comparisons
+    "crates/cashu/src/nuts/nut00/mod.rs:.*impl PartialEq<&str> for PaymentMethod.*eq",
+    "crates/cashu/src/nuts/nut00/mod.rs:.*impl PartialEq<str> for PaymentMethod.*eq",
+    "crates/cashu/src/nuts/nut00/mod.rs:.*impl PartialEq<PaymentMethod> for &str.*eq",
+    "crates/cashu/src/nuts/nut00/mod.rs:.*impl PartialEq<KnownMethod> for PaymentMethod.*eq",
+    "crates/cashu/src/nuts/nut00/mod.rs:.*impl PartialEq<PaymentMethod> for KnownMethod.*eq",
 ]
