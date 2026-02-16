@@ -1087,6 +1087,7 @@ mod tests {
             .unwrap(),
             witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
             dleq: None,
+            p2pk_e: None,
         };
 
         proof.sign_p2pk(secret_key).unwrap();
@@ -1190,6 +1191,7 @@ mod tests {
             .unwrap(),
             witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
             dleq: None,
+            p2pk_e: None,
         };
 
         proof.sign_p2pk(signing_key_three.clone()).unwrap();
@@ -1222,6 +1224,7 @@ mod tests {
             c: pubkey,
             witness: None,
             dleq: None,
+            p2pk_e: None,
         }
     }
 
