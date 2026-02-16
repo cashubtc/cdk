@@ -477,7 +477,8 @@ where
                 state,
                 spending_condition,
                 used_by_operation,
-                created_by_operation
+                created_by_operation,
+                p2pk_e
             FROM proof
             "#,
         )?
@@ -523,7 +524,8 @@ where
                 state,
                 spending_condition,
                 used_by_operation,
-                created_by_operation
+                created_by_operation,
+                p2pk_e
             FROM proof
             WHERE y IN (:ys)
         "#,
@@ -694,9 +696,9 @@ where
             query(
                 r#"
     INSERT INTO proof
-    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation)
+    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, p2pk_e)
     VALUES
-    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation)
+    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :p2pk_e)
     ON CONFLICT(y) DO UPDATE SET
         mint_url = excluded.mint_url,
         state = excluded.state,
@@ -711,7 +713,8 @@ where
         dleq_s = excluded.dleq_s,
         dleq_r = excluded.dleq_r,
         used_by_operation = excluded.used_by_operation,
-        created_by_operation = excluded.created_by_operation
+        created_by_operation = excluded.created_by_operation,
+        p2pk_e = excluded.p2pk_e
     ;
             "#,
             )?
@@ -750,6 +753,14 @@ where
             )
             .bind("used_by_operation", proof.used_by_operation.map(|id| id.to_string()))
             .bind("created_by_operation", proof.created_by_operation.map(|id| id.to_string()))
+            .bind(
+                "p2pk_e",
+                proof
+                    .proof
+                    .p2pk_e
+                    .as_ref()
+                    .map(|pk| pk.to_bytes().to_vec()),
+            )
             .execute(&tx)
             .await?;
         }
@@ -1791,7 +1802,8 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
             state,
             spending_condition,
             used_by_operation,
-            created_by_operation
+            created_by_operation,
+            p2pk_e
         ) = row
     );
 
@@ -1820,6 +1832,9 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         }),
         c: column_as_string!(c, PublicKey::from_str, PublicKey::from_slice),
         dleq,
+        p2pk_e: column_as_nullable_binary!(p2pk_e)
+            .map(|bytes| PublicKey::from_slice(&bytes))
+            .transpose()?,
     };
 
     let used_by_operation =

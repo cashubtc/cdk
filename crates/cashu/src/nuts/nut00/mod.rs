@@ -443,15 +443,13 @@ pub struct ProofV4 {
     )]
     pub c: PublicKey,
     /// Witness
-    #[serde(default)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
     /// DLEQ Proof
     #[serde(rename = "d")]
     pub dleq: Option<ProofDleq>,
     /// P2BK Ephemeral Public Key (NUT-28)
-    #[serde(rename = "pe", default)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "pe", default, skip_serializing_if = "Option::is_none")]
     pub p2pk_e: Option<PublicKey>,
 }
 
