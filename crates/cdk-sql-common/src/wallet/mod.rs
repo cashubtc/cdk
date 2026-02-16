@@ -1965,3 +1965,45 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
         saga_id,
     })
 }
+
+#[cfg(test)]
+mod migration_tests {
+    use super::migrations::MIGRATIONS;
+
+    /// Verify that the committed manifest.txt matches the compiled MIGRATIONS constant.
+    /// If this test fails, rebuild with: cargo build -p cdk-sql-common
+    #[test]
+    fn manifest_matches_compiled_migrations() {
+        let manifest = include_str!("migrations/manifest.txt");
+        let expected: Vec<String> = MIGRATIONS
+            .iter()
+            .map(|(prefix, name, _sql)| format!("{prefix} {name}"))
+            .collect();
+
+        let actual: Vec<&str> = manifest
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.is_empty())
+            .collect();
+
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "Manifest has {} entries but compiled MIGRATIONS has {}. \
+             Regenerate with: cargo build -p cdk-sql-common",
+            actual.len(),
+            expected.len()
+        );
+
+        for (i, (actual_line, expected_line)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(
+                actual_line,
+                expected_line,
+                "Manifest mismatch at entry {}: manifest='{}', compiled='{}'. \
+                 Regenerate with: cargo build -p cdk-sql-common",
+                i + 1,
+                actual_line,
+                expected_line
+            );
+        }
+    }
+}
