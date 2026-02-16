@@ -1203,7 +1203,6 @@ mod tests {
         assert_eq!(index, 1222349093)
     }
 
-
     #[test]
     fn test_payment_method_parsing() {
         // Test known methods (case insensitive)
