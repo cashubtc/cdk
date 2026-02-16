@@ -16,10 +16,9 @@ pub fn create_version_inject_interceptor(
     version: &'static str,
 ) -> impl Fn(Request<()>) -> Result<Request<()>, Status> + Clone {
     move |mut request: Request<()>| {
-        request.metadata_mut().insert(
-            header,
-            version.parse().expect("Invalid protocol version"),
-        );
+        request
+            .metadata_mut()
+            .insert(header, version.parse().expect("Invalid protocol version"));
         Ok(request)
     }
 }

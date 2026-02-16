@@ -108,7 +108,7 @@ impl PaymentProcessorServer {
                     CdkPaymentProcessorServer::with_interceptor(
                         self.clone(),
                         create_version_check_interceptor(
-cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::grpc::VERSION_HEADER,
                             cdk_common::PAYMENT_PROCESSOR_PROTOCOL_VERSION,
                         ),
                     ),
@@ -119,7 +119,7 @@ cdk_common::grpc::VERSION_HEADER,
                 Server::builder().add_service(CdkPaymentProcessorServer::with_interceptor(
                     self.clone(),
                     create_version_check_interceptor(
-cdk_common::grpc::VERSION_HEADER,
+                        cdk_common::grpc::VERSION_HEADER,
                         cdk_common::PAYMENT_PROCESSOR_PROTOCOL_VERSION,
                     ),
                 ))

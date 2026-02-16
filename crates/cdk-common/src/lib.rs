@@ -11,7 +11,6 @@ pub mod task;
 /// Protocol version for gRPC Mint RPC communication
 pub const MINT_RPC_PROTOCOL_VERSION: &str = "1.0.0";
 
-
 /// Protocol version for gRPC Payment Processor communication
 pub const PAYMENT_PROCESSOR_PROTOCOL_VERSION: &str = "1.0.0";
 

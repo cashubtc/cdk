@@ -272,10 +272,7 @@ where
     server
         .add_service(signatory_server::SignatoryServer::with_interceptor(
             CdkSignatoryServer::new(signatory_loader),
-            create_version_check_interceptor(
-                cdk_common::grpc::VERSION_SIGNATORY_HEADER,
-                version,
-            ),
+            create_version_check_interceptor(cdk_common::grpc::VERSION_SIGNATORY_HEADER, version),
         ))
         .serve(addr)
         .await?;
@@ -299,10 +296,7 @@ where
     Server::builder()
         .add_service(signatory_server::SignatoryServer::with_interceptor(
             CdkSignatoryServer::new(signatory_loader),
-            create_version_check_interceptor(
-                cdk_common::grpc::VERSION_SIGNATORY_HEADER,
-                version,
-            ),
+            create_version_check_interceptor(cdk_common::grpc::VERSION_SIGNATORY_HEADER, version),
         ))
         .serve_with_incoming(incoming)
         .await?;
