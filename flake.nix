@@ -567,6 +567,8 @@
                   cargo update
                   cargo update home --precise 0.5.11
                   cargo update typed-index-collections --precise 3.3.0
+                  cargo update simple_asn1 --precise 0.6.3
+                  cargo update time --precise 0.3.44
               ";
                 buildInputs = buildInputs ++ [ msrv_toolchain ];
                 inherit nativeBuildInputs;
