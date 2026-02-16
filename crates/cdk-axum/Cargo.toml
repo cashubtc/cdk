@@ -15,6 +15,7 @@ default = ["auth"]
 redis = ["dep:redis"]
 swagger = ["cdk/swagger", "dep:utoipa"]
 auth = ["cdk/auth"]
+conditional-tokens = ["cdk/conditional-tokens"]
 prometheus = ["dep:cdk-prometheus"]
 [dependencies]
 anyhow.workspace = true

@@ -880,6 +880,18 @@ pub struct MintKeySetInfo {
     pub input_fee_ppk: u64,
     /// Final expiry
     pub final_expiry: Option<u64>,
+    /// Condition ID (for conditional keysets, NUT-28)
+    #[cfg(feature = "conditional-tokens")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition_id: Option<String>,
+    /// Outcome collection string (for conditional keysets, NUT-28)
+    #[cfg(feature = "conditional-tokens")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome_collection: Option<String>,
+    /// Outcome collection ID (for conditional keysets, NUT-28)
+    #[cfg(feature = "conditional-tokens")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome_collection_id: Option<String>,
 }
 
 /// Default fee
@@ -1064,4 +1076,36 @@ mod offer_serde {
             serde::de::Error::custom("Invalid Bolt12 Offer")
         })?))
     }
+}
+
+// --- NUT-28 Conditional Token Storage Types ---
+
+/// Stored condition in the database (NUT-28)
+#[cfg(feature = "conditional-tokens")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredCondition {
+    /// Computed condition identifier (64 hex chars)
+    pub condition_id: String,
+    /// Collateral unit or outcome_collection_id
+    pub collateral: String,
+    /// Parent collection ID (32 zero bytes hex for root)
+    pub parent_collection_id: String,
+    /// Nesting depth (1 for root)
+    pub depth: u32,
+    /// Oracle threshold
+    pub threshold: u32,
+    /// Description
+    pub description: String,
+    /// Hex-encoded oracle announcement TLV bytes (JSON array)
+    pub announcements_json: String,
+    /// Partition keys (JSON array)
+    pub partition_json: String,
+    /// Attestation status
+    pub attestation_status: String,
+    /// Winning outcome (if attested)
+    pub winning_outcome: Option<String>,
+    /// Attestation timestamp
+    pub attested_at: Option<u64>,
+    /// Created at timestamp
+    pub created_at: u64,
 }

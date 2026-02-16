@@ -47,6 +47,12 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
         amounts,
         input_fee_ppk: column_as_nullable_number!(row_keyset_ppk).unwrap_or(0),
         final_expiry: column_as_nullable_number!(valid_to),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     })
 }
 

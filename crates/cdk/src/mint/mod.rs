@@ -35,11 +35,15 @@ use crate::OidcClient;
 pub(crate) mod auth;
 mod builder;
 mod check_spendable;
+#[cfg(feature = "conditional-tokens")]
+mod conditions;
 mod issue;
 mod keysets;
 mod ln;
 mod melt;
 mod proofs;
+#[cfg(feature = "conditional-tokens")]
+mod redeem_outcome;
 mod saga_recovery;
 mod start_up_check;
 mod subscription;

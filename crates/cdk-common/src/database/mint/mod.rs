@@ -8,6 +8,8 @@ use cashu::quote_id::QuoteId;
 use cashu::Amount;
 
 use super::{DbTransactionFinalizer, Error};
+#[cfg(feature = "conditional-tokens")]
+use crate::mint::StoredCondition;
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
 };
@@ -569,6 +571,59 @@ pub trait CompletedOperationsDatabase {
     async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err>;
 }
 
+/// Conditions Database trait (NUT-28)
+#[cfg(feature = "conditional-tokens")]
+#[async_trait]
+pub trait ConditionsDatabase {
+    /// Conditions Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Add a stored condition
+    async fn add_condition(&self, condition: StoredCondition) -> Result<(), Self::Err>;
+
+    /// Get a condition by condition_id
+    async fn get_condition(&self, condition_id: &str) -> Result<Option<StoredCondition>, Self::Err>;
+
+    /// Get all conditions
+    async fn get_conditions(&self) -> Result<Vec<StoredCondition>, Self::Err>;
+
+    /// Update condition attestation state
+    async fn update_condition_attestation(
+        &self,
+        condition_id: &str,
+        status: &str,
+        winning_outcome: Option<&str>,
+        attested_at: Option<u64>,
+    ) -> Result<(), Self::Err>;
+
+    /// Add a conditional keyset mapping
+    async fn add_conditional_keyset_info(
+        &self,
+        condition_id: &str,
+        outcome_collection: &str,
+        outcome_collection_id: &str,
+        keyset_id: &Id,
+    ) -> Result<(), Self::Err>;
+
+    /// Get conditional keysets for a condition
+    async fn get_conditional_keysets_for_condition(
+        &self,
+        condition_id: &str,
+    ) -> Result<HashMap<String, Id>, Self::Err>;
+
+    /// Get all conditional keyset infos (for GET /v1/conditional_keysets)
+    async fn get_all_conditional_keyset_infos(
+        &self,
+    ) -> Result<Vec<cashu::nuts::nut28::ConditionalKeySetInfo>, Self::Err>;
+
+    /// Get condition info for a specific keyset ID
+    /// Returns (condition_id, outcome_collection, outcome_collection_id) if this is a conditional keyset
+    async fn get_condition_for_keyset(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Option<(String, String, String)>, Self::Err>;
+}
+
 /// Base database writer
 pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>
@@ -582,6 +637,7 @@ pub trait Transaction<Error>:
 }
 
 /// Mint Database trait
+#[cfg(not(feature = "conditional-tokens"))]
 #[async_trait]
 pub trait Database<Error>:
     KVStoreDatabase<Err = Error>
@@ -590,6 +646,22 @@ pub trait Database<Error>:
     + SignaturesDatabase<Err = Error>
     + SagaDatabase<Err = Error>
     + CompletedOperationsDatabase<Err = Error>
+{
+    /// Begins a transaction
+    async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;
+}
+
+/// Mint Database trait (with conditional tokens support)
+#[cfg(feature = "conditional-tokens")]
+#[async_trait]
+pub trait Database<Error>:
+    KVStoreDatabase<Err = Error>
+    + QuotesDatabase<Err = Error>
+    + ProofsDatabase<Err = Error>
+    + SignaturesDatabase<Err = Error>
+    + SagaDatabase<Err = Error>
+    + CompletedOperationsDatabase<Err = Error>
+    + ConditionsDatabase<Err = Error>
 {
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;

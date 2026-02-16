@@ -18,6 +18,7 @@ bench = []
 wallet = ["cashu/wallet", "dep:uuid"]
 mint = ["cashu/mint", "dep:uuid"]
 auth = ["cashu/auth"]
+conditional-tokens = ["cashu/conditional-tokens"]
 nostr = ["wallet", "cashu/nostr"]
 prometheus = ["cdk-prometheus/default"]
 

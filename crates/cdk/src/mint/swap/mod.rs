@@ -42,6 +42,22 @@ impl Mint {
         // We don't need to check P2PK or HTLC again. It has all been checked above
         // and the code doesn't reach here unless such verifications were satisfactory
 
+        // NUT-28: Reject conditional keyset tokens in regular swaps.
+        // Conditional tokens must be redeemed via POST /v1/redeem_outcome.
+        #[cfg(feature = "conditional-tokens")]
+        {
+            for proof in input_proofs {
+                if self
+                    .localstore
+                    .get_condition_for_keyset(&proof.keyset_id)
+                    .await?
+                    .is_some()
+                {
+                    return Err(Error::InputsMustUseSameConditionalKeyset);
+                }
+            }
+        }
+
         // Verify inputs (cryptographic verification, no DB needed)
         let input_verification = self.verify_inputs(input_proofs).await.map_err(|err| {
             #[cfg(feature = "prometheus")]

@@ -49,6 +49,12 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     };
     let mut writer = db.begin_transaction().await.expect("db.begin()");
     writer.add_keyset_info(keyset_info).await.unwrap();

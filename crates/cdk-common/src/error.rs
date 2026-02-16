@@ -334,6 +334,72 @@ pub enum Error {
     /// Subscription error
     #[error("Subscription error: {0}")]
     SubscriptionError(String),
+    // 13xxx - Conditional token errors (NUT-28/29/30)
+    /// Invalid oracle signature (13010)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Invalid oracle signature")]
+    InvalidOracleSignature,
+    /// Oracle announcement verification failed (13011)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Oracle announcement verification failed")]
+    OracleAnnouncementVerificationFailed,
+    /// Conditional keyset requires oracle witness (13014)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Conditional keyset requires oracle witness")]
+    ConditionalKeysetRequiresWitness,
+    /// Oracle has not attested to this outcome collection (13015)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Oracle has not attested to this outcome collection")]
+    OracleNotAttestedOutcome,
+    /// Inputs must use the same conditional keyset (13016)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Inputs must use the same conditional keyset")]
+    InputsMustUseSameConditionalKeyset,
+    /// Outputs must use a regular keyset (13017)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Outputs must use a regular keyset")]
+    OutputsMustUseRegularKeyset,
+    /// Invalid condition ID (13020)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Invalid condition ID")]
+    InvalidConditionId,
+    /// Condition not found (13021)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Condition not found")]
+    ConditionNotFound,
+    /// Split amount mismatch (13022)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Split amount mismatch")]
+    SplitAmountMismatch,
+    /// Condition not active (13024)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Condition not active")]
+    ConditionNotActive,
+    /// Merge amount mismatch (13025)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Merge amount mismatch")]
+    MergeAmountMismatch,
+    /// Oracle threshold not met (13027)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Oracle threshold not met")]
+    OracleThresholdNotMet,
+    /// Condition already exists with different configuration (13028)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Condition already exists with different configuration")]
+    ConditionAlreadyExists,
+    /// Overlapping outcome collections (13037)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Overlapping outcome collections")]
+    OverlappingOutcomeCollections,
+    /// Incomplete partition (13038)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Incomplete partition")]
+    IncompletePartition,
+    /// Maximum condition depth exceeded (13040)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Maximum condition depth exceeded")]
+    MaxConditionDepthExceeded,
+
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),
@@ -1057,6 +1123,68 @@ pub enum ErrorCode {
     /// Keyset is inactive, cannot sign messages (12002)
     KeysetInactive,
 
+    // 13xxx - Conditional token errors (NUT-28/29/30)
+    /// Invalid oracle signature (13010)
+    #[cfg(feature = "conditional-tokens")]
+    InvalidOracleSignature,
+    /// Oracle announcement verification failed (13011)
+    #[cfg(feature = "conditional-tokens")]
+    OracleAnnouncementVerificationFailed,
+    /// Conditional keyset requires oracle witness (13014)
+    #[cfg(feature = "conditional-tokens")]
+    ConditionalKeysetRequiresWitness,
+    /// Oracle has not attested to this outcome collection (13015)
+    #[cfg(feature = "conditional-tokens")]
+    OracleNotAttestedOutcome,
+    /// Inputs must use the same conditional keyset (13016)
+    #[cfg(feature = "conditional-tokens")]
+    InputsMustUseSameConditionalKeyset,
+    /// Outputs must use a regular keyset (13017)
+    #[cfg(feature = "conditional-tokens")]
+    OutputsMustUseRegularKeyset,
+    /// Invalid condition ID (13020)
+    #[cfg(feature = "conditional-tokens")]
+    InvalidConditionId,
+    /// Condition not found (13021)
+    #[cfg(feature = "conditional-tokens")]
+    ConditionNotFound,
+    /// Split amount mismatch (13022)
+    #[cfg(feature = "conditional-tokens")]
+    SplitAmountMismatch,
+    /// Condition not active (13024)
+    #[cfg(feature = "conditional-tokens")]
+    ConditionNotActive,
+    /// Merge amount mismatch (13025)
+    #[cfg(feature = "conditional-tokens")]
+    MergeAmountMismatch,
+    /// Oracle threshold not met (13027)
+    #[cfg(feature = "conditional-tokens")]
+    OracleThresholdNotMet,
+    /// Condition already exists with different configuration (13028)
+    #[cfg(feature = "conditional-tokens")]
+    ConditionAlreadyExists,
+    /// Invalid numeric range (13030)
+    #[cfg(feature = "conditional-tokens")]
+    InvalidNumericRange,
+    /// Digit signature verification failed (13031)
+    #[cfg(feature = "conditional-tokens")]
+    DigitSignatureVerificationFailed,
+    /// Attested value outside representable range (13032)
+    #[cfg(feature = "conditional-tokens")]
+    AttestedValueOutsideRange,
+    /// Payout calculation overflow (13033)
+    #[cfg(feature = "conditional-tokens")]
+    PayoutCalculationOverflow,
+    /// Overlapping outcome collections (13037)
+    #[cfg(feature = "conditional-tokens")]
+    OverlappingOutcomeCollections,
+    /// Incomplete partition (13038)
+    #[cfg(feature = "conditional-tokens")]
+    IncompletePartition,
+    /// Maximum condition depth exceeded (13040)
+    #[cfg(feature = "conditional-tokens")]
+    MaxConditionDepthExceeded,
+
     // 20xxx - Quote/Payment errors
     /// Quote request is not paid (20001)
     QuoteNotPaid,
@@ -1123,6 +1251,47 @@ impl ErrorCode {
             // 12xxx - Keyset errors
             12001 => Self::KeysetNotFound,
             12002 => Self::KeysetInactive,
+            // 13xxx - Conditional token errors
+            #[cfg(feature = "conditional-tokens")]
+            13010 => Self::InvalidOracleSignature,
+            #[cfg(feature = "conditional-tokens")]
+            13011 => Self::OracleAnnouncementVerificationFailed,
+            #[cfg(feature = "conditional-tokens")]
+            13014 => Self::ConditionalKeysetRequiresWitness,
+            #[cfg(feature = "conditional-tokens")]
+            13015 => Self::OracleNotAttestedOutcome,
+            #[cfg(feature = "conditional-tokens")]
+            13016 => Self::InputsMustUseSameConditionalKeyset,
+            #[cfg(feature = "conditional-tokens")]
+            13017 => Self::OutputsMustUseRegularKeyset,
+            #[cfg(feature = "conditional-tokens")]
+            13020 => Self::InvalidConditionId,
+            #[cfg(feature = "conditional-tokens")]
+            13021 => Self::ConditionNotFound,
+            #[cfg(feature = "conditional-tokens")]
+            13022 => Self::SplitAmountMismatch,
+            #[cfg(feature = "conditional-tokens")]
+            13024 => Self::ConditionNotActive,
+            #[cfg(feature = "conditional-tokens")]
+            13025 => Self::MergeAmountMismatch,
+            #[cfg(feature = "conditional-tokens")]
+            13027 => Self::OracleThresholdNotMet,
+            #[cfg(feature = "conditional-tokens")]
+            13028 => Self::ConditionAlreadyExists,
+            #[cfg(feature = "conditional-tokens")]
+            13030 => Self::InvalidNumericRange,
+            #[cfg(feature = "conditional-tokens")]
+            13031 => Self::DigitSignatureVerificationFailed,
+            #[cfg(feature = "conditional-tokens")]
+            13032 => Self::AttestedValueOutsideRange,
+            #[cfg(feature = "conditional-tokens")]
+            13033 => Self::PayoutCalculationOverflow,
+            #[cfg(feature = "conditional-tokens")]
+            13037 => Self::OverlappingOutcomeCollections,
+            #[cfg(feature = "conditional-tokens")]
+            13038 => Self::IncompletePartition,
+            #[cfg(feature = "conditional-tokens")]
+            13040 => Self::MaxConditionDepthExceeded,
             // 20xxx - Quote/Payment errors
             20001 => Self::QuoteNotPaid,
             20002 => Self::TokensAlreadyIssued,
@@ -1167,6 +1336,47 @@ impl ErrorCode {
             // 12xxx - Keyset errors
             Self::KeysetNotFound => 12001,
             Self::KeysetInactive => 12002,
+            // 13xxx - Conditional token errors
+            #[cfg(feature = "conditional-tokens")]
+            Self::InvalidOracleSignature => 13010,
+            #[cfg(feature = "conditional-tokens")]
+            Self::OracleAnnouncementVerificationFailed => 13011,
+            #[cfg(feature = "conditional-tokens")]
+            Self::ConditionalKeysetRequiresWitness => 13014,
+            #[cfg(feature = "conditional-tokens")]
+            Self::OracleNotAttestedOutcome => 13015,
+            #[cfg(feature = "conditional-tokens")]
+            Self::InputsMustUseSameConditionalKeyset => 13016,
+            #[cfg(feature = "conditional-tokens")]
+            Self::OutputsMustUseRegularKeyset => 13017,
+            #[cfg(feature = "conditional-tokens")]
+            Self::InvalidConditionId => 13020,
+            #[cfg(feature = "conditional-tokens")]
+            Self::ConditionNotFound => 13021,
+            #[cfg(feature = "conditional-tokens")]
+            Self::SplitAmountMismatch => 13022,
+            #[cfg(feature = "conditional-tokens")]
+            Self::ConditionNotActive => 13024,
+            #[cfg(feature = "conditional-tokens")]
+            Self::MergeAmountMismatch => 13025,
+            #[cfg(feature = "conditional-tokens")]
+            Self::OracleThresholdNotMet => 13027,
+            #[cfg(feature = "conditional-tokens")]
+            Self::ConditionAlreadyExists => 13028,
+            #[cfg(feature = "conditional-tokens")]
+            Self::InvalidNumericRange => 13030,
+            #[cfg(feature = "conditional-tokens")]
+            Self::DigitSignatureVerificationFailed => 13031,
+            #[cfg(feature = "conditional-tokens")]
+            Self::AttestedValueOutsideRange => 13032,
+            #[cfg(feature = "conditional-tokens")]
+            Self::PayoutCalculationOverflow => 13033,
+            #[cfg(feature = "conditional-tokens")]
+            Self::OverlappingOutcomeCollections => 13037,
+            #[cfg(feature = "conditional-tokens")]
+            Self::IncompletePartition => 13038,
+            #[cfg(feature = "conditional-tokens")]
+            Self::MaxConditionDepthExceeded => 13040,
             // 20xxx - Quote/Payment errors
             Self::QuoteNotPaid => 20001,
             Self::TokensAlreadyIssued => 20002,
@@ -1214,5 +1424,39 @@ impl<'de> Deserialize<'de> for ErrorCode {
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.to_code())
+    }
+}
+
+/// Convert NUT-28 errors to cdk_common errors
+#[cfg(feature = "conditional-tokens")]
+impl From<cashu::nuts::nut28::Error> for Error {
+    fn from(err: cashu::nuts::nut28::Error) -> Self {
+        match err {
+            cashu::nuts::nut28::Error::InvalidConditionId => Self::InvalidConditionId,
+            cashu::nuts::nut28::Error::ConditionNotFound => Self::ConditionNotFound,
+            cashu::nuts::nut28::Error::OverlappingOutcomeCollections => {
+                Self::OverlappingOutcomeCollections
+            }
+            cashu::nuts::nut28::Error::IncompletePartition => Self::IncompletePartition,
+            cashu::nuts::nut28::Error::InvalidOracleSignature => Self::InvalidOracleSignature,
+            cashu::nuts::nut28::Error::OracleAnnouncementVerificationFailed(_) => {
+                Self::OracleAnnouncementVerificationFailed
+            }
+            cashu::nuts::nut28::Error::ConditionalKeysetRequiresWitness => {
+                Self::ConditionalKeysetRequiresWitness
+            }
+            cashu::nuts::nut28::Error::OracleNotAttestedOutcome => {
+                Self::OracleNotAttestedOutcome
+            }
+            cashu::nuts::nut28::Error::InputsMustUseSameConditionalKeyset => {
+                Self::InputsMustUseSameConditionalKeyset
+            }
+            cashu::nuts::nut28::Error::OutputsMustUseRegularKeyset => {
+                Self::OutputsMustUseRegularKeyset
+            }
+            cashu::nuts::nut28::Error::OracleThresholdNotMet => Self::OracleThresholdNotMet,
+            cashu::nuts::nut28::Error::ConditionAlreadyExists => Self::ConditionAlreadyExists,
+            cashu::nuts::nut28::Error::Dlc(msg) => Self::Custom(format!("DLC error: {msg}")),
+        }
     }
 }

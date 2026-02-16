@@ -16,6 +16,7 @@ default = ["mint", "wallet", "auth"]
 mint = ["cdk-common/mint"]
 wallet = ["cdk-common/wallet"]
 auth = ["cdk-common/auth"]
+conditional-tokens = ["cdk-common/conditional-tokens"]
 prometheus = ["cdk-prometheus"]
 [dependencies]
 async-trait.workspace = true

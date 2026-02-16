@@ -344,3 +344,89 @@ where
     // Per NUT-00 spec: "In case of an error, mints respond with the HTTP status code 400"
     (StatusCode::BAD_REQUEST, Json(err_response)).into_response()
 }
+
+// --- NUT-28 Conditional Token Endpoints ---
+
+/// GET /v1/conditions - List all registered conditions
+#[cfg(feature = "conditional-tokens")]
+#[instrument(skip_all)]
+pub(crate) async fn get_conditions(
+    State(state): State<MintState>,
+) -> Result<Json<cdk::nuts::nut28::GetConditionsResponse>, Response> {
+    let response = state.mint.get_conditions().await.map_err(|err| {
+        tracing::error!("Could not get conditions: {}", err);
+        into_response(err)
+    })?;
+    Ok(Json(response))
+}
+
+/// POST /v1/conditions - Register a new condition
+#[cfg(feature = "conditional-tokens")]
+#[instrument(skip_all)]
+pub(crate) async fn post_conditions(
+    State(state): State<MintState>,
+    Json(payload): Json<cdk::nuts::nut28::RegisterConditionRequest>,
+) -> Result<Json<cdk::nuts::nut28::RegisterConditionResponse>, Response> {
+    let response = state
+        .mint
+        .register_condition(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not register condition: {}", err);
+            into_response(err)
+        })?;
+    Ok(Json(response))
+}
+
+/// GET /v1/conditions/{condition_id} - Get a specific condition
+#[cfg(feature = "conditional-tokens")]
+#[instrument(skip_all)]
+pub(crate) async fn get_condition(
+    State(state): State<MintState>,
+    Path(condition_id): Path<String>,
+) -> Result<Json<cdk::nuts::nut28::ConditionInfo>, Response> {
+    let response = state
+        .mint
+        .get_condition(&condition_id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not get condition: {}", err);
+            into_response(err)
+        })?;
+    Ok(Json(response))
+}
+
+/// GET /v1/conditional_keysets - List all conditional keysets
+#[cfg(feature = "conditional-tokens")]
+#[instrument(skip_all)]
+pub(crate) async fn get_conditional_keysets(
+    State(state): State<MintState>,
+) -> Result<Json<cdk::nuts::nut28::ConditionalKeysetsResponse>, Response> {
+    let response = state
+        .mint
+        .get_conditional_keysets()
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not get conditional keysets: {}", err);
+            into_response(err)
+        })?;
+    Ok(Json(response))
+}
+
+/// POST /v1/redeem_outcome - Redeem conditional tokens
+#[cfg(feature = "conditional-tokens")]
+#[instrument(skip_all)]
+pub(crate) async fn post_redeem_outcome(
+    State(state): State<MintState>,
+    Json(payload): Json<cdk::nuts::nut28::RedeemOutcomeRequest>,
+) -> Result<Json<cdk::nuts::nut28::RedeemOutcomeResponse>, Response> {
+    let response = state
+        .mint
+        .process_redeem_outcome(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process redeem outcome: {}", err);
+            into_response(err)
+        })?;
+    Ok(Json(response))
+}

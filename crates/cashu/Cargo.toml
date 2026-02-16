@@ -16,6 +16,7 @@ swagger = ["dep:utoipa"]
 mint = []
 wallet = []
 auth = ["dep:strum", "dep:strum_macros", "dep:regex"]
+conditional-tokens = ["dep:dlc-messages"]
 nostr = ["dep:nostr-sdk"]
 bench = []
 
@@ -38,6 +39,7 @@ regex = { workspace = true, optional = true }
 strum = { workspace = true, optional = true }
 strum_macros = { workspace = true, optional = true }
 nostr-sdk = { workspace = true, optional = true }
+dlc-messages = { workspace = true, optional = true }
 zeroize = "1"
 web-time.workspace = true
 

@@ -116,6 +116,12 @@ impl From<SignatoryKeySet> for MintKeySetInfo {
             amounts: val.amounts,
             final_expiry: val.final_expiry,
             valid_from: 0,
+            #[cfg(feature = "conditional-tokens")]
+            condition_id: None,
+            #[cfg(feature = "conditional-tokens")]
+            outcome_collection: None,
+            #[cfg(feature = "conditional-tokens")]
+            outcome_collection_id: None,
         }
     }
 }
@@ -158,4 +164,30 @@ pub trait Signatory {
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error>;
+
+    /// Create a conditional keyset for a specific condition and outcome collection (NUT-28)
+    #[cfg(feature = "conditional-tokens")]
+    async fn create_conditional_keyset(
+        &self,
+        unit: CurrencyUnit,
+        condition_id: &str,
+        outcome_collection: &str,
+        outcome_collection_id: &str,
+        amounts: Vec<u64>,
+        input_fee_ppk: u64,
+        final_expiry: Option<u64>,
+    ) -> Result<SignatoryKeySet, Error> {
+        let _ = (
+            unit,
+            condition_id,
+            outcome_collection,
+            outcome_collection_id,
+            amounts,
+            input_fee_ppk,
+            final_expiry,
+        );
+        Err(Error::Custom(
+            "Conditional keysets not supported by this signatory".to_string(),
+        ))
+    }
 }

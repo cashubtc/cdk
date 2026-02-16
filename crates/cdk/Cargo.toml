@@ -17,6 +17,7 @@ nostr = ["wallet", "dep:nostr-sdk", "cdk-common/nostr"]
 npubcash = ["wallet", "nostr", "dep:cdk-npubcash"]
 mint = ["dep:futures", "dep:reqwest", "cdk-common/mint", "cdk-signatory"]
 auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]
+conditional-tokens = ["cdk-common/conditional-tokens", "cdk-signatory/conditional-tokens"]
 bip353 = ["dep:hickory-resolver"]
 # We do not commit to a MSRV with swagger enabled
 swagger = ["mint", "dep:utoipa", "cdk-common/swagger"]

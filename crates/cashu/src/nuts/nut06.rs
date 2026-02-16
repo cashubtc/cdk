@@ -327,6 +327,12 @@ pub struct Nuts {
     #[serde(default)]
     #[serde(rename = "20")]
     pub nut20: SupportedSettings,
+    /// NUT28 Settings (Conditional Tokens)
+    #[serde(rename = "28")]
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg(feature = "conditional-tokens")]
+    pub nut28: Option<super::nut28::Nut28Settings>,
     /// NUT21 Settings
     #[serde(rename = "21")]
     #[serde(skip_serializing_if = "Option::is_none")]
