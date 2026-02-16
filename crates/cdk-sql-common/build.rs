@@ -51,7 +51,7 @@ fn main() {
                 "".to_owned()
             };
 
-            let prefix_b = if parts_a.len() == 2 {
+            let prefix_b = if parts_b.len() == 2 {
                 parts_b.first().map(|x| x.to_owned()).unwrap_or_default()
             } else {
                 "".to_owned()
