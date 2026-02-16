@@ -2124,4 +2124,31 @@ mod tests {
         let result = Amount::ZERO.saturating_sub(Amount::ZERO);
         assert_eq!(result, Amount::ZERO);
     }
+
+    /// Tests that saturating_sub handles the edge case where other == self + 1.
+    ///
+    /// This catches the mutation where `>` is replaced with `>=`.
+    /// If `other == self + 1`, then `other > self` is true, so we should return ZERO.
+    /// But if changed to `other >= self`, it would incorrectly return 1.
+    #[test]
+    fn test_saturating_sub_edge_case_other_greater_by_one() {
+        // When other is exactly one greater than self
+        let amount1 = Amount::from(10);
+        let amount2 = Amount::from(11); // amount2 = amount1 + 1
+        let result = amount1.saturating_sub(amount2);
+        // Should saturate to ZERO since other > self
+        assert_eq!(result, Amount::ZERO);
+
+        // Another case: subtracting 2 from 1
+        let amount1 = Amount::from(1);
+        let amount2 = Amount::from(2);
+        let result = amount1.saturating_sub(amount2);
+        assert_eq!(result, Amount::ZERO);
+
+        // Edge case with zero: subtracting 1 from 0
+        let amount1 = Amount::ZERO;
+        let amount2 = Amount::from(1);
+        let result = amount1.saturating_sub(amount2);
+        assert_eq!(result, Amount::ZERO);
+    }
 }
