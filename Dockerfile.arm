@@ -13,7 +13,7 @@ COPY crates ./crates
 RUN echo 'filter-syscalls = false' > /etc/nix/nix.conf
 
 # Start the Nix daemon and develop the environment
-RUN nix develop --extra-platforms aarch64-linux --extra-experimental-features nix-command --extra-experimental-features flakes --command cargo build --release --bin cdk-mintd --features postgres
+RUN nix develop --extra-platforms aarch64-linux --extra-experimental-features nix-command --extra-experimental-features flakes --command cargo build --release --bin cdk-mintd --features postgres --features prometheus
 
 # Create a runtime stage
 FROM debian:trixie-slim
