@@ -5,7 +5,6 @@ use std::sync::Arc;
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, All, Secp256k1};
 use cdk_common::common::IssuerVersion;
-use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{CurrencyUnit, MintKeySet};
