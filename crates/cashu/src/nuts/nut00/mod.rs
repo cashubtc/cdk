@@ -56,6 +56,9 @@ pub trait ProofsMethods {
 
     /// Create a copy of proofs without dleqs
     fn without_dleqs(&self) -> Proofs;
+
+    /// Create a copy of proofs without P2BK nonce
+    fn without_p2pk_e(&self) -> Proofs;
 }
 
 impl ProofsMethods for Proofs {
@@ -84,6 +87,16 @@ impl ProofsMethods for Proofs {
             })
             .collect()
     }
+
+    fn without_p2pk_e(&self) -> Proofs {
+        self.iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.p2pk_e = None;
+                p
+            })
+            .collect()
+    }
 }
 
 impl ProofsMethods for HashSet<Proof> {
@@ -108,6 +121,16 @@ impl ProofsMethods for HashSet<Proof> {
             .map(|p| {
                 let mut p = p.clone();
                 p.dleq = None;
+                p
+            })
+            .collect()
+    }
+
+    fn without_p2pk_e(&self) -> Proofs {
+        self.iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.p2pk_e = None;
                 p
             })
             .collect()
@@ -214,7 +237,7 @@ pub struct BlindedMessage {
     /// Witness
     ///
     /// <https://github.com/cashubtc/nuts/blob/main/11.md>
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
 }
 
@@ -260,7 +283,7 @@ pub struct BlindSignature {
     /// DLEQ Proof
     ///
     /// <https://github.com/cashubtc/nuts/blob/main/12.md>
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<BlindSignatureDleq>,
 }
 
@@ -348,11 +371,15 @@ pub struct Proof {
     #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub c: PublicKey,
     /// Witness
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
     /// DLEQ Proof
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
+    /// P2BK Ephemeral Public Key (NUT-28)
+    /// Used for Pay-to-Blinded-Key privacy feature
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p2pk_e: Option<PublicKey>,
 }
 
 impl Proof {
@@ -365,6 +392,7 @@ impl Proof {
             c,
             witness: None,
             dleq: None,
+            p2pk_e: None,
         }
     }
 
@@ -416,11 +444,15 @@ pub struct ProofV4 {
     pub c: PublicKey,
     /// Witness
     #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
     /// DLEQ Proof
     #[serde(rename = "d")]
     pub dleq: Option<ProofDleq>,
+    /// P2BK Ephemeral Public Key (NUT-28)
+    #[serde(rename = "pe", default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p2pk_e: Option<PublicKey>,
 }
 
 impl ProofV4 {
@@ -433,6 +465,7 @@ impl ProofV4 {
             c: self.c,
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
+            p2pk_e: self.p2pk_e.clone(),
         }
     }
 }
@@ -451,7 +484,8 @@ impl From<Proof> for ProofV4 {
             c,
             witness,
             dleq,
-            ..
+            p2pk_e,
+            keyset_id: _,
         } = proof;
         ProofV4 {
             amount,
@@ -459,6 +493,7 @@ impl From<Proof> for ProofV4 {
             c,
             witness,
             dleq,
+            p2pk_e,
         }
     }
 }
@@ -471,6 +506,7 @@ impl From<ProofV3> for ProofV4 {
             c: proof.c,
             witness: proof.witness,
             dleq: proof.dleq,
+            p2pk_e: None,
         }
     }
 }
@@ -489,10 +525,10 @@ pub struct ProofV3 {
     #[serde(rename = "C")]
     pub c: PublicKey,
     /// Witness
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
     /// DLEQ Proof
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
 }
 
@@ -506,6 +542,7 @@ impl ProofV3 {
             c: self.c,
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
+            p2pk_e: None,
         }
     }
 }
@@ -519,6 +556,7 @@ impl From<Proof> for ProofV3 {
             c,
             witness,
             dleq,
+            p2pk_e: _,
         } = proof;
         ProofV3 {
             amount,
