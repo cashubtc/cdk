@@ -14,7 +14,7 @@ service Signatory {
 enum Constants {
   CONSTANTS_UNSPECIFIED = 0;
   // this constant should be sent on the header of the grpc code for verification
-  CONSTANTS_VERSION = 1;
+  CONSTANTS_SCHEMA_VERSION = 1;
 }
 
 message BlindSignResponse {

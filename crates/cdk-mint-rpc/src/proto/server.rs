@@ -139,7 +139,10 @@ impl MintRPCServer {
                 Server::builder().tls_config(tls_config)?.add_service(
                     CdkMintServer::with_interceptor(
                         self.clone(),
-                        create_version_check_interceptor(cdk_common::MINT_RPC_PROTOCOL_VERSION),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
                     ),
                 )
             }
@@ -147,7 +150,10 @@ impl MintRPCServer {
                 tracing::warn!("No valid TLS configuration found, starting insecure server");
                 Server::builder().add_service(CdkMintServer::with_interceptor(
                     self.clone(),
-                    create_version_check_interceptor(cdk_common::MINT_RPC_PROTOCOL_VERSION),
+                    create_version_check_interceptor(
+                        cdk_common::grpc::VERSION_HEADER,
+                        cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                    ),
                 ))
             }
         };
