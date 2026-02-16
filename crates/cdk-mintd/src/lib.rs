@@ -100,7 +100,9 @@ async fn initial_setup(
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
 )> {
+    tracing::info!("Initializing database...");
     let (localstore, keystore, kv) = setup_database(settings, work_dir, db_password).await?;
+    tracing::info!("Database initialized successfully");
     Ok((localstore, keystore, kv))
 }
 
@@ -266,6 +268,7 @@ async fn setup_database(
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
 )> {
+    tracing::info!("Using database engine: {:?}", settings.database.engine);
     match settings.database.engine {
         #[cfg(feature = "sqlite")]
         DatabaseEngine::Sqlite => {
@@ -288,6 +291,7 @@ async fn setup_database(
 
             #[cfg(feature = "postgres")]
             let pg_db = Arc::new(MintPgDatabase::new(pg_config.url.as_str()).await?);
+            tracing::info!("PostgreSQL database connection established");
             #[cfg(feature = "postgres")]
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
                 pg_db.clone();
@@ -320,6 +324,7 @@ async fn setup_sqlite_database(
     _password: Option<String>,
 ) -> Result<Arc<MintSqliteDatabase>> {
     let sql_db_path = work_dir.join("cdk-mintd.sqlite");
+    tracing::info!("SQLite database path: {}", sql_db_path.display());
 
     #[cfg(not(feature = "sqlcipher"))]
     let db = MintSqliteDatabase::new(&sql_db_path).await?;
@@ -328,9 +333,11 @@ async fn setup_sqlite_database(
         // Get password from command line arguments for sqlcipher
         let password = _password
             .ok_or_else(|| anyhow!("Password required when sqlcipher feature is enabled"))?;
+        tracing::info!("Using SQLCipher encryption for SQLite database");
         MintSqliteDatabase::new((sql_db_path, password)).await?
     };
 
+    tracing::info!("SQLite database initialized successfully");
     Ok(Arc::new(db))
 }
 
