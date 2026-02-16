@@ -156,6 +156,8 @@ fn visit_dirs(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
+            // Watch subdirectories so new migration files trigger a rebuild
+            println!("cargo:rerun-if-changed={}", path.display());
             visit_dirs(&path, files)?;
         } else if path.is_file() {
             files.push(path);
