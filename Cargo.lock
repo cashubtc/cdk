@@ -189,7 +189,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -200,7 +200,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1109,7 +1109,7 @@ dependencies = [
 
 [[package]]
 name = "cashu"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "bip39",
  "bitcoin 0.32.8",
@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "cdk"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1235,7 +1235,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-axum"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1257,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cli"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "anyhow",
  "bip39",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cln"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-common"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1335,7 +1335,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-fake-wallet"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "android_logger",
  "async-trait",
@@ -1384,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-http-client"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "mockito",
  "regex",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-integration-tests"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ldk-node"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
@@ -1466,7 +1466,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnbits"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnd"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1509,7 +1509,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mint-rpc"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "anyhow",
  "cdk",
@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mintd"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-npubcash"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-payment-processor"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1630,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-postgres"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1653,7 +1653,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-prometheus"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "anyhow",
  "futures",
@@ -1671,7 +1671,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-redb"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "async-trait",
  "cdk-common",
@@ -1689,7 +1689,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-signatory"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1714,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sql-common"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1732,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sqlite"
-version = "0.15.0-rc.2"
+version = "0.15.0-rc.3"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1940,7 +1940,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -2535,7 +2535,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2766,7 +2766,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3430,11 +3430,11 @@ dependencies = [
 
 [[package]]
 name = "home"
-version = "0.5.12"
+version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
+checksum = "589533453244b0995c858700322199b2becb13b627df2851f64a2775d024abcf"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4730,7 +4730,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4761,9 +4761,9 @@ dependencies = [
 
 [[package]]
 name = "num-conv"
-version = "0.2.0"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf97ec579c3c42f953ef76dbf8d55ac91fb219dde70e49aa4a6b7d74e9919050"
+checksum = "51d515d32fb182ee37cda2ccdcb92950d6a3c2893aa280e540671c2cd0f3b1d9"
 
 [[package]]
 name = "num-integer"
@@ -6231,7 +6231,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6808,9 +6808,9 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "simple_asn1"
-version = "0.6.4"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d585997b0ac10be3c5ee635f1bab02d512760d14b7c468801ac8a01d9ae5f1d"
+checksum = "297f631f50729c8c99b84667867963997ec0b50f32b2a7dbcab828ef0541e8bb"
 dependencies = [
  "num-bigint",
  "num-traits",
@@ -7127,7 +7127,7 @@ dependencies = [
  "getrandom 0.4.1",
  "once_cell",
  "rustix 1.1.3",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7210,30 +7210,30 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.47"
+version = "0.3.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
+checksum = "91e7d9e3bb61134e77bde20dd4825b97c010155709965fedf0f49bb138e52a9d"
 dependencies = [
  "deranged",
  "itoa",
  "num-conv",
  "powerfmt",
- "serde_core",
+ "serde",
  "time-core",
  "time-macros",
 ]
 
 [[package]]
 name = "time-core"
-version = "0.1.8"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
+checksum = "40868e7c1d2f0b8d73e4a8c7f0ff63af4f6d19be117e90bd73eb1d62cf831c6b"
 
 [[package]]
 name = "time-macros"
-version = "0.2.27"
+version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
+checksum = "30cfb0125f12d9c277f35663a0a33f8c30190f4e4574868a330595412d34ebf3"
 dependencies = [
  "num-conv",
  "time-core",
@@ -8648,9 +8648,9 @@ dependencies = [
 
 [[package]]
 name = "typed-index-collections"
-version = "3.5.0"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "898160f1dfd383b4e92e17f0512a7d62f3c51c44937b23b6ffc3a1614a8eaccd"
+checksum = "3fd393dbd1e7b23e0cab7396570309b4068aa504e9dac2cd41d827583b4e9ab7"
 dependencies = [
  "bincode",
  "serde",
@@ -9376,7 +9376,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
