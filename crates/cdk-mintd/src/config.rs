@@ -190,7 +190,7 @@ impl Default for Ln {
 }
 
 #[cfg(feature = "lnbits")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LNbits {
     pub admin_api_key: String,
     pub invoice_api_key: String,
@@ -199,6 +199,19 @@ pub struct LNbits {
     pub fee_percent: f32,
     #[serde(default = "default_reserve_fee_min")]
     pub reserve_fee_min: Amount,
+}
+
+#[cfg(feature = "lnbits")]
+impl std::fmt::Debug for LNbits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LNbits")
+            .field("admin_api_key", &"[REDACTED]")
+            .field("invoice_api_key", &"[REDACTED]")
+            .field("lnbits_api", &self.lnbits_api)
+            .field("fee_percent", &self.fee_percent)
+            .field("reserve_fee_min", &self.reserve_fee_min)
+            .finish()
+    }
 }
 
 #[cfg(feature = "lnbits")]
@@ -269,7 +282,7 @@ impl Default for Lnd {
 }
 
 #[cfg(feature = "ldk-node")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LdkNode {
     /// Fee percentage (e.g., 0.02 for 2%)
     #[serde(default = "default_ldk_fee_percent")]
@@ -337,6 +350,36 @@ impl Default for LdkNode {
             webserver_port: default_webserver_port(),
             ldk_node_mnemonic: None,
         }
+    }
+}
+
+#[cfg(feature = "ldk-node")]
+impl std::fmt::Debug for LdkNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LdkNode")
+            .field("fee_percent", &self.fee_percent)
+            .field("reserve_fee_min", &self.reserve_fee_min)
+            .field("bitcoin_network", &self.bitcoin_network)
+            .field("chain_source_type", &self.chain_source_type)
+            .field("esplora_url", &self.esplora_url)
+            .field("bitcoind_rpc_host", &self.bitcoind_rpc_host)
+            .field("bitcoind_rpc_port", &self.bitcoind_rpc_port)
+            .field("bitcoind_rpc_user", &self.bitcoind_rpc_user)
+            .field("bitcoind_rpc_password", &"[REDACTED]")
+            .field("storage_dir_path", &self.storage_dir_path)
+            .field("log_dir_path", &self.log_dir_path)
+            .field("ldk_node_host", &self.ldk_node_host)
+            .field("ldk_node_port", &self.ldk_node_port)
+            .field(
+                "ldk_node_announce_addresses",
+                &self.ldk_node_announce_addresses,
+            )
+            .field("gossip_source_type", &self.gossip_source_type)
+            .field("rgs_url", &self.rgs_url)
+            .field("webserver_host", &self.webserver_host)
+            .field("webserver_port", &self.webserver_port)
+            .field("ldk_node_mnemonic", &"[REDACTED]")
+            .finish()
     }
 }
 
