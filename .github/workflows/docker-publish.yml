@@ -1,4 +1,4 @@
-name: Publish Docker Image AMD64
+name: Multi-Arch Docker Build & Publish
 
 on:
   release:
@@ -16,7 +16,10 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm64' || 'ubuntu-22.04' }}
     permissions:
       contents: read
       packages: write
@@ -40,22 +43,86 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease && !contains(github.ref_name, 'rc') }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
             type=ref,event=branch
-            type=ref,event=pr
             type=sha
-            ${{ github.event.inputs.tag != '' && github.event.inputs.tag || '' }}
 
-      # Build and push AMD64 image with architecture suffix
-      - name: Build and push Docker image
+      - name: Build and push standard Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}-amd64
+          platforms: ${{ matrix.arch }}
+          tags: ${{ steps.meta.outputs.tags }}-${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  build-ldk-node:
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm64' || 'ubuntu-22.04' }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata for LDK-node
+        id: meta-ldk
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest-ldk-node
+            type=ref,event=branch
+            type=sha
+
+      - name: Build and push LDK-node Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: ${{ matrix.arch }}
+          build-args: VARIANT=ldk-node
+          tags: ${{ steps.meta-ldk.outputs.tags }}-${{ matrix.arch }}
+          labels: ${{ steps.meta-ldk.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  create-manifests:
+    name: Create Multi-Arch Manifests
+    runs-on: ubuntu-latest
+    needs: [build-and-push, build-ldk-node]
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create manifest for standard image
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:arm64
+
+      - name: Create manifest for LDK-node image
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-ldk-node \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:arm64
