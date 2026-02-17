@@ -192,6 +192,20 @@ impl Mint {
     /// **NOTE: This does not check if inputs have been spent
     #[instrument(skip_all)]
     pub async fn verify_inputs(&self, inputs: &Proofs) -> Result<Verification, Error> {
+        // Check max inputs limit
+        let inputs_count = inputs.len();
+        if inputs_count > self.max_inputs {
+            tracing::warn!(
+                "Melt request exceeds max inputs limit: {} > {}",
+                inputs_count,
+                self.max_inputs
+            );
+            return Err(Error::MaxInputsExceeded {
+                actual: inputs_count,
+                max: self.max_inputs,
+            });
+        }
+
         Mint::check_inputs_unique(inputs)?;
         let unit = self.verify_inputs_keyset(inputs).await?;
 

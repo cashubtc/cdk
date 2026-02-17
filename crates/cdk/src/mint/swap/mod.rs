@@ -25,10 +25,6 @@ impl Mint {
         swap_request.input_amount()?;
         swap_request.output_amount()?;
 
-        // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
-        // and HTLC (including SIGALL)
-        swap_request.verify_spending_conditions()?;
-
         let input_proofs = swap_request.inputs();
 
         if input_proofs.is_empty() {
@@ -37,20 +33,6 @@ impl Mint {
                 swap_request.output_amount()?.to_u64(),
                 0,
             ));
-        }
-
-        // Check max inputs limit
-        let inputs_count = input_proofs.len();
-        if inputs_count > self.max_inputs {
-            tracing::warn!(
-                "Swap request exceeds max inputs limit: {} > {}",
-                inputs_count,
-                self.max_inputs
-            );
-            return Err(Error::MaxInputsExceeded {
-                actual: inputs_count,
-                max: self.max_inputs,
-            });
         }
 
         // Check max outputs limit
@@ -78,6 +60,10 @@ impl Mint {
             tracing::debug!("Input verification failed: {:?}", err);
             err
         })?;
+
+        // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
+        // and HTLC (including SIGALL)
+        swap_request.verify_spending_conditions()?;
 
         // Step 1: Initialize the swap saga
         let init_saga = SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone());

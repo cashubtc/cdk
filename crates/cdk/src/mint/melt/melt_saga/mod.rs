@@ -6,7 +6,10 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
-use cdk_common::{Amount, CurrencyUnit, Error, ProofsMethods, PublicKey, QuoteId, State};
+use cdk_common::{
+    Amount, CurrencyUnit, Error, ProofsMethods, PublicKey, QuoteId, SpendingConditionVerification,
+    State,
+};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use tokio::sync::Mutex;
@@ -194,40 +197,14 @@ impl MeltSaga<Initial> {
         input_verification: Verification,
         payment_method: cdk_common::PaymentMethod,
     ) -> Result<MeltSaga<SetupComplete>, Error> {
+        // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
+        // and HTLC (including SIGALL)
+        melt_request.verify_spending_conditions()?;
+
         let Verification {
             amount: input_amount,
         } = input_verification;
         let input_unit = Some(input_amount.unit().clone());
-
-        // Check max inputs limit
-        let inputs_count = melt_request.inputs().len();
-        if inputs_count > self.mint.max_inputs {
-            tracing::warn!(
-                "Melt request exceeds max inputs limit: {} > {}",
-                inputs_count,
-                self.mint.max_inputs
-            );
-            return Err(Error::MaxInputsExceeded {
-                actual: inputs_count,
-                max: self.mint.max_inputs,
-            });
-        }
-
-        // Check max outputs limit (if change outputs are provided)
-        if let Some(outputs) = melt_request.outputs() {
-            let outputs_count = outputs.len();
-            if outputs_count > self.mint.max_outputs {
-                tracing::warn!(
-                    "Melt request exceeds max outputs limit: {} > {}",
-                    outputs_count,
-                    self.mint.max_outputs
-                );
-                return Err(Error::MaxOutputsExceeded {
-                    actual: outputs_count,
-                    max: self.mint.max_outputs,
-                });
-            }
-        }
 
         let mut tx = self.db.begin_transaction().await?;
 
