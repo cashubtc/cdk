@@ -63,7 +63,7 @@ fn test_p2bk_test_vectors() {
     let expected_std_secret_keys = [
         "8d5ad08f4a3cb3fee9bcb5e16cd214e240a2e9ad3c1dc791c4c6e51654698c9a", // sk0
         "7b64cff5ecac0abf96eeff910f57ab0dd6e53c3c2f1ce9038be25a7ba40e5a3a", // sk1
-        "5f2cb5d0ac13e491ed5cd0fba44eeefea8dd0e2e17a3cf7d2d5f6a0d863d1e5", // sk2
+        "5f2cb5d0ac13e491ed5cd0fba44eeefea8dd0e2e17a3cf7d2d5f6a0d863d1e5",  // sk2
         "a16dc61e45c4b4ef2d9b4d7f1dabf07a41a4fb1be45ea4c2b60eefc9c46a0f0f", // sk3
         "40ec3c26a1bc3e5c7f16b0a6bc3bc7a2d6fa40a7a0bb4b0e47bf9dc9d8c0f0b0b", // sk4
         "e6c0c82f40ee3efbc6b29cd7a7aee9d4e71c9bfbe6e7eeed1e6b8c8d8e0e0e0e", // sk5
@@ -80,17 +80,11 @@ fn test_p2bk_test_vectors() {
 
     // Test 1: Verify ECDH KDF produces expected blinding scalars
     for slot in 0..=10 {
-        let r = ecdh_kdf(
-            &ephemeral_secret_key,
-            &receiver_public_key,
-            keyset_id,
-            slot,
-        )
-        .unwrap();
+        let r = ecdh_kdf(&ephemeral_secret_key, &receiver_public_key, keyset_id, slot).unwrap();
 
         let expected_hex = expected_blinding_scalars[slot as usize];
         let expected_key = SecretKey::from_hex(expected_hex).unwrap();
-        
+
         if r.to_secret_bytes() != expected_key.to_secret_bytes() {
             println!(
                 "FAIL: Slot {} - Expected: {}, Got: {:?}",
@@ -107,13 +101,7 @@ fn test_p2bk_test_vectors() {
     // Test 2: Verify public key blinding produces expected blinded pubkeys
     println!("\n=== Testing Public Key Blinding ===");
     for slot in 0..=10 {
-        let r = ecdh_kdf(
-            &ephemeral_secret_key,
-            &receiver_public_key,
-            keyset_id,
-            slot,
-        )
-        .unwrap();
+        let r = ecdh_kdf(&ephemeral_secret_key, &receiver_public_key, keyset_id, slot).unwrap();
 
         let blinded = blind_public_key(&receiver_public_key, &r).unwrap();
         let expected_hex = expected_blinded_pubkeys[slot as usize];
@@ -122,9 +110,7 @@ fn test_p2bk_test_vectors() {
         if blinded != expected_key {
             println!(
                 "FAIL: Slot {} - Expected: {}, Got: {}",
-                slot,
-                expected_hex,
-                blinded
+                slot, expected_hex, blinded
             );
             fail = true;
         } else {
@@ -135,13 +121,7 @@ fn test_p2bk_test_vectors() {
     // Test 3: Verify signing key derivation
     println!("\n=== Testing Signing Key Derivation ===");
     for slot in 0..=10 {
-        let r = ecdh_kdf(
-            &ephemeral_secret_key,
-            &receiver_public_key,
-            keyset_id,
-            slot,
-        )
-        .unwrap();
+        let r = ecdh_kdf(&ephemeral_secret_key, &receiver_public_key, keyset_id, slot).unwrap();
 
         let blinded = blind_public_key(&receiver_public_key, &r).unwrap();
 
@@ -151,7 +131,8 @@ fn test_p2bk_test_vectors() {
         match derived_key {
             Ok(key) => {
                 let derived_pubkey = key.public_key();
-                let expected_pubkey = PublicKey::from_hex(expected_blinded_pubkeys[slot as usize]).unwrap();
+                let expected_pubkey =
+                    PublicKey::from_hex(expected_blinded_pubkeys[slot as usize]).unwrap();
 
                 if derived_pubkey != expected_pubkey {
                     println!(

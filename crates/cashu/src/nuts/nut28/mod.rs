@@ -182,11 +182,11 @@ pub fn derive_signing_key_bip340(
     // Verify the x-coordinates match
     let (unblinded_x_only, unblinded_parity) = unblinded_pubkey.x_only_public_key();
     let privkey_x_only = privkey_pubkey.x_only_public_key();
-    
+
     // Compute parity from the compressed public key bytes
     // First byte is 02 (even) or 03 (odd)
     let privkey_pubkey_parity = privkey_pubkey.to_bytes()[0] == 0x02;
-    
+
     // Convert Parity to bool for comparison (Even = true, Odd = false)
     let unblinded_parity_is_even = matches!(unblinded_parity, bitcoin::key::Parity::Even);
 
