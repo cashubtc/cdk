@@ -399,6 +399,14 @@ pub enum Error {
     #[cfg(feature = "conditional-tokens")]
     #[error("Maximum condition depth exceeded")]
     MaxConditionDepthExceeded,
+    /// Hash to curve failed (13041)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Hash to curve failed")]
+    HashToCurveFailed,
+    /// EC point operation failed (13042)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("EC point operation failed")]
+    EcPointOperationFailed,
 
     /// Custom Error
     #[error("`{0}`")]
@@ -1184,6 +1192,12 @@ pub enum ErrorCode {
     /// Maximum condition depth exceeded (13040)
     #[cfg(feature = "conditional-tokens")]
     MaxConditionDepthExceeded,
+    /// Hash to curve failed (13041)
+    #[cfg(feature = "conditional-tokens")]
+    HashToCurveFailed,
+    /// EC point operation failed (13042)
+    #[cfg(feature = "conditional-tokens")]
+    EcPointOperationFailed,
 
     // 20xxx - Quote/Payment errors
     /// Quote request is not paid (20001)
@@ -1292,6 +1306,10 @@ impl ErrorCode {
             13038 => Self::IncompletePartition,
             #[cfg(feature = "conditional-tokens")]
             13040 => Self::MaxConditionDepthExceeded,
+            #[cfg(feature = "conditional-tokens")]
+            13041 => Self::HashToCurveFailed,
+            #[cfg(feature = "conditional-tokens")]
+            13042 => Self::EcPointOperationFailed,
             // 20xxx - Quote/Payment errors
             20001 => Self::QuoteNotPaid,
             20002 => Self::TokensAlreadyIssued,
@@ -1377,6 +1395,10 @@ impl ErrorCode {
             Self::IncompletePartition => 13038,
             #[cfg(feature = "conditional-tokens")]
             Self::MaxConditionDepthExceeded => 13040,
+            #[cfg(feature = "conditional-tokens")]
+            Self::HashToCurveFailed => 13041,
+            #[cfg(feature = "conditional-tokens")]
+            Self::EcPointOperationFailed => 13042,
             // 20xxx - Quote/Payment errors
             Self::QuoteNotPaid => 20001,
             Self::TokensAlreadyIssued => 20002,
@@ -1457,6 +1479,8 @@ impl From<cashu::nuts::nut28::Error> for Error {
             cashu::nuts::nut28::Error::OracleThresholdNotMet => Self::OracleThresholdNotMet,
             cashu::nuts::nut28::Error::ConditionAlreadyExists => Self::ConditionAlreadyExists,
             cashu::nuts::nut28::Error::Dlc(msg) => Self::Custom(format!("DLC error: {msg}")),
+            cashu::nuts::nut28::Error::HashToCurve(_) => Self::HashToCurveFailed,
+            cashu::nuts::nut28::Error::EcPointOperationFailed => Self::EcPointOperationFailed,
         }
     }
 }

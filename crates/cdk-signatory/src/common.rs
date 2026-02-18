@@ -202,7 +202,7 @@ pub fn create_conditional_keyset<C: secp256k1::Signing>(
         ChildNumber::from_hardened_idx(derived_index).expect("valid derived index"),
     ]);
 
-    let keyset = MintKeySet::generate(
+    let mut keyset = MintKeySet::generate(
         secp,
         xpriv
             .derive_priv(secp, &derivation_path)
@@ -211,8 +211,20 @@ pub fn create_conditional_keyset<C: secp256k1::Signing>(
         amounts,
         input_fee_ppk,
         final_expiry,
-        cdk_common::nut02::KeySetVersion::Version00,
+        cdk_common::nut02::KeySetVersion::Version01,
     );
+
+    // Override the keyset ID with V2 conditional derivation
+    let pub_keys: cdk_common::nuts::Keys = keyset.keys.clone().into();
+    keyset.id = cdk_common::nuts::Id::v2_from_data_conditional(
+        &pub_keys,
+        &keyset.unit,
+        input_fee_ppk,
+        final_expiry,
+        condition_id,
+        outcome_collection_id,
+    );
+
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
         unit: keyset.unit.clone(),

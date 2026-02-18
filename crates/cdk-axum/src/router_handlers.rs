@@ -413,6 +413,25 @@ pub(crate) async fn get_conditional_keysets(
     Ok(Json(response))
 }
 
+/// POST /v1/conditions/{condition_id}/partitions - Register a partition for a condition
+#[cfg(feature = "conditional-tokens")]
+#[instrument(skip_all)]
+pub(crate) async fn post_register_partition(
+    State(state): State<MintState>,
+    Path(condition_id): Path<String>,
+    Json(payload): Json<cdk::nuts::nut28::RegisterPartitionRequest>,
+) -> Result<Json<cdk::nuts::nut28::RegisterPartitionResponse>, Response> {
+    let response = state
+        .mint
+        .register_partition(&condition_id, payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not register partition: {}", err);
+            into_response(err)
+        })?;
+    Ok(Json(response))
+}
+
 /// POST /v1/redeem_outcome - Redeem conditional tokens
 #[cfg(feature = "conditional-tokens")]
 #[instrument(skip_all)]

@@ -17,6 +17,7 @@ mint = []
 wallet = []
 auth = ["dep:strum", "dep:strum_macros", "dep:regex"]
 conditional-tokens = ["dep:dlc-messages"]
+test-utils = ["conditional-tokens"]
 nostr = ["dep:nostr-sdk"]
 bench = []
 

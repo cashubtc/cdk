@@ -1,17 +1,24 @@
 -- NUT-28: Conditional tokens - conditions table
 CREATE TABLE IF NOT EXISTS conditions (
     condition_id TEXT PRIMARY KEY,
-    collateral TEXT NOT NULL,
-    parent_collection_id TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
-    depth INTEGER NOT NULL DEFAULT 1,
     threshold INTEGER NOT NULL DEFAULT 1,
     description TEXT NOT NULL DEFAULT '',
     announcements_json TEXT NOT NULL,
-    partition_json TEXT NOT NULL,
     attestation_status TEXT NOT NULL DEFAULT 'pending',
     winning_outcome TEXT,
     attested_at INTEGER,
     created_at INTEGER NOT NULL
+);
+
+-- NUT-28: Conditional tokens - condition partitions table
+CREATE TABLE IF NOT EXISTS condition_partitions (
+    condition_id TEXT NOT NULL,
+    partition_json TEXT NOT NULL,
+    collateral TEXT NOT NULL,
+    parent_collection_id TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (condition_id, partition_json),
+    FOREIGN KEY (condition_id) REFERENCES conditions(condition_id)
 );
 
 -- NUT-28: Conditional tokens - conditional keyset mapping

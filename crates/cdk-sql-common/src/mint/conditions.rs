@@ -6,7 +6,7 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use cdk_common::database::mint::ConditionsDatabase;
 use cdk_common::database::Error;
-use cdk_common::mint::StoredCondition;
+use cdk_common::mint::{StoredCondition, StoredPartition};
 use cdk_common::nuts::nut28::ConditionalKeySetInfo;
 use cdk_common::nuts::Id;
 
@@ -19,13 +19,9 @@ fn sql_row_to_stored_condition(row: Vec<Column>) -> Result<StoredCondition, Erro
     unpack_into!(
         let (
             condition_id,
-            collateral,
-            parent_collection_id,
-            depth,
             threshold,
             description,
             announcements_json,
-            partition_json,
             attestation_status,
             winning_outcome,
             attested_at,
@@ -43,22 +39,39 @@ fn sql_row_to_stored_condition(row: Vec<Column>) -> Result<StoredCondition, Erro
         _ => None,
     };
 
-    let depth_val: u64 = column_as_number!(depth);
     let threshold_val: u64 = column_as_number!(threshold);
     let created_at_val: u64 = column_as_number!(created_at);
 
     Ok(StoredCondition {
         condition_id: column_as_string!(&condition_id),
-        collateral: column_as_string!(&collateral),
-        parent_collection_id: column_as_string!(&parent_collection_id),
-        depth: depth_val as u32,
         threshold: threshold_val as u32,
         description: column_as_string!(&description),
         announcements_json: column_as_string!(&announcements_json),
-        partition_json: column_as_string!(&partition_json),
         attestation_status: column_as_string!(&attestation_status),
         winning_outcome,
         attested_at,
+        created_at: created_at_val,
+    })
+}
+
+fn sql_row_to_stored_partition(row: Vec<Column>) -> Result<StoredPartition, Error> {
+    unpack_into!(
+        let (
+            condition_id,
+            partition_json,
+            collateral,
+            parent_collection_id,
+            created_at
+        ) = row
+    );
+
+    let created_at_val: u64 = column_as_number!(created_at);
+
+    Ok(StoredPartition {
+        condition_id: column_as_string!(&condition_id),
+        partition_json: column_as_string!(&partition_json),
+        collateral: column_as_string!(&collateral),
+        parent_collection_id: column_as_string!(&parent_collection_id),
         created_at: created_at_val,
     })
 }
@@ -135,24 +148,18 @@ where
         query(
             r#"
             INSERT INTO conditions (
-                condition_id, collateral, parent_collection_id, depth,
-                threshold, description, announcements_json, partition_json,
+                condition_id, threshold, description, announcements_json,
                 attestation_status, winning_outcome, attested_at, created_at
             ) VALUES (
-                :condition_id, :collateral, :parent_collection_id, :depth,
-                :threshold, :description, :announcements_json, :partition_json,
+                :condition_id, :threshold, :description, :announcements_json,
                 :attestation_status, :winning_outcome, :attested_at, :created_at
             )
             "#,
         )?
         .bind("condition_id", condition.condition_id)
-        .bind("collateral", condition.collateral)
-        .bind("parent_collection_id", condition.parent_collection_id)
-        .bind("depth", condition.depth as i64)
         .bind("threshold", condition.threshold as i64)
         .bind("description", condition.description)
         .bind("announcements_json", condition.announcements_json)
-        .bind("partition_json", condition.partition_json)
         .bind("attestation_status", condition.attestation_status)
         .bind("winning_outcome", condition.winning_outcome)
         .bind("attested_at", condition.attested_at.map(|a| a as i64))
@@ -168,8 +175,7 @@ where
 
         let row = query(
             r#"
-            SELECT condition_id, collateral, parent_collection_id, depth,
-                   threshold, description, announcements_json, partition_json,
+            SELECT condition_id, threshold, description, announcements_json,
                    attestation_status, winning_outcome, attested_at, created_at
             FROM conditions
             WHERE condition_id = :condition_id
@@ -190,8 +196,7 @@ where
 
         let rows = query(
             r#"
-            SELECT condition_id, collateral, parent_collection_id, depth,
-                   threshold, description, announcements_json, partition_json,
+            SELECT condition_id, threshold, description, announcements_json,
                    attestation_status, winning_outcome, attested_at, created_at
             FROM conditions
             ORDER BY created_at DESC
@@ -335,5 +340,51 @@ where
             }
             None => Ok(None),
         }
+    }
+
+    async fn add_partition(&self, partition: StoredPartition) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        query(
+            r#"
+            INSERT INTO condition_partitions (
+                condition_id, partition_json, collateral, parent_collection_id, created_at
+            ) VALUES (
+                :condition_id, :partition_json, :collateral, :parent_collection_id, :created_at
+            )
+            "#,
+        )?
+        .bind("condition_id", partition.condition_id)
+        .bind("partition_json", partition.partition_json)
+        .bind("collateral", partition.collateral)
+        .bind("parent_collection_id", partition.parent_collection_id)
+        .bind("created_at", partition.created_at as i64)
+        .execute(&*conn)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn get_partitions_for_condition(
+        &self,
+        condition_id: &str,
+    ) -> Result<Vec<StoredPartition>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let rows = query(
+            r#"
+            SELECT condition_id, partition_json, collateral, parent_collection_id, created_at
+            FROM condition_partitions
+            WHERE condition_id = :condition_id
+            ORDER BY created_at ASC
+            "#,
+        )?
+        .bind("condition_id", condition_id.to_string())
+        .fetch_all(&*conn)
+        .await?;
+
+        rows.into_iter()
+            .map(sql_row_to_stored_partition)
+            .collect()
     }
 }

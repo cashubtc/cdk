@@ -116,22 +116,32 @@ impl Mint {
             let attested_outcome = &witness.oracle_sigs[0].outcome;
 
             // Check which partition key contains the attested outcome
-            let partition: Vec<String> =
-                serde_json::from_str(&condition.partition_json).unwrap_or_default();
+            // Load all partitions for this condition and search through them
+            let stored_partitions = self
+                .localstore
+                .get_partitions_for_condition(&condition_id)
+                .await?;
 
-            let winning_collection = partition
-                .iter()
-                .find(|key| {
+            let mut winning_collection = None;
+            for sp in &stored_partitions {
+                let partition_keys: Vec<String> =
+                    serde_json::from_str(&sp.partition_json).unwrap_or_default();
+                for key in &partition_keys {
                     let outcomes = parse_outcome_collection(key);
-                    outcomes.contains(attested_outcome)
-                })
-                .map(|key| {
-                    // Normalize: sort outcomes within the key
-                    let mut elements = parse_outcome_collection(key);
-                    elements.sort();
-                    elements.join("|")
-                })
-                .ok_or(Error::OracleNotAttestedOutcome)?;
+                    if outcomes.contains(attested_outcome) {
+                        let mut elements = parse_outcome_collection(key);
+                        elements.sort();
+                        winning_collection = Some(elements.join("|"));
+                        break;
+                    }
+                }
+                if winning_collection.is_some() {
+                    break;
+                }
+            }
+
+            let winning_collection =
+                winning_collection.ok_or(Error::OracleNotAttestedOutcome)?;
 
             // Verify the inputs match the winning collection
             if outcome_collection != winning_collection {

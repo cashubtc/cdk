@@ -309,7 +309,15 @@ impl Signatory for DbSignatory {
         tx.add_keyset_info(info.clone()).await?;
         tx.commit().await?;
 
-        self.reload_keys_from_db().await?;
+        // Insert directly into the in-memory map with active=true.
+        // Do NOT use reload_keys_from_db() because it determines active status
+        // from the active_keysets table (one per unit), which would set
+        // conditional keysets to active=false since they aren't the "primary"
+        // active keyset for their unit.
+        info.active = true;
+        let id = info.id;
+        let mut keysets = self.keysets.write().await;
+        keysets.insert(id, (info.clone(), keyset.clone()));
 
         Ok((&(info, keyset)).into())
     }

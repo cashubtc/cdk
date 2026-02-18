@@ -10,9 +10,13 @@ use serde::{Deserialize, Serialize};
 
 use super::nut00::{BlindSignature, BlindedMessage, Proofs};
 use super::nut02::Id;
+use crate::dhke;
 
 pub mod dlc;
 pub(crate) mod serde_oracle_witness;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_helpers;
 
 /// NUT-28 Error
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +60,12 @@ pub enum Error {
     /// DLC messages error
     #[error("DLC error: {0}")]
     Dlc(String),
+    /// Hash to curve failed
+    #[error("Hash to curve failed: {0}")]
+    HashToCurve(String),
+    /// EC point operation failed
+    #[error("EC point operation failed")]
+    EcPointOperationFailed,
 }
 
 /// Zero collection ID (32 zero bytes)
@@ -67,8 +77,6 @@ pub const ZERO_COLLECTION_ID: &str =
 /// POST /v1/conditions request body
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterConditionRequest {
-    /// For root conditions: a NUT-00 unit string. For nested: an outcome_collection_id hex string.
-    pub collateral: String,
     /// Minimum oracles required for attestation (default: 1)
     #[serde(default = "default_threshold")]
     pub threshold: u32,
@@ -76,12 +84,6 @@ pub struct RegisterConditionRequest {
     pub description: String,
     /// Array of hex-encoded oracle announcement TLV bytes
     pub announcements: Vec<String>,
-    /// Partition keys (optional, defaults to individual outcomes)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub partition: Option<Vec<String>>,
-    /// Parent collection ID (optional, defaults to 32 zero bytes for root)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_collection_id: Option<String>,
 }
 
 fn default_threshold() -> u32 {
@@ -93,6 +95,37 @@ fn default_threshold() -> u32 {
 pub struct RegisterConditionResponse {
     /// Computed condition identifier (64 hex characters)
     pub condition_id: String,
+}
+
+/// POST /v1/conditions/{condition_id}/partitions request body
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterPartitionRequest {
+    /// For root conditions: a NUT-00 unit string. For nested: an outcome_collection_id hex string.
+    pub collateral: String,
+    /// Partition keys (optional, defaults to individual outcomes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partition: Option<Vec<String>>,
+    /// Parent collection ID (optional, defaults to 32 zero bytes for root)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_collection_id: Option<String>,
+}
+
+/// POST /v1/conditions/{condition_id}/partitions response body
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterPartitionResponse {
+    /// Mapping of outcome_collection -> keyset_id
+    pub keysets: HashMap<String, Id>,
+}
+
+/// Partition info entry for ConditionInfo
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartitionInfoEntry {
+    /// Partition keys
+    pub partition: Vec<String>,
+    /// Collateral unit or outcome_collection_id
+    pub collateral: String,
+    /// Parent collection ID
+    pub parent_collection_id: String,
     /// Mapping of outcome_collection -> keyset_id
     pub keysets: HashMap<String, Id>,
 }
@@ -109,20 +142,14 @@ pub struct GetConditionsResponse {
 pub struct ConditionInfo {
     /// Condition identifier
     pub condition_id: String,
-    /// Collateral unit or outcome_collection_id
-    pub collateral: String,
-    /// Parent collection ID
-    pub parent_collection_id: String,
-    /// Nesting depth (1 for root)
-    pub depth: u32,
     /// Oracle threshold
     pub threshold: u32,
     /// Description
     pub description: String,
     /// Hex-encoded oracle announcement TLV bytes
     pub announcements: Vec<String>,
-    /// Mapping of outcome_collection -> keyset_id
-    pub keysets: HashMap<String, Id>,
+    /// Registered partitions with their keysets
+    pub partitions: Vec<PartitionInfoEntry>,
     /// Attestation state (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attestation: Option<AttestationState>,
@@ -251,25 +278,20 @@ pub fn tagged_hash(tag: &str, msg: &[u8]) -> [u8; 32] {
     Sha256Hash::from_engine(engine).to_byte_array()
 }
 
-/// Compute condition_id from oracle parameters and partition.
+/// Compute condition_id from oracle parameters.
 ///
 /// ```text
 /// condition_id = tagged_hash("Cashu_condition_id",
-///   sorted_oracle_pubkeys || sorted_event_id || outcome_count || sorted_partition_keys)
+///   sorted_oracle_pubkeys || event_id || outcome_count)
 /// ```
 pub fn compute_condition_id(
     oracle_pubkeys: &[Vec<u8>],
     event_id: &str,
     outcome_count: u8,
-    partition_keys: &[String],
 ) -> [u8; 32] {
     // Sort oracle pubkeys lexicographically
     let mut sorted_pubkeys = oracle_pubkeys.to_vec();
     sorted_pubkeys.sort();
-
-    // Sort partition keys lexicographically
-    let mut sorted_partition = partition_keys.to_vec();
-    sorted_partition.sort();
 
     // Build message
     let mut msg = Vec::new();
@@ -285,27 +307,51 @@ pub fn compute_condition_id(
     // Outcome count as 1 byte
     msg.push(outcome_count);
 
-    // Sorted partition keys joined with null byte separator
-    let partition_str = sorted_partition.join("\0");
-    msg.extend_from_slice(partition_str.as_bytes());
-
     tagged_hash("Cashu_condition_id", &msg)
 }
 
-/// Compute outcome_collection_id from outcome collection string and condition_id.
+/// Compute outcome_collection_id using EC point operations.
 ///
 /// ```text
-/// outcome_collection_id = tagged_hash("Cashu_outcome_collection_id",
-///   outcome_collection_string || condition_id)
+/// h = tagged_hash("Cashu_outcome_collection_id", condition_id || outcome_collection_string)
+/// P = hash_to_curve(h)
+/// if parent_collection_id is identity (all zeros): return x_only(P)
+/// else: Q = lift_x(parent_collection_id); return x_only(Q + P)
 /// ```
 pub fn compute_outcome_collection_id(
-    outcome_collection_string: &str,
+    parent_collection_id: &[u8; 32],
     condition_id: &[u8; 32],
-) -> [u8; 32] {
+    outcome_collection_string: &str,
+) -> Result<[u8; 32], Error> {
+    use bitcoin::secp256k1::{PublicKey as SecpPublicKey, XOnlyPublicKey, Parity};
+
+    // 1. Tagged hash: condition_id || outcome_collection_string
     let mut msg = Vec::new();
-    msg.extend_from_slice(outcome_collection_string.as_bytes());
     msg.extend_from_slice(condition_id);
-    tagged_hash("Cashu_outcome_collection_id", &msg)
+    msg.extend_from_slice(outcome_collection_string.as_bytes());
+    let h = tagged_hash("Cashu_outcome_collection_id", &msg);
+
+    // 2. hash_to_curve(h) -> secp256k1 point P
+    let p_cashu = dhke::hash_to_curve(&h).map_err(|e| Error::HashToCurve(e.to_string()))?;
+    let p = SecpPublicKey::from_slice(&p_cashu.to_bytes())
+        .map_err(|_| Error::EcPointOperationFailed)?;
+
+    // 3. Check if parent is identity (all zeros)
+    let is_identity = parent_collection_id.iter().all(|&b| b == 0);
+
+    if is_identity {
+        // Return x_only(P)
+        let (xonly, _parity) = p.x_only_public_key();
+        Ok(xonly.serialize())
+    } else {
+        // lift_x(parent) -> Q, then Q + P
+        let parent_xonly = XOnlyPublicKey::from_slice(parent_collection_id)
+            .map_err(|_| Error::EcPointOperationFailed)?;
+        let q = SecpPublicKey::from_x_only_public_key(parent_xonly, Parity::Even);
+        let result = q.combine(&p).map_err(|_| Error::EcPointOperationFailed)?;
+        let (result_xonly, _parity) = result.x_only_public_key();
+        Ok(result_xonly.serialize())
+    }
 }
 
 /// Parse outcome collection string into individual outcomes.
@@ -402,35 +448,21 @@ mod tests {
     fn test_compute_condition_id_deterministic() {
         let pubkeys = vec![vec![0x02; 32]];
         let event_id = "test_event";
-        let partition = vec!["YES".to_string(), "NO".to_string()];
 
-        let id1 = compute_condition_id(&pubkeys, event_id, 2, &partition);
-        let id2 = compute_condition_id(&pubkeys, event_id, 2, &partition);
-        assert_eq!(id1, id2);
-    }
-
-    #[test]
-    fn test_compute_condition_id_partition_order_invariant() {
-        let pubkeys = vec![vec![0x02; 32]];
-        let event_id = "test_event";
-
-        // Different order of partition keys should produce same ID (sorted internally)
-        let partition1 = vec!["YES".to_string(), "NO".to_string()];
-        let partition2 = vec!["NO".to_string(), "YES".to_string()];
-
-        let id1 = compute_condition_id(&pubkeys, event_id, 2, &partition1);
-        let id2 = compute_condition_id(&pubkeys, event_id, 2, &partition2);
+        let id1 = compute_condition_id(&pubkeys, event_id, 2);
+        let id2 = compute_condition_id(&pubkeys, event_id, 2);
         assert_eq!(id1, id2);
     }
 
     #[test]
     fn test_compute_outcome_collection_id() {
         let condition_id = [0xab; 32];
-        let oc_id1 = compute_outcome_collection_id("YES", &condition_id);
-        let oc_id2 = compute_outcome_collection_id("YES", &condition_id);
+        let parent = [0u8; 32]; // identity
+        let oc_id1 = compute_outcome_collection_id(&parent, &condition_id, "YES").unwrap();
+        let oc_id2 = compute_outcome_collection_id(&parent, &condition_id, "YES").unwrap();
         assert_eq!(oc_id1, oc_id2);
 
-        let oc_id3 = compute_outcome_collection_id("NO", &condition_id);
+        let oc_id3 = compute_outcome_collection_id(&parent, &condition_id, "NO").unwrap();
         assert_ne!(oc_id1, oc_id3);
     }
 
@@ -506,63 +538,73 @@ mod tests {
     #[test]
     fn test_compute_condition_id_different_pubkeys() {
         let event_id = "event1";
-        let partition = vec!["YES".to_string(), "NO".to_string()];
 
         let pubkeys_a = vec![vec![0x02; 32]];
         let pubkeys_b = vec![vec![0x03; 32]];
 
-        let id_a = compute_condition_id(&pubkeys_a, event_id, 2, &partition);
-        let id_b = compute_condition_id(&pubkeys_b, event_id, 2, &partition);
+        let id_a = compute_condition_id(&pubkeys_a, event_id, 2);
+        let id_b = compute_condition_id(&pubkeys_b, event_id, 2);
         assert_ne!(id_a, id_b);
     }
 
     #[test]
     fn test_compute_condition_id_different_event_ids() {
         let pubkeys = vec![vec![0x02; 32]];
-        let partition = vec!["YES".to_string(), "NO".to_string()];
 
-        let id_a = compute_condition_id(&pubkeys, "event_A", 2, &partition);
-        let id_b = compute_condition_id(&pubkeys, "event_B", 2, &partition);
+        let id_a = compute_condition_id(&pubkeys, "event_A", 2);
+        let id_b = compute_condition_id(&pubkeys, "event_B", 2);
         assert_ne!(id_a, id_b);
     }
 
     #[test]
     fn test_compute_condition_id_different_outcome_count() {
         let pubkeys = vec![vec![0x02; 32]];
-        let partition = vec!["YES".to_string(), "NO".to_string()];
 
-        let id_a = compute_condition_id(&pubkeys, "event1", 2, &partition);
-        let id_b = compute_condition_id(&pubkeys, "event1", 3, &partition);
+        let id_a = compute_condition_id(&pubkeys, "event1", 2);
+        let id_b = compute_condition_id(&pubkeys, "event1", 3);
         assert_ne!(id_a, id_b);
     }
 
     #[test]
     fn test_compute_condition_id_pubkey_order_invariant() {
         let event_id = "event1";
-        let partition = vec!["YES".to_string(), "NO".to_string()];
 
         let pubkeys_ab = vec![vec![0x02; 32], vec![0x03; 32]];
         let pubkeys_ba = vec![vec![0x03; 32], vec![0x02; 32]];
 
-        let id_ab = compute_condition_id(&pubkeys_ab, event_id, 2, &partition);
-        let id_ba = compute_condition_id(&pubkeys_ba, event_id, 2, &partition);
+        let id_ab = compute_condition_id(&pubkeys_ab, event_id, 2);
+        let id_ba = compute_condition_id(&pubkeys_ba, event_id, 2);
         assert_eq!(id_ab, id_ba, "pubkey order should not affect condition_id");
     }
 
     #[test]
     fn test_compute_outcome_collection_id_deterministic_and_unique() {
         let cid = [0xab; 32];
+        let parent = [0u8; 32]; // identity
 
-        let oc1_a = compute_outcome_collection_id("YES", &cid);
-        let oc1_b = compute_outcome_collection_id("YES", &cid);
+        let oc1_a = compute_outcome_collection_id(&parent, &cid, "YES").unwrap();
+        let oc1_b = compute_outcome_collection_id(&parent, &cid, "YES").unwrap();
         assert_eq!(oc1_a, oc1_b, "same inputs must produce same output");
 
-        let oc2 = compute_outcome_collection_id("NO", &cid);
+        let oc2 = compute_outcome_collection_id(&parent, &cid, "NO").unwrap();
         assert_ne!(oc1_a, oc2, "different outcomes must produce different IDs");
 
         let cid2 = [0xcd; 32];
-        let oc3 = compute_outcome_collection_id("YES", &cid2);
+        let oc3 = compute_outcome_collection_id(&parent, &cid2, "YES").unwrap();
         assert_ne!(oc1_a, oc3, "different condition IDs must produce different IDs");
+    }
+
+    #[test]
+    fn test_compute_outcome_collection_id_with_parent() {
+        let cid = [0xab; 32];
+        let parent_zero = [0u8; 32];
+
+        let oc_root = compute_outcome_collection_id(&parent_zero, &cid, "YES").unwrap();
+
+        // With a non-zero parent, result should differ
+        let parent_nonzero = oc_root; // use the root result as parent
+        let oc_nested = compute_outcome_collection_id(&parent_nonzero, &cid, "YES").unwrap();
+        assert_ne!(oc_root, oc_nested, "different parents must produce different IDs");
     }
 
     #[test]
@@ -648,15 +690,15 @@ mod tests {
     #[test]
     fn test_condition_id_is_32_bytes() {
         let pubkeys = vec![vec![0x02; 32]];
-        let partition = vec!["A".to_string(), "B".to_string()];
-        let cid = compute_condition_id(&pubkeys, "event", 2, &partition);
+        let cid = compute_condition_id(&pubkeys, "event", 2);
         assert_eq!(cid.len(), 32);
     }
 
     #[test]
     fn test_outcome_collection_id_is_32_bytes() {
         let cid = [0x00; 32];
-        let ocid = compute_outcome_collection_id("YES", &cid);
+        let parent = [0u8; 32];
+        let ocid = compute_outcome_collection_id(&parent, &cid, "YES").unwrap();
         assert_eq!(ocid.len(), 32);
     }
 

@@ -9,7 +9,7 @@ use cashu::Amount;
 
 use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "conditional-tokens")]
-use crate::mint::StoredCondition;
+use crate::mint::{StoredCondition, StoredPartition};
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
 };
@@ -622,6 +622,15 @@ pub trait ConditionsDatabase {
         &self,
         keyset_id: &Id,
     ) -> Result<Option<(String, String, String)>, Self::Err>;
+
+    /// Add a stored partition
+    async fn add_partition(&self, partition: StoredPartition) -> Result<(), Self::Err>;
+
+    /// Get partitions for a condition
+    async fn get_partitions_for_condition(
+        &self,
+        condition_id: &str,
+    ) -> Result<Vec<StoredPartition>, Self::Err>;
 }
 
 /// Base database writer

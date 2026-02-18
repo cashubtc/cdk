@@ -128,3 +128,192 @@ pub fn verify_announcement_signature(
         Error::OracleAnnouncementVerificationFailed("Signature verification failed".into())
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nuts::nut28::test_helpers::{
+        create_oracle_witness, create_test_announcement, create_test_oracle, create_test_oracle_2,
+        sign_nut28_attestation,
+    };
+    use crate::nuts::nut28::to_hex;
+
+    #[test]
+    fn test_parse_announcement_roundtrip() {
+        let oracle = create_test_oracle();
+        let (original, hex_tlv) = create_test_announcement(&oracle, &["YES", "NO"], "test-event");
+
+        let parsed = parse_oracle_announcement(&hex_tlv).expect("parse should succeed");
+        assert_eq!(parsed.oracle_public_key, original.oracle_public_key);
+        assert_eq!(
+            parsed.oracle_event.event_id,
+            original.oracle_event.event_id
+        );
+    }
+
+    #[test]
+    fn test_parse_announcement_invalid_hex() {
+        assert!(parse_oracle_announcement("not_valid_hex!!").is_err());
+        assert!(parse_oracle_announcement("").is_err());
+        assert!(parse_oracle_announcement("deadbeef").is_err());
+    }
+
+    #[test]
+    fn test_extract_event_id() {
+        let oracle = create_test_oracle();
+        let (ann, _) = create_test_announcement(&oracle, &["YES", "NO"], "my-event-123");
+        assert_eq!(extract_event_id(&ann), "my-event-123");
+    }
+
+    #[test]
+    fn test_extract_oracle_pubkey() {
+        let oracle = create_test_oracle();
+        let (ann, _) = create_test_announcement(&oracle, &["YES", "NO"], "evt");
+
+        let pubkey_bytes = extract_oracle_pubkey(&ann);
+        assert_eq!(pubkey_bytes.len(), 32);
+        assert_eq!(pubkey_bytes, oracle.public_key.serialize().to_vec());
+    }
+
+    #[test]
+    fn test_extract_outcomes() {
+        let oracle = create_test_oracle();
+        let (ann, _) = create_test_announcement(&oracle, &["WIN", "LOSE", "DRAW"], "game");
+
+        let outcomes = extract_outcomes(&ann).expect("should extract outcomes");
+        assert_eq!(outcomes, vec!["WIN", "LOSE", "DRAW"]);
+    }
+
+    #[test]
+    fn test_extract_nonce_points() {
+        let oracle = create_test_oracle();
+        let (ann, _) = create_test_announcement(&oracle, &["YES", "NO"], "evt");
+
+        let nonces = extract_nonce_points(&ann.oracle_event);
+        assert_eq!(nonces.len(), 1);
+        assert_eq!(nonces[0], oracle.nonce_public);
+    }
+
+    #[test]
+    fn test_verify_attestation_valid() {
+        let oracle = create_test_oracle();
+        let outcome = "YES";
+        let sig = sign_nut28_attestation(&oracle, outcome);
+
+        let result = verify_oracle_attestation(
+            &oracle.public_key.serialize(),
+            &sig,
+            outcome,
+            &oracle.nonce_public,
+        );
+        assert!(result.is_ok(), "valid attestation should verify: {:?}", result);
+    }
+
+    #[test]
+    fn test_verify_attestation_wrong_outcome() {
+        let oracle = create_test_oracle();
+        let sig = sign_nut28_attestation(&oracle, "YES");
+
+        let result = verify_oracle_attestation(
+            &oracle.public_key.serialize(),
+            &sig,
+            "NO", // wrong outcome
+            &oracle.nonce_public,
+        );
+        assert!(result.is_err(), "wrong outcome should fail verification");
+    }
+
+    #[test]
+    fn test_verify_attestation_wrong_pubkey() {
+        let oracle = create_test_oracle();
+        let oracle2 = create_test_oracle_2();
+        let sig = sign_nut28_attestation(&oracle, "YES");
+
+        let result = verify_oracle_attestation(
+            &oracle2.public_key.serialize(), // wrong pubkey
+            &sig,
+            "YES",
+            &oracle.nonce_public,
+        );
+        assert!(result.is_err(), "wrong pubkey should fail verification");
+    }
+
+    #[test]
+    fn test_verify_attestation_wrong_nonce() {
+        let oracle = create_test_oracle();
+        let oracle2 = create_test_oracle_2();
+        let sig = sign_nut28_attestation(&oracle, "YES");
+
+        let result = verify_oracle_attestation(
+            &oracle.public_key.serialize(),
+            &sig,
+            "YES",
+            &oracle2.nonce_public, // wrong nonce
+        );
+        assert!(result.is_err(), "wrong nonce should fail verification");
+    }
+
+    #[test]
+    fn test_verify_announcement_signature_valid() {
+        let oracle = create_test_oracle();
+        let (ann, _) = create_test_announcement(&oracle, &["YES", "NO"], "evt");
+
+        let result = verify_announcement_signature(&ann);
+        assert!(
+            result.is_ok(),
+            "valid announcement signature should verify: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_verify_announcement_signature_corrupted() {
+        let oracle = create_test_oracle();
+        let (mut ann, _) = create_test_announcement(&oracle, &["YES", "NO"], "evt");
+
+        // Corrupt the event_id after signing
+        ann.oracle_event.event_id = "tampered".to_string();
+
+        let result = verify_announcement_signature(&ann);
+        assert!(
+            result.is_err(),
+            "corrupted announcement should fail verification"
+        );
+    }
+
+    #[test]
+    fn test_create_oracle_witness_roundtrip() {
+        let oracle = create_test_oracle();
+        let witness = create_oracle_witness(&oracle, "YES");
+
+        assert_eq!(witness.oracle_sigs.len(), 1);
+        assert_eq!(witness.oracle_sigs[0].outcome, "YES");
+        assert_eq!(
+            witness.oracle_sigs[0].oracle_pubkey,
+            to_hex(&oracle.public_key.serialize())
+        );
+        assert!(witness.oracle_sigs[0].oracle_sig.is_some());
+    }
+
+    #[test]
+    fn test_verify_attestation_multiple_outcomes() {
+        let oracle = create_test_oracle();
+
+        // Sign and verify each outcome
+        for outcome in &["A", "B", "C", "DRAW"] {
+            let sig = sign_nut28_attestation(&oracle, outcome);
+            let result = verify_oracle_attestation(
+                &oracle.public_key.serialize(),
+                &sig,
+                outcome,
+                &oracle.nonce_public,
+            );
+            assert!(
+                result.is_ok(),
+                "attestation for outcome '{}' should verify: {:?}",
+                outcome,
+                result
+            );
+        }
+    }
+}

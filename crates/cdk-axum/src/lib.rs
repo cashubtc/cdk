@@ -299,6 +299,10 @@ pub async fn create_mint_router_with_custom_cache(
     let v1_router = v1_router
         .route("/conditions", get(get_conditions).post(post_conditions))
         .route("/conditions/{condition_id}", get(get_condition))
+        .route(
+            "/conditions/{condition_id}/partitions",
+            post(post_register_partition),
+        )
         .route("/conditional_keysets", get(get_conditional_keysets))
         .route("/redeem_outcome", post(post_redeem_outcome));
 

@@ -19,6 +19,7 @@ wallet = ["cashu/wallet", "dep:uuid"]
 mint = ["cashu/mint", "dep:uuid"]
 auth = ["cashu/auth"]
 conditional-tokens = ["cashu/conditional-tokens"]
+test-utils = ["cashu/test-utils"]
 nostr = ["wallet", "cashu/nostr"]
 prometheus = ["cdk-prometheus/default"]
 
