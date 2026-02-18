@@ -23,7 +23,9 @@ pub trait RequestBuilderExt: Sized + Send {
     fn send(self) -> impl std::future::Future<Output = Response<RawResponse>> + Send;
 
     /// Send the request and deserialize the response as JSON
-    fn send_json<R: DeserializeOwned>(self) -> impl std::future::Future<Output = Response<R>> + Send;
+    fn send_json<R: DeserializeOwned>(
+        self,
+    ) -> impl std::future::Future<Output = Response<R>> + Send;
 }
 
 #[allow(clippy::manual_async_fn)]
@@ -44,7 +46,9 @@ impl<T: RequestBuilderExt> RequestBuilderExt for Box<T> {
         async move { (*self).send().await }
     }
 
-    fn send_json<R: DeserializeOwned>(self) -> impl std::future::Future<Output = Response<R>> + Send {
+    fn send_json<R: DeserializeOwned>(
+        self,
+    ) -> impl std::future::Future<Output = Response<R>> + Send {
         async move { (*self).send_json().await }
     }
 }
