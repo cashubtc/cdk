@@ -30,10 +30,8 @@ pub mod ws;
 
 #[cfg(feature = "bitreq")]
 pub use backends::BitreqRequestBuilder;
-
 #[cfg(feature = "reqwest")]
 pub use backends::ReqwestRequestBuilder;
-
 pub use client::{fetch, HttpClient, HttpClientBuilder};
 pub use error::HttpError;
 pub use request::{RequestBuilder, RequestBuilderExt};

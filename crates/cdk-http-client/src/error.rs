@@ -54,8 +54,9 @@ impl From<reqwest::Error> for HttpError {
 #[cfg(feature = "bitreq")]
 impl From<bitreq::Error> for HttpError {
     fn from(err: bitreq::Error) -> Self {
-        use bitreq::Error;
         use std::io;
+
+        use bitreq::Error;
 
         match err {
             Error::InvalidUtf8InBody(_) => HttpError::Serialization(err.to_string()),
