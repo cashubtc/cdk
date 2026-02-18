@@ -424,11 +424,8 @@ impl MintPayment for Cln {
 
                 max_fee_msat = bolt11_options
                     .max_fee_amount
-                    .map(|a| {
-                        Amount::new(a.into(), unit.clone())
-                            .convert_to(&CurrencyUnit::Msat)
-                            .map(|a| a.value())
-                    })
+                    .as_ref()
+                    .map(|a| a.to_msat())
                     .transpose()?;
 
                 bolt11_options.bolt11.to_string()
@@ -486,11 +483,8 @@ impl MintPayment for Cln {
 
                 max_fee_msat = bolt12_options
                     .max_fee_amount
-                    .map(|a| {
-                        Amount::new(a.into(), unit.clone())
-                            .convert_to(&CurrencyUnit::Msat)
-                            .map(|a| a.value())
-                    })
+                    .clone()
+                    .map(|a| a.to_msat())
                     .transpose()?;
 
                 cln_response.invoice
@@ -579,14 +573,15 @@ impl MintPayment for Cln {
                 amount,
                 unix_expiry,
             }) => {
+                debug_assert_eq!(amount.unit(), unit, "amount unit must match unit parameter");
+
                 let time_now = unix_time();
 
                 let mut cln_client = self.cln_client().await?;
 
                 let label = Uuid::new_v4().to_string();
 
-                let amount_converted =
-                    Amount::new(amount.into(), unit.clone()).convert_to(&CurrencyUnit::Msat)?;
+                let amount_converted = amount.convert_to(&CurrencyUnit::Msat)?;
                 let amount_msat =
                     AmountOrAny::Amount(CLN_Amount::from_msat(amount_converted.value()));
 
@@ -629,8 +624,13 @@ impl MintPayment for Cln {
                 // Match like this until we change to option
                 let amount = match amount {
                     Some(amount) => {
-                        let amount = Amount::new(amount.into(), unit.clone())
-                            .convert_to(&CurrencyUnit::Msat)?;
+                        debug_assert_eq!(
+                            amount.unit(),
+                            unit,
+                            "amount unit must match unit parameter"
+                        );
+
+                        let amount = amount.convert_to(&CurrencyUnit::Msat)?;
 
                         amount.value().to_string()
                     }

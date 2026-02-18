@@ -288,7 +288,7 @@ impl Mint {
 
                     let bolt11_options = Bolt11IncomingPaymentOptions {
                         description,
-                        amount: bolt11_request.amount,
+                        amount: bolt11_request.amount.with_unit(unit.clone()),
                         unix_expiry: Some(quote_expiry),
                     };
 
@@ -299,7 +299,7 @@ impl Mint {
 
                     let bolt12_options = Bolt12IncomingPaymentOptions {
                         description,
-                        amount,
+                        amount: amount.map(|a| a.with_unit(unit.clone())),
                         unix_expiry: None,
                     };
 
@@ -319,7 +319,7 @@ impl Mint {
                     let custom_options = CustomIncomingPaymentOptions {
                         method,
                         description: request.description,
-                        amount: request.amount,
+                        amount: request.amount.with_unit(unit.clone()),
                         unix_expiry: Some(quote_expiry),
                         extra_json,
                     };
