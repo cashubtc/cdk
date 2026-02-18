@@ -8,6 +8,5 @@ pub mod reqwest_backend;
 
 #[cfg(feature = "bitreq")]
 pub use bitreq_backend::BitreqRequestBuilder;
-
 #[cfg(feature = "reqwest")]
 pub use reqwest_backend::ReqwestRequestBuilder;
