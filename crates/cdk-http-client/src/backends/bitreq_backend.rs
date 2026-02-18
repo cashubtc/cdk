@@ -17,10 +17,7 @@ pub struct BitreqRequestBuilder {
 impl BitreqRequestBuilder {
     /// Create a new BitreqRequestBuilder from a bitreq::Request
     pub(crate) fn new(inner: bitreq::Request) -> Self {
-        Self {
-            inner,
-            error: None,
-        }
+        Self { inner, error: None }
     }
 }
 
