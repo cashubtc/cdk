@@ -23,7 +23,6 @@ http = ["dep:cdk-http-client"]
 grpc = ["dep:tonic"]
 
 [dependencies]
-cdk-http-client = { workspace = true, optional = true }
 async-trait.workspace = true
 bitcoin.workspace = true
 cashu.workspace = true
@@ -48,12 +47,14 @@ paste = "1.0.15"
 tonic = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cdk-http-client = { workspace = true, optional = true, features = ["bitreq"] }
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "test-util", "sync"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+cdk-http-client = { workspace = true, optional = true, default-features = false, features = ["reqwest"] }
 uuid = { workspace = true, features = ["js"], optional = true }
 getrandom = { version = "0.2", features = ["js"] }
-tokio.workspace = true
+tokio = { workspace = true, default-features = false }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 
