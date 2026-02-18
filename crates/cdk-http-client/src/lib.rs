@@ -1,7 +1,8 @@
 //! HTTP client abstraction for CDK
 //!
-//! This crate provides an HTTP client wrapper that abstracts the underlying HTTP library (reqwest).
-//! Using this crate allows other CDK crates to avoid direct dependencies on reqwest.
+//! This crate provides an HTTP client wrapper that abstracts the underlying HTTP library
+//! (reqwest or bitreq).
+//! Using this crate allows other CDK crates to avoid direct dependencies on a specific backend.
 //!
 //! # Example
 //!
@@ -19,6 +20,9 @@
 //!     client.fetch("https://api.example.com/data").await
 //! }
 //! ```
+
+#[cfg(all(feature = "reqwest", feature = "bitreq"))]
+compile_error!("Features \"reqwest\" and \"bitreq\" are mutually exclusive. Enable only one.");
 
 mod backends;
 mod client;

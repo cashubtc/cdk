@@ -11,6 +11,7 @@ license.workspace = true
 readme = "README.md"
 
 [features]
+# Backend features are mutually exclusive; enable only one.
 default = ["bitreq"]
 reqwest = ["dep:reqwest", "dep:regex"]
 bitreq = ["dep:bitreq", "dep:serde_urlencoded", "dep:regex"]
@@ -34,3 +35,6 @@ serde = { workspace = true }
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+features = ["bitreq"]
