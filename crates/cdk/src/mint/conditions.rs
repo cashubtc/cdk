@@ -8,7 +8,8 @@ use cdk_common::nuts::nut28::{
     to_hex, validate_partition, AttestationState, AttestationStatus, ConditionInfo,
     ConditionalKeysetsResponse, GetConditionsResponse, PartitionInfoEntry,
     RegisterConditionRequest, RegisterConditionResponse, RegisterPartitionRequest,
-    RegisterPartitionResponse, ZERO_COLLECTION_ID,
+    RegisterPartitionResponse, MAX_ANNOUNCEMENT_HEX_LENGTH, MAX_ANNOUNCEMENTS,
+    MAX_DESCRIPTION_LENGTH, MAX_PARTITION_KEYS, ZERO_COLLECTION_ID,
 };
 use tracing::instrument;
 
@@ -25,6 +26,28 @@ impl Mint {
         &self,
         request: RegisterConditionRequest,
     ) -> Result<RegisterConditionResponse, Error> {
+        // 0. Input size validation
+        if request.announcements.is_empty() || request.announcements.len() > MAX_ANNOUNCEMENTS {
+            return Err(Error::Custom(format!(
+                "Number of announcements must be between 1 and {}",
+                MAX_ANNOUNCEMENTS
+            )));
+        }
+        if request.description.len() > MAX_DESCRIPTION_LENGTH {
+            return Err(Error::Custom(format!(
+                "Description exceeds maximum length of {}",
+                MAX_DESCRIPTION_LENGTH
+            )));
+        }
+        for ann_hex in &request.announcements {
+            if ann_hex.len() > MAX_ANNOUNCEMENT_HEX_LENGTH {
+                return Err(Error::Custom(format!(
+                    "Announcement hex exceeds maximum length of {}",
+                    MAX_ANNOUNCEMENT_HEX_LENGTH
+                )));
+            }
+        }
+
         // 1. Parse and verify announcements
         let announcements: Vec<_> = request
             .announcements
@@ -66,8 +89,7 @@ impl Mint {
             condition_id: condition_id.clone(),
             threshold: request.threshold,
             description: request.description.clone(),
-            announcements_json: serde_json::to_string(&request.announcements)
-                .unwrap_or_default(),
+            announcements_json: serde_json::to_string(&request.announcements)?,
             attestation_status: "pending".to_string(),
             winning_outcome: None,
             attested_at: None,
@@ -88,6 +110,16 @@ impl Mint {
         condition_id: &str,
         request: RegisterPartitionRequest,
     ) -> Result<RegisterPartitionResponse, Error> {
+        // 0. Validate partition size limits
+        if let Some(ref p) = request.partition {
+            if p.len() > MAX_PARTITION_KEYS {
+                return Err(Error::Custom(format!(
+                    "Partition keys exceed maximum of {}",
+                    MAX_PARTITION_KEYS
+                )));
+            }
+        }
+
         // 1. Look up the condition
         let condition = self
             .localstore
@@ -97,7 +129,10 @@ impl Mint {
 
         // 2. Extract outcomes from stored announcements
         let announcements: Vec<String> =
-            serde_json::from_str(&condition.announcements_json).unwrap_or_default();
+            serde_json::from_str(&condition.announcements_json)?;
+        if announcements.is_empty() {
+            return Err(Error::ConditionNotFound);
+        }
         let first_ann = dlc::parse_oracle_announcement(&announcements[0])?;
         let outcomes = dlc::extract_outcomes(&first_ann)?;
 
@@ -137,7 +172,7 @@ impl Mint {
 
         let stored_partition = StoredPartition {
             condition_id: condition_id.to_string(),
-            partition_json: serde_json::to_string(&partition).unwrap_or_default(),
+            partition_json: serde_json::to_string(&partition)?,
             collateral: request.collateral.clone(),
             parent_collection_id: parent_collection_id_hex,
             created_at: now,
@@ -233,7 +268,7 @@ impl Mint {
         condition: StoredCondition,
     ) -> Result<ConditionInfo, Error> {
         let announcements: Vec<String> =
-            serde_json::from_str(&condition.announcements_json).unwrap_or_default();
+            serde_json::from_str(&condition.announcements_json)?;
 
         // Load partitions for this condition
         let stored_partitions = self
@@ -251,7 +286,7 @@ impl Mint {
         let mut partitions = Vec::new();
         for sp in stored_partitions {
             let partition_keys: Vec<String> =
-                serde_json::from_str(&sp.partition_json).unwrap_or_default();
+                serde_json::from_str(&sp.partition_json)?;
 
             // Filter keysets that belong to this partition
             let mut partition_keysets = std::collections::HashMap::new();

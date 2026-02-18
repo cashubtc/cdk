@@ -48,9 +48,15 @@ impl Mint {
             .await?
             .ok_or(Error::ConditionNotFound)?;
 
-        // 3. Verify all outputs use a regular (non-conditional) keyset of the same unit
+        // 3. Verify all outputs use a regular (non-conditional), active keyset
         let output_keyset_ids: HashSet<_> = outputs.iter().map(|o| o.keyset_id).collect();
         for oid in &output_keyset_ids {
+            // Check keyset exists and is active
+            let keyset_info = self.get_keyset_info(oid).ok_or(Error::UnknownKeySet)?;
+            if !keyset_info.active {
+                return Err(Error::InactiveKeyset);
+            }
+            // Check it's not a conditional keyset
             let is_conditional = self.localstore.get_condition_for_keyset(oid).await?;
             if is_conditional.is_some() {
                 return Err(Error::OutputsMustUseRegularKeyset);
@@ -71,15 +77,16 @@ impl Mint {
 
             // Parse announcements to get oracle info
             let announcements: Vec<String> =
-                serde_json::from_str(&condition.announcements_json).unwrap_or_default();
+                serde_json::from_str(&condition.announcements_json)?;
 
             let parsed_announcements: Vec<_> = announcements
                 .iter()
                 .map(|hex| dlc::parse_oracle_announcement(hex))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            // Verify threshold oracle signatures
+            // Verify threshold oracle signatures, ensuring all attest to the same outcome
             let mut valid_sigs = 0u32;
+            let mut attested_outcome_from_sigs: Option<String> = None;
             for sig in &witness.oracle_sigs {
                 // Find matching announcement by oracle pubkey
                 for ann in &parsed_announcements {
@@ -100,6 +107,17 @@ impl Mint {
                                 )
                                 .is_ok()
                                 {
+                                    // Verify all valid signatures attest to the same outcome
+                                    match &attested_outcome_from_sigs {
+                                        Some(prev) if *prev != sig.outcome => {
+                                            return Err(Error::OracleNotAttestedOutcome);
+                                        }
+                                        None => {
+                                            attested_outcome_from_sigs =
+                                                Some(sig.outcome.clone());
+                                        }
+                                        _ => {}
+                                    }
                                     valid_sigs += 1;
                                 }
                             }
@@ -112,8 +130,10 @@ impl Mint {
                 return Err(Error::OracleThresholdNotMet);
             }
 
-            // Determine winning outcome from the oracle's attested outcome
-            let attested_outcome = &witness.oracle_sigs[0].outcome;
+            // Determine winning outcome from the verified oracle attestations
+            let attested_outcome = attested_outcome_from_sigs
+                .as_deref()
+                .ok_or(Error::ConditionalKeysetRequiresWitness)?;
 
             // Check which partition key contains the attested outcome
             // Load all partitions for this condition and search through them
@@ -125,10 +145,10 @@ impl Mint {
             let mut winning_collection = None;
             for sp in &stored_partitions {
                 let partition_keys: Vec<String> =
-                    serde_json::from_str(&sp.partition_json).unwrap_or_default();
+                    serde_json::from_str(&sp.partition_json)?;
                 for key in &partition_keys {
                     let outcomes = parse_outcome_collection(key);
-                    if outcomes.contains(attested_outcome) {
+                    if outcomes.iter().any(|o| o.as_str() == attested_outcome) {
                         let mut elements = parse_outcome_collection(key);
                         elements.sort();
                         winning_collection = Some(elements.join("|"));
@@ -148,13 +168,14 @@ impl Mint {
                 return Err(Error::OracleNotAttestedOutcome);
             }
 
-            // Record attestation (first-write-wins)
+            // Record attestation (first-write-wins via WHERE attestation_status = 'pending')
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
 
-            self.localstore
+            let updated = self
+                .localstore
                 .update_condition_attestation(
                     &condition_id,
                     "attested",
@@ -162,6 +183,19 @@ impl Mint {
                     Some(now),
                 )
                 .await?;
+
+            if !updated {
+                // Another concurrent request already attested — re-read to verify
+                // that the winning outcome matches ours
+                let refreshed = self
+                    .localstore
+                    .get_condition(&condition_id)
+                    .await?
+                    .ok_or(Error::ConditionNotFound)?;
+                if refreshed.winning_outcome.as_deref() != Some(&*winning_collection) {
+                    return Err(Error::OracleNotAttestedOutcome);
+                }
+            }
         }
 
         // 6. Balance check (inputs >= outputs + fees)
@@ -201,10 +235,8 @@ impl Mint {
     /// Extract the OracleWitness from a set of proofs
     fn extract_oracle_witness(proofs: &cdk_common::Proofs) -> Result<OracleWitness, Error> {
         for proof in proofs {
-            if let Some(ref witness) = proof.witness {
-                if let Witness::OracleWitness(ref ow) = witness {
-                    return Ok(ow.clone());
-                }
+            if let Some(Witness::OracleWitness(ref ow)) = proof.witness {
+                return Ok(ow.clone());
             }
         }
         Err(Error::ConditionalKeysetRequiresWitness)

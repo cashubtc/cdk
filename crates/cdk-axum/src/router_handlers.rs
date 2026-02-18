@@ -351,8 +351,21 @@ where
 #[cfg(feature = "conditional-tokens")]
 #[instrument(skip_all)]
 pub(crate) async fn get_conditions(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
 ) -> Result<Json<cdk::nuts::nut28::GetConditionsResponse>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::Conditions),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let response = state.mint.get_conditions().await.map_err(|err| {
         tracing::error!("Could not get conditions: {}", err);
         into_response(err)
@@ -364,9 +377,22 @@ pub(crate) async fn get_conditions(
 #[cfg(feature = "conditional-tokens")]
 #[instrument(skip_all)]
 pub(crate) async fn post_conditions(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<cdk::nuts::nut28::RegisterConditionRequest>,
 ) -> Result<Json<cdk::nuts::nut28::RegisterConditionResponse>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::Conditions),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let response = state
         .mint
         .register_condition(payload)
@@ -382,9 +408,22 @@ pub(crate) async fn post_conditions(
 #[cfg(feature = "conditional-tokens")]
 #[instrument(skip_all)]
 pub(crate) async fn get_condition(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Path(condition_id): Path<String>,
 ) -> Result<Json<cdk::nuts::nut28::ConditionInfo>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::Condition),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let response = state
         .mint
         .get_condition(&condition_id)
@@ -400,8 +439,21 @@ pub(crate) async fn get_condition(
 #[cfg(feature = "conditional-tokens")]
 #[instrument(skip_all)]
 pub(crate) async fn get_conditional_keysets(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
 ) -> Result<Json<cdk::nuts::nut28::ConditionalKeysetsResponse>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::ConditionalKeysets),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let response = state
         .mint
         .get_conditional_keysets()
@@ -417,10 +469,23 @@ pub(crate) async fn get_conditional_keysets(
 #[cfg(feature = "conditional-tokens")]
 #[instrument(skip_all)]
 pub(crate) async fn post_register_partition(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Path(condition_id): Path<String>,
     Json(payload): Json<cdk::nuts::nut28::RegisterPartitionRequest>,
 ) -> Result<Json<cdk::nuts::nut28::RegisterPartitionResponse>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::ConditionPartitions),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let response = state
         .mint
         .register_partition(&condition_id, payload)
@@ -436,9 +501,22 @@ pub(crate) async fn post_register_partition(
 #[cfg(feature = "conditional-tokens")]
 #[instrument(skip_all)]
 pub(crate) async fn post_redeem_outcome(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<cdk::nuts::nut28::RedeemOutcomeRequest>,
 ) -> Result<Json<cdk::nuts::nut28::RedeemOutcomeResponse>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::RedeemOutcome),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let response = state
         .mint
         .process_redeem_outcome(payload)

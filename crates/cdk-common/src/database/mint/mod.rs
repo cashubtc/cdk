@@ -587,14 +587,16 @@ pub trait ConditionsDatabase {
     /// Get all conditions
     async fn get_conditions(&self) -> Result<Vec<StoredCondition>, Self::Err>;
 
-    /// Update condition attestation state
+    /// Update condition attestation state.
+    /// Only succeeds if current status is 'pending' (first-write-wins).
+    /// Returns true if the update was applied, false if already attested.
     async fn update_condition_attestation(
         &self,
         condition_id: &str,
         status: &str,
         winning_outcome: Option<&str>,
         attested_at: Option<u64>,
-    ) -> Result<(), Self::Err>;
+    ) -> Result<bool, Self::Err>;
 
     /// Add a conditional keyset mapping
     async fn add_conditional_keyset_info(

@@ -631,6 +631,27 @@ impl Error {
             | Self::OperationNotFound
             | Self::KVStoreInvalidKey(_) => true,
 
+            // 13xxx - Conditional token errors (definitively rejected)
+            #[cfg(feature = "conditional-tokens")]
+            Self::InvalidOracleSignature
+            | Self::OracleAnnouncementVerificationFailed
+            | Self::ConditionalKeysetRequiresWitness
+            | Self::OracleNotAttestedOutcome
+            | Self::InputsMustUseSameConditionalKeyset
+            | Self::OutputsMustUseRegularKeyset
+            | Self::InvalidConditionId
+            | Self::ConditionNotFound
+            | Self::SplitAmountMismatch
+            | Self::ConditionNotActive
+            | Self::MergeAmountMismatch
+            | Self::OracleThresholdNotMet
+            | Self::ConditionAlreadyExists
+            | Self::OverlappingOutcomeCollections
+            | Self::IncompletePartition
+            | Self::MaxConditionDepthExceeded
+            | Self::HashToCurveFailed
+            | Self::EcPointOperationFailed => true,
+
             // HTTP Errors
             Self::HttpError(Some(status), _) => {
                 // Client errors (400-499) are definitive failures
@@ -1481,6 +1502,15 @@ impl From<cashu::nuts::nut28::Error> for Error {
             cashu::nuts::nut28::Error::Dlc(msg) => Self::Custom(format!("DLC error: {msg}")),
             cashu::nuts::nut28::Error::HashToCurve(_) => Self::HashToCurveFailed,
             cashu::nuts::nut28::Error::EcPointOperationFailed => Self::EcPointOperationFailed,
+            cashu::nuts::nut28::Error::InputSizeLimitExceeded(msg) => {
+                Self::Custom(format!("Input size limit exceeded: {msg}"))
+            }
+            cashu::nuts::nut28::Error::EmptyOutcomeString => {
+                Self::Custom("Empty outcome string is not allowed".into())
+            }
+            cashu::nuts::nut28::Error::ConflictingOracleAttestations => {
+                Self::OracleNotAttestedOutcome
+            }
         }
     }
 }

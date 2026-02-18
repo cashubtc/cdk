@@ -66,11 +66,35 @@ pub enum Error {
     /// EC point operation failed
     #[error("EC point operation failed")]
     EcPointOperationFailed,
+    /// Input size limit exceeded
+    #[error("Input size limit exceeded: {0}")]
+    InputSizeLimitExceeded(String),
+    /// Empty outcome string
+    #[error("Empty outcome string is not allowed")]
+    EmptyOutcomeString,
+    /// Conflicting oracle attestations
+    #[error("Oracle signatures attest to different outcomes")]
+    ConflictingOracleAttestations,
 }
 
 /// Zero collection ID (32 zero bytes)
 pub const ZERO_COLLECTION_ID: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Maximum number of outcomes allowed per condition
+pub const MAX_OUTCOMES: usize = 256;
+
+/// Maximum number of partition keys per partition registration
+pub const MAX_PARTITION_KEYS: usize = 256;
+
+/// Maximum number of oracle announcements per condition
+pub const MAX_ANNOUNCEMENTS: usize = 32;
+
+/// Maximum length of a description string
+pub const MAX_DESCRIPTION_LENGTH: usize = 1024;
+
+/// Maximum length of a single announcement hex string (64 KB)
+pub const MAX_ANNOUNCEMENT_HEX_LENGTH: usize = 131_072;
 
 // --- Request/Response Types ---
 
@@ -381,15 +405,19 @@ pub fn parse_outcome_collection(oc: &str) -> Vec<String> {
 /// Validate that partition keys form a valid partition of all outcomes.
 ///
 /// Returns Ok(()) if:
-/// 1. Disjoint: no outcome appears in multiple collections
-/// 2. Complete: every outcome appears in exactly one collection
+/// 1. No empty outcome strings
+/// 2. Disjoint: no outcome appears in multiple collections
+/// 3. Complete: every outcome appears in exactly one collection
 pub fn validate_partition(outcomes: &[String], partition: &[String]) -> Result<(), Error> {
-    let all_outcomes: HashSet<&str> = outcomes.iter().map(|s| s.as_str()).collect();
+    let all_outcomes: HashSet<&str> = outcomes.iter().map(String::as_str).collect();
     let mut covered = HashSet::new();
 
     for key in partition {
         let oc_outcomes = parse_outcome_collection(key);
         for outcome in &oc_outcomes {
+            if outcome.is_empty() {
+                return Err(Error::EmptyOutcomeString);
+            }
             if !all_outcomes.contains(outcome.as_str()) {
                 return Err(Error::IncompletePartition);
             }
@@ -621,6 +649,14 @@ mod tests {
         // "A|A" duplicates A
         let result = validate_partition(&outcomes, &["A|A".into(), "B".into()]);
         assert!(matches!(result, Err(Error::OverlappingOutcomeCollections)));
+    }
+
+    #[test]
+    fn test_validate_partition_empty_outcome_string() {
+        let outcomes = vec!["A".into(), "B".into(), "C".into()];
+        // "A||B" parses as ["A", "", "B"] — empty string should be rejected
+        let result = validate_partition(&outcomes, &["A||B".into(), "C".into()]);
+        assert!(matches!(result, Err(Error::EmptyOutcomeString)));
     }
 
     #[test]

@@ -216,16 +216,17 @@ where
         status: &str,
         winning_outcome: Option<&str>,
         attested_at: Option<u64>,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<bool, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        query(
+        let rows_affected = query(
             r#"
             UPDATE conditions
             SET attestation_status = :status,
                 winning_outcome = :winning_outcome,
                 attested_at = :attested_at
             WHERE condition_id = :condition_id
+              AND attestation_status = 'pending'
             "#,
         )?
         .bind("status", status.to_string())
@@ -235,7 +236,7 @@ where
         .execute(&*conn)
         .await?;
 
-        Ok(())
+        Ok(rows_affected > 0)
     }
 
     async fn add_conditional_keyset_info(
