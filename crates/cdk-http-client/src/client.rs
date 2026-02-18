@@ -348,6 +348,7 @@ pub struct HttpClientBuilder {
     accept_invalid_certs: bool,
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[cfg(any(feature = "bitreq", feature = "reqwest"))]
 #[derive(Debug, Clone)]
 pub(crate) struct ProxyConfig {
@@ -385,14 +386,14 @@ pub(crate) fn apply_proxy_if_needed(
 
 impl HttpClientBuilder {
     /// Set a proxy URL (reqwest only)
-    #[cfg(feature = "reqwest")]
+    #[cfg(all(feature = "reqwest", not(target_arch = "wasm32")))]
     pub fn proxy(mut self, url: url::Url) -> Self {
         self.proxy = Some(ProxyConfig { url, matcher: None });
         self
     }
 
     /// Set a proxy URL with a host pattern matcher (reqwest only)
-    #[cfg(feature = "reqwest")]
+    #[cfg(all(feature = "reqwest", not(target_arch = "wasm32")))]
     pub fn proxy_with_matcher(mut self, url: url::Url, pattern: &str) -> Response<Self> {
         let matcher = regex::Regex::new(pattern)
             .map_err(|e| HttpError::Proxy(format!("Invalid proxy pattern: {}", e)))?;
@@ -433,7 +434,11 @@ impl HttpClientBuilder {
     pub fn build(self) -> Response<HttpClient> {
         #[cfg(feature = "reqwest")]
         {
+            #[cfg(not(target_arch = "wasm32"))]
             let mut builder = reqwest::Client::builder();
+            #[cfg(target_arch = "wasm32")]
+            let builder = reqwest::Client::builder();
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(proxy) = self.proxy {
                 let proxy_url = proxy.url;
                 if let Some(matcher) = proxy.matcher {
@@ -452,6 +457,12 @@ impl HttpClientBuilder {
                         .map_err(|e| HttpError::Proxy(e.to_string()))?;
                     builder = builder.proxy(proxy);
                 }
+            }
+            #[cfg(target_arch = "wasm32")]
+            if self.proxy.is_some() {
+                return Err(HttpError::Build(
+                    "proxy configuration is not supported on wasm".to_string(),
+                ));
             }
             let client = builder
                 .build()
