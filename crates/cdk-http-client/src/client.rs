@@ -1,10 +1,9 @@
 //! HTTP client wrapper
 
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-
 #[cfg(feature = "bitreq")]
 use bitreq::RequestExt;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use crate::error::HttpError;
 use crate::request::RequestBuilder;
@@ -68,7 +67,13 @@ impl HttpClient {
         url: &str,
         body: &B,
     ) -> Response<R> {
-        let response = self.inner.post(url).json(body).send().await.map_err(HttpError::from)?;
+        let response = self
+            .inner
+            .post(url)
+            .json(body)
+            .send()
+            .await
+            .map_err(HttpError::from)?;
         let status = response.status();
 
         if !status.is_success() {
@@ -88,7 +93,13 @@ impl HttpClient {
         url: &str,
         form: &F,
     ) -> Response<R> {
-        let response = self.inner.post(url).form(form).send().await.map_err(HttpError::from)?;
+        let response = self
+            .inner
+            .post(url)
+            .form(form)
+            .send()
+            .await
+            .map_err(HttpError::from)?;
         let status = response.status();
 
         if !status.is_success() {
@@ -108,7 +119,13 @@ impl HttpClient {
         url: &str,
         body: &B,
     ) -> Response<R> {
-        let response = self.inner.patch(url).json(body).send().await.map_err(HttpError::from)?;
+        let response = self
+            .inner
+            .patch(url)
+            .json(body)
+            .send()
+            .await
+            .map_err(HttpError::from)?;
         let status = response.status();
 
         if !status.is_success() {
@@ -160,7 +177,11 @@ impl HttpClient {
     }
 
     /// Helper method to apply proxy if URL matches the configured proxy rules
-    fn apply_proxy_if_needed(&self, request: bitreq::Request, url: &str) -> Response<bitreq::Request> {
+    fn apply_proxy_if_needed(
+        &self,
+        request: bitreq::Request,
+        url: &str,
+    ) -> Response<bitreq::Request> {
         if let Some(ref config) = self.proxy_config {
             if let Some(ref matcher) = config.matcher {
                 // Check if URL host matches the regex pattern
@@ -187,7 +208,10 @@ impl HttpClient {
     pub async fn fetch<R: DeserializeOwned>(&self, url: &str) -> Response<R> {
         let request = bitreq::get(url);
         let request = self.apply_proxy_if_needed(request, url)?;
-        let response = request.send_async_with_client(&self.inner).await.map_err(HttpError::from)?;
+        let response = request
+            .send_async_with_client(&self.inner)
+            .await
+            .map_err(HttpError::from)?;
         let status = response.status_code;
 
         if !(200..300).contains(&status) {
@@ -207,11 +231,12 @@ impl HttpClient {
         url: &str,
         body: &B,
     ) -> Response<R> {
-        let request = bitreq::post(url)
-            .with_json(body)
-            .map_err(HttpError::from)?;
+        let request = bitreq::post(url).with_json(body).map_err(HttpError::from)?;
         let request = self.apply_proxy_if_needed(request, url)?;
-        let response: bitreq::Response = request.send_async_with_client(&self.inner).await.map_err(HttpError::from)?;
+        let response: bitreq::Response = request
+            .send_async_with_client(&self.inner)
+            .await
+            .map_err(HttpError::from)?;
         let status = response.status_code;
 
         if !(200..300).contains(&status) {
@@ -235,7 +260,10 @@ impl HttpClient {
             .map_err(|e| HttpError::Serialization(e.to_string()))?;
         let request = bitreq::post(url).with_body(form_str.into_bytes());
         let request = self.apply_proxy_if_needed(request, url)?;
-        let response: bitreq::Response = request.send_async_with_client(&self.inner).await.map_err(HttpError::from)?;
+        let response: bitreq::Response = request
+            .send_async_with_client(&self.inner)
+            .await
+            .map_err(HttpError::from)?;
         let status = response.status_code;
 
         if !(200..300).contains(&status) {
@@ -259,7 +287,10 @@ impl HttpClient {
             .with_json(body)
             .map_err(HttpError::from)?;
         let request = self.apply_proxy_if_needed(request, url)?;
-        let response: bitreq::Response = request.send_async_with_client(&self.inner).await.map_err(HttpError::from)?;
+        let response: bitreq::Response = request
+            .send_async_with_client(&self.inner)
+            .await
+            .map_err(HttpError::from)?;
         let status = response.status_code;
 
         if !(200..300).contains(&status) {
@@ -277,7 +308,10 @@ impl HttpClient {
     pub async fn get_raw(&self, url: &str) -> Response<RawResponse> {
         let request = bitreq::get(url);
         let request = self.apply_proxy_if_needed(request, url)?;
-        let response = request.send_async_with_client(&self.inner).await.map_err(HttpError::from)?;
+        let response = request
+            .send_async_with_client(&self.inner)
+            .await
+            .map_err(HttpError::from)?;
         Ok(RawResponse::new(response))
     }
 
