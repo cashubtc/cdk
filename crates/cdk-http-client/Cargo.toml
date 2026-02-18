@@ -10,19 +10,22 @@ rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 
+[features]
+default = ["bitreq"]
+reqwest = ["dep:reqwest"]
+bitreq = ["dep:bitreq", "dep:serde_urlencoded", "dep:regex"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 url.workspace = true
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-bitreq = { version = "0.3.1", features = ["async", "async-https-rustls", "json-using-serde", "proxy"] }
-serde_urlencoded = "0.7"
-regex = { workspace = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# Optional dependencies
+reqwest = { version = "0.12", default-features = false, features = ["json"], optional = true }
+bitreq = { version = "0.3.1", features = ["async", "async-https-rustls", "json-using-serde", "proxy"], optional = true }
+serde_urlencoded = { version = "0.7", optional = true }
+regex = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

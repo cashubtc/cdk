@@ -37,6 +37,7 @@ prometheus = ["dep:cdk-prometheus"]
 [dependencies]
 arc-swap = "1.7.1"
 cdk-common.workspace = true
+cdk-http-client.workspace = true
 cbor-diag.workspace = true
 async-trait.workspace = true
 anyhow.workspace = true

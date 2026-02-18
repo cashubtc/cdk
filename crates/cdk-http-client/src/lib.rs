@@ -20,12 +20,20 @@
 //! }
 //! ```
 
+mod backends;
 mod client;
 mod error;
 mod request;
+mod request_builder_ext;
 mod response;
+
+#[cfg(feature = "bitreq")]
+pub use backends::BitreqRequestBuilder;
+
+#[cfg(feature = "reqwest")]
+pub use backends::ReqwestRequestBuilder;
 
 pub use client::{fetch, HttpClient, HttpClientBuilder};
 pub use error::HttpError;
-pub use request::RequestBuilder;
+pub use request::{RequestBuilder, RequestBuilderExt};
 pub use response::{RawResponse, Response};

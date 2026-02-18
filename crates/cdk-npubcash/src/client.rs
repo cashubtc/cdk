@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use cdk_http_client::{HttpClient, RawResponse};
+use cdk_http_client::RequestBuilderExt;
 use tracing::instrument;
 
 use crate::auth::JwtAuthProvider;
