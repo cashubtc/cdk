@@ -3,7 +3,7 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "bitreq")]
 use bitreq::RequestExt;
 
 use crate::error::HttpError;
@@ -13,11 +13,11 @@ use crate::response::{RawResponse, Response};
 /// HTTP client wrapper
 #[derive(Clone)]
 pub struct HttpClient {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(feature = "reqwest")]
     inner: reqwest::Client,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "bitreq")]
     inner: bitreq::Client,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "bitreq")]
     proxy_config: Option<ProxyConfig>,
 }
 
@@ -27,14 +27,7 @@ impl std::fmt::Debug for HttpClient {
     }
 }
 
-// #[cfg(not(target_arch = "wasm32"))]
-// impl std::fmt::Debug for HttpClient {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         f.debug_struct("HttpClient").finish()
-//     }
-// }
-
-#[cfg(target_arch = "wasm32")]
+#[cfg(feature = "reqwest")]
 impl HttpClient {
     /// Create a new HTTP client with default settings
     pub fn new() -> Self {
@@ -55,7 +48,7 @@ impl HttpClient {
 
     /// GET request, returns JSON deserialized to R
     pub async fn fetch<R: DeserializeOwned>(&self, url: &str) -> Response<R> {
-        let response = self.inner.get(url).send().await?;
+        let response = self.inner.get(url).send().await.map_err(HttpError::from)?;
         let status = response.status();
 
         if !status.is_success() {
@@ -75,7 +68,7 @@ impl HttpClient {
         url: &str,
         body: &B,
     ) -> Response<R> {
-        let response = self.inner.post(url).json(body).send().await?;
+        let response = self.inner.post(url).json(body).send().await.map_err(HttpError::from)?;
         let status = response.status();
 
         if !status.is_success() {
@@ -95,7 +88,7 @@ impl HttpClient {
         url: &str,
         form: &F,
     ) -> Response<R> {
-        let response = self.inner.post(url).form(form).send().await?;
+        let response = self.inner.post(url).form(form).send().await.map_err(HttpError::from)?;
         let status = response.status();
 
         if !status.is_success() {
@@ -115,7 +108,7 @@ impl HttpClient {
         url: &str,
         body: &B,
     ) -> Response<R> {
-        let response = self.inner.patch(url).json(body).send().await?;
+        let response = self.inner.patch(url).json(body).send().await.map_err(HttpError::from)?;
         let status = response.status();
 
         if !status.is_success() {
@@ -131,7 +124,7 @@ impl HttpClient {
 
     /// GET request returning raw response body
     pub async fn get_raw(&self, url: &str) -> Response<RawResponse> {
-        let response = self.inner.get(url).send().await?;
+        let response = self.inner.get(url).send().await.map_err(HttpError::from)?;
         Ok(RawResponse::new(response))
     }
 
@@ -151,7 +144,7 @@ impl HttpClient {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "bitreq")]
 impl HttpClient {
     /// Create a new HTTP client with default settings
     pub fn new() -> Self {
@@ -314,13 +307,13 @@ impl Default for HttpClient {
 /// HTTP client builder for configuring proxy and TLS settings
 #[derive(Debug, Default)]
 pub struct HttpClientBuilder {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "bitreq")]
     accept_invalid_certs: bool,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "bitreq")]
     proxy: Option<ProxyConfig>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "bitreq")]
 #[derive(Debug, Clone)]
 struct ProxyConfig {
     url: url::Url,
@@ -328,22 +321,22 @@ struct ProxyConfig {
 }
 
 impl HttpClientBuilder {
-    /// Accept invalid TLS certificates (non-WASM only)
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Accept invalid TLS certificates (bitreq only)
+    #[cfg(feature = "bitreq")]
     pub fn danger_accept_invalid_certs(mut self, accept: bool) -> Self {
         self.accept_invalid_certs = accept;
         self
     }
 
-    /// Set a proxy URL (non-WASM only)
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Set a proxy URL (bitreq only)
+    #[cfg(feature = "bitreq")]
     pub fn proxy(mut self, url: url::Url) -> Self {
         self.proxy = Some(ProxyConfig { url, matcher: None });
         self
     }
 
-    /// Set a proxy URL with a host pattern matcher (non-WASM only)
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Set a proxy URL with a host pattern matcher (bitreq only)
+    #[cfg(feature = "bitreq")]
     pub fn proxy_with_matcher(mut self, url: url::Url, pattern: &str) -> Response<Self> {
         let matcher = regex::Regex::new(pattern)
             .map_err(|e| HttpError::Proxy(format!("Invalid proxy pattern: {}", e)))?;
@@ -356,19 +349,19 @@ impl HttpClientBuilder {
 
     /// Build the HTTP client
     pub fn build(self) -> Response<HttpClient> {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(feature = "reqwest")]
         {
             Ok(HttpClient {
                 inner: reqwest::Client::new(),
             })
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "bitreq")]
         {
-            // Return error if danger_accept_invalid_certs was set on non-wasm32
+            // Return error if danger_accept_invalid_certs was set
             if self.accept_invalid_certs {
                 return Err(HttpError::Build(
-                    "danger_accept_invalid_certs is not supported on non-WASM targets".to_string(),
+                    "danger_accept_invalid_certs is not supported".to_string(),
                 ));
             }
 
@@ -415,7 +408,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(feature = "reqwest")]
     #[test]
     fn test_from_reqwest() {
         let reqwest_client = reqwest::Client::new();
@@ -423,8 +416,8 @@ mod tests {
         let _ = format!("{:?}", client);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    mod non_wasm {
+    #[cfg(feature = "bitreq")]
+    mod bitreq_tests {
         use super::*;
 
         #[test]
