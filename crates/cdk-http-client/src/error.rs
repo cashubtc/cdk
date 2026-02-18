@@ -33,7 +33,7 @@ pub enum HttpError {
     Other(String),
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(feature = "reqwest")]
 impl From<reqwest::Error> for HttpError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
@@ -51,7 +51,7 @@ impl From<reqwest::Error> for HttpError {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "bitreq")]
 impl From<bitreq::Error> for HttpError {
     fn from(err: bitreq::Error) -> Self {
         use bitreq::Error;
