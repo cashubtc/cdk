@@ -2,8 +2,15 @@
 
 HTTP client abstraction for the Cashu Development Kit (CDK).
 
-This crate provides an HTTP client wrapper that abstracts the underlying HTTP library (reqwest),
-allowing other CDK crates to avoid direct dependencies on reqwest.
+This crate provides an HTTP client wrapper that abstracts the underlying HTTP library
+(reqwest or bitreq), allowing other CDK crates to avoid direct dependencies on a specific backend.
+
+## Features
+
+- `bitreq` (default) - use bitreq as the HTTP backend
+- `reqwest` - use reqwest as the HTTP backend
+
+These features are mutually exclusive. Enable only one backend at a time.
 
 ## Usage
 
