@@ -1,10 +1,10 @@
 //! bitreq-based RequestBuilder implementation
 
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::sync::Arc;
 
 use bitreq::RequestExt;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use crate::client::{apply_proxy_if_needed, ProxyConfig};
 use crate::error::HttpError;
