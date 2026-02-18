@@ -48,9 +48,7 @@ pub trait RequestBuilderExt: Sized {
     fn send(self) -> impl std::future::Future<Output = Response<RawResponse>>;
 
     /// Send the request and deserialize the response as JSON
-    fn send_json<R: DeserializeOwned>(
-        self,
-    ) -> impl std::future::Future<Output = Response<R>>;
+    fn send_json<R: DeserializeOwned>(self) -> impl std::future::Future<Output = Response<R>>;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -98,9 +96,7 @@ impl<T: RequestBuilderExt> RequestBuilderExt for Box<T> {
         async move { (*self).send().await }
     }
 
-    fn send_json<R: DeserializeOwned>(
-        self,
-    ) -> impl std::future::Future<Output = Response<R>> {
+    fn send_json<R: DeserializeOwned>(self) -> impl std::future::Future<Output = Response<R>> {
         async move { (*self).send_json().await }
     }
 }

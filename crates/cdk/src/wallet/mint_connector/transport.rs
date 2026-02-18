@@ -1,9 +1,9 @@
 //! HTTP Transport trait with a default implementation
 use std::fmt::Debug;
 
-use cdk_common::{AuthToken, HttpClient};
 #[cfg(not(target_arch = "wasm32"))]
 use cdk_common::HttpClientBuilder;
+use cdk_common::{AuthToken, HttpClient};
 use cdk_http_client::RequestBuilderExt;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use hickory_resolver::config::ResolverConfig;
