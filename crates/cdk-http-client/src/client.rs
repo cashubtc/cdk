@@ -1,9 +1,10 @@
 //! HTTP client wrapper
 
 #[cfg(feature = "bitreq")]
-use bitreq::RequestExt;
-#[cfg(feature = "bitreq")]
 use std::sync::Arc;
+
+#[cfg(feature = "bitreq")]
+use bitreq::RequestExt;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -452,7 +453,9 @@ impl HttpClientBuilder {
                     builder = builder.proxy(proxy);
                 }
             }
-            let client = builder.build().map_err(|e| HttpError::Build(e.to_string()))?;
+            let client = builder
+                .build()
+                .map_err(|e| HttpError::Build(e.to_string()))?;
             Ok(HttpClient { inner: client })
         }
 
