@@ -15,8 +15,7 @@ use cdk::nuts::{
 use cdk::wallet::{AuthHttpClient, AuthMintConnector, HttpClient, MintConnector, WalletBuilder};
 use cdk::{Error, OidcClient};
 use cdk_fake_wallet::create_fake_invoice;
-use cdk_http_client::HttpClient as CommonHttpClient;
-use cdk_http_client::RequestBuilderExt;
+use cdk_http_client::{HttpClient as CommonHttpClient, RequestBuilderExt};
 use cdk_integration_tests::fund_wallet;
 use cdk_sqlite::wallet::memory;
 
