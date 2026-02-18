@@ -8,6 +8,7 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use cdk_common::HttpClientBuilder;
 use cdk_common::{AuthToken, HttpClient};
+use cdk_http_client::RequestBuilderExt;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
