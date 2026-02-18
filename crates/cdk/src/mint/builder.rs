@@ -491,7 +491,7 @@ impl MintBuilder {
             keystore,
             seed,
             self.supported_units.clone(),
-            HashMap::new(),
+            self.custom_paths.clone(),
         )
         .await?;
 
