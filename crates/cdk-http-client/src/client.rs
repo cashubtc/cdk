@@ -2,6 +2,8 @@
 
 #[cfg(feature = "bitreq")]
 use bitreq::RequestExt;
+#[cfg(feature = "bitreq")]
+use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -15,7 +17,7 @@ pub struct HttpClient {
     #[cfg(feature = "reqwest")]
     inner: reqwest::Client,
     #[cfg(feature = "bitreq")]
-    inner: bitreq::Client,
+    inner: Arc<bitreq::Client>,
     #[cfg(feature = "bitreq")]
     proxy_config: Option<ProxyConfig>,
 }
@@ -166,7 +168,7 @@ impl HttpClient {
     /// Create a new HTTP client with default settings
     pub fn new() -> Self {
         Self {
-            inner: bitreq::Client::new(10), // Default capacity of 10
+            inner: Arc::new(bitreq::Client::new(10)), // Default capacity of 10
             proxy_config: None,
         }
     }
@@ -182,26 +184,7 @@ impl HttpClient {
         request: bitreq::Request,
         url: &str,
     ) -> Response<bitreq::Request> {
-        if let Some(ref config) = self.proxy_config {
-            if let Some(ref matcher) = config.matcher {
-                // Check if URL host matches the regex pattern
-                if let Ok(parsed_url) = url::Url::parse(url) {
-                    if let Some(host) = parsed_url.host_str() {
-                        if matcher.is_match(host) {
-                            let proxy = bitreq::Proxy::new_http(&config.url.to_string())
-                                .map_err(|e| HttpError::Proxy(e.to_string()))?;
-                            return Ok(request.with_proxy(proxy));
-                        }
-                    }
-                }
-            } else {
-                // No matcher, apply proxy to all requests
-                let proxy = bitreq::Proxy::new_http(&config.url.to_string())
-                    .map_err(|e| HttpError::Proxy(e.to_string()))?;
-                return Ok(request.with_proxy(proxy));
-            }
-        }
-        Ok(request)
+        apply_proxy_if_needed(request, url, &self.proxy_config)
     }
 
     /// GET request, returns JSON deserialized to R
@@ -258,7 +241,9 @@ impl HttpClient {
     ) -> Response<R> {
         let form_str = serde_urlencoded::to_string(form)
             .map_err(|e| HttpError::Serialization(e.to_string()))?;
-        let request = bitreq::post(url).with_body(form_str.into_bytes());
+        let request = bitreq::post(url)
+            .with_body(form_str.into_bytes())
+            .with_header("Content-Type", "application/x-www-form-urlencoded");
         let request = self.apply_proxy_if_needed(request, url)?;
         let response: bitreq::Response = request
             .send_async_with_client(&self.inner)
@@ -318,17 +303,32 @@ impl HttpClient {
     /// POST request builder for complex cases
     pub fn post(&self, url: &str) -> RequestBuilder {
         // Note: Proxy will be applied when the request is sent
-        RequestBuilder::new(bitreq::post(url))
+        RequestBuilder::new(
+            bitreq::post(url),
+            url,
+            self.inner.clone(),
+            self.proxy_config.clone(),
+        )
     }
 
     /// GET request builder for complex cases
     pub fn get(&self, url: &str) -> RequestBuilder {
-        RequestBuilder::new(bitreq::get(url))
+        RequestBuilder::new(
+            bitreq::get(url),
+            url,
+            self.inner.clone(),
+            self.proxy_config.clone(),
+        )
     }
 
     /// PATCH request builder for complex cases
     pub fn patch(&self, url: &str) -> RequestBuilder {
-        RequestBuilder::new(bitreq::patch(url))
+        RequestBuilder::new(
+            bitreq::patch(url),
+            url,
+            self.inner.clone(),
+            self.proxy_config.clone(),
+        )
     }
 }
 
@@ -341,20 +341,67 @@ impl Default for HttpClient {
 /// HTTP client builder for configuring proxy and TLS settings
 #[derive(Debug, Default)]
 pub struct HttpClientBuilder {
+    #[cfg(any(feature = "reqwest", feature = "bitreq"))]
+    proxy: Option<ProxyConfig>,
     #[cfg(feature = "bitreq")]
     accept_invalid_certs: bool,
-    #[cfg(feature = "bitreq")]
-    proxy: Option<ProxyConfig>,
 }
 
-#[cfg(feature = "bitreq")]
+#[cfg(any(feature = "bitreq", feature = "reqwest"))]
 #[derive(Debug, Clone)]
-struct ProxyConfig {
+pub(crate) struct ProxyConfig {
     url: url::Url,
     matcher: Option<regex::Regex>,
 }
 
+#[cfg(feature = "bitreq")]
+pub(crate) fn apply_proxy_if_needed(
+    request: bitreq::Request,
+    url: &str,
+    proxy_config: &Option<ProxyConfig>,
+) -> Response<bitreq::Request> {
+    if let Some(ref config) = proxy_config {
+        if let Some(ref matcher) = config.matcher {
+            // Check if URL host matches the regex pattern
+            if let Ok(parsed_url) = url::Url::parse(url) {
+                if let Some(host) = parsed_url.host_str() {
+                    if matcher.is_match(host) {
+                        let proxy = bitreq::Proxy::new_http(&config.url)
+                            .map_err(|e| HttpError::Proxy(e.to_string()))?;
+                        return Ok(request.with_proxy(proxy));
+                    }
+                }
+            }
+        } else {
+            // No matcher, apply proxy to all requests
+            let proxy = bitreq::Proxy::new_http(&config.url)
+                .map_err(|e| HttpError::Proxy(e.to_string()))?;
+            return Ok(request.with_proxy(proxy));
+        }
+    }
+    Ok(request)
+}
+
 impl HttpClientBuilder {
+    /// Set a proxy URL (reqwest only)
+    #[cfg(feature = "reqwest")]
+    pub fn proxy(mut self, url: url::Url) -> Self {
+        self.proxy = Some(ProxyConfig { url, matcher: None });
+        self
+    }
+
+    /// Set a proxy URL with a host pattern matcher (reqwest only)
+    #[cfg(feature = "reqwest")]
+    pub fn proxy_with_matcher(mut self, url: url::Url, pattern: &str) -> Response<Self> {
+        let matcher = regex::Regex::new(pattern)
+            .map_err(|e| HttpError::Proxy(format!("Invalid proxy pattern: {}", e)))?;
+        self.proxy = Some(ProxyConfig {
+            url,
+            matcher: Some(matcher),
+        });
+        Ok(self)
+    }
+
     /// Accept invalid TLS certificates (bitreq only)
     #[cfg(feature = "bitreq")]
     pub fn danger_accept_invalid_certs(mut self, accept: bool) -> Self {
@@ -385,9 +432,28 @@ impl HttpClientBuilder {
     pub fn build(self) -> Response<HttpClient> {
         #[cfg(feature = "reqwest")]
         {
-            Ok(HttpClient {
-                inner: reqwest::Client::new(),
-            })
+            let mut builder = reqwest::Client::builder();
+            if let Some(proxy) = self.proxy {
+                let proxy_url = proxy.url;
+                if let Some(matcher) = proxy.matcher {
+                    let custom_proxy = reqwest::Proxy::custom(move |url| {
+                        url.host_str().and_then(|host| {
+                            if matcher.is_match(host) {
+                                Some(proxy_url.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    });
+                    builder = builder.proxy(custom_proxy);
+                } else {
+                    let proxy = reqwest::Proxy::all(proxy_url)
+                        .map_err(|e| HttpError::Proxy(e.to_string()))?;
+                    builder = builder.proxy(proxy);
+                }
+            }
+            let client = builder.build().map_err(|e| HttpError::Build(e.to_string()))?;
+            Ok(HttpClient { inner: client })
         }
 
         #[cfg(feature = "bitreq")]
@@ -400,7 +466,7 @@ impl HttpClientBuilder {
             }
 
             Ok(HttpClient {
-                inner: bitreq::Client::new(10), // Default capacity of 10
+                inner: Arc::new(bitreq::Client::new(10)), // Default capacity of 10
                 proxy_config: self.proxy,
             })
         }
