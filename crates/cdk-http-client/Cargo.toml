@@ -12,7 +12,7 @@ readme = "README.md"
 
 [features]
 default = ["bitreq"]
-reqwest = ["dep:reqwest"]
+reqwest = ["dep:reqwest", "dep:regex"]
 bitreq = ["dep:bitreq", "dep:serde_urlencoded", "dep:regex"]
 
 [dependencies]
