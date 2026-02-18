@@ -1,11 +1,10 @@
 use std::time::Duration;
 
 use cdk_fake_wallet::create_fake_invoice;
-use cdk_http_client::HttpClient;
+use cdk_http_client::{HttpClient, RequestBuilderExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::sleep;
-use cdk_http_client::RequestBuilderExt;
 
 /// Response from the invoice creation endpoint
 #[derive(Debug, Serialize, Deserialize)]
