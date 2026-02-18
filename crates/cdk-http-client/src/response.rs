@@ -12,13 +12,13 @@ pub type Response<R, E = HttpError> = Result<R, E>;
 #[derive(Debug)]
 pub struct RawResponse {
     status: u16,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(feature = "reqwest")]
     inner: reqwest::Response,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "bitreq")]
     inner: bitreq::Response,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(feature = "reqwest")]
 impl RawResponse {
     /// Create a new RawResponse from a reqwest::Response
     pub(crate) fn new(response: reqwest::Response) -> Self {
@@ -68,7 +68,7 @@ impl RawResponse {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "bitreq")]
 impl RawResponse {
     /// Create a new RawResponse from a bitreq::Response
     pub(crate) fn new(response: bitreq::Response) -> Self {
