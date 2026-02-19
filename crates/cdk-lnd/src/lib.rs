@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cdk_common::amount::{Amount, MSAT_IN_SAT};
+use cdk_common::amount::Amount;
 use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
@@ -556,7 +556,6 @@ impl MintPayment for Lnd {
                             payment_request: bolt11.to_string(),
                             fee_limit_msat,
                             amt_msat: amount_msat as i64,
-                            allow_self_payment: true,
                             ..Default::default()
                         };
 
