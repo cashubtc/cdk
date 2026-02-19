@@ -1,12 +1,12 @@
 //! HTTP request builder backends
 
-#[cfg(feature = "bitreq")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod bitreq_backend;
 
-#[cfg(feature = "reqwest")]
-pub mod reqwest_backend;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm_backend;
 
-#[cfg(feature = "bitreq")]
-pub use bitreq_backend::BitreqRequestBuilder;
-#[cfg(feature = "reqwest")]
-pub use reqwest_backend::ReqwestRequestBuilder;
+#[cfg(not(target_arch = "wasm32"))]
+pub use bitreq_backend::{BitreqRequestBuilder, HttpClient, HttpClientBuilder};
+#[cfg(target_arch = "wasm32")]
+pub use wasm_backend::{HttpClient, HttpClientBuilder, WasmRequestBuilder};
