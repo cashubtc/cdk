@@ -118,7 +118,7 @@ async fn test_ffi_full_minting_flow() {
         "Quote amount should match requested amount"
     );
     assert_eq!(
-        quote_status.unit.unwrap(),
+        quote_status.unit,
         CurrencyUnit::Sat,
         "Quote unit should be sats"
     );
