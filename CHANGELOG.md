@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [0.15.1](https://github.com/cashubtc/cdk/releases/tag/v0.15.1)
+
+## Fixed
+
+- cdk: Add limits to secret and witness ([thesimplekid])
+- cdk: build_with_seed with custom paths ([thesimplekid])
+
 ## [0.15.0](https://github.com/cashubtc/cdk/releases/tag/v0.15.0)
 
 ### Summary
