@@ -16,7 +16,7 @@ pub async fn init_keysets(
     xpriv: Xpriv,
     secp_ctx: &Secp256k1<All>,
     localstore: &Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
-    supported_units: &HashMap<CurrencyUnit, (u64, u8)>,
+    supported_units: &HashMap<CurrencyUnit, (u64, Vec<u64>)>,
 ) -> Result<(), Error> {
     let keysets_infos = localstore.get_keyset_infos().await?;
     let mut tx = localstore.begin_transaction().await?;
@@ -29,16 +29,16 @@ pub async fn init_keysets(
 
     for (unit, keysets) in keysets_by_unit {
         // We only care about units that are supported
-        if let Some((input_fee_ppk, max_order)) = supported_units.get(&unit) {
+        if let Some((input_fee_ppk, amounts)) = supported_units.get(&unit) {
             let mut keysets = keysets;
             keysets.sort_by_key(|b| std::cmp::Reverse(b.derivation_path_index));
 
             if let Some(highest_index_keyset) = keysets.first() {
                 // Check if it matches our criteria
                 if highest_index_keyset.input_fee_ppk == *input_fee_ppk
-                    && highest_index_keyset.amounts.len() == (*max_order as usize)
+                    && highest_index_keyset.amounts == *amounts
                 {
-                    tracing::debug!("Current highest index keyset matches expect fee and max order. Setting active");
+                    tracing::debug!("Current highest index keyset matches expect fee and amounts. Setting active");
                     let id = highest_index_keyset.id;
 
                     // Validate we can generate it (sanity check)
