@@ -591,24 +591,6 @@ impl MintPayment for Lnd {
                                 .checked_add(update.fee_msat)
                                 .ok_or(Error::AmountOverflow)?;
 
-                            let total_msat = if total_msat > 0 {
-                                total_msat
-                            } else {
-                                let mut htlc_total_msat = 0;
-                                for htlc in &update.htlcs {
-                                    if let Some(route) = htlc.route.as_ref() {
-                                        if route.total_amt_msat > 0 {
-                                            htlc_total_msat = route.total_amt_msat;
-                                            break;
-                                        }
-                                    }
-                                }
-                                htlc_total_msat
-                            };
-
-                            let total_amount = u64::try_from(total_msat / MSAT_IN_SAT as i64)
-                                .map_err(|_| Error::AmountOverflow)?;
-
                             let payment_preimage = if update.payment_preimage.is_empty() {
                                 None
                             } else {
@@ -622,7 +604,7 @@ impl MintPayment for Lnd {
                                 payment_lookup_id: payment_identifier,
                                 payment_proof: payment_preimage,
                                 status: response_status,
-                                total_spent: Amount::new(total_amount, CurrencyUnit::Sat),
+                                total_spent: Amount::new(total_msat as u64, CurrencyUnit::Msat),
                             });
                         }
 
