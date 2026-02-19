@@ -6,6 +6,9 @@ use tracing::instrument;
 use super::{Error, Mint};
 use crate::cdk_database;
 
+/// Maximum allowed length in bytes for proof secret or witness content
+const MAX_PROOF_CONTENT_LEN: usize = 1024;
+
 /// Verification result with typed amount
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Verification {
@@ -204,6 +207,38 @@ impl Mint {
                 actual: inputs_count,
                 max: self.max_inputs,
             });
+        }
+
+        // Check proof content lengths (secret and witness) are within limits
+        for proof in inputs {
+            let secret_len = proof.secret.len();
+            if secret_len > MAX_PROOF_CONTENT_LEN {
+                tracing::warn!(
+                    "Proof secret exceeds max content length: {} > {}",
+                    secret_len,
+                    MAX_PROOF_CONTENT_LEN
+                );
+                return Err(Error::ProofContentTooLarge {
+                    actual: secret_len,
+                    max: MAX_PROOF_CONTENT_LEN,
+                });
+            }
+
+            if let Some(witness) = &proof.witness {
+                let witness_str = serde_json::to_string(witness)?;
+                let witness_len = witness_str.len();
+                if witness_len > MAX_PROOF_CONTENT_LEN {
+                    tracing::warn!(
+                        "Proof witness exceeds max content length: {} > {}",
+                        witness_len,
+                        MAX_PROOF_CONTENT_LEN
+                    );
+                    return Err(Error::ProofContentTooLarge {
+                        actual: witness_len,
+                        max: MAX_PROOF_CONTENT_LEN,
+                    });
+                }
+            }
         }
 
         Mint::check_inputs_unique(inputs)?;
