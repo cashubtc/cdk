@@ -33,25 +33,7 @@ pub enum HttpError {
     Other(String),
 }
 
-#[cfg(feature = "reqwest")]
-impl From<reqwest::Error> for HttpError {
-    fn from(err: reqwest::Error) -> Self {
-        if err.is_timeout() {
-            HttpError::Timeout
-        } else if err.is_builder() {
-            HttpError::Build(err.to_string())
-        } else if let Some(status) = err.status() {
-            HttpError::Status {
-                status: status.as_u16(),
-                message: err.to_string(),
-            }
-        } else {
-            HttpError::Other(err.to_string())
-        }
-    }
-}
-
-#[cfg(feature = "bitreq")]
+#[cfg(not(target_arch = "wasm32"))]
 impl From<bitreq::Error> for HttpError {
     fn from(err: bitreq::Error) -> Self {
         use std::io;

@@ -1406,15 +1406,18 @@ name = "cdk-http-client"
 version = "0.15.1"
 dependencies = [
  "bitreq",
+ "js-sys",
  "mockito",
  "regex",
- "reqwest",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "thiserror 2.0.18",
  "tokio",
  "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -1682,7 +1685,6 @@ dependencies = [
  "futures",
  "once_cell",
  "prometheus",
- "reqwest",
  "serde",
  "serde_json",
  "sysinfo",

@@ -10,23 +10,23 @@ rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 
-[features]
-# Backend features are mutually exclusive; enable only one.
-default = ["bitreq"]
-reqwest = ["dep:reqwest", "dep:regex"]
-bitreq = ["dep:bitreq", "dep:serde_urlencoded", "dep:regex"]
-
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 url.workspace = true
 
-# Optional dependencies
-reqwest = { version = "0.12", default-features = false, features = ["json"], optional = true }
-bitreq = { version = "0.3.1", features = ["async", "async-https-rustls", "json-using-serde", "proxy"], optional = true }
-serde_urlencoded = { version = "0.7", optional = true }
-regex = { workspace = true, optional = true }
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bitreq = { version = "0.3.1", features = ["async", "async-https-rustls", "json-using-serde", "proxy"] }
+serde_urlencoded = "0.7"
+regex.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Request", "RequestInit", "Response", "Headers"] }
+serde_urlencoded = "0.7"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
@@ -35,6 +35,3 @@ serde = { workspace = true }
 
 [lints]
 workspace = true
-
-[package.metadata.docs.rs]
-features = ["bitreq"]
