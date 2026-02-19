@@ -12,20 +12,17 @@ pub type Response<R, E = HttpError> = Result<R, E>;
 #[derive(Debug)]
 pub struct RawResponse {
     status: u16,
-    #[cfg(feature = "reqwest")]
-    inner: reqwest::Response,
-    #[cfg(feature = "bitreq")]
+    #[cfg(not(target_arch = "wasm32"))]
     inner: bitreq::Response,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) body: Vec<u8>,
 }
 
-#[cfg(feature = "reqwest")]
+#[cfg(target_arch = "wasm32")]
 impl RawResponse {
-    /// Create a new RawResponse from a reqwest::Response
-    pub(crate) fn new(response: reqwest::Response) -> Self {
-        Self {
-            status: response.status().as_u16(),
-            inner: response,
-        }
+    /// Create a new RawResponse from status and body bytes
+    pub(crate) fn new(status: u16, body: Vec<u8>) -> Self {
+        Self { status, body }
     }
 
     /// Get the HTTP status code
@@ -50,25 +47,21 @@ impl RawResponse {
 
     /// Get the response body as text
     pub async fn text(self) -> Response<String> {
-        self.inner.text().await.map_err(HttpError::from)
+        String::from_utf8(self.body).map_err(|e| HttpError::Other(e.to_string()))
     }
 
     /// Get the response body as JSON
     pub async fn json<T: DeserializeOwned>(self) -> Response<T> {
-        self.inner.json().await.map_err(HttpError::from)
+        serde_json::from_slice(&self.body).map_err(HttpError::from)
     }
 
     /// Get the response body as bytes
     pub async fn bytes(self) -> Response<Vec<u8>> {
-        self.inner
-            .bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(HttpError::from)
+        Ok(self.body)
     }
 }
 
-#[cfg(feature = "bitreq")]
+#[cfg(not(target_arch = "wasm32"))]
 impl RawResponse {
     /// Create a new RawResponse from a bitreq::Response
     pub(crate) fn new(response: bitreq::Response) -> Self {

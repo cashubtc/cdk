@@ -1464,12 +1464,9 @@ name = "cdk-http-client"
 version = "0.16.0"
 dependencies = [
  "bitreq",
- "futures",
- "futures-channel",
  "js-sys",
  "mockito",
  "regex",
- "reqwest",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -1752,7 +1749,6 @@ dependencies = [
  "futures",
  "once_cell",
  "prometheus",
- "reqwest",
  "serde",
  "serde_json",
  "sysinfo",
