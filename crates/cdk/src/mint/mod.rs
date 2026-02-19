@@ -945,6 +945,19 @@ impl Mint {
         let result = async {
             let output_len = request.outputs.len();
 
+            // Check max outputs limit
+            if output_len > self.max_outputs {
+                tracing::warn!(
+                    "Restore request exceeds max outputs limit: {} > {}",
+                    output_len,
+                    self.max_outputs
+                );
+                return Err(Error::MaxOutputsExceeded {
+                    actual: output_len,
+                    max: self.max_outputs,
+                });
+            }
+
             let mut outputs = Vec::with_capacity(output_len);
             let mut signatures = Vec::with_capacity(output_len);
 

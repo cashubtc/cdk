@@ -344,6 +344,8 @@ pub trait SpendingConditionVerification {
                 if has_sig_all {
                     return Ok(true);
                 }
+            } else if proof.witness.is_some() {
+                return Err(super::nut11::Error::IncorrectWitnessKind);
             }
         }
 

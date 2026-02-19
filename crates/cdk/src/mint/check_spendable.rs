@@ -12,6 +12,20 @@ impl Mint {
         &self,
         check_state: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
+        // Check max inputs limit
+        let ys_count = check_state.ys.len();
+        if ys_count > self.max_inputs {
+            tracing::warn!(
+                "CheckState request exceeds max inputs limit: {} > {}",
+                ys_count,
+                self.max_inputs
+            );
+            return Err(Error::MaxInputsExceeded {
+                actual: ys_count,
+                max: self.max_inputs,
+            });
+        }
+
         let states = self.localstore.get_proofs_states(&check_state.ys).await?;
 
         if check_state.ys.len() != states.len() {

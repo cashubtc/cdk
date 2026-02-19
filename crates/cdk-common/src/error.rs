@@ -215,6 +215,24 @@ pub enum Error {
         /// Maximum allowed outputs
         max: usize,
     },
+    /// Proof content too large (secret or witness exceeds max length)
+    #[error("Proof content too large: {actual} bytes, max {max}")]
+    ProofContentTooLarge {
+        /// Actual size in bytes
+        actual: usize,
+        /// Maximum allowed size in bytes
+        max: usize,
+    },
+    /// Request field content too large (description or extra exceeds max length)
+    #[error("Request field '{field}' too large: {actual} bytes, max {max}")]
+    RequestFieldTooLarge {
+        /// Name of the field that exceeded the limit
+        field: String,
+        /// Actual size in bytes
+        actual: usize,
+        /// Maximum allowed size in bytes
+        max: usize,
+    },
     /// Multiple units provided
     #[error("Cannot have multiple units")]
     MultipleUnits,
@@ -1066,7 +1084,6 @@ pub enum ErrorCode {
     MaxInputsExceeded,
     /// The max number of outputs is exceeded
     MaxOutputsExceeded,
-
     // 12xxx - Keyset errors
     /// Keyset is not known (12001)
     KeysetNotFound,
