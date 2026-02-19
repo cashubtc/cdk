@@ -19,6 +19,7 @@ use super::{
     CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, Mint,
     PaymentMethod,
 };
+use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
@@ -346,6 +347,17 @@ impl Mint {
             method,
             extra,
         } = melt_request;
+
+        if !extra.is_null() {
+            let extra_str = extra.to_string();
+            if extra_str.len() > MAX_REQUEST_FIELD_LEN {
+                return Err(Error::RequestFieldTooLarge {
+                    field: "extra".to_string(),
+                    actual: extra_str.len(),
+                    max: MAX_REQUEST_FIELD_LEN,
+                });
+            }
+        }
 
         let ln = self
             .payment_processors

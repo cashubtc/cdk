@@ -59,6 +59,18 @@ impl Secret {
         Self(secret)
     }
 
+    /// Length of the secret string in bytes
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Check if the secret is empty
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// [`Secret`] as bytes
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {

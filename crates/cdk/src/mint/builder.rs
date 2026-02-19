@@ -71,8 +71,8 @@ impl MintBuilder {
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
             use_keyset_v2: None,
-            max_inputs: 100,
-            max_outputs: 100,
+            max_inputs: 1000,
+            max_outputs: 1000,
         }
     }
 
