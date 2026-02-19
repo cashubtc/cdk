@@ -331,10 +331,6 @@ pub trait SpendingConditionVerification {
         for proof in self.inputs() {
             // Try to extract spending conditions from the proof's secret
             if let Ok(spending_conditions) = super::SpendingConditions::try_from(&proof.secret) {
-                if proof.witness.is_none() {
-                    return Err(super::nut11::Error::InvalidSignature);
-                }
-
                 // Check for SIG_ALL flag in either P2PK or HTLC conditions
                 let has_sig_all = match spending_conditions {
                     super::SpendingConditions::P2PKConditions { conditions, .. } => conditions

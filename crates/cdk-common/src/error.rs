@@ -223,6 +223,16 @@ pub enum Error {
         /// Maximum allowed size in bytes
         max: usize,
     },
+    /// Request field content too large (description or extra exceeds max length)
+    #[error("Request field '{field}' too large: {actual} bytes, max {max}")]
+    RequestFieldTooLarge {
+        /// Name of the field that exceeded the limit
+        field: String,
+        /// Actual size in bytes
+        actual: usize,
+        /// Maximum allowed size in bytes
+        max: usize,
+    },
     /// Multiple units provided
     #[error("Cannot have multiple units")]
     MultipleUnits,

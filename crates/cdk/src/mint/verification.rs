@@ -9,6 +9,9 @@ use crate::cdk_database;
 /// Maximum allowed length in bytes for proof secret or witness content
 const MAX_PROOF_CONTENT_LEN: usize = 1024;
 
+/// Maximum allowed length in bytes for request fields (description, extra)
+pub(crate) const MAX_REQUEST_FIELD_LEN: usize = 1024;
+
 /// Verification result with typed amount
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Verification {

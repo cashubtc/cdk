@@ -17,6 +17,7 @@ use cdk_common::{
 use cdk_prometheus::METRICS;
 use tracing::instrument;
 
+use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
 use crate::mint::Verification;
 use crate::Mint;
 
@@ -271,6 +272,16 @@ impl Mint {
 
             let payment_options = match mint_quote_request {
                 MintQuoteRequest::Bolt11(bolt11_request) => {
+                    if let Some(ref desc) = bolt11_request.description {
+                        if desc.len() > MAX_REQUEST_FIELD_LEN {
+                            return Err(Error::RequestFieldTooLarge {
+                                field: "description".to_string(),
+                                actual: desc.len(),
+                                max: MAX_REQUEST_FIELD_LEN,
+                            });
+                        }
+                    }
+
                     let mint_ttl = self.quote_ttl().await?.mint_ttl;
 
                     let quote_expiry = unix_time() + mint_ttl;
@@ -295,6 +306,16 @@ impl Mint {
                     IncomingPaymentOptions::Bolt11(bolt11_options)
                 }
                 MintQuoteRequest::Bolt12(bolt12_request) => {
+                    if let Some(ref desc) = bolt12_request.description {
+                        if desc.len() > MAX_REQUEST_FIELD_LEN {
+                            return Err(Error::RequestFieldTooLarge {
+                                field: "description".to_string(),
+                                actual: desc.len(),
+                                max: MAX_REQUEST_FIELD_LEN,
+                            });
+                        }
+                    }
+
                     let description = bolt12_request.description;
 
                     let bolt12_options = Bolt12IncomingPaymentOptions {
@@ -306,6 +327,27 @@ impl Mint {
                     IncomingPaymentOptions::Bolt12(Box::new(bolt12_options))
                 }
                 MintQuoteRequest::Custom { method, request } => {
+                    if let Some(ref desc) = request.description {
+                        if desc.len() > MAX_REQUEST_FIELD_LEN {
+                            return Err(Error::RequestFieldTooLarge {
+                                field: "description".to_string(),
+                                actual: desc.len(),
+                                max: MAX_REQUEST_FIELD_LEN,
+                            });
+                        }
+                    }
+
+                    if !request.extra.is_null() {
+                        let extra_str = request.extra.to_string();
+                        if extra_str.len() > MAX_REQUEST_FIELD_LEN {
+                            return Err(Error::RequestFieldTooLarge {
+                                field: "extra".to_string(),
+                                actual: extra_str.len(),
+                                max: MAX_REQUEST_FIELD_LEN,
+                            });
+                        }
+                    }
+
                     let mint_ttl = self.quote_ttl().await?.mint_ttl;
                     let quote_expiry = unix_time() + mint_ttl;
 
