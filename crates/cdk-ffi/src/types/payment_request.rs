@@ -10,7 +10,8 @@ use super::proof::Proof;
 use crate::error::FfiError;
 
 /// Transport type for payment request delivery
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransportType {
     /// Nostr transport (privacy-preserving)
     Nostr,
@@ -37,7 +38,8 @@ impl From<TransportType> for cdk::nuts::TransportType {
 }
 
 /// Transport for payment request delivery
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transport {
     /// Transport type
     pub transport_type: TransportType,
@@ -71,7 +73,7 @@ impl From<Transport> for cdk::nuts::Transport {
 ///
 /// A payment request that can be shared to request Cashu tokens.
 /// Encoded as a string with the `creqA` prefix.
-#[derive(uniffi::Object)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Object))]
 pub struct PaymentRequest {
     inner: cdk::nuts::PaymentRequest,
 }
@@ -83,10 +85,10 @@ impl PaymentRequest {
     }
 }
 
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 impl PaymentRequest {
     /// Parse a payment request from its encoded string representation
-    #[uniffi::constructor]
+    #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
     pub fn from_string(encoded: String) -> Result<Arc<Self>, FfiError> {
         use std::str::FromStr;
         let inner = cdk::nuts::PaymentRequest::from_str(&encoded).map_err(FfiError::internal)?;
@@ -143,7 +145,8 @@ impl PaymentRequest {
 }
 
 /// Parameters for creating a NUT-18 payment request
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRequestParams {
     /// Optional amount to request (in smallest unit for the currency)
     pub amount: Option<u64>,
@@ -219,19 +222,19 @@ impl From<cdk::wallet::payment_request::CreateRequestParams> for CreateRequestPa
 }
 
 /// Decode a payment request from its encoded string representation
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_payment_request(encoded: String) -> Result<Arc<PaymentRequest>, FfiError> {
     PaymentRequest::from_string(encoded)
 }
 
 /// Encode CreateRequestParams to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_create_request_params(params: CreateRequestParams) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&params)?)
 }
 
 /// Decode CreateRequestParams from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_create_request_params(json: String) -> Result<CreateRequestParams, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
@@ -241,7 +244,7 @@ pub fn decode_create_request_params(json: String) -> Result<CreateRequestParams,
 /// Returned by `create_request` when the transport is `nostr`. Pass this to
 /// `wait_for_nostr_payment` to connect, subscribe, and receive the incoming
 /// payment on the specified relays.
-#[derive(uniffi::Object)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Object))]
 pub struct NostrWaitInfo {
     inner: cdk::wallet::payment_request::NostrWaitInfo,
 }
@@ -254,7 +257,7 @@ impl NostrWaitInfo {
     }
 }
 
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 impl NostrWaitInfo {
     /// Get the Nostr relays to connect to
     pub fn relays(&self) -> Vec<String> {
@@ -271,7 +274,7 @@ impl NostrWaitInfo {
 ///
 /// Contains the payment request and optionally the Nostr wait info
 /// if the transport was set to "nostr".
-#[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
 pub struct CreateRequestResult {
     /// The payment request to share with the payer
     pub payment_request: Arc<PaymentRequest>,
@@ -282,15 +285,15 @@ pub struct CreateRequestResult {
 /// Payment Request Payload
 ///
 /// Sent over Nostr or other transports.
-#[derive(uniffi::Object)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Object))]
 pub struct PaymentRequestPayload {
     inner: cdk::nuts::PaymentRequestPayload,
 }
 
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 impl PaymentRequestPayload {
     /// Decode PaymentRequestPayload from JSON string
-    #[uniffi::constructor]
+    #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
     pub fn from_string(json: String) -> Result<Arc<PaymentRequestPayload>, FfiError> {
         let inner: cdk::nuts::PaymentRequestPayload = serde_json::from_str(&json)?;
         Ok(Arc::new(PaymentRequestPayload { inner }))

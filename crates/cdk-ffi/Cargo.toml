@@ -16,42 +16,63 @@ name = "cdk_ffi"
 async-trait = { workspace = true }
 bip39 = { workspace = true }
 cdk = { workspace = true, default-features = false, features = ["wallet", "bip353", "nostr"] }
-cdk-sqlite = { workspace = true }
+cdk-sqlite = { workspace = true, optional = true }
 cdk-postgres = { workspace = true, optional = true }
 cdk-npubcash = { workspace = true, optional = true }
 nostr-sdk = { workspace = true, optional = true }
 futures = { workspace = true }
 once_cell = { workspace = true }
 rand = { workspace = true }
-cdk-sql-common = { workspace = true }
+cdk-sql-common = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
-uniffi = { version = "0.29", features = ["cli", "tokio"] }
+tokio = { workspace = true, features = ["sync"] }
+uniffi = { version = "0.29", features = ["cli", "tokio"], optional = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 cdk-common.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 
+# WASM dependencies
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["Window", "Storage"] }
+base64 = { version = "0.22", optional = true }
+tracing-web = { version = "0.1", optional = true }
+
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
 log = "0.4"
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [features]
-default = ["postgres", "npubcash"]
+default = ["uniffi-bindings", "postgres", "npubcash"]
+# UniFFI native bindings (Swift, Kotlin, Python)
+uniffi-bindings = ["dep:uniffi", "dep:cdk-sqlite", "dep:cdk-sql-common"]
+# WebAssembly target
+wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:console_error_panic_hook", "dep:web-sys", "dep:base64", "dep:tracing-web"]
 # Enable Postgres-backed wallet database support in FFI
-postgres = ["cdk-postgres"]
+postgres = ["dep:cdk-postgres"]
 # Enable NpubCash client bindings
-npubcash = ["cdk-npubcash", "nostr-sdk"]
+npubcash = ["dep:cdk-npubcash", "dep:nostr-sdk"]
 
 [dev-dependencies]
 
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
+required-features = ["uniffi-bindings"]
 
 [lints]
 workspace = true

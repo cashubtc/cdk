@@ -198,8 +198,8 @@ pub async fn post_create_bolt11(
                 "Web interface: Successfully created BOLT11 invoice with payment_hash={}",
                 invoice.payment_hash()
             );
-            let current_time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let current_time = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
 
@@ -280,8 +280,8 @@ pub async fn post_create_bolt12(
                 "Web interface: Successfully created BOLT12 offer with offer_id={}",
                 offer.id()
             );
-            let current_time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let current_time = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
 

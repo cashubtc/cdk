@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::FfiError;
 
 /// FFI-compatible Amount type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Amount {
     pub value: u64,
@@ -91,7 +92,8 @@ impl From<Amount> for CdkAmount {
 }
 
 /// FFI-compatible Currency Unit
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CurrencyUnit {
     Sat,
     Msat,
@@ -129,7 +131,8 @@ impl From<CurrencyUnit> for CdkCurrencyUnit {
 }
 
 /// FFI-compatible SplitTarget
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SplitTarget {
     /// Default target; least amount of proofs
     None,

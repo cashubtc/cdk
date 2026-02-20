@@ -489,6 +489,22 @@ check-wasm *ARGS="--target wasm32-unknown-unknown":
     echo
   done
 
+# Check cdk-ffi compiles for WASM target
+check-wasm-ffi:
+  cargo check --target wasm32-unknown-unknown -p cdk-ffi --no-default-features --features wasm
+
+# Build cdk-ffi WASM package using wasm-pack
+wasm-build mode="--dev":
+  wasm-pack build crates/cdk-ffi --target web {{mode}} --no-default-features --features wasm
+
+# Build WASM and serve the wallet web app on http://localhost:8080
+wasm-serve mode="--dev": (wasm-build mode)
+  #!/usr/bin/env bash
+  set -euo pipefail
+  ln -sfn ../pkg crates/cdk-ffi/web/pkg
+  echo "Serving CDK wallet at http://localhost:8080"
+  python3 -m http.server 8080 --directory crates/cdk-ffi/web
+
 release m="":
   #!/usr/bin/env bash
   set -euo pipefail

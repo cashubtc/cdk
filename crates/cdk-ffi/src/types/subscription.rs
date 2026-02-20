@@ -9,7 +9,8 @@ use super::quote::{MeltQuoteBolt11Response, MintQuoteBolt11Response};
 use crate::error::FfiError;
 
 /// FFI-compatible SubscriptionKind
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SubscriptionKind {
     /// Bolt 11 Melt Quote
     Bolt11MeltQuote,
@@ -51,7 +52,8 @@ impl From<cdk::nuts::nut17::Kind> for SubscriptionKind {
 }
 
 /// FFI-compatible SubscribeParams
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscribeParams {
     /// Subscription kind
     pub kind: SubscriptionKind,
@@ -84,19 +86,19 @@ impl SubscribeParams {
 }
 
 /// Decode SubscribeParams from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_subscribe_params(json: String) -> Result<SubscribeParams, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode SubscribeParams to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_subscribe_params(params: SubscribeParams) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&params)?)
 }
 
 /// FFI-compatible ActiveSubscription
-#[derive(uniffi::Object)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Object))]
 pub struct ActiveSubscription {
     inner: std::sync::Arc<tokio::sync::Mutex<cdk::wallet::subscription::ActiveSubscription>>,
     pub sub_id: String,
@@ -114,7 +116,7 @@ impl ActiveSubscription {
     }
 }
 
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export(async_runtime = "tokio"))]
 impl ActiveSubscription {
     /// Get the subscription ID
     pub fn id(&self) -> String {
@@ -139,7 +141,8 @@ impl ActiveSubscription {
 }
 
 /// FFI-compatible NotificationPayload
-#[derive(Debug, Clone, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone)]
 pub enum NotificationPayload {
     /// Proof state update
     ProofState { proof_states: Vec<ProofStateUpdate> },

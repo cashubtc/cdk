@@ -8,7 +8,8 @@ use cdk::wallet::{
 use super::MintUrl;
 
 /// Options for backup operations
-#[derive(Debug, Clone, Default, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Default)]
 pub struct BackupOptions {
     /// Client name to include in the event tags
     pub client: Option<String>,
@@ -25,7 +26,8 @@ impl From<BackupOptions> for CdkBackupOptions {
 }
 
 /// Options for restore operations
-#[derive(Debug, Clone, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone)]
 pub struct RestoreOptions {
     /// Timeout in seconds for waiting for relay responses
     pub timeout_secs: u64,
@@ -44,7 +46,8 @@ impl From<RestoreOptions> for CdkRestoreOptions {
 }
 
 /// Result of a backup operation
-#[derive(Debug, Clone, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone)]
 pub struct BackupResult {
     /// The event ID of the published backup (hex encoded)
     pub event_id: String,
@@ -65,7 +68,8 @@ impl From<CdkBackupResult> for BackupResult {
 }
 
 /// Result of a restore operation
-#[derive(Debug, Clone, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone)]
 pub struct RestoreResult {
     /// The restored mint backup data
     pub backup: MintBackup,
@@ -86,7 +90,8 @@ impl From<CdkRestoreResult> for RestoreResult {
 }
 
 /// Mint backup data containing the list of mints and timestamp
-#[derive(Debug, Clone, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone)]
 pub struct MintBackup {
     /// List of mint URLs in the backup
     pub mints: Vec<MintUrl>,

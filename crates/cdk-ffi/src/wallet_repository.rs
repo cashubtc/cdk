@@ -20,7 +20,7 @@ pub struct WalletRepository {
 #[uniffi::export(async_runtime = "tokio")]
 impl WalletRepository {
     /// Create a new WalletRepository from mnemonic using WalletDatabaseFfi trait
-    #[uniffi::constructor]
+    #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
     pub fn new(
         mnemonic: String,
         db: Arc<dyn crate::database::WalletDatabase>,
@@ -63,7 +63,7 @@ impl WalletRepository {
     }
 
     /// Create a new WalletRepository with proxy configuration
-    #[uniffi::constructor]
+    #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
     pub fn new_with_proxy(
         mnemonic: String,
         db: Arc<dyn crate::database::WalletDatabase>,
@@ -247,7 +247,8 @@ impl WalletRepository {
 /// Token data FFI type
 ///
 /// Contains information extracted from a parsed token.
-#[derive(Debug, Clone, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone)]
 pub struct TokenData {
     /// The mint URL from the token
     pub mint_url: MintUrl,

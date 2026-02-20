@@ -38,7 +38,7 @@ impl WalletPostgresDatabase {
     /// Example URL:
     ///  "host=localhost user=test password=test dbname=testdb port=5433 schema=wallet sslmode=prefer"
     #[cfg(feature = "postgres")]
-    #[uniffi::constructor]
+    #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
     pub fn new(url: String) -> Result<Arc<Self>, FfiError> {
         let inner = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| {

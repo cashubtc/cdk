@@ -1311,8 +1311,8 @@ async fn test_saga_content_validation() {
     }
 
     // STEP 8: Verify timestamps are set and reasonable
-    let current_timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let current_timestamp = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
 

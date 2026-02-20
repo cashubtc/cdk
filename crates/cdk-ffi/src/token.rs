@@ -7,7 +7,8 @@ use crate::error::FfiError;
 use crate::{Amount, CurrencyUnit, KeySetInfo, MintUrl, Proofs};
 
 /// FFI-compatible Token
-#[derive(Debug, uniffi::Object)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Object))]
+#[derive(Debug)]
 pub struct Token {
     pub(crate) inner: cdk::nuts::Token,
 }
@@ -40,10 +41,10 @@ impl From<Token> for cdk::nuts::Token {
     }
 }
 
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 impl Token {
     /// Create a new Token from string
-    #[uniffi::constructor]
+    #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
     pub fn from_string(encoded_token: String) -> Result<Token, FfiError> {
         let token = cdk::nuts::Token::from_str(&encoded_token)
             .map_err(|e| FfiError::internal(format!("Invalid token: {}", e)))?;
@@ -96,14 +97,14 @@ impl Token {
     }
 
     /// Decode token from raw bytes
-    #[uniffi::constructor]
+    #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
     pub fn from_raw_bytes(bytes: Vec<u8>) -> Result<Token, FfiError> {
         let token = cdk::nuts::Token::try_from(&bytes)?;
         Ok(Token { inner: token })
     }
 
     /// Decode token from string representation
-    #[uniffi::constructor]
+    #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
     pub fn decode(encoded_token: String) -> Result<Token, FfiError> {
         encoded_token.parse()
     }

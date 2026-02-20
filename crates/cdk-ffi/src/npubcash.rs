@@ -14,12 +14,12 @@ use crate::types::MintQuote;
 ///
 /// This client provides access to the NpubCash API for fetching quotes
 /// and managing user settings.
-#[derive(uniffi::Object)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Object))]
 pub struct NpubCashClient {
     inner: Arc<CdkNpubCashClient>,
 }
 
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export(async_runtime = "tokio"))]
 impl NpubCashClient {
     /// Create a new NpubCash client
     ///
@@ -33,7 +33,7 @@ impl NpubCashClient {
     /// # Errors
     ///
     /// Returns an error if the secret key is invalid or cannot be parsed
-    #[uniffi::constructor]
+    #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
     pub fn new(base_url: String, nostr_secret_key: String) -> Result<Self, FfiError> {
         let keys = parse_nostr_secret_key(&nostr_secret_key)?;
         let auth_provider = Arc::new(JwtAuthProvider::new(base_url.clone(), keys));
@@ -91,7 +91,8 @@ impl NpubCashClient {
 }
 
 /// A quote from the NpubCash service
-#[derive(Debug, Clone, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone)]
 pub struct NpubCashQuote {
     /// Unique identifier for the quote
     pub id: String,
@@ -145,7 +146,7 @@ impl From<cdk_npubcash::Quote> for NpubCashQuote {
 /// # Returns
 ///
 /// A MintQuote that can be used with wallet minting functions
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn npubcash_quote_to_mint_quote(quote: NpubCashQuote) -> MintQuote {
     let cdk_quote = cdk_npubcash::Quote {
         id: quote.id,
@@ -165,7 +166,8 @@ pub fn npubcash_quote_to_mint_quote(quote: NpubCashQuote) -> MintQuote {
 }
 
 /// Response from updating user settings on NpubCash
-#[derive(Debug, Clone, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone)]
 pub struct NpubCashUserResponse {
     /// Whether the request resulted in an error
     pub error: bool,
@@ -204,7 +206,7 @@ impl From<cdk_npubcash::UserResponse> for NpubCashUserResponse {
 /// # Errors
 ///
 /// Returns an error if the seed is too short or key derivation fails
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn npubcash_derive_secret_key_from_seed(seed: Vec<u8>) -> Result<String, FfiError> {
     if seed.len() < 32 {
         return Err(FfiError::internal(
@@ -234,7 +236,7 @@ pub fn npubcash_derive_secret_key_from_seed(seed: Vec<u8>) -> Result<String, Ffi
 /// # Errors
 ///
 /// Returns an error if the secret key is invalid
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn npubcash_get_pubkey(nostr_secret_key: String) -> Result<String, FfiError> {
     let keys = parse_nostr_secret_key(&nostr_secret_key)?;
     Ok(keys.public_key().to_hex())
