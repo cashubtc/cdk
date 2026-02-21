@@ -227,7 +227,7 @@ pub struct HttpClientBuilder;
 impl HttpClientBuilder {
     /// Accept invalid TLS certificates (not supported on WASM)
     pub fn danger_accept_invalid_certs(self, _accept: bool) -> Self {
-        self
+        panic!("danger_accept_invalid_certs configuration is not supported on WASM")
     }
 
     /// Set a proxy URL (not supported on WASM)
