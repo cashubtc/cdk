@@ -47,8 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let one_hour_ago = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
+    let one_hour_ago = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)?
         .as_secs()
         - 3600;
 

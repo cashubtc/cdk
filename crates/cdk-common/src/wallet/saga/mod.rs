@@ -204,8 +204,8 @@ impl WalletSaga {
         unit: CurrencyUnit,
         data: OperationData,
     ) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
@@ -238,8 +238,8 @@ impl WalletSaga {
     pub fn update_state(&mut self, state: WalletSagaState) {
         self.state = state;
         self.kind = state.kind();
-        self.updated_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        self.updated_at = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         self.version += 1;
