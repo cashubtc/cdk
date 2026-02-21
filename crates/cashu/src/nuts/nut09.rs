@@ -22,9 +22,6 @@ pub struct RestoreResponse {
     pub outputs: Vec<BlindedMessage>,
     /// Signatures
     pub signatures: Vec<BlindSignature>,
-    /// Promises
-    // Temp compatibility with cashu-ts
-    pub promises: Option<Vec<BlindSignature>>,
 }
 
 mod test {
