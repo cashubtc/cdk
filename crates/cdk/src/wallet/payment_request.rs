@@ -274,8 +274,8 @@ impl WalletRepository {
             },
         };
 
-        // Get the list of mints accepted by the payment request (None means any mint is accepted)
-        let accepted_mints = payment_request.mints.as_ref();
+        // Get the list of mints accepted by the payment request (empty means any mint is accepted)
+        let accepted_mints = &payment_request.mints;
 
         // Get the unit from the payment request, defaulting to Sat
         let unit = payment_request.unit.clone().unwrap_or(CurrencyUnit::Sat);
@@ -283,13 +283,11 @@ impl WalletRepository {
         // Select the wallet to use for payment
         let selected_wallet = if let Some(specified_mint) = &mint_url {
             // User specified a mint - verify it's accepted by the payment request
-            if let Some(accepted) = accepted_mints {
-                if !accepted.contains(specified_mint) {
-                    return Err(Error::Custom(format!(
-                        "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
-                        specified_mint, accepted
-                    )));
-                }
+            if !accepted_mints.is_empty() && !accepted_mints.contains(specified_mint) {
+                return Err(Error::Custom(format!(
+                    "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
+                    specified_mint, accepted_mints
+                )));
             }
 
             // Get the wallet for the specified mint and unit
@@ -307,10 +305,8 @@ impl WalletRepository {
                 }
 
                 // Check if this mint is accepted by the payment request
-                let is_accepted = match accepted_mints {
-                    Some(accepted) => accepted.contains(&wallet_key.mint_url),
-                    None => true, // No mints specified means any mint is accepted
-                };
+                let is_accepted =
+                    accepted_mints.is_empty() || accepted_mints.contains(&wallet_key.mint_url);
 
                 if !is_accepted {
                     continue;
@@ -509,7 +505,7 @@ impl WalletRepository {
                         target: nprofile.to_bech32().map_err(|e| {
                             Error::Custom(format!("Couldn't convert nprofile to bech32: {e}"))
                         })?,
-                        tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
+                        tags: vec![vec!["n".to_string(), "17".to_string()]],
                     };
 
                     (
@@ -526,7 +522,7 @@ impl WalletRepository {
                         let http_transport = Transport {
                             _type: TransportType::HttpPost,
                             target: url.clone(),
-                            tags: None,
+                            tags: vec![],
                         };
                         (vec![http_transport], None)
                     } else {
@@ -547,7 +543,7 @@ impl WalletRepository {
             amount: params.amount.map(Amount::from),
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
-            mints: Some(mints),
+            mints,
             description: params.description,
             transports,
             nut10,
@@ -597,7 +593,7 @@ impl WalletRepository {
                     let http_transport = Transport {
                         _type: TransportType::HttpPost,
                         target: url.clone(),
-                        tags: None,
+                        tags: vec![],
                     };
                     vec![http_transport]
                 } else {
@@ -617,7 +613,7 @@ impl WalletRepository {
             amount: params.amount.map(Amount::from),
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
-            mints: Some(mints),
+            mints,
             description: params.description,
             transports,
             nut10,
