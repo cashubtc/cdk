@@ -368,7 +368,6 @@ mod tests {
         mock_client._set_restore_response(Ok(RestoreResponse {
             signatures: vec![],
             outputs: vec![],
-            promises: None,
         }));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
