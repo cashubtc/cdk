@@ -1351,6 +1351,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "web-time",
 ]
 
 [[package]]
@@ -1462,6 +1463,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "urlencoding",
+ "web-time",
 ]
 
 [[package]]
@@ -1589,6 +1591,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "web-time",
 ]
 
 [[package]]
