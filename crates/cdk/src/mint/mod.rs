@@ -1015,8 +1015,7 @@ impl Mint {
 
             Ok(RestoreResponse {
                 outputs,
-                signatures: signatures.clone(),
-                promises: Some(signatures),
+                signatures,
             })
         }
         .await;
