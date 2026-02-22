@@ -30,6 +30,7 @@ rust-embed = "8.5.0"
 serde_urlencoded = "0.7"
 urlencoding = "2.1"
 bip39.workspace = true
+web-time.workspace = true
 
 [lints]
 workspace = true

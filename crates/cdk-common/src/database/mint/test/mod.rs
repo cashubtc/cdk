@@ -5,11 +5,11 @@
 #![allow(clippy::unwrap_used, clippy::missing_panics_doc)]
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 // For derivation path parsing
 use bitcoin::bip32::DerivationPath;
 use cashu::CurrencyUnit;
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
 use crate::common::IssuerVersion;

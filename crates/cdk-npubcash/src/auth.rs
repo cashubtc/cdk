@@ -3,11 +3,12 @@
 //! Implements NIP-98 and JWT authentication
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use base64::Engine;
 use nostr_sdk::{EventBuilder, Keys, Kind, Tag};
 use tokio::sync::RwLock;
+use web_time::SystemTime;
 
 use crate::types::Nip98Response;
 use crate::{Error, Result};

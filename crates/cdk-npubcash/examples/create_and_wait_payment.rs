@@ -104,8 +104,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::debug!("Starting quote polling with 5 second interval");
 
     // Get initial timestamp for polling
-    let mut last_timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
+    let mut last_timestamp = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)?
         .as_secs();
 
     // Poll for quotes and handle Ctrl+C

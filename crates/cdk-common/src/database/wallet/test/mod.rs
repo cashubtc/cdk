@@ -8,11 +8,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use cashu::nut00::KnownMethod;
 use cashu::secret::Secret;
 use cashu::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
 use crate::mint_url::MintUrl;
