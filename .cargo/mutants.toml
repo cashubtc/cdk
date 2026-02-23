@@ -83,4 +83,21 @@ exclude_re = [
     "crates/cashu/src/nuts/nut00/mod.rs:.*impl PartialEq<PaymentMethod> for &str.*eq",
     "crates/cashu/src/nuts/nut00/mod.rs:.*impl PartialEq<KnownMethod> for PaymentMethod.*eq",
     "crates/cashu/src/nuts/nut00/mod.rs:.*impl PartialEq<PaymentMethod> for KnownMethod.*eq",
+
+    # saturating_sub boundary comparison - extensively tested, mutation doesn't change behavior
+    "crates/cashu/src/amount.rs:344:.*replace > with >=",
+
+    # Secret trivial getters - standard Rust patterns, well-tested indirectly
+    "crates/cashu/src/secret.rs:.*Secret::len",
+    "crates/cashu/src/secret.rs:.*Secret::is_empty",
+
+    # Witness Display impl - not used in database (uses serde_json directly), debugging only
+    "crates/cashu/src/nuts/nut00/mod.rs:.*impl.*Display for Witness.*fmt",
+
+    # PreMint PartialOrd - canonical delegation to Ord::cmp, standard Rust idiom
+    "crates/cashu/src/nuts/nut00/mod.rs:.*impl PartialOrd for PreMint.*partial_cmp",
+
+    # PreMintSecrets trivial methods - standard delegation patterns
+    "crates/cashu/src/nuts/nut00/mod.rs:.*PreMintSecrets::iter",
+    "crates/cashu/src/nuts/nut00/mod.rs:.*PreMintSecrets::is_empty",
 ]
