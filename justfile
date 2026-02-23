@@ -325,6 +325,50 @@ typos:
 typos-fix:
   just typos -w
 
+# Generate MSRV-compatible Cargo.lock.msrv (run from MSRV shell: nix develop .#msrv)
+gen-msrv-lock:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  
+  # Get MSRV from Cargo.toml
+  MSRV=$(grep -oP 'rust-version\s*=\s*"\K[^"]+' Cargo.toml | head -1)
+  
+  # Verify we're in the MSRV shell by checking Rust version
+  RUST_VERSION=$(rustc --version | grep -oP '\d+\.\d+\.\d+')
+  if [[ "$RUST_VERSION" != "$MSRV" ]]; then
+    echo "❌ Error: Must run from MSRV shell"
+    echo "   Current Rust version: $RUST_VERSION"
+    echo "   Expected MSRV: $MSRV"
+    echo ""
+    echo "Run: nix develop .#msrv"
+    echo "Then run this command again."
+    exit 1
+  fi
+  
+  echo "🔧 Generating MSRV lockfile..."
+  
+  # Backup original files
+  cp Cargo.toml Cargo.toml.bak
+  cp Cargo.lock Cargo.lock.bak
+  
+  # Modify Cargo.toml to exclude cdk-integration-tests
+  # This removes ln-regtest-rs (and other integration-test-only deps) from the lockfile
+  sed -i 's|"fuzz",|"fuzz",\n    "crates/cdk-integration-tests",|' Cargo.toml
+  
+  # Run cargo update (uses MSRV shell's pinned versions from shellHook)
+  echo "📦 Updating lockfile without integration tests..."
+  cargo update
+  
+  # Copy to MSRV lockfile
+  cp Cargo.lock Cargo.lock.msrv
+  echo "✅ Created Cargo.lock.msrv"
+  
+  # Restore original files
+  mv Cargo.toml.bak Cargo.toml
+  mv Cargo.lock.bak Cargo.lock
+  
+  echo "✅ MSRV lockfile generation complete!"
+
 # run all linting checks (format check, typos, nix format)
 lint:
   #!/usr/bin/env bash
