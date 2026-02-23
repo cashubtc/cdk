@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::FfiError;
 
 /// Type of Lightning payment request
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PaymentType {
     /// Bolt11 invoice
     Bolt11,
@@ -32,7 +33,8 @@ impl From<PaymentType> for cdk::invoice::PaymentType {
 }
 
 /// Decoded invoice or offer information
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecodedInvoice {
     /// Type of payment request (Bolt11 or Bolt12)
     pub payment_type: PaymentType,
@@ -89,7 +91,7 @@ impl From<DecodedInvoice> for cdk::invoice::DecodedInvoice {
 ///     PaymentType.BOLT12 -> println("Bolt12 offer")
 /// }
 /// ```
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_invoice(invoice_str: String) -> Result<DecodedInvoice, FfiError> {
     let decoded = cdk::invoice::decode_invoice(&invoice_str)?;
     Ok(decoded.into())

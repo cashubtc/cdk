@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CDK Wallet</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; padding: 20px; max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 1.4em; margin-bottom: 16px; color: #fff; }
+  h2 { font-size: 1.1em; margin: 16px 0 8px; color: #ccc; }
+  .section { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+  label { display: block; font-size: 0.85em; color: #999; margin-bottom: 4px; }
+  input, textarea { width: 100%; padding: 8px; background: #111; border: 1px solid #444; border-radius: 4px; color: #e0e0e0; font-family: monospace; font-size: 0.9em; margin-bottom: 8px; }
+  textarea { resize: vertical; min-height: 60px; }
+  button { padding: 8px 16px; background: #2563eb; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9em; margin-right: 6px; margin-bottom: 6px; }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #333; color: #666; cursor: not-allowed; }
+  .btn-secondary { background: #374151; }
+  .btn-secondary:hover { background: #4b5563; }
+  .btn-danger { background: #dc2626; }
+  .btn-danger:hover { background: #b91c1c; }
+  #log { background: #050505; border: 1px solid #333; border-radius: 4px; padding: 12px; font-family: monospace; font-size: 0.8em; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: #9ca3af; }
+  .balance { font-size: 1.8em; font-weight: bold; color: #22c55e; }
+  .balance-label { font-size: 0.8em; color: #666; }
+  .hidden { display: none; }
+  .status { font-size: 0.8em; padding: 4px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px; }
+  .status-ok { background: #14532d; color: #4ade80; }
+  .status-err { background: #450a0a; color: #f87171; }
+  .status-loading { background: #1e1b4b; color: #818cf8; }
+  .row { display: flex; gap: 8px; align-items: end; }
+  .row > * { flex: 1; }
+  #mnemonic-display { font-family: monospace; font-size: 0.85em; padding: 8px; background: #111; border: 1px solid #444; border-radius: 4px; margin-bottom: 8px; word-break: break-word; }
+</style>
+</head>
+<body>
+
+<h1>CDK Wallet (WASM)</h1>
+
+<!-- Setup -->
+<div id="setup-section" class="section">
+  <h2>Setup</h2>
+  <label for="mint-url">Mint URL</label>
+  <input id="mint-url" value="https://testnut.cashu.space" placeholder="https://mint.example.com">
+
+  <label for="mnemonic">Mnemonic (12 words)</label>
+  <div id="mnemonic-display"></div>
+  <button onclick="newMnemonic()">Generate New Mnemonic</button>
+  <input id="mnemonic" placeholder="Or paste your own mnemonic here">
+
+  <br>
+  <button onclick="initWallet()" id="btn-init">Connect Wallet</button>
+  <span id="init-status"></span>
+</div>
+
+<!-- Wallet -->
+<div id="wallet-section" class="hidden">
+
+  <!-- Balance -->
+  <div class="section">
+    <div class="balance-label">Balance</div>
+    <div class="balance" id="balance">--</div>
+    <div style="margin-top:4px">
+      <span class="balance-label">Pending: <span id="pending-balance">--</span></span> &nbsp;
+      <span class="balance-label">Reserved: <span id="reserved-balance">--</span></span>
+    </div>
+    <br>
+    <button onclick="refreshBalance()">Refresh Balance</button>
+    <button onclick="refreshKeysets()" class="btn-secondary">Refresh Keysets</button>
+  </div>
+
+  <!-- Mint Info -->
+  <div class="section">
+    <h2>Mint Info</h2>
+    <button onclick="fetchMintInfo()">Fetch Mint Info</button>
+    <pre id="mint-info" style="font-size:0.75em; margin-top:8px; max-height:150px; overflow:auto;"></pre>
+  </div>
+
+  <!-- Mint (receive from Lightning) -->
+  <div class="section">
+    <h2>Mint Tokens</h2>
+    <div class="row">
+      <div>
+        <label for="mint-amount">Amount (sats)</label>
+        <input id="mint-amount" type="number" value="21" min="1">
+      </div>
+    </div>
+    <button onclick="createMintQuote()">Get Invoice</button>
+    <div id="mint-quote-info" class="hidden" style="margin-top:8px;">
+      <label>Pay this invoice:</label>
+      <textarea id="mint-invoice" readonly></textarea>
+      <button onclick="mintTokens()">Mint Tokens</button>
+      <button onclick="checkQuote()" class="btn-secondary">Check Quote</button>
+    </div>
+  </div>
+
+  <!-- Send -->
+  <div class="section">
+    <h2>Send</h2>
+    <div class="row">
+      <div>
+        <label for="send-amount">Amount (sats)</label>
+        <input id="send-amount" type="number" value="1" min="1">
+      </div>
+    </div>
+    <button onclick="sendTokens()">Send</button>
+    <div id="send-result" class="hidden" style="margin-top:8px;">
+      <label>Token:</label>
+      <textarea id="send-token" readonly></textarea>
+    </div>
+  </div>
+
+  <!-- Receive -->
+  <div class="section">
+    <h2>Receive</h2>
+    <label for="receive-token">Cashu Token</label>
+    <textarea id="receive-token" placeholder="cashuA... or cashuB..."></textarea>
+    <button onclick="receiveToken()">Receive</button>
+  </div>
+
+  <!-- Transactions -->
+  <div class="section">
+    <h2>Transactions</h2>
+    <button onclick="listTransactions()">List Transactions</button>
+    <pre id="tx-list" style="font-size:0.75em; margin-top:8px; max-height:200px; overflow:auto;"></pre>
+  </div>
+</div>
+
+<!-- Log -->
+<div class="section" style="margin-top:16px;">
+  <h2>Log</h2>
+  <div id="log"></div>
+</div>
+
+<script type="module">
+import init, { Wallet, generateMnemonic } from './pkg/cdk_ffi.js';
+
+let wallet = null;
+let currentQuoteId = null;
+
+const $ = id => document.getElementById(id);
+
+function log(msg) {
+  const el = $('log');
+  const ts = new Date().toLocaleTimeString();
+  el.textContent += `[${ts}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(id, text, type) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = `status status-${type}`;
+}
+
+// Initialize WASM
+await init();
+log('WASM initialized');
+
+// Expose functions to window for onclick handlers
+window.newMnemonic = function() {
+  try {
+    const mnemonic = generateMnemonic();
+    $('mnemonic-display').textContent = mnemonic;
+    $('mnemonic').value = mnemonic;
+    log('Generated new mnemonic');
+  } catch (e) {
+    log('Error generating mnemonic: ' + e);
+  }
+};
+
+// Generate a default mnemonic on load
+window.newMnemonic();
+
+window.initWallet = async function() {
+  const mintUrl = $('mint-url').value.trim();
+  const mnemonic = $('mnemonic').value.trim() || $('mnemonic-display').textContent.trim();
+
+  if (!mintUrl || !mnemonic) {
+    log('Please provide mint URL and mnemonic');
+    return;
+  }
+
+  setStatus('init-status', 'Connecting...', 'loading');
+  $('btn-init').disabled = true;
+
+  try {
+    wallet = new Wallet(mintUrl, "Sat", mnemonic, { target_proof_count: 3 });
+    log(`Wallet created for ${mintUrl}`);
+
+    // Load mint info to verify connection
+    const info = await wallet.loadMintInfo();
+    log('Connected to mint: ' + (info.name || mintUrl));
+
+    setStatus('init-status', 'Connected', 'ok');
+    $('wallet-section').classList.remove('hidden');
+
+    await refreshBalance();
+  } catch (e) {
+    log('Error: ' + e);
+    setStatus('init-status', 'Failed: ' + e, 'err');
+    $('btn-init').disabled = false;
+  }
+};
+
+window.refreshBalance = async function() {
+  try {
+    const balance = await wallet.totalBalance();
+    const pending = await wallet.totalPendingBalance();
+    const reserved = await wallet.totalReservedBalance();
+    $('balance').textContent = (balance?.value ?? balance ?? 0) + ' sat';
+    $('pending-balance').textContent = (pending?.value ?? pending ?? 0) + ' sat';
+    $('reserved-balance').textContent = (reserved?.value ?? reserved ?? 0) + ' sat';
+  } catch (e) {
+    log('Balance error: ' + e);
+  }
+};
+
+window.refreshKeysets = async function() {
+  try {
+    const keysets = await wallet.refreshKeysets();
+    log('Refreshed ' + keysets.length + ' keysets');
+    await refreshBalance();
+  } catch (e) {
+    log('Keyset error: ' + e);
+  }
+};
+
+window.fetchMintInfo = async function() {
+  try {
+    const info = await wallet.fetchMintInfo();
+    $('mint-info').textContent = JSON.stringify(info, null, 2);
+    log('Fetched mint info');
+  } catch (e) {
+    log('Mint info error: ' + e);
+  }
+};
+
+window.createMintQuote = async function() {
+  try {
+    const amount = parseInt($('mint-amount').value);
+    if (!amount || amount <= 0) { log('Invalid amount'); return; }
+
+    log(`Requesting mint quote for ${amount} sats...`);
+    const quote = await wallet.mintQuote("Bolt11", amount, null, null);
+    currentQuoteId = quote.id;
+    $('mint-invoice').value = quote.request || '';
+    $('mint-quote-info').classList.remove('hidden');
+    log('Mint quote received: ' + quote.id);
+    log('State: ' + quote.state);
+  } catch (e) {
+    log('Mint quote error: ' + e);
+  }
+};
+
+window.checkQuote = async function() {
+  if (!currentQuoteId) { log('No active quote'); return; }
+  try {
+    const quote = await wallet.checkMintQuote(currentQuoteId);
+    log('Quote state: ' + quote.state);
+  } catch (e) {
+    log('Check quote error: ' + e);
+  }
+};
+
+window.mintTokens = async function() {
+  if (!currentQuoteId) { log('No active quote'); return; }
+  try {
+    log('Minting tokens...');
+    const proofs = await wallet.mint(currentQuoteId, "None", null);
+    log('Minted ' + (proofs?.length || 0) + ' proofs');
+    currentQuoteId = null;
+    $('mint-quote-info').classList.add('hidden');
+    await refreshBalance();
+  } catch (e) {
+    log('Mint error: ' + e);
+  }
+};
+
+window.sendTokens = async function() {
+  try {
+    const amount = parseInt($('send-amount').value);
+    if (!amount || amount <= 0) { log('Invalid amount'); return; }
+
+    log(`Sending ${amount} sats...`);
+    const token = await wallet.send(
+      { value: amount },
+      {
+        memo: null,
+        conditions: null,
+        amount_split_target: "None",
+        send_kind: "OnlineExact",
+        include_fee: false,
+        max_proofs: null,
+        metadata: {},
+      },
+      null
+    );
+    $('send-token').value = token;
+    $('send-result').classList.remove('hidden');
+    log('Sent! Token generated.');
+    await refreshBalance();
+  } catch (e) {
+    log('Send error: ' + e);
+  }
+};
+
+window.receiveToken = async function() {
+  try {
+    const token = $('receive-token').value.trim();
+    if (!token) { log('Please paste a token'); return; }
+
+    log('Receiving token...');
+    const amount = await wallet.receive(token, {
+      amount_split_target: "None",
+      p2pk_signing_keys: [],
+      preimages: [],
+      metadata: {},
+    });
+    log('Received: ' + JSON.stringify(amount));
+    $('receive-token').value = '';
+    await refreshBalance();
+  } catch (e) {
+    log('Receive error: ' + e);
+  }
+};
+
+window.listTransactions = async function() {
+  try {
+    const txs = await wallet.listTransactions(null);
+    if (!txs || txs.length === 0) {
+      $('tx-list').textContent = 'No transactions';
+    } else {
+      $('tx-list').textContent = txs.map(tx =>
+        `${tx.direction} ${tx.amount?.value ?? tx.amount} sat - ${tx.status || ''}`
+      ).join('\n');
+    }
+    log('Listed ' + (txs?.length || 0) + ' transactions');
+  } catch (e) {
+    log('Transaction list error: ' + e);
+  }
+};
+</script>
+</body>
+</html>

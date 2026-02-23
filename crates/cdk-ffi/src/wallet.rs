@@ -4,7 +4,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
-use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
+use cdk::wallet::Wallet as CdkWallet;
+#[cfg(feature = "uniffi-bindings")]
+use cdk::wallet::WalletBuilder as CdkWalletBuilder;
 
 use crate::error::FfiError;
 use crate::token::Token;
@@ -12,8 +14,8 @@ use crate::types::payment_request::PaymentRequest;
 use crate::types::*;
 
 /// FFI-compatible Wallet
-
-#[derive(uniffi::Object)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Object))]
+#[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
 pub struct Wallet {
     inner: Arc<CdkWallet>,
 }
@@ -25,7 +27,8 @@ impl Wallet {
     }
 }
 
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg(feature = "uniffi-bindings")]
+#[uniffi::export]
 impl Wallet {
     /// Create a new Wallet from mnemonic using WalletDatabaseFfi trait
     #[uniffi::constructor]
@@ -59,7 +62,10 @@ impl Wallet {
             inner: Arc::new(wallet),
         })
     }
+}
 
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export(async_runtime = "tokio"))]
+impl Wallet {
     /// Get the mint URL
     pub fn mint_url(&self) -> MintUrl {
         self.inner.mint_url.clone().into()
@@ -554,7 +560,7 @@ impl Wallet {
 
 /// BIP353 methods for Wallet
 #[cfg(not(target_arch = "wasm32"))]
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export(async_runtime = "tokio"))]
 impl Wallet {
     /// Get a quote for a BIP353 melt
     ///
@@ -614,7 +620,7 @@ impl Wallet {
 }
 
 /// Auth methods for Wallet
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export(async_runtime = "tokio"))]
 impl Wallet {
     /// Set Clear Auth Token (CAT) for authentication
     pub async fn set_cat(&self, cat: String) -> Result<(), FfiError> {
@@ -648,13 +654,14 @@ impl Wallet {
 }
 
 /// Configuration for creating wallets
-#[derive(Debug, Clone, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WalletConfig {
     pub target_proof_count: Option<u32>,
 }
 
 /// Generates a new random mnemonic phrase
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn generate_mnemonic() -> Result<String, FfiError> {
     let mnemonic = Mnemonic::generate(12)
         .map_err(|e| FfiError::internal(format!("Failed to generate mnemonic: {}", e)))?;
@@ -662,7 +669,7 @@ pub fn generate_mnemonic() -> Result<String, FfiError> {
 }
 
 /// Converts a mnemonic phrase to its entropy bytes
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn mnemonic_to_entropy(mnemonic: String) -> Result<Vec<u8>, FfiError> {
     let m = Mnemonic::parse(&mnemonic)
         .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;

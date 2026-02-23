@@ -10,7 +10,8 @@ use super::quote::PaymentMethod;
 use crate::error::FfiError;
 
 /// FFI-compatible Mint URL
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct MintUrl {
     pub url: String,
@@ -43,7 +44,8 @@ impl TryFrom<MintUrl> for cdk::mint_url::MintUrl {
 }
 
 /// FFI-compatible MintVersion
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MintVersion {
     /// Mint Software name
     pub name: String,
@@ -77,19 +79,20 @@ impl MintVersion {
 }
 
 /// Decode MintVersion from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_mint_version(json: String) -> Result<MintVersion, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode MintVersion to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_mint_version(version: MintVersion) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&version)?)
 }
 
 /// FFI-compatible ContactInfo
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContactInfo {
     /// Contact Method i.e. nostr
     pub method: String,
@@ -123,19 +126,20 @@ impl ContactInfo {
 }
 
 /// Decode ContactInfo from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_contact_info(json: String) -> Result<ContactInfo, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode ContactInfo to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_contact_info(info: ContactInfo) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&info)?)
 }
 
 /// FFI-compatible SupportedSettings
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SupportedSettings {
     /// Setting supported
@@ -163,7 +167,8 @@ impl From<SupportedSettings> for cdk::nuts::nut06::SupportedSettings {
 // -----------------------------
 
 /// FFI-compatible MintMethodSettings (NUT-04)
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MintMethodSettings {
     pub method: PaymentMethod,
     pub unit: CurrencyUnit,
@@ -211,7 +216,8 @@ impl TryFrom<MintMethodSettings> for cdk::nuts::nut04::MintMethodSettings {
 }
 
 /// FFI-compatible Nut04 Settings
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Nut04Settings {
     pub methods: Vec<MintMethodSettings>,
     pub disabled: bool,
@@ -242,7 +248,8 @@ impl TryFrom<Nut04Settings> for cdk::nuts::nut04::Settings {
 }
 
 /// FFI-compatible MeltMethodSettings (NUT-05)
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeltMethodSettings {
     pub method: PaymentMethod,
     pub unit: CurrencyUnit,
@@ -289,7 +296,8 @@ impl TryFrom<MeltMethodSettings> for cdk::nuts::nut05::MeltMethodSettings {
 }
 
 /// FFI-compatible Nut05 Settings
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Nut05Settings {
     pub methods: Vec<MeltMethodSettings>,
     pub disabled: bool,
@@ -320,7 +328,8 @@ impl TryFrom<Nut05Settings> for cdk::nuts::nut05::Settings {
 }
 
 /// FFI-compatible ProtectedEndpoint (for auth nuts)
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtectedEndpoint {
     /// HTTP method (GET, POST, etc.)
     pub method: String,
@@ -329,7 +338,8 @@ pub struct ProtectedEndpoint {
 }
 
 /// FFI-compatible ClearAuthSettings (NUT-21)
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClearAuthSettings {
     /// OpenID Connect discovery URL
     pub openid_discovery: String,
@@ -340,7 +350,8 @@ pub struct ClearAuthSettings {
 }
 
 /// FFI-compatible BlindAuthSettings (NUT-22)
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlindAuthSettings {
     /// Maximum number of blind auth tokens that can be minted per request
     pub bat_max_mint: u64,
@@ -477,7 +488,8 @@ impl TryFrom<ProtectedEndpoint> for cdk::nuts::ProtectedEndpoint {
 }
 
 /// FFI-compatible Nuts settings (extended to include NUT-04 and NUT-05 settings)
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Nuts {
     /// NUT04 Settings
     pub nut04: Nut04Settings,
@@ -589,19 +601,20 @@ impl Nuts {
 }
 
 /// Decode Nuts from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_nuts(json: String) -> Result<Nuts, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode Nuts to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_nuts(nuts: Nuts) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&nuts)?)
 }
 
 /// FFI-compatible MintInfo
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
     pub name: Option<String>,
@@ -681,13 +694,13 @@ impl MintInfo {
 }
 
 /// Decode MintInfo from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_mint_info(json: String) -> Result<MintInfo, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode MintInfo to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_mint_info(info: MintInfo) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&info)?)
 }

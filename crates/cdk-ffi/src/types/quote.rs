@@ -7,7 +7,8 @@ use super::mint::MintUrl;
 use crate::error::FfiError;
 
 /// FFI-compatible MintQuote
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MintQuote {
     /// Quote ID
     pub id: String,
@@ -87,41 +88,42 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
 }
 
 /// Get total amount for a mint quote (amount paid)
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn mint_quote_total_amount(quote: &MintQuote) -> Result<Amount, FfiError> {
     let cdk_quote: cdk::wallet::MintQuote = quote.clone().try_into()?;
     Ok(cdk_quote.total_amount().into())
 }
 
 /// Check if mint quote is expired
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn mint_quote_is_expired(quote: &MintQuote, current_time: u64) -> Result<bool, FfiError> {
     let cdk_quote: cdk::wallet::MintQuote = quote.clone().try_into()?;
     Ok(cdk_quote.is_expired(current_time))
 }
 
 /// Get amount that can be minted from a mint quote
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn mint_quote_amount_mintable(quote: &MintQuote) -> Result<Amount, FfiError> {
     let cdk_quote: cdk::wallet::MintQuote = quote.clone().try_into()?;
     Ok(cdk_quote.amount_mintable().into())
 }
 
 /// Decode MintQuote from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_mint_quote(json: String) -> Result<MintQuote, FfiError> {
     let quote: cdk::wallet::MintQuote = serde_json::from_str(&json)?;
     Ok(quote.into())
 }
 
 /// Encode MintQuote to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_mint_quote(quote: MintQuote) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&quote)?)
 }
 
 /// FFI-compatible MintQuoteBolt11Response
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MintQuoteBolt11Response {
     /// Quote ID
     pub quote: String,
@@ -171,7 +173,8 @@ impl From<cdk::wallet::MintQuote> for MintQuoteBolt11Response {
 ///
 /// This is a unified response type for custom payment methods that includes
 /// extra fields for method-specific data (e.g., ehash share).
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MintQuoteCustomResponse {
     /// Quote ID
     pub quote: String,
@@ -216,7 +219,8 @@ impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomRespons
 }
 
 /// FFI-compatible MeltQuoteBolt11Response
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeltQuoteBolt11Response {
     /// Quote ID
     pub quote: String,
@@ -255,7 +259,8 @@ impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Respons
 ///
 /// This is a unified response type for custom payment methods that includes
 /// extra fields for method-specific data.
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeltQuoteCustomResponse {
     /// Quote ID
     pub quote: String,
@@ -303,7 +308,8 @@ impl From<cdk::nuts::MeltQuoteCustomResponse<String>> for MeltQuoteCustomRespons
 }
 
 /// FFI-compatible PaymentMethod
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaymentMethod {
     /// Bolt11 payment type
     Bolt11,
@@ -336,7 +342,8 @@ impl From<PaymentMethod> for cdk::nuts::PaymentMethod {
 }
 
 /// FFI-compatible MeltQuote
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeltQuote {
     /// Quote ID
     pub id: String,
@@ -409,20 +416,21 @@ impl MeltQuote {
 }
 
 /// Decode MeltQuote from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_melt_quote(json: String) -> Result<MeltQuote, FfiError> {
     let quote: cdk::wallet::MeltQuote = serde_json::from_str(&json)?;
     Ok(quote.into())
 }
 
 /// Encode MeltQuote to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_melt_quote(quote: MeltQuote) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&quote)?)
 }
 
 /// FFI-compatible QuoteState
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuoteState {
     Unpaid,
     Paid,

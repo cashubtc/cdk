@@ -8,7 +8,8 @@ use super::amount::CurrencyUnit;
 use crate::error::FfiError;
 
 /// FFI-compatible KeySetInfo
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeySetInfo {
     pub id: String,
     pub unit: CurrencyUnit,
@@ -49,19 +50,20 @@ impl KeySetInfo {
 }
 
 /// Decode KeySetInfo from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_key_set_info(json: String) -> Result<KeySetInfo, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode KeySetInfo to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_key_set_info(info: KeySetInfo) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&info)?)
 }
 
 /// FFI-compatible PublicKey
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PublicKey {
     /// Hex-encoded public key
@@ -87,7 +89,8 @@ impl TryFrom<PublicKey> for cdk::nuts::PublicKey {
 }
 
 /// FFI-compatible Keys (simplified - contains only essential info)
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Keys {
     /// Keyset ID
     pub id: String,
@@ -141,19 +144,20 @@ impl Keys {
 }
 
 /// Decode Keys from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_keys(json: String) -> Result<Keys, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode Keys to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_keys(keys: Keys) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&keys)?)
 }
 
 /// FFI-compatible KeySet
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeySet {
     /// Keyset ID
     pub id: String,
@@ -230,19 +234,20 @@ impl KeySet {
 }
 
 /// Decode KeySet from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_key_set(json: String) -> Result<KeySet, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode KeySet to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_key_set(keyset: KeySet) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&keyset)?)
 }
 
 /// FFI-compatible Id (for keyset IDs)
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Id {
     pub hex: String,

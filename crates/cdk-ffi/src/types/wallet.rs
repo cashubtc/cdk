@@ -11,7 +11,8 @@ use crate::token::Token;
 use crate::{CurrencyUnit, MintUrl};
 
 /// FFI-compatible SendMemo
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendMemo {
     /// Memo text
     pub memo: String,
@@ -45,19 +46,20 @@ impl SendMemo {
 }
 
 /// Decode SendMemo from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_send_memo(json: String) -> Result<SendMemo, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode SendMemo to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_send_memo(memo: SendMemo) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&memo)?)
 }
 
 /// FFI-compatible SendKind
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SendKind {
     /// Allow online swap before send if wallet does not have exact amount
     OnlineExact,
@@ -100,7 +102,8 @@ impl From<cdk::wallet::SendKind> for SendKind {
 }
 
 /// FFI-compatible Send options
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendOptions {
     /// Memo
     pub memo: Option<SendMemo>,
@@ -168,19 +171,20 @@ impl SendOptions {
 }
 
 /// Decode SendOptions from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_send_options(json: String) -> Result<SendOptions, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode SendOptions to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_send_options(options: SendOptions) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&options)?)
 }
 
 /// FFI-compatible SecretKey
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SecretKey {
     /// Hex-encoded secret key (64 characters)
@@ -233,7 +237,8 @@ impl From<cdk::nuts::SecretKey> for SecretKey {
 }
 
 /// FFI-compatible Receive options
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiveOptions {
     /// Amount split target
     pub amount_split_target: SplitTarget,
@@ -286,13 +291,13 @@ impl ReceiveOptions {
 }
 
 /// Decode ReceiveOptions from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_receive_options(json: String) -> Result<ReceiveOptions, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode ReceiveOptions to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_receive_options(options: ReceiveOptions) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&options)?)
 }
@@ -302,7 +307,7 @@ pub fn encode_receive_options(options: ReceiveOptions) -> Result<String, FfiErro
 /// This wraps the data from a prepared send operation along with a reference
 /// to the wallet. The actual PreparedSend<'a> from cdk has a lifetime parameter
 /// that doesn't work with FFI, so we store the wallet and cached data separately.
-#[derive(uniffi::Object)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Object))]
 pub struct PreparedSend {
     wallet: std::sync::Arc<cdk::Wallet>,
     operation_id: uuid::Uuid,
@@ -342,7 +347,7 @@ impl PreparedSend {
     }
 }
 
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export(async_runtime = "tokio"))]
 impl PreparedSend {
     /// Get the operation ID for this prepared send
     pub fn operation_id(&self) -> String {
@@ -408,7 +413,8 @@ impl PreparedSend {
 }
 
 /// FFI-compatible FinalizedMelt result
-#[derive(Debug, Clone, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FinalizedMelt {
     pub quote_id: String,
     pub state: super::quote::QuoteState,
@@ -438,7 +444,7 @@ impl From<cdk_common::common::FinalizedMelt> for FinalizedMelt {
 /// This wraps the data from a prepared melt operation along with a reference
 /// to the wallet. The actual PreparedMelt<'a> from cdk has a lifetime parameter
 /// that doesn't work with FFI, so we store the wallet and cached data separately.
-#[derive(uniffi::Object)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Object))]
 pub struct PreparedMelt {
     wallet: std::sync::Arc<cdk::Wallet>,
     operation_id: uuid::Uuid,
@@ -481,7 +487,7 @@ impl PreparedMelt {
     }
 }
 
-#[uniffi::export(async_runtime = "tokio")]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export(async_runtime = "tokio"))]
 impl PreparedMelt {
     /// Get the operation ID for this prepared melt
     pub fn operation_id(&self) -> String {
@@ -607,7 +613,8 @@ impl PreparedMelt {
 }
 
 /// FFI-compatible MeltOptions
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MeltOptions {
     /// MPP (Multi-Part Payments) options
     Mpp { amount: Amount },
@@ -644,7 +651,8 @@ impl From<cdk::nuts::MeltOptions> for MeltOptions {
 }
 
 /// Restored Data
-#[derive(Debug, Clone, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Restored {
     pub spent: Amount,
     pub unspent: Amount,
@@ -662,7 +670,8 @@ impl From<cdk::wallet::Restored> for Restored {
 }
 
 /// FFI-compatible options for confirming a melt operation
-#[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MeltConfirmOptions {
     /// Skip the pre-melt swap and send proofs directly to melt.
     /// When true, saves swap input fees but gets change from melt instead.
@@ -686,7 +695,8 @@ impl From<cdk::wallet::MeltConfirmOptions> for MeltConfirmOptions {
 }
 
 /// FFI-compatible WalletKey
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WalletKey {
     /// Mint Url
     pub mint_url: MintUrl,

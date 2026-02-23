@@ -18,7 +18,7 @@ pub struct WalletSqliteDatabase {
 #[uniffi::export]
 impl WalletSqliteDatabase {
     /// Create a new WalletSqliteDatabase with the given work directory
-    #[uniffi::constructor]
+    #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
     pub fn new(file_path: String) -> Result<Arc<Self>, FfiError> {
         let db = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| {
@@ -39,7 +39,7 @@ impl WalletSqliteDatabase {
     }
 
     /// Create an in-memory database
-    #[uniffi::constructor]
+    #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
     pub fn new_in_memory() -> Result<Arc<Self>, FfiError> {
         let db = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| {

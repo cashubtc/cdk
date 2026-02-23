@@ -5,3 +5,6 @@ rustflags = [
     "-C", "link-arg=-z",
     "-C", "link-arg=common-page-size=16384",
 ]
+
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

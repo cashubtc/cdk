@@ -10,7 +10,8 @@ use super::mint::MintUrl;
 use crate::error::FfiError;
 
 /// FFI-compatible Proof state
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProofState {
     Unspent,
     Pending,
@@ -44,7 +45,8 @@ impl From<ProofState> for CdkState {
 }
 
 /// FFI-compatible Proof
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Proof {
     /// Proof amount
     pub amount: Amount,
@@ -96,7 +98,7 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
 }
 
 /// Get the Y value (hash_to_curve of secret) for a proof
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn proof_y(proof: &Proof) -> Result<String, FfiError> {
     // Convert to CDK proof to calculate Y
     let cdk_proof: cdk::nuts::Proof = proof.clone().try_into()?;
@@ -104,7 +106,7 @@ pub fn proof_y(proof: &Proof) -> Result<String, FfiError> {
 }
 
 /// Check if proof is active with given keyset IDs
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn proof_is_active(proof: &Proof, active_keyset_ids: Vec<String>) -> bool {
     use cdk::nuts::Id;
     let ids: Vec<Id> = active_keyset_ids
@@ -121,20 +123,20 @@ pub fn proof_is_active(proof: &Proof, active_keyset_ids: Vec<String>) -> bool {
 }
 
 /// Check if proof has DLEQ proof
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn proof_has_dleq(proof: &Proof) -> bool {
     proof.dleq.is_some()
 }
 
 /// Verify HTLC witness on a proof
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn proof_verify_htlc(proof: &Proof) -> Result<(), FfiError> {
     let cdk_proof: cdk::nuts::Proof = proof.clone().try_into()?;
     cdk_proof.verify_htlc().map_err(FfiError::internal)
 }
 
 /// Verify DLEQ proof on a proof
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn proof_verify_dleq(
     proof: &Proof,
     mint_pubkey: super::keys::PublicKey,
@@ -147,7 +149,7 @@ pub fn proof_verify_dleq(
 }
 
 /// Sign a P2PK proof with a secret key, returning a new signed proof
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn proof_sign_p2pk(proof: Proof, secret_key_hex: String) -> Result<Proof, FfiError> {
     let mut cdk_proof: cdk::nuts::Proof = proof.try_into()?;
     let secret_key = cdk::nuts::SecretKey::from_hex(&secret_key_hex)
@@ -164,7 +166,8 @@ pub fn proof_sign_p2pk(proof: Proof, secret_key_hex: String) -> Result<Proof, Ff
 pub type Proofs = Vec<Proof>;
 
 /// FFI-compatible DLEQ proof for proofs
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProofDleq {
     /// e value (hex-encoded SecretKey)
     pub e: String,
@@ -175,7 +178,8 @@ pub struct ProofDleq {
 }
 
 /// FFI-compatible DLEQ proof for blind signatures
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlindSignatureDleq {
     /// e value (hex-encoded SecretKey)
     pub e: String,
@@ -222,7 +226,7 @@ impl From<BlindSignatureDleq> for cdk::nuts::BlindSignatureDleq {
 }
 
 /// Helper function to calculate total amount of proofs
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn proofs_total_amount(proofs: &Proofs) -> Result<Amount, FfiError> {
     let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
         proofs.iter().map(|p| p.clone().try_into()).collect();
@@ -232,7 +236,8 @@ pub fn proofs_total_amount(proofs: &Proofs) -> Result<Amount, FfiError> {
 }
 
 /// FFI-compatible Conditions (for spending conditions)
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conditions {
     /// Unix locktime after which refund keys can be used
     pub locktime: Option<u64>,
@@ -333,19 +338,20 @@ impl Conditions {
 }
 
 /// Decode Conditions from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_conditions(json: String) -> Result<Conditions, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode Conditions to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_conditions(conditions: Conditions) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&conditions)?)
 }
 
 /// FFI-compatible Witness
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Witness {
     /// P2PK Witness
     P2PK {
@@ -393,7 +399,8 @@ impl From<Witness> for cdk::nuts::Witness {
 }
 
 /// FFI-compatible SpendingConditions
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SpendingConditions {
     /// P2PK (Pay to Public Key) conditions
     P2PK {
@@ -456,7 +463,8 @@ impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
 }
 
 /// FFI-compatible ProofInfo
-#[derive(Debug, Clone, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone)]
 pub struct ProofInfo {
     /// Proof
     pub proof: Proof,
@@ -492,14 +500,14 @@ impl From<cdk::types::ProofInfo> for ProofInfo {
 }
 
 /// Decode ProofInfo from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_proof_info(json: String) -> Result<ProofInfo, FfiError> {
     let info: cdk::types::ProofInfo = serde_json::from_str(&json)?;
     Ok(info.into())
 }
 
 /// Encode ProofInfo to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
     use std::str::FromStr;
     // Convert to cdk::types::ProofInfo for serialization
@@ -525,7 +533,8 @@ pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
 }
 
 /// FFI-compatible ProofStateUpdate
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProofStateUpdate {
     /// Y value (hash_to_curve of secret)
     pub y: String,
@@ -553,13 +562,13 @@ impl ProofStateUpdate {
 }
 
 /// Decode ProofStateUpdate from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_proof_state_update(json: String) -> Result<ProofStateUpdate, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode ProofStateUpdate to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_proof_state_update(update: ProofStateUpdate) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&update)?)
 }

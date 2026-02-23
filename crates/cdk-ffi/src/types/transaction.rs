@@ -14,7 +14,8 @@ use super::quote::PaymentMethod;
 use crate::error::FfiError;
 
 /// FFI-compatible Transaction
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
     /// Transaction ID
     pub id: TransactionId,
@@ -106,19 +107,19 @@ impl Transaction {
 }
 
 /// Decode Transaction from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_transaction(json: String) -> Result<Transaction, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode Transaction to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_transaction(transaction: Transaction) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&transaction)?)
 }
 
 /// Check if a transaction matches the given filter conditions
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn transaction_matches_conditions(
     transaction: &Transaction,
     mint_url: Option<MintUrl>,
@@ -133,7 +134,8 @@ pub fn transaction_matches_conditions(
 }
 
 /// FFI-compatible TransactionDirection
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransactionDirection {
     /// Incoming transaction (i.e., receive or mint)
     Incoming,
@@ -160,7 +162,8 @@ impl From<TransactionDirection> for cdk::wallet::types::TransactionDirection {
 }
 
 /// FFI-compatible TransactionId
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TransactionId {
     /// Hex-encoded transaction ID (64 characters)
@@ -217,7 +220,8 @@ impl TryFrom<TransactionId> for cdk::wallet::types::TransactionId {
 }
 
 /// FFI-compatible AuthProof
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthProof {
     /// Keyset ID
     pub keyset_id: String,
@@ -271,13 +275,13 @@ impl AuthProof {
 }
 
 /// Decode AuthProof from JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn decode_auth_proof(json: String) -> Result<AuthProof, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode AuthProof to JSON string
-#[uniffi::export]
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
 pub fn encode_auth_proof(proof: AuthProof) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&proof)?)
 }

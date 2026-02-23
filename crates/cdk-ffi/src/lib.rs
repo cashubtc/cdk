@@ -1,34 +1,61 @@
 //! CDK FFI Bindings
 //!
 //! UniFFI bindings for the CDK Wallet and related types.
+//! Supports both native (UniFFI) and WebAssembly (wasm-bindgen) targets.
 
 #![warn(clippy::unused_async)]
 #![allow(missing_docs)]
 #![allow(missing_debug_implementations)]
 
+#[cfg(feature = "uniffi-bindings")]
 pub mod database;
 pub mod error;
+#[cfg(feature = "uniffi-bindings")]
 pub mod logging;
 #[cfg(feature = "npubcash")]
 pub mod npubcash;
 #[cfg(feature = "postgres")]
 pub mod postgres;
+#[cfg(feature = "uniffi-bindings")]
 pub mod sqlite;
 pub mod token;
 pub mod types;
 pub mod wallet;
+#[cfg(feature = "uniffi-bindings")]
 pub mod wallet_repository;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
+#[cfg(feature = "uniffi-bindings")]
 pub use database::*;
 pub use error::*;
+#[cfg(feature = "uniffi-bindings")]
 pub use logging::*;
 #[cfg(feature = "npubcash")]
 pub use npubcash::*;
 pub use types::*;
 pub use wallet::*;
+#[cfg(feature = "uniffi-bindings")]
 pub use wallet_repository::*;
 
+#[cfg(feature = "uniffi-bindings")]
 uniffi::setup_scaffolding!();
+
+/// Initialize the WASM environment (panic hook + console logging)
+#[cfg(feature = "wasm")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn init_wasm() {
+    console_error_panic_hook::set_once();
+
+    use tracing_subscriber::prelude::*;
+    use tracing_web::MakeWebConsoleWriter;
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(MakeWebConsoleWriter::new());
+
+    let _ = tracing_subscriber::registry().with(fmt_layer).try_init();
+}
 
 #[cfg(test)]
 mod tests {

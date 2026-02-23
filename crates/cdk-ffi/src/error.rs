@@ -8,7 +8,8 @@ use cdk_common::error::ErrorResponse;
 /// This simplified error type uses protocol-compliant error codes from `ErrorCode`
 /// in `cdk-common`, reducing duplication while providing structured error information
 /// to FFI consumers.
-#[derive(Debug, thiserror::Error, uniffi::Error)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Error))]
+#[derive(Debug, thiserror::Error)]
 pub enum FfiError {
     /// CDK error with protocol-compliant error code
     /// The code corresponds to the Cashu protocol error codes (e.g., 11001, 20001, etc.)
@@ -71,5 +72,23 @@ impl From<cdk::nuts::nut00::Error> for FfiError {
 impl From<serde_json::Error> for FfiError {
     fn from(err: serde_json::Error) -> Self {
         FfiError::internal(err)
+    }
+}
+
+/// WASM-compatible error wrapper that converts FfiError into a JS Error
+#[cfg(feature = "wasm")]
+pub struct WasmError(pub FfiError);
+
+#[cfg(feature = "wasm")]
+impl From<WasmError> for wasm_bindgen::JsValue {
+    fn from(err: WasmError) -> Self {
+        js_sys::Error::new(&err.0.to_string()).into()
+    }
+}
+
+#[cfg(feature = "wasm")]
+impl From<FfiError> for WasmError {
+    fn from(err: FfiError) -> Self {
+        WasmError(err)
     }
 }
