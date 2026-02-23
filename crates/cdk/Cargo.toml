@@ -90,7 +90,7 @@ tls-api = { version = "0.9", optional = true }
 tls-api-native-tls = { version = "0.9", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-cdk-http-client = { workspace = true, default-features = false }
+cdk-http-client = { workspace = true }
 tokio = { workspace = true, default-features = false, features = ["rt", "macros", "sync", "time"] }
 cdk-signatory = { workspace = true, default-features = false }
 getrandom = { version = "0.2", features = ["js"] }
