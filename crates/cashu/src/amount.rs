@@ -2151,4 +2151,319 @@ mod tests {
         let result = amount1.saturating_sub(amount2);
         assert_eq!(result, Amount::ZERO);
     }
+
+    // =========================================================================
+    // Tests for restricted/non-standard keysets (denomination reuse required)
+    // =========================================================================
+    //
+    // These tests document the correct behavior for keysets where denominations
+    // must be used more than once (e.g., a keyset with only denomination 1).
+    // The current split() algorithm uses modulo which limits each denomination
+    // to at most one use, causing CannotSplitAmount errors for these cases.
+
+    /// Tests split() with a single-denomination keyset {1}.
+    /// This is the exact scenario from the xsr mint bug where only denomination 1
+    /// is available. Amounts > 1 require reusing the denomination multiple times.
+    #[test]
+    fn test_split_single_denomination_keyset() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1]).into();
+
+        // Amount 1: trivially works (single use of denomination 1)
+        let result = Amount::from(1).split(&fee_and_amounts).unwrap();
+        assert_eq!(result, vec![Amount::from(1)]);
+
+        // Amount 2: requires denomination 1 used twice
+        let result = Amount::from(2).split(&fee_and_amounts).unwrap();
+        assert_eq!(result, vec![Amount::from(1), Amount::from(1)]);
+
+        // Amount 5: requires denomination 1 used five times
+        let result = Amount::from(5).split(&fee_and_amounts).unwrap();
+        assert_eq!(result, vec![Amount::from(1); 5]);
+
+        // Amount 10: requires denomination 1 used ten times
+        let result = Amount::from(10).split(&fee_and_amounts).unwrap();
+        assert_eq!(result, vec![Amount::from(1); 10]);
+    }
+
+    /// Tests split() when a denomination must be reused with a two-denomination keyset {1, 5}.
+    /// Amount 10 requires denomination 5 used twice, which the modulo approach cannot do.
+    #[test]
+    fn test_split_denomination_reuse_required() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1, 5]).into();
+
+        // Amount 5: single use of denomination 5
+        let result = Amount::from(5).split(&fee_and_amounts).unwrap();
+        assert_eq!(result, vec![Amount::from(5)]);
+
+        // Amount 10: requires denomination 5 used twice (10 % 5 = 0 discards remainder)
+        let result = Amount::from(10).split(&fee_and_amounts).unwrap();
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(10));
+        assert_eq!(result, vec![Amount::from(5), Amount::from(5)]);
+
+        // Amount 12: requires [5, 5, 1, 1]
+        let result = Amount::from(12).split(&fee_and_amounts).unwrap();
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(12));
+        assert_eq!(
+            result,
+            vec![
+                Amount::from(5),
+                Amount::from(5),
+                Amount::from(1),
+                Amount::from(1),
+            ]
+        );
+    }
+
+    /// Tests split() with non-power-of-two denominations {1, 3, 5}.
+    /// The greedy algorithm should still produce correct (if not optimal) results.
+    #[test]
+    fn test_split_non_power_of_two_keyset() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1, 3, 5]).into();
+
+        // Amount 6: greedy takes 5, remainder 1 -> [5, 1]
+        let result = Amount::from(6).split(&fee_and_amounts).unwrap();
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(6));
+
+        // Amount 9: greedy takes 5, remainder 4, takes 3, remainder 1 -> [5, 3, 1]
+        let result = Amount::from(9).split(&fee_and_amounts).unwrap();
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(9));
+
+        // Amount 10: greedy takes 5, remainder 5, takes 5 -> [5, 5]
+        // This fails with modulo because 10 % 5 = 0 after first take
+        let result = Amount::from(10).split(&fee_and_amounts).unwrap();
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(10));
+
+        // Amount 15: greedy takes 5 three times -> [5, 5, 5]
+        let result = Amount::from(15).split(&fee_and_amounts).unwrap();
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(15));
+    }
+
+    /// Tests split() with a sparse keyset {1, 8} that has a gap between denominations.
+    /// Amounts like 3 require multiple uses of denomination 1.
+    #[test]
+    fn test_split_sparse_power_of_two_keyset() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1, 8]).into();
+
+        // Amount 3: no denomination 2 or 4, so needs [1, 1, 1]
+        let result = Amount::from(3).split(&fee_and_amounts).unwrap();
+        assert_eq!(result, vec![Amount::from(1); 3]);
+
+        // Amount 9: takes 8, remainder 1 -> [8, 1]
+        let result = Amount::from(9).split(&fee_and_amounts).unwrap();
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(9));
+        assert_eq!(result, vec![Amount::from(8), Amount::from(1)]);
+
+        // Amount 17: needs [8, 8, 1]
+        let result = Amount::from(17).split(&fee_and_amounts).unwrap();
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(17));
+        assert_eq!(
+            result,
+            vec![Amount::from(8), Amount::from(8), Amount::from(1)]
+        );
+    }
+
+    /// Tests split() with a partial power-of-two keyset {1, 4, 16} (missing 2 and 8).
+    /// Some amounts require denomination reuse to fill gaps.
+    #[test]
+    fn test_split_partial_power_of_two_keyset() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1, 4, 16]).into();
+
+        // Amount 2: no denomination 2, needs [1, 1]
+        let result = Amount::from(2).split(&fee_and_amounts).unwrap();
+        assert_eq!(result, vec![Amount::from(1), Amount::from(1)]);
+
+        // Amount 5: takes 4, remainder 1 -> [4, 1]
+        let result = Amount::from(5).split(&fee_and_amounts).unwrap();
+        assert_eq!(result, vec![Amount::from(4), Amount::from(1)]);
+
+        // Amount 6: takes 4, remainder 2, needs two 1s -> [4, 1, 1]
+        let result = Amount::from(6).split(&fee_and_amounts).unwrap();
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(6));
+        assert_eq!(
+            result,
+            vec![Amount::from(4), Amount::from(1), Amount::from(1)]
+        );
+
+        // Amount 20: takes 16, remainder 4 -> [16, 4]
+        let result = Amount::from(20).split(&fee_and_amounts).unwrap();
+        assert_eq!(result, vec![Amount::from(16), Amount::from(4)]);
+
+        // Amount 8: no denomination 8, needs [4, 4]
+        let result = Amount::from(8).split(&fee_and_amounts).unwrap();
+        assert_eq!(result, vec![Amount::from(4), Amount::from(4)]);
+    }
+
+    /// Tests split() with a large amount on a single-denomination keyset {1}.
+    /// Should produce many proofs of denomination 1.
+    #[test]
+    fn test_split_large_amount_single_denomination() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1]).into();
+
+        let result = Amount::from(100).split(&fee_and_amounts).unwrap();
+        assert_eq!(result.len(), 100);
+        assert!(result.iter().all(|a| *a == Amount::from(1)));
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(100));
+    }
+
+    /// Tests split() with amount 0. Should return an empty vec since no proofs are needed.
+    #[test]
+    fn test_split_zero_amount() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1]).into();
+
+        let result = Amount::from(0).split(&fee_and_amounts).unwrap();
+        assert!(result.is_empty());
+
+        // Also with standard keyset
+        let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
+        let result = Amount::from(0).split(&fee_and_amounts).unwrap();
+        assert!(result.is_empty());
+    }
+
+    // =========================================================================
+    // split_targeted() tests for restricted keysets
+    // =========================================================================
+
+    /// Tests split_targeted() with SplitTarget::None on a single-denomination keyset {1}.
+    /// Should behave identically to split().
+    #[test]
+    fn test_split_targeted_none_single_denomination() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1]).into();
+
+        let result = Amount::from(5)
+            .split_targeted(&SplitTarget::None, &fee_and_amounts)
+            .unwrap();
+        assert_eq!(result, vec![Amount::from(1); 5]);
+
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(5));
+    }
+
+    /// Tests split_targeted() with SplitTarget::Value(1) on a single-denomination keyset {1}.
+    /// Requesting proofs of value 1 with only denomination 1 available.
+    #[test]
+    fn test_split_targeted_value_single_denomination() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1]).into();
+
+        let result = Amount::from(5)
+            .split_targeted(&SplitTarget::Value(Amount::from(1)), &fee_and_amounts)
+            .unwrap();
+        assert_eq!(result, vec![Amount::from(1); 5]);
+
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(5));
+    }
+
+    /// Tests split_targeted() with SplitTarget::Values on a single-denomination keyset {1}.
+    /// Specifying partial values, with the remainder split into 1s.
+    #[test]
+    fn test_split_targeted_values_single_denomination() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1]).into();
+
+        // Request 3 out of 5 as explicit values, remainder should be split as [1, 1]
+        let target = SplitTarget::Values(vec![Amount::from(1), Amount::from(1), Amount::from(1)]);
+        let result = Amount::from(5)
+            .split_targeted(&target, &fee_and_amounts)
+            .unwrap();
+
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(5));
+        assert_eq!(result, vec![Amount::from(1); 5]);
+    }
+
+    /// Tests split_targeted() with SplitTarget::Value on a keyset {1, 5}.
+    /// Requesting proofs of value 5 for amount 15 should produce three 5s.
+    #[test]
+    fn test_split_targeted_value_restricted_keyset() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1, 5]).into();
+
+        let result = Amount::from(15)
+            .split_targeted(&SplitTarget::Value(Amount::from(5)), &fee_and_amounts)
+            .unwrap();
+
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, Amount::from(15));
+        assert_eq!(
+            result,
+            vec![Amount::from(5), Amount::from(5), Amount::from(5)]
+        );
+    }
+
+    // =========================================================================
+    // split_with_fee() tests for restricted keysets
+    // =========================================================================
+
+    /// Tests split_with_fee() on a single-denomination keyset {1} with fees.
+    /// Must produce enough proofs to cover the amount plus the per-proof fee.
+    #[test]
+    fn test_split_with_fee_single_denomination() {
+        let fee_and_amounts: FeeAndAmounts = (100, vec![1]).into();
+
+        let amount = Amount::from(5);
+        let result = amount.split_with_fee(&fee_and_amounts).unwrap();
+
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        let total_fee_ppk = (result.len() as u64) * fee_and_amounts.fee;
+        let total_fee = Amount::from(total_fee_ppk.div_ceil(1000));
+
+        // The split must cover amount + fees
+        assert!(
+            total >= amount.checked_add(total_fee).unwrap(),
+            "Split total {} should be >= amount {} + fee {}",
+            total,
+            amount,
+            total_fee
+        );
+
+        // All proofs should be denomination 1
+        assert!(result.iter().all(|a| *a == Amount::from(1)));
+    }
+
+    // =========================================================================
+    // Regression test for the exact reported bug
+    // =========================================================================
+
+    /// Regression test: xsr mint keyset with only denomination 1.
+    /// Minting amount 2 failed with CannotSplitAmount(2, 1) because the split
+    /// algorithm could only use each denomination once via the modulo approach.
+    #[test]
+    fn test_split_xsr_mint_keyset_regression() {
+        // This exactly reproduces the xsr mint's keyset: only one key for denomination 1
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1]).into();
+
+        // This is the exact error case: CannotSplitAmount(2, 1)
+        let amount = Amount::from(2);
+        let result = amount.split(&fee_and_amounts);
+        assert!(
+            result.is_ok(),
+            "split(2) with keyset {{1}} should succeed but got: {:?}",
+            result.err()
+        );
+        let proofs = result.unwrap();
+        assert_eq!(proofs, vec![Amount::from(1), Amount::from(1)]);
+
+        // Also verify that a typical mint amount (e.g., 5 xsr) works
+        let amount = Amount::from(5);
+        let result = amount.split(&fee_and_amounts);
+        assert!(
+            result.is_ok(),
+            "split(5) with keyset {{1}} should succeed but got: {:?}",
+            result.err()
+        );
+        let proofs = result.unwrap();
+        assert_eq!(proofs.len(), 5);
+        assert_eq!(
+            Amount::try_sum(proofs.iter().copied()).unwrap(),
+            Amount::from(5)
+        );
+    }
 }
