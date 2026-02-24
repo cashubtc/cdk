@@ -18,7 +18,7 @@ use cdk_common::{
     database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PaymentMethod,
     PublicKey, SpendingConditions, State,
 };
-use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
+use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, TableDefinition};
 use tracing::instrument;
 
 use super::error::Error;
@@ -183,9 +183,7 @@ impl WalletRedbDatabase {
             }
         }
 
-        let mut db = Database::create(path)?;
-
-        db.upgrade()?;
+        let db = Database::create(path)?;
 
         Ok(Self { db: Arc::new(db) })
     }
