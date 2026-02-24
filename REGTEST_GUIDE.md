@@ -196,6 +196,7 @@ Managed automatically via Nix development shell:
 - Bitcoin Core
 - Core Lightning (CLN)
 - LND (Lightning Network Daemon)
+- PostgreSQL
 - Rust toolchain
 
 ## Advanced Usage
@@ -223,7 +224,7 @@ From within mprocs:
 
 ### Environment Not Starting
 - Check that ports are available: 8085, 8087, 18443, 19846, 19847, 10009, 10010
-- Ensure the Nix development shell is active: `nix develop`
+- Ensure the Nix development shell is active: `nix develop .#regtest`
 - Check individual component logs in mprocs
 
 ### Helper Commands Not Working
