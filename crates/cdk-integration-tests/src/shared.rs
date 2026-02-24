@@ -230,6 +230,8 @@ pub fn create_fake_wallet_settings(
         cln: None,
         lnbits: None,
         lnd: None,
+        #[cfg(feature = "blink")]
+        blink: None,
         ldk_node: None,
         fake_wallet: fake_wallet_config,
         grpc_processor: None,
@@ -285,6 +287,8 @@ pub fn create_cln_settings(
         cln: Some(cln_config),
         lnbits: None,
         lnd: None,
+        #[cfg(feature = "blink")]
+        blink: None,
         ldk_node: None,
         fake_wallet: None,
         grpc_processor: None,
@@ -336,6 +340,8 @@ pub fn create_lnd_settings(
         lnbits: None,
         ldk_node: None,
         lnd: Some(lnd_config),
+        #[cfg(feature = "blink")]
+        blink: None,
         fake_wallet: None,
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
