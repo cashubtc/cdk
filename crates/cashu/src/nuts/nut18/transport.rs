@@ -51,7 +51,8 @@ pub struct Transport {
     pub target: String,
     /// Tags
     #[serde(rename = "g")]
-    pub tags: Option<Vec<Vec<String>>>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub tags: Vec<Vec<String>>,
 }
 
 impl Transport {
@@ -78,7 +79,7 @@ impl FromStr for Transport {
 pub struct TransportBuilder {
     _type: Option<TransportType>,
     target: Option<String>,
-    tags: Option<Vec<Vec<String>>>,
+    tags: Vec<Vec<String>>,
 }
 
 impl TransportBuilder {
@@ -96,13 +97,13 @@ impl TransportBuilder {
 
     /// Add a tag
     pub fn add_tag(mut self, tag: Vec<String>) -> Self {
-        self.tags.get_or_insert_with(Vec::new).push(tag);
+        self.tags.push(tag);
         self
     }
 
     /// Set tags
     pub fn tags(mut self, tags: Vec<Vec<String>>) -> Self {
-        self.tags = Some(tags);
+        self.tags = tags;
         self
     }
 

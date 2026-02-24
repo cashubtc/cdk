@@ -34,7 +34,8 @@ pub struct PaymentRequest {
     pub single_use: Option<bool>,
     /// Mints
     #[serde(rename = "m")]
-    pub mints: Option<Vec<MintUrl>>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub mints: Vec<MintUrl>,
     /// Description
     #[serde(rename = "d")]
     pub description: Option<String>,
@@ -100,7 +101,7 @@ pub struct PaymentRequestBuilder {
     amount: Option<Amount>,
     unit: Option<CurrencyUnit>,
     single_use: Option<bool>,
-    mints: Option<Vec<MintUrl>>,
+    mints: Vec<MintUrl>,
     description: Option<String>,
     transports: Vec<Transport>,
     nut10: Option<Nut10SecretRequest>,
@@ -139,13 +140,13 @@ impl PaymentRequestBuilder {
 
     /// Add a mint URL
     pub fn add_mint(mut self, mint_url: MintUrl) -> Self {
-        self.mints.get_or_insert_with(Vec::new).push(mint_url);
+        self.mints.push(mint_url);
         self
     }
 
     /// Set mints
     pub fn mints(mut self, mints: Vec<MintUrl>) -> Self {
-        self.mints = Some(mints);
+        self.mints = mints;
         self
     }
 
@@ -224,30 +225,30 @@ mod tests {
         assert_eq!(req.amount.unwrap(), 10.into());
         assert_eq!(req.unit.clone().unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            req.mints.unwrap(),
+            req.mints,
             vec![MintUrl::from_str("https://nofees.testnut.cashu.space").expect("valid mint url")]
         );
         assert_eq!(req.unit.unwrap(), CurrencyUnit::Sat);
 
         let transport = req.transports.first().unwrap();
 
-        let expected_transport = Transport {_type: TransportType::Nostr, target: "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n".to_string(), tags: Some(vec![vec!["n".to_string(), "17".to_string()]])};
+        let expected_transport = Transport {_type: TransportType::Nostr, target: "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n".to_string(), tags: vec![vec!["n".to_string(), "17".to_string()]]};
 
         assert_eq!(transport, &expected_transport);
     }
 
     #[test]
     fn test_roundtrip_payment_req() {
-        let transport = Transport {_type: TransportType::Nostr, target: "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n".to_string(), tags: Some(vec![vec!["n".to_string(), "17".to_string()]])};
+        let transport = Transport {_type: TransportType::Nostr, target: "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n".to_string(), tags: vec![vec!["n".to_string(), "17".to_string()]]};
 
         let request = PaymentRequest {
             payment_id: Some("b7a90176".to_string()),
             amount: Some(10.into()),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec!["https://nofees.testnut.cashu.space"
+            mints: vec!["https://nofees.testnut.cashu.space"
                 .parse()
-                .expect("valid mint url")]),
+                .expect("valid mint url")],
             description: None,
             transports: vec![transport.clone()],
             nut10: None,
@@ -263,7 +264,7 @@ mod tests {
         assert_eq!(req.amount.unwrap(), 10.into());
         assert_eq!(req.unit.clone().unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            req.mints.unwrap(),
+            req.mints,
             vec![MintUrl::from_str("https://nofees.testnut.cashu.space").expect("valid mint url")]
         );
         assert_eq!(req.unit.unwrap(), CurrencyUnit::Sat);
@@ -277,7 +278,7 @@ mod tests {
         let transport = Transport {
             _type: TransportType::Nostr,
             target: "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n".to_string(),
-            tags: Some(vec![vec!["n".to_string(), "17".to_string()]])
+            tags: vec![vec!["n".to_string(), "17".to_string()]]
         };
 
         let mint_url =
@@ -296,7 +297,7 @@ mod tests {
         assert_eq!(&request.payment_id.clone().unwrap(), "b7a90176");
         assert_eq!(request.amount.unwrap(), 10.into());
         assert_eq!(request.unit.clone().unwrap(), CurrencyUnit::Sat);
-        assert_eq!(request.mints.clone().unwrap(), vec![mint_url]);
+        assert_eq!(request.mints.clone(), vec![mint_url]);
 
         let t = request.transports.first().unwrap();
         assert_eq!(&transport, t);
@@ -325,7 +326,7 @@ mod tests {
         assert_eq!(transport.target, "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n");
         assert_eq!(
             transport.tags,
-            Some(vec![vec!["n".to_string(), "17".to_string()]])
+            vec![vec!["n".to_string(), "17".to_string()]]
         );
 
         // Test error case - missing required fields
@@ -497,7 +498,7 @@ mod tests {
         assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(10));
         assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            payment_request_cloned.mints.unwrap(),
+            payment_request_cloned.mints,
             vec![MintUrl::from_str("https://8333.space:3338").unwrap()]
         );
 
@@ -506,7 +507,7 @@ mod tests {
         assert_eq!(transport.target, "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n");
         assert_eq!(
             transport.tags,
-            Some(vec![vec!["n".to_string(), "17".to_string()]])
+            vec![vec!["n".to_string(), "17".to_string()]]
         );
 
         // Test encoding - the encoded form should match the expected output
@@ -522,7 +523,7 @@ mod tests {
         assert_eq!(decoded_from_spec.amount.unwrap(), Amount::from(10));
         assert_eq!(decoded_from_spec.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            decoded_from_spec.mints.unwrap(),
+            decoded_from_spec.mints,
             vec![MintUrl::from_str("https://8333.space:3338").unwrap()]
         );
     }
@@ -558,7 +559,7 @@ mod tests {
         assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(100));
         assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            payment_request_cloned.mints.unwrap(),
+            payment_request_cloned.mints,
             vec![
                 MintUrl::from_str("https://mint1.example.com").unwrap(),
                 MintUrl::from_str("https://mint2.example.com").unwrap()
@@ -573,10 +574,10 @@ mod tests {
         );
         assert_eq!(
             transport.tags,
-            Some(vec![
+            vec![
                 vec!["n".to_string(), "17".to_string()],
                 vec!["n".to_string(), "9735".to_string()]
-            ])
+            ]
         );
 
         // Test round-trip serialization
@@ -613,7 +614,7 @@ mod tests {
         assert_eq!(payment_request_cloned.amount, None);
         assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            payment_request_cloned.mints.unwrap(),
+            payment_request_cloned.mints,
             vec![MintUrl::from_str("https://mint.example.com").unwrap()]
         );
         assert_eq!(payment_request_cloned.transports, vec![]);
@@ -657,7 +658,7 @@ mod tests {
         assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(500));
         assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            payment_request_cloned.mints.unwrap(),
+            payment_request_cloned.mints,
             vec![MintUrl::from_str("https://mint.example.com").unwrap()]
         );
 
@@ -691,7 +692,7 @@ mod tests {
             amount: Some(Amount::from(100)),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: Some("Test both formats".to_string()),
             transports: vec![],
             nut10: None,

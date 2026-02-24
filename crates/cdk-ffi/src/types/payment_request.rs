@@ -43,8 +43,8 @@ pub struct Transport {
     pub transport_type: TransportType,
     /// Target (e.g., nprofile for Nostr, URL for HTTP)
     pub target: String,
-    /// Optional tags
-    pub tags: Option<Vec<Vec<String>>>,
+    /// Tags
+    pub tags: Vec<Vec<String>>,
 }
 
 impl From<cdk::nuts::Transport> for Transport {
@@ -119,11 +119,8 @@ impl PaymentRequest {
     }
 
     /// Get the list of acceptable mint URLs
-    pub fn mints(&self) -> Option<Vec<String>> {
-        self.inner
-            .mints
-            .as_ref()
-            .map(|mints| mints.iter().map(|m| m.to_string()).collect())
+    pub fn mints(&self) -> Vec<String> {
+        self.inner.mints.iter().map(|m| m.to_string()).collect()
     }
 
     /// Get the description
@@ -395,7 +392,7 @@ mod tests {
         assert_eq!(req.amount().unwrap().value, 10);
         assert!(matches!(req.unit().unwrap(), CurrencyUnit::Sat));
 
-        let mints = req.mints().unwrap();
+        let mints = req.mints();
         assert_eq!(mints.len(), 1);
         assert_eq!(mints[0], "https://nofees.testnut.cashu.space");
 
@@ -422,7 +419,7 @@ mod tests {
         let ffi_transport = Transport {
             transport_type: TransportType::Nostr,
             target: "nprofile1...".to_string(),
-            tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
+            tags: vec![vec!["n".to_string(), "17".to_string()]],
         };
 
         let cdk_transport: cdk::nuts::Transport = ffi_transport.clone().into();
