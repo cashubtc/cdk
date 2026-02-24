@@ -248,7 +248,7 @@ impl MintPayment for PaymentProcessorClient {
 
     async fn make_payment(
         &self,
-        _unit: &cdk_common::CurrencyUnit,
+        unit: &cdk_common::CurrencyUnit,
         options: cdk_common::payment::OutgoingPaymentOptions,
     ) -> Result<CdkMakePaymentResponse, Self::Err> {
         let mut inner = self.inner.clone();
@@ -297,6 +297,7 @@ impl MintPayment for PaymentProcessorClient {
                 payment_options: Some(payment_options),
                 partial_amount: None,
                 max_fee_amount: None,
+                unit: unit.to_string(),
             })))
             .await
             .map_err(|err| {
