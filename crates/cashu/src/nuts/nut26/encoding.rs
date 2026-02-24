@@ -1072,7 +1072,7 @@ mod tests {
         let nprofile = "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5";
 
         let nostr_decoded =
-            Nip19Profile::from_bech32(&nprofile).expect("nostr-sdk should decode our nprofile");
+            Nip19Profile::from_bech32(nprofile).expect("nostr-sdk should decode our nprofile");
 
         // Verify the decoded data can be re-encoded (round-trip works)
         let encoded = nostr_decoded.to_bech32().unwrap();
@@ -1304,7 +1304,8 @@ mod tests {
         assert_eq!(mints.len(), 3);
 
         // MintUrl normalizes URLs and may add trailing slashes
-        let mint_strings: Vec<String> = mints.iter().map(|m| m.to_string()).collect();
+        let mint_strings: Vec<String> =
+            mints.iter().map(std::string::ToString::to_string).collect();
         assert!(
             mint_strings[0] == "https://mint1.example.com/"
                 || mint_strings[0] == "https://mint1.example.com"
@@ -2138,7 +2139,7 @@ mod tests {
 
         // Decode from the encoded string and verify round-trip
         let decoded =
-            PaymentRequest::from_bech32_string(&expected_encoded).expect("decoding should work");
+            PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
 
         // Verify all top-level fields
         assert_eq!(decoded.payment_id, Some("htlc_test".to_string()));

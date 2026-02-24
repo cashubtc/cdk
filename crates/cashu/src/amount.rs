@@ -1477,6 +1477,7 @@ mod tests {
     /// - Some(0)
     /// - Some(1)
     /// - Some(-1)
+    ///
     /// Also catches mutation that replaces <= with > in the comparison.
     #[test]
     fn test_amount_to_i64_returns_correct_value() {
@@ -1901,11 +1902,11 @@ mod tests {
 
         // Greater than
         assert!(large > small);
-        assert!(!(small > large));
+        assert!(small <= large);
 
         // Less than
         assert!(small < large);
-        assert!(!(large < small));
+        assert!(large >= small);
 
         // Greater than or equal
         assert!(large >= small);
@@ -1960,24 +1961,14 @@ mod tests {
         // - >= returns false
         // - <= returns false
 
-        assert!(!(sat > msat));
-        assert!(!(sat < msat));
-        assert!(!(sat >= msat));
-        assert!(!(sat <= msat));
-
-        assert!(!(msat > sat));
-        assert!(!(msat < sat));
-        assert!(!(msat >= sat));
-        assert!(!(msat <= sat));
+        assert!(sat.partial_cmp(&msat).is_none());
+        assert!(msat.partial_cmp(&sat).is_none());
 
         // Even with same value, different units should return false
         let sat100 = Amount::new(100, CurrencyUnit::Sat);
         let msat100 = Amount::new(100, CurrencyUnit::Msat);
 
-        assert!(!(sat100 > msat100));
-        assert!(!(sat100 < msat100));
-        assert!(!(sat100 >= msat100));
-        assert!(!(sat100 <= msat100));
+        assert!(sat100.partial_cmp(&msat100).is_none());
     }
 
     /// Tests that Amount<()> (untyped) has total ordering and implements Ord.

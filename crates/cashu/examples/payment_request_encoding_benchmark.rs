@@ -271,8 +271,17 @@ fn compare_formats(
     let size_ratio = (nut26_size as f64 / nut18_size as f64) * 100.0;
 
     println!("  {} Payment Request:", label);
-    println!("  Payment ID: {:?}", payment_request.payment_id);
-    println!("  Amount: {:?}", payment_request.amount);
+    println!(
+        "  Payment ID: {}",
+        payment_request.payment_id.as_deref().unwrap_or("None")
+    );
+    println!(
+        "  Amount: {}",
+        payment_request
+            .amount
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "None".to_string())
+    );
     println!("  Mints: {}", payment_request.mints.len());
     println!("  Transports: {}", payment_request.transports.len());
     println!("  NUT-10: {}", payment_request.nut10.is_some());
@@ -397,7 +406,7 @@ fn analyze_qr_efficiency(nut18: &str, nut26: &str) {
 
 fn estimate_qr_version(data_length: usize, is_alphanumeric: bool) -> u8 {
     // Simplified QR version estimation (Level L - Low error correction)
-    let capacity = if is_alphanumeric {
+    if is_alphanumeric {
         // Alphanumeric mode capacity
         match data_length {
             0..=20 => 1,
@@ -437,8 +446,7 @@ fn estimate_qr_version(data_length: usize, is_alphanumeric: bool) -> u8 {
             363..=394 => 15,
             _ => 16,
         }
-    };
-    capacity
+    }
 }
 
 fn summary() {

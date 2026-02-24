@@ -154,6 +154,7 @@
               ./Cargo.lock
               ./Cargo.lock.msrv
               ./.typos.toml
+              ./rustfmt.toml
               ./README.md
               ./.cargo
               ./crates
@@ -171,6 +172,8 @@
             lib.fileset.unions [
               ./Cargo.toml
               ./Cargo.lock.msrv
+              ./.typos.toml
+              ./rustfmt.toml
               ./README.md
               ./.cargo
               ./crates
