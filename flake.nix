@@ -281,6 +281,7 @@
             cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests";
           }
         );
+
         # Static musl dependencies (separate cache for static builds, Linux only)
         workspaceDepsStatic = if muslTarget != null then craneLibStatic.buildDepsOnly (
           commonCraneArgsStatic
@@ -868,6 +869,12 @@
               value = mkMsrvBuild name msrvChecks.${name};
             }) (builtins.attrNames msrvChecks)
           ))
+          // (builtins.listToAttrs (
+            map (name: {
+              name = "msrv-${name}";
+              value = mkMsrvBuild name msrvChecks.${name};
+            }) (builtins.attrNames msrvChecks)
+          ))
           # Generate WASM build checks (prefixed with wasm-)
           // (builtins.listToAttrs (
             map (name: {
@@ -875,7 +882,18 @@
               value = mkWasmBuild name wasmChecks.${name};
             }) (builtins.attrNames wasmChecks)
           ))
-          # Generate example checks from exampleChecks list
+          // (builtins.listToAttrs (
+            map (name: {
+              name = "wasm-${name}";
+              value = mkWasmBuild name wasmChecks.${name};
+            }) (builtins.attrNames wasmChecks)
+          ))
+          // (builtins.listToAttrs (
+            map (name: {
+              name = "example-${name}";
+              value = mkExample name;
+            }) exampleChecks
+          ))
           // (builtins.listToAttrs (
             map (name: {
               name = "example-${name}";
