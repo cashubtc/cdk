@@ -19,6 +19,7 @@ use cdk::nuts::nut00::KnownMethod;
 #[cfg(any(
     feature = "cln",
     feature = "lnbits",
+    feature = "blink",
     feature = "lnd",
     feature = "ldk-node",
     feature = "fakewallet",
@@ -29,6 +30,7 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
 #[cfg(any(
     feature = "cln",
     feature = "lnbits",
+    feature = "blink",
     feature = "lnd",
     feature = "ldk-node"
 ))]
@@ -506,6 +508,28 @@ async fn configure_lightning_backend(
                 Arc::new(lnbits),
             )
             .await?;
+        }
+        #[cfg(feature = "blink")]
+        LnBackend::Blink => {
+            let blink_settings = settings.clone().blink.expect("Checked on config load");
+            tracing::info!("Using Blink backend: {:?}", blink_settings);
+
+            for unit in blink_settings.clone().supported_units {
+                let blink = blink_settings
+                    .setup(settings, unit.clone(), None, work_dir, None)
+                    .await?;
+                #[cfg(feature = "prometheus")]
+                let blink = MetricsMintPayment::new(blink);
+
+                mint_builder = configure_backend_for_unit(
+                    settings,
+                    mint_builder,
+                    unit.clone(),
+                    mint_melt_limits,
+                    Arc::new(blink),
+                )
+                .await?;
+            }
         }
         #[cfg(feature = "lnd")]
         LnBackend::Lnd => {

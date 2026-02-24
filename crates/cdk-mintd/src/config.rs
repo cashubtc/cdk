@@ -134,6 +134,8 @@ pub enum LnBackend {
     Cln,
     #[cfg(feature = "lnbits")]
     LNbits,
+    #[cfg(feature = "blink")]
+    Blink,
     #[cfg(feature = "fakewallet")]
     FakeWallet,
     #[cfg(feature = "lnd")]
@@ -153,6 +155,8 @@ impl std::str::FromStr for LnBackend {
             "cln" => Ok(LnBackend::Cln),
             #[cfg(feature = "lnbits")]
             "lnbits" => Ok(LnBackend::LNbits),
+            #[cfg(feature = "blink")]
+            "blink" => Ok(LnBackend::Blink),
             #[cfg(feature = "fakewallet")]
             "fakewallet" => Ok(LnBackend::FakeWallet),
             #[cfg(feature = "lnd")]
@@ -225,6 +229,56 @@ impl Default for LNbits {
             reserve_fee_min: 2.into(),
         }
     }
+}
+
+#[cfg(feature = "blink")]
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Blink {
+    pub api_key: String,
+    #[serde(default = "default_blink_api_url")]
+    pub api_url: String,
+    #[serde(default = "default_blink_supported_units")]
+    pub supported_units: Vec<CurrencyUnit>,
+    #[serde(default = "default_fee_percent")]
+    pub fee_percent: f32,
+    #[serde(default = "default_reserve_fee_min")]
+    pub reserve_fee_min: Amount,
+}
+
+#[cfg(feature = "blink")]
+impl std::fmt::Debug for Blink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Blink")
+            .field("api_key", &"[REDACTED]")
+            .field("api_url", &self.api_url)
+            .field("supported_units", &self.supported_units)
+            .field("fee_percent", &self.fee_percent)
+            .field("reserve_fee_min", &self.reserve_fee_min)
+            .finish()
+    }
+}
+
+#[cfg(feature = "blink")]
+impl Default for Blink {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            api_url: default_blink_api_url(),
+            supported_units: default_blink_supported_units(),
+            fee_percent: 0.02,
+            reserve_fee_min: 2.into(),
+        }
+    }
+}
+
+#[cfg(feature = "blink")]
+fn default_blink_supported_units() -> Vec<CurrencyUnit> {
+    vec![CurrencyUnit::Sat]
+}
+
+#[cfg(feature = "blink")]
+fn default_blink_api_url() -> String {
+    "https://api.blink.sv/graphql".to_string()
 }
 
 #[cfg(feature = "cln")]
@@ -430,12 +484,12 @@ impl Default for FakeWallet {
 
 // Helper functions to provide default values
 // Common fee defaults for all backends
-#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
+#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd", feature = "blink"))]
 fn default_fee_percent() -> f32 {
     0.02
 }
 
-#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
+#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd", feature = "blink"))]
 fn default_reserve_fee_min() -> Amount {
     2.into()
 }
@@ -619,6 +673,8 @@ pub struct Settings {
     pub cln: Option<Cln>,
     #[cfg(feature = "lnbits")]
     pub lnbits: Option<LNbits>,
+    #[cfg(feature = "blink")]
+    pub blink: Option<Blink>,
     #[cfg(feature = "lnd")]
     pub lnd: Option<Lnd>,
     #[cfg(feature = "ldk-node")]

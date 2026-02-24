@@ -12,6 +12,8 @@ mod ln;
 mod mint_info;
 
 mod auth;
+#[cfg(feature = "blink")]
+mod blink;
 #[cfg(feature = "cln")]
 mod cln;
 #[cfg(feature = "fakewallet")]
@@ -34,6 +36,8 @@ use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Result};
 pub use auth::*;
+#[cfg(feature = "blink")]
+pub use blink::*;
 #[cfg(feature = "cln")]
 pub use cln::*;
 pub use common::*;
@@ -128,6 +132,10 @@ impl Settings {
             #[cfg(feature = "lnbits")]
             LnBackend::LNbits => {
                 self.lnbits = Some(self.lnbits.clone().unwrap_or_default().from_env());
+            }
+            #[cfg(feature = "blink")]
+            LnBackend::Blink => {
+                self.blink = Some(self.blink.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "fakewallet")]
             LnBackend::FakeWallet => {

@@ -1256,6 +1256,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdk-blink"
+version = "0.15.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "cdk-common",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "cdk-cli"
 version = "0.15.1"
 dependencies = [
@@ -1542,6 +1559,7 @@ dependencies = [
  "bitcoin 0.32.8",
  "cdk",
  "cdk-axum",
+ "cdk-blink",
  "cdk-cln",
  "cdk-common",
  "cdk-fake-wallet",

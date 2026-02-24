@@ -11,7 +11,7 @@ rust-version.workspace = true
 readme = "README.md"
 
 [features]
-default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor", "sqlite"]
+default = ["management-rpc", "cln", "lnd", "lnbits", "blink", "fakewallet", "grpc-processor", "sqlite"]
 # Database features - at least one must be enabled
 sqlite = ["dep:cdk-sqlite"]
 postgres = ["dep:cdk-postgres"]
@@ -20,6 +20,7 @@ management-rpc = ["cdk-mint-rpc"]
 cln = ["dep:cdk-cln"]
 lnd = ["dep:cdk-lnd"]
 lnbits = ["dep:cdk-lnbits"]
+blink = ["dep:cdk-blink"]
 fakewallet = ["dep:cdk-fake-wallet"]
 ldk-node = ["dep:cdk-ldk-node"]
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
@@ -42,6 +43,7 @@ cdk-sqlite = { workspace = true, features = [
 cdk-common = {workspace = true, features = ["prometheus"]}
 cdk-postgres = { workspace = true, features = ["mint"], optional = true}
 cdk-cln = { workspace = true, optional = true }
+cdk-blink = { workspace = true, optional = true }
 cdk-lnbits = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
 cdk-ldk-node = { workspace = true, optional = true }

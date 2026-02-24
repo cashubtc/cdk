@@ -15,6 +15,7 @@ use cdk::cdk_payment::MintPayment;
 use cdk::nuts::CurrencyUnit;
 #[cfg(any(
     feature = "lnbits",
+    feature = "blink",
     feature = "cln",
     feature = "lnd",
     feature = "ldk-node",
@@ -76,6 +77,47 @@ impl LnBackendSetup for config::Cln {
         .await?;
 
         Ok(cln)
+    }
+}
+
+#[cfg(feature = "blink")]
+#[async_trait]
+impl LnBackendSetup for config::Blink {
+    async fn setup(
+        &self,
+        _settings: &Settings,
+        unit: CurrencyUnit,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+        _work_dir: &Path,
+        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+    ) -> anyhow::Result<cdk_blink::Blink> {
+        use anyhow::bail;
+
+        // Validate required connection field
+        if self.api_key.is_empty() {
+            bail!("Blink api_key must be set via config or CDK_MINTD_BLINK_API_KEY env var");
+        }
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: self.reserve_fee_min,
+            percent_fee_reserve: self.fee_percent,
+        };
+
+        let endpoint = if self.api_url.is_empty() {
+            None
+        } else {
+            Some(self.api_url.clone())
+        };
+
+        let blink = cdk_blink::Blink::new(
+            self.api_key.clone(),
+            endpoint,
+            fee_reserve,
+            unit,
+        )
+        .await?;
+
+        Ok(blink)
     }
 }
 

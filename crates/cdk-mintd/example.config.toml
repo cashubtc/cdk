@@ -114,6 +114,13 @@ ln_backend = "fakewallet"
 # reserve_fee_min = 2        # Optional, defaults to 2 sats
 # Note: Only LNBits v1 API is supported (websocket-based)
 
+# [blink]
+# api_key = ""                                    # Required: API key from https://dashboard.blink.sv
+# api_url = "https://api.blink.sv/graphql"        # Optional, defaults to production endpoint
+# supported_units = ["sat"]                       # "sat" for BTC wallet, "usd" for USD wallet, or both
+# fee_percent = 0.02                              # Optional, defaults to 2%
+# reserve_fee_min = 2                             # Optional, defaults to 2 sats
+
 # [lnd]
 # address = "https://localhost:10009"
 # cert_file = "/path/to/.lnd/tls.cert"
