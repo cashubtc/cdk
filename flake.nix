@@ -164,9 +164,10 @@
         });
 
         # MSRV dependencies (separate cache due to different toolchain)
+        # Exclude cdk-redb (and its dependents) since redb requires a higher MSRV
         workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (commonCraneArgsMsrv // {
           pname = "cdk-deps-msrv";
-          cargoExtraArgs = "--workspace";
+          cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests";
         });
 
         # Helper function to create combined clippy + test checks

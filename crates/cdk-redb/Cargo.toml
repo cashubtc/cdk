@@ -7,7 +7,7 @@ description = "Redb storage backend for CDK"
 license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version.workspace = "1.89.0" # MSRV
+rust-version = "1.89.0" # MSRV
 readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
