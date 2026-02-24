@@ -17,9 +17,11 @@ The cdk-payment-processor is a Rust crate that provides both a binary and a libr
 
 ### Prerequisites
 1. Install Nix package manager
-2. Enter development environment:
+2. Enter development environment (use `.#regtest` for full stack including CLN/LND):
 ```sh
 nix develop
+# or for full stack:
+nix develop .#regtest
 ```
 
 ### Configuration

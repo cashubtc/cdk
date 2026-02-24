@@ -9,6 +9,19 @@ CDK is a collection of rust crates for [Cashu](https://github.com/cashubtc) wall
 
 **ALPHA** This library is in early development, the api will change and should be used with caution.
 
+## Quick Start
+
+CDK uses Nix flakes to manage development environments. We provide a lean default shell for standard development and a full-stack shell for integration testing.
+
+```bash
+# Enter the lean development shell (Rust + PostgreSQL)
+nix develop
+
+# OR enter the full regtest environment (Bitcoind + Lightning Nodes)
+nix develop .#regtest
+```
+
+For more details on available environments, see the [Development Guide](DEVELOPMENT.md).
 
 ## Project structure
 
@@ -39,10 +52,6 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-mintd**](./crates/cdk-mintd/): Cashu Mint Binary.
     * [**cdk-mint-cli**](./crates/cdk-mint-rpc/): Cashu Mint management gRPC client cli.
 
-
-## Development 
-
-For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVELOPMENT.md)
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
