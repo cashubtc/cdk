@@ -51,10 +51,8 @@ pub async fn pay_request(
     for wallet in wallet_mints.iter() {
         let balance = wallet.total_balance().await?;
 
-        if let Some(request_mints) = request_mints {
-            if !request_mints.contains(&wallet.mint_url) {
-                continue;
-            }
+        if !request_mints.is_empty() && !request_mints.contains(&wallet.mint_url) {
+            continue;
         }
 
         if let Some(unit) = unit {

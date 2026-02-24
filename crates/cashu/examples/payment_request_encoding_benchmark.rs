@@ -93,7 +93,7 @@ fn minimal_comparison() -> Result<(), Box<dyn std::error::Error>> {
         amount: None,
         unit: None,
         single_use: None,
-        mints: Some(vec![MintUrl::from_str("https://mint.example.com")?]),
+        mints: vec![MintUrl::from_str("https://mint.example.com")?],
         description: None,
         transports: vec![],
         nut10: None,
@@ -109,7 +109,7 @@ fn amount_unit_comparison() -> Result<(), Box<dyn std::error::Error>> {
         amount: Some(Amount::from(2100)),
         unit: Some(CurrencyUnit::Sat),
         single_use: None,
-        mints: Some(vec![MintUrl::from_str("https://mint.example.com")?]),
+        mints: vec![MintUrl::from_str("https://mint.example.com")?],
         description: None,
         transports: vec![],
         nut10: None,
@@ -125,12 +125,12 @@ fn multiple_mints_comparison() -> Result<(), Box<dyn std::error::Error>> {
         amount: Some(Amount::from(10000)),
         unit: Some(CurrencyUnit::Sat),
         single_use: Some(true),
-        mints: Some(vec![
+        mints: vec![
             MintUrl::from_str("https://mint1.example.com")?,
             MintUrl::from_str("https://mint2.example.com")?,
             MintUrl::from_str("https://mint3.example.com")?,
             MintUrl::from_str("https://backup-mint.cashu.space")?,
-        ]),
+        ],
         description: Some("Payment with multiple mint options".to_string()),
         transports: vec![],
         nut10: None,
@@ -144,10 +144,10 @@ fn transport_comparison() -> Result<(), Box<dyn std::error::Error>> {
     let transport = Transport {
         _type: TransportType::HttpPost,
         target: "https://api.example.com/cashu/payment/callback".to_string(),
-        tags: Some(vec![
+        tags: vec![
             vec!["method".to_string(), "POST".to_string()],
             vec!["auth".to_string(), "bearer".to_string()],
-        ]),
+        ],
     };
 
     let payment_request = PaymentRequest {
@@ -155,7 +155,7 @@ fn transport_comparison() -> Result<(), Box<dyn std::error::Error>> {
         amount: Some(Amount::from(5000)),
         unit: Some(CurrencyUnit::Sat),
         single_use: Some(true),
-        mints: Some(vec![MintUrl::from_str("https://mint.example.com")?]),
+        mints: vec![MintUrl::from_str("https://mint.example.com")?],
         description: Some("Payment with callback transport".to_string()),
         transports: vec![transport],
         nut10: None,
@@ -181,7 +181,7 @@ fn complete_with_nut10_comparison() -> Result<(), Box<dyn std::error::Error>> {
     let transport = Transport {
         _type: TransportType::HttpPost,
         target: "https://callback.example.com/payment".to_string(),
-        tags: Some(vec![vec!["priority".to_string(), "high".to_string()]]),
+        tags: vec![vec!["priority".to_string(), "high".to_string()]],
     };
 
     let payment_request = PaymentRequest {
@@ -189,10 +189,10 @@ fn complete_with_nut10_comparison() -> Result<(), Box<dyn std::error::Error>> {
         amount: Some(Amount::from(5000)),
         unit: Some(CurrencyUnit::Sat),
         single_use: Some(true),
-        mints: Some(vec![
+        mints: vec![
             MintUrl::from_str("https://mint1.example.com")?,
             MintUrl::from_str("https://mint2.example.com")?,
-        ]),
+        ],
         description: Some("Complete payment with P2PK locking and refund key".to_string()),
         transports: vec![transport],
         nut10: Some(nut10),
@@ -218,19 +218,19 @@ fn very_complex_comparison() -> Result<(), Box<dyn std::error::Error>> {
     let transport1 = Transport {
         _type: TransportType::HttpPost,
         target: "https://primary-callback.example.com/payment/webhook".to_string(),
-        tags: Some(vec![
+        tags: vec![
             vec!["priority".to_string(), "high".to_string()],
             vec!["timeout".to_string(), "30".to_string()],
-        ]),
+        ],
     };
 
     let transport2 = Transport {
         _type: TransportType::HttpPost,
         target: "https://backup-callback.example.com/payment/webhook".to_string(),
-        tags: Some(vec![
+        tags: vec![
             vec!["priority".to_string(), "medium".to_string()],
             vec!["timeout".to_string(), "60".to_string()],
-        ]),
+        ],
     };
 
     let payment_request = PaymentRequest {
@@ -238,13 +238,13 @@ fn very_complex_comparison() -> Result<(), Box<dyn std::error::Error>> {
         amount: Some(Amount::from(21000)),
         unit: Some(CurrencyUnit::Sat),
         single_use: Some(true),
-        mints: Some(vec![
+        mints: vec![
             MintUrl::from_str("https://primary-mint.cashu.space")?,
             MintUrl::from_str("https://secondary-mint.example.com")?,
             MintUrl::from_str("https://backup-mint-1.example.org")?,
             MintUrl::from_str("https://backup-mint-2.example.net")?,
             MintUrl::from_str("https://emergency-mint.example.io")?,
-        ]),
+        ],
         description: Some("Complex payment with multiple mints and transports".to_string()),
         transports: vec![transport1, transport2],
         nut10: Some(nut10),
@@ -273,10 +273,7 @@ fn compare_formats(
     println!("  {} Payment Request:", label);
     println!("  Payment ID: {:?}", payment_request.payment_id);
     println!("  Amount: {:?}", payment_request.amount);
-    println!(
-        "  Mints: {}",
-        payment_request.mints.as_ref().map_or(0, |m| m.len())
-    );
+    println!("  Mints: {}", payment_request.mints.len());
     println!("  Transports: {}", payment_request.transports.len());
     println!("  NUT-10: {}", payment_request.nut10.is_some());
 
