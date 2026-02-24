@@ -603,7 +603,8 @@ impl MintPayment for Lnd {
                                 payment_lookup_id: payment_identifier,
                                 payment_proof: payment_preimage,
                                 status: response_status,
-                                total_spent: Amount::new(total_msat as u64, CurrencyUnit::Msat).convert_to(unit)?,
+                                total_spent: Amount::new(total_msat as u64, CurrencyUnit::Msat)
+                                    .convert_to(unit)?,
                             });
                         }
 
