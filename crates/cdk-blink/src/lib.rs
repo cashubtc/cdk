@@ -5,6 +5,7 @@
 //! and USD (cents).
 
 use std::cmp::max;
+use std::fmt;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -56,8 +57,8 @@ pub struct Blink {
     settings: SettingsResponse,
 }
 
-impl std::fmt::Debug for Blink {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Blink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Blink")
             .field("endpoint", &self.endpoint)
             .field("unit", &self.unit)
@@ -195,7 +196,11 @@ impl Blink {
 
     /// Return an Amount in the instance's native unit from a settlement value.
     /// Blink settlement amounts are in sats for BTC wallets, cents for USD wallets.
-    fn settlement_to_amount(&self, settlement_value: u64, unit: &CurrencyUnit) -> Amount<CurrencyUnit> {
+    fn settlement_to_amount(
+        &self,
+        settlement_value: u64,
+        unit: &CurrencyUnit,
+    ) -> Amount<CurrencyUnit> {
         if is_usd_unit(unit) {
             // USD wallet settlement amounts are in cents
             Amount::new(settlement_value, unit.clone())
@@ -382,11 +387,12 @@ impl MintPayment for Blink {
                         }
                         amount.amount_msat()
                     }
-                    None => bolt11_options
-                        .bolt11
-                        .amount_milli_satoshis()
-                        .ok_or(Error::UnknownInvoiceAmount)?
-                        .into(),
+                    None => Amount::from(
+                        bolt11_options
+                            .bolt11
+                            .amount_milli_satoshis()
+                            .ok_or(Error::UnknownInvoiceAmount)?,
+                    ),
                 };
 
                 let invoice_str = bolt11_options.bolt11.to_string();
@@ -398,10 +404,7 @@ impl MintPayment for Blink {
                 let fee_msat = match probe_fee {
                     Ok(fee) => fee,
                     Err(e) => {
-                        tracing::warn!(
-                            "Blink fee probe failed, using fallback: {}",
-                            e
-                        );
+                        tracing::warn!("Blink fee probe failed, using fallback: {}", e);
                         // Fallback: max(amount * 0.5%, 10_000 msat)
                         let relative =
                             (u64::from(amount_msat) as f64 * BLINK_MAX_FEE_PERCENT) as u64;
@@ -427,10 +430,8 @@ impl MintPayment for Blink {
                 // min_fee_reserve is in native units (sats for BTC, cents for USD).
                 // The msat-based reserve calculation above is wrong for USD because it
                 // treats min_fee_reserve as sats, so we enforce it post-conversion.
-                let min_fee = Amount::new(
-                    u64::from(self.fee_reserve.min_fee_reserve),
-                    unit.clone(),
-                );
+                let min_fee =
+                    Amount::new(u64::from(self.fee_reserve.min_fee_reserve), unit.clone());
                 if fee < min_fee {
                     fee = min_fee;
                 }
@@ -479,13 +480,12 @@ impl MintPayment for Blink {
                     }
                 });
 
-                let data =
-                    graphql_request(&self.client, &self.endpoint, query, Some(variables))
-                        .await
-                        .map_err(|e| {
-                            tracing::error!("Blink: Could not pay invoice: {e}");
-                            Self::Err::Anyhow(anyhow!("Could not pay invoice: {e}"))
-                        })?;
+                let data = graphql_request(&self.client, &self.endpoint, query, Some(variables))
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("Blink: Could not pay invoice: {e}");
+                        Self::Err::Anyhow(anyhow!("Could not pay invoice: {e}"))
+                    })?;
 
                 let send_result = data.get("lnInvoicePaymentSend").ok_or_else(|| {
                     Self::Err::Anyhow(anyhow!("No lnInvoicePaymentSend in response"))
@@ -573,17 +573,13 @@ impl MintPayment for Blink {
                         }
                     });
 
-                    let data = graphql_request(
-                        &self.client,
-                        &self.endpoint,
-                        query,
-                        Some(variables),
-                    )
-                    .await
-                    .map_err(|e| {
-                        tracing::error!("Blink: Could not create USD invoice: {e}");
-                        Self::Err::Anyhow(anyhow!("Could not create invoice: {e}"))
-                    })?;
+                    let data =
+                        graphql_request(&self.client, &self.endpoint, query, Some(variables))
+                            .await
+                            .map_err(|e| {
+                                tracing::error!("Blink: Could not create USD invoice: {e}");
+                                Self::Err::Anyhow(anyhow!("Could not create invoice: {e}"))
+                            })?;
 
                     (data, "lnUsdInvoiceCreateOnBehalfOfRecipient")
                 } else {
@@ -611,24 +607,20 @@ impl MintPayment for Blink {
                         }
                     });
 
-                    let data = graphql_request(
-                        &self.client,
-                        &self.endpoint,
-                        query,
-                        Some(variables),
-                    )
-                    .await
-                    .map_err(|e| {
-                        tracing::error!("Blink: Could not create invoice: {e}");
-                        Self::Err::Anyhow(anyhow!("Could not create invoice: {e}"))
-                    })?;
+                    let data =
+                        graphql_request(&self.client, &self.endpoint, query, Some(variables))
+                            .await
+                            .map_err(|e| {
+                                tracing::error!("Blink: Could not create invoice: {e}");
+                                Self::Err::Anyhow(anyhow!("Could not create invoice: {e}"))
+                            })?;
 
                     (data, "lnInvoiceCreateOnBehalfOfRecipient")
                 };
 
-                let create_result = data.get(mutation_name).ok_or_else(|| {
-                    Self::Err::Anyhow(anyhow!("No {mutation_name} in response"))
-                })?;
+                let create_result = data
+                    .get(mutation_name)
+                    .ok_or_else(|| Self::Err::Anyhow(anyhow!("No {mutation_name} in response")))?;
 
                 // Check for errors
                 if let Some(errors) = create_result.get("errors").and_then(|e| e.as_array()) {
@@ -638,9 +630,7 @@ impl MintPayment for Blink {
                             .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
                             .collect::<Vec<_>>()
                             .join("; ");
-                        return Err(Self::Err::Anyhow(anyhow!(
-                            "Invoice creation failed: {msg}"
-                        )));
+                        return Err(Self::Err::Anyhow(anyhow!("Invoice creation failed: {msg}")));
                     }
                 }
 
@@ -651,9 +641,7 @@ impl MintPayment for Blink {
                 let payment_request = invoice_data
                     .get("paymentRequest")
                     .and_then(|p| p.as_str())
-                    .ok_or_else(|| {
-                        Self::Err::Anyhow(anyhow!("No paymentRequest in invoice"))
-                    })?;
+                    .ok_or_else(|| Self::Err::Anyhow(anyhow!("No paymentRequest in invoice")))?;
 
                 let request: Bolt11Invoice = payment_request.parse()?;
                 let expiry = request.expires_at().map(|t| t.as_secs());
@@ -773,10 +761,9 @@ impl MintPayment for Blink {
             .and_then(|w| w.get("transactionsByPaymentHash"))
             .and_then(|t| t.as_array());
 
-        let (status, total_spent) = if let Some(txs) = transactions {
-            self.parse_outgoing_transactions(txs)
-        } else {
-            (MeltQuoteState::Unknown, Amount::new(0, self.unit.clone()))
+        let (status, total_spent) = match transactions {
+            Some(txs) => self.parse_outgoing_transactions(txs),
+            None => (MeltQuoteState::Unknown, Amount::new(0, self.unit.clone())),
         };
 
         Ok(MakePaymentResponse {
@@ -791,7 +778,12 @@ impl MintPayment for Blink {
 impl Blink {
     /// Probe fee for an invoice using Blink's fee probe mutation.
     /// Uses `lnUsdInvoiceFeeProbe` for USD and `lnInvoiceFeeProbe` for BTC.
-    async fn probe_fee(&self, wallet_id: &str, invoice: &str, unit: &CurrencyUnit) -> Result<u64, Error> {
+    async fn probe_fee(
+        &self,
+        wallet_id: &str,
+        invoice: &str,
+        unit: &CurrencyUnit,
+    ) -> Result<u64, Error> {
         let (query, response_key) = if is_usd_unit(unit) {
             (
                 r#"
@@ -937,10 +929,7 @@ impl Blink {
 
     /// Get the received amount for an incoming payment.
     /// Uses the instance's configured unit to determine which wallet to query.
-    async fn get_received_amount(
-        &self,
-        payment_hash: &str,
-    ) -> Result<Amount<CurrencyUnit>, Error> {
+    async fn get_received_amount(&self, payment_hash: &str) -> Result<Amount<CurrencyUnit>, Error> {
         let query = r#"
             query TransactionsByPaymentHash($paymentHash: PaymentHash!, $walletId: WalletId!) {
                 me {
@@ -997,10 +986,7 @@ impl Blink {
     /// Parse outgoing transactions to determine status and total spent.
     /// Handles the edge case where both SEND and RECEIVE transactions exist
     /// (internal transfer that should be treated as FAILED).
-    fn parse_outgoing_transactions(
-        &self,
-        txs: &[Value],
-    ) -> (MeltQuoteState, Amount<CurrencyUnit>) {
+    fn parse_outgoing_transactions(&self, txs: &[Value]) -> (MeltQuoteState, Amount<CurrencyUnit>) {
         let mut has_send = false;
         let mut has_receive = false;
         let mut send_status = MeltQuoteState::Unknown;
@@ -1052,10 +1038,7 @@ impl Blink {
         // Edge case: if both SEND and RECEIVE exist, it was an internal
         // transfer that failed to reach the external destination
         if has_send && has_receive {
-            return (
-                MeltQuoteState::Unpaid,
-                Amount::new(0, self.unit.clone()),
-            );
+            return (MeltQuoteState::Unpaid, Amount::new(0, self.unit.clone()));
         }
 
         if has_send {

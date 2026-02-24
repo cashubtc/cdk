@@ -109,13 +109,8 @@ impl LnBackendSetup for config::Blink {
             Some(self.api_url.clone())
         };
 
-        let blink = cdk_blink::Blink::new(
-            self.api_key.clone(),
-            endpoint,
-            fee_reserve,
-            unit,
-        )
-        .await?;
+        let blink =
+            cdk_blink::Blink::new(self.api_key.clone(), endpoint, fee_reserve, unit).await?;
 
         Ok(blink)
     }
