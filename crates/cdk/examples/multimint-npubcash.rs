@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         use web_time::{SystemTime, UNIX_EPOCH};
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| e.to_string())?
             .as_nanos();
         for (i, byte) in s.iter_mut().enumerate() {
             *byte = ((timestamp >> (i % 16)) & 0xFF) as u8;
@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     wallet.enable_npubcash(NPUBCASH_URL.to_string()).await?;
 
-    let keys = wallet.get_npubcash_keys().unwrap();
+    let keys = wallet.get_npubcash_keys()?;
     let npub = keys.public_key().to_bech32()?;
     let display_url = NPUBCASH_URL.trim_start_matches("https://");
 

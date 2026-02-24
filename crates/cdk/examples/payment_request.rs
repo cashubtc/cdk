@@ -23,6 +23,8 @@
 //! cargo run --example payment_request --features="wallet nostr"
 //! ```
 
+#![allow(clippy::use_debug)]
+
 use std::sync::Arc;
 use std::time::Duration;
 

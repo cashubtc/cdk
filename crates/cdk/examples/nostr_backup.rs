@@ -102,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
 
     let relays = vec!["wss://relay.damus.io", "wss://nos.lol"];
 
-    println!("  Relays: {:?}", relays);
+    println!("  Relays: [{}]", relays.join(", "));
     println!("  Publishing backup event...");
 
     let backup_result = wallet

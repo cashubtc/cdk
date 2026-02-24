@@ -246,7 +246,7 @@ mod tests {
         let secret: SecretString = nut10_secret.try_into().unwrap();
 
         let htlc_witness = HTLCWitness {
-            preimage: hex::encode(&preimage_bytes),
+            preimage: hex::encode(preimage_bytes),
             signatures: None,
         };
 
@@ -287,7 +287,7 @@ mod tests {
         // Use a different preimage in the witness
         let wrong_preimage_bytes = [99u8; 32]; // Different from correct preimage
         let htlc_witness = HTLCWitness {
-            preimage: hex::encode(&wrong_preimage_bytes),
+            preimage: hex::encode(wrong_preimage_bytes),
             signatures: None,
         };
 
@@ -330,7 +330,7 @@ mod tests {
 
         let preimage_bytes = [42u8; 32]; // Valid 32-byte preimage
         let htlc_witness = HTLCWitness {
-            preimage: hex::encode(&preimage_bytes),
+            preimage: hex::encode(preimage_bytes),
             signatures: None,
         };
 
@@ -422,7 +422,7 @@ mod tests {
         assert!(proof.witness.is_none());
 
         // Add preimage (hex-encoded)
-        let preimage_hex = hex::encode(&preimage_bytes);
+        let preimage_hex = hex::encode(preimage_bytes);
         proof.add_preimage(preimage_hex.clone());
 
         // After adding, witness should be Some with HTLCWitness
@@ -477,8 +477,8 @@ mod tests {
         let secret: SecretString = nut10_secret.try_into().unwrap();
 
         let htlc_witness = HTLCWitness {
-            preimage: hex::encode(&wrong_preimage_bytes), // Wrong preimage!
-            signatures: None,                             // No signature provided
+            preimage: hex::encode(wrong_preimage_bytes), // Wrong preimage!
+            signatures: None,                            // No signature provided
         };
 
         let proof = Proof {
