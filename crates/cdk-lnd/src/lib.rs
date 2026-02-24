@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cdk_common::amount::{Amount, MSAT_IN_SAT};
+use cdk_common::amount::Amount;
 use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
@@ -545,24 +545,23 @@ impl MintPayment for Lnd {
                                 .unwrap_or_default(),
                         );
 
-                        let pay_req = lnrpc::SendRequest {
+                        let fee_limit_msat = match max_fee {
+                            Some(fee) => Amount::new(fee.into(), unit.clone())
+                                .convert_to(&CurrencyUnit::Msat)?
+                                .value() as i64,
+                            None => 0,
+                        };
+
+                        let pay_req = routerrpc::SendPaymentRequest {
                             payment_request: bolt11.to_string(),
-                            fee_limit: max_fee
-                                .map(|f| {
-                                    let fee_msat = Amount::new(f.into(), unit.clone())
-                                        .convert_to(&CurrencyUnit::Msat)?
-                                        .value();
-                                    let limit = Limit::FixedMsat(fee_msat as i64);
-                                    Ok::<_, Error>(FeeLimit { limit: Some(limit) })
-                                })
-                                .transpose()?,
+                            fee_limit_msat,
                             amt_msat: amount_msat as i64,
                             ..Default::default()
                         };
 
-                        let payment_response = lnd_client
-                            .lightning()
-                            .send_payment_sync(tonic::Request::new(pay_req))
+                        let mut payment_stream = lnd_client
+                            .router()
+                            .send_payment_v2(pay_req)
                             .await
                             .map_err(|err| {
                                 tracing::warn!("Lightning payment failed: {}", err);
@@ -570,28 +569,46 @@ impl MintPayment for Lnd {
                             })?
                             .into_inner();
 
-                        let total_amount = payment_response
-                            .payment_route
-                            .map_or(0, |route| route.total_amt_msat / MSAT_IN_SAT as i64)
-                            as u64;
+                        while let Some(update) = payment_stream.message().await.map_err(|err| {
+                            tracing::warn!("Lightning payment failed: {}", err);
+                            Error::PaymentFailed
+                        })? {
+                            let status = update.status();
 
-                        let (status, payment_preimage) = match total_amount == 0 {
-                            true => (MeltQuoteState::Unpaid, None),
-                            false => (
-                                MeltQuoteState::Paid,
-                                Some(hex::encode(payment_response.payment_preimage)),
-                            ),
-                        };
+                            let response_status = match status {
+                                PaymentStatus::InFlight | PaymentStatus::Initiated => {
+                                    continue;
+                                }
+                                PaymentStatus::Succeeded => MeltQuoteState::Paid,
+                                PaymentStatus::Failed => MeltQuoteState::Failed,
+                                #[allow(deprecated)]
+                                PaymentStatus::Unknown => MeltQuoteState::Unknown,
+                            };
 
-                        let payment_identifier =
-                            PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
+                            let total_msat = update
+                                .value_msat
+                                .checked_add(update.fee_msat)
+                                .ok_or(Error::AmountOverflow)?;
 
-                        Ok(MakePaymentResponse {
-                            payment_lookup_id: payment_identifier,
-                            payment_proof: payment_preimage,
-                            status,
-                            total_spent: Amount::new(total_amount, CurrencyUnit::Sat),
-                        })
+                            let payment_preimage = if update.payment_preimage.is_empty() {
+                                None
+                            } else {
+                                Some(update.payment_preimage)
+                            };
+
+                            let payment_identifier =
+                                PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
+
+                            return Ok(MakePaymentResponse {
+                                payment_lookup_id: payment_identifier,
+                                payment_proof: payment_preimage,
+                                status: response_status,
+                                total_spent: Amount::new(total_msat as u64, CurrencyUnit::Msat)
+                                    .convert_to(unit)?,
+                            });
+                        }
+
+                        Err(Error::UnknownPaymentStatus.into())
                     }
                 }
             }
