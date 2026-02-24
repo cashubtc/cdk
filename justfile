@@ -22,7 +22,10 @@ new-migration target name:
     touch "$migration_path"
     echo "Created new migration: $migration_path"
 
-final-check: typos format clippy test
+
+final-check: lint clippy test
+
+quick-check: lint clippy test-units
 
 # run `cargo build` on everything
 build *ARGS="--workspace --all-targets":
@@ -64,6 +67,13 @@ test:
   # Run pure integration tests
   cargo test -p cdk-integration-tests --test mint 
 
+test-units:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
   
 # run doc tests
 test-pure db="memory":

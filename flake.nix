@@ -90,6 +90,7 @@
         # ========================================
         craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
+        craneLibNightly = (crane.mkLib pkgs).overrideToolchain nightly_toolchain;
 
         # Source for crane builds - uses lib.fileset for efficient filtering
         # This is much faster than nix-gitignore when large directories (like target/) exist
@@ -102,6 +103,7 @@
               ./Cargo.toml
               ./Cargo.lock
               ./Cargo.lock.msrv
+              ./.typos.toml
               ./README.md
               ./.cargo
               ./crates
@@ -168,6 +170,12 @@
         workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (commonCraneArgsMsrv // {
           pname = "cdk-deps-msrv";
           cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests";
+        });
+
+         # Nightly dependencies (separate cache due to different toolchain)
+        workspaceDepsNightly = craneLibNightly.buildDepsOnly (commonCraneArgs // {
+          pname = "cdk-deps-nightly";
+          cargoExtraArgs = "--workspace";
         });
 
         # Helper function to create combined clippy + test checks
@@ -296,6 +304,34 @@
           "proof-selection"
           "wallet"
         ];
+
+        # Quick check - runs typos, format check, clippy, and unit tests
+        # Matches the `just quick-check` command for consistency between local and CI
+        quickCheck = craneLibNightly.mkCargoDerivation (commonCraneArgs // {
+          pname = "cdk-quick-check";
+          cargoArtifacts = workspaceDepsNightly;
+          nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
+            pkgs.typos
+            pkgs.nixpkgs-fmt
+          ];
+          buildPhaseCargoCommand = ''
+            # Check for typos
+            typos
+
+            # Check Rust formatting
+            cargo fmt --all -- --check
+
+            # Check Nix formatting
+            nixpkgs-fmt --check $(echo **.nix)
+
+            # Run clippy
+            cargo clippy --workspace --all-targets -- -D warnings
+
+            # Run unit tests
+            cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
+          '';
+          installPhaseCommand = "mkdir -p $out";
+        });
 
         # ========================================
         # Clippy + test check definitions - single source of truth
@@ -578,6 +614,9 @@
           # Generate example checks from exampleChecks list
           // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExample name; }) exampleChecks))
           // {
+            # Quick check - comprehensive fast checks (typos, format, clippy, unit tests)
+            quick-check = quickCheck;
+
             # Doc tests
             doc-tests = docTests;
 

@@ -1,3 +1,8 @@
+[files]
+extend-exclude = [
+    "target/"
+]
+
 [default]
 extend-ignore-re = [
     # Ignore cashu tokens
