@@ -311,6 +311,7 @@ fn create_ldk_settings(
         cln: None,
         lnbits: None,
         lnd: None,
+        blink: None,
         ldk_node: Some(ldk_config),
         fake_wallet: None,
         grpc_processor: None,
