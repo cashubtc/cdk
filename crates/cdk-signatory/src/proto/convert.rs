@@ -345,8 +345,7 @@ impl From<crate::signatory::RotateKeyArguments> for RotationRequest {
             unit: Some(value.unit.into()),
             amounts: value.amounts,
             input_fee_ppk: value.input_fee_ppk,
-            // added a plus one to be correct with the keyset enum
-            keyset_id_type: (value.keyset_id_type.to_byte() as i32 + 1),
+            keyset_id_type: value.keyset_id_type.to_proto_i32(),
             final_expiry: value.final_expiry,
         }
     }
@@ -356,7 +355,6 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
     type Error = Status;
 
     fn try_into(self) -> Result<crate::signatory::RotateKeyArguments, Self::Error> {
-        let keyset_id_type: u8 = self.keyset_id_type as u8;
         Ok(crate::signatory::RotateKeyArguments {
             unit: self
                 .unit
@@ -365,7 +363,7 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
             amounts: self.amounts,
             input_fee_ppk: self.input_fee_ppk,
             final_expiry: self.final_expiry,
-            keyset_id_type: KeySetVersion::from_byte(&keyset_id_type)
+            keyset_id_type: KeySetVersion::from_proto_i32(self.keyset_id_type)
                 .map_err(|err| Status::invalid_argument(err.to_string()))?,
         })
     }
