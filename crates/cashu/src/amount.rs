@@ -195,7 +195,11 @@ impl Amount<()> {
         }
     }
 
-    /// Split into parts that are powers of two
+    /// Split into parts using the available denominations
+    ///
+    /// Uses a greedy algorithm starting from the largest denomination,
+    /// taking as many of each denomination as possible before moving
+    /// to the next smaller one.
     ///
     /// Returns an error if the amount cannot be fully represented
     /// with the available denominations.
@@ -205,7 +209,8 @@ impl Amount<()> {
             .iter()
             .rev()
             .fold((Vec::new(), self.value), |(mut acc, total), &amount| {
-                if total >= amount {
+                let count = total / amount;
+                for _ in 0..count {
                     acc.push(Self::from(amount));
                 }
                 (acc, total % amount)
@@ -1201,13 +1206,10 @@ mod tests {
         }
     }
 
-    /// Tests that the modulo operation in split works correctly.
+    /// Tests that split produces correct decomposition for standard keysets.
     ///
-    /// At line 108, split uses modulo (%) to compute the remainder.
-    /// If this is mutated to division (/), it would produce wrong results
-    /// that could cause infinite loops in code that depends on split.
-    ///
-    /// Mutant testing: Kills mutations that replace `%` with `/`.
+    /// Verifies that the greedy algorithm correctly decomposes amounts
+    /// using the available denominations.
     #[test]
     fn test_split_modulo_operation() {
         let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
@@ -1233,17 +1235,18 @@ mod tests {
     /// with the available denominations.
     #[test]
     fn test_split_cannot_represent_amount() {
-        // Only denomination 32 available - the split algorithm can only use each denomination once
+        // Only denomination 32 available
         let fee_and_amounts: FeeAndAmounts = (0, vec![32]).into();
 
-        // 100 cannot be exactly represented: 100 >= 32, push(32), 100 % 32 = 4, result = [32]
+        // 100 cannot be exactly represented: 100 / 32 = 3, remainder 4
+        // Result: [32, 32, 32] = 96, missing 4
         let amount = Amount::from(100);
         let result = amount.split(&fee_and_amounts);
         assert!(result.is_err());
         match result {
             Err(Error::CannotSplitAmount(requested, got)) => {
                 assert_eq!(requested, 100);
-                assert_eq!(got, 32); // Only one 32 can be taken
+                assert_eq!(got, 96); // Three 32s = 96, remainder 4 cannot be represented
             }
             _ => panic!("Expected CannotSplitAmount error"),
         }
@@ -1254,9 +1257,15 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), vec![Amount::from(32)]);
 
+        // 64 can now be represented as two 32s
+        let amount = Amount::from(64);
+        let result = amount.split(&fee_and_amounts);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![Amount::from(32), Amount::from(32)]);
+
         // Missing denominations: only have 32 and 64, trying to split 100
-        // 100 >= 64, push(64), 100 % 64 = 36
-        // 36 >= 32, push(32), 36 % 32 = 4
+        // 100 / 64 = 1, remainder 36
+        // 36 / 32 = 1, remainder 4
         // Result: [64, 32] = 96, missing 4
         let fee_and_amounts: FeeAndAmounts = (0, vec![32, 64]).into();
         let amount = Amount::from(100);
@@ -1273,20 +1282,32 @@ mod tests {
 
     #[test]
     fn test_split_amount_exceeds_keyset_capacity() {
-        // Keyset with denominations 2^0 to 2^31
-        let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
+        // Keyset with only denomination 32 — amount 100 leaves remainder 4
+        // which cannot be represented, so split fails
+        let fee_and_amounts: FeeAndAmounts = (0, vec![32]).into();
 
-        // Attempt to split 2^63 (way larger than sum of keyset)
-        let amount = Amount::from(2u64.pow(63));
+        let amount = Amount::from(100);
         let result = amount.split(&fee_and_amounts);
-
         assert!(result.is_err());
         match result {
             Err(Error::CannotSplitAmount(requested, got)) => {
-                assert_eq!(requested, 2u64.pow(63));
-                // The algorithm greedily takes 2^31, and since 2^63 % 2^31 == 0, it stops there.
-                // So "got" should be 2^31.
-                assert_eq!(got, 2u64.pow(31));
+                assert_eq!(requested, 100);
+                // 100 / 32 = 3 with remainder 4, so got = 96
+                assert_eq!(got, 96);
+            }
+            _ => panic!("Expected CannotSplitAmount error, got {:?}", result),
+        }
+
+        // Keyset {4, 16} — amount 50 leaves remainder 2
+        // 50 / 16 = 3 remainder 2, 2 / 4 = 0 → got = 48
+        let fee_and_amounts: FeeAndAmounts = (0, vec![4, 16]).into();
+        let amount = Amount::from(50);
+        let result = amount.split(&fee_and_amounts);
+        assert!(result.is_err());
+        match result {
+            Err(Error::CannotSplitAmount(requested, got)) => {
+                assert_eq!(requested, 50);
+                assert_eq!(got, 48);
             }
             _ => panic!("Expected CannotSplitAmount error, got {:?}", result),
         }
