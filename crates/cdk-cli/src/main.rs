@@ -227,6 +227,17 @@ async fn main() -> Result<()> {
         builder.build().await?
     };
 
+    let wallets = wallet_repository.get_wallets().await;
+
+    for wallet in wallets {
+        // Recover from incomplete operations (required after wallet creation)
+        let recovery = wallet.recover_incomplete_sagas().await?;
+        println!(
+            "Recovered {} operations, {} compensated, {} skipped, {} failed",
+            recovery.recovered, recovery.compensated, recovery.skipped, recovery.failed
+        );
+    }
+
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {
             sub_commands::decode_token::decode_token(sub_command_args)
