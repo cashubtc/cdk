@@ -350,37 +350,6 @@
           "wallet"
         ];
 
-        # Quick check - runs typos, format check, clippy, and unit tests
-        # Matches the `just quick-check` command for consistency between local and CI
-        quickCheck = craneLibNightly.mkCargoDerivation (
-          commonCraneArgs
-          // {
-            pname = "cdk-quick-check";
-            cargoArtifacts = workspaceDepsNightly;
-            nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
-              pkgs.typos
-              pkgs.nixpkgs-fmt
-            ];
-            buildPhaseCargoCommand = ''
-              # Check for typos
-              typos
-
-              # Check Rust formatting
-              cargo fmt --all -- --check
-
-              # Check Nix formatting
-              nixpkgs-fmt --check $(echo **.nix)
-
-              # Run clippy
-              cargo clippy --workspace --all-targets -- -D warnings
-
-              # Run unit tests
-              cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
-            '';
-            installPhaseCommand = "mkdir -p $out";
-          }
-        );
-
         # ========================================
         # Clippy + test check definitions - single source of truth
         # These run both clippy and unit tests in a single derivation
@@ -694,9 +663,6 @@
               exampleChecks
           ))
           // {
-            # Quick check - comprehensive fast checks (typos, format, clippy, unit tests)
-            quick-check = quickCheck;
-
             # Doc tests
             doc-tests = docTests;
 

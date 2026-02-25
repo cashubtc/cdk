@@ -1651,6 +1651,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "mint")]
+    #[allow(deprecated)]
     fn test_currency_unit_derivation_index() {
         // Each currency unit should have a specific derivation index
         // These values are important for key derivation compatibility
