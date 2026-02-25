@@ -80,6 +80,23 @@ impl KeySetVersion {
             _ => Err(Error::UnknownVersion),
         }
     }
+
+    /// [`KeySetVersion`] from proto value
+    pub fn from_proto_i32(value: i32) -> Result<Self, Error> {
+        match value {
+            1 => Ok(Self::Version00),
+            2 => Ok(Self::Version01),
+            _ => Err(Error::UnknownVersion),
+        }
+    }
+
+    /// [`KeySetVersion`] to proto value
+    pub fn to_proto_i32(&self) -> i32 {
+        match self {
+            Self::Version00 => 1,
+            Self::Version01 => 2,
+        }
+    }
 }
 
 impl fmt::Display for KeySetVersion {
@@ -918,6 +935,25 @@ mod test {
         let id_from_bytes = Id::from_bytes(&id_bytes).unwrap();
 
         assert_eq!(id_from_bytes, id);
+    }
+
+    #[test]
+    fn test_keyset_version_proto_mapping() {
+        assert_eq!(
+            KeySetVersion::from_proto_i32(1).unwrap(),
+            KeySetVersion::Version00
+        );
+        assert_eq!(
+            KeySetVersion::from_proto_i32(2).unwrap(),
+            KeySetVersion::Version01
+        );
+        assert!(matches!(
+            KeySetVersion::from_proto_i32(0),
+            Err(Error::UnknownVersion)
+        ));
+
+        assert_eq!(KeySetVersion::Version00.to_proto_i32(), 1);
+        assert_eq!(KeySetVersion::Version01.to_proto_i32(), 2);
     }
 
     #[test]

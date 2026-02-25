@@ -1,11 +1,12 @@
 use std::path::Path;
 
 use cdk_common::error::Error;
-use cdk_common::grpc::VERSION_HEADER;
+use cdk_common::grpc::VERSION_SIGNATORY_HEADER;
 use cdk_common::{BlindSignature, BlindedMessage, Proof};
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
+use crate::proto;
 use crate::proto::signatory_client::SignatoryClient;
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
@@ -38,9 +39,11 @@ pub enum ClientError {
 
 /// Helper function to add version header to a request
 fn with_version_header<T>(mut request: tonic::Request<T>) -> tonic::Request<T> {
+    let version_str = (proto::Constants::SchemaVersion as u8).to_string();
+    let version: &'static str = Box::leak(version_str.into_boxed_str());
     request.metadata_mut().insert(
-        VERSION_HEADER,
-        MetadataValue::from_static(cdk_common::SIGNATORY_PROTOCOL_VERSION),
+        VERSION_SIGNATORY_HEADER,
+        MetadataValue::from_static(version),
     );
     request
 }
@@ -117,8 +120,6 @@ impl Signatory for SignatoryRpcClient {
                 .into_iter()
                 .map(|blind_message| blind_message.into())
                 .collect(),
-            operation: super::Operation::Unspecified.into(),
-            correlation_id: "".to_owned(),
         };
 
         self.client

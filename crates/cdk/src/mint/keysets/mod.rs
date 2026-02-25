@@ -84,7 +84,12 @@ impl Mint {
                 unit,
                 amounts,
                 input_fee_ppk,
-                use_keyset_v2,
+                keyset_id_type: if use_keyset_v2 {
+                    cdk_common::nut02::KeySetVersion::Version01
+                } else {
+                    cdk_common::nut02::KeySetVersion::Version00
+                },
+                final_expiry: None,
             })
             .await?;
 

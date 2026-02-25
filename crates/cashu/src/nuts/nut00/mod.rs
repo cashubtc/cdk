@@ -9,8 +9,11 @@ use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::string::FromUtf8Error;
 
+#[cfg(feature = "mint")]
+use bitcoin::hashes::Hash as BitcoinHash;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 
 use super::nut02::ShortKeysetId;
 #[cfg(feature = "wallet")]
@@ -585,6 +588,10 @@ pub enum CurrencyUnit {
 #[cfg(feature = "mint")]
 impl CurrencyUnit {
     /// Derivation index mint will use for unit
+    #[deprecated(
+        since = "0.15.0",
+        note = "This function is outdated; use `hashed_derivation_index` instead."
+    )]
     pub fn derivation_index(&self) -> Option<u32> {
         match self {
             Self::Sat => Some(0),
@@ -595,6 +602,28 @@ impl CurrencyUnit {
             _ => None,
         }
     }
+
+    /// Construct a custom unit, normalizing to uppercase and trimming whitespace.
+    pub fn custom<S: AsRef<str>>(value: S) -> Self {
+        Self::Custom(normalize_custom_unit(value.as_ref()).to_uppercase())
+    }
+
+    ///  Big endian encoded integer of the first 4 bytes of the sha256 hash of the unit string.
+    pub fn hashed_derivation_index(&self) -> u32 {
+        use bitcoin::hashes::sha256;
+
+        // transform to uppercase
+        let unit_str = self.to_string().to_uppercase();
+
+        let bytes = <sha256::Hash as BitcoinHash>::hash(unit_str.as_bytes());
+        // Take the first 4 bytes and convert to u32 (big endian) make sure the integer
+        u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) & !(1 << 31)
+    }
+}
+
+fn normalize_custom_unit(value: &str) -> String {
+    let trimmed = value.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n'));
+    trimmed.nfc().collect::<String>()
 }
 
 impl FromStr for CurrencyUnit {
@@ -607,13 +636,14 @@ impl FromStr for CurrencyUnit {
             "USD" => Ok(Self::Usd),
             "EUR" => Ok(Self::Eur),
             "AUTH" => Ok(Self::Auth),
-            _ => Ok(Self::Custom(value.to_string())),
+            _ => Ok(Self::Custom(normalize_custom_unit(value))),
         }
     }
 }
 
 impl fmt::Display for CurrencyUnit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // let binding = normalize_custom_unit(&self).clone();
         let s = match self {
             CurrencyUnit::Sat => "SAT",
             CurrencyUnit::Msat => "MSAT",
@@ -622,10 +652,16 @@ impl fmt::Display for CurrencyUnit {
             CurrencyUnit::Auth => "AUTH",
             CurrencyUnit::Custom(unit) => unit,
         };
+
         if let Some(width) = f.width() {
-            write!(f, "{:width$}", s.to_lowercase(), width = width)
+            write!(
+                f,
+                "{:width$}",
+                normalize_custom_unit(s).to_lowercase(),
+                width = width
+            )
         } else {
-            write!(f, "{}", s.to_lowercase())
+            write!(f, "{}", normalize_custom_unit(s).to_lowercase())
         }
     }
 }
@@ -635,7 +671,7 @@ impl Serialize for CurrencyUnit {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        serializer.serialize_str(&self.to_string().to_lowercase())
     }
 }
 
@@ -1140,6 +1176,31 @@ mod tests {
             CurrencyUnit::from_str("custom").unwrap(),
             CurrencyUnit::Custom("custom".to_string())
         );
+    }
+
+    #[test]
+    #[cfg(feature = "mint")]
+    fn four_bytes_hash_currency_unit() {
+        let unit = CurrencyUnit::Sat;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 1967237907);
+
+        let unit = CurrencyUnit::Msat;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 142929756);
+
+        let unit = CurrencyUnit::Eur;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 1473545324);
+
+        let unit = CurrencyUnit::Usd;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 577560378);
+
+        let unit = CurrencyUnit::Auth;
+        let index = unit.hashed_derivation_index();
+
+        assert_eq!(index, 1222349093)
     }
 
     #[test]

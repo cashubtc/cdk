@@ -1131,7 +1131,8 @@ mod tests {
                     unit: unit.clone(),
                     amounts,
                     input_fee_ppk: *fee,
-                    use_keyset_v2: true,
+                    keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                    final_expiry: None,
                 })
                 .await
                 .unwrap();
@@ -1227,7 +1228,8 @@ mod tests {
 
         let keys = mint.pubkeys();
 
-        let expected_keys = r#"{"keysets":[{"id":"0189b01ca2ba7320cc876dab22142a03715a69f94ce4b0b6b40495b181f7c84987","unit":"sat","active":true,"keys":{"1":"03ce4b803140715740d78f75ac6d3d45a65869a131e5ecc30e6a82fa28d6a20c92","1024":"025ba80cb0976ffb41a489ab0802b8d800f0ed98610a383cf50c4976ba2304f522","1048576":"0393b48556736402981d593ef65b2cf515a3a3c47fafcdf53d8d760c8e408a3f15","1073741824":"0347232765cef64efad0d5ce6d6284ee0f30159560c1c99b1d5b03997e71601458","128":"0387657827149eecc59f3e9ad005c6921d146918aad2d621fcd607da491647f7af","131072":"021336ad827102d1cc3f38593e3678db3ad541c501eb00edfd2e7e3273490a907d","134217728":"0307a702d8e33120d14c4be4a7e59f2bdca85fc9a0aa44d03f046ee2e381b17370","16":"029fd0c57ea3413c6513786ce24fd9bc3d271c5dd289d44a62a4f238d249f487c1","16384":"0205e262dec067013a410be5a40db16747f63a9666ed0cd6d919dfb8414a5c0dfc","16777216":"0365e8c8e449a8505b99b385eddc6537aeef065047bfe1011174b440394b44119c","2":"030baaed63a0f7e70b8d67b6e71b0a08bbea9a76003a3202171a39f23c1b7a6cfe","2048":"03177255abc417bdfd2cc0b3f01d74721c60001d3eda5c9229741aff09e8318b44","2097152":"03c0c77353f25ced0eb614613ae71ad79953a5b6d0d2453c67261fe7b810b0d49b","2147483648":"0236fd16a9269bf9125bcfb60df63b28b45a20b95520b000364feb2028f7da35fb","256":"028e68e298c203a9234f419fe26d395943191cce026d31be93f1d0eb0087acf0a6","262144":"02e7e2a871b5b02fb3070450be5f3dc329ed759f14d6a60ec12098209fba2177e1","268435456":"037795e574ea67518bfab1a871c65db8fb7f9f330853a0ad2126441598fe2aaffb","32":"0364d5774ba9cd0a26dacc48ca162f9f2117daf76140cedd0022a4086be44b9771","32768":"02202ab81477b68d35ada9645626ca2d1ed1d03405e07204a21ef76179b953b5d9","33554432":"02669a53f43c897fc1e3fd0537a2fef7cd0028b9c17ba8b19f260f1d3d8987a680","4":"038c299183d2c117fd6f7481ff20b89c1eddf32c4bf35d0e6739fa791b8cbcdcd5","4096":"02c86b0d5a85472c8eca02ee050a0aabc22713b2f393ad8e30f236650d6f6fa44a","4194304":"03a00ff9c25e6dcf06dc2fafc3f0ca24de53d1b125852613a80c609b39482bc557","512":"02308dda7d4c70c68acd531dd3505fb5aa0d12dfa7d185b8a6ef56b9448d019e1b","524288":"0375be62f8ea713636f81d16b57d29c224219bb1ad56befd447ef2bcf08a4342ea","536870912":"0346f1c1d1deb0697afdbb1f3aee035b144d24c90a91000bc3fd0c5acabdaf8381","64":"0347c66658e7e2df639cdd6532a4f1aabf9bd331f0e3010ea9c736cb17750de18e","65536":"02c28e5d2aa58fc68297d1e4c56cbe63ea39dff243fb87c4ad1b61d54288539548","67108864":"03d17eff1ce29b40c41a9733702ad4888b1b04eaaa30967a3e91fcb5ddae32b255","8":"02177b2d66b5b3b5271252b75ebb8eb577f433889153152ec9334dba4915adab30","8192":"02c861553ac0d05415b81e0c75200306407a30242e2495e31e6c216650780f1830","8388608":"031189128904ca7473698bc1fd9435df8aece3f9915f06d5ecc82eaf117d9c71f4"},"input_fee_ppk":0}]}"#;
+        let expected_keys = r#"{"keysets":[{"id":"00214f2e37bdebad","unit":"sat","active":true,"keys":{"1":"024aebe0f8be04b1ba1d7d6b7fe454c9ae43e0fa22b2fdc88b172f3c5a0d19aaa4","1024":"02f050a80caa51a655a4adfcb4c9f6954d9d3b465d4535055319090948d4e89eb5","1048576":"0270b4f86ee9b5a3b3e4ee7f0067af466676c57265c65ce91fbecac7d07ee507d1","1073741824":"035f7fd86429f45f19463840cb90a6053197e808b38ca2e32e2e8690e269c6d820","128":"0214318e5f69e01babdfc0fe923801a58e6e4fd24efe13432f2fec03eae746a0ca","131072":"02aee4305555703649245920911f9da6bc86d59ca7a016b753925454288bf05758","134217728":"02647036cd6c6e93a520968a33f20599f147debc4dce1994e83dc86946ff8c0183","16":"03e41c8e640ad4bcba9d39a0553a8ac1059a0bfd65fd9c19efbe6db844d0d04440","16384":"026c140e10dbdf282f47d0889b427a18c18ef9dfc87888c4487aea7093d3a9dd2e","16777216":"0204d4854439b387fdee5ad46806e4f8a38dabc0158ddcc189912fdc76e2f13161","2":"02c36fe78839c9ccbf3ea3f43b0d38ebd0e25df5310975de879b6fe9b53a3f4038","2048":"03b80c919d38ae697f28af7b5812f38ab886072179616d2b1636708473cd351cf3","2097152":"023a0d0e3a76b085df6f02b1b454758062a097c52927e682be458d549781cbcc96","2147483648":"03e47890abf0fc06b178500dc642e01a648a3674b89634eefc0269c0561023b135","256":"0294de1d276c4b092b41eb50a6545c1d07c4fe173214fd299925774ae1dc190925","262144":"02069c8cbd7e26d7cf84d7a1e2080a1006f4541c6ec75628bf2f4f15dff31ca39a","268435456":"03667e9818b5c49d7fb9ce6ddbfee8933a6ad62b9f15297c84adb251d9cb0db4a2","32":"03d49648d7137553edb6d9d45a47e271fff7301b84e7c854844292dc67d3f39aa2","32768":"02ac41bdfbfbdbb6ebedeb2651c05a6c01e44c15f69cc728878e988eab0af98265","33554432":"03502a5360cb536d3e32abd0bddb214c2a51d9a0c6dc41b346b603206b607074ae","4":"03d8deb39a4d45d120980c973aeb2b4aa9ca1ffbf222a2b7b83f7e1bc68453e6fb","4096":"03d131e59268288cb6a9af37e6ad3f6702cefb36cd4b7fb21120355acf2563749f","4194304":"029b1766c75b5c8789c81194551a65c7902e23fc974ae39a1e2f8a69fe1a786a1f","512":"030552b9dba664409946d5f895cdda030bf7bad8dc7ce085ffb93dbfa54ef2dbfc","524288":"0276c4ca58705002ae7319b33c63e4fcd0aca83e4bf731a1a047c64d4ca3fedd8d","536870912":"028263d89b6ca5fa838a37db6ab35606b2c2955aa717956afc872b9ed3f31c48c5","64":"03966b40fb692370864afe4f161909247b589f4c572a5aa0895b0f297fe00dc894","65536":"03434e6c95715e2cce9f09a40125cbf1dec8247784c22fc5d2629092401b177835","67108864":"03c3ac346a9b0671caffcc3a16e18fbf679b024a4e5f85d7edebc2ca0152b97b7b","8":"0360bb9c61e60f998585768a8893f89963da5699d6ee76c938d148ec3815ed5419","8192":"022cc0be442980edb83fa46771dc3c4303cc572b03d3b174879ca2e10b071f2b4b","8388608":"032818f6e7d6d6dec4bd349df6e609f6c2a9555012e924356c911ee2dbfa8a3d98"},"input_fee_ppk":0}]}"#;
+        println!("keys: {}", serde_json::to_string(&keys.clone()).unwrap());
 
         assert_eq!(expected_keys, serde_json::to_string(&keys.clone()).unwrap());
     }
@@ -1257,5 +1259,34 @@ mod tests {
         // Should be able to start again after stopping
         mint.start().await.expect("Should be able to restart");
         mint.stop().await.expect("Final stop should work");
+    }
+
+    #[tokio::test]
+    async fn mint_unit_string_collision() {
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+        let config = MintConfig::<'_> {
+            supported_units: supported_units.clone(),
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        let amounts: Vec<u64> = (0..32).map(|i| 2_u64.pow(i as u32)).collect();
+        let currency_unit = CurrencyUnit::custom("sW8W2A_hTH_gapj1_vj5suO3JI_");
+        let rotate_argument = RotateKeyArguments {
+            unit: currency_unit,
+            amounts,
+            input_fee_ppk: 100,
+            keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            final_expiry: None,
+        };
+        let rotation_result = mint.signatory.rotate_keyset(rotate_argument).await;
+
+        assert!(rotation_result.is_err());
+
+        assert!(matches!(
+            rotation_result,
+            Err(Error::UnitStringCollision(_currency_unit))
+        ));
     }
 }
