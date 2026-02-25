@@ -112,6 +112,62 @@ impl<'a> MintSaga<'a, Initial> {
         )
         .await;
 
+        // All work after this point has registered compensations.
+        // If any step fails, we must run compensations to release the quote
+        // rather than leaving it reserved.
+        let prepare_result = self
+            .prepare_after_reserve(
+                quote_id,
+                &quote_info,
+                amount,
+                amount_split_target,
+                spending_conditions,
+                &fee_and_amounts,
+                active_keyset_id,
+            )
+            .await;
+
+        match prepare_result {
+            Ok(prepared) => {
+                // Transition to Prepared state
+                Ok(MintSaga {
+                    wallet: self.wallet,
+                    compensations: self.compensations,
+                    state_data: prepared,
+                })
+            }
+            Err(e) => {
+                if e.is_definitive_failure() {
+                    tracing::warn!(
+                        "Mint saga prepare failed (definitive): {}. Running compensations.",
+                        e
+                    );
+                    if let Err(comp_err) = execute_compensations(&mut self.compensations).await {
+                        tracing::error!("Compensation failed during prepare: {}", comp_err);
+                    }
+                } else {
+                    tracing::warn!("Mint saga prepare failed (ambiguous): {}.", e);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Fallible prepare logic that runs after the quote has been reserved.
+    ///
+    /// Separated from `prepare_common` so that the caller can execute
+    /// compensations (releasing the reserved quote) if this method fails.
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_after_reserve(
+        &mut self,
+        quote_id: &str,
+        quote_info: &cdk_common::wallet::MintQuote,
+        amount: Amount,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+        fee_and_amounts: &cdk_common::amount::FeeAndAmounts,
+        active_keyset_id: cdk_common::nut02::Id,
+    ) -> Result<Prepared, Error> {
         if amount == Amount::ZERO {
             tracing::debug!("Amount mintable 0.");
             return Err(Error::AmountUndefined);
@@ -125,7 +181,7 @@ impl<'a> MintSaga<'a, Initial> {
         let split_target = match amount_split_target {
             SplitTarget::None => {
                 self.wallet
-                    .determine_split_target_values(amount, &fee_and_amounts)
+                    .determine_split_target_values(amount, fee_and_amounts)
                     .await?
             }
             s => s,
@@ -137,10 +193,10 @@ impl<'a> MintSaga<'a, Initial> {
                 amount,
                 &split_target,
                 spending_conditions,
-                &fee_and_amounts,
+                fee_and_amounts,
             )?,
             None => {
-                let amount_split = amount.split_targeted(&split_target, &fee_and_amounts)?;
+                let amount_split = amount.split_targeted(&split_target, fee_and_amounts)?;
                 let num_secrets = amount_split.len() as u32;
 
                 tracing::debug!(
@@ -163,7 +219,7 @@ impl<'a> MintSaga<'a, Initial> {
                     &self.wallet.seed,
                     amount,
                     &split_target,
-                    &fee_and_amounts,
+                    fee_and_amounts,
                 )?
             }
         };
@@ -221,20 +277,15 @@ impl<'a> MintSaga<'a, Initial> {
         )
         .await;
 
-        // Transition to Prepared state
-        Ok(MintSaga {
-            wallet: self.wallet,
-            compensations: self.compensations,
-            state_data: Prepared {
-                operation_id: self.state_data.operation_id,
-                quote_id: quote_id.to_string(),
-                quote_info: quote_info.clone(),
-                active_keyset_id,
-                premint_secrets,
-                mint_request: request,
-                payment_method: quote_info.payment_method.clone(),
-                saga,
-            },
+        Ok(Prepared {
+            operation_id: self.state_data.operation_id,
+            quote_id: quote_id.to_string(),
+            quote_info: quote_info.clone(),
+            active_keyset_id,
+            premint_secrets,
+            mint_request: request,
+            payment_method: quote_info.payment_method.clone(),
+            saga,
         })
     }
 
