@@ -254,7 +254,9 @@ pub enum Error {
     /// Oidc config not set
     #[error("Oidc client not set")]
     OidcNotSet,
-
+    /// Unit String collision
+    #[error("Unit string picked collided: `{0}`")]
+    UnitStringCollision(CurrencyUnit),
     // Wallet Errors
     /// P2PK spending conditions not met
     #[error("P2PK condition not met `{0}`")]

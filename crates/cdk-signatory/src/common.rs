@@ -1,15 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, All, Secp256k1};
 use cdk_common::common::IssuerVersion;
-use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{CurrencyUnit, MintKeySet};
 use cdk_common::util::unix_time;
+use cdk_common::{database, nut02};
 
 /// Initialize keysets
 pub async fn init_keysets(
@@ -79,14 +79,8 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
     amounts: &[u64],
     input_fee_ppk: u64,
     final_expiry: Option<u64>,
-    use_keyset_v2: bool,
+    keyset_id_version: nut02::KeySetVersion,
 ) -> (MintKeySet, MintKeySetInfo) {
-    let version = if use_keyset_v2 {
-        cdk_common::nut02::KeySetVersion::Version01
-    } else {
-        cdk_common::nut02::KeySetVersion::Version00
-    };
-
     let keyset = MintKeySet::generate(
         secp,
         xpriv
@@ -96,7 +90,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
         amounts,
         input_fee_ppk,
         final_expiry,
-        version,
+        keyset_id_version,
     );
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
@@ -114,11 +108,38 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
 }
 
 pub fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<DerivationPath> {
-    let unit_index = unit.derivation_index()?;
+    let unit_index = unit.hashed_derivation_index();
 
     Some(DerivationPath::from(vec![
-        ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),
-        ChildNumber::from_hardened_idx(unit_index).expect("0 is a valid index"),
+        ChildNumber::from_hardened_idx(129372).expect("129372 is a valid index"),
+        ChildNumber::from_hardened_idx(unit_index).expect("unit index should be valid"),
         ChildNumber::from_hardened_idx(index).expect("0 is a valid index"),
     ]))
+}
+
+/// take all the keyset units and if te new keyset is a new unit we check
+pub fn check_unit_string_collision(
+    keysets: Vec<crate::signatory::SignatoryKeySet>,
+    new_keyset: &MintKeySetInfo,
+) -> Result<(), Error> {
+    let mut unit_hash: HashSet<CurrencyUnit> = HashSet::new();
+
+    for key in keysets {
+        unit_hash.insert(key.unit);
+    }
+
+    if unit_hash.contains(&new_keyset.unit) {
+        // the currency unit already exists so we don't have to check it
+        return Ok(());
+    }
+
+    let new_unit_int = new_keyset.unit.hashed_derivation_index();
+    for unit in unit_hash.iter() {
+        let existing_unit_string = unit.hashed_derivation_index();
+        if existing_unit_string == new_unit_int {
+            return Err(Error::UnitStringCollision(new_keyset.unit.clone()));
+        }
+    }
+
+    Ok(())
 }
