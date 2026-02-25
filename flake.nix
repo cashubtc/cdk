@@ -27,14 +27,13 @@
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      nixpkgs-unstable,
-      rust-overlay,
-      flake-utils,
-      crane,
-      ...
+    { self
+    , nixpkgs
+    , nixpkgs-unstable
+    , rust-overlay
+    , flake-utils
+    , crane
+    , ...
     }@inputs:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -44,8 +43,7 @@
           {
             "x86_64-linux" = "x86_64-unknown-linux-musl";
             "aarch64-linux" = "aarch64-unknown-linux-musl";
-          }
-          .${system} or null;
+          }.${system} or null;
 
         archSuffix =
           {
@@ -53,15 +51,13 @@
             "aarch64-linux" = "aarch64";
             "x86_64-darwin" = "x86_64-apple-darwin";
             "aarch64-darwin" = "aarch64-apple-darwin";
-          }
-          .${system} or null;
+          }.${system} or null;
 
         cargoTargetEnvName =
           {
             "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER";
             "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER";
-          }
-          .${system} or null;
+          }.${system} or null;
 
         overlays = [ (import rust-overlay) ];
 
@@ -87,13 +83,18 @@
         };
 
         # Static/musl packages for fully static binary builds (Linux only)
-        pkgsMusl = if muslTarget != null then import nixpkgs {
-          localSystem = system;
-          crossSystem = {
-            config = muslTarget;
-            isStatic = true;
-          };
-        } else null;
+        pkgsMusl =
+          if muslTarget != null then
+            import nixpkgs
+              {
+                localSystem = system;
+                crossSystem = {
+                  config = muslTarget;
+                  isStatic = true;
+                };
+              }
+          else
+            null;
 
         # Toolchains
         # latest stable
@@ -131,16 +132,22 @@
         );
 
         # Stable toolchain with musl target for static builds (Linux only)
-        static_toolchain = if muslTarget != null then pkgs.rust-bin.stable."1.93.1".default.override {
-          targets = [ muslTarget ];
-        } else null;
+        static_toolchain =
+          if muslTarget != null then
+            pkgs.rust-bin.stable."1.93.1".default.override
+              {
+                targets = [ muslTarget ];
+              }
+          else
+            null;
 
         # ========================================
         # Crane setup for cached builds
         # ========================================
         craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
-        craneLibStatic = if static_toolchain != null then (crane.mkLib pkgs).overrideToolchain static_toolchain else null;
+        craneLibStatic =
+          if static_toolchain != null then (crane.mkLib pkgs).overrideToolchain static_toolchain else null;
         craneLibNightly = (crane.mkLib pkgs).overrideToolchain nightly_toolchain;
 
         # Source for crane builds - uses lib.fileset for efficient filtering
@@ -219,50 +226,56 @@
 
         # Common args for static musl builds (Linux only)
         # Produces fully statically-linked binaries that run on any Linux system
-        commonCraneArgsStatic = if muslTarget != null then ({
-          inherit src version;
-          pname = "cdk-static";
+        commonCraneArgsStatic =
+          if muslTarget != null then
+            (
+              {
+                inherit src version;
+                pname = "cdk-static";
 
-          # Cross-compile to musl for fully static linking
-          CARGO_BUILD_TARGET = muslTarget;
-          CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+                # Cross-compile to musl for fully static linking
+                CARGO_BUILD_TARGET = muslTarget;
+                CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
 
-          # Host-side build tools (run on build machine)
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-            protobuf
-            muslCC
-          ];
+                # Host-side build tools (run on build machine)
+                nativeBuildInputs = with pkgs; [
+                  pkg-config
+                  protobuf
+                  muslCC
+                ];
 
-          # Target-side libraries (musl static libs linked into the binary)
-          buildInputs = with pkgsMusl; [
-            openssl.dev
-            zlib.static
-          ];
+                # Target-side libraries (musl static libs linked into the binary)
+                buildInputs = with pkgsMusl; [
+                  openssl.dev
+                  zlib.static
+                ];
 
-          # Tell the cc crate and cargo to use the musl-targeting C compiler/linker
-          TARGET_CC = "${muslCC}/bin/${muslCC.targetPrefix}cc";
+                # Tell the cc crate and cargo to use the musl-targeting C compiler/linker
+                TARGET_CC = "${muslCC}/bin/${muslCC.targetPrefix}cc";
 
-          # Force static OpenSSL linking (needed by postgres/native-tls)
-          OPENSSL_STATIC = "1";
-          OPENSSL_DIR = "${pkgsMusl.openssl.dev}";
-          OPENSSL_LIB_DIR = "${pkgsMusl.openssl.out}/lib";
-          OPENSSL_INCLUDE_DIR = "${pkgsMusl.openssl.dev}/include";
+                # Force static OpenSSL linking (needed by postgres/native-tls)
+                OPENSSL_STATIC = "1";
+                OPENSSL_DIR = "${pkgsMusl.openssl.dev}";
+                OPENSSL_LIB_DIR = "${pkgsMusl.openssl.out}/lib";
+                OPENSSL_INCLUDE_DIR = "${pkgsMusl.openssl.dev}/include";
 
-          # Protobuf (build-time code generation, runs on host)
-          PROTOC = "${pkgs.protobuf}/bin/protoc";
-          PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+                # Protobuf (build-time code generation, runs on host)
+                PROTOC = "${pkgs.protobuf}/bin/protoc";
+                PROTOC_INCLUDE = "${pkgs.protobuf}/include";
 
-          # Tell pkg-config to find musl static libraries
-          PKG_CONFIG_ALL_STATIC = "1";
+                # Tell pkg-config to find musl static libraries
+                PKG_CONFIG_ALL_STATIC = "1";
 
-          # Use the release-static profile for reproducible, optimized builds
-          CARGO_PROFILE = "release-static";
-        }
-        // {
-          # Dynamic attribute name for the cargo linker env var (arch-specific)
-          ${cargoTargetEnvName} = "${muslCC}/bin/${muslCC.targetPrefix}cc";
-        }) else null;
+                # Use the release-static profile for reproducible, optimized builds
+                CARGO_PROFILE = "release-static";
+              }
+              // {
+                # Dynamic attribute name for the cargo linker env var (arch-specific)
+                ${cargoTargetEnvName} = "${muslCC}/bin/${muslCC.targetPrefix}cc";
+              }
+            )
+          else
+            null;
 
         # Build ALL dependencies once - this is what gets cached by Cachix
         # Note: We exclude swagger feature as it tries to download assets during build
@@ -286,13 +299,18 @@
         );
 
         # Static musl dependencies (separate cache for static builds, Linux only)
-        workspaceDepsStatic = if muslTarget != null then craneLibStatic.buildDepsOnly (
-          commonCraneArgsStatic
-          // {
-            pname = "cdk-deps-static";
-            cargoExtraArgs = "--workspace";
-          }
-        ) else null;
+        workspaceDepsStatic =
+          if muslTarget != null then
+            craneLibStatic.buildDepsOnly
+              (
+                commonCraneArgsStatic
+                // {
+                  pname = "cdk-deps-static";
+                  cargoExtraArgs = "--workspace";
+                }
+              )
+          else
+            null;
 
         # Nightly dependencies (separate cache due to different toolchain)
         workspaceDepsNightly = craneLibNightly.buildDepsOnly (
@@ -459,37 +477,6 @@
           "proof-selection"
           "wallet"
         ];
-
-        # Quick check - runs typos, format check, clippy, and unit tests
-        # Matches the `just quick-check` command for consistency between local and CI
-        quickCheck = craneLibNightly.mkCargoDerivation (
-          commonCraneArgs
-          // {
-            pname = "cdk-quick-check";
-            cargoArtifacts = workspaceDepsNightly;
-            nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
-              pkgs.typos
-              pkgs.nixpkgs-fmt
-            ];
-            buildPhaseCargoCommand = ''
-              # Check for typos
-              typos
-
-              # Check Rust formatting
-              cargo fmt --all -- --check
-
-              # Check Nix formatting
-              nixpkgs-fmt --check $(echo **.nix)
-
-              # Run clippy
-              cargo clippy --workspace --all-targets -- -D warnings
-
-              # Run unit tests
-              cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
-            '';
-            installPhaseCommand = "mkdir -p $out";
-          }
-        );
 
         # ========================================
         # Clippy + test check definitions - single source of truth
@@ -764,38 +751,61 @@
         # name: the output binary name prefix (e.g. "cdk-mintd-ldk")
         # cargoExtraArgs: additional cargo args (e.g. "--bin cdk-mintd --features ldk-node")
         staticVersion = if commonCraneArgsStatic != null then commonCraneArgsStatic.version else version;
-        mkStaticPackage = if muslTarget != null then ({ bin, name, cargoExtraArgs }: craneLibStatic.buildPackage (commonCraneArgsStatic // {
-          pname = name;
-          cargoArtifacts = workspaceDepsStatic;
-          inherit cargoExtraArgs;
-          nativeBuildInputs = commonCraneArgsStatic.nativeBuildInputs ++ [
-            pkgs.removeReferencesTo
-          ];
-          installPhaseCommand = ''
-            mkdir -p $out/bin
-            cp target/${muslTarget}/release-static/${bin} $out/bin/${name}-${staticVersion}-${archSuffix}
-          '';
-          # Strip Nix store references from binaries for reproducibility
-          postFixup = ''
-            find "$out" -type f -executable -exec remove-references-to -t ${static_toolchain} '{}' +
-          '';
-        })) else null;
+        mkStaticPackage =
+          if muslTarget != null then
+            (
+              { bin
+              , name
+              , cargoExtraArgs
+              ,
+              }:
+              craneLibStatic.buildPackage (
+                commonCraneArgsStatic
+                // {
+                  pname = name;
+                  cargoArtifacts = workspaceDepsStatic;
+                  inherit cargoExtraArgs;
+                  nativeBuildInputs = commonCraneArgsStatic.nativeBuildInputs ++ [
+                    pkgs.removeReferencesTo
+                  ];
+                  installPhaseCommand = ''
+                    mkdir -p $out/bin
+                    cp target/${muslTarget}/release-static/${bin} $out/bin/${name}-${staticVersion}-${archSuffix}
+                  '';
+                  # Strip Nix store references from binaries for reproducibility
+                  postFixup = ''
+                    find "$out" -type f -executable -exec remove-references-to -t ${static_toolchain} '{}' +
+                  '';
+                }
+              )
+            )
+          else
+            null;
 
         # Helper to build a macOS release binary package (dynamically linked, as is standard on macOS)
         # Uses the same release-static Cargo profile for consistent optimization settings
         # bin: the cargo binary name (e.g. "cdk-mintd")
         # name: the output binary name prefix (e.g. "cdk-mintd-ldk")
         # cargoExtraArgs: additional cargo args (e.g. "--bin cdk-mintd --features ldk-node")
-        mkDarwinPackage = { bin, name, cargoExtraArgs }: craneLib.buildPackage (commonCraneArgs // {
-          pname = name;
-          cargoArtifacts = workspaceDeps;
-          inherit cargoExtraArgs;
-          CARGO_PROFILE = "release-static";
-          installPhaseCommand = ''
-            mkdir -p $out/bin
-            cp target/release-static/${bin} $out/bin/${name}-${version}-${archSuffix}
-          '';
-        });
+        mkDarwinPackage =
+          { bin
+          , name
+          , cargoExtraArgs
+          ,
+          }:
+          craneLib.buildPackage (
+            commonCraneArgs
+            // {
+              pname = name;
+              cargoArtifacts = workspaceDeps;
+              inherit cargoExtraArgs;
+              CARGO_PROFILE = "release-static";
+              installPhaseCommand = ''
+                mkdir -p $out/bin
+                cp target/release-static/${bin} $out/bin/${name}-${version}-${archSuffix}
+              '';
+            }
+          );
 
         # Common arguments can be set here to avoid repeating them later
         nativeBuildInputs = [
@@ -857,56 +867,67 @@
         }
         # Example packages (binaries that can be run outside sandbox with network access)
         // (builtins.listToAttrs (
-          map (name: {
-            name = "example-${name}";
-            value = mkExamplePackage name;
-          }) exampleChecks
+          map
+            (name: {
+              name = "example-${name}";
+              value = mkExamplePackage name;
+            })
+            exampleChecks
         ));
         checks =
           # Generate clippy + test checks from clippyAndTestChecks attrset
           (builtins.mapAttrs (name: args: mkClippyAndTest name args) clippyAndTestChecks)
           # Generate MSRV build checks (prefixed with msrv-)
           // (builtins.listToAttrs (
-            map (name: {
-              name = "msrv-${name}";
-              value = mkMsrvBuild name msrvChecks.${name};
-            }) (builtins.attrNames msrvChecks)
+            map
+              (name: {
+                name = "msrv-${name}";
+                value = mkMsrvBuild name msrvChecks.${name};
+              })
+              (builtins.attrNames msrvChecks)
           ))
           // (builtins.listToAttrs (
-            map (name: {
-              name = "msrv-${name}";
-              value = mkMsrvBuild name msrvChecks.${name};
-            }) (builtins.attrNames msrvChecks)
+            map
+              (name: {
+                name = "msrv-${name}";
+                value = mkMsrvBuild name msrvChecks.${name};
+              })
+              (builtins.attrNames msrvChecks)
           ))
           # Generate WASM build checks (prefixed with wasm-)
           // (builtins.listToAttrs (
-            map (name: {
-              name = "wasm-${name}";
-              value = mkWasmBuild name wasmChecks.${name};
-            }) (builtins.attrNames wasmChecks)
+            map
+              (name: {
+                name = "wasm-${name}";
+                value = mkWasmBuild name wasmChecks.${name};
+              })
+              (builtins.attrNames wasmChecks)
           ))
           // (builtins.listToAttrs (
-            map (name: {
-              name = "wasm-${name}";
-              value = mkWasmBuild name wasmChecks.${name};
-            }) (builtins.attrNames wasmChecks)
+            map
+              (name: {
+                name = "wasm-${name}";
+                value = mkWasmBuild name wasmChecks.${name};
+              })
+              (builtins.attrNames wasmChecks)
           ))
           // (builtins.listToAttrs (
-            map (name: {
-              name = "example-${name}";
-              value = mkExample name;
-            }) exampleChecks
+            map
+              (name: {
+                name = "example-${name}";
+                value = mkExample name;
+              })
+              exampleChecks
           ))
           // (builtins.listToAttrs (
-            map (name: {
-              name = "example-${name}";
-              value = mkExample name;
-            }) exampleChecks
+            map
+              (name: {
+                name = "example-${name}";
+                value = mkExample name;
+              })
+              exampleChecks
           ))
           // {
-            # Quick check - comprehensive fast checks (typos, format, clippy, unit tests)
-            quick-check = quickCheck;
-
             # Doc tests
             doc-tests = docTests;
 

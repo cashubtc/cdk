@@ -265,7 +265,7 @@ impl Amount<()> {
                 parts
             }
             SplitTarget::Values(values) => {
-                let values_total: Amount = Amount::try_sum(values.clone().into_iter())?;
+                let values_total: Amount = Amount::try_sum(values.clone())?;
 
                 match self.cmp(&values_total) {
                     Ordering::Equal => values.clone(),
