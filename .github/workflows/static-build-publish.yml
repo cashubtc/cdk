@@ -1,0 +1,131 @@
+name: Publish Static Binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and publish'
+        required: true
+
+jobs:
+  build-x86_64:
+    name: "Build static binaries (x86_64)"
+    runs-on: self-hosted
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set up Cachix
+        uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+          installCommand: nix profile install nixpkgs#cachix
+        continue-on-error: true
+
+      - name: Build cdk-mintd-static
+        run: |
+          nix build .#cdk-mintd-static -L
+          mkdir -p ./static-bin
+          cp -f ./result/bin/* ./static-bin/
+
+      - name: Build cdk-mintd-ldk-static
+        run: |
+          nix build .#cdk-mintd-ldk-static -L
+          cp -f ./result/bin/* ./static-bin/
+
+      - name: Build cdk-cli-static
+        run: |
+          nix build .#cdk-cli-static -L
+          cp -f ./result/bin/* ./static-bin/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-x86_64
+          path: ./static-bin/
+
+  build-aarch64:
+    name: "Build static binaries (aarch64)"
+    runs-on: ubuntu-22.04-arm64
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
+
+      - name: Set up Cachix
+        uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+
+      - name: Build cdk-mintd-static
+        run: |
+          nix build .#cdk-mintd-static -L
+          mkdir -p ./static-bin
+          cp -f ./result/bin/* ./static-bin/
+
+      - name: Build cdk-mintd-ldk-static
+        run: |
+          nix build .#cdk-mintd-ldk-static -L
+          cp -f ./result/bin/* ./static-bin/
+
+      - name: Build cdk-cli-static
+        run: |
+          nix build .#cdk-cli-static -L
+          cp -f ./result/bin/* ./static-bin/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-aarch64
+          path: ./static-bin/
+
+  upload-release:
+    name: "Upload binaries to release"
+    runs-on: ubuntu-22.04
+    needs: [build-x86_64, build-aarch64]
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./static-bin/
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd ./static-bin
+          sha256sum * > SHA256SUMS
+          echo "Checksums:"
+          cat SHA256SUMS
+
+      - name: Upload binaries to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.event.release.tag_name }}"
+          gh release upload "$TAG" ./static-bin/* --clobber
