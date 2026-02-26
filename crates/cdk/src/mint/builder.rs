@@ -25,13 +25,31 @@ use crate::nuts::{
 };
 use crate::types::PaymentProcessorKey;
 
+/// Configuration for a mint unit (keyset)
+#[derive(Debug, Clone)]
+pub struct UnitConfig {
+    /// List of amounts to support (e.g., [1, 2, 4, 8, 16, 32])
+    pub amounts: Vec<u64>,
+    /// Input fee in parts per thousand
+    pub input_fee_ppk: u64,
+}
+
+impl Default for UnitConfig {
+    fn default() -> Self {
+        Self {
+            amounts: (0..32).map(|i| 2_u64.pow(i)).collect(),
+            input_fee_ppk: 0,
+        }
+    }
+}
+
 /// Cashu Mint Builder
 pub struct MintBuilder {
     mint_info: MintInfo,
     localstore: DynMintDatabase,
     auth_localstore: Option<DynMintAuthDatabase>,
     payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
-    supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+    supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     use_keyset_v2: Option<bool>,
     max_inputs: usize,
@@ -257,7 +275,66 @@ impl MintBuilder {
         self
     }
 
-    /// Add payment processor
+    /// Configure a unit with custom amounts and fee
+    ///
+    /// This is optional - if not called before [`add_payment_processor`](Self::add_payment_processor),
+    /// the unit will be auto-configured with default values (powers of 2 amounts, zero fee).
+    ///
+    /// # Arguments
+    /// * `unit` - The currency unit to configure
+    /// * `config` - The unit configuration (amounts and fee)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// mint_builder.configure_unit(
+    ///     CurrencyUnit::Sat,
+    ///     UnitConfig {
+    ///         amounts: vec![1, 2, 4, 8, 16, 32],
+    ///         input_fee_ppk: 100,
+    ///     }
+    /// );
+    /// ```
+    pub fn configure_unit(&mut self, unit: CurrencyUnit, config: UnitConfig) -> Result<(), Error> {
+        // Validate amounts
+        if config.amounts.is_empty() {
+            return Err(Error::Custom("Amounts list cannot be empty".to_string()));
+        }
+
+        // Check for duplicates and ensure sorted
+        let mut sorted = config.amounts.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        if sorted.len() != config.amounts.len() {
+            return Err(Error::Custom(
+                "Amounts list contains duplicates".to_string(),
+            ));
+        }
+        if sorted != config.amounts {
+            return Err(Error::Custom(
+                "Amounts must be sorted in ascending order".to_string(),
+            ));
+        }
+
+        // Check all amounts are positive
+        if config.amounts.contains(&0) {
+            return Err(Error::Custom("Amounts must be greater than 0".to_string()));
+        }
+
+        self.supported_units
+            .insert(unit, (config.input_fee_ppk, config.amounts));
+        Ok(())
+    }
+
+    /// Add a payment processor for the given unit and payment method
+    ///
+    /// If the unit has not been configured via [`configure_unit`](Self::configure_unit),
+    /// it will be auto-configured with default values (powers of 2 amounts, zero fee).
+    ///
+    /// # Arguments
+    /// * `unit` - The currency unit for this payment processor
+    /// * `method` - The payment method (e.g., bolt11, bolt12)
+    /// * `limits` - Mint and melt amount limits
+    /// * `payment_processor` - The payment processor implementation
     pub async fn add_payment_processor(
         &mut self,
         unit: CurrencyUnit,
@@ -370,9 +447,10 @@ impl MintBuilder {
             }
         }
 
-        let mut supported_units = self.supported_units.clone();
-        supported_units.insert(key.unit.clone(), (0, 32));
-        self.supported_units = supported_units;
+        // Check that the unit has been pre-configured
+        if !self.supported_units.contains_key(&key.unit) {
+            self.configure_unit(key.unit.clone(), Default::default())?;
+        }
 
         self.payment_processors.insert(key, payment_processor);
         Ok(())
@@ -403,10 +481,10 @@ impl MintBuilder {
         if self.auth_localstore.is_some() {
             self.supported_units
                 .entry(CurrencyUnit::Auth)
-                .or_insert((0, 1));
+                .or_insert((0, vec![1]));
         }
 
-        for (unit, (fee, max_order)) in &self.supported_units {
+        for (unit, (fee, amounts)) in &self.supported_units {
             // Check if we have an active keyset for this unit
             let keyset = active_keysets
                 .keysets
@@ -424,6 +502,12 @@ impl MintBuilder {
                         keyset.input_fee_ppk,
                         fee
                     );
+                    rotate = true;
+                }
+
+                // Check if amounts match
+                if keyset.amounts != *amounts {
+                    tracing::info!("Rotating keyset for unit {} due to amounts mismatch", unit);
                     rotate = true;
                 }
 
@@ -446,11 +530,10 @@ impl MintBuilder {
             }
 
             if rotate {
-                let amounts: Vec<u64> = (0..*max_order).map(|i| 2_u64.pow(i as u32)).collect();
                 signatory
                     .rotate_keyset(RotateKeyArguments {
                         unit: unit.clone(),
-                        amounts,
+                        amounts: amounts.clone(),
                         input_fee_ppk: *fee,
                         keyset_id_type: if self.use_keyset_v2.unwrap_or(true) {
                             cdk_common::nut02::KeySetVersion::Version01
@@ -660,6 +743,17 @@ mod tests {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(localstore);
 
+        // Configure the unit first
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+
         let bolt11_settings = Bolt11Settings {
             mpp: true,
             amountless: true,
@@ -723,6 +817,17 @@ mod tests {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(localstore);
 
+        // Configure the unit first
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+
         let bolt11_settings = Bolt11Settings {
             mpp: false, // MPP disabled
             amountless: false,
@@ -760,6 +865,17 @@ mod tests {
     async fn test_add_payment_processor_bolt12() {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(localstore);
+
+        // Configure the unit first
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
 
         let bolt12_settings = Bolt12Settings { amountless: true };
 
@@ -807,6 +923,17 @@ mod tests {
     async fn test_add_payment_processor_custom() {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(localstore);
+
+        // Configure the unit first
+        builder
+            .configure_unit(
+                CurrencyUnit::Usd,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
 
         let mut custom_methods = HashMap::new();
         custom_methods.insert("paypal".to_string(), "{}".to_string());
@@ -859,6 +986,17 @@ mod tests {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(localstore);
 
+        // Configure the unit first
+        builder
+            .configure_unit(
+                CurrencyUnit::Usd,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+
         // Settings with no custom methods
         let settings = SettingsResponse {
             unit: "usd".to_string(),
@@ -888,6 +1026,17 @@ mod tests {
     async fn test_add_multiple_payment_processors() {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(localstore);
+
+        // Configure the unit first
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
 
         // Add Bolt11
         let bolt11_settings = Bolt11Settings {

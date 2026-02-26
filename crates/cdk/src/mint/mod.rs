@@ -40,7 +40,7 @@ mod subscription;
 mod swap;
 mod verification;
 
-pub use builder::{MintBuilder, MintMeltLimits};
+pub use builder::{MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use issue::{MintQuoteRequest, MintQuoteResponse};
 pub use verification::Verification;
@@ -1095,7 +1095,7 @@ mod tests {
         spent_proofs: Proofs,
         seed: &'a [u8],
         mint_info: MintInfo,
-        supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+        supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Mint {
@@ -1124,12 +1124,11 @@ mod tests {
             .expect("Failed to create signatory"),
         );
 
-        for (unit, (fee, max_order)) in &config.supported_units {
-            let amounts: Vec<u64> = (0..*max_order).map(|i| 2_u64.pow(i as u32)).collect();
+        for (unit, (fee, amounts)) in &config.supported_units {
             signatory
                 .rotate_keyset(RotateKeyArguments {
                     unit: unit.clone(),
-                    amounts,
+                    amounts: amounts.clone(),
                     input_fee_ppk: *fee,
                     keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
                     final_expiry: None,
@@ -1153,7 +1152,8 @@ mod tests {
     #[tokio::test]
     async fn mint_mod_new_mint() {
         let mut supported_units = HashMap::new();
-        supported_units.insert(CurrencyUnit::default(), (0, 32));
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
         let config = MintConfig::<'_> {
             supported_units,
             ..Default::default()
@@ -1182,7 +1182,8 @@ mod tests {
     #[tokio::test]
     async fn mint_mod_rotate_keyset() {
         let mut supported_units = HashMap::new();
-        supported_units.insert(CurrencyUnit::default(), (0, 32));
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
 
         let config = MintConfig::<'_> {
             supported_units,
@@ -1217,7 +1218,8 @@ mod tests {
         )
         .unwrap();
         let mut supported_units = HashMap::new();
-        supported_units.insert(CurrencyUnit::default(), (0, 32));
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
 
         let config = MintConfig::<'_> {
             seed: &seed.to_seed_normalized(""),
@@ -1237,7 +1239,8 @@ mod tests {
     #[tokio::test]
     async fn test_start_stop_lifecycle() {
         let mut supported_units = HashMap::new();
-        supported_units.insert(CurrencyUnit::default(), (0, 32));
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
         let config = MintConfig::<'_> {
             supported_units,
             ..Default::default()
@@ -1264,14 +1267,14 @@ mod tests {
     #[tokio::test]
     async fn mint_unit_string_collision() {
         let mut supported_units = HashMap::new();
-        supported_units.insert(CurrencyUnit::default(), (0, 32));
+        let amounts: Vec<u64> = (0..32).map(|i| 2_u64.pow(i as u32)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts.clone()));
         let config = MintConfig::<'_> {
             supported_units: supported_units.clone(),
             ..Default::default()
         };
         let mint = create_mint(config).await;
 
-        let amounts: Vec<u64> = (0..32).map(|i| 2_u64.pow(i as u32)).collect();
         let currency_unit = CurrencyUnit::custom("sW8W2A_hTH_gapj1_vj5suO3JI_");
         let rotate_argument = RotateKeyArguments {
             unit: currency_unit,

@@ -149,8 +149,10 @@ pub async fn cli_main() -> Result<()> {
                 .map(|x| x.parse())
                 .transpose()?
                 .unwrap_or_default();
-            let max_order = parts.pop().map(|x| x.parse()).transpose()?.unwrap_or(32);
-            Ok::<(_, (_, _)), anyhow::Error>((unit, (fee, max_order)))
+            let max_order: u32 = parts.pop().map(|x| x.parse()).transpose()?.unwrap_or(32);
+            // Convert max_order to amounts list (powers of 2)
+            let amounts: Vec<u64> = (0..max_order).map(|i| 2u64.pow(i)).collect();
+            Ok::<(_, (_, _)), anyhow::Error>((unit, (fee, amounts)))
         })
         .collect::<Result<HashMap<_, _>, _>>()?;
 
