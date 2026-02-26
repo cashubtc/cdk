@@ -163,6 +163,44 @@ nix build .#cdk-mintd
 nix build .#checks.x86_64-linux.cashu
 ```
 
+### Static Binaries
+
+CDK provides fully statically-linked Linux binaries built with [musl](https://musl.libc.org/). These binaries have zero runtime dependencies and run on any x86_64 Linux system.
+
+**Available static build targets:**
+
+| Target | Binary | Features |
+| :--- | :--- | :--- |
+| `cdk-mintd-static` | `cdk-mintd-{version}-x86_64-linux` | `postgres`, `prometheus`, `redis` |
+| `cdk-mintd-ldk-static` | `cdk-mintd-ldk-{version}-x86_64-linux` | `ldk-node`, `postgres`, `prometheus`, `redis` |
+| `cdk-cli-static` | `cdk-cli-{version}-x86_64-linux` | default |
+
+**Building locally (requires Nix):**
+
+```bash
+# Build a single target
+just build-static cdk-mintd-static
+
+# Build all static targets
+just build-static-all
+
+# Or use nix directly
+nix build .#cdk-mintd-static
+cp ./result/bin/* ./static-bin/
+```
+
+Built binaries are placed in `./static-bin/`.
+
+**Release process:**
+
+When a GitHub release is published, the [`static-build-publish.yml`](.github/workflows/static-build-publish.yml) workflow automatically:
+
+1. Builds all three static binaries via Nix
+2. Generates a `SHA256SUMS` file with checksums for each binary
+3. Uploads the binaries and checksums to the GitHub release
+
+The workflow can also be triggered manually via `workflow_dispatch` with a tag input. Pre-built static binaries are available on the [GitHub releases page](https://github.com/cashubtc/cdk/releases).
+
 ### Nix Troubleshooting
 
 - **Updating Dependencies**: If you notice dependencies are out of date or a new tool has been added to the flake, run `nix flake update` to refresh the `flake.lock` file.

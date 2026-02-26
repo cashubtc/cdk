@@ -1,0 +1,63 @@
+name: Publish Static Binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and publish'
+        required: true
+
+jobs:
+  build-and-upload:
+    name: "Build and upload static binaries"
+    runs-on: self-hosted
+    timeout-minutes: 120
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set up Cachix
+        uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+          installCommand: nix profile install nixpkgs#cachix
+        continue-on-error: true
+
+      - name: Build cdk-mintd-static
+        run: |
+          nix build .#cdk-mintd-static -L
+          mkdir -p ./static-bin
+          cp -f ./result/bin/* ./static-bin/
+
+      - name: Build cdk-mintd-ldk-static
+        run: |
+          nix build .#cdk-mintd-ldk-static -L
+          cp -f ./result/bin/* ./static-bin/
+
+      - name: Build cdk-cli-static
+        run: |
+          nix build .#cdk-cli-static -L
+          cp -f ./result/bin/* ./static-bin/
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd ./static-bin
+          sha256sum * > SHA256SUMS
+          echo "Checksums:"
+          cat SHA256SUMS
+
+      - name: Upload binaries to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.event.release.tag_name }}"
+          gh release upload "$TAG" ./static-bin/* --clobber
