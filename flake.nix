@@ -52,6 +52,10 @@
         }.${system} or null;
 
         overlays = [ (import rust-overlay) ];
+
+        # Derive version from Cargo.toml so there is a single source of truth
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
+
         lib = pkgs.lib;
         stdenv = pkgs.stdenv;
         isDarwin = stdenv.isDarwin;
@@ -159,9 +163,8 @@
 
         # Common args for all Crane builds
         commonCraneArgs = {
-          inherit src;
+          inherit src version;
           pname = "cdk";
-          version = "0.15.0-rc.0";
 
           nativeBuildInputs = with pkgs; [
             pkg-config
@@ -193,9 +196,8 @@
         # Common args for static musl builds (Linux only)
         # Produces fully statically-linked binaries that run on any Linux system
         commonCraneArgsStatic = {
-          inherit src;
+          inherit src version;
           pname = "cdk-static";
-          version = "0.15.0-rc.0";
 
           # Cross-compile to musl for fully static linking
           CARGO_BUILD_TARGET = muslTarget;
@@ -300,9 +302,8 @@
         # Helper function to create WASM build checks
         # WASM builds don't need native libs like openssl
         mkWasmBuild = name: cargoArgs: craneLib.cargoBuild ({
-          inherit src;
+          inherit src version;
           pname = "cdk-wasm-${name}";
-          version = "0.15.0-rc.0";
           cargoArtifacts = workspaceDeps;
           cargoExtraArgs = "${cargoArgs} --target wasm32-unknown-unknown";
           # WASM doesn't need native build inputs
