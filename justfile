@@ -33,6 +33,26 @@ build *ARGS="--workspace --all-targets":
   fi
   cargo build {{ARGS}}
 
+# Build a statically-linked binary by profile name (requires nix)
+# Profiles: cdk-mintd-static, cdk-mintd-ldk-static, cdk-cli-static
+build-static profile:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  nix build .#{{profile}}
+  mkdir -p ./static-bin
+  cp -f ./result/bin/* ./static-bin/
+  echo "Static binaries in ./static-bin/:"
+  ls -la ./static-bin/
+
+# Build all statically-linked binaries and generate checksums (requires nix)
+build-static-all: (build-static "cdk-mintd-static") (build-static "cdk-mintd-ldk-static") (build-static "cdk-cli-static")
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd ./static-bin
+  sha256sum -- *-x86_64 > SHA256SUMS
+  echo "Checksums:"
+  cat SHA256SUMS
+
 # run `cargo check` on everything
 check *ARGS="--workspace --all-targets":
   #!/usr/bin/env bash
