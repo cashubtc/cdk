@@ -9,6 +9,7 @@
 config.toml
 .pre-commit-config.yaml
 result
+static-bin/
 .aider*
 **/postgres_data/
 .pg_data/

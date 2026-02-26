@@ -50,6 +50,15 @@
           inherit system overlays;
         };
 
+        # Static/musl packages for fully static binary builds (x86_64-linux only)
+        pkgsMusl = import nixpkgs {
+          localSystem = system;
+          crossSystem = {
+            config = "x86_64-unknown-linux-musl";
+            isStatic = true;
+          };
+        };
+
         # Toolchains
         # latest stable
         stable_toolchain = pkgs.rust-bin.stable."1.93.0".default.override {
@@ -85,11 +94,17 @@
           }
         );
 
+        # Stable toolchain with musl target for static builds
+        static_toolchain = pkgs.rust-bin.stable."1.93.0".default.override {
+          targets = [ "x86_64-unknown-linux-musl" ];
+        };
+
         # ========================================
         # Crane setup for cached builds
         # ========================================
         craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
+        craneLibStatic = (crane.mkLib pkgs).overrideToolchain static_toolchain;
 
         # Source for crane builds - uses lib.fileset for efficient filtering
         # This is much faster than nix-gitignore when large directories (like target/) exist
@@ -155,6 +170,52 @@
           cargoLock = ./Cargo.lock.msrv;
         };
 
+        # Musl-targeting C compiler for crates that compile bundled C code
+        # (libsqlite3-sys, secp256k1-sys, aws-lc-sys, etc.)
+        muslCC = pkgs.pkgsStatic.stdenv.cc;
+
+        # Common args for static musl builds (x86_64-linux only)
+        # Produces fully statically-linked binaries that run on any Linux x86_64 system
+        commonCraneArgsStatic = {
+          inherit src;
+          pname = "cdk-static";
+          version = "0.15.0-rc.0";
+
+          # Cross-compile to musl for fully static linking
+          CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
+          CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+
+          # Host-side build tools (run on build machine)
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            protobuf
+            muslCC
+          ];
+
+          # Target-side libraries (musl static libs linked into the binary)
+          buildInputs = with pkgsMusl; [
+            openssl.dev
+            zlib.static
+          ];
+
+          # Tell the cc crate and cargo to use the musl-targeting C compiler/linker
+          TARGET_CC = "${muslCC}/bin/${muslCC.targetPrefix}cc";
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCC}/bin/${muslCC.targetPrefix}cc";
+
+          # Force static OpenSSL linking (needed by postgres/native-tls)
+          OPENSSL_STATIC = "1";
+          OPENSSL_DIR = "${pkgsMusl.openssl.dev}";
+          OPENSSL_LIB_DIR = "${pkgsMusl.openssl.out}/lib";
+          OPENSSL_INCLUDE_DIR = "${pkgsMusl.openssl.dev}/include";
+
+          # Protobuf (build-time code generation, runs on host)
+          PROTOC = "${pkgs.protobuf}/bin/protoc";
+          PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+
+          # Tell pkg-config to find musl static libraries
+          PKG_CONFIG_ALL_STATIC = "1";
+        };
+
         # Build ALL dependencies once - this is what gets cached by Cachix
         # Note: We exclude swagger feature as it tries to download assets during build
         workspaceDeps = craneLib.buildDepsOnly (commonCraneArgs // {
@@ -168,6 +229,12 @@
         workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (commonCraneArgsMsrv // {
           pname = "cdk-deps-msrv";
           cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests";
+        });
+
+        # Static musl dependencies (separate cache for static builds)
+        workspaceDepsStatic = craneLibStatic.buildDepsOnly (commonCraneArgsStatic // {
+          pname = "cdk-deps-static";
+          cargoExtraArgs = "--workspace";
         });
 
         # Helper function to create combined clippy + test checks
@@ -552,6 +619,21 @@
           ${pkgs.postgresql_16}/bin/psql "postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
         '';
 
+        # Helper to build a statically-linked binary package
+        # bin: the cargo binary name (e.g. "cdk-mintd")
+        # name: the output binary name prefix (e.g. "cdk-mintd-ldk")
+        # cargoExtraArgs: additional cargo args (e.g. "--bin cdk-mintd --features ldk-node")
+        staticVersion = commonCraneArgsStatic.version;
+        mkStaticPackage = { bin, name, cargoExtraArgs }: craneLibStatic.buildPackage (commonCraneArgsStatic // {
+          pname = name;
+          cargoArtifacts = workspaceDepsStatic;
+          inherit cargoExtraArgs;
+          installPhaseCommand = ''
+            mkdir -p $out/bin
+            cp target/x86_64-unknown-linux-musl/release/${bin} $out/bin/${name}-${staticVersion}-x86_64-linux
+          '';
+        });
+
         # Common arguments can be set here to avoid repeating them later
         nativeBuildInputs = [
           #Add additional build inputs here
@@ -565,6 +647,27 @@
         packages = {
           deps = workspaceDeps;
           deps-msrv = workspaceDepsMsrv;
+          deps-static = workspaceDepsStatic;
+        }
+        # Static binary packages (fully statically-linked, runs on any x86_64 Linux)
+        // {
+          cdk-mintd-static = mkStaticPackage {
+            bin = "cdk-mintd";
+            name = "cdk-mintd";
+            cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
+          };
+
+          cdk-mintd-ldk-static = mkStaticPackage {
+            bin = "cdk-mintd";
+            name = "cdk-mintd-ldk";
+            cargoExtraArgs = "--bin cdk-mintd --features ldk-node,postgres,prometheus,redis";
+          };
+
+          cdk-cli-static = mkStaticPackage {
+            bin = "cdk-cli";
+            name = "cdk-cli";
+            cargoExtraArgs = "--bin cdk-cli";
+          };
         }
         # Example packages (binaries that can be run outside sandbox with network access)
         // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExamplePackage name; }) exampleChecks));
