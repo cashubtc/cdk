@@ -44,8 +44,14 @@ build-static profile:
   echo "Static binaries in ./static-bin/:"
   ls -la ./static-bin/
 
-# Build all statically-linked binaries (requires nix)
+# Build all statically-linked binaries and generate checksums (requires nix)
 build-static-all: (build-static "cdk-mintd-static") (build-static "cdk-mintd-ldk-static") (build-static "cdk-cli-static")
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd ./static-bin
+  sha256sum -- *-x86_64 > SHA256SUMS
+  echo "Checksums:"
+  cat SHA256SUMS
 
 # run `cargo check` on everything
 check *ARGS="--workspace --all-targets":

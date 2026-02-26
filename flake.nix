@@ -35,6 +35,22 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
+        # Architecture-specific configuration for static musl builds
+        muslTarget = {
+          "x86_64-linux" = "x86_64-unknown-linux-musl";
+          "aarch64-linux" = "aarch64-unknown-linux-musl";
+        }.${system} or null;
+
+        archSuffix = {
+          "x86_64-linux" = "x86_64";
+          "aarch64-linux" = "aarch64";
+        }.${system} or null;
+
+        cargoTargetEnvName = {
+          "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER";
+          "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER";
+        }.${system} or null;
+
         overlays = [ (import rust-overlay) ];
         lib = pkgs.lib;
         stdenv = pkgs.stdenv;
@@ -50,11 +66,11 @@
           inherit system overlays;
         };
 
-        # Static/musl packages for fully static binary builds (x86_64-linux only)
+        # Static/musl packages for fully static binary builds (Linux only)
         pkgsMusl = import nixpkgs {
           localSystem = system;
           crossSystem = {
-            config = "x86_64-unknown-linux-musl";
+            config = muslTarget;
             isStatic = true;
           };
         };
@@ -96,7 +112,7 @@
 
         # Stable toolchain with musl target for static builds
         static_toolchain = pkgs.rust-bin.stable."1.93.0".default.override {
-          targets = [ "x86_64-unknown-linux-musl" ];
+          targets = [ muslTarget ];
         };
 
         # ========================================
@@ -174,15 +190,15 @@
         # (libsqlite3-sys, secp256k1-sys, aws-lc-sys, etc.)
         muslCC = pkgs.pkgsStatic.stdenv.cc;
 
-        # Common args for static musl builds (x86_64-linux only)
-        # Produces fully statically-linked binaries that run on any Linux x86_64 system
+        # Common args for static musl builds (Linux only)
+        # Produces fully statically-linked binaries that run on any Linux system
         commonCraneArgsStatic = {
           inherit src;
           pname = "cdk-static";
           version = "0.15.0-rc.0";
 
           # Cross-compile to musl for fully static linking
-          CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
+          CARGO_BUILD_TARGET = muslTarget;
           CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
 
           # Host-side build tools (run on build machine)
@@ -200,7 +216,6 @@
 
           # Tell the cc crate and cargo to use the musl-targeting C compiler/linker
           TARGET_CC = "${muslCC}/bin/${muslCC.targetPrefix}cc";
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCC}/bin/${muslCC.targetPrefix}cc";
 
           # Force static OpenSSL linking (needed by postgres/native-tls)
           OPENSSL_STATIC = "1";
@@ -214,6 +229,12 @@
 
           # Tell pkg-config to find musl static libraries
           PKG_CONFIG_ALL_STATIC = "1";
+
+          # Use the release-static profile for reproducible, optimized builds
+          CARGO_PROFILE = "release-static";
+        } // {
+          # Dynamic attribute name for the cargo linker env var (arch-specific)
+          ${cargoTargetEnvName} = "${muslCC}/bin/${muslCC.targetPrefix}cc";
         };
 
         # Build ALL dependencies once - this is what gets cached by Cachix
@@ -628,9 +649,16 @@
           pname = name;
           cargoArtifacts = workspaceDepsStatic;
           inherit cargoExtraArgs;
+          nativeBuildInputs = commonCraneArgsStatic.nativeBuildInputs ++ [
+            pkgs.removeReferencesTo
+          ];
           installPhaseCommand = ''
             mkdir -p $out/bin
-            cp target/x86_64-unknown-linux-musl/release/${bin} $out/bin/${name}-${staticVersion}-x86_64-linux
+            cp target/${muslTarget}/release-static/${bin} $out/bin/${name}-${staticVersion}-${archSuffix}
+          '';
+          # Strip Nix store references from binaries for reproducibility
+          postFixup = ''
+            find "$out" -type f -executable -exec remove-references-to -t ${static_toolchain} '{}' +
           '';
         });
 

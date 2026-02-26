@@ -171,9 +171,9 @@ CDK provides fully statically-linked Linux binaries built with [musl](https://mu
 
 | Target | Binary | Features |
 | :--- | :--- | :--- |
-| `cdk-mintd-static` | `cdk-mintd-{version}-x86_64-linux` | `postgres`, `prometheus`, `redis` |
-| `cdk-mintd-ldk-static` | `cdk-mintd-ldk-{version}-x86_64-linux` | `ldk-node`, `postgres`, `prometheus`, `redis` |
-| `cdk-cli-static` | `cdk-cli-{version}-x86_64-linux` | default |
+| `cdk-mintd-static` | `cdk-mintd-{version}-x86_64` | `postgres`, `prometheus`, `redis` |
+| `cdk-mintd-ldk-static` | `cdk-mintd-ldk-{version}-x86_64` | `ldk-node`, `postgres`, `prometheus`, `redis` |
+| `cdk-cli-static` | `cdk-cli-{version}-x86_64` | default |
 
 **Building locally (requires Nix):**
 
@@ -200,6 +200,23 @@ When a GitHub release is published, the [`static-build-publish.yml`](.github/wor
 3. Uploads the binaries and checksums to the GitHub release
 
 The workflow can also be triggered manually via `workflow_dispatch` with a tag input. Pre-built static binaries are available on the [GitHub releases page](https://github.com/cashubtc/cdk/releases).
+
+**Reproducibility:**
+
+Static builds are designed to be reproducible. Two builds from the same source and `flake.lock` should produce identical binaries. This is achieved through:
+
+- **Pinned toolchain and dependencies**: All inputs (Rust compiler, musl, OpenSSL, etc.) are pinned via the Nix flake lockfile.
+- **`release-static` Cargo profile**: Uses `codegen-units = 1` (eliminates parallel codegen ordering non-determinism), LTO, and `panic = "abort"`.
+- **Nix store path stripping**: A `postFixup` step runs `remove-references-to` on the final binaries to strip any embedded Nix store paths (e.g., the Rust toolchain path), which would otherwise differ across build machines.
+- **No non-deterministic metadata**: The codebase does not embed git hashes, build timestamps, or other non-deterministic values into binaries.
+
+You can verify a release binary by building locally and comparing checksums:
+
+```bash
+nix build .#cdk-mintd-static
+sha256sum ./result/bin/*
+# Compare against SHA256SUMS from the release
+```
 
 ### Nix Troubleshooting
 

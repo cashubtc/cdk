@@ -32,22 +32,22 @@ For detailed configuration of each Lightning backend, see:
 Statically-linked x86_64 Linux binaries are published to each [GitHub release](https://github.com/cashubtc/cdk/releases). These have zero runtime dependencies and run on any x86_64 Linux system.
 
 Available binaries:
-- **`cdk-mintd-{version}-x86_64-linux`** -- standard mint with `postgres`, `prometheus`, and `redis` support
-- **`cdk-mintd-ldk-{version}-x86_64-linux`** -- mint with built-in `ldk-node` Lightning backend
+- **`cdk-mintd-{version}-x86_64`** -- standard mint with `postgres`, `prometheus`, and `redis` support
+- **`cdk-mintd-ldk-{version}-x86_64`** -- mint with built-in `ldk-node` Lightning backend
 
 Each release also includes a `SHA256SUMS` file to verify downloads:
 
 ```bash
 # Download the binary and checksums
-curl -LO https://github.com/cashubtc/cdk/releases/latest/download/cdk-mintd-{version}-x86_64-linux
+curl -LO https://github.com/cashubtc/cdk/releases/latest/download/cdk-mintd-{version}-x86_64
 curl -LO https://github.com/cashubtc/cdk/releases/latest/download/SHA256SUMS
 
 # Verify the checksum
 sha256sum -c SHA256SUMS --ignore-missing
 
 # Make executable and run
-chmod +x cdk-mintd-*-x86_64-linux
-./cdk-mintd-*-x86_64-linux --help
+chmod +x cdk-mintd-*-x86_64
+./cdk-mintd-*-x86_64 --help
 ```
 
 To build static binaries locally, see the [Static Binaries](../../DEVELOPMENT.md#static-binaries) section in the Development Guide.
