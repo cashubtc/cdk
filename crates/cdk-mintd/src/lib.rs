@@ -1339,15 +1339,36 @@ pub async fn run_mintd(
     result
 }
 
-/// Run mintd with a custom shutdown signal
-pub async fn run_mintd_with_shutdown(
+/// A built mint instance ready to have services started on it.
+///
+/// Returned by [`build_mint_from_settings`] so that callers can interact with the
+/// [`Mint`] (e.g. rotate keysets) before starting the HTTP server via
+/// [`start_mint_services`].
+pub struct MintdInstance {
+    /// The fully-built mint.
+    pub mint: Arc<Mint>,
+    config_mint_info: cdk::nuts::MintInfo,
+    auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
+}
+
+impl std::fmt::Debug for MintdInstance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MintdInstance")
+            .field("mint", &"<Mint>")
+            .field("config_mint_info", &self.config_mint_info)
+            .field("auth_localstore", &self.auth_localstore.as_ref().map(|_| "<auth_db>"))
+            .finish()
+    }
+}
+
+/// Build a [`MintdInstance`] from the given settings without starting any
+/// network services. This is the first half of [`run_mintd_with_shutdown`].
+pub async fn build_mint_from_settings(
     work_dir: &Path,
     settings: &config::Settings,
-    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     db_password: Option<String>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
-    routers: Vec<Router>,
-) -> Result<()> {
+) -> Result<MintdInstance> {
     let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
     let mint_builder = MintBuilder::new(localstore);
@@ -1389,18 +1410,45 @@ pub async fn run_mintd_with_shutdown(
 
     tracing::debug!("Mint built from builder.");
 
-    let mint = Arc::new(mint);
+    Ok(MintdInstance {
+        mint: Arc::new(mint),
+        config_mint_info,
+        auth_localstore,
+    })
+}
 
+/// Start HTTP/RPC services for an already-built [`MintdInstance`].
+/// This is the second half of [`run_mintd_with_shutdown`].
+pub async fn start_mint_services(
+    instance: MintdInstance,
+    settings: &config::Settings,
+    work_dir: &Path,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    routers: Vec<Router>,
+) -> Result<()> {
     start_services_with_shutdown(
-        mint.clone(),
+        instance.mint,
         settings,
         work_dir,
-        config_mint_info,
+        instance.config_mint_info,
         shutdown_signal,
         routers,
-        auth_localstore,
+        instance.auth_localstore,
     )
     .await
+}
+
+/// Run mintd with a custom shutdown signal
+pub async fn run_mintd_with_shutdown(
+    work_dir: &Path,
+    settings: &config::Settings,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    db_password: Option<String>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
+) -> Result<()> {
+    let instance = build_mint_from_settings(work_dir, settings, db_password, runtime).await?;
+    start_mint_services(instance, settings, work_dir, shutdown_signal, routers).await
 }
 
 #[cfg(test)]

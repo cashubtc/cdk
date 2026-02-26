@@ -14,6 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+use cdk::mint::Mint;
 use cdk::nuts::CurrencyUnit;
 use cdk_integration_tests::cli::CommonArgs;
 use cdk_integration_tests::shared;
@@ -41,6 +42,45 @@ struct Args {
     /// Use external signatory
     #[arg(long, default_value_t = false)]
     external_signatory: bool,
+}
+
+/// Set up inactive/expired test keysets on the mint so that downstream wallet
+/// tests can exercise keyset filtering logic.
+///
+/// After this function the mint has:
+/// - Sat V1 (active)                      — current working keyset
+/// - Sat V0 (inactive, final_expiry=past) — expired keyset
+/// - Sat V1 (inactive, no final_expiry)   — rotation-deactivated keyset
+/// - USD V1 (active)                      — non-sat keyset (untouched)
+/// - Auth V1 (active)                     — auth keyset (untouched)
+async fn setup_test_keysets(mint: &Mint) -> Result<()> {
+    let amounts = cdk_integration_tests::standard_keyset_amounts(32);
+
+    // Step 1: Rotate Sat keyset → V0 with a past expiry.
+    // The original Sat V1 becomes inactive (rotation).
+    let past_expiry = cdk::util::unix_time().saturating_sub(3600); // 1 hour ago
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        amounts.clone(),
+        0,
+        false, // V0
+        Some(past_expiry),
+    )
+    .await?;
+
+    // Step 2: Rotate Sat keyset again → V1, no expiry.
+    // The Sat V0 from step 1 becomes inactive (and carries the past expiry).
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        amounts,
+        0,
+        true, // V1
+        None,
+    )
+    .await?;
+
+    println!("Test keysets configured (inactive expired + inactive rotated)");
+    Ok(())
 }
 
 /// Start a fake mint using the library
@@ -94,18 +134,39 @@ async fn start_fake_mint(
 
     // Run the mint in a separate task
     let handle = tokio::spawn(async move {
+        // Build the mint first
+        let instance = match cdk_mintd::build_mint_from_settings(
+            &temp_dir,
+            &settings,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(instance) => instance,
+            Err(e) => {
+                eprintln!("Failed to build mint: {e}");
+                return;
+            }
+        };
+
+        // Inject test keysets between build and service start
+        if let Err(e) = setup_test_keysets(&instance.mint).await {
+            eprintln!("Failed to set up test keysets: {e}");
+            return;
+        }
+
         // Create a future that resolves when the shutdown signal is received
         let shutdown_future = async move {
             shutdown_clone.notified().await;
             println!("Fake mint shutdown signal received");
         };
 
-        match cdk_mintd::run_mintd_with_shutdown(
-            &temp_dir,
+        match cdk_mintd::start_mint_services(
+            instance,
             &settings,
+            &temp_dir,
             shutdown_future,
-            None,
-            None,
             vec![],
         )
         .await
