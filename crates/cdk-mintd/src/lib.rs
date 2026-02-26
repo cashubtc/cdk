@@ -4,6 +4,7 @@
 // std
 use std::collections::HashMap;
 use std::env::{self};
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -1351,12 +1352,15 @@ pub struct MintdInstance {
     auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
 }
 
-impl std::fmt::Debug for MintdInstance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for MintdInstance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MintdInstance")
             .field("mint", &"<Mint>")
             .field("config_mint_info", &self.config_mint_info)
-            .field("auth_localstore", &self.auth_localstore.as_ref().map(|_| "<auth_db>"))
+            .field(
+                "auth_localstore",
+                &self.auth_localstore.as_ref().map(|_| "<auth_db>"),
+            )
             .finish()
     }
 }

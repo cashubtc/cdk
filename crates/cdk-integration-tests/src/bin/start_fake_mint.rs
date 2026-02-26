@@ -135,20 +135,14 @@ async fn start_fake_mint(
     // Run the mint in a separate task
     let handle = tokio::spawn(async move {
         // Build the mint first
-        let instance = match cdk_mintd::build_mint_from_settings(
-            &temp_dir,
-            &settings,
-            None,
-            None,
-        )
-        .await
-        {
-            Ok(instance) => instance,
-            Err(e) => {
-                eprintln!("Failed to build mint: {e}");
-                return;
-            }
-        };
+        let instance =
+            match cdk_mintd::build_mint_from_settings(&temp_dir, &settings, None, None).await {
+                Ok(instance) => instance,
+                Err(e) => {
+                    eprintln!("Failed to build mint: {e}");
+                    return;
+                }
+            };
 
         // Inject test keysets between build and service start
         if let Err(e) = setup_test_keysets(&instance.mint).await {
