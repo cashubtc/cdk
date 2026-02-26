@@ -178,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .prepare_melt(&melt_quote.id, HashMap::new())
         .await?;
     let melt_result = prepared_melt.confirm().await?;
-    println!("Melt completed! State: {:?}", melt_result.state());
+    println!("Melt completed! State: {}", melt_result.state());
 
     // ========================================
     // BALANCE: Query balances

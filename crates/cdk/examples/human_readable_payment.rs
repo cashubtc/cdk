@@ -141,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
                     match prepared.confirm().await {
                         Ok(confirmed) => {
                             println!("✓ BIP-353 payment successful!");
-                            println!("  State: {:?}", confirmed.state());
+                            println!("  State: {}", confirmed.state());
                             println!("  Amount paid: {} sats", confirmed.amount());
                             println!("  Fee paid: {} sats", confirmed.fee_paid());
 
@@ -218,7 +218,7 @@ async fn main() -> anyhow::Result<()> {
                     match prepared.confirm().await {
                         Ok(confirmed) => {
                             println!("✓ Lightning Address payment successful!");
-                            println!("  State: {:?}", confirmed.state());
+                            println!("  State: {}", confirmed.state());
                             println!("  Amount paid: {} sats", confirmed.amount());
                             println!("  Fee paid: {} sats", confirmed.fee_paid());
 

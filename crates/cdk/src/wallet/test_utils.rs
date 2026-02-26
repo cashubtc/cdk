@@ -1,5 +1,6 @@
 #![cfg(test)]
 #![allow(missing_docs)]
+#![allow(clippy::missing_panics_doc)]
 
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -138,6 +139,12 @@ pub struct MockMintConnector {
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Response for post_swap calls
     pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
+}
+
+impl Default for MockMintConnector {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MockMintConnector {

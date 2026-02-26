@@ -1524,7 +1524,7 @@ mod tests {
         assert_eq!(sig1.partial_cmp(&sig3), Some(Ordering::Equal));
 
         // Verify sorting works
-        let mut sigs = vec![sig2.clone(), sig1.clone(), sig3.clone()];
+        let mut sigs = [sig2.clone(), sig1.clone(), sig3.clone()];
         sigs.sort();
         assert_eq!(sigs[0].amount, Amount::from(10));
         assert_eq!(sigs[2].amount, Amount::from(20));
@@ -1651,6 +1651,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "mint")]
+    #[allow(deprecated)]
     fn test_currency_unit_derivation_index() {
         // Each currency unit should have a specific derivation index
         // These values are important for key derivation compatibility

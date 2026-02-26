@@ -1,4 +1,6 @@
 #![allow(missing_docs)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::use_debug)]
 
 use std::sync::Arc;
 use std::time::Duration;

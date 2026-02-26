@@ -782,18 +782,10 @@ mod tests {
     fn test_split_fragmented_no_match() {
         // 64×10, 32×5, 16×10, 8×5 = 640 + 160 + 160 + 40 = 1000
         let mut input_amounts = vec![];
-        for _ in 0..10 {
-            input_amounts.push(64);
-        }
-        for _ in 0..5 {
-            input_amounts.push(32);
-        }
-        for _ in 0..10 {
-            input_amounts.push(16);
-        }
-        for _ in 0..5 {
-            input_amounts.push(8);
-        }
+        input_amounts.extend(std::iter::repeat_n(64, 10));
+        input_amounts.extend(std::iter::repeat_n(32, 5));
+        input_amounts.extend(std::iter::repeat_n(16, 10));
+        input_amounts.extend(std::iter::repeat_n(8, 5));
         let input_proofs = proofs(&input_amounts);
         let send_amounts = amounts(&[512, 256, 128, 64, 32, 8]);
         let keyset_fees = keyset_fees_with_ppk(200);
@@ -826,24 +818,12 @@ mod tests {
     fn test_split_large_fragmented() {
         // 256×8, 128×4, 64×8, 32×4, 16×8, 8×4 = 3360
         let mut input_amounts = vec![];
-        for _ in 0..8 {
-            input_amounts.push(256);
-        }
-        for _ in 0..4 {
-            input_amounts.push(128);
-        }
-        for _ in 0..8 {
-            input_amounts.push(64);
-        }
-        for _ in 0..4 {
-            input_amounts.push(32);
-        }
-        for _ in 0..8 {
-            input_amounts.push(16);
-        }
-        for _ in 0..4 {
-            input_amounts.push(8);
-        }
+        input_amounts.extend(std::iter::repeat_n(256, 8));
+        input_amounts.extend(std::iter::repeat_n(128, 4));
+        input_amounts.extend(std::iter::repeat_n(64, 8));
+        input_amounts.extend(std::iter::repeat_n(32, 4));
+        input_amounts.extend(std::iter::repeat_n(16, 8));
+        input_amounts.extend(std::iter::repeat_n(8, 4));
         let input_proofs = proofs(&input_amounts);
         // Total = 8*256 + 4*128 + 8*64 + 4*32 + 8*16 + 4*8 = 2048+512+512+128+128+32 = 3360
         // Use send_amounts that DON'T all exist in input to force swap

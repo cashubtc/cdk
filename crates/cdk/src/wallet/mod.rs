@@ -912,12 +912,12 @@ mod tests {
         };
 
         // Response in same order as request
-        let response_outputs = vec![
+        let response_outputs = [
             premint1.blinded_message.clone(),
             premint2.blinded_message.clone(),
             premint3.blinded_message.clone(),
         ];
-        let response_signatures = vec![sig1.clone(), sig2.clone(), sig3.clone()];
+        let response_signatures = [sig1.clone(), sig2.clone(), sig3.clone()];
 
         // Apply the matching logic (same as in restore)
         let signature_map: HashMap<_, _> = response_outputs
@@ -1009,12 +1009,12 @@ mod tests {
         };
 
         // Response in REVERSED order (simulating out-of-order response from mint)
-        let response_outputs = vec![
+        let response_outputs = [
             premint3.blinded_message.clone(), // index 2 first
             premint1.blinded_message.clone(), // index 0 second
             premint2.blinded_message.clone(), // index 1 third
         ];
-        let response_signatures = vec![sig3.clone(), sig1.clone(), sig2.clone()];
+        let response_signatures = [sig3.clone(), sig1.clone(), sig2.clone()];
 
         // Apply the matching logic (same as in restore)
         let signature_map: HashMap<_, _> = response_outputs
@@ -1102,11 +1102,11 @@ mod tests {
 
         // Response only has signatures for premint1 and premint3 (gap at premint2)
         // Also out of order
-        let response_outputs = vec![
+        let response_outputs = [
             premint3.blinded_message.clone(),
             premint1.blinded_message.clone(),
         ];
-        let response_signatures = vec![sig3.clone(), sig1.clone()];
+        let response_signatures = [sig3.clone(), sig1.clone()];
 
         let signature_map: HashMap<_, _> = response_outputs
             .iter()

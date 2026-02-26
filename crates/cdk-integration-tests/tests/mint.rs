@@ -223,7 +223,7 @@ async fn test_concurrent_duplicate_payment_handling() {
             } else {
                 tx.update_mint_quote(&mut quote_from_db)
                     .await
-                    .map_err(|err| cdk_common::Error::Database(err))
+                    .map_err(cdk_common::Error::Database)
             };
 
             if result.is_ok() {

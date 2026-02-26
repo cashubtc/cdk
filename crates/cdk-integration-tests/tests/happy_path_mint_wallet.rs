@@ -908,10 +908,10 @@ async fn test_fake_melt_change_in_quote() {
 
     let check = client.get_melt_quote_status(&melt_quote.id).await.unwrap();
     let mut melt_change = melt_response.change.unwrap();
-    melt_change.sort_by(|a, b| a.amount.cmp(&b.amount));
+    melt_change.sort_by_key(|a| a.amount);
 
     let mut check = check.change.unwrap();
-    check.sort_by(|a, b| a.amount.cmp(&b.amount));
+    check.sort_by_key(|a| a.amount);
 
     assert_eq!(melt_change, check);
 }
