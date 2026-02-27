@@ -376,6 +376,10 @@ pub struct SendOptions {
     pub max_proofs: Option<usize>,
     /// Metadata
     pub metadata: HashMap<String, String>,
+    /// Use P2BK (NUT-28)
+    ///
+    /// When true, P2PK conditions will be converted to P2BK by blinding the public key
+    pub use_p2bk: bool,
 }
 
 /// Send memo

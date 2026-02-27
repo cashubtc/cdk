@@ -212,6 +212,10 @@ pub enum Error {
     /// Short keyset id -> id error
     #[error(transparent)]
     NUT02(#[from] crate::nuts::nut02::Error),
+    #[cfg(feature = "wallet")]
+    #[error(transparent)]
+    /// NUT28 P2BK error
+    NUT28(#[from] crate::nuts::nut28::Error),
 }
 
 /// Blinded Message (also called `output`)
@@ -463,7 +467,7 @@ impl ProofV4 {
             c: self.c,
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
-            p2pk_e: self.p2pk_e.clone(),
+            p2pk_e: self.p2pk_e,
         }
     }
 }
@@ -483,7 +487,7 @@ impl From<Proof> for ProofV4 {
             witness,
             dleq,
             p2pk_e,
-            keyset_id: _,
+            ..
         } = proof;
         ProofV4 {
             amount,
@@ -554,7 +558,7 @@ impl From<Proof> for ProofV3 {
             c,
             witness,
             dleq,
-            p2pk_e: _,
+            ..
         } = proof;
         ProofV3 {
             amount,
@@ -972,6 +976,59 @@ impl PreMintSecrets {
                 r,
                 amount: Amount::ZERO,
             })
+        }
+
+        Ok(PreMintSecrets {
+            secrets: output,
+            keyset_id,
+        })
+    }
+
+    /// Outputs with P2BK spending conditions
+    #[cfg(feature = "wallet")]
+    pub fn with_p2bk(
+        keyset_id: Id,
+        amount: Amount,
+        amount_split_target: &SplitTarget,
+        receiver_pubkey: PublicKey,
+        conditions: Option<crate::nuts::nut11::Conditions>,
+        ephemeral_key: &crate::nuts::nut01::SecretKey,
+        fee_and_amounts: &FeeAndAmounts,
+    ) -> Result<Self, Error> {
+        use crate::nuts::nut28::{blind_public_key, ecdh_kdf};
+
+        let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
+
+        let mut output = Vec::with_capacity(amount_split.len());
+
+        for (i, amount) in amount_split.into_iter().enumerate() {
+            if i > 10 {
+                return Err(Error::NUT28(
+                    crate::nuts::nut28::Error::InvalidCanonicalSlot(i as u8),
+                ));
+            }
+
+            let r = ecdh_kdf(ephemeral_key, &receiver_pubkey, keyset_id, i as u8)
+                .map_err(Error::NUT28)?;
+            let blinded_pubkey = blind_public_key(&receiver_pubkey, &r).map_err(Error::NUT28)?;
+
+            let blinded_conditions = crate::nuts::SpendingConditions::P2PKConditions {
+                data: blinded_pubkey,
+                conditions: conditions.clone(),
+            };
+
+            let secret: crate::nuts::nut10::Secret = blinded_conditions.into();
+            let secret: Secret = secret.try_into()?;
+            let (blinded, rs) = blind_message(&secret.to_bytes(), None)?;
+
+            let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
+
+            output.push(PreMint {
+                secret,
+                blinded_message,
+                r: rs,
+                amount,
+            });
         }
 
         Ok(PreMintSecrets {

@@ -12,7 +12,7 @@ fn test_p2bk_test_vectors() {
     let ephemeral_secret_key =
         SecretKey::from_hex("1cedb9df0c6872188b560ace9e35fd55c2532d53e19ae65b46159073886482ca")
             .unwrap();
-    let ephemeral_public_key =
+    let _ephemeral_public_key =
         PublicKey::from_hex("02a8cda4cf448bfce9a9e46e588c06ea1780fcb94e3bbdf3277f42995d403a8b0c")
             .unwrap();
 
@@ -27,7 +27,8 @@ fn test_p2bk_test_vectors() {
     let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
 
     // Expected shared secret from test vectors
-    let expected_shared_secret = "40d6ba4430a6dfa915bb441579b0f4dee032307434e9957a092bbca73151df8b";
+    let _expected_shared_secret =
+        "40d6ba4430a6dfa915bb441579b0f4dee032307434e9957a092bbca73151df8b";
 
     // Expected blinding scalars from official NUT-28 spec
     let expected_blinding_scalars = [
@@ -60,7 +61,7 @@ fn test_p2bk_test_vectors() {
     ];
 
     // Expected derived secret keys from NUT-28 spec - reference only, not used in tests
-    let expected_std_secret_keys = [
+    let _expected_std_secret_keys = [
         "8d5ad08f4a3cb3fee9bcb5e16cd214e240a2e9ad3c1dc791c4c6e51654698c9a", // sk0
         "7b64cff5ecac0abf96eeff910f57ab0dd6e53c3c2f1ce9038be25a7ba40e5a3a", // sk1
         "5f2cb5d0ac13e491ed5cd0fba44eeefea8dd0e2e17a3cf7d2d5f6a0d863d1e5",  // sk2

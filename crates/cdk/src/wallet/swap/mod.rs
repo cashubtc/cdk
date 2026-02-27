@@ -27,6 +27,7 @@ impl Wallet {
         amount_split_target: SplitTarget,
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
+        use_p2bk: bool,
         include_fees: bool,
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
@@ -38,6 +39,7 @@ impl Wallet {
                 amount_split_target,
                 input_proofs,
                 spending_conditions,
+                use_p2bk,
                 include_fees,
             )
             .await?;
@@ -57,9 +59,10 @@ impl Wallet {
         amount_split_target: SplitTarget,
         proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
+        use_p2bk: bool,
         include_fees: bool,
         proofs_fee_breakdown: &ProofsFeeBreakdown,
-    ) -> Result<PreSwap, Error> {
+    ) -> Result<(PreSwap, Option<crate::nuts::nut01::SecretKey>), Error> {
         tracing::info!("Creating swap");
 
         // Desired amount is either amount passed or value of all proof
@@ -155,6 +158,7 @@ impl Wallet {
 
         let mut count = starting_counter;
 
+        let mut p2bk_ephemeral_key = None;
         let (mut desired_messages, change_messages) = match spending_conditions {
             Some(conditions) => {
                 let change_premint_secrets = PreMintSecrets::from_seed(
@@ -168,16 +172,39 @@ impl Wallet {
 
                 derived_secret_count = change_premint_secrets.len();
 
-                (
-                    PreMintSecrets::with_conditions(
-                        active_keyset_id,
-                        send_amount.unwrap_or(Amount::ZERO),
-                        &SplitTarget::default(),
-                        &conditions,
-                        fee_and_amounts,
-                    )?,
-                    change_premint_secrets,
-                )
+                let (send_secrets, ephemeral_key) = if use_p2bk {
+                    if let SpendingConditions::P2PKConditions { data, conditions } = conditions {
+                        let ephemeral_key = crate::nuts::nut01::SecretKey::generate();
+                        (
+                            PreMintSecrets::with_p2bk(
+                                active_keyset_id,
+                                send_amount.unwrap_or(Amount::ZERO),
+                                &SplitTarget::default(),
+                                data,
+                                conditions,
+                                &ephemeral_key,
+                                fee_and_amounts,
+                            )?,
+                            Some(ephemeral_key),
+                        )
+                    } else {
+                        return Err(Error::Custom("P2BK requires P2PK conditions".to_string()));
+                    }
+                } else {
+                    (
+                        PreMintSecrets::with_conditions(
+                            active_keyset_id,
+                            send_amount.unwrap_or(Amount::ZERO),
+                            &SplitTarget::default(),
+                            &conditions,
+                            fee_and_amounts,
+                        )?,
+                        None,
+                    )
+                };
+
+                p2bk_ephemeral_key = ephemeral_key;
+                (send_secrets, change_premint_secrets)
             }
             None => {
                 let premint_secrets = PreMintSecrets::from_seed(
@@ -213,11 +240,14 @@ impl Wallet {
 
         let swap_request = SwapRequest::new(proofs, desired_messages.blinded_messages());
 
-        Ok(PreSwap {
-            pre_mint_secrets: desired_messages,
-            swap_request,
-            derived_secret_count: derived_secret_count as u32,
-            fee: proofs_fee_breakdown.total,
-        })
+        Ok((
+            PreSwap {
+                pre_mint_secrets: desired_messages,
+                swap_request,
+                derived_secret_count: derived_secret_count as u32,
+                fee: proofs_fee_breakdown.total,
+            },
+            p2bk_ephemeral_key,
+        ))
     }
 }

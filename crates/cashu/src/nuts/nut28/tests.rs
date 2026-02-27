@@ -1,11 +1,9 @@
 //! Tests for the NUT-28 implementation
 
-use std::str::FromStr;
-
 use crate::nuts::nut01::SecretKey;
 use crate::nuts::nut02::KeySetVersion;
 use crate::nuts::nut28::{blind_public_key, derive_signing_key_bip340, ecdh_kdf};
-use crate::{Conditions, Id, PreMintSecrets, SigFlag, SpendingConditions};
+use crate::Id;
 
 #[test]
 fn test_ecdh_kdf() {
