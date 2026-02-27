@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -27,6 +28,7 @@
   outputs =
     { self
     , nixpkgs
+    , nixpkgs-unstable
     , rust-overlay
     , flake-utils
     , crane
@@ -68,6 +70,10 @@
         # Dependencies
         pkgs = import nixpkgs {
           inherit system overlays;
+        };
+
+        pkgsUnstable = import nixpkgs-unstable {
+          inherit system;
         };
 
         # Static/musl packages for fully static binary builds (Linux only)
@@ -531,7 +537,7 @@
           with pkgs;
           [
             lnd
-            clightning
+            pkgsUnstable.clightning
             bitcoind
             mprocs
           ];
