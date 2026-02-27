@@ -73,11 +73,6 @@ tokio = { workspace = true, features = [
 ] }
 getrandom = { version = "0.2" }
 cdk-signatory = { workspace = true, features = ["grpc"], optional = true }
-tokio-tungstenite = { workspace = true, features = [
-    "rustls",
-    "rustls-tls-native-roots",
-    "connect"
-] }
 # Tor dependencies (optional; enabled by feature "tor")
 hyper = { version = "0.14", optional = true, features = ["client", "http1", "http2"] }
 http = { version = "0.2", optional = true }
