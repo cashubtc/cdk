@@ -458,7 +458,14 @@ async fn test_restore_large_proof_count() {
         let batch_fee = wallet_2.get_proofs_fee(&batch_vec).await.unwrap().total;
         total_fee += batch_fee;
         wallet_2
-            .swap(None, SplitTarget::default(), batch.to_vec(), None, false, false)
+            .swap(
+                None,
+                SplitTarget::default(),
+                batch.to_vec(),
+                None,
+                false,
+                false,
+            )
             .await
             .unwrap();
     }
@@ -605,7 +612,14 @@ async fn test_restore_with_counter_gap() {
         }
 
         let swap_result = wallet_restored
-            .swap(None, SplitTarget::default(), proofs.clone(), None, false, false)
+            .swap(
+                None,
+                SplitTarget::default(),
+                proofs.clone(),
+                None,
+                false,
+                false,
+            )
             .await;
 
         match swap_result {

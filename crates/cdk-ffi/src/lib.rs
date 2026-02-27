@@ -226,7 +226,6 @@ mod tests {
             p2pk_signing_keys: vec![secret_key],
             preimages: vec!["preimage1".to_string(), "preimage2".to_string()],
             metadata,
-
         };
 
         assert!(matches!(
