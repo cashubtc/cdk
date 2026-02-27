@@ -3,8 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -73,7 +72,6 @@
           inherit system overlays;
         };
 
-        # Unstable packages for Bitcoin/Lightning tools (newer versions)
         pkgsUnstable = import nixpkgs-unstable {
           inherit system;
         };
