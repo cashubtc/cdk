@@ -197,14 +197,23 @@ impl MeltSaga<Initial> {
         input_verification: Verification,
         payment_method: cdk_common::PaymentMethod,
     ) -> Result<MeltSaga<SetupComplete>, Error> {
-        // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
-        // and HTLC (including SIGALL)
-        melt_request.verify_spending_conditions()?;
-
         let Verification {
             amount: input_amount,
         } = input_verification;
         let input_unit = Some(input_amount.unit().clone());
+
+        if let Some(outputs) = melt_request.outputs() {
+            if !outputs.is_empty() {
+                let output_verification = self.mint.verify_outputs(outputs)?;
+                if input_unit.as_ref() != Some(output_verification.amount.unit()) {
+                    return Err(Error::UnitMismatch);
+                }
+            }
+        }
+
+        // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
+        // and HTLC (including SIGALL)
+        melt_request.verify_spending_conditions()?;
 
         let mut tx = self.db.begin_transaction().await?;
 
@@ -318,24 +327,6 @@ impl MeltSaga<Initial> {
                 quote.amount().value(),
                 inputs_fee.checked_add(&fee_reserve)?.value(),
             ));
-        }
-
-        // Verify outputs if provided
-        if let Some(outputs) = &melt_request.outputs() {
-            if !outputs.is_empty() {
-                let output_verification = match self.mint.verify_outputs(outputs).await {
-                    Ok(verification) => verification,
-                    Err(err) => {
-                        tx.rollback().await?;
-                        return Err(err);
-                    }
-                };
-
-                if input_unit.as_ref() != Some(output_verification.amount.unit()) {
-                    tx.rollback().await?;
-                    return Err(Error::UnitMismatch);
-                }
-            }
         }
 
         // Add melt request tracking record

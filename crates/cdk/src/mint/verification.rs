@@ -146,10 +146,24 @@ impl Mint {
     /// Returns an error if outputs are empty - callers should guard against
     /// empty outputs before calling this function.
     #[instrument(skip_all)]
-    pub async fn verify_outputs(&self, outputs: &[BlindedMessage]) -> Result<Verification, Error> {
+    pub fn verify_outputs(&self, outputs: &[BlindedMessage]) -> Result<Verification, Error> {
         if outputs.is_empty() {
             tracing::debug!("verify_outputs called with empty outputs");
             return Err(Error::TransactionUnbalanced(0, 0, 0));
+        }
+
+        // Check max outputs limit
+        let outputs_count = outputs.len();
+        if outputs_count > self.max_outputs {
+            tracing::warn!(
+                "Mint request exceeds max outputs limit: {} > {}",
+                outputs_count,
+                self.max_outputs
+            );
+            return Err(Error::MaxOutputsExceeded {
+                actual: outputs_count,
+                max: self.max_outputs,
+            });
         }
 
         Mint::check_outputs_unique(outputs)?;
