@@ -1,0 +1,143 @@
+name: FFI - Flutter Bindings
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify-flutter-bindings:
+    name: Verify Flutter Bindings
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CDK
+        uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Flutter Rust Bridge Codegen
+        run: cargo install flutter_rust_bridge_codegen --version 2.11.1
+
+      - name: Scaffold Test Project
+        run: |
+          # Create project structure
+          mkdir -p cdk_flutter_test/rust/src/api
+          mkdir -p cdk_flutter_test/lib
+          
+          # 1. Create pubspec.yaml
+          cat <<EOF > cdk_flutter_test/pubspec.yaml
+          name: cdk_flutter_test
+          description: "Test project for CDK Flutter bindings"
+          version: 0.1.0
+          environment:
+            sdk: ^3.0.0
+          dependencies:
+            flutter:
+              sdk: flutter
+            flutter_rust_bridge: 2.11.1
+          dev_dependencies:
+            ffigen: ^13.0.0
+            build_runner: ^2.4.14
+            freezed: ^2.5.7
+          flutter:
+            plugin:
+              platforms:
+                android:
+                  ffiPlugin: true
+                ios:
+                  ffiPlugin: true
+                linux:
+                  ffiPlugin: true
+                macos:
+                  ffiPlugin: true
+                windows:
+                  ffiPlugin: true
+          EOF
+
+          # 2. Create Cargo.toml
+          # We point dependencies to the local checkout of CDK
+          cat <<EOF > cdk_flutter_test/rust/Cargo.toml
+          [package]
+          name = "cdk_flutter_test"
+          version = "0.1.0"
+          edition = "2021"
+
+          [lib]
+          crate-type = ["cdylib", "staticlib"]
+
+          [dependencies]
+          cdk = { path = "../../crates/cdk", default-features = false, features = ["wallet"] }
+          cdk-common = { path = "../../crates/cdk-common", default-features = false }
+          cdk-sqlite = { path = "../../crates/cdk-sqlite", default-features = false, features = ["wallet"] }
+          flutter_rust_bridge = { version = "=2.11.1", features = ["anyhow", "dart-opaque", "portable-atomic", "rust-async", "thread-pool", "wasm-start"] }
+          tokio = { version = "1", features = ["full"] }
+          anyhow = "1"
+          EOF
+
+          # 3. Create Rust Source
+          
+          # rust/src/lib.rs
+          cat <<EOF > cdk_flutter_test/rust/src/lib.rs
+          pub mod api;
+          EOF
+
+          # rust/src/api/mod.rs
+          cat <<EOF > cdk_flutter_test/rust/src/api/mod.rs
+          pub mod wallet;
+          EOF
+
+          # rust/src/api/wallet.rs 
+          # This mimics a subset of the actual cdk-flutter bindings to verify API compatibility
+          cat <<EOF > cdk_flutter_test/rust/src/api/wallet.rs
+          use flutter_rust_bridge::frb;
+          use cdk::wallet::Wallet;
+          use cdk::Amount;
+          use std::sync::Arc;
+          
+          #[frb(opaque)]
+          pub struct CdkWallet {
+              pub inner: Wallet,
+          }
+          
+          impl CdkWallet {
+             pub fn new() -> Self {
+                 panic!("Scaffold test only")
+             }
+             
+             pub fn get_unit(&self) -> String {
+                 self.inner.unit.to_string()
+             }
+          }
+          
+          pub fn verify_amount_type() {
+             let _ = Amount::from(100);
+          }
+          EOF
+
+          echo "✅ Scaffolded test project"
+
+      - name: Generate Bindings
+        run: |
+          cd cdk_flutter_test
+          flutter pub get
+          
+          # Generate bindings
+          # This verifies that the Rust API matches what FRB expects and that types are compatible
+          flutter_rust_bridge_codegen generate
+          
+      - name: Verify Compilation
+        run: |
+          cd cdk_flutter_test/rust
+          cargo check
