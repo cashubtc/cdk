@@ -46,7 +46,7 @@ run_test() {
             fi
         done
         echo "Running test '$test_name' from nextest archive"
-        cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" -E "binary(~$test_name)" "${nextest_args[@]}"
+        cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~$test_name)" "${nextest_args[@]}"
     else
         echo "Running test '$test_name' via cargo test"
         cargo test -p cdk-integration-tests --test "$test_name" "$@"

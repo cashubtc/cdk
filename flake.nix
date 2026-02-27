@@ -505,6 +505,7 @@
           # rust analyzer needs  NIX_PATH for some reason.
           NIX_PATH = "nixpkgs=${inputs.nixpkgs}";
         };
+
         baseBuildInputs =
           with pkgs;
           [
