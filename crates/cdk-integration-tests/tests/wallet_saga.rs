@@ -477,6 +477,7 @@ async fn test_melt_swap_gap_recovery() -> Result<()> {
             proofs_to_swap.clone(),
             None,
             false,
+            false,
         )
         .await?;
 

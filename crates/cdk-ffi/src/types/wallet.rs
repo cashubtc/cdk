@@ -112,6 +112,7 @@ pub struct SendOptions {
     pub send_kind: SendKind,
     /// Include fee
     pub include_fee: bool,
+    pub use_p2bk: bool,
     /// Maximum number of proofs to include in the token
     pub max_proofs: Option<u32>,
     /// Metadata
@@ -128,6 +129,7 @@ impl Default for SendOptions {
             include_fee: false,
             max_proofs: None,
             metadata: HashMap::new(),
+            use_p2bk: false,
         }
     }
 }
@@ -142,6 +144,7 @@ impl From<SendOptions> for cdk::wallet::SendOptions {
             include_fee: opts.include_fee,
             max_proofs: opts.max_proofs.map(|p| p as usize),
             metadata: opts.metadata,
+            use_p2bk: opts.use_p2bk,
         }
     }
 }
@@ -156,6 +159,7 @@ impl From<cdk::wallet::SendOptions> for SendOptions {
             include_fee: opts.include_fee,
             max_proofs: opts.max_proofs.map(|p| p as u32),
             metadata: opts.metadata,
+            use_p2bk: opts.use_p2bk,
         }
     }
 }

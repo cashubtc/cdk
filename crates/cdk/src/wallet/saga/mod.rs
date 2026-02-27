@@ -175,6 +175,7 @@ pub mod test_utils {
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         }
     }
 

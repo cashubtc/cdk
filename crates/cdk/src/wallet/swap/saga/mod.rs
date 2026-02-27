@@ -88,6 +88,7 @@ impl<'a> SwapSaga<'a, Initial> {
         amount_split_target: SplitTarget,
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
+        use_p2bk: bool,
         include_fees: bool,
     ) -> Result<SwapSaga<'a, Prepared>, Error> {
         tracing::info!(
@@ -105,7 +106,7 @@ impl<'a> SwapSaga<'a, Initial> {
 
         let input_ys = input_proofs.ys()?;
 
-        let pre_swap = self
+        let (pre_swap, p2bk_ephemeral) = self
             .wallet
             .create_swap(
                 active_keyset_id,
@@ -114,6 +115,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 amount_split_target.clone(),
                 input_proofs.clone(),
                 spending_conditions.clone(),
+                use_p2bk,
                 include_fees,
                 &fee_breakdown,
             )
@@ -169,6 +171,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 input_ys,
                 spending_conditions,
                 pre_swap,
+                p2bk_ephemeral,
                 saga,
             },
         })
@@ -246,32 +249,41 @@ impl<'a> SwapSaga<'a, Prepared> {
                         nut10_secret.is_ok()
                     });
 
-                let (proofs_to_send, proofs_to_keep) = match &self.state_data.spending_conditions {
-                    Some(_) => (proofs_with_condition, proofs_without_condition),
-                    None => {
-                        let mut all_proofs = proofs_without_condition;
-                        all_proofs.reverse();
+                let (mut proofs_to_send, proofs_to_keep) =
+                    match &self.state_data.spending_conditions {
+                        Some(_) => (proofs_with_condition, proofs_without_condition),
+                        None => {
+                            let mut all_proofs = proofs_without_condition;
+                            all_proofs.reverse();
 
-                        let mut proofs_to_send = Proofs::new();
-                        let mut proofs_to_keep = Proofs::new();
-                        let mut amount_split = amount.split_targeted(
-                            &self.state_data.amount_split_target,
-                            &fee_and_amounts,
-                        )?;
+                            let mut proofs_to_send = Proofs::new();
+                            let mut proofs_to_keep = Proofs::new();
+                            let mut amount_split = amount.split_targeted(
+                                &self.state_data.amount_split_target,
+                                &fee_and_amounts,
+                            )?;
 
-                        for proof in all_proofs {
-                            if let Some(idx) = amount_split.iter().position(|&a| a == proof.amount)
-                            {
-                                proofs_to_send.push(proof);
-                                amount_split.remove(idx);
-                            } else {
-                                proofs_to_keep.push(proof);
+                            for proof in all_proofs {
+                                if let Some(idx) =
+                                    amount_split.iter().position(|&a| a == proof.amount)
+                                {
+                                    proofs_to_send.push(proof);
+                                    amount_split.remove(idx);
+                                } else {
+                                    proofs_to_keep.push(proof);
+                                }
                             }
-                        }
 
-                        (proofs_to_send, proofs_to_keep)
+                            (proofs_to_send, proofs_to_keep)
+                        }
+                    };
+
+                if let Some(ephemeral_key) = &self.state_data.p2bk_ephemeral {
+                    let ephemeral_pubkey = ephemeral_key.public_key();
+                    for proof in proofs_to_send.iter_mut() {
+                        proof.p2pk_e = Some(ephemeral_pubkey);
                     }
-                };
+                }
 
                 let send_proofs_info = proofs_to_send
                     .clone()

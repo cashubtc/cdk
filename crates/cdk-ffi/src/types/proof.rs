@@ -91,6 +91,7 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
                 .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             witness: proof.witness.map(|w| w.into()),
             dleq: proof.dleq.map(|d| d.into()),
+            p2pk_e: None,
         })
     }
 }

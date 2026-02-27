@@ -166,8 +166,37 @@ impl<'a> ReceiveSaga<'a, Initial> {
                         }
                     }
                     for pubkey in pubkeys {
-                        if let Some(signing) = p2pk_signing_keys.get(&pubkey.x_only_public_key()) {
-                            proof.sign_p2pk(signing.to_owned().clone())?;
+                        if let Some(ephemeral_key) = proof.p2pk_e {
+                            #[cfg(feature = "wallet")]
+                            {
+                                for signing_key in p2pk_signing_keys.values() {
+                                    for slot in 0..=10 {
+                                        if let Ok(r) = crate::nuts::nut28::ecdh_kdf(
+                                            *signing_key,
+                                            &ephemeral_key,
+                                            proof.keyset_id,
+                                            slot,
+                                        ) {
+                                            if let Ok(derived_key) =
+                                                crate::nuts::nut28::derive_signing_key_bip340(
+                                                    *signing_key,
+                                                    &r,
+                                                    &pubkey,
+                                                )
+                                            {
+                                                proof.sign_p2pk(derived_key)?;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            if let Some(signing) =
+                                p2pk_signing_keys.get(&pubkey.x_only_public_key())
+                            {
+                                proof.sign_p2pk(signing.to_owned().clone())?;
+                            }
                         }
                     }
 
@@ -270,7 +299,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         )
         .await;
 
-        let mut pre_swap = self
+        let (mut pre_swap, _) = self
             .wallet
             .create_swap(
                 self.state_data.active_keyset_id,
@@ -279,6 +308,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 self.state_data.options.amount_split_target.clone(),
                 proofs,
                 None,
+                false,
                 false,
                 &fee_breakdown,
             )
@@ -297,6 +327,10 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 
             for blinded_message in pre_swap.swap_request.outputs_mut() {
                 for signing_key in p2pk_signing_keys.values() {
+                    // Blinded messages don't have p2pk_e because they are outputs of the swap.
+                    // Wait, we are signing the outputs of the swap using p2pk_signing_keys!
+                    // If the user provided p2pk keys to be signed on output messages,
+                    // this assumes standard P2PK since output P2BK requires ephemeral keys which is handled at creation.
                     blinded_message.sign_p2pk(signing_key.to_owned().clone())?
                 }
             }
