@@ -24,6 +24,7 @@ mod client;
 mod error;
 mod request;
 mod response;
+pub mod ws;
 
 pub use client::{fetch, HttpClient, HttpClientBuilder};
 pub use error::HttpError;

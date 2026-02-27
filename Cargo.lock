@@ -1221,7 +1221,6 @@ dependencies = [
  "tls-api",
  "tls-api-native-tls",
  "tokio",
- "tokio-tungstenite 0.26.2",
  "tokio-util",
  "tor-rtcompat",
  "tracing",
@@ -1388,6 +1387,9 @@ dependencies = [
 name = "cdk-http-client"
 version = "0.15.1"
 dependencies = [
+ "futures",
+ "futures-channel",
+ "js-sys",
  "mockito",
  "regex",
  "reqwest",
@@ -1395,7 +1397,12 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
  "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

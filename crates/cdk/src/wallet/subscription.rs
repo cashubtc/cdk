@@ -10,7 +10,9 @@ use std::fmt::Debug;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use cdk_common::nut17::ws::{WsMethodRequest, WsRequest, WsUnsubscribeRequest};
+use cdk_common::nut17::ws::{
+    WsMessageOrResponse, WsMethodRequest, WsRequest, WsUnsubscribeRequest,
+};
 use cdk_common::nut17::{Kind, NotificationId};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::pub_sub::remote_consumer::{
@@ -18,16 +20,14 @@ use cdk_common::pub_sub::remote_consumer::{
 };
 use cdk_common::pub_sub::{Error as PubsubError, Spec, Subscriber};
 use cdk_common::subscription::WalletParams;
-use cdk_common::CheckStateRequest;
+use cdk_common::ws_client::{connect as ws_connect, WsError};
+use cdk_common::{CheckStateRequest, Method, RoutePath};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::event::MintEvent;
 use crate::mint_url::MintUrl;
 use crate::wallet::MintConnector;
-
-#[cfg(not(target_arch = "wasm32"))]
-mod ws;
 
 /// Notification Payload
 pub type NotificationPayload = crate::nuts::NotificationPayload<String>;
@@ -215,17 +215,11 @@ impl Transport for SubscriptionClient {
 
     async fn stream(
         &self,
-        _ctrls: mpsc::Receiver<StreamCtrl<Self::Spec>>,
-        _topics: Vec<SubscribeMessage<Self::Spec>>,
-        _reply_to: InternalRelay<Self::Spec>,
+        ctrls: mpsc::Receiver<StreamCtrl<Self::Spec>>,
+        topics: Vec<SubscribeMessage<Self::Spec>>,
+        reply_to: InternalRelay<Self::Spec>,
     ) -> Result<(), PubsubError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let r = ws::stream_client(self, _ctrls, _topics, _reply_to).await;
-
-        #[cfg(target_arch = "wasm32")]
-        let r = Err(PubsubError::NotSupported);
-
-        r
+        stream_client(self, ctrls, topics, reply_to).await
     }
 
     /// Poll on demand
@@ -351,5 +345,142 @@ impl Transport for SubscriptionClient {
         }
 
         Ok(())
+    }
+}
+
+async fn stream_client(
+    client: &SubscriptionClient,
+    mut ctrl: mpsc::Receiver<StreamCtrl<MintSubTopics>>,
+    topics: Vec<SubscribeMessage<MintSubTopics>>,
+    reply_to: InternalRelay<MintSubTopics>,
+) -> Result<(), PubsubError> {
+    let mut url = client
+        .mint_url
+        .join_paths(&["v1", "ws"])
+        .expect("Could not join paths");
+
+    if url.scheme() == "https" {
+        url.set_scheme("wss").expect("Could not set scheme");
+    } else {
+        url.set_scheme("ws").expect("Could not set scheme");
+    }
+
+    let mut headers: Vec<(&str, String)> = Vec::new();
+
+    {
+        let auth_wallet = client.http_client.get_auth_wallet().await;
+        let token = match auth_wallet.as_ref() {
+            Some(auth_wallet) => {
+                let endpoint = cdk_common::ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
+                match auth_wallet.get_auth_for_request(&endpoint).await {
+                    Ok(token) => token,
+                    Err(err) => {
+                        tracing::warn!("Failed to get auth token: {:?}", err);
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+
+        if let Some(auth_token) = token {
+            let header_key = match &auth_token {
+                cdk_common::AuthToken::ClearAuth(_) => "Clear-auth",
+                cdk_common::AuthToken::BlindAuth(_) => "Blind-auth",
+            };
+
+            let header_value = auth_token.to_string();
+            headers.push((header_key, header_value));
+        }
+    }
+
+    let url_str = url.to_string();
+    let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    tracing::debug!("Connecting to {}", url);
+    let (mut sender, mut receiver) = ws_connect(&url_str, &header_refs).await.map_err(|err| {
+        tracing::error!("Error connecting: {err:?}");
+        map_ws_error(err)
+    })?;
+
+    tracing::debug!("Connected to {}", url);
+
+    for (name, index) in topics {
+        let (_, req) = if let Some(req) = client.get_sub_request(name, index) {
+            req
+        } else {
+            continue;
+        };
+
+        let _ = sender.send(req).await;
+    }
+
+    loop {
+        tokio::select! {
+            Some(msg) = ctrl.recv() => {
+                match msg {
+                    StreamCtrl::Subscribe(msg) => {
+                        let (_, req) = if let Some(req) = client.get_sub_request(msg.0, msg.1) {
+                            req
+                        } else {
+                            continue;
+                        };
+                        let _ = sender.send(req).await;
+                    }
+                    StreamCtrl::Unsubscribe(msg) => {
+                        let req = if let Some(req) = client.get_unsub_request(msg) {
+                            req
+                        } else {
+                            continue;
+                        };
+                        let _ = sender.send(req).await;
+                    }
+                    StreamCtrl::Stop => {
+                        if let Err(err) = sender.close().await {
+                            tracing::error!("Closing error {err:?}");
+                        }
+                        break;
+                    }
+                };
+            }
+            msg = receiver.recv() => {
+                let msg = match msg {
+                    Some(Ok(msg)) => msg,
+                    Some(Err(_)) => {
+                        if let Err(err) = sender.close().await {
+                            tracing::error!("Closing error {err:?}");
+                        }
+                        break;
+                    }
+                    None => break,
+                };
+                let msg = match serde_json::from_str::<WsMessageOrResponse<String>>(&msg) {
+                    Ok(msg) => msg,
+                    Err(_) => continue,
+                };
+
+                match msg {
+                    WsMessageOrResponse::Notification(ref payload) => {
+                        reply_to.send(payload.params.payload.clone());
+                    }
+                    WsMessageOrResponse::Response(response) => {
+                        tracing::debug!("Received response from server: {:?}", response);
+                    }
+                    WsMessageOrResponse::ErrorResponse(error) => {
+                        tracing::debug!("Received an error from server: {:?}", error);
+                        return Err(PubsubError::InternalStr(error.error.message));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn map_ws_error(err: WsError) -> PubsubError {
+    match err {
+        WsError::Connection(_) => PubsubError::NotSupported,
+        other => PubsubError::InternalStr(other.to_string()),
     }
 }
