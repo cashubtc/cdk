@@ -76,6 +76,7 @@ async fn start_fake_mint(
         reserve_fee_min: 1.into(),
         min_delay_time: 1,
         max_delay_time: 3,
+        create_test_keysets: true,
     });
 
     // Create settings struct for fake mint using shared function

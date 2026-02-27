@@ -30,7 +30,8 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
-    feature = "ldk-node"
+    feature = "ldk-node",
+    feature = "fakewallet"
 ))]
 use cdk::nuts::CurrencyUnit;
 use cdk::nuts::{
@@ -545,6 +546,31 @@ async fn configure_lightning_backend(
                     Arc::new(fake),
                 )
                 .await?;
+            }
+
+            if fake_wallet.create_test_keysets {
+                use cdk::mint::KeysetRotation;
+
+                let amounts = cdk::mint::UnitConfig::default().amounts;
+                let past_expiry = cdk::util::unix_time().saturating_sub(3600);
+
+                // Rotation 1: Sat V0 with past expiry (creates an expired keyset)
+                mint_builder = mint_builder.with_keyset_rotation(KeysetRotation {
+                    unit: CurrencyUnit::Sat,
+                    amounts: amounts.clone(),
+                    input_fee_ppk: 0,
+                    use_keyset_v2: false,
+                    final_expiry: Some(past_expiry),
+                });
+
+                // Rotation 2: Sat V1 with no expiry (rotation-deactivated keyset)
+                mint_builder = mint_builder.with_keyset_rotation(KeysetRotation {
+                    unit: CurrencyUnit::Sat,
+                    amounts,
+                    input_fee_ppk: 0,
+                    use_keyset_v2: true,
+                    final_expiry: None,
+                });
             }
         }
         #[cfg(feature = "grpc-processor")]

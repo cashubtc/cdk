@@ -413,6 +413,9 @@ pub struct FakeWallet {
     pub min_delay_time: u64,
     #[serde(default = "default_max_delay_time")]
     pub max_delay_time: u64,
+    /// When true, create additional inactive/expired test keysets during mint build
+    #[serde(default)]
+    pub create_test_keysets: bool,
 }
 
 #[cfg(feature = "fakewallet")]
@@ -424,6 +427,7 @@ impl Default for FakeWallet {
             reserve_fee_min: 2.into(),
             min_delay_time: 1,
             max_delay_time: 3,
+            create_test_keysets: false,
         }
     }
 }

@@ -43,6 +43,22 @@ impl Default for UnitConfig {
     }
 }
 
+/// Describes an extra keyset rotation to perform during mint build.
+/// Used to create inactive/expired keysets for testing.
+#[derive(Debug, Clone)]
+pub struct KeysetRotation {
+    /// Currency unit for this rotation
+    pub unit: CurrencyUnit,
+    /// Amounts for the keyset
+    pub amounts: Vec<u64>,
+    /// Input fee
+    pub input_fee_ppk: u64,
+    /// Whether to use keyset V2 (Version01) or V1 (Version00)
+    pub use_keyset_v2: bool,
+    /// Optional expiry timestamp (unix seconds)
+    pub final_expiry: Option<u64>,
+}
+
 /// Cashu Mint Builder
 pub struct MintBuilder {
     mint_info: MintInfo,
@@ -52,6 +68,7 @@ pub struct MintBuilder {
     supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     use_keyset_v2: Option<bool>,
+    keyset_rotations: Vec<KeysetRotation>,
     max_inputs: usize,
     max_outputs: usize,
 }
@@ -89,6 +106,7 @@ impl MintBuilder {
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
             use_keyset_v2: None,
+            keyset_rotations: Vec::new(),
             max_inputs: 1000,
             max_outputs: 1000,
         }
@@ -97,6 +115,13 @@ impl MintBuilder {
     /// Set use keyset v2
     pub fn with_keyset_v2(mut self, use_keyset_v2: Option<bool>) -> Self {
         self.use_keyset_v2 = use_keyset_v2;
+        self
+    }
+
+    /// Add a keyset rotation to execute during build.
+    /// Used to create inactive/expired keysets for testing.
+    pub fn with_keyset_rotation(mut self, rotation: KeysetRotation) -> Self {
+        self.keyset_rotations.push(rotation);
         self
     }
 
@@ -544,6 +569,23 @@ impl MintBuilder {
                     })
                     .await?;
             }
+        }
+
+        // Execute configured keyset rotations (e.g. for test keysets)
+        for rotation in &self.keyset_rotations {
+            signatory
+                .rotate_keyset(RotateKeyArguments {
+                    unit: rotation.unit.clone(),
+                    amounts: rotation.amounts.clone(),
+                    input_fee_ppk: rotation.input_fee_ppk,
+                    keyset_id_type: if rotation.use_keyset_v2 {
+                        cdk_common::nut02::KeySetVersion::Version01
+                    } else {
+                        cdk_common::nut02::KeySetVersion::Version00
+                    },
+                    final_expiry: rotation.final_expiry,
+                })
+                .await?;
         }
 
         if let Some(auth_localstore) = self.auth_localstore {

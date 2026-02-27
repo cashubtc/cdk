@@ -40,7 +40,7 @@ mod subscription;
 mod swap;
 mod verification;
 
-pub use builder::{MintBuilder, MintMeltLimits, UnitConfig};
+pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use issue::{MintQuoteRequest, MintQuoteResponse};
 pub use verification::Verification;
