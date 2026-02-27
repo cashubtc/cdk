@@ -194,7 +194,7 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test
-        run: nix develop -i -L .#regtest --command bash -c "export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest ${{ matrix.database }}"
+        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p .) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest ${{ matrix.database }}"
 
   fake-mint-itest:
     name: "Integration fake mint tests"
@@ -218,7 +218,7 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test fake mint
-        run: nix develop -i -L .#regtest --command bash -c "export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-mint-itest ${{ matrix.database }}"
+        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p .) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-mint-itest ${{ matrix.database }}"
 
   pure-itest:
     name: "Integration fake wallet tests"
@@ -242,10 +242,10 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test fake mint
-        run: nix develop -i -L .#regtest --command bash -c "export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just test-pure ${{ matrix.database }}"
+        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p .) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just test-pure ${{ matrix.database }}"
       - name: Unit tests and basic mint test
         if: matrix.database == 'memory'
-        run: nix develop -i -L .#regtest --command bash -c "export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just test"
+        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p .) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just test"
 
   payment-processor-itests:
     name: "Payment processor tests"
@@ -269,7 +269,7 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test
-        run: nix develop -i -L .#regtest --command bash -c "export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-payment-processor ${{matrix.ln}}"
+        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p .) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-payment-processor ${{matrix.ln}}"
 
   # Discover MSRV checks from flake - single source of truth
   discover-msrv-checks:
@@ -381,7 +381,7 @@ jobs:
           # Check if the realm endpoint is accessible (better verification than log grep)
           curl -f -s http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null && echo "Keycloak realm successfully imported" || (docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") && exit 1)
       - name: Test fake auth mint
-        run: nix develop -i -L .#integration --command bash -c "export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-auth-mint-itest ${{ matrix.database }} http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration"
+        run: nix develop -i -L .#integration --command bash -c "export TMPDIR=$(mktemp -d -p .) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-auth-mint-itest ${{ matrix.database }} http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration"
       - name: Stop and clean up Docker Compose
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml down

@@ -497,18 +497,6 @@
           # rust analyzer needs  NIX_PATH for some reason.
           NIX_PATH = "nixpkgs=${inputs.nixpkgs}";
         };
-        # Override clightning to include mako dependency and fix compilation bug
-        clightningWithMako = pkgs.clightning.overrideAttrs (oldAttrs: {
-          nativeBuildInputs = (oldAttrs.nativeBuildInputs or [ ]) ++ [
-            pkgs.python311Packages.mako
-          ];
-
-          # Disable -Werror to work around multiple compilation bugs in 25.09.2 on macOS
-          # See: https://github.com/ElementsProject/lightning/issues/7961
-          env = (oldAttrs.env or { }) // {
-            NIX_CFLAGS_COMPILE = toString ((oldAttrs.env.NIX_CFLAGS_COMPILE or "") + " -Wno-error");
-          };
-        });
 
         baseBuildInputs =
           with pkgs;
@@ -543,7 +531,7 @@
           with pkgs;
           [
             lnd
-            clightningWithMako
+            clightning
             bitcoind
             mprocs
           ];
