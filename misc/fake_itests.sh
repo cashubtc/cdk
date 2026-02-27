@@ -4,6 +4,61 @@
 # This script ensures the .env file is properly created and available
 # before running tests
 
+# ========================================
+# Helper: run a binary from $PATH (Nix pre-built) or fall back to cargo
+# ========================================
+run_bin() {
+    local bin_name="$1"
+    shift
+    if command -v "$bin_name" &>/dev/null; then
+        echo "Using pre-built binary: $bin_name"
+        "$bin_name" "$@"
+    else
+        echo "Pre-built binary not found, falling back to: cargo run --bin $bin_name"
+        cargo run --bin "$bin_name" -- "$@"
+    fi
+}
+
+run_bin_bg() {
+    local bin_name="$1"
+    shift
+    if command -v "$bin_name" &>/dev/null; then
+        echo "Using pre-built binary: $bin_name"
+        "$bin_name" "$@" &
+    else
+        echo "Pre-built binary not found, falling back to: cargo run --bin $bin_name"
+        cargo run --bin "$bin_name" -- "$@" &
+    fi
+}
+
+# Helper: run cargo nextest with archive if available, or fall back to cargo test
+# For nextest: translates '-- --nocapture' to '--no-capture' and strips '--' separators
+run_test() {
+    local test_name="$1"
+    shift
+    if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "${CDK_ITEST_ARCHIVE:-}" ]; then
+        # Build nextest args, translating cargo test conventions
+        local nextest_args=()
+        local skip_separator=false
+        for arg in "$@"; do
+            if [ "$arg" = "--" ]; then
+                skip_separator=true
+                continue
+            fi
+            if [ "$arg" = "--nocapture" ]; then
+                nextest_args+=("--no-capture")
+            else
+                nextest_args+=("$arg")
+            fi
+        done
+        echo "Running test '$test_name' from nextest archive"
+        cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" -E "binary(~$test_name)" "${nextest_args[@]}"
+    else
+        echo "Running test '$test_name' via cargo test"
+        cargo test -p cdk-integration-tests --test "$test_name" "$@"
+    fi
+}
+
 # Function to perform cleanup
 cleanup() {
     echo "Cleaning up..."
@@ -57,7 +112,10 @@ echo "Temp directory created: $CDK_ITESTS_DIR"
 # Check if a database type was provided as first argument, default to sqlite
 export CDK_MINTD_DATABASE="${1:-sqlite}"
 
-cargo build --bin start_fake_mint
+# Build harness binary only if not available as pre-built
+if ! command -v start_fake_mint &>/dev/null; then
+    cargo build --bin start_fake_mint
+fi
 
 # Start the fake mint binary with the new Rust-based approach
 echo "Starting fake mint using Rust binary..."
@@ -72,14 +130,16 @@ if [ "$2" = "external_signatory" ]; then
     echo "Starting with external signatory support"
 
     bash -x `dirname $0`/../crates/cdk-signatory/generate_certs.sh $CDK_ITESTS_DIR
-    cargo build --bin signatory
-    cargo run --bin signatory -- -w $CDK_ITESTS_DIR -u "sat" -u "usd"  &
+    if ! command -v signatory &>/dev/null; then
+        cargo build --bin signatory
+    fi
+    run_bin_bg signatory -w $CDK_ITESTS_DIR -u "sat" -u "usd"
     export CDK_SIGNATORY_PID=$!
     sleep 5
 
-    cargo run --bin start_fake_mint -- --enable-logging --external-signatory "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" &
+    run_bin_bg start_fake_mint --enable-logging --external-signatory "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR"
 else
-    cargo run --bin start_fake_mint -- --enable-logging "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" &
+    run_bin_bg start_fake_mint --enable-logging "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR"
 fi
 export FAKE_MINT_PID=$!
 
@@ -158,7 +218,7 @@ done
 
 # Run first test
 echo "Running fake_wallet test"
-cargo test -p cdk-integration-tests --test fake_wallet -- --nocapture
+run_test fake_wallet -- --nocapture
 status1=$?
 
 # Exit immediately if the first test failed
@@ -169,7 +229,7 @@ fi
 
 # Run second test only if the first one succeeded
 echo "Running happy_path_mint_wallet test"
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet --  --nocapture
+run_test happy_path_mint_wallet -- --nocapture
 status2=$?
 
 # Exit if the second test failed
@@ -180,7 +240,7 @@ fi
 
 # Run third test (async_melt) only if previous tests succeeded
 echo "Running async_melt test"
-cargo test -p cdk-integration-tests --test async_melt
+run_test async_melt
 status3=$?
 
 # Exit with the status of the third test
@@ -191,7 +251,7 @@ fi
 
 # Run fourth test (multi_mint_wallet) only if previous tests succeeded
 echo "Running wallet_repository test"
-cargo test -p cdk-integration-tests --test wallet_repository -- --nocapture
+run_test wallet_repository -- --nocapture
 status4=$?
 
 # Exit with the status of the fourth test

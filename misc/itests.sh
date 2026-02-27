@@ -1,5 +1,46 @@
 #!/usr/bin/env bash
 
+# ========================================
+# Helper: run a binary from $PATH (Nix pre-built) or fall back to cargo
+# ========================================
+run_bin_bg() {
+    local bin_name="$1"
+    shift
+    if command -v "$bin_name" &>/dev/null; then
+        echo "Using pre-built binary: $bin_name"
+        "$bin_name" "$@" &
+    else
+        echo "Pre-built binary not found, falling back to: cargo run --bin $bin_name"
+        cargo run --bin "$bin_name" -- "$@" &
+    fi
+}
+
+# Helper: run cargo nextest with archive if available, or fall back to cargo test
+# For nextest: translates '-- --nocapture' to '--no-capture' and strips '--' separators
+run_test() {
+    local test_name="$1"
+    shift
+    if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "${CDK_ITEST_ARCHIVE:-}" ]; then
+        # Build nextest args, translating cargo test conventions
+        local nextest_args=()
+        for arg in "$@"; do
+            if [ "$arg" = "--" ]; then
+                continue
+            fi
+            if [ "$arg" = "--nocapture" ]; then
+                nextest_args+=("--no-capture")
+            else
+                nextest_args+=("$arg")
+            fi
+        done
+        echo "Running test '$test_name' from nextest archive"
+        cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" -E "binary(~$test_name)" "${nextest_args[@]}"
+    else
+        echo "Running test '$test_name' via cargo test"
+        cargo test -p cdk-integration-tests --test "$test_name" "$@"
+    fi
+}
+
 # Function to perform cleanup
 cleanup() {
     echo "Cleaning up..."
@@ -75,11 +116,14 @@ if [ "${CDK_MINTD_DATABASE}" = "POSTGRES" ]; then
     echo "PostgreSQL is ready"
 fi
 
-cargo build --bin start_regtest_mints 
+# Build harness binary only if not available as pre-built
+if ! command -v start_regtest_mints &>/dev/null; then
+    cargo build --bin start_regtest_mints
+fi
 
 echo "Starting regtest and mints"
 # Run the binary in background
-cargo r --bin start_regtest_mints -- --enable-logging "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" "$CDK_ITESTS_MINT_ADDR" "$CDK_ITESTS_MINT_PORT_0" "$CDK_ITESTS_MINT_PORT_1" &
+run_bin_bg start_regtest_mints --enable-logging "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" "$CDK_ITESTS_MINT_ADDR" "$CDK_ITESTS_MINT_PORT_0" "$CDK_ITESTS_MINT_PORT_1"
 export CDK_REGTEST_PID=$!
 
 # Give it a moment to start - reduced from 5 to 2 seconds since we have better waiting mechanisms now
@@ -192,29 +236,30 @@ done
 # Run cargo test
 echo "Running regtest test with CLN mint and CLN client"
 export CDK_TEST_LIGHTNING_CLIENT="lnd"
-cargo test -p cdk-integration-tests --test regtest
+run_test regtest
 if [ $? -ne 0 ]; then
     echo "regtest test with cln mint failed, exiting"
     exit 1
 fi
 
 echo "Running happy_path_mint_wallet test with CLN mint and CLN client"
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+run_test happy_path_mint_wallet
 if [ $? -ne 0 ]; then
     echo "happy_path_mint_wallet with cln mint test failed, exiting"
     exit 1
 fi
 
-# Run cargo test with the http_subscription feature
+# Run regtest test again (http_subscription is a no-op at compile time;
+# the feature has no cfg guards so the same binary covers both cases)
 echo "Running regtest test with http_subscription feature (CLN client)"
-cargo test -p cdk-integration-tests --test regtest --features http_subscription
+run_test regtest
 if [ $? -ne 0 ]; then
     echo "regtest test with http_subscription failed, exiting"
     exit 1
 fi
 
 echo "Running regtest test with cln mint for bolt12 (CLN client)"
-cargo test -p cdk-integration-tests --test bolt12
+run_test bolt12
 if [ $? -ne 0 ]; then
     echo "regtest test failed, exiting"
     exit 1
@@ -229,14 +274,14 @@ CDK_TEST_MINT_URL_2_SWITCHED=$CDK_TEST_MINT_URL
 export CDK_TEST_MINT_URL=$CDK_TEST_MINT_URL_SWITCHED
 export CDK_TEST_MINT_URL_2=$CDK_TEST_MINT_URL_2_SWITCHED
 
- cargo test -p cdk-integration-tests --test regtest
+ run_test regtest
  if [ $? -ne 0 ]; then
      echo "regtest test with LND mint failed, exiting"
      exit 1
  fi
 
  echo "Running happy_path_mint_wallet test with LND mint and LND client"
- cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+ run_test happy_path_mint_wallet
  if [ $? -ne 0 ]; then
      echo "happy_path_mint_wallet test with LND mint failed, exiting"
      exit 1
@@ -277,14 +322,14 @@ done
 
 echo "Running happy_path_mint_wallet test with LDK mint and CLN client"
 export CDK_TEST_LIGHTNING_CLIENT="cln"  # Use CLN client for LDK tests
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+run_test happy_path_mint_wallet
 if [ $? -ne 0 ]; then
     echo "happy_path_mint_wallet test with LDK mint failed, exiting"
     exit 1
 fi
 
 echo "Running regtest test with LDK mint and CLN client"
-cargo test -p cdk-integration-tests --test regtest
+run_test regtest
 if [ $? -ne 0 ]; then
     echo "regtest test LDK mint failed, exiting"
     exit 1
