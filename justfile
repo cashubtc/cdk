@@ -79,13 +79,20 @@ test:
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
+
+  # Unit/lib tests always run from source (not included in the nextest archive)
   cargo test --lib --workspace --exclude cdk-postgres
 
-  # Run pure integration tests
-  cargo test -p cdk-integration-tests --test mint 
+  if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "$CDK_ITEST_ARCHIVE" ]; then
+    # Run the mint integration test from the pre-built nextest archive
+    cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~mint)"
+  else
+    # Run pure integration tests
+    cargo test -p cdk-integration-tests --test mint
+  fi
 
   
-# run doc tests
+# run pure integration tests
 test-pure db="memory":
   #!/usr/bin/env bash
   set -euo pipefail
@@ -93,14 +100,21 @@ test-pure db="memory":
     cd {{invocation_directory()}}
   fi
 
-  # Run pure integration tests (cargo test will only build what's needed for the test)
-  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
-  
-  # Run swap flow tests (detailed testing of swap operation)
-  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test test_swap_flow -- --test-threads 1
+  if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "$CDK_ITEST_ARCHIVE" ]; then
+    # Run pure integration tests from nextest archive
+    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~integration_tests_pure)" -j 1
+    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~test_swap_flow)" -j 1
+    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~wallet_saga)" -j 1
+  else
+    # Run pure integration tests (cargo test will only build what's needed for the test)
+    CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
+    
+    # Run swap flow tests (detailed testing of swap operation)
+    CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test test_swap_flow -- --test-threads 1
 
-  # Run wallet saga tests
-  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test wallet_saga -- --test-threads 1
+    # Run wallet saga tests
+    CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test wallet_saga -- --test-threads 1
+  fi
 
 test-all db="memory":
     #!/usr/bin/env bash

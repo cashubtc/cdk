@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -27,6 +28,7 @@
   outputs =
     { self
     , nixpkgs
+    , nixpkgs-unstable
     , rust-overlay
     , flake-utils
     , crane
@@ -68,6 +70,10 @@
         # Dependencies
         pkgs = import nixpkgs {
           inherit system overlays;
+        };
+
+        pkgsUnstable = import nixpkgs-unstable {
+          inherit system;
         };
 
         # Static/musl packages for fully static binary builds (Linux only)
@@ -497,18 +503,6 @@
           # rust analyzer needs  NIX_PATH for some reason.
           NIX_PATH = "nixpkgs=${inputs.nixpkgs}";
         };
-        # Override clightning to include mako dependency and fix compilation bug
-        clightningWithMako = pkgs.clightning.overrideAttrs (oldAttrs: {
-          nativeBuildInputs = (oldAttrs.nativeBuildInputs or [ ]) ++ [
-            pkgs.python311Packages.mako
-          ];
-
-          # Disable -Werror to work around multiple compilation bugs in 25.09.2 on macOS
-          # See: https://github.com/ElementsProject/lightning/issues/7961
-          env = (oldAttrs.env or { }) // {
-            NIX_CFLAGS_COMPILE = toString ((oldAttrs.env.NIX_CFLAGS_COMPILE or "") + " -Wno-error");
-          };
-        });
 
         baseBuildInputs =
           with pkgs;
@@ -525,6 +519,7 @@
             cargo-outdated
             cargo-mutants
             cargo-fuzz
+            cargo-nextest
 
             # Database
             postgresql_16
@@ -542,7 +537,7 @@
           with pkgs;
           [
             lnd
-            clightningWithMako
+            pkgsUnstable.clightning
             bitcoind
             mprocs
           ];
@@ -663,6 +658,44 @@
           '';
         });
 
+        # ========================================
+        # Integration test harness binaries (pre-built via Crane, cached by Cachix)
+        # These are used by CI integration test scripts instead of cargo build/run
+        # ========================================
+        mkItestBinary = name: cargoExtraArgs: craneLib.buildPackage (commonCraneArgs // {
+          pname = "cdk-itest-${name}";
+          cargoArtifacts = workspaceDeps;
+          inherit cargoExtraArgs;
+          # Only install the specific binary, not the entire workspace
+          doCheck = false;
+        });
+
+        itestBinaries = {
+          start-fake-mint = mkItestBinary "start-fake-mint" "--bin start_fake_mint";
+          start-regtest-mints = mkItestBinary "start-regtest-mints" "--bin start_regtest_mints";
+          start-fake-auth-mint = mkItestBinary "start-fake-auth-mint" "--bin start_fake_auth_mint";
+          start-regtest = mkItestBinary "start-regtest" "--bin start_regtest";
+          signatory = mkItestBinary "signatory" "--bin signatory";
+          cdk-payment-processor = mkItestBinary "cdk-payment-processor" "--bin cdk-payment-processor";
+          cdk-mintd-grpc = mkItestBinary "cdk-mintd-grpc" "--bin cdk-mintd --no-default-features --features grpc-processor";
+        };
+
+        # Nextest archive for integration tests (pre-compiled test binaries)
+        itestArchive = craneLib.mkCargoDerivation (commonCraneArgs // {
+          pname = "cdk-itest-archive";
+          cargoArtifacts = workspaceDeps;
+          nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
+            pkgs.cargo-nextest
+          ];
+          buildPhaseCargoCommand = ''
+            mkdir -p $out
+            cargo nextest archive \
+              -p cdk-integration-tests \
+              --archive-file $out/itest-archive.tar.zst
+          '';
+          installPhaseCommand = "";
+        });
+
         # Common arguments can be set here to avoid repeating them later
         nativeBuildInputs = [
           #Add additional build inputs here
@@ -697,6 +730,11 @@
             name = "cdk-cli";
             cargoExtraArgs = "--bin cdk-cli";
           };
+        }
+        # Integration test harness binaries (pre-built for CI)
+        // itestBinaries
+        // {
+          itest-archive = itestArchive;
         }
         # Example packages (binaries that can be run outside sandbox with network access)
         // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExamplePackage name; }) exampleChecks));
@@ -756,7 +794,7 @@
                 shellHook = commonShellHook + pgShellHook;
                 buildInputs = baseBuildInputs ++ regtestBuildInputs ++ [
                   stable_toolchain
-                ];
+                ] ++ builtins.attrValues itestBinaries;
                 inherit nativeBuildInputs;
               }
               // envVars
@@ -801,7 +839,7 @@
                   stable_toolchain
                   pkgs.docker-client
                   pkgs.python311
-                ];
+                ] ++ builtins.attrValues itestBinaries;
                 inherit nativeBuildInputs;
               }
               // envVars
