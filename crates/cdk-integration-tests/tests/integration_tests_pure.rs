@@ -567,6 +567,7 @@ async fn test_swap_overpay_underpay_fee() {
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
             true,
+            None,
         )
         .await
         .unwrap();
@@ -646,6 +647,7 @@ async fn test_mint_enforce_fee() {
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
             true,
+            None,
         )
         .await
         .unwrap();
@@ -1022,6 +1024,7 @@ async fn test_mint_change_with_fee_melt() {
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
             true,
+            None,
         )
         .await
         .unwrap();

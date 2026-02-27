@@ -769,6 +769,7 @@ impl CdkMint for MintRPCServer {
                 amounts,
                 request.input_fee_ppk.unwrap_or(0),
                 request.use_keyset_v2.unwrap_or(true),
+                None,
             )
             .await
             .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))?;

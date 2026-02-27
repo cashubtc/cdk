@@ -81,6 +81,7 @@ async fn test_correct_keyset() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
+        None,
     )
     .await
     .unwrap();
@@ -100,6 +101,7 @@ async fn test_correct_keyset() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
+        None,
     )
     .await
     .unwrap();
@@ -291,4 +293,108 @@ async fn test_concurrent_duplicate_payment_handling() {
         final_quote.payments[0].payment_id, payment_id,
         "Payment ID should match"
     );
+}
+
+/// Test that rotating a keyset with a final_expiry sets the expiry on the old keyset
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_rotate_keyset_with_expiry() {
+    let mnemonic = Mnemonic::generate(12).unwrap();
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 1.into(),
+        percent_fee_reserve: 1.0,
+    };
+
+    let database = memory::empty().await.expect("valid db instance");
+
+    let fake_wallet = FakeWallet::new(
+        fee_reserve,
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
+
+    let localstore = Arc::new(database);
+    let mut mint_builder = MintBuilder::new(localstore.clone());
+
+    mint_builder = mint_builder
+        .with_name("expiry test mint".to_string())
+        .with_description("testing keyset expiry".to_string());
+
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 5_000),
+            Arc::new(fake_wallet),
+        )
+        .await
+        .unwrap();
+
+    let mint = mint_builder
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await
+        .unwrap();
+
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+    mint.set_quote_ttl(quote_ttl).await.unwrap();
+
+    // Get the initial active keyset
+    let active = mint.get_active_keysets();
+    let active_id = active
+        .get(&CurrencyUnit::Sat)
+        .expect("There is a keyset for unit");
+    let initial_keyset = mint.get_keyset_info(active_id).expect("There is keyset");
+    assert!(initial_keyset.active);
+
+    // Rotate with a past expiry timestamp
+    let past_expiry = cdk::util::unix_time().saturating_sub(3600);
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        0,
+        true,
+        Some(past_expiry),
+    )
+    .await
+    .unwrap();
+
+    // The old keyset should now be inactive
+    let old_keyset = mint
+        .get_keyset_info(&initial_keyset.id)
+        .expect("Old keyset still exists");
+    assert!(!old_keyset.active, "Old keyset should be inactive");
+
+    // The new keyset should be active
+    let active = mint.get_active_keysets();
+    let new_active_id = active
+        .get(&CurrencyUnit::Sat)
+        .expect("There is an active keyset");
+    assert_ne!(
+        *new_active_id, initial_keyset.id,
+        "New active keyset should differ from old"
+    );
+
+    // Rotate again without expiry
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        0,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Should now have 3 keysets total
+    let keysets = mint.keysets();
+    assert!(
+        keysets.keysets.len() >= 3,
+        "Should have at least 3 keysets after two rotations, got {}",
+        keysets.keysets.len()
+    );
+
+    // Exactly one should be active
+    let active_count = keysets.keysets.iter().filter(|k| k.active).count();
+    assert_eq!(active_count, 1, "Exactly one keyset should be active");
 }
