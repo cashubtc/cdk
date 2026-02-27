@@ -378,6 +378,7 @@ impl Wallet {
                 amount_split_target.into(),
                 cdk_proofs,
                 conditions,
+                false,
                 include_fees,
             )
             .await?;

@@ -193,6 +193,7 @@ mod tests {
             include_fee: true,
             max_proofs: Some(10),
             metadata,
+            use_p2bk: false,
         };
 
         assert!(options.memo.is_some());
@@ -225,6 +226,7 @@ mod tests {
             p2pk_signing_keys: vec![secret_key],
             preimages: vec!["preimage1".to_string(), "preimage2".to_string()],
             metadata,
+
         };
 
         assert!(matches!(

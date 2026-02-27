@@ -1465,7 +1465,8 @@ where
                 state,
                 spending_condition,
                 used_by_operation,
-                created_by_operation
+                created_by_operation,
+                p2pk_e
             FROM proof
             WHERE used_by_operation = :operation_id
             "#,

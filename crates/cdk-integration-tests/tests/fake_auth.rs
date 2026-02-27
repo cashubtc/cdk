@@ -386,6 +386,7 @@ async fn test_swap_with_auth() {
             proofs.clone(),
             None,
             false,
+            false,
         )
         .await
         .expect("Could not swap")
