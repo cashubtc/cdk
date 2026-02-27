@@ -706,7 +706,7 @@ impl Mint {
 
         let Verification {
             amount: outputs_amount,
-        } = match self.verify_outputs(&mut tx, &mint_request.outputs).await {
+        } = match self.verify_outputs(&mint_request.outputs).await {
             Ok(verification) => verification,
             Err(err) => {
                 tracing::debug!("Could not verify mint outputs");

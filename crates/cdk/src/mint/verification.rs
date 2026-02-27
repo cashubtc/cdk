@@ -4,7 +4,6 @@ use cdk_common::{Amount, BlindedMessage, CurrencyUnit, Id, Proofs, ProofsMethods
 use tracing::instrument;
 
 use super::{Error, Mint};
-use crate::cdk_database;
 
 /// Maximum allowed length in bytes for proof secret or witness content
 const MAX_PROOF_CONTENT_LEN: usize = 1024;
@@ -141,49 +140,19 @@ impl Mint {
         keyset_units.into_iter().next().ok_or(Error::Internal)
     }
 
-    /// Verifies that the outputs have not already been signed
-    #[instrument(skip_all)]
-    pub async fn check_output_already_signed(
-        &self,
-        tx: &mut Box<dyn cdk_database::MintTransaction<cdk_database::Error> + Send + Sync>,
-        outputs: &[BlindedMessage],
-    ) -> Result<(), Error> {
-        let blinded_messages: Vec<PublicKey> = outputs.iter().map(|o| o.blinded_secret).collect();
-
-        if tx
-            .get_blind_signatures(&blinded_messages)
-            .await?
-            .iter()
-            .flatten()
-            .next()
-            .is_some()
-        {
-            tracing::debug!("Transaction attempted where output is already signed.");
-
-            return Err(Error::BlindedMessageAlreadySigned);
-        }
-
-        Ok(())
-    }
-
     /// Verifies outputs
     ///
     /// Checks outputs are unique, of the same unit and not signed before.
     /// Returns an error if outputs are empty - callers should guard against
     /// empty outputs before calling this function.
     #[instrument(skip_all)]
-    pub async fn verify_outputs(
-        &self,
-        tx: &mut Box<dyn cdk_database::MintTransaction<cdk_database::Error> + Send + Sync>,
-        outputs: &[BlindedMessage],
-    ) -> Result<Verification, Error> {
+    pub async fn verify_outputs(&self, outputs: &[BlindedMessage]) -> Result<Verification, Error> {
         if outputs.is_empty() {
             tracing::debug!("verify_outputs called with empty outputs");
             return Err(Error::TransactionUnbalanced(0, 0, 0));
         }
 
         Mint::check_outputs_unique(outputs)?;
-        self.check_output_already_signed(tx, outputs).await?;
 
         let unit = self.verify_outputs_keyset(outputs)?;
 

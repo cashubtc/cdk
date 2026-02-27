@@ -323,7 +323,7 @@ impl MeltSaga<Initial> {
         // Verify outputs if provided
         if let Some(outputs) = &melt_request.outputs() {
             if !outputs.is_empty() {
-                let output_verification = match self.mint.verify_outputs(&mut tx, outputs).await {
+                let output_verification = match self.mint.verify_outputs(outputs).await {
                     Ok(verification) => verification,
                     Err(err) => {
                         tx.rollback().await?;
