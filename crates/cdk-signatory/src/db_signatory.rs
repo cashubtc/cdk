@@ -223,8 +223,7 @@ impl Signatory for DbSignatory {
             args.unit.clone(),
             &amounts,
             args.input_fee_ppk,
-            // TODO: add and connect settings for this
-            None,
+            args.final_expiry,
             args.keyset_id_type,
         );
 
