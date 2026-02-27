@@ -17,11 +17,16 @@ thiserror.workspace = true
 url.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest = { workspace = true }
-regex = { workspace = true }
+bitreq = { version = "0.3.1", features = ["async", "async-https-rustls", "json-using-serde", "proxy"] }
+serde_urlencoded = "0.7"
+regex.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Request", "RequestInit", "Response", "Headers"] }
+serde_urlencoded = "0.7"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

@@ -6,6 +6,7 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::MintInfo;
 use cdk::wallet::WalletRepository;
 use cdk::OidcClient;
+use cdk_http_client::RequestBuilderExt;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
