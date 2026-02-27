@@ -179,6 +179,25 @@ reserve_fee_min = 1
 min_delay_time = 1
 max_delay_time = 3
 
+# Optional keyset rotations to create inactive/expired test keysets
+# Each rotation creates a keyset that gets rotated out during mint build
+# unit: currency unit (e.g. "sat", "usd")
+# version: "v1" (Version00) or "v2" (Version01)
+# input_fee_ppk: input fee in parts per thousand (default: 0)
+# expired: if true, keyset is created with a past expiry timestamp (default: false)
+#
+# [[fake_wallet.keyset_rotations]]
+# unit = "sat"
+# version = "v1"
+# input_fee_ppk = 0
+# expired = true
+#
+# [[fake_wallet.keyset_rotations]]
+# unit = "sat"
+# version = "v2"
+# input_fee_ppk = 0
+# expired = false
+
 # [grpc_processor]
 # gRPC Payment Processor configuration
 # supported_units = ["sat"]

@@ -1583,6 +1583,7 @@ dependencies = [
  "home",
  "lightning-invoice",
  "serde",
+ "serde_json",
  "tokio",
  "tower 0.5.3",
  "tower-http",

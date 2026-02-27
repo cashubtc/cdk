@@ -557,6 +557,25 @@ async fn configure_lightning_backend(
                 )
                 .await?;
             }
+
+            for rotation_cfg in &fake_wallet.keyset_rotations {
+                use cdk::mint::KeysetRotation;
+
+                let amounts = cdk::mint::UnitConfig::default().amounts;
+                let final_expiry = if rotation_cfg.expired {
+                    Some(cdk::util::unix_time().saturating_sub(3600))
+                } else {
+                    None
+                };
+
+                mint_builder = mint_builder.with_keyset_rotation(KeysetRotation {
+                    unit: rotation_cfg.unit.clone(),
+                    amounts,
+                    input_fee_ppk: rotation_cfg.input_fee_ppk,
+                    use_keyset_v2: rotation_cfg.version == "v2",
+                    final_expiry,
+                });
+            }
         }
         #[cfg(feature = "grpc-processor")]
         LnBackend::GrpcProcessor => {
