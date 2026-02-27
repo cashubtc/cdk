@@ -1608,3 +1608,84 @@ where
     let retrieved = db.get_mint_quote(&mint_quote.id).await.unwrap().unwrap();
     assert_eq!(retrieved.amount_paid().value(), 100);
 }
+
+/// Test getting multiple mint quotes by IDs
+pub async fn get_mint_quotes_by_ids<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use crate::database::mint::test::unique_string;
+
+    let quote1 = MintQuote::new(
+        None,
+        unique_string(),
+        cashu::CurrencyUnit::Sat,
+        None,
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        None,
+        Amount::new(100, cashu::CurrencyUnit::Sat),
+        Amount::new(0, cashu::CurrencyUnit::Sat),
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
+        vec![],
+        vec![],
+        None,
+    );
+
+    let quote2 = MintQuote::new(
+        None,
+        unique_string(),
+        cashu::CurrencyUnit::Sat,
+        None,
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        None,
+        Amount::new(200, cashu::CurrencyUnit::Sat),
+        Amount::new(0, cashu::CurrencyUnit::Sat),
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
+        vec![],
+        vec![],
+        None,
+    );
+
+    // Add quotes
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_mint_quote(quote1.clone()).await.unwrap();
+    tx.add_mint_quote(quote2.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // 1. Test getting both quotes
+    let ids = vec![quote1.id.clone(), quote2.id.clone()];
+    let quotes = db.get_mint_quotes_by_ids(&ids).await.unwrap();
+    assert_eq!(quotes.len(), 2);
+    assert!(quotes[0].is_some());
+    assert!(quotes[1].is_some());
+    assert_eq!(quotes[0].as_ref().unwrap().id, quote1.id);
+    assert_eq!(quotes[1].as_ref().unwrap().id, quote2.id);
+
+    // 2. Test getting with missing ID
+    let missing_id = QuoteId::new_uuid();
+    let ids = vec![quote1.id.clone(), missing_id, quote2.id.clone()];
+    let quotes = db.get_mint_quotes_by_ids(&ids).await.unwrap();
+    assert_eq!(quotes.len(), 3);
+    assert!(quotes[0].is_some());
+    assert!(quotes[1].is_none());
+    assert!(quotes[2].is_some());
+    assert_eq!(quotes[0].as_ref().unwrap().id, quote1.id);
+    assert_eq!(quotes[2].as_ref().unwrap().id, quote2.id);
+
+    // 3. Test empty list
+    let quotes = db.get_mint_quotes_by_ids(&[]).await.unwrap();
+    assert!(quotes.is_empty());
+
+    // 4. Test within transaction (with locking)
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let ids = vec![quote2.id.clone(), quote1.id.clone()]; // Reverse order
+    let quotes = tx.get_mint_quotes_by_ids(&ids).await.unwrap();
+    assert_eq!(quotes.len(), 2);
+    assert_eq!(quotes[0].as_ref().unwrap().id, quote2.id);
+    assert_eq!(quotes[1].as_ref().unwrap().id, quote1.id);
+    tx.commit().await.unwrap();
+}

@@ -200,6 +200,15 @@ pub trait QuotesTransaction {
         quote_id: &QuoteId,
     ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
 
+    /// Get multiple [`MintMintQuote`]s by their IDs and lock them for update in this transaction.
+    ///
+    /// Returns results in the same order as the input IDs, with `None` for any IDs not found.
+    /// This method locks all found quotes to prevent race conditions during concurrent modifications.
+    async fn get_mint_quotes_by_ids(
+        &mut self,
+        quote_ids: &[QuoteId],
+    ) -> Result<Vec<Option<Acquired<MintMintQuote>>>, Self::Err>;
+
     /// Add [`MintMintQuote`]
     async fn add_mint_quote(
         &mut self,
@@ -330,6 +339,14 @@ pub trait QuotesDatabase {
 
     /// Get [`MintMintQuote`]
     async fn get_mint_quote(&self, quote_id: &QuoteId) -> Result<Option<MintMintQuote>, Self::Err>;
+
+    /// Get multiple [`MintMintQuote`]s by their IDs.
+    ///
+    /// Returns results in the same order as the input IDs, with `None` for any IDs not found.
+    async fn get_mint_quotes_by_ids(
+        &self,
+        quote_ids: &[QuoteId],
+    ) -> Result<Vec<Option<MintMintQuote>>, Self::Err>;
 
     /// Get all [`MintMintQuote`]s
     async fn get_mint_quote_by_request(
