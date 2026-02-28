@@ -19,12 +19,19 @@ pub struct WalletRepository {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl WalletRepository {
-    /// Create a new WalletRepository from mnemonic using WalletDatabaseFfi trait
+    /// Create a new WalletRepository
+    ///
+    /// Accepts a `WalletStore` which can be:
+    /// - `Sqlite { path }` — built-in Rust SQLite backend
+    /// - `Postgres { url }` — built-in Rust Postgres backend
+    /// - `Custom { db }` — foreign-language implementation of `WalletDatabase`
     #[uniffi::constructor]
     pub fn new(
         mnemonic: String,
-        db: Arc<dyn crate::database::WalletDatabase>,
+        store: crate::database::WalletStore,
     ) -> Result<Self, FfiError> {
+        let db = crate::database::resolve_wallet_store(store)?;
+
         // Parse mnemonic and generate seed without passphrase
         let m = Mnemonic::parse(&mnemonic)
             .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
@@ -66,9 +73,11 @@ impl WalletRepository {
     #[uniffi::constructor]
     pub fn new_with_proxy(
         mnemonic: String,
-        db: Arc<dyn crate::database::WalletDatabase>,
+        store: crate::database::WalletStore,
         proxy_url: String,
     ) -> Result<Self, FfiError> {
+        let db = crate::database::resolve_wallet_store(store)?;
+
         // Parse mnemonic and generate seed without passphrase
         let m = Mnemonic::parse(&mnemonic)
             .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
