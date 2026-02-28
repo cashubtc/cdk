@@ -10,3 +10,6 @@ module_name = "CashuDevKit"
 cdylib_name = "cdk_ffi"
 generate_codable_conformance = true
 generate_immutable_records = true
+
+[bindings.go]
+go_mod = "github.com/cashubtc/cdk-go"

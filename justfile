@@ -650,11 +650,11 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
   
   # Validate language
   case "$LANG" in
-    python|swift|kotlin)
+    python|swift|kotlin|go)
       ;;
     *)
       echo "❌ Unsupported language: $LANG"
-      echo "Supported languages: python, swift, kotlin"
+      echo "Supported languages: python, swift, kotlin, go"
       exit 1
       ;;
   esac
@@ -664,6 +664,7 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
     python) EMOJI="🐍" ;;
     swift) EMOJI="🍎" ;;
     kotlin) EMOJI="🎯" ;;
+    go) EMOJI="🚀" ;;
   esac
   
   # Determine build type and library path
@@ -678,17 +679,33 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
   
   echo "$EMOJI Generating $LANG bindings..."
   mkdir -p target/bindings/$LANG
-  
-  cargo run --bin uniffi-bindgen generate \
-    --library target/$BUILD_TYPE/libcdk_ffi.$LIB_EXT \
-    --language $LANG \
-    --out-dir target/bindings/$LANG
+
+
+  # Use uniffi-bindgen-go for Go, otherwise the standard uniffi-bindgen
+  if [[ "$LANG" == "go" ]]; then
+    if ! command -v uniffi-bindgen-go >/dev/null 2>&1; then
+      echo "⬇️  Installing uniffi-bindgen-go..."
+      cargo install uniffi-bindgen-go --git https://github.com/kegsay/uniffi-bindgen-go --tag v0.4.0+v0.28.3
+    fi
+    uniffi-bindgen-go "target/$BUILD_TYPE/libcdk_ffi.$LIB_EXT" \
+      --library  \
+      --out-dir "target/bindings/$LANG"
+  else
+    cargo run --bin uniffi-bindgen generate \
+      --library "target/$BUILD_TYPE/libcdk_ffi.$LIB_EXT" \
+      --language "$LANG" \
+      --out-dir "target/bindings/$LANG"
+  fi
+
   
   echo "✅ $LANG bindings generated in target/bindings/$LANG/"
 
 # Generate Python bindings (shorthand)
 ffi-generate-python *ARGS="--release": 
   just ffi-generate python {{ARGS}}
+
+ffi-generate-go *ARGS="--release":
+  just ffi-generate go {{ARGS}}
 
 # Generate Swift bindings (shorthand)
 ffi-generate-swift *ARGS="--release":
