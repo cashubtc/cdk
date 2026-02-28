@@ -32,22 +32,26 @@ impl Wallet {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
-    /// Create a new Wallet from mnemonic using WalletDatabaseFfi trait
+    /// Create a new Wallet
+    ///
+    /// Accepts a `WalletStore` which can be:
+    /// - `Sqlite { path }` — built-in Rust SQLite backend
+    /// - `Postgres { url }` — built-in Rust Postgres backend
+    /// - `Custom { db }` — foreign-language implementation of `WalletDatabase`
     #[uniffi::constructor]
     pub fn new(
         mint_url: String,
         unit: CurrencyUnit,
         mnemonic: String,
-        db: Arc<dyn crate::database::WalletDatabase>,
+        store: crate::database::WalletStore,
         config: WalletConfig,
     ) -> Result<Self, FfiError> {
-        // Parse mnemonic and generate seed without passphrase
+        let db = crate::database::resolve_wallet_store(store)?;
+        let localstore = crate::database::create_cdk_database_from_ffi(db);
+
         let m = Mnemonic::parse(&mnemonic)
             .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
         let seed = m.to_seed_normalized("");
-        tracing::info!("creating ffi wallet");
-        // Convert the FFI database trait to a CDK database implementation
-        let localstore = crate::database::create_cdk_database_from_ffi(db);
 
         let wallet = CdkWalletBuilder::new()
             .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
