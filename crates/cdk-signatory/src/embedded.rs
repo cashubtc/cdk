@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use cdk_common::{BlindSignature, BlindedMessage, Error, Proof};
+#[cfg(feature = "conditional-tokens")]
+use cdk_common::CurrencyUnit;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -20,6 +22,19 @@ enum Request {
     RotateKeyset(
         (
             RotateKeyArguments,
+            oneshot::Sender<Result<SignatoryKeySet, Error>>,
+        ),
+    ),
+    #[cfg(feature = "conditional-tokens")]
+    CreateConditionalKeyset(
+        (
+            CurrencyUnit,
+            String,
+            String,
+            String,
+            Vec<u64>,
+            u64,
+            Option<u64>,
             oneshot::Sender<Result<SignatoryKeySet, Error>>,
         ),
     ),
@@ -88,6 +103,32 @@ impl Service {
                         tracing::error!("Error sending response: {:?}", err);
                     }
                 }
+                #[cfg(feature = "conditional-tokens")]
+                Request::CreateConditionalKeyset((
+                    unit,
+                    condition_id,
+                    outcome_collection,
+                    outcome_collection_id,
+                    amounts,
+                    input_fee_ppk,
+                    final_expiry,
+                    response,
+                )) => {
+                    let output = handler
+                        .create_conditional_keyset(
+                            unit,
+                            &condition_id,
+                            &outcome_collection,
+                            &outcome_collection_id,
+                            amounts,
+                            input_fee_ppk,
+                            final_expiry,
+                        )
+                        .await;
+                    if let Err(err) = response.send(output) {
+                        tracing::error!("Error sending response: {:?}", err);
+                    }
+                }
             }
         }
     }
@@ -140,6 +181,36 @@ impl Signatory for Service {
         let (tx, rx) = oneshot::channel();
         self.pipeline
             .send(Request::RotateKeyset((args, tx)))
+            .await
+            .map_err(|e| Error::SendError(e.to_string()))?;
+
+        rx.await.map_err(|e| Error::RecvError(e.to_string()))?
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    #[tracing::instrument(skip(self))]
+    async fn create_conditional_keyset(
+        &self,
+        unit: CurrencyUnit,
+        condition_id: &str,
+        outcome_collection: &str,
+        outcome_collection_id: &str,
+        amounts: Vec<u64>,
+        input_fee_ppk: u64,
+        final_expiry: Option<u64>,
+    ) -> Result<SignatoryKeySet, Error> {
+        let (tx, rx) = oneshot::channel();
+        self.pipeline
+            .send(Request::CreateConditionalKeyset((
+                unit,
+                condition_id.to_string(),
+                outcome_collection.to_string(),
+                outcome_collection_id.to_string(),
+                amounts,
+                input_fee_ppk,
+                final_expiry,
+                tx,
+            )))
             .await
             .map_err(|e| Error::SendError(e.to_string()))?;
 

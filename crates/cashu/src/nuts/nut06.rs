@@ -327,6 +327,24 @@ pub struct Nuts {
     #[serde(default)]
     #[serde(rename = "20")]
     pub nut20: SupportedSettings,
+    /// NUT-CTF Settings (Conditional Token Framework)
+    #[serde(rename = "CTF")]
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg(feature = "conditional-tokens")]
+    pub nut_ctf: Option<super::nut_ctf::NutCtfSettings>,
+    /// NUT-CTF-split-merge Settings (CTF Split/Merge)
+    #[serde(rename = "CTF-split-merge")]
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg(feature = "conditional-tokens")]
+    pub nut_ctf_split_merge: Option<super::nut_ctf::NutCtfSplitMergeSettings>,
+    /// NUT-CTF-numeric Settings (Numeric Conditional Tokens)
+    #[serde(rename = "CTF-numeric")]
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg(feature = "conditional-tokens")]
+    pub nut_ctf_numeric: Option<super::nut_ctf::NutCtfNumericSettings>,
     /// NUT21 Settings
     #[serde(rename = "21")]
     #[serde(skip_serializing_if = "Option::is_none")]

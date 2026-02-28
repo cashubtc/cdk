@@ -15,6 +15,7 @@ readme = "README.md"
 default = ["mint", "wallet"]
 mint = ["cdk-common/mint"]
 wallet = ["cdk-common/wallet"]
+conditional-tokens = ["cdk-common/conditional-tokens"]
 prometheus = ["cdk-prometheus"]
 [dependencies]
 async-trait.workspace = true

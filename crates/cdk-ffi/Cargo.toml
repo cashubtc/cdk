@@ -44,6 +44,7 @@ log = "0.4"
 default = ["postgres", "npubcash"]
 # Enable Postgres-backed wallet database support in FFI
 postgres = ["cdk-postgres"]
+conditional-tokens = ["cdk/conditional-tokens", "cdk-common/conditional-tokens"]
 # Enable NpubCash client bindings
 npubcash = ["cdk-npubcash", "nostr-sdk"]
 

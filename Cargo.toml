@@ -123,6 +123,7 @@ nostr-sdk = { version = "0.44.1", default-features = false, features = [
     "nip44",
     "nip59"
 ]}
+dlc-messages = { version = "0.8.0" }
 
 
 
