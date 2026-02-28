@@ -36,6 +36,8 @@ use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::{Amount, OidcClient};
 
 mod auth;
+#[cfg(feature = "conditional-tokens")]
+mod ctf;
 #[cfg(feature = "nostr")]
 mod nostr_backup;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]

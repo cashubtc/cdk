@@ -31,6 +31,12 @@ where
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
         issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     };
 
     // Add keyset info
@@ -66,6 +72,12 @@ where
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
         issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     };
 
     // Add keyset info first time
@@ -102,6 +114,12 @@ where
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
         issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     };
 
     let keyset_id2 = Id::from_str("00916bbf7ef91a37").unwrap();
@@ -116,6 +134,12 @@ where
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
         issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     };
 
     // Add keyset infos
@@ -148,6 +172,12 @@ where
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
         issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     };
 
     // Add keyset info
@@ -181,6 +211,12 @@ where
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
         issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     };
 
     let keyset_id_usd = Id::from_str("00916bbf7ef91a37").unwrap();
@@ -195,6 +231,12 @@ where
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
         issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     };
 
     // Add keyset infos and set as active
@@ -233,6 +275,12 @@ where
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
         issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     };
 
     let keyset_id2 = Id::from_str("00916bbf7ef91a37").unwrap();
@@ -247,6 +295,12 @@ where
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
         issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     };
 
     // Add both keysets and set first as active

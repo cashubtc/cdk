@@ -356,4 +356,73 @@ impl MintConnector for MockMintConnector {
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         unimplemented!()
     }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_conditions(
+        &self,
+        _since: Option<u64>,
+        _limit: Option<u64>,
+        _status: &[String],
+    ) -> Result<crate::nuts::nut_ctf::GetConditionsResponse, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_condition(
+        &self,
+        _condition_id: &str,
+    ) -> Result<crate::nuts::nut_ctf::ConditionInfo, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_register_condition(
+        &self,
+        _request: crate::nuts::nut_ctf::RegisterConditionRequest,
+    ) -> Result<crate::nuts::nut_ctf::RegisterConditionResponse, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_register_partition(
+        &self,
+        _condition_id: &str,
+        _request: crate::nuts::nut_ctf::RegisterPartitionRequest,
+    ) -> Result<crate::nuts::nut_ctf::RegisterPartitionResponse, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_conditional_keysets(
+        &self,
+        _since: Option<u64>,
+        _limit: Option<u64>,
+        _active: Option<bool>,
+    ) -> Result<crate::nuts::nut_ctf::ConditionalKeysetsResponse, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_ctf_split(
+        &self,
+        _request: crate::nuts::nut_ctf::CtfSplitRequest,
+    ) -> Result<crate::nuts::nut_ctf::CtfSplitResponse, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_ctf_merge(
+        &self,
+        _request: crate::nuts::nut_ctf::CtfMergeRequest,
+    ) -> Result<crate::nuts::nut_ctf::CtfMergeResponse, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_redeem_outcome(
+        &self,
+        _request: crate::nuts::nut_ctf::RedeemOutcomeRequest,
+    ) -> Result<crate::nuts::nut_ctf::RedeemOutcomeResponse, Error> {
+        unimplemented!()
+    }
 }

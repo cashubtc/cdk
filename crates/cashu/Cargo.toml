@@ -15,6 +15,8 @@ default = ["mint", "wallet"]
 swagger = ["dep:utoipa"]
 mint = []
 wallet = []
+conditional-tokens = ["dep:dlc-messages"]
+test-utils = ["conditional-tokens"]
 nostr = ["dep:nostr-sdk"]
 bench = []
 
@@ -36,6 +38,7 @@ serde_with.workspace = true
 strum.workspace = true
 strum_macros.workspace = true
 nostr-sdk = { workspace = true, optional = true }
+dlc-messages = { workspace = true, optional = true }
 zeroize = "1"
 web-time.workspace = true
 unicode-normalization = "0.1.25"

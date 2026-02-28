@@ -597,6 +597,177 @@ where
 
         self.transport.http_get(url, auth_token).await
     }
+
+    /// Get all conditions [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_conditions(
+        &self,
+        since: Option<u64>,
+        limit: Option<u64>,
+        status: &[String],
+    ) -> Result<crate::nuts::nut_ctf::GetConditionsResponse, Error> {
+        let mut url = self.mint_url.join_paths(&["v1", "conditions"])?;
+        let mut query_parts = Vec::new();
+        if let Some(since_ts) = since {
+            query_parts.push(format!("since={}", since_ts));
+        }
+        if let Some(limit_val) = limit {
+            query_parts.push(format!("limit={}", limit_val));
+        }
+        for s in status {
+            query_parts.push(format!("status={}", s));
+        }
+        if !query_parts.is_empty() {
+            url.set_query(Some(&query_parts.join("&")));
+        }
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Get, RoutePath::Conditions)
+            .await?;
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.transport.http_get(url, auth_token).await
+    }
+
+    /// Get a specific condition [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_condition(
+        &self,
+        condition_id: &str,
+    ) -> Result<crate::nuts::nut_ctf::ConditionInfo, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "conditions", condition_id])?;
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Get, RoutePath::Condition)
+            .await?;
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.transport.http_get(url, auth_token).await
+    }
+
+    /// Register a condition [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_register_condition(
+        &self,
+        request: crate::nuts::nut_ctf::RegisterConditionRequest,
+    ) -> Result<crate::nuts::nut_ctf::RegisterConditionResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "conditions"])?;
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::Conditions)
+            .await?;
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.transport.http_post(url, auth_token, &request).await
+    }
+
+    /// Register a partition [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_register_partition(
+        &self,
+        condition_id: &str,
+        request: crate::nuts::nut_ctf::RegisterPartitionRequest,
+    ) -> Result<crate::nuts::nut_ctf::RegisterPartitionResponse, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "conditions", condition_id, "partitions"])?;
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::ConditionPartitions)
+            .await?;
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.transport.http_post(url, auth_token, &request).await
+    }
+
+    /// Get conditional keysets [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_conditional_keysets(
+        &self,
+        since: Option<u64>,
+        limit: Option<u64>,
+        active: Option<bool>,
+    ) -> Result<crate::nuts::nut_ctf::ConditionalKeysetsResponse, Error> {
+        let mut url = self.mint_url.join_paths(&["v1", "conditional_keysets"])?;
+        let mut query_parts = Vec::new();
+        if let Some(since_ts) = since {
+            query_parts.push(format!("since={}", since_ts));
+        }
+        if let Some(limit_val) = limit {
+            query_parts.push(format!("limit={}", limit_val));
+        }
+        if let Some(active_val) = active {
+            query_parts.push(format!("active={}", active_val));
+        }
+        if !query_parts.is_empty() {
+            url.set_query(Some(&query_parts.join("&")));
+        }
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Get, RoutePath::ConditionalKeysets)
+            .await?;
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.transport.http_get(url, auth_token).await
+    }
+
+    /// CTF split [NUT-CTF-split-merge]
+    #[cfg(feature = "conditional-tokens")]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_ctf_split(
+        &self,
+        request: crate::nuts::nut_ctf::CtfSplitRequest,
+    ) -> Result<crate::nuts::nut_ctf::CtfSplitResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "ctf", "split"])?;
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::Swap)
+            .await?;
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.transport.http_post(url, auth_token, &request).await
+    }
+
+    /// CTF merge [NUT-CTF-split-merge]
+    #[cfg(feature = "conditional-tokens")]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_ctf_merge(
+        &self,
+        request: crate::nuts::nut_ctf::CtfMergeRequest,
+    ) -> Result<crate::nuts::nut_ctf::CtfMergeResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "ctf", "merge"])?;
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::Swap)
+            .await?;
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.transport.http_post(url, auth_token, &request).await
+    }
+
+    /// Redeem outcome [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_redeem_outcome(
+        &self,
+        request: crate::nuts::nut_ctf::RedeemOutcomeRequest,
+    ) -> Result<crate::nuts::nut_ctf::RedeemOutcomeResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "redeem_outcome"])?;
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::RedeemOutcome)
+            .await?;
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.transport.http_post(url, auth_token, &request).await
+    }
 }
 
 /// Http Client

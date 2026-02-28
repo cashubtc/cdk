@@ -157,4 +157,65 @@ pub trait MintConnector: Debug {
         method: &str,
         quote_id: &str,
     ) -> Result<MeltQuoteCustomResponse<String>, Error>;
+
+    /// Get all conditions [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_conditions(
+        &self,
+        since: Option<u64>,
+        limit: Option<u64>,
+        status: &[String],
+    ) -> Result<crate::nuts::nut_ctf::GetConditionsResponse, Error>;
+
+    /// Get a specific condition [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_condition(
+        &self,
+        condition_id: &str,
+    ) -> Result<crate::nuts::nut_ctf::ConditionInfo, Error>;
+
+    /// Register a condition [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_register_condition(
+        &self,
+        request: crate::nuts::nut_ctf::RegisterConditionRequest,
+    ) -> Result<crate::nuts::nut_ctf::RegisterConditionResponse, Error>;
+
+    /// Register a partition [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_register_partition(
+        &self,
+        condition_id: &str,
+        request: crate::nuts::nut_ctf::RegisterPartitionRequest,
+    ) -> Result<crate::nuts::nut_ctf::RegisterPartitionResponse, Error>;
+
+    /// Get conditional keysets [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_conditional_keysets(
+        &self,
+        since: Option<u64>,
+        limit: Option<u64>,
+        active: Option<bool>,
+    ) -> Result<crate::nuts::nut_ctf::ConditionalKeysetsResponse, Error>;
+
+    /// CTF split [NUT-CTF-split-merge]
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_ctf_split(
+        &self,
+        request: crate::nuts::nut_ctf::CtfSplitRequest,
+    ) -> Result<crate::nuts::nut_ctf::CtfSplitResponse, Error>;
+
+    /// CTF merge [NUT-CTF-split-merge]
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_ctf_merge(
+        &self,
+        request: crate::nuts::nut_ctf::CtfMergeRequest,
+    ) -> Result<crate::nuts::nut_ctf::CtfMergeResponse, Error>;
+
+    /// Redeem outcome [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_redeem_outcome(
+        &self,
+        request: crate::nuts::nut_ctf::RedeemOutcomeRequest,
+    ) -> Result<crate::nuts::nut_ctf::RedeemOutcomeResponse, Error>;
 }
