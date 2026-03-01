@@ -35,23 +35,6 @@ impl Mint {
             ));
         }
 
-        // Check max outputs limit
-        let outputs_count = swap_request.outputs().len();
-        if outputs_count > self.max_outputs {
-            tracing::warn!(
-                "Swap request exceeds max outputs limit: {} > {}",
-                outputs_count,
-                self.max_outputs
-            );
-            return Err(Error::MaxOutputsExceeded {
-                actual: outputs_count,
-                max: self.max_outputs,
-            });
-        }
-
-        // We don't need to check P2PK or HTLC again. It has all been checked above
-        // and the code doesn't reach here unless such verifications were satisfactory
-
         // Verify inputs (cryptographic verification, no DB needed)
         let input_verification = self.verify_inputs(input_proofs).await.map_err(|err| {
             #[cfg(feature = "prometheus")]
