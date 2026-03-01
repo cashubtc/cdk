@@ -4,6 +4,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
 
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs = {
@@ -27,6 +29,7 @@
   outputs =
     { self
     , nixpkgs
+    , nixpkgs-unstable
     , rust-overlay
     , flake-utils
     , crane
@@ -68,6 +71,11 @@
         # Dependencies
         pkgs = import nixpkgs {
           inherit system overlays;
+        };
+
+        # Unstable packages for Bitcoin/Lightning tools (newer versions)
+        pkgsUnstable = import nixpkgs-unstable {
+          inherit system;
         };
 
         # Static/musl packages for fully static binary builds (Linux only)
@@ -497,19 +505,6 @@
           # rust analyzer needs  NIX_PATH for some reason.
           NIX_PATH = "nixpkgs=${inputs.nixpkgs}";
         };
-        # Override clightning to include mako dependency and fix compilation bug
-        clightningWithMako = pkgs.clightning.overrideAttrs (oldAttrs: {
-          nativeBuildInputs = (oldAttrs.nativeBuildInputs or [ ]) ++ [
-            pkgs.python311Packages.mako
-          ];
-
-          # Disable -Werror to work around multiple compilation bugs in 25.09.2 on macOS
-          # See: https://github.com/ElementsProject/lightning/issues/7961
-          env = (oldAttrs.env or { }) // {
-            NIX_CFLAGS_COMPILE = toString ((oldAttrs.env.NIX_CFLAGS_COMPILE or "") + " -Wno-error");
-          };
-        });
-
         baseBuildInputs =
           with pkgs;
           [
@@ -539,13 +534,28 @@
           ++ libsDarwin;
 
         regtestBuildInputs =
-          with pkgs;
-          [
+          (with pkgsUnstable; [
             lnd
-            clightningWithMako
+            # Apple Clang treats certain warnings as errors via -Werror, breaking
+            # the clightning build on macOS. These are fixed upstream in commit
+            # c22538ec (milestone v26.04) but not yet released. The override is
+            # Darwin-only so Linux builds still use the binary cache unmodified.
+            # TODO: Remove this override once clightning >= 26.04 lands in nixpkgs.
+            (if pkgs.stdenv.hostPlatform.isDarwin then
+              (clightning.overrideAttrs (old: {
+                env = (old.env or {}) // {
+                  NIX_CFLAGS_COMPILE = (old.env.NIX_CFLAGS_COMPILE or "")
+                    + " -Wno-error=uninitialized-const-pointer"
+                    + " -Wno-error=gnu-folding-constant";
+                };
+              }))
+            else
+              clightning)
             bitcoind
+          ])
+          ++ (with pkgs; [
             mprocs
-          ];
+          ]);
 
         commonShellHook = ''
           # Needed for github ci
