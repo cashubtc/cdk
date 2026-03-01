@@ -4,6 +4,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
 
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs = {
@@ -27,6 +29,7 @@
   outputs =
     { self
     , nixpkgs
+    , nixpkgs-unstable
     , rust-overlay
     , flake-utils
     , crane
@@ -68,6 +71,11 @@
         # Dependencies
         pkgs = import nixpkgs {
           inherit system overlays;
+        };
+
+        # Unstable packages for Bitcoin/Lightning tools (newer versions)
+        pkgsUnstable = import nixpkgs-unstable {
+          inherit system;
         };
 
         # Static/musl packages for fully static binary builds (Linux only)
@@ -497,19 +505,6 @@
           # rust analyzer needs  NIX_PATH for some reason.
           NIX_PATH = "nixpkgs=${inputs.nixpkgs}";
         };
-        # Override clightning to include mako dependency and fix compilation bug
-        clightningWithMako = pkgs.clightning.overrideAttrs (oldAttrs: {
-          nativeBuildInputs = (oldAttrs.nativeBuildInputs or [ ]) ++ [
-            pkgs.python311Packages.mako
-          ];
-
-          # Disable -Werror to work around multiple compilation bugs in 25.09.2 on macOS
-          # See: https://github.com/ElementsProject/lightning/issues/7961
-          env = (oldAttrs.env or { }) // {
-            NIX_CFLAGS_COMPILE = toString ((oldAttrs.env.NIX_CFLAGS_COMPILE or "") + " -Wno-error");
-          };
-        });
-
         baseBuildInputs =
           with pkgs;
           [
@@ -539,13 +534,14 @@
           ++ libsDarwin;
 
         regtestBuildInputs =
-          with pkgs;
-          [
+          (with pkgsUnstable; [
             lnd
-            clightningWithMako
+            clightning
             bitcoind
+          ])
+          ++ (with pkgs; [
             mprocs
-          ];
+          ]);
 
         commonShellHook = ''
           # Needed for github ci
