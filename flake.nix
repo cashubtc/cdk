@@ -546,7 +546,9 @@
                 env = (old.env or {}) // {
                   NIX_CFLAGS_COMPILE = (old.env.NIX_CFLAGS_COMPILE or "")
                     + " -Wno-error=uninitialized-const-pointer"
-                    + " -Wno-error=gnu-folding-constant";
+                    + " -Wno-error=gnu-folding-constant"
+                    + " -Wno-error=default-const-init-var-unsafe"
+                    + " -Wno-error=sometimes-uninitialized";
                 };
               }))
             else
