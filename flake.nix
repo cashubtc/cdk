@@ -536,11 +536,21 @@
         regtestBuildInputs =
           (with pkgsUnstable; [
             lnd
-            (clightning.overrideAttrs (old: {
-              env = (old.env or {}) // {
-                NIX_CFLAGS_COMPILE = (old.env.NIX_CFLAGS_COMPILE or "") + " -Wno-error";
-              };
-            }))
+            # Apple Clang treats certain warnings as errors via -Werror, breaking
+            # the clightning build on macOS. These are fixed upstream in commit
+            # c22538ec (milestone v26.04) but not yet released. The override is
+            # Darwin-only so Linux builds still use the binary cache unmodified.
+            # TODO: Remove this override once clightning >= 26.04 lands in nixpkgs.
+            (if pkgs.stdenv.hostPlatform.isDarwin then
+              (clightning.overrideAttrs (old: {
+                env = (old.env or {}) // {
+                  NIX_CFLAGS_COMPILE = (old.env.NIX_CFLAGS_COMPILE or "")
+                    + " -Wno-error=uninitialized-const-pointer"
+                    + " -Wno-error=gnu-folding-constant";
+                };
+              }))
+            else
+              clightning)
             bitcoind
           ])
           ++ (with pkgs; [
