@@ -147,16 +147,10 @@ impl<'a> SwapSaga<'a, Initial> {
         quote_id: Option<QuoteId>,
         input_verification: crate::mint::Verification,
     ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
-        let mut tx = self.db.begin_transaction().await?;
-
-        let output_verification = self
-            .mint
-            .verify_outputs(&mut tx, blinded_messages)
-            .await
-            .map_err(|err| {
-                tracing::debug!("Output verification failed: {:?}", err);
-                err
-            })?;
+        let output_verification = self.mint.verify_outputs(blinded_messages).map_err(|err| {
+            tracing::debug!("Output verification failed: {:?}", err);
+            err
+        })?;
 
         // Verify balance within the transaction
         self.mint
@@ -184,6 +178,8 @@ impl<'a> SwapSaga<'a, Initial> {
             None, // complete_at
             None, // payment_method (not applicable for swap)
         );
+
+        let mut tx = self.db.begin_transaction().await?;
 
         // Add input proofs to DB
         let mut new_proofs = match tx

@@ -630,13 +630,26 @@ impl Mint {
     ) -> Result<MintResponse, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("process_mint_request");
+
         let result = async {
+
             let mut mint_quote = self
                 .localstore
                 .get_mint_quote(&mint_request.quote)
                 .await?
                 .ok_or(Error::UnknownQuote)?;
             self.check_mint_quote_paid(&mut mint_quote).await?;
+
+        let Verification {
+            amount: outputs_amount,
+        } = match self.verify_outputs(&mint_request.outputs) {
+            Ok(verification) => verification,
+            Err(err) => {
+                tracing::debug!("Could not verify mint outputs");
+
+                return Err(err);
+            }
+        };
 
 
         // get the blind signatures before having starting the db transaction, if there are any
@@ -702,27 +715,6 @@ impl Mint {
         // verify the signature is provided for the mint request
         if let Some(pubkey) = mint_quote.pubkey {
             mint_request.verify_signature(pubkey)?;
-        }
-
-        let Verification {
-            amount: outputs_amount,
-        } = match self.verify_outputs(&mut tx, &mint_request.outputs).await {
-            Ok(verification) => verification,
-            Err(err) => {
-                tracing::debug!("Could not verify mint outputs");
-
-                return Err(err);
-            }
-        };
-
-        // Check max outputs limit
-        let outputs_count = mint_request.outputs.len();
-        if outputs_count > self.max_outputs {
-            tracing::warn!("Mint request exceeds max outputs limit: {} > {}", outputs_count, self.max_outputs);
-            return Err(Error::MaxOutputsExceeded {
-                actual: outputs_count,
-                max: self.max_outputs,
-            });
         }
 
         // Get unit from the typed outputs amount
