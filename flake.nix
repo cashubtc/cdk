@@ -4,6 +4,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
 
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs = {
@@ -27,6 +29,7 @@
   outputs =
     { self
     , nixpkgs
+    , nixpkgs-unstable
     , rust-overlay
     , flake-utils
     , crane
@@ -35,7 +38,27 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
+        # Architecture-specific configuration for static musl builds
+        muslTarget = {
+          "x86_64-linux" = "x86_64-unknown-linux-musl";
+          "aarch64-linux" = "aarch64-unknown-linux-musl";
+        }.${system} or null;
+
+        archSuffix = {
+          "x86_64-linux" = "x86_64";
+          "aarch64-linux" = "aarch64";
+        }.${system} or null;
+
+        cargoTargetEnvName = {
+          "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER";
+          "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER";
+        }.${system} or null;
+
         overlays = [ (import rust-overlay) ];
+
+        # Derive version from Cargo.toml so there is a single source of truth
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
+
         lib = pkgs.lib;
         stdenv = pkgs.stdenv;
         isDarwin = stdenv.isDarwin;
@@ -50,9 +73,23 @@
           inherit system overlays;
         };
 
+        # Unstable packages for Bitcoin/Lightning tools (newer versions)
+        pkgsUnstable = import nixpkgs-unstable {
+          inherit system;
+        };
+
+        # Static/musl packages for fully static binary builds (Linux only)
+        pkgsMusl = import nixpkgs {
+          localSystem = system;
+          crossSystem = {
+            config = muslTarget;
+            isStatic = true;
+          };
+        };
+
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.93.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.93.1".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
           extensions = [
             "rustfmt"
@@ -85,11 +122,17 @@
           }
         );
 
+        # Stable toolchain with musl target for static builds
+        static_toolchain = pkgs.rust-bin.stable."1.93.1".default.override {
+          targets = [ muslTarget ];
+        };
+
         # ========================================
         # Crane setup for cached builds
         # ========================================
         craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
+        craneLibStatic = (crane.mkLib pkgs).overrideToolchain static_toolchain;
 
         # Source for crane builds - uses lib.fileset for efficient filtering
         # This is much faster than nix-gitignore when large directories (like target/) exist
@@ -128,9 +171,8 @@
 
         # Common args for all Crane builds
         commonCraneArgs = {
-          inherit src;
+          inherit src version;
           pname = "cdk";
-          version = "0.15.0-rc.0";
 
           nativeBuildInputs = with pkgs; [
             pkg-config
@@ -155,6 +197,56 @@
           cargoLock = ./Cargo.lock.msrv;
         };
 
+        # Musl-targeting C compiler for crates that compile bundled C code
+        # (libsqlite3-sys, secp256k1-sys, aws-lc-sys, etc.)
+        muslCC = pkgs.pkgsStatic.stdenv.cc;
+
+        # Common args for static musl builds (Linux only)
+        # Produces fully statically-linked binaries that run on any Linux system
+        commonCraneArgsStatic = {
+          inherit src version;
+          pname = "cdk-static";
+
+          # Cross-compile to musl for fully static linking
+          CARGO_BUILD_TARGET = muslTarget;
+          CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+
+          # Host-side build tools (run on build machine)
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            protobuf
+            muslCC
+          ];
+
+          # Target-side libraries (musl static libs linked into the binary)
+          buildInputs = with pkgsMusl; [
+            openssl.dev
+            zlib.static
+          ];
+
+          # Tell the cc crate and cargo to use the musl-targeting C compiler/linker
+          TARGET_CC = "${muslCC}/bin/${muslCC.targetPrefix}cc";
+
+          # Force static OpenSSL linking (needed by postgres/native-tls)
+          OPENSSL_STATIC = "1";
+          OPENSSL_DIR = "${pkgsMusl.openssl.dev}";
+          OPENSSL_LIB_DIR = "${pkgsMusl.openssl.out}/lib";
+          OPENSSL_INCLUDE_DIR = "${pkgsMusl.openssl.dev}/include";
+
+          # Protobuf (build-time code generation, runs on host)
+          PROTOC = "${pkgs.protobuf}/bin/protoc";
+          PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+
+          # Tell pkg-config to find musl static libraries
+          PKG_CONFIG_ALL_STATIC = "1";
+
+          # Use the release-static profile for reproducible, optimized builds
+          CARGO_PROFILE = "release-static";
+        } // {
+          # Dynamic attribute name for the cargo linker env var (arch-specific)
+          ${cargoTargetEnvName} = "${muslCC}/bin/${muslCC.targetPrefix}cc";
+        };
+
         # Build ALL dependencies once - this is what gets cached by Cachix
         # Note: We exclude swagger feature as it tries to download assets during build
         workspaceDeps = craneLib.buildDepsOnly (commonCraneArgs // {
@@ -168,6 +260,12 @@
         workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (commonCraneArgsMsrv // {
           pname = "cdk-deps-msrv";
           cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests";
+        });
+
+        # Static musl dependencies (separate cache for static builds)
+        workspaceDepsStatic = craneLibStatic.buildDepsOnly (commonCraneArgsStatic // {
+          pname = "cdk-deps-static";
+          cargoExtraArgs = "--workspace";
         });
 
         # Helper function to create combined clippy + test checks
@@ -212,9 +310,8 @@
         # Helper function to create WASM build checks
         # WASM builds don't need native libs like openssl
         mkWasmBuild = name: cargoArgs: craneLib.cargoBuild ({
-          inherit src;
+          inherit src version;
           pname = "cdk-wasm-${name}";
-          version = "0.15.0-rc.0";
           cargoArtifacts = workspaceDeps;
           cargoExtraArgs = "${cargoArgs} --target wasm32-unknown-unknown";
           # WASM doesn't need native build inputs
@@ -408,19 +505,6 @@
           # rust analyzer needs  NIX_PATH for some reason.
           NIX_PATH = "nixpkgs=${inputs.nixpkgs}";
         };
-        # Override clightning to include mako dependency and fix compilation bug
-        clightningWithMako = pkgs.clightning.overrideAttrs (oldAttrs: {
-          nativeBuildInputs = (oldAttrs.nativeBuildInputs or [ ]) ++ [
-            pkgs.python311Packages.mako
-          ];
-
-          # Disable -Werror to work around multiple compilation bugs in 25.09.2 on macOS
-          # See: https://github.com/ElementsProject/lightning/issues/7961
-          env = (oldAttrs.env or { }) // {
-            NIX_CFLAGS_COMPILE = toString ((oldAttrs.env.NIX_CFLAGS_COMPILE or "") + " -Wno-error");
-          };
-        });
-
         baseBuildInputs =
           with pkgs;
           [
@@ -450,13 +534,30 @@
           ++ libsDarwin;
 
         regtestBuildInputs =
-          with pkgs;
-          [
+          (with pkgsUnstable; [
             lnd
-            clightningWithMako
+            # Apple Clang treats certain warnings as errors via -Werror, breaking
+            # the clightning build on macOS. These are fixed upstream in commit
+            # c22538ec (milestone v26.04) but not yet released. The override is
+            # Darwin-only so Linux builds still use the binary cache unmodified.
+            # TODO: Remove this override once clightning >= 26.04 lands in nixpkgs.
+            (if pkgs.stdenv.hostPlatform.isDarwin then
+              (clightning.overrideAttrs (old: {
+                env = (old.env or {}) // {
+                  NIX_CFLAGS_COMPILE = (old.env.NIX_CFLAGS_COMPILE or "")
+                    + " -Wno-error=uninitialized-const-pointer"
+                    + " -Wno-error=gnu-folding-constant"
+                    + " -Wno-error=default-const-init-var-unsafe"
+                    + " -Wno-error=sometimes-uninitialized";
+                };
+              }))
+            else
+              clightning)
             bitcoind
+          ])
+          ++ (with pkgs; [
             mprocs
-          ];
+          ]);
 
         commonShellHook = ''
           # Needed for github ci
@@ -552,6 +653,28 @@
           ${pkgs.postgresql_16}/bin/psql "postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
         '';
 
+        # Helper to build a statically-linked binary package
+        # bin: the cargo binary name (e.g. "cdk-mintd")
+        # name: the output binary name prefix (e.g. "cdk-mintd-ldk")
+        # cargoExtraArgs: additional cargo args (e.g. "--bin cdk-mintd --features ldk-node")
+        staticVersion = commonCraneArgsStatic.version;
+        mkStaticPackage = { bin, name, cargoExtraArgs }: craneLibStatic.buildPackage (commonCraneArgsStatic // {
+          pname = name;
+          cargoArtifacts = workspaceDepsStatic;
+          inherit cargoExtraArgs;
+          nativeBuildInputs = commonCraneArgsStatic.nativeBuildInputs ++ [
+            pkgs.removeReferencesTo
+          ];
+          installPhaseCommand = ''
+            mkdir -p $out/bin
+            cp target/${muslTarget}/release-static/${bin} $out/bin/${name}-${staticVersion}-${archSuffix}
+          '';
+          # Strip Nix store references from binaries for reproducibility
+          postFixup = ''
+            find "$out" -type f -executable -exec remove-references-to -t ${static_toolchain} '{}' +
+          '';
+        });
+
         # Common arguments can be set here to avoid repeating them later
         nativeBuildInputs = [
           #Add additional build inputs here
@@ -565,6 +688,27 @@
         packages = {
           deps = workspaceDeps;
           deps-msrv = workspaceDepsMsrv;
+          deps-static = workspaceDepsStatic;
+        }
+        # Static binary packages (fully statically-linked, runs on any x86_64 Linux)
+        // {
+          cdk-mintd-static = mkStaticPackage {
+            bin = "cdk-mintd";
+            name = "cdk-mintd";
+            cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
+          };
+
+          cdk-mintd-ldk-static = mkStaticPackage {
+            bin = "cdk-mintd";
+            name = "cdk-mintd-ldk";
+            cargoExtraArgs = "--bin cdk-mintd --features ldk-node,postgres,prometheus,redis";
+          };
+
+          cdk-cli-static = mkStaticPackage {
+            bin = "cdk-cli";
+            name = "cdk-cli";
+            cargoExtraArgs = "--bin cdk-cli";
+          };
         }
         # Example packages (binaries that can be run outside sandbox with network access)
         // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExamplePackage name; }) exampleChecks));

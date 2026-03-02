@@ -1,5 +1,6 @@
 //! Quotes database implementation
 
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
@@ -281,6 +282,81 @@ where
         .await?
         .map(sql_row_to_melt_quote)
         .transpose()
+}
+
+pub(super) async fn get_mint_quotes_inner<T>(
+    executor: &T,
+    quote_ids: &[QuoteId],
+    for_update: bool,
+) -> Result<Vec<Option<MintQuote>>, Error>
+where
+    T: DatabaseExecutor,
+{
+    if quote_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Build placeholders for IN clause: :id0, :id1, :id2, ...
+    let placeholders: Vec<String> = quote_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!(":id{i}"))
+        .collect();
+    let in_clause = placeholders.join(", ");
+
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            amount,
+            unit,
+            request,
+            expiry,
+            request_lookup_id,
+            pubkey,
+            created_time,
+            amount_paid,
+            amount_issued,
+            payment_method,
+            request_lookup_id_kind
+        FROM
+            mint_quote
+        WHERE id IN ({in_clause})
+        {for_update_clause}
+        "#
+    );
+
+    let mut stmt = query(&query_str)?;
+    for (i, id) in quote_ids.iter().enumerate() {
+        stmt = stmt.bind(format!("id{i}"), id.to_string());
+    }
+
+    let rows = stmt.fetch_all(executor).await?;
+
+    // Build a map from quote ID to MintQuote (without payments/issuance yet)
+    let mut quote_map: HashMap<String, MintQuote> = HashMap::with_capacity(rows.len());
+
+    for row in rows {
+        let quote = sql_row_to_mint_quote(row, vec![], vec![])?;
+        quote_map.insert(quote.id.to_string(), quote);
+    }
+
+    // Now fetch payments and issuance for each found quote
+    for quote in quote_map.values_mut() {
+        let payments = get_mint_quote_payments(executor, &quote.id).await?;
+        let issuance = get_mint_quote_issuance(executor, &quote.id).await?;
+        quote.payments = payments;
+        quote.issuance = issuance;
+    }
+
+    // Reconstruct in the same order as input IDs
+    let result: Vec<Option<MintQuote>> = quote_ids
+        .iter()
+        .map(|id| quote_map.remove(&id.to_string()))
+        .collect();
+
+    Ok(result)
 }
 
 pub(super) async fn get_melt_quotes_by_request_lookup_id_inner<T>(
@@ -954,6 +1030,20 @@ where
             .map(|quote| quote.map(|inner| inner.into()))
     }
 
+    async fn get_mint_quotes_by_ids(
+        &mut self,
+        quote_ids: &[QuoteId],
+    ) -> Result<Vec<Option<Acquired<MintQuote>>>, Self::Err> {
+        get_mint_quotes_inner(&self.inner, quote_ids, true)
+            .await
+            .map(|quotes| {
+                quotes
+                    .into_iter()
+                    .map(|quote| quote.map(|inner| inner.into()))
+                    .collect()
+            })
+    }
+
     async fn get_melt_quote(
         &mut self,
         quote_id: &QuoteId,
@@ -1029,6 +1119,14 @@ where
         }
 
         result
+    }
+
+    async fn get_mint_quotes_by_ids(
+        &self,
+        quote_ids: &[QuoteId],
+    ) -> Result<Vec<Option<MintQuote>>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        get_mint_quotes_inner(&*conn, quote_ids, false).await
     }
 
     async fn get_mint_quote_by_request(

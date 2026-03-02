@@ -44,14 +44,16 @@ impl DbSignatory {
     pub async fn new(
         localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
         seed: &[u8],
-        mut supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+        mut supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
         init_keysets(xpriv, &secp_ctx, &localstore, &supported_units).await?;
 
-        supported_units.entry(CurrencyUnit::Auth).or_insert((0, 1));
+        supported_units
+            .entry(CurrencyUnit::Auth)
+            .or_insert((0, vec![1]));
 
         let keys = Self {
             keysets: Default::default(),

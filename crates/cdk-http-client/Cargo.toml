@@ -11,17 +11,27 @@ license.workspace = true
 readme = "README.md"
 
 [dependencies]
+futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 url.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { workspace = true }
 regex = { workspace = true }
+tokio-tungstenite = { workspace = true, features = [
+    "rustls", "rustls-tls-native-roots", "connect"
+] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["WebSocket", "MessageEvent", "CloseEvent", "ErrorEvent", "BinaryType"] }
+js-sys = "0.3"
+futures-channel = "0.3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

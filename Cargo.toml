@@ -148,5 +148,13 @@ codegen-units = 1   # Reduce number of codegen units to increase optimizations.
 panic = "abort"     # Abort on panic
 strip = "debuginfo" # Partially strip symbols from binary
 
+[profile.release-static]
+inherits = "release"
+opt-level = 3       # Full speed optimization
+lto = "thin"        # Thin LTO (cross-crate optimization + reproducibility, faster than fat LTO)
+codegen-units = 1   # Single codegen unit (better optimization + reproducibility)
+panic = "abort"     # No unwinding overhead, smaller binary
+strip = "debuginfo" # Strip debug info, keep symbol names for backtraces
+
 [workspace.metadata.crane]
 name = "cdk-workspace"
