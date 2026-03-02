@@ -1214,7 +1214,8 @@ mod tests {
     #[tokio::test]
     async fn mint_mod_rotate_keyset_with_expiry() {
         let mut supported_units = HashMap::new();
-        supported_units.insert(CurrencyUnit::default(), (0, 32));
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
 
         let config = MintConfig::<'_> {
             supported_units,
