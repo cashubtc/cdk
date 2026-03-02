@@ -89,7 +89,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.93.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.93.1".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
           extensions = [
             "rustfmt"
@@ -123,7 +123,7 @@
         );
 
         # Stable toolchain with musl target for static builds
-        static_toolchain = pkgs.rust-bin.stable."1.93.0".default.override {
+        static_toolchain = pkgs.rust-bin.stable."1.93.1".default.override {
           targets = [ muslTarget ];
         };
 
