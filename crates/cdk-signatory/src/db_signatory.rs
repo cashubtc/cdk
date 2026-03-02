@@ -243,6 +243,49 @@ impl Signatory for DbSignatory {
 
         Ok((&(info, keyset)).into())
     }
+
+    #[cfg(feature = "conditional-tokens")]
+    #[tracing::instrument(skip(self))]
+    async fn create_conditional_keyset(
+        &self,
+        unit: CurrencyUnit,
+        condition_id: &str,
+        outcome_collection: &str,
+        outcome_collection_id: &str,
+        amounts: Vec<u64>,
+        input_fee_ppk: u64,
+        final_expiry: Option<u64>,
+    ) -> Result<SignatoryKeySet, Error> {
+        let (keyset, mut info) = crate::common::create_conditional_keyset(
+            &self.secp_ctx,
+            self.xpriv,
+            unit,
+            condition_id,
+            outcome_collection_id,
+            &amounts,
+            input_fee_ppk,
+            final_expiry,
+        )
+        .ok_or(Error::UnsupportedUnit)?;
+
+        info.outcome_collection = Some(outcome_collection.to_string());
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.add_keyset_info(info.clone()).await?;
+        tx.commit().await?;
+
+        // Insert directly into the in-memory map with active=true.
+        // Do NOT use reload_keys_from_db() because it determines active status
+        // from the active_keysets table (one per unit), which would set
+        // conditional keysets to active=false since they aren't the "primary"
+        // active keyset for their unit.
+        info.active = true;
+        let id = info.id;
+        let mut keysets = self.keysets.write().await;
+        keysets.insert(id, (info.clone(), keyset.clone()));
+
+        Ok((&(info, keyset)).into())
+    }
 }
 
 #[cfg(test)]

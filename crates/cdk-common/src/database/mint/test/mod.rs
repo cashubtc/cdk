@@ -22,11 +22,17 @@ mod proofs;
 mod saga;
 mod signatures;
 
+#[cfg(feature = "conditional-tokens")]
+mod conditions;
+
 pub use self::keys::*;
 pub use self::mint::*;
 pub use self::proofs::*;
 pub use self::saga::*;
 pub use self::signatures::*;
+
+#[cfg(feature = "conditional-tokens")]
+pub use self::conditions::*;
 
 /// Generate standard keyset amounts as powers of 2
 #[inline]
@@ -51,6 +57,12 @@ where
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
         issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     };
     let mut writer = db.begin_transaction().await.expect("db.begin()");
     writer.add_keyset_info(keyset_info).await.unwrap();
@@ -260,6 +272,46 @@ macro_rules! mint_db_test {
             get_proofs_with_inconsistent_states_fails,
             get_proofs_fails_when_some_not_found,
             update_proofs_state_updates_proofs_with_state,
+        );
+    };
+    ($make_db_fn:ident, $($name:ident),+ $(,)?) => {
+        $(
+            #[tokio::test]
+            async fn $name() {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards");
+
+                cdk_common::database::mint::test::$name($make_db_fn(format!("test_{}_{}", now.as_nanos(), stringify!($name))).await).await;
+            }
+        )+
+    };
+}
+
+/// Unit tests for NUT-CTF conditional token database operations.
+/// Feature-gated behind `conditional-tokens`.
+#[cfg(feature = "conditional-tokens")]
+#[macro_export]
+macro_rules! mint_db_conditional_test {
+    ($make_db_fn:ident) => {
+        mint_db_conditional_test!(
+            $make_db_fn,
+            add_and_get_condition,
+            get_nonexistent_condition,
+            get_conditions_multiple,
+            get_conditions_since,
+            update_condition_attestation,
+            add_and_get_conditional_keyset_info,
+            get_conditional_keysets_multiple,
+            get_condition_for_keyset,
+            get_condition_for_keyset_nonexistent,
+            add_and_get_partitions,
+            get_partitions_multiple,
+            get_partitions_empty,
+            get_conditions_limit,
+            get_conditions_status_filter,
+            get_conditions_ascending_order,
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

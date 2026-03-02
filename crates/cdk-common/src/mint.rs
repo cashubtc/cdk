@@ -888,6 +888,18 @@ pub struct MintKeySetInfo {
     pub final_expiry: Option<u64>,
     /// Issuer Version
     pub issuer_version: Option<IssuerVersion>,
+    /// Condition ID (for conditional keysets, NUT-CTF)
+    #[cfg(feature = "conditional-tokens")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition_id: Option<String>,
+    /// Outcome collection string (for conditional keysets, NUT-CTF)
+    #[cfg(feature = "conditional-tokens")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome_collection: Option<String>,
+    /// Outcome collection ID (for conditional keysets, NUT-CTF)
+    #[cfg(feature = "conditional-tokens")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome_collection_id: Option<String>,
 }
 
 /// Default fee
@@ -1072,4 +1084,58 @@ mod offer_serde {
             serde::de::Error::custom("Invalid Bolt12 Offer")
         })?))
     }
+}
+
+// --- NUT-CTF Conditional Token Storage Types ---
+
+/// Stored condition in the database (NUT-CTF)
+#[cfg(feature = "conditional-tokens")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredCondition {
+    /// Computed condition identifier (64 hex chars)
+    pub condition_id: String,
+    /// Oracle threshold
+    pub threshold: u32,
+    /// Description
+    pub description: String,
+    /// Hex-encoded oracle announcement TLV bytes (JSON array)
+    pub announcements_json: String,
+    /// Attestation status
+    pub attestation_status: String,
+    /// Winning outcome (if attested)
+    pub winning_outcome: Option<String>,
+    /// Attestation timestamp
+    pub attested_at: Option<u64>,
+    /// Created at timestamp
+    pub created_at: u64,
+    /// Condition type: "enum" or "numeric" (NUT-CTF-numeric)
+    #[serde(default = "default_condition_type")]
+    pub condition_type: String,
+    /// Lower bound for numeric conditions (NUT-CTF-numeric)
+    pub lo_bound: Option<i64>,
+    /// Upper bound for numeric conditions (NUT-CTF-numeric)
+    pub hi_bound: Option<i64>,
+    /// Precision for numeric conditions (NUT-CTF-numeric)
+    pub precision: Option<i32>,
+}
+
+#[cfg(feature = "conditional-tokens")]
+fn default_condition_type() -> String {
+    "enum".to_string()
+}
+
+/// Stored partition in the database (NUT-CTF)
+#[cfg(feature = "conditional-tokens")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredPartition {
+    /// Condition identifier this partition belongs to
+    pub condition_id: String,
+    /// Partition keys (JSON array)
+    pub partition_json: String,
+    /// Collateral unit or outcome_collection_id
+    pub collateral: String,
+    /// Parent collection ID (32 zero bytes hex for root)
+    pub parent_collection_id: String,
+    /// Created at timestamp
+    pub created_at: u64,
 }

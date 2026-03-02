@@ -12,6 +12,7 @@ rust-version.workspace = true                                                   
 
 [features]
 http_subscription = ["cdk/http_subscription"]
+conditional-tokens = ["cdk/conditional-tokens", "cashu/conditional-tokens", "cdk-common/conditional-tokens"]
 
 [dependencies]
 async-trait.workspace = true

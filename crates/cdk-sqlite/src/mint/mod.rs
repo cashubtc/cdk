@@ -18,6 +18,8 @@ mod test {
     use std::fs::remove_file;
 
     use cdk_common::mint_db_test;
+    #[cfg(feature = "conditional-tokens")]
+    use cdk_common::mint_db_conditional_test;
     use cdk_sql_common::pool::Pool;
     use cdk_sql_common::stmt::query;
 
@@ -29,6 +31,9 @@ mod test {
     }
 
     mint_db_test!(provide_db);
+
+    #[cfg(feature = "conditional-tokens")]
+    cdk_common::mint_db_conditional_test!(provide_db);
 
     #[tokio::test]
     async fn bug_opening_relative_path() {

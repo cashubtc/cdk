@@ -33,6 +33,8 @@ use crate::nuts::nut01::SecretKey;
 use crate::nuts::nut11::{serde_p2pk_witness, P2PKWitness};
 use crate::nuts::nut12::BlindSignatureDleq;
 use crate::nuts::nut14::{serde_htlc_witness, HTLCWitness};
+#[cfg(feature = "conditional-tokens")]
+use crate::nuts::nut_ctf::{serde_oracle_witness, OracleWitness};
 use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
 use crate::Amount;
@@ -290,6 +292,10 @@ pub enum Witness {
     /// P2PK Witness
     #[serde(with = "serde_p2pk_witness")]
     P2PKWitness(P2PKWitness),
+    /// Oracle Witness (NUT-CTF conditional tokens)
+    #[cfg(feature = "conditional-tokens")]
+    #[serde(with = "serde_oracle_witness")]
+    OracleWitness(OracleWitness),
 }
 
 impl From<P2PKWitness> for Witness {
@@ -304,6 +310,13 @@ impl From<HTLCWitness> for Witness {
     }
 }
 
+#[cfg(feature = "conditional-tokens")]
+impl From<OracleWitness> for Witness {
+    fn from(witness: OracleWitness) -> Self {
+        Self::OracleWitness(witness)
+    }
+}
+
 impl Witness {
     /// Add signatures to [`Witness`]
     pub fn add_signatures(&mut self, signatures: Vec<String>) {
@@ -313,6 +326,10 @@ impl Witness {
                 Some(sigs) => sigs.extend(signatures),
                 None => htlc_witness.signatures = Some(signatures),
             },
+            #[cfg(feature = "conditional-tokens")]
+            Self::OracleWitness(_) => {
+                // Oracle witnesses don't use signature-style signatures
+            }
         }
     }
 
@@ -321,6 +338,8 @@ impl Witness {
         match self {
             Self::P2PKWitness(witness) => Some(witness.signatures.clone()),
             Self::HTLCWitness(witness) => witness.signatures.clone(),
+            #[cfg(feature = "conditional-tokens")]
+            Self::OracleWitness(_) => None,
         }
     }
 
@@ -329,6 +348,17 @@ impl Witness {
         match self {
             Self::P2PKWitness(_witness) => None,
             Self::HTLCWitness(witness) => Some(witness.preimage.clone()),
+            #[cfg(feature = "conditional-tokens")]
+            Self::OracleWitness(_) => None,
+        }
+    }
+
+    /// Get oracle witness from [`Witness`] (NUT-CTF)
+    #[cfg(feature = "conditional-tokens")]
+    pub fn oracle_witness(&self) -> Option<&OracleWitness> {
+        match self {
+            Self::OracleWitness(w) => Some(w),
+            _ => None,
         }
     }
 }

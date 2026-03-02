@@ -257,6 +257,58 @@ impl Id {
         }
     }
 
+    /// *** V2 KEYSET (conditional) ***
+    /// Create [`Id`] v2 from keys, unit, and conditional token parameters.
+    /// Builds same base preimage as `v2_from_data`, then appends
+    /// `|condition_id:{hex}|outcome_collection_id:{hex}`
+    #[cfg(feature = "mint")]
+    pub fn v2_from_data_conditional(
+        map: &Keys,
+        unit: &CurrencyUnit,
+        input_fee_ppk: u64,
+        expiry: Option<u64>,
+        condition_id: &str,
+        outcome_collection_id: &str,
+    ) -> Self {
+        let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
+        keys.sort_by_key(|(amt, _v)| *amt);
+
+        let keys_string = keys
+            .iter()
+            .map(|(amt, pubkey)| format!("{}:{}", amt, hex::encode(pubkey.to_bytes())))
+            .collect::<Vec<String>>()
+            .join(",");
+
+        let mut data = keys_string;
+        data.push_str(&format!("|unit:{}", unit));
+
+        if input_fee_ppk > 0 {
+            data.push_str(&format!("|input_fee_ppk:{}", input_fee_ppk));
+        }
+
+        if let Some(expiry) = expiry {
+            if expiry > 0 {
+                data.push_str(&format!("|final_expiry:{}", expiry));
+            }
+        }
+
+        data.push_str(&format!("|condition_id:{}", condition_id));
+        data.push_str(&format!("|outcome_collection_id:{}", outcome_collection_id));
+
+        let hash = Sha256::hash(data.as_bytes());
+        let hex_of_hash = hex::encode(hash.to_byte_array());
+
+        Self {
+            version: KeySetVersion::Version01,
+            id: IdBytes::V2(
+                hex::decode(&hex_of_hash[0..Self::STRLEN_V2])
+                    .expect("Keys hash could not be hex decoded")
+                    .try_into()
+                    .expect("Invalid length of hex id"),
+            ),
+        }
+    }
+
     /// Selects the correct IDv2 from a list of keysets and the given short-id
     /// or returns the short-id in the case of v1.
     pub fn from_short_keyset_id(

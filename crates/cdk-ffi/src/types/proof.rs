@@ -371,6 +371,10 @@ impl From<cdk::nuts::Witness> for Witness {
                 preimage: htlc.preimage,
                 signatures: htlc.signatures,
             },
+            #[cfg(feature = "conditional-tokens")]
+            cdk::nuts::Witness::OracleWitness(_) => {
+                unimplemented!("OracleWitness is not yet supported in FFI bindings")
+            }
         }
     }
 }

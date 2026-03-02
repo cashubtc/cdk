@@ -266,6 +266,133 @@ impl<'a> SwapSaga<'a, Initial> {
             },
         })
     }
+
+    /// Sets up a swap without balanced verification (for CTF split/merge).
+    ///
+    /// This is identical to `setup_swap` except it skips the balance check.
+    /// The caller (split/merge logic) is responsible for its own balance validation.
+    #[cfg(feature = "conditional-tokens")]
+    #[instrument(skip_all)]
+    pub async fn setup_swap_unbalanced(
+        mut self,
+        input_proofs: &Proofs,
+        blinded_messages: &[BlindedMessage],
+        quote_id: Option<QuoteId>,
+        input_verification: crate::mint::Verification,
+    ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
+        let mut tx = self.db.begin_transaction().await?;
+
+        let output_verification = self
+            .mint
+            .verify_outputs(&mut tx, blinded_messages)
+            .await
+            .map_err(|err| {
+                tracing::debug!("Output verification failed: {:?}", err);
+                err
+            })?;
+
+        // Skip balance verification — caller already validated amounts.
+        // But enforce unit equality to prevent cross-unit conversion.
+        if output_verification.amount.unit() != input_verification.amount.unit() {
+            tx.rollback().await?;
+            tracing::debug!(
+                "Unbalanced swap unit mismatch: input {:?}, output {:?}",
+                input_verification.amount.unit(),
+                output_verification.amount.unit()
+            );
+            return Err(Error::UnitMismatch);
+        }
+
+        let total_redeemed = input_verification.amount;
+        let total_issued = output_verification.amount;
+
+        let fee_breakdown = self.mint.get_proofs_fee(input_proofs).await?;
+
+        let operation = Operation::new(
+            self.state_data.operation_id,
+            cdk_common::mint::OperationKind::Swap,
+            total_issued.clone().into(),
+            total_redeemed.clone().into(),
+            fee_breakdown.total,
+            None,
+            None,
+        );
+
+        let mut new_proofs = match tx
+            .add_proofs(input_proofs.clone(), quote_id.clone(), &operation)
+            .await
+        {
+            Ok(proofs) => proofs,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(match err {
+                    database::Error::Duplicate => Error::TokenPending,
+                    database::Error::AttemptUpdateSpentProof => Error::TokenAlreadySpent,
+                    _ => Error::Database(err),
+                });
+            }
+        };
+
+        let ys = match input_proofs.ys() {
+            Ok(ys) => ys,
+            Err(err) => return Err(Error::NUT00(err)),
+        };
+
+        if let Err(err) =
+            Mint::update_proofs_state(&mut tx, &mut new_proofs, State::Pending).await
+        {
+            tx.rollback().await?;
+            return Err(err);
+        }
+
+        if let Err(err) = tx
+            .add_blinded_messages(quote_id.as_ref(), blinded_messages, &operation)
+            .await
+        {
+            tx.rollback().await?;
+            return Err(match err {
+                database::Error::Duplicate => Error::DuplicateOutputs,
+                _ => Error::Database(err),
+            });
+        }
+
+        let blinded_messages_vec = blinded_messages.to_vec();
+        let blinded_secrets: Vec<PublicKey> = blinded_messages_vec
+            .iter()
+            .map(|bm| bm.blinded_secret)
+            .collect();
+
+        let saga = Saga::new_swap(self.operation_id, SwapSagaState::SetupComplete);
+
+        if let Err(err) = tx.add_saga(&saga).await {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
+
+        tx.commit().await?;
+        for pk in &ys {
+            self.pubsub.proof_state((*pk, State::Pending));
+        }
+        self.compensations.push_front(Box::new(RemoveSwapSetup {
+            blinded_secrets: blinded_secrets.clone(),
+            input_ys: ys.clone(),
+            operation_id: self.operation_id,
+        }));
+
+        Ok(SwapSaga {
+            mint: self.mint,
+            db: self.db,
+            pubsub: self.pubsub,
+            compensations: self.compensations,
+            operation_id: self.operation_id,
+            state_data: SetupComplete {
+                blinded_messages: blinded_messages_vec,
+                ys,
+                operation,
+                fee_breakdown,
+            },
+        })
+    }
 }
 
 impl<'a> SwapSaga<'a, SetupComplete> {
