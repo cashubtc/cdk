@@ -81,6 +81,7 @@ async fn test_correct_keyset() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
+        None,
     )
     .await
     .unwrap();
@@ -100,6 +101,7 @@ async fn test_correct_keyset() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
+        None,
     )
     .await
     .unwrap();

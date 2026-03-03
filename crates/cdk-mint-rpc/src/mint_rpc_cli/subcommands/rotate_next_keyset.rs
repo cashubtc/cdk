@@ -25,6 +25,9 @@ pub struct RotateNextKeysetCommand {
     /// Use keyset v2
     #[arg(long)]
     use_keyset_v2: Option<bool>,
+    /// Final expiry unix timestamp for the keyset
+    #[arg(long)]
+    final_expiry: Option<u64>,
 }
 
 /// Executes the rotate_next_keyset command against the mint server
@@ -54,6 +57,7 @@ pub async fn rotate_next_keyset(
             amounts,
             input_fee_ppk: sub_command_args.input_fee_ppk,
             use_keyset_v2: sub_command_args.use_keyset_v2,
+            final_expiry: sub_command_args.final_expiry,
         }))
         .await?;
 
