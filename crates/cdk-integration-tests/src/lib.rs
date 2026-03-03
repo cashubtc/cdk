@@ -30,7 +30,7 @@ use cdk::wallet::{HttpClient, MintConnector, MintQuote};
 use cdk::{StreamExt, Wallet};
 use cdk_fake_wallet::create_fake_invoice;
 use init_regtest::{get_lnd_dir, LND_RPC_ADDR};
-use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
+use ln_regtest::ln_client::{ClnClient, LightningClient, LndClient};
 
 use crate::init_regtest::get_cln_dir;
 
@@ -38,6 +38,7 @@ pub mod cli;
 pub mod init_auth_mint;
 pub mod init_pure_tests;
 pub mod init_regtest;
+pub mod ln_regtest;
 pub mod shared;
 
 /// Generate standard keyset amounts as powers of 2
