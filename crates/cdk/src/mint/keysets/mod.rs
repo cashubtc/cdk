@@ -77,6 +77,7 @@ impl Mint {
         amounts: Vec<u64>,
         input_fee_ppk: u64,
         use_keyset_v2: bool,
+        final_expiry: Option<u64>,
     ) -> Result<MintKeySetInfo, Error> {
         let result = self
             .signatory
@@ -89,7 +90,7 @@ impl Mint {
                 } else {
                     cdk_common::nut02::KeySetVersion::Version00
                 },
-                final_expiry: None,
+                final_expiry,
             })
             .await?;
 
