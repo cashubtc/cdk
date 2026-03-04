@@ -1001,25 +1001,33 @@ impl PreMintSecrets {
 
         let mut output = Vec::with_capacity(amount_split.len());
 
-        let is_sig_all = conditions.as_ref().is_some_and(|c| c.sig_flag == crate::nuts::nut11::SigFlag::SigAll);
+        let is_sig_all = conditions
+            .as_ref()
+            .is_some_and(|c| c.sig_flag == crate::nuts::nut11::SigFlag::SigAll);
         if !is_sig_all && ephemeral_keys.len() != amount_split.len() {
-            return Err(Error::NUT28(crate::nuts::nut28::Error::InvalidCanonicalSlot(255)));
+            return Err(Error::NUT28(
+                crate::nuts::nut28::Error::InvalidCanonicalSlot(255),
+            ));
         }
 
         for (i, amount) in amount_split.into_iter().enumerate() {
-            let ephemeral_key = if is_sig_all { &ephemeral_keys[0] } else { &ephemeral_keys[i] };
-            
+            let ephemeral_key = if is_sig_all {
+                &ephemeral_keys[0]
+            } else {
+                &ephemeral_keys[i]
+            };
+
             // Blind data pubkey (slot 0)
-            let r0 = ecdh_kdf(ephemeral_key, &receiver_pubkey, keyset_id, 0)
-                .map_err(Error::NUT28)?;
+            let r0 =
+                ecdh_kdf(ephemeral_key, &receiver_pubkey, keyset_id, 0).map_err(Error::NUT28)?;
             let blinded_pubkey = blind_public_key(&receiver_pubkey, &r0).map_err(Error::NUT28)?;
 
             let mut blinded_conditions = conditions.clone();
-            
+
             // Blind tags pubkeys
             if let Some(ref mut cond) = blinded_conditions {
                 let mut slot_idx = 1;
-                
+
                 if let Some(ref mut pubkeys) = cond.pubkeys {
                     for pk in pubkeys.iter_mut() {
                         let r = ecdh_kdf(ephemeral_key, pk, keyset_id, slot_idx)
@@ -1028,7 +1036,7 @@ impl PreMintSecrets {
                         slot_idx += 1;
                     }
                 }
-                
+
                 if let Some(ref mut refund_keys) = cond.refund_keys {
                     for pk in refund_keys.iter_mut() {
                         let r = ecdh_kdf(ephemeral_key, pk, keyset_id, slot_idx)

@@ -174,10 +174,16 @@ impl Wallet {
 
                 let (send_secrets, ephemeral_key) = if use_p2bk {
                     if let SpendingConditions::P2PKConditions { data, conditions } = conditions {
-                        let is_sig_all = conditions.as_ref().is_some_and(|c| c.sig_flag == crate::nuts::nut11::SigFlag::SigAll);
-                        let amount_split = send_amount.unwrap_or(Amount::ZERO).split_targeted(&SplitTarget::default(), fee_and_amounts)?;
+                        let is_sig_all = conditions
+                            .as_ref()
+                            .is_some_and(|c| c.sig_flag == crate::nuts::nut11::SigFlag::SigAll);
+                        let amount_split = send_amount
+                            .unwrap_or(Amount::ZERO)
+                            .split_targeted(&SplitTarget::default(), fee_and_amounts)?;
                         let keys_count = if is_sig_all { 1 } else { amount_split.len() };
-                        let ephemeral_keys: Vec<_> = (0..keys_count).map(|_| crate::nuts::nut01::SecretKey::generate()).collect();
+                        let ephemeral_keys: Vec<_> = (0..keys_count)
+                            .map(|_| crate::nuts::nut01::SecretKey::generate())
+                            .collect();
                         (
                             PreMintSecrets::with_p2bk(
                                 active_keyset_id,

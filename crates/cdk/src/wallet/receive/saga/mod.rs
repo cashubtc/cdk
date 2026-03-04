@@ -167,11 +167,11 @@ impl<'a> ReceiveSaga<'a, Initial> {
                                 .get(hashed_preimage)
                                 .ok_or(Error::PreimageNotProvided)?;
                             proof.add_preimage(preimage.to_string());
-                            
+
                             // For HTLC, there is no slot 0 pubkey. But slot index for the tags still starts at 1!
                         }
                     }
-                    
+
                     if let Some(mut cond_pubkeys) = conditions.pubkeys {
                         pubkeys.append(&mut cond_pubkeys);
                     }
