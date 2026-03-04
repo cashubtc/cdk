@@ -39,7 +39,7 @@ pub struct Prepared {
     /// Pre-swap data (request and secrets)
     pub pre_swap: PreSwap,
     /// Ephemeral key if P2BK was used
-    pub p2bk_ephemeral: Option<crate::nuts::nut01::SecretKey>,
+    pub p2bk_ephemeral: Option<Vec<crate::nuts::nut01::SecretKey>>,
     /// The persisted saga for optimistic locking (contains recovery data)
     pub saga: WalletSaga,
 }

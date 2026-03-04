@@ -278,10 +278,10 @@ impl<'a> SwapSaga<'a, Prepared> {
                         }
                     };
 
-                if let Some(ephemeral_key) = &self.state_data.p2bk_ephemeral {
-                    let ephemeral_pubkey = ephemeral_key.public_key();
-                    for proof in proofs_to_send.iter_mut() {
-                        proof.p2pk_e = Some(ephemeral_pubkey);
+                if let Some(ephemeral_keys) = &self.state_data.p2bk_ephemeral {
+                    for (i, proof) in proofs_to_send.iter_mut().enumerate() {
+                        let e_key = if ephemeral_keys.len() == 1 { &ephemeral_keys[0] } else { &ephemeral_keys[i] };
+                        proof.p2pk_e = Some(e_key.public_key());
                     }
                 }
 

@@ -62,7 +62,7 @@ impl Wallet {
         use_p2bk: bool,
         include_fees: bool,
         proofs_fee_breakdown: &ProofsFeeBreakdown,
-    ) -> Result<(PreSwap, Option<crate::nuts::nut01::SecretKey>), Error> {
+    ) -> Result<(PreSwap, Option<Vec<crate::nuts::nut01::SecretKey>>), Error> {
         tracing::info!("Creating swap");
 
         // Desired amount is either amount passed or value of all proof
@@ -174,7 +174,10 @@ impl Wallet {
 
                 let (send_secrets, ephemeral_key) = if use_p2bk {
                     if let SpendingConditions::P2PKConditions { data, conditions } = conditions {
-                        let ephemeral_key = crate::nuts::nut01::SecretKey::generate();
+                        let is_sig_all = conditions.as_ref().is_some_and(|c| c.sig_flag == crate::nuts::nut11::SigFlag::SigAll);
+                        let amount_split = send_amount.unwrap_or(Amount::ZERO).split_targeted(&SplitTarget::default(), fee_and_amounts)?;
+                        let keys_count = if is_sig_all { 1 } else { amount_split.len() };
+                        let ephemeral_keys: Vec<_> = (0..keys_count).map(|_| crate::nuts::nut01::SecretKey::generate()).collect();
                         (
                             PreMintSecrets::with_p2bk(
                                 active_keyset_id,
@@ -182,10 +185,10 @@ impl Wallet {
                                 &SplitTarget::default(),
                                 data,
                                 conditions,
-                                &ephemeral_key,
+                                &ephemeral_keys,
                                 fee_and_amounts,
                             )?,
-                            Some(ephemeral_key),
+                            Some(ephemeral_keys),
                         )
                     } else {
                         return Err(Error::Custom("P2BK requires P2PK conditions".to_string()));
