@@ -338,7 +338,6 @@ impl MintPayment for LNbits {
 
     async fn create_incoming_payment_request(
         &self,
-        unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
@@ -353,7 +352,7 @@ impl MintPayment for LNbits {
                 let invoice_request = CreateInvoiceRequest {
                     amount: amount.to_sat()?,
                     memo: Some(description),
-                    unit: unit.to_string(),
+                    unit: amount.unit().to_string(),
                     expiry,
                     internal: None,
                     out: false,
