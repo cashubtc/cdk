@@ -6,15 +6,13 @@ pub(crate) mod saga;
 
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
-use cdk_common::nut25::MintQuoteBolt12Request;
-use cdk_common::PaymentMethod;
+use cdk_common::{MintQuoteRequest, MintQuoteResponse, PaymentMethod};
 pub(crate) use saga::MintSaga;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
 use crate::nuts::{
-    BatchCheckMintQuoteRequest, MintQuoteBolt11Request, MintQuoteCustomRequest, Proofs, SecretKey,
-    SpendingConditions,
+    BatchCheckMintQuoteRequest, MintQuoteCustomRequest, Proofs, SecretKey, SpendingConditions,
 };
 use crate::util::unix_time;
 use crate::wallet::recovery::RecoveryAction;
@@ -58,44 +56,43 @@ impl Wallet {
 
         let secret_key = SecretKey::generate();
 
-        let (quote_id, request_str, expiry) = match &method {
+        let request = match &method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
                 let amount = amount.ok_or(Error::AmountUndefined)?;
-                let request = MintQuoteBolt11Request {
+                MintQuoteRequest::Bolt11(cdk_common::nut23::MintQuoteBolt11Request {
                     amount,
                     unit: unit.clone(),
                     description,
                     pubkey: Some(secret_key.public_key()),
-                };
-
-                let response = self.client.post_mint_quote(request).await?;
-                (response.quote, response.request, response.expiry)
+                })
             }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
-                let request = MintQuoteBolt12Request {
+                MintQuoteRequest::Bolt12(cdk_common::nut25::MintQuoteBolt12Request {
                     amount,
                     unit: unit.clone(),
                     description,
                     pubkey: secret_key.public_key(),
-                };
-
-                let response = self.client.post_mint_bolt12_quote(request).await?;
-                (response.quote, response.request, response.expiry)
+                })
             }
             PaymentMethod::Custom(_) => {
                 let amount = amount.ok_or(Error::AmountUndefined)?;
-                let request = MintQuoteCustomRequest {
-                    amount,
-                    unit: unit.clone(),
-                    description,
-                    pubkey: Some(secret_key.public_key()),
-                    extra: serde_json::from_str(&extra.unwrap_or_default())?,
-                };
-
-                let response = self.client.post_mint_custom_quote(&method, request).await?;
-                (response.quote, response.request, response.expiry)
+                MintQuoteRequest::Custom((
+                    method.clone(),
+                    MintQuoteCustomRequest {
+                        amount,
+                        unit: unit.clone(),
+                        description,
+                        pubkey: Some(secret_key.public_key()),
+                        extra: serde_json::from_str(&extra.unwrap_or_default())?,
+                    },
+                ))
             }
         };
+
+        let response: MintQuoteResponse<String> = self.client.post_mint_quote(request).await?;
+        let quote_id = response.quote().to_string();
+        let request_str = response.request().to_string();
+        let expiry = response.expiry();
 
         let quote = MintQuote::new(
             quote_id,
@@ -115,51 +112,37 @@ impl Wallet {
 
     /// Checks the state of a mint quote with the mint
     async fn check_state(&self, mint_quote: &mut MintQuote) -> Result<(), Error> {
-        match mint_quote.payment_method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => {
-                let mint_quote_response = self.client.get_mint_quote_status(&mint_quote.id).await?;
-                mint_quote.state = mint_quote_response.state;
+        let mint_quote_response: MintQuoteResponse<String> = self
+            .client
+            .get_mint_quote_status(mint_quote.payment_method.clone(), &mint_quote.id)
+            .await?;
+        mint_quote.state = mint_quote_response.state();
 
-                match mint_quote_response.state {
-                    MintQuoteState::Paid => {
-                        mint_quote.amount_paid = mint_quote.amount.unwrap_or_default();
-                    }
-                    MintQuoteState::Issued => {
-                        mint_quote.amount_paid = mint_quote.amount.unwrap_or_default();
-                        mint_quote.amount_issued = mint_quote.amount.unwrap_or_default();
-                    }
-                    MintQuoteState::Unpaid => (),
+        match &mint_quote_response {
+            MintQuoteResponse::Bolt11(response) => match response.state {
+                MintQuoteState::Paid => {
+                    mint_quote.amount_paid = mint_quote.amount.unwrap_or_default();
                 }
-            }
-            PaymentMethod::Known(KnownMethod::Bolt12) => {
-                let mint_quote_response = self
-                    .client
-                    .get_mint_quote_bolt12_status(&mint_quote.id)
-                    .await?;
-
-                mint_quote.amount_issued = mint_quote_response.amount_issued;
-                mint_quote.amount_paid = mint_quote_response.amount_paid;
-            }
-            PaymentMethod::Custom(ref method) => {
-                let mint_quote_response = self
-                    .client
-                    .get_mint_quote_custom_status(method, &mint_quote.id)
-                    .await?;
-
-                mint_quote.state = mint_quote_response.state;
-
-                // Update amounts based on state
-                match mint_quote_response.state {
-                    MintQuoteState::Paid => {
-                        mint_quote.amount_paid = mint_quote_response.amount.unwrap_or_default();
-                    }
-                    MintQuoteState::Issued => {
-                        mint_quote.amount_paid = mint_quote_response.amount.unwrap_or_default();
-                        mint_quote.amount_issued = mint_quote_response.amount.unwrap_or_default();
-                    }
-                    MintQuoteState::Unpaid => (),
+                MintQuoteState::Issued => {
+                    mint_quote.amount_paid = mint_quote.amount.unwrap_or_default();
+                    mint_quote.amount_issued = mint_quote.amount.unwrap_or_default();
                 }
+                MintQuoteState::Unpaid => (),
+            },
+            MintQuoteResponse::Bolt12(response) => {
+                mint_quote.amount_issued = response.amount_issued;
+                mint_quote.amount_paid = response.amount_paid;
             }
+            MintQuoteResponse::Custom((_, response)) => match response.state {
+                MintQuoteState::Paid => {
+                    mint_quote.amount_paid = response.amount.unwrap_or_default();
+                }
+                MintQuoteState::Issued => {
+                    mint_quote.amount_paid = response.amount.unwrap_or_default();
+                    mint_quote.amount_issued = response.amount.unwrap_or_default();
+                }
+                MintQuoteState::Unpaid => (),
+            },
         }
 
         Ok(())
@@ -416,84 +399,57 @@ impl Wallet {
             (None, None) => return Err(Error::PaymentMethodRequired),
         };
 
-        // Fetch the quote status from the mint based on payment method
-        let quote = match &method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => {
-                let response = self.client.get_mint_quote_status(quote_id).await?;
+        // Fetch the quote status from the mint using unified method
+        let response: MintQuoteResponse<String> = self
+            .client
+            .get_mint_quote_status(method.clone(), quote_id)
+            .await?;
 
-                match existing_quote {
-                    Some(mut existing) => {
-                        // Update the existing quote with new state
-                        existing.state = response.state;
-                        existing
+        let quote = match existing_quote {
+            Some(mut existing) => {
+                // Update the existing quote with new state
+                existing.state = response.state();
+                match &response {
+                    MintQuoteResponse::Bolt12(r) => {
+                        existing.amount_paid = r.amount_paid;
+                        existing.amount_issued = r.amount_issued;
                     }
-                    None => {
-                        // Create a new quote from the response
-                        MintQuote::new(
-                            quote_id.to_string(),
-                            self.mint_url.clone(),
-                            method,
-                            response.amount,
-                            response.unit.unwrap_or(self.unit.clone()),
-                            response.request,
-                            response.expiry.unwrap_or(0),
-                            None,
-                        )
+                    MintQuoteResponse::Bolt11(r) => {
+                        if let Some(amount) = r.amount {
+                            existing.amount_paid = amount;
+                        }
+                    }
+                    MintQuoteResponse::Custom((_, r)) => {
+                        if let Some(amount) = r.amount {
+                            existing.amount_paid = amount;
+                            existing.amount_issued = amount;
+                        }
                     }
                 }
+                existing
             }
-            PaymentMethod::Known(KnownMethod::Bolt12) => {
-                let response = self.client.get_mint_quote_bolt12_status(quote_id).await?;
-
-                match existing_quote {
-                    Some(mut existing) => {
-                        // Update the existing quote with new state from bolt12 response
-                        existing.amount_paid = response.amount_paid;
-                        existing.amount_issued = response.amount_issued;
-                        existing
-                    }
-                    None => {
-                        // Create a new quote from the response
-                        MintQuote::new(
-                            quote_id.to_string(),
-                            self.mint_url.clone(),
-                            method,
-                            response.amount,
-                            response.unit,
-                            response.request,
-                            response.expiry.unwrap_or(0),
-                            None,
-                        )
-                    }
-                }
-            }
-            PaymentMethod::Custom(custom_method) => {
-                let response = self
-                    .client
-                    .get_mint_quote_custom_status(custom_method, quote_id)
-                    .await?;
-
-                match existing_quote {
-                    Some(mut existing) => {
-                        // Update the existing quote with new state
-                        existing.amount_paid = response.amount.unwrap_or_default();
-                        existing.amount_issued = response.amount.unwrap_or_default();
-                        existing
-                    }
-                    None => {
-                        // Create a new quote from the response
-                        MintQuote::new(
-                            quote_id.to_string(),
-                            self.mint_url.clone(),
-                            method,
-                            response.amount,
-                            response.unit.unwrap_or(self.unit.clone()),
-                            response.request,
-                            response.expiry.unwrap_or(0),
-                            None,
-                        )
-                    }
-                }
+            None => {
+                // Create a new quote from the response
+                let amount = match &response {
+                    MintQuoteResponse::Bolt11(r) => r.amount,
+                    MintQuoteResponse::Bolt12(r) => r.amount,
+                    MintQuoteResponse::Custom((_, r)) => r.amount,
+                };
+                let unit = match &response {
+                    MintQuoteResponse::Bolt11(r) => r.unit.clone(),
+                    MintQuoteResponse::Bolt12(r) => Some(r.unit.clone()),
+                    MintQuoteResponse::Custom((_, r)) => r.unit.clone(),
+                };
+                MintQuote::new(
+                    quote_id.to_string(),
+                    self.mint_url.clone(),
+                    method,
+                    amount,
+                    unit.unwrap_or(self.unit.clone()),
+                    response.request().to_string(),
+                    response.expiry().unwrap_or(0),
+                    None,
+                )
             }
         };
 
