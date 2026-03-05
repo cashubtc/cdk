@@ -87,7 +87,7 @@ test:
 
   if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "$CDK_ITEST_ARCHIVE" ]; then
     # Run the mint integration test from the pre-built nextest archive
-    cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~mint)"
+    cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(/^mint$/)"
   else
     # Run pure integration tests
     cargo test -p cdk-integration-tests --test mint
