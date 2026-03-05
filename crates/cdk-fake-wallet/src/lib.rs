@@ -433,6 +433,7 @@ impl MintPayment for FakeWallet {
                 invoice_description: true,
             }),
             bolt12: Some(payment::Bolt12Settings { amountless: false }),
+            onchain: None,
             custom: std::collections::HashMap::new(),
         })
     }
@@ -517,6 +518,10 @@ impl MintPayment for FakeWallet {
                 // Custom payment methods are not supported by fake wallet
                 return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
             }
+            OutgoingPaymentOptions::Onchain(_) => {
+                // Onchain payment methods are not supported by fake wallet
+                return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
+            }
         };
 
         let amount = convert_currency_amount(
@@ -539,6 +544,7 @@ impl MintPayment for FakeWallet {
             amount,
             fee: Amount::new(fee, unit.clone()),
             state: MeltQuoteState::Unpaid,
+            estimated_blocks: None,
         })
     }
 
@@ -644,6 +650,10 @@ impl MintPayment for FakeWallet {
                 // Custom payment methods are not supported by fake wallet
                 Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
+            OutgoingPaymentOptions::Onchain(_) => {
+                // Onchain payment methods are not supported by fake wallet
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
         }
     }
 
@@ -712,6 +722,10 @@ impl MintPayment for FakeWallet {
             }
             IncomingPaymentOptions::Custom(_) => {
                 // Custom payment methods are not supported by fake wallet
+                return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
+            }
+            IncomingPaymentOptions::Onchain(_) => {
+                // Onchain payment methods are not supported by fake wallet
                 return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
             }
         };

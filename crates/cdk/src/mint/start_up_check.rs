@@ -63,18 +63,17 @@ impl Mint {
         })?;
 
         // Check payment status with LN backend
-        let pay_invoice_response =
-            ln_backend
-                .check_outgoing_payment(lookup_id)
-                .await
-                .map_err(|err| {
-                    tracing::error!(
-                        "Failed to check payment status for quote {}: {}",
-                        quote.id,
-                        err
-                    );
-                    Error::Internal
-                })?;
+        let pay_invoice_response = match ln_backend.check_outgoing_payment(lookup_id).await {
+            Ok(response) => response,
+            Err(err) => {
+                tracing::error!(
+                    "Failed to check payment status for quote {}: {}",
+                    quote.id,
+                    err
+                );
+                return Err(Error::Internal);
+            }
+        };
 
         tracing::info!(
             "Payment status for melt quote {}: {}",

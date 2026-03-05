@@ -491,6 +491,33 @@ impl MintBuilder {
                     self.mint_info.nuts.nut05.disabled = false;
                 }
             }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                if let Some(onchain_settings) = settings.onchain {
+                    // Add to NUT04 (mint)
+                    let mint_method_settings = MintMethodSettings {
+                        method: method.clone(),
+                        unit: unit.clone(),
+                        min_amount: Some(limits.mint_min),
+                        max_amount: Some(limits.mint_max),
+                        options: Some(MintMethodOptions::Onchain {
+                            confirmations: onchain_settings.confirmations,
+                        }),
+                    };
+                    self.mint_info.nuts.nut04.methods.push(mint_method_settings);
+                    self.mint_info.nuts.nut04.disabled = false;
+
+                    // Add to NUT05 (melt)
+                    let melt_method_settings = MeltMethodSettings {
+                        method: method.clone(),
+                        unit: unit.clone(),
+                        min_amount: Some(limits.melt_min),
+                        max_amount: Some(limits.melt_max),
+                        options: None,
+                    };
+                    self.mint_info.nuts.nut05.methods.push(melt_method_settings);
+                    self.mint_info.nuts.nut05.disabled = false;
+                }
+            }
         }
 
         // Check that the unit has been pre-configured
@@ -851,6 +878,7 @@ mod tests {
             unit: "sat".to_string(),
             bolt11: Some(bolt11_settings),
             bolt12: None,
+            onchain: None,
             custom: HashMap::new(),
         };
 
@@ -925,6 +953,7 @@ mod tests {
             unit: "sat".to_string(),
             bolt11: Some(bolt11_settings),
             bolt12: None,
+            onchain: None,
             custom: HashMap::new(),
         };
 
@@ -970,6 +999,7 @@ mod tests {
             unit: "sat".to_string(),
             bolt11: None,
             bolt12: Some(bolt12_settings),
+            onchain: None,
             custom: HashMap::new(),
         };
 
@@ -1029,6 +1059,7 @@ mod tests {
             unit: "usd".to_string(),
             bolt11: None,
             bolt12: None,
+            onchain: None,
             custom: custom_methods,
         };
 
@@ -1089,6 +1120,7 @@ mod tests {
             unit: "usd".to_string(),
             bolt11: None,
             bolt12: None,
+            onchain: None,
             custom: HashMap::new(), // Empty - no custom methods supported
         };
 
@@ -1135,6 +1167,7 @@ mod tests {
             unit: "sat".to_string(),
             bolt11: Some(bolt11_settings),
             bolt12: None,
+            onchain: None,
             custom: HashMap::new(),
         };
         let processor1 = Arc::new(MockPaymentProcessor {
@@ -1156,6 +1189,7 @@ mod tests {
             unit: "sat".to_string(),
             bolt11: None,
             bolt12: Some(bolt12_settings),
+            onchain: None,
             custom: HashMap::new(),
         };
         let processor2 = Arc::new(MockPaymentProcessor {

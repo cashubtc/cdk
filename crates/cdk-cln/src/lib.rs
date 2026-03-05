@@ -100,6 +100,7 @@ impl MintPayment for Cln {
                 invoice_description: true,
             }),
             bolt12: Some(payment::Bolt12Settings { amountless: true }),
+            onchain: None,
             custom: HashMap::new(),
         })
     }
@@ -318,6 +319,9 @@ impl MintPayment for Cln {
             cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
                 Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 // If we have specific amount options, use those
                 let amount_msat: Amount = if let Some(melt_options) = bolt11_options.melt_options {
@@ -361,6 +365,7 @@ impl MintPayment for Cln {
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
+                    estimated_blocks: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -392,6 +397,7 @@ impl MintPayment for Cln {
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
+                    estimated_blocks: None,
                 })
             }
         }
@@ -533,6 +539,9 @@ impl MintPayment for Cln {
                     cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
                         PaymentIdentifier::PaymentHash(*pay_response.payment_hash.as_ref())
                     }
+                    cdk_common::payment::OutgoingPaymentOptions::Onchain(_) => {
+                        PaymentIdentifier::PaymentHash(*pay_response.payment_hash.as_ref())
+                    }
                     OutgoingPaymentOptions::Bolt11(_) => {
                         PaymentIdentifier::PaymentHash(*pay_response.payment_hash.as_ref())
                     }
@@ -568,6 +577,9 @@ impl MintPayment for Cln {
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
             cdk_common::payment::IncomingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
+            cdk_common::payment::IncomingPaymentOptions::Onchain(_) => {
                 Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
             IncomingPaymentOptions::Bolt11(Bolt11IncomingPaymentOptions {

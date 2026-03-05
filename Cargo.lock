@@ -721,6 +721,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bdk_bitcoind_rpc"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a52a57cc5e07e207711a5064def0bd04b18e183b9f2247f41561cb12dd393be"
+dependencies = [
+ "bdk_core",
+ "bitcoin 0.32.8",
+ "bitcoincore-rpc",
+]
+
+[[package]]
 name = "bdk_chain"
 version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -729,6 +740,7 @@ dependencies = [
  "bdk_core",
  "bitcoin 0.32.8",
  "miniscript",
+ "rusqlite",
  "serde",
 ]
 
@@ -1286,6 +1298,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdk-bdk"
+version = "0.16.0"
+dependencies = [
+ "async-trait",
+ "bdk_bitcoind_rpc",
+ "bdk_esplora",
+ "bdk_wallet",
+ "cdk-common",
+ "cdk-sqlite",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "cdk-cli"
 version = "0.16.0"
 dependencies = [
@@ -1476,6 +1509,7 @@ dependencies = [
  "cashu",
  "cdk",
  "cdk-axum",
+ "cdk-bdk",
  "cdk-cln",
  "cdk-common",
  "cdk-fake-wallet",
@@ -1611,6 +1645,7 @@ dependencies = [
  "bitcoin 0.32.8",
  "cdk",
  "cdk-axum",
+ "cdk-bdk",
  "cdk-cln",
  "cdk-common",
  "cdk-fake-wallet",
@@ -2921,6 +2956,7 @@ dependencies = [
  "bitcoin 0.32.8",
  "hex-conservative 0.2.2",
  "log",
+ "minreq",
  "reqwest",
  "serde",
  "serde_json",
@@ -3834,6 +3870,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyper-tls"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper 1.8.1",
+ "hyper-util",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tower-service",
+]
+
+[[package]]
 name = "hyper-util"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4669,8 +4721,12 @@ version = "2.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05015102dad0f7d61691ca347e9d9d9006685a64aefb3d79eecf62665de2153d"
 dependencies = [
+ "base64 0.22.1",
+ "rustls 0.21.12",
+ "rustls-webpki 0.101.7",
  "serde",
  "serde_json",
+ "webpki-roots 0.25.4",
 ]
 
 [[package]]
@@ -6195,9 +6251,11 @@ dependencies = [
  "http-body-util",
  "hyper 1.8.1",
  "hyper-rustls 0.27.7",
+ "hyper-tls",
  "hyper-util",
  "js-sys",
  "log",
+ "native-tls",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -6209,6 +6267,7 @@ dependencies = [
  "serde_urlencoded",
  "sync_wrapper 1.0.2",
  "tokio",
+ "tokio-native-tls",
  "tokio-rustls 0.26.4",
  "tower 0.5.3",
  "tower-http",

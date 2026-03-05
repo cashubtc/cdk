@@ -67,12 +67,13 @@ impl WaitableEvent {
                 vec![WalletSubscription::Bolt11MeltQuoteState(quotes)]
             }
             WaitableEvent::MintQuote(quotes) => {
-                let (bolt11, bolt12) = quotes.into_iter().fold(
-                    (Vec::new(), Vec::new()),
+                let (bolt11, bolt12, onchain) = quotes.into_iter().fold(
+                    (Vec::new(), Vec::new(), Vec::new()),
                     |mut acc, (quote_id, payment_method)| {
                         match payment_method.as_str() {
                             "bolt11" => acc.0.push(quote_id),
                             "bolt12" => acc.1.push(quote_id),
+                            "onchain" => acc.2.push(quote_id),
                             _ => acc.0.push(quote_id),
                         }
                         acc
@@ -87,6 +88,10 @@ impl WaitableEvent {
 
                 if !bolt12.is_empty() {
                     subscriptions.push(WalletSubscription::Bolt12MintQuoteState(bolt12));
+                }
+
+                if !onchain.is_empty() {
+                    subscriptions.push(WalletSubscription::MintQuoteOnchainState(onchain));
                 }
 
                 subscriptions

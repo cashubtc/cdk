@@ -42,6 +42,10 @@ impl From<CdkPaymentIdentifier> for PaymentIdentifier {
                 r#type: PaymentIdentifierType::PaymentId.into(),
                 value: Some(payment_identifier::Value::Hash(hex::encode(hash))),
             },
+            CdkPaymentIdentifier::QuoteId(quote_id) => Self {
+                r#type: PaymentIdentifierType::QuoteId.into(),
+                value: Some(payment_identifier::Value::Id(quote_id.to_string())),
+            },
         }
     }
 }
@@ -76,6 +80,11 @@ impl TryFrom<PaymentIdentifier> for CdkPaymentIdentifier {
             }
             (PaymentIdentifierType::CustomId, Some(payment_identifier::Value::Id(id))) => {
                 Ok(CdkPaymentIdentifier::CustomId(id))
+            }
+            (PaymentIdentifierType::QuoteId, Some(payment_identifier::Value::Id(id))) => {
+                Ok(CdkPaymentIdentifier::QuoteId(id.parse().map_err(|_| {
+                    crate::error::Error::InvalidPaymentIdentifier
+                })?))
             }
             (PaymentIdentifierType::PaymentId, Some(payment_identifier::Value::Hash(hash))) => {
                 let decoded = hex::decode(hash)?;
@@ -230,6 +239,7 @@ impl TryFrom<PaymentQuoteResponse> for CdkPaymentQuoteResponse {
                 .ok_or(crate::error::Error::MissingAmount)?
                 .try_into()?,
             state: state_val.into(),
+            estimated_blocks: None,
         })
     }
 }

@@ -26,6 +26,8 @@ mod lnbits;
 mod lnd;
 #[cfg(feature = "management-rpc")]
 mod management_rpc;
+#[cfg(feature = "onchain")]
+mod onchain;
 #[cfg(feature = "prometheus")]
 mod prometheus;
 
@@ -53,6 +55,8 @@ pub use lnd::*;
 #[cfg(feature = "management-rpc")]
 pub use management_rpc::*;
 pub use mint_info::*;
+#[cfg(feature = "onchain")]
+pub use onchain::*;
 #[cfg(feature = "prometheus")]
 pub use prometheus::*;
 
@@ -118,6 +122,16 @@ impl Settings {
         #[cfg(feature = "prometheus")]
         {
             self.prometheus = Some(self.prometheus.clone().unwrap_or_default().from_env());
+        }
+
+        #[cfg(feature = "onchain")]
+        {
+            let onchain = self.onchain.clone().unwrap_or_default().from_env();
+            if onchain.enabled {
+                self.onchain = Some(onchain);
+            } else {
+                self.onchain = None;
+            }
         }
 
         match self.ln.ln_backend {

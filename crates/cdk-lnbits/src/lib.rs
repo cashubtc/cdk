@@ -69,6 +69,7 @@ impl LNbits {
                     invoice_description: true,
                 }),
                 bolt12: None,
+                onchain: None,
                 custom: std::collections::HashMap::new(),
             },
         })
@@ -263,11 +264,13 @@ impl MintPayment for LNbits {
                     amount: Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?,
                     fee: Amount::new(fee, CurrencyUnit::Msat).convert_to(unit)?,
                     state: MeltQuoteState::Unpaid,
+                    estimated_blocks: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(_bolt12_options) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
             }
+            OutgoingPaymentOptions::Onchain(_) => Err(payment::Error::UnsupportedPaymentOption),
             OutgoingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
@@ -332,6 +335,7 @@ impl MintPayment for LNbits {
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
             }
+            OutgoingPaymentOptions::Onchain(_) => Err(payment::Error::UnsupportedPaymentOption),
             OutgoingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
@@ -384,6 +388,7 @@ impl MintPayment for LNbits {
             IncomingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
             }
+            IncomingPaymentOptions::Onchain(_) => Err(payment::Error::UnsupportedPaymentOption),
             IncomingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }

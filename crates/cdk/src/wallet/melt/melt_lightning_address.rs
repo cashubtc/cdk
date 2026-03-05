@@ -140,7 +140,7 @@ mod tests {
                 reason: None,
             },
         ));
-        connector.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        connector.set_bolt11_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: "quote-should-not-be-used".to_string(),
             amount: Amount::from(1_000_u64),
             fee_reserve: Amount::from(0_u64),

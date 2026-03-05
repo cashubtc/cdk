@@ -150,6 +150,10 @@ pub enum WalletSubscription {
     Bolt12MeltQuoteState(Vec<String>),
     /// Mint bolt12 quote subscription
     Bolt12MintQuoteState(Vec<String>),
+    /// Mint Onchain quote subscription
+    MintQuoteOnchainState(Vec<String>),
+    /// Melt Onchain quote subscription
+    MeltQuoteOnchainState(Vec<String>),
     /// Custom melt quote subscription
     MeltQuoteCustom(String, Vec<String>),
 }
@@ -194,6 +198,16 @@ impl From<WalletSubscription> for WalletParams {
             WalletSubscription::Bolt12MeltQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt12MeltQuote,
+                id,
+            },
+            WalletSubscription::MintQuoteOnchainState(filters) => WalletParams {
+                filters,
+                kind: Kind::OnchainMintQuote,
+                id,
+            },
+            WalletSubscription::MeltQuoteOnchainState(filters) => WalletParams {
+                filters,
+                kind: Kind::OnchainMeltQuote,
                 id,
             },
             WalletSubscription::MeltQuoteCustom(method, filters) => WalletParams {
@@ -277,6 +291,9 @@ impl Wallet {
             }
             cdk_common::PaymentMethod::Known(KnownMethod::Bolt12) => {
                 WalletSubscription::Bolt12MintQuoteState(quote_ids)
+            }
+            cdk_common::PaymentMethod::Known(KnownMethod::Onchain) => {
+                WalletSubscription::MintQuoteOnchainState(quote_ids)
             }
             cdk_common::PaymentMethod::Custom(_) => {
                 return Err(Error::InvalidPaymentMethod);

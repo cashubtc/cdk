@@ -18,8 +18,8 @@ use cdk_common::nuts::{
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{
-    Amount, MeltQuoteRequest, MeltQuoteResponse, MeltQuoteState, MintQuoteRequest,
-    MintQuoteResponse, SecretKey, State,
+    Amount, MeltQuoteOnchainResponse, MeltQuoteRequest, MeltQuoteResponse, MeltQuoteState,
+    MintQuoteRequest, MintQuoteResponse, SecretKey, State,
 };
 
 use crate::nuts::{
@@ -348,7 +348,8 @@ pub fn test_melt_quote() -> MeltQuote {
         fee_reserve: Amount::from(10),
         state: MeltQuoteState::Unpaid,
         expiry: 9999999999,
-        payment_preimage: None,
+        payment_proof: None,
+        estimated_blocks: None,
         payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
         used_by_operation: None,
         version: 0,
@@ -408,7 +409,7 @@ pub struct MockMintConnector {
     /// Response for post_restore calls
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
     /// Response for get_melt_quote_status calls
-    pub melt_quote_status_response: Mutex<Option<Result<MeltQuoteBolt11Response<String>, Error>>>,
+    pub melt_quote_status_response: Mutex<Option<Result<MeltQuoteResponse<String>, Error>>>,
     /// Response for post_mint calls
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Response for post_swap calls
@@ -524,9 +525,23 @@ impl MockMintConnector {
 
     pub fn set_melt_quote_status_response(
         &self,
-        response: Result<MeltQuoteBolt11Response<String>, Error>,
+        response: Result<MeltQuoteResponse<String>, Error>,
     ) {
         *self.melt_quote_status_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_bolt11_melt_quote_status_response(
+        &self,
+        response: Result<MeltQuoteBolt11Response<String>, Error>,
+    ) {
+        self.set_melt_quote_status_response(response.map(MeltQuoteResponse::Bolt11));
+    }
+
+    pub fn set_onchain_melt_quote_status_response(
+        &self,
+        response: Result<MeltQuoteOnchainResponse<String>, Error>,
+    ) {
+        self.set_melt_quote_status_response(response.map(MeltQuoteResponse::Onchain));
     }
 
     pub fn set_post_mint_response(&self, response: Result<MintResponse, Error>) {
@@ -648,7 +663,7 @@ impl MintConnector for MockMintConnector {
     async fn post_melt_quote(
         &self,
         _request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteResponse<String>, Error> {
+    ) -> Result<cdk_common::MeltQuoteCreateResponse<String>, Error> {
         unimplemented!()
     }
 
@@ -657,15 +672,11 @@ impl MintConnector for MockMintConnector {
         _method: PaymentMethod,
         _quote_id: &str,
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        let response = self
-            .melt_quote_status_response
+        self.melt_quote_status_response
             .lock()
             .unwrap()
             .take()
-            .expect(
-                "MockMintConnector: get_melt_quote_status called without configured response",
-            )?;
-        Ok(MeltQuoteResponse::Bolt11(response))
+            .expect("MockMintConnector: get_melt_quote_status called without configured response")
     }
 
     async fn post_swap(&self, _request: SwapRequest) -> Result<SwapResponse, Error> {
