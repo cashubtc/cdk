@@ -183,24 +183,19 @@ impl<'a> ReceiveSaga<'a, Initial> {
                             _ => (i + 1) as u8, // HTLC skips slot 0 since it's a hash, not a pubkey
                         };
                         if let Some(ephemeral_key) = proof.p2pk_e {
-                            #[cfg(feature = "wallet")]
-                            {
-                                for signing_key in p2pk_signing_keys.values() {
-                                    if let Ok(r) = crate::nuts::nut28::ecdh_kdf(
-                                        signing_key,
-                                        &ephemeral_key,
-                                        slot,
-                                    ) {
-                                        if let Ok(derived_key) =
-                                            crate::nuts::nut28::derive_signing_key_bip340(
-                                                signing_key,
-                                                &r,
-                                                pubkey,
-                                            )
-                                        {
-                                            proof.sign_p2pk(derived_key)?;
-                                            break;
-                                        }
+                            for signing_key in p2pk_signing_keys.values() {
+                                if let Ok(r) =
+                                    crate::nuts::nut28::ecdh_kdf(signing_key, &ephemeral_key, slot)
+                                {
+                                    if let Ok(derived_key) =
+                                        crate::nuts::nut28::derive_signing_key_bip340(
+                                            signing_key,
+                                            &r,
+                                            pubkey,
+                                        )
+                                    {
+                                        proof.sign_p2pk(derived_key)?;
+                                        break;
                                     }
                                 }
                             }
