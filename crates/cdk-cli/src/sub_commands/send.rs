@@ -248,6 +248,7 @@ pub async fn send(
         send_kind,
         include_fee: sub_command_args.include_fee,
         conditions,
+        use_p2bk: sub_command_args.use_p2bk,
         ..Default::default()
     };
 

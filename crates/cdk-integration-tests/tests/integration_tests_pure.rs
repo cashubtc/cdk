@@ -1502,3 +1502,78 @@ async fn get_keyset_id(mint: &Mint) -> Id {
         .expect("Keyset ID generation is successful");
     keys.id
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_p2bk_send_and_receive() {
+    setup_tracing();
+
+    let mint = create_mint_with_fee(1000)
+        .await
+        .expect("Failed to create test mint with fees");
+    let wallet_sender = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create sender wallet");
+    let wallet_receiver = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create receiver wallet");
+
+    // Fund sender with 64 sats
+    fund_wallet(wallet_sender.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    // Generate P2PK spending conditions
+    let secret = SecretKey::generate();
+    let spending_conditions = SpendingConditions::new_p2pk(secret.public_key(), None);
+
+    let send_amount = Amount::from(10);
+
+    // Send with include_fee=true and use_p2bk=true so token uses NUT-28 P2BK privacy
+    let prepared = wallet_sender
+        .prepare_send(
+            send_amount,
+            SendOptions {
+                conditions: Some(spending_conditions),
+                include_fee: true,
+                use_p2bk: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("Failed to prepare send");
+
+    let token = prepared
+        .confirm(None)
+        .await
+        .expect("Failed to confirm send");
+
+    // Check if the proofs have p2pk_e
+    let keysets_info = wallet_sender.get_mint_keysets().await.unwrap();
+    let token_proofs = token.proofs(&keysets_info).unwrap();
+    for proof in &token_proofs {
+        assert!(proof.p2pk_e.is_some(), "Proof should have p2pk_e set");
+    }
+    // Check if the proofs have p2pk_e
+    let keysets_info = wallet_sender.get_mint_keysets().await.unwrap();
+    let token_proofs = token.proofs(&keysets_info).unwrap();
+    for proof in &token_proofs {
+        assert!(proof.p2pk_e.is_some(), "Proof should have p2pk_e set");
+    }
+
+    // Receiver redeems the token using the P2PK signing key
+    let received_amount = wallet_receiver
+        .receive(
+            &token.to_string(),
+            ReceiveOptions {
+                p2pk_signing_keys: vec![secret],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("Receiver should be able to redeem P2BK token");
+
+    assert_eq!(
+        send_amount, received_amount,
+        "Receiver should get exactly the requested amount after fees"
+    );
+}
