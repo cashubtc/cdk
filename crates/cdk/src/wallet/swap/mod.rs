@@ -27,8 +27,8 @@ impl Wallet {
         amount_split_target: SplitTarget,
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
-        use_p2bk: bool,
         include_fees: bool,
+        use_p2bk: bool,
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
 
@@ -59,8 +59,8 @@ impl Wallet {
         amount_split_target: SplitTarget,
         proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
-        use_p2bk: bool,
         include_fees: bool,
+        use_p2bk: bool,
         proofs_fee_breakdown: &ProofsFeeBreakdown,
     ) -> Result<(PreSwap, Option<Vec<crate::nuts::nut01::SecretKey>>), Error> {
         tracing::info!("Creating swap");

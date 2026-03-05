@@ -467,8 +467,8 @@ impl<'a> SendSaga<'a, Prepared> {
                         SplitTarget::None,
                         proofs_to_swap,
                         options.conditions.clone(),
-                        options.use_p2bk,
                         false,
+                        options.use_p2bk,
                     )
                     .await?
                 {
