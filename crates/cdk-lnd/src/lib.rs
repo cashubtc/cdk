@@ -620,7 +620,6 @@ impl MintPayment for Lnd {
     #[instrument(skip(self, options))]
     async fn create_incoming_payment_request(
         &self,
-        unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
@@ -628,8 +627,6 @@ impl MintPayment for Lnd {
                 let description = bolt11_options.description.unwrap_or_default();
                 let amount = bolt11_options.amount;
                 let unix_expiry = bolt11_options.unix_expiry;
-
-                debug_assert_eq!(amount.unit(), unit, "amount unit must match unit parameter");
 
                 let amount_msat: Amount = amount.convert_to(&CurrencyUnit::Msat)?.into();
 
