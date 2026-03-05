@@ -21,7 +21,7 @@ use cdk_common::pub_sub::remote_consumer::{
 use cdk_common::pub_sub::{Error as PubsubError, Spec, Subscriber};
 use cdk_common::subscription::WalletParams;
 use cdk_common::ws_client::{connect as ws_connect, WsError};
-use cdk_common::{CheckStateRequest, Method, RoutePath};
+use cdk_common::{CheckStateRequest, Method, PaymentMethod, RoutePath};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -255,8 +255,18 @@ impl Transport for SubscriptionClient {
         {
             match topic {
                 NotificationId::MintQuoteBolt11(id) => {
-                    let response = match self.http_client.get_mint_quote_status(&id).await {
-                        Ok(success) => success,
+                    let response = match self
+                        .http_client
+                        .get_mint_quote_status(PaymentMethod::BOLT11, &id)
+                        .await
+                    {
+                        Ok(success) => match success {
+                            cdk_common::MintQuoteResponse::Bolt11(r) => r,
+                            _ => {
+                                tracing::error!("Unexpected response type for MintBolt11 {}", id);
+                                continue;
+                            }
+                        },
                         Err(err) => {
                             tracing::error!("Error with MintBolt11 {} with {:?}", id, err);
                             continue;
@@ -264,7 +274,7 @@ impl Transport for SubscriptionClient {
                     };
 
                     reply_to.send(MintEvent::new(
-                        NotificationPayload::MintQuoteBolt11Response(response.clone()),
+                        NotificationPayload::MintQuoteBolt11Response(response),
                     ));
                 }
                 NotificationId::MeltQuoteBolt11(id) => {
@@ -281,8 +291,18 @@ impl Transport for SubscriptionClient {
                     ));
                 }
                 NotificationId::MintQuoteBolt12(id) => {
-                    let response = match self.http_client.get_mint_quote_bolt12_status(&id).await {
-                        Ok(success) => success,
+                    let response = match self
+                        .http_client
+                        .get_mint_quote_status(PaymentMethod::BOLT12, &id)
+                        .await
+                    {
+                        Ok(success) => match success {
+                            cdk_common::MintQuoteResponse::Bolt12(r) => r,
+                            _ => {
+                                tracing::error!("Unexpected response type for MintBolt12 {}", id);
+                                continue;
+                            }
+                        },
                         Err(err) => {
                             tracing::error!("Error with MintBolt12 {} with {:?}", id, err);
                             continue;
@@ -307,12 +327,21 @@ impl Transport for SubscriptionClient {
                     ));
                 }
                 NotificationId::MintQuoteCustom(method, id) => {
-                    let response = match self
+                    let (_, response) = match self
                         .http_client
-                        .get_mint_quote_custom_status(&method, &id)
+                        .get_mint_quote_status(PaymentMethod::Custom(method.clone()), &id)
                         .await
                     {
-                        Ok(success) => success,
+                        Ok(success) => match success {
+                            cdk_common::MintQuoteResponse::Custom(r) => r,
+                            _ => {
+                                tracing::error!(
+                                    "Unexpected response type for Custom Mint Quote {}",
+                                    id
+                                );
+                                continue;
+                            }
+                        },
                         Err(err) => {
                             tracing::error!("Error with Custom Mint Quote {} with {:?}", id, err);
                             continue;

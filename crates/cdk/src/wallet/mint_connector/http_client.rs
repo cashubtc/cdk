@@ -4,8 +4,8 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use cdk_common::{
-    nut19, MeltQuoteBolt12Request, MeltQuoteBolt12Response, MeltQuoteCustomResponse, Method,
-    MintQuoteBolt12Request, MintQuoteBolt12Response, ProtectedEndpoint, RoutePath,
+    nut19, MeltQuoteCustomResponse, Method, MintQuoteBolt11Response, MintQuoteBolt12Response,
+    MintQuoteCustomResponse, MintQuoteRequest, MintQuoteResponse, ProtectedEndpoint, RoutePath,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -22,9 +22,7 @@ use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteCustomRequest, MeltRequest, MintInfo,
-    MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteCustomRequest,
-    MintQuoteCustomResponse, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 
@@ -249,44 +247,103 @@ where
         transport.http_get(url, None).await
     }
 
-    /// Mint Quote [NUT-04]
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    /// Mint Quote [NUT-04, NUT-23, NUT-25]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_mint_quote(
         &self,
-        request: MintQuoteBolt11Request,
-    ) -> Result<MintQuoteBolt11Response<String>, Error> {
+        request: MintQuoteRequest,
+    ) -> Result<MintQuoteResponse<String>, Error> {
+        let method = request.method().to_string();
+        let path = format!("v1/mint/quote/{}", method);
+
         let url = self
             .mint_url
-            .join_paths(&["v1", "mint", "quote", "bolt11"])?;
+            .join_paths(&path.split('/').collect::<Vec<_>>())?;
 
         let auth_token = self
             .get_auth_token(
                 Method::Post,
-                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+                RoutePath::MintQuote(request.method().to_string()),
             )
             .await?;
 
-        self.transport.http_post(url, auth_token, &request).await
+        match &request {
+            MintQuoteRequest::Bolt11(req) => {
+                let response: cdk_common::nut23::MintQuoteBolt11Response<String> =
+                    self.transport.http_post(url, auth_token, req).await?;
+                Ok(MintQuoteResponse::Bolt11(response))
+            }
+            MintQuoteRequest::Bolt12(req) => {
+                let response: cdk_common::nut25::MintQuoteBolt12Response<String> =
+                    self.transport.http_post(url, auth_token, req).await?;
+                Ok(MintQuoteResponse::Bolt12(response))
+            }
+            MintQuoteRequest::Custom(req) => {
+                let response: cdk_common::nut04::MintQuoteCustomResponse<String> =
+                    self.transport.http_post(url, auth_token, req).await?;
+                Ok(MintQuoteResponse::Custom((request.method(), response)))
+            }
+        }
     }
 
-    /// Mint Quote status
+    /// Mint Quote status with payment method
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_quote_status(
         &self,
+        method: PaymentMethod,
         quote_id: &str,
-    ) -> Result<MintQuoteBolt11Response<String>, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "mint", "quote", "bolt11", quote_id])?;
+    ) -> Result<MintQuoteResponse<String>, Error> {
+        match &method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                let url = self
+                    .mint_url
+                    .join_paths(&["v1", "mint", "quote", "bolt11", quote_id])?;
 
-        let auth_token = self
-            .get_auth_token(
-                Method::Get,
-                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
-            )
-            .await?;
+                let auth_token = self
+                    .get_auth_token(
+                        Method::Get,
+                        RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+                    )
+                    .await?;
 
-        self.transport.http_get(url, auth_token).await
+                let response: MintQuoteBolt11Response<String> =
+                    self.transport.http_get(url, auth_token).await?;
+
+                Ok(MintQuoteResponse::Bolt11(response))
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                let url = self
+                    .mint_url
+                    .join_paths(&["v1", "mint", "quote", "bolt12", quote_id])?;
+
+                let auth_token = self
+                    .get_auth_token(
+                        Method::Get,
+                        RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+                    )
+                    .await?;
+
+                let response: MintQuoteBolt12Response<String> =
+                    self.transport.http_get(url, auth_token).await?;
+
+                Ok(MintQuoteResponse::Bolt12(response))
+            }
+            // PaymentMethod::Known(KnownMethod::Onchain) => Err(Error::UnsupportedPaymentMethod),
+            PaymentMethod::Custom(method_name) => {
+                let url =
+                    self.mint_url
+                        .join_paths(&["v1", "mint", "quote", method_name, quote_id])?;
+
+                let auth_token = self
+                    .get_auth_token(Method::Get, RoutePath::MintQuote(method_name.clone()))
+                    .await?;
+
+                let response: MintQuoteCustomResponse<String> =
+                    self.transport.http_get(url, auth_token).await?;
+
+                Ok(MintQuoteResponse::Custom((method, response)))
+            }
+        }
     }
 
     /// Mint Tokens [NUT-04]
@@ -423,6 +480,45 @@ where
         *self.auth_wallet.write().await = wallet;
     }
 
+    /// Melt Quote Bolt12 [NUT-23]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_melt_bolt12_quote(
+        &self,
+        request: cdk_common::nut25::MeltQuoteBolt12Request,
+    ) -> Result<cdk_common::nut25::MeltQuoteBolt12Response<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "melt", "quote", "bolt12"])?;
+        let auth_token = self
+            .get_auth_token(
+                Method::Post,
+                RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            )
+            .await?;
+
+        self.transport.http_post(url, auth_token, &request).await
+    }
+
+    /// Melt Quote Bolt12 Status [NUT-23]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_melt_bolt12_quote_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<cdk_common::nut25::MeltQuoteBolt12Response<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "melt", "quote", "bolt12", quote_id])?;
+
+        let auth_token = self
+            .get_auth_token(
+                Method::Get,
+                RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            )
+            .await?;
+
+        self.transport.http_get(url, auth_token).await
+    }
+
     /// Spendable check [NUT-07]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_check_state(
@@ -446,121 +542,6 @@ where
             .await?;
 
         self.transport.http_post(url, auth_token, &request).await
-    }
-
-    /// Mint Quote Bolt12 [NUT-23]
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
-    async fn post_mint_bolt12_quote(
-        &self,
-        request: MintQuoteBolt12Request,
-    ) -> Result<MintQuoteBolt12Response<String>, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "mint", "quote", "bolt12"])?;
-
-        let auth_token = self
-            .get_auth_token(
-                Method::Post,
-                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
-            )
-            .await?;
-
-        self.transport.http_post(url, auth_token, &request).await
-    }
-
-    /// Mint Quote Bolt12 status
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
-    async fn get_mint_quote_bolt12_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MintQuoteBolt12Response<String>, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "mint", "quote", "bolt12", quote_id])?;
-
-        let auth_token = self
-            .get_auth_token(
-                Method::Get,
-                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
-            )
-            .await?;
-
-        self.transport.http_get(url, auth_token).await
-    }
-
-    /// Melt Quote Bolt12 [NUT-23]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_melt_bolt12_quote(
-        &self,
-        request: MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt12Response<String>, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "melt", "quote", "bolt12"])?;
-        let auth_token = self
-            .get_auth_token(
-                Method::Post,
-                RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
-            )
-            .await?;
-
-        self.transport.http_post(url, auth_token, &request).await
-    }
-
-    /// Melt Quote Bolt12 Status [NUT-23]
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
-    async fn get_melt_bolt12_quote_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MeltQuoteBolt12Response<String>, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "melt", "quote", "bolt12", quote_id])?;
-
-        let auth_token = self
-            .get_auth_token(
-                Method::Get,
-                RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
-            )
-            .await?;
-
-        self.transport.http_get(url, auth_token).await
-    }
-
-    /// Mint Quote for Custom Payment Method
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
-    async fn post_mint_custom_quote(
-        &self,
-        method: &PaymentMethod,
-        request: MintQuoteCustomRequest,
-    ) -> Result<MintQuoteCustomResponse<String>, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "mint", "quote", &method.to_string()])?;
-
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintQuote(method.to_string()))
-            .await?;
-
-        self.transport.http_post(url, auth_token, &request).await
-    }
-
-    /// Mint Quote Status for Custom Payment Method
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
-    async fn get_mint_quote_custom_status(
-        &self,
-        method: &str,
-        quote_id: &str,
-    ) -> Result<MintQuoteCustomResponse<String>, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "mint", "quote", method, quote_id])?;
-
-        let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MintQuote(method.to_string()))
-            .await?;
-
-        self.transport.http_get(url, auth_token).await
     }
 
     /// Melt Quote for Custom Payment Method

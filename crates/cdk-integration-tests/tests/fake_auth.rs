@@ -65,7 +65,10 @@ async fn test_quote_status_without_auth() {
     // Test mint quote status
     {
         let quote_res = client
-            .get_mint_quote_status("123e4567-e89b-12d3-a456-426614174000")
+            .get_mint_quote_status(
+                PaymentMethod::BOLT11,
+                "123e4567-e89b-12d3-a456-426614174000",
+            )
             .await;
 
         assert!(
@@ -100,7 +103,7 @@ async fn test_mint_without_auth() {
             pubkey: None,
         };
 
-        let quote_res = client.post_mint_quote(request).await;
+        let quote_res = client.post_mint_quote(request.into()).await;
 
         assert!(
             matches!(quote_res, Err(Error::BlindAuthRequired)),
@@ -129,7 +132,10 @@ async fn test_mint_without_auth() {
 
     {
         let mint_res = client
-            .get_mint_quote_status("123e4567-e89b-12d3-a456-426614174000")
+            .get_mint_quote_status(
+                PaymentMethod::BOLT11,
+                "123e4567-e89b-12d3-a456-426614174000",
+            )
             .await;
 
         assert!(
@@ -593,7 +599,7 @@ async fn test_melt_with_invalid_auth() {
             pubkey: None,
         };
 
-        let quote_res = client.post_mint_quote(request).await;
+        let quote_res = client.post_mint_quote(request.into()).await;
 
         assert!(
             matches!(quote_res, Err(Error::BlindAuthRequired)),

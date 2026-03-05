@@ -11,15 +11,14 @@ use cdk_common::mint_url::MintUrl;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::{
     CheckStateResponse, CurrencyUnit, Id, KeysetResponse, MeltQuoteCustomRequest,
-    MeltQuoteCustomResponse, MintQuoteBolt11Request, MintQuoteBolt11Response,
-    MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest, MintResponse, Proof,
-    RestoreResponse, SwapRequest, SwapResponse,
+    MeltQuoteCustomResponse, MintRequest, MintResponse, Proof, RestoreResponse, SwapRequest,
+    SwapResponse,
 };
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{
-    Amount, MeltQuoteBolt12Request, MeltQuoteState, MintQuoteBolt12Request,
-    MintQuoteBolt12Response, SecretKey, State,
+    Amount, MeltQuoteBolt12Request, MeltQuoteBolt12Response, MeltQuoteState, MintQuoteRequest,
+    MintQuoteResponse, SecretKey, State,
 };
 
 use crate::nuts::{
@@ -219,15 +218,16 @@ impl MintConnector for MockMintConnector {
 
     async fn post_mint_quote(
         &self,
-        _request: MintQuoteBolt11Request,
-    ) -> Result<MintQuoteBolt11Response<String>, Error> {
+        _request: MintQuoteRequest,
+    ) -> Result<MintQuoteResponse<String>, Error> {
         unimplemented!()
     }
 
     async fn get_mint_quote_status(
         &self,
+        _method: PaymentMethod,
         _quote_id: &str,
-    ) -> Result<MintQuoteBolt11Response<String>, Error> {
+    ) -> Result<MintQuoteResponse<String>, Error> {
         unimplemented!()
     }
 
@@ -298,33 +298,11 @@ impl MintConnector for MockMintConnector {
 
     async fn set_auth_wallet(&self, _wallet: Option<crate::wallet::AuthWallet>) {}
 
-    async fn get_mint_quote_custom_status(
-        &self,
-        _method: &str,
-        _quote_id: &str,
-    ) -> Result<MintQuoteCustomResponse<String>, Error> {
-        unimplemented!()
-    }
-
     async fn get_melt_quote_custom_status(
         &self,
         _method: &str,
         _quote_id: &str,
     ) -> Result<MeltQuoteCustomResponse<String>, Error> {
-        unimplemented!()
-    }
-
-    async fn post_mint_bolt12_quote(
-        &self,
-        _request: MintQuoteBolt12Request,
-    ) -> Result<MintQuoteBolt12Response<String>, Error> {
-        unimplemented!()
-    }
-
-    async fn get_mint_quote_bolt12_status(
-        &self,
-        _quote_id: &str,
-    ) -> Result<MintQuoteBolt12Response<String>, Error> {
         unimplemented!()
     }
 
@@ -338,15 +316,7 @@ impl MintConnector for MockMintConnector {
     async fn get_melt_bolt12_quote_status(
         &self,
         _quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        unimplemented!()
-    }
-
-    async fn post_mint_custom_quote(
-        &self,
-        _method: &PaymentMethod,
-        _request: MintQuoteCustomRequest,
-    ) -> Result<MintQuoteCustomResponse<String>, Error> {
+    ) -> Result<MeltQuoteBolt12Response<String>, Error> {
         unimplemented!()
     }
 

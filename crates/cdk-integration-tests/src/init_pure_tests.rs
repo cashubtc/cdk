@@ -10,25 +10,21 @@ use async_trait::async_trait;
 use bip39::Mnemonic;
 use cashu::nut00::KnownMethod;
 use cashu::quote_id::QuoteId;
-use cashu::{
-    MeltQuoteBolt12Request, MeltQuoteCustomRequest, MeltQuoteCustomResponse,
-    MintQuoteBolt12Request, MintQuoteBolt12Response, MintQuoteCustomRequest,
-    MintQuoteCustomResponse,
-};
+use cashu::{MeltQuoteBolt12Request, MeltQuoteCustomRequest, MeltQuoteCustomResponse};
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintRequest,
+    MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
 use cdk::{Amount, Error, Mint, StreamExt};
+use cdk_common::{MintQuoteRequest, MintQuoteResponse};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
@@ -92,22 +88,28 @@ impl MintConnector for DirectMintConnection {
 
     async fn post_mint_quote(
         &self,
-        request: MintQuoteBolt11Request,
-    ) -> Result<MintQuoteBolt11Response<String>, Error> {
-        self.mint
-            .get_mint_quote(request.into())
-            .await
-            .map(Into::into)
+        request: MintQuoteRequest,
+    ) -> Result<MintQuoteResponse<String>, Error> {
+        match request {
+            MintQuoteRequest::Bolt11(req) => {
+                let response = self.mint.get_mint_quote(req.into()).await?.into();
+                Ok(MintQuoteResponse::Bolt11(response))
+            }
+            _ => unimplemented!(),
+        }
     }
 
     async fn get_mint_quote_status(
         &self,
+        _method: PaymentMethod,
         quote_id: &str,
-    ) -> Result<MintQuoteBolt11Response<String>, Error> {
-        self.mint
+    ) -> Result<MintQuoteResponse<String>, Error> {
+        let response = self
+            .mint
             .check_mint_quote(&QuoteId::from_str(quote_id)?)
-            .await
-            .map(Into::into)
+            .await?
+            .into();
+        Ok(MintQuoteResponse::Bolt11(response))
     }
 
     async fn post_mint(
@@ -179,28 +181,6 @@ impl MintConnector for DirectMintConnection {
         *auth_wallet = wallet;
     }
 
-    async fn post_mint_bolt12_quote(
-        &self,
-        request: MintQuoteBolt12Request,
-    ) -> Result<MintQuoteBolt12Response<String>, Error> {
-        let res: MintQuoteBolt12Response<QuoteId> =
-            self.mint.get_mint_quote(request.into()).await?.try_into()?;
-        Ok(res.into())
-    }
-
-    async fn get_mint_quote_bolt12_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MintQuoteBolt12Response<String>, Error> {
-        let quote: MintQuoteBolt12Response<QuoteId> = self
-            .mint
-            .check_mint_quote(&QuoteId::from_str(quote_id)?)
-            .await?
-            .try_into()?;
-
-        Ok(quote.into())
-    }
-
     /// Melt Quote [NUT-23]
     async fn post_melt_bolt12_quote(
         &self,
@@ -220,26 +200,6 @@ impl MintConnector for DirectMintConnection {
             .check_melt_quote(&QuoteId::from_str(quote_id)?)
             .await
             .map(Into::into)
-    }
-
-    /// Mint Quote for Custom Payment Method
-    async fn post_mint_custom_quote(
-        &self,
-        _method: &PaymentMethod,
-        _request: MintQuoteCustomRequest,
-    ) -> Result<MintQuoteCustomResponse<String>, Error> {
-        // Custom payment methods not implemented in test mock
-        Err(Error::UnsupportedPaymentMethod)
-    }
-
-    /// Mint Quote Status for Custom Payment Method
-    async fn get_mint_quote_custom_status(
-        &self,
-        _method: &str,
-        _quote_id: &str,
-    ) -> Result<MintQuoteCustomResponse<String>, Error> {
-        // Custom payment methods not implemented in test mock
-        Err(Error::UnsupportedPaymentMethod)
     }
 
     /// Melt Quote for Custom Payment Method

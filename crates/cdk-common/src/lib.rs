@@ -24,6 +24,7 @@ pub mod error;
 pub mod melt;
 #[cfg(feature = "mint")]
 pub mod mint;
+pub mod mint_quote;
 #[cfg(feature = "mint")]
 pub mod payment;
 pub mod pub_sub;
@@ -53,5 +54,6 @@ pub use cdk_http_client::{
 // Re-export common types
 pub use common::FinalizedMelt;
 pub use error::Error;
+pub use mint_quote::{MintQuoteRequest, MintQuoteResponse};
 /// Re-export parking_lot for reuse
 pub use parking_lot;

@@ -131,10 +131,10 @@ pub async fn post_mint_custom_quote(
                     into_response(cdk::Error::InvalidPaymentMethod)
                 })?;
 
-            let quote_request = cdk::mint::MintQuoteRequest::Custom {
-                method,
-                request: custom_request,
-            };
+            let quote_request = cdk::mint::MintQuoteRequest::Custom((
+                cdk::nuts::PaymentMethod::from(method),
+                custom_request,
+            ));
 
             let response = state
                 .mint
@@ -143,7 +143,7 @@ pub async fn post_mint_custom_quote(
                 .map_err(into_response)?;
 
             match response {
-                cdk::mint::MintQuoteResponse::Custom { response, .. } => {
+                cdk::mint::MintQuoteResponse::Custom((_, response)) => {
                     Ok(Json(response).into_response())
                 }
                 _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
@@ -188,11 +188,8 @@ pub async fn get_check_mint_custom_quote(
         _ => {
             // Extract and verify it's a Custom payment method
             match quote_response {
-                cdk::mint::MintQuoteResponse::Custom {
-                    method: quote_method,
-                    response,
-                } => {
-                    if quote_method != method {
+                cdk::mint::MintQuoteResponse::Custom((quote_method, response)) => {
+                    if quote_method != cdk::nuts::PaymentMethod::from(method.clone()) {
                         return Err(into_response(cdk::Error::InvalidPaymentMethod));
                     }
                     Ok(Json(response).into_response())
