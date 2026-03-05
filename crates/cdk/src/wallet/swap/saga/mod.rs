@@ -106,7 +106,7 @@ impl<'a> SwapSaga<'a, Initial> {
 
         let input_ys = input_proofs.ys()?;
 
-        let (pre_swap, p2bk_ephemeral) = self
+        let pre_swap = self
             .wallet
             .create_swap(
                 active_keyset_id,
@@ -171,7 +171,6 @@ impl<'a> SwapSaga<'a, Initial> {
                 input_ys,
                 spending_conditions,
                 pre_swap,
-                p2bk_ephemeral,
                 saga,
             },
         })
@@ -278,7 +277,7 @@ impl<'a> SwapSaga<'a, Prepared> {
                         }
                     };
 
-                if let Some(ephemeral_keys) = &self.state_data.p2bk_ephemeral {
+                if let Some(ephemeral_keys) = &self.state_data.pre_swap.p2bk_secret_keys {
                     for (i, proof) in proofs_to_send.iter_mut().enumerate() {
                         let e_key = if ephemeral_keys.len() == 1 {
                             &ephemeral_keys[0]

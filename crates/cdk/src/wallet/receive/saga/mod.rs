@@ -305,7 +305,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         )
         .await;
 
-        let (mut pre_swap, _) = self
+        let mut pre_swap = self
             .wallet
             .create_swap(
                 self.state_data.active_keyset_id,
@@ -335,7 +335,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 for signing_key in p2pk_signing_keys.values() {
                     // Sign the outputs of the swap using standard P2PK since output
                     // P2BK requires ephemeral keys which is handled at creation.
-                    blinded_message.sign_p2pk(signing_key.to_owned().clone())?
+                    blinded_message.sign_p2pk((**signing_key).clone())?
                 }
             }
         }

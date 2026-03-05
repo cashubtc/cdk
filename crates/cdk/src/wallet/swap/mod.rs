@@ -62,7 +62,7 @@ impl Wallet {
         include_fees: bool,
         use_p2bk: bool,
         proofs_fee_breakdown: &ProofsFeeBreakdown,
-    ) -> Result<(PreSwap, Option<Vec<crate::nuts::nut01::SecretKey>>), Error> {
+    ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
 
         // Desired amount is either amount passed or value of all proof
@@ -249,14 +249,12 @@ impl Wallet {
 
         let swap_request = SwapRequest::new(proofs, desired_messages.blinded_messages());
 
-        Ok((
-            PreSwap {
-                pre_mint_secrets: desired_messages,
-                swap_request,
-                derived_secret_count: derived_secret_count as u32,
-                fee: proofs_fee_breakdown.total,
-            },
-            p2bk_ephemeral_key,
-        ))
+        Ok(PreSwap {
+            pre_mint_secrets: desired_messages,
+            swap_request,
+            derived_secret_count: derived_secret_count as u32,
+            fee: proofs_fee_breakdown.total,
+            p2bk_secret_keys: p2bk_ephemeral_key,
+        })
     }
 }
