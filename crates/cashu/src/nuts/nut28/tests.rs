@@ -148,8 +148,7 @@ fn test_multi_key_blinding() {
     let ephemeral_pubkey = ephemeral_key.public_key();
 
     // Derive blinding scalar for the primary key on receiver side
-    let receiver_primary_blinding =
-        ecdh_kdf(&primary_key, &ephemeral_pubkey, 0).unwrap();
+    let receiver_primary_blinding = ecdh_kdf(&primary_key, &ephemeral_pubkey, 0).unwrap();
 
     // Verify that both sides derive the same blinding factor
     assert_eq!(
@@ -158,29 +157,25 @@ fn test_multi_key_blinding() {
     );
 
     // Similarly, test additional keys and refund keys recovery
-    let receiver_add_blinding1 =
-        ecdh_kdf(&additional_key1, &ephemeral_pubkey, 1).unwrap();
+    let receiver_add_blinding1 = ecdh_kdf(&additional_key1, &ephemeral_pubkey, 1).unwrap();
     assert_eq!(
         add_blinding1.to_secret_bytes(),
         receiver_add_blinding1.to_secret_bytes()
     );
 
-    let receiver_add_blinding2 =
-        ecdh_kdf(&additional_key2, &ephemeral_pubkey, 2).unwrap();
+    let receiver_add_blinding2 = ecdh_kdf(&additional_key2, &ephemeral_pubkey, 2).unwrap();
     assert_eq!(
         add_blinding2.to_secret_bytes(),
         receiver_add_blinding2.to_secret_bytes()
     );
 
-    let receiver_refund_blinding1 =
-        ecdh_kdf(&refund_key1, &ephemeral_pubkey, 3).unwrap();
+    let receiver_refund_blinding1 = ecdh_kdf(&refund_key1, &ephemeral_pubkey, 3).unwrap();
     assert_eq!(
         refund_blinding1.to_secret_bytes(),
         receiver_refund_blinding1.to_secret_bytes()
     );
 
-    let receiver_refund_blinding2 =
-        ecdh_kdf(&refund_key2, &ephemeral_pubkey, 4).unwrap();
+    let receiver_refund_blinding2 = ecdh_kdf(&refund_key2, &ephemeral_pubkey, 4).unwrap();
     assert_eq!(
         refund_blinding2.to_secret_bytes(),
         receiver_refund_blinding2.to_secret_bytes()

@@ -1018,8 +1018,7 @@ impl PreMintSecrets {
             };
 
             // Blind data pubkey (slot 0)
-            let r0 =
-                ecdh_kdf(ephemeral_key, &receiver_pubkey, 0).map_err(Error::NUT28)?;
+            let r0 = ecdh_kdf(ephemeral_key, &receiver_pubkey, 0).map_err(Error::NUT28)?;
             let blinded_pubkey = blind_public_key(&receiver_pubkey, &r0).map_err(Error::NUT28)?;
 
             let mut blinded_conditions = conditions.clone();
@@ -1030,8 +1029,7 @@ impl PreMintSecrets {
 
                 if let Some(ref mut pubkeys) = cond.pubkeys {
                     for pk in pubkeys.iter_mut() {
-                        let r = ecdh_kdf(ephemeral_key, pk, slot_idx)
-                            .map_err(Error::NUT28)?;
+                        let r = ecdh_kdf(ephemeral_key, pk, slot_idx).map_err(Error::NUT28)?;
                         *pk = blind_public_key(pk, &r).map_err(Error::NUT28)?;
                         slot_idx += 1;
                     }
@@ -1039,8 +1037,7 @@ impl PreMintSecrets {
 
                 if let Some(ref mut refund_keys) = cond.refund_keys {
                     for pk in refund_keys.iter_mut() {
-                        let r = ecdh_kdf(ephemeral_key, pk, slot_idx)
-                            .map_err(Error::NUT28)?;
+                        let r = ecdh_kdf(ephemeral_key, pk, slot_idx).map_err(Error::NUT28)?;
                         *pk = blind_public_key(pk, &r).map_err(Error::NUT28)?;
                         slot_idx += 1;
                     }
