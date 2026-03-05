@@ -92,7 +92,6 @@ pub enum Error {
 pub fn ecdh_kdf(
     secret_key: &SecretKey,
     pubkey: &PublicKey,
-    _keyset_id: Id,
     canonical_slot: u8,
 ) -> Result<SecretKey, Error> {
     if canonical_slot > 10 {

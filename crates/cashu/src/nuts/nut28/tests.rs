@@ -20,23 +20,23 @@ fn test_ecdh_kdf() {
     let keyset_id = Id::from_bytes(&keyset_bytes).unwrap();
 
     // Test basic KDF derivation
-    let blinding_scalar = ecdh_kdf(&sender_key, &receiver_pubkey, keyset_id, 0).unwrap();
+    let blinding_scalar = ecdh_kdf(&sender_key, &receiver_pubkey, 0).unwrap();
 
     // Verify blinding scalar is not zero
     assert_ne!(blinding_scalar.to_secret_bytes(), [0u8; 32]);
 
     // Test canonical slot validation
-    let result = ecdh_kdf(&sender_key, &receiver_pubkey, keyset_id, 11);
+    let result = ecdh_kdf(&sender_key, &receiver_pubkey, 11);
     assert!(result.is_err()); // Slot > 10 should fail
 
     // Test all valid slots
     for slot in 0..=10 {
-        let result = ecdh_kdf(&sender_key, &receiver_pubkey, keyset_id, slot);
+        let result = ecdh_kdf(&sender_key, &receiver_pubkey, slot);
         assert!(result.is_ok());
 
         // Different slots should produce different blinding factors
         if slot > 0 {
-            let previous = ecdh_kdf(&sender_key, &receiver_pubkey, keyset_id, slot - 1).unwrap();
+            let previous = ecdh_kdf(&sender_key, &receiver_pubkey, slot - 1).unwrap();
             let current = result.unwrap();
             assert_ne!(previous.to_secret_bytes(), current.to_secret_bytes());
         }
@@ -120,18 +120,18 @@ fn test_multi_key_blinding() {
     let keyset_id = Id::from_bytes(&keyset_bytes).unwrap();
 
     // Blind the primary key (slot 0)
-    let primary_blinding = ecdh_kdf(&ephemeral_key, &primary_pubkey, keyset_id, 0).unwrap();
+    let primary_blinding = ecdh_kdf(&ephemeral_key, &primary_pubkey, 0).unwrap();
     let blinded_primary = blind_public_key(&primary_pubkey, &primary_blinding).unwrap();
 
     // Blind additional keys (slots 1-2)
-    let add_blinding1 = ecdh_kdf(&ephemeral_key, &additional_pubkey1, keyset_id, 1).unwrap();
-    let add_blinding2 = ecdh_kdf(&ephemeral_key, &additional_pubkey2, keyset_id, 2).unwrap();
+    let add_blinding1 = ecdh_kdf(&ephemeral_key, &additional_pubkey1, 1).unwrap();
+    let add_blinding2 = ecdh_kdf(&ephemeral_key, &additional_pubkey2, 2).unwrap();
     let blinded_add1 = blind_public_key(&additional_pubkey1, &add_blinding1).unwrap();
     let blinded_add2 = blind_public_key(&additional_pubkey2, &add_blinding2).unwrap();
 
     // Blind refund keys (slots 3-4)
-    let refund_blinding1 = ecdh_kdf(&ephemeral_key, &refund_pubkey1, keyset_id, 3).unwrap();
-    let refund_blinding2 = ecdh_kdf(&ephemeral_key, &refund_pubkey2, keyset_id, 4).unwrap();
+    let refund_blinding1 = ecdh_kdf(&ephemeral_key, &refund_pubkey1, 3).unwrap();
+    let refund_blinding2 = ecdh_kdf(&ephemeral_key, &refund_pubkey2, 4).unwrap();
     let blinded_refund1 = blind_public_key(&refund_pubkey1, &refund_blinding1).unwrap();
     let blinded_refund2 = blind_public_key(&refund_pubkey2, &refund_blinding2).unwrap();
 
@@ -149,7 +149,7 @@ fn test_multi_key_blinding() {
 
     // Derive blinding scalar for the primary key on receiver side
     let receiver_primary_blinding =
-        ecdh_kdf(&primary_key, &ephemeral_pubkey, keyset_id, 0).unwrap();
+        ecdh_kdf(&primary_key, &ephemeral_pubkey, 0).unwrap();
 
     // Verify that both sides derive the same blinding factor
     assert_eq!(
@@ -159,28 +159,28 @@ fn test_multi_key_blinding() {
 
     // Similarly, test additional keys and refund keys recovery
     let receiver_add_blinding1 =
-        ecdh_kdf(&additional_key1, &ephemeral_pubkey, keyset_id, 1).unwrap();
+        ecdh_kdf(&additional_key1, &ephemeral_pubkey, 1).unwrap();
     assert_eq!(
         add_blinding1.to_secret_bytes(),
         receiver_add_blinding1.to_secret_bytes()
     );
 
     let receiver_add_blinding2 =
-        ecdh_kdf(&additional_key2, &ephemeral_pubkey, keyset_id, 2).unwrap();
+        ecdh_kdf(&additional_key2, &ephemeral_pubkey, 2).unwrap();
     assert_eq!(
         add_blinding2.to_secret_bytes(),
         receiver_add_blinding2.to_secret_bytes()
     );
 
     let receiver_refund_blinding1 =
-        ecdh_kdf(&refund_key1, &ephemeral_pubkey, keyset_id, 3).unwrap();
+        ecdh_kdf(&refund_key1, &ephemeral_pubkey, 3).unwrap();
     assert_eq!(
         refund_blinding1.to_secret_bytes(),
         receiver_refund_blinding1.to_secret_bytes()
     );
 
     let receiver_refund_blinding2 =
-        ecdh_kdf(&refund_key2, &ephemeral_pubkey, keyset_id, 4).unwrap();
+        ecdh_kdf(&refund_key2, &ephemeral_pubkey, 4).unwrap();
     assert_eq!(
         refund_blinding2.to_secret_bytes(),
         receiver_refund_blinding2.to_secret_bytes()

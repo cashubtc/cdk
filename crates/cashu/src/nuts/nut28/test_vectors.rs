@@ -81,7 +81,7 @@ fn test_p2bk_test_vectors() {
 
     // Test 1: Verify ECDH KDF produces expected blinding scalars
     for slot in 0..=10 {
-        let r = ecdh_kdf(&ephemeral_secret_key, &receiver_public_key, keyset_id, slot).unwrap();
+        let r = ecdh_kdf(&ephemeral_secret_key, &receiver_public_key, slot).unwrap();
 
         let expected_hex = expected_blinding_scalars[slot as usize];
         let expected_key = SecretKey::from_hex(expected_hex).unwrap();
@@ -102,7 +102,7 @@ fn test_p2bk_test_vectors() {
     // Test 2: Verify public key blinding produces expected blinded pubkeys
     println!("\n=== Testing Public Key Blinding ===");
     for slot in 0..=10 {
-        let r = ecdh_kdf(&ephemeral_secret_key, &receiver_public_key, keyset_id, slot).unwrap();
+        let r = ecdh_kdf(&ephemeral_secret_key, &receiver_public_key, slot).unwrap();
 
         let blinded = blind_public_key(&receiver_public_key, &r).unwrap();
         let expected_hex = expected_blinded_pubkeys[slot as usize];
@@ -122,7 +122,7 @@ fn test_p2bk_test_vectors() {
     // Test 3: Verify signing key derivation
     println!("\n=== Testing Signing Key Derivation ===");
     for slot in 0..=10 {
-        let r = ecdh_kdf(&ephemeral_secret_key, &receiver_public_key, keyset_id, slot).unwrap();
+        let r = ecdh_kdf(&ephemeral_secret_key, &receiver_public_key, slot).unwrap();
 
         let blinded = blind_public_key(&receiver_public_key, &r).unwrap();
 

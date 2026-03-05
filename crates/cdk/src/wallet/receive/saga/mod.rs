@@ -191,7 +191,6 @@ impl<'a> ReceiveSaga<'a, Initial> {
                                     if let Ok(r) = crate::nuts::nut28::ecdh_kdf(
                                         signing_key,
                                         &ephemeral_key,
-                                        proof.keyset_id,
                                         slot,
                                     ) {
                                         if let Ok(derived_key) =
