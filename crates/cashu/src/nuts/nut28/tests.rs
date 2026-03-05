@@ -3,7 +3,6 @@
 use crate::nuts::nut01::SecretKey;
 use crate::nuts::nut02::KeySetVersion;
 use crate::nuts::nut28::{blind_public_key, derive_signing_key_bip340, ecdh_kdf};
-use crate::Id;
 
 #[test]
 fn test_ecdh_kdf() {
@@ -13,11 +12,10 @@ fn test_ecdh_kdf() {
     let receiver_pubkey = receiver_key.public_key();
 
     // Create a test keyset ID with proper version byte
-    let keyset_bytes = [KeySetVersion::Version01.to_byte()]
+    let _keyset_bytes = [KeySetVersion::Version01.to_byte()]
         .into_iter()
         .chain([1u8; 32])
         .collect::<Vec<_>>();
-    let keyset_id = Id::from_bytes(&keyset_bytes).unwrap();
 
     // Test basic KDF derivation
     let blinding_scalar = ecdh_kdf(&sender_key, &receiver_pubkey, 0).unwrap();
@@ -64,10 +62,9 @@ fn test_blind_public_key() {
     // Compute r*G
     let r_pubkey = blinding_scalar.public_key();
 
-    // Manually compute P + r*G using the library's combine function
+    // Compute P + r*G
     let combined = pubkey.combine(&r_pubkey).unwrap();
 
-    // Verify that our blind_public_key function produces the same result
     assert_eq!(blinded_pubkey.to_string(), combined.to_string());
 }
 
@@ -113,11 +110,10 @@ fn test_multi_key_blinding() {
 
     // Create a ephemeral key for the blinding
     let ephemeral_key = SecretKey::generate();
-    let keyset_bytes = [KeySetVersion::Version01.to_byte()]
+    let _keyset_bytes = [KeySetVersion::Version01.to_byte()]
         .into_iter()
         .chain([2u8; 32])
         .collect::<Vec<_>>();
-    let keyset_id = Id::from_bytes(&keyset_bytes).unwrap();
 
     // Blind the primary key (slot 0)
     let primary_blinding = ecdh_kdf(&ephemeral_key, &primary_pubkey, 0).unwrap();

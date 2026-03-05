@@ -1,8 +1,5 @@
-use std::str::FromStr;
-
 use super::{blind_public_key, derive_signing_key_bip340, ecdh_kdf};
 use crate::nuts::nut01::{PublicKey, SecretKey};
-use crate::nuts::nut02::Id;
 
 /// Tests for the NUT-28 test vectors
 /// Based on: https://github.com/cashubtc/nuts/blob/main/tests/28-tests.md
@@ -24,7 +21,7 @@ fn test_p2bk_test_vectors() {
             .unwrap();
 
     // Keyset ID is ignored per NUT-28 spec (kept for API compatibility)
-    let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+    // let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
 
     // Expected shared secret from test vectors
     let _expected_shared_secret =

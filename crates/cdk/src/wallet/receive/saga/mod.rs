@@ -158,10 +158,8 @@ impl<'a> ReceiveSaga<'a, Initial> {
                             pubkeys.push(data_key);
                         }
                         Kind::HTLC => {
-                            // HTLC data is a hash, so it's not a pubkey.
-                            // But wait, the spec says: By implication, it also extends NUT-14 (HTLC).
-                            // But HTLC slot 0 is the hash? No! HTLC data is the hash. HTLC does not have a pubkey in `data`.
-                            // So we just add the pre-image and skip slot 0 pubkey.
+                            // HTLC data is a hash, not a pubkey.
+                            // Add the pre-image and skip slot 0 pubkey.
                             let hashed_preimage = secret.secret_data().data();
                             let preimage = hashed_to_preimage
                                 .get(hashed_preimage)
@@ -340,6 +338,8 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 
             for blinded_message in pre_swap.swap_request.outputs_mut() {
                 for signing_key in p2pk_signing_keys.values() {
+                    // Sign the outputs of the swap using standard P2PK since output
+                    // P2BK requires ephemeral keys which is handled at creation.
                     blinded_message.sign_p2pk(signing_key.to_owned().clone())?
                 }
             }

@@ -35,7 +35,6 @@ use bitcoin::secp256k1::Secp256k1;
 use thiserror::Error;
 
 use crate::nuts::nut01::{PublicKey, SecretKey};
-use crate::Id;
 
 // Create a static SECP256K1 context that we'll use for operations
 static SECP: LazyLock<Secp256k1<bitcoin::secp256k1::All>> = LazyLock::new(Secp256k1::new);
