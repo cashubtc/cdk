@@ -36,7 +36,6 @@ pub struct PreSwap {
     pub fee: Amount,
     /// Ephemeral secret keys used for p2bk
     pub p2bk_secret_keys: Option<Vec<crate::nuts::nut01::SecretKey>>,
-
 }
 
 /// Swap Request [NUT-03]
