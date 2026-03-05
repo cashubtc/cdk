@@ -340,10 +340,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 
             for blinded_message in pre_swap.swap_request.outputs_mut() {
                 for signing_key in p2pk_signing_keys.values() {
-                    // Blinded messages don't have p2pk_e because they are outputs of the swap.
-                    // Wait, we are signing the outputs of the swap using p2pk_signing_keys!
-                    // If the user provided p2pk keys to be signed on output messages,
-                    // this assumes standard P2PK since output P2BK requires ephemeral keys which is handled at creation.
                     blinded_message.sign_p2pk(signing_key.to_owned().clone())?
                 }
             }
