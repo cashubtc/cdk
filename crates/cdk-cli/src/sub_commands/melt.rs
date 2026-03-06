@@ -24,6 +24,29 @@ pub enum PaymentType {
     Bip353,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum BitcoinNetwork {
+    /// Bitcoin Mainnet
+    Bitcoin,
+    /// Testnet
+    Testnet,
+    /// Signet
+    Signet,
+    /// Regtest
+    Regtest,
+}
+
+impl From<BitcoinNetwork> for bitcoin::Network {
+    fn from(network: BitcoinNetwork) -> Self {
+        match network {
+            BitcoinNetwork::Bitcoin => bitcoin::Network::Bitcoin,
+            BitcoinNetwork::Testnet => bitcoin::Network::Testnet,
+            BitcoinNetwork::Signet => bitcoin::Network::Signet,
+            BitcoinNetwork::Regtest => bitcoin::Network::Regtest,
+        }
+    }
+}
+
 #[derive(Args)]
 pub struct MeltSubCommand {
     /// Use Multi-Path Payment (split payment across multiple mints, BOLT11 only)
@@ -44,6 +67,9 @@ pub struct MeltSubCommand {
     /// BIP353 address to pay (for bip353 method)
     #[arg(long, conflicts_with_all = ["invoice", "offer"])]
     address: Option<String>,
+    /// Bitcoin network to use for BIP353 (bitcoin, testnet, signet, regtest)
+    #[arg(long, default_value = "bitcoin")]
+    network: BitcoinNetwork,
 }
 
 /// Helper function to check if there are enough funds and create appropriate MeltOptions
@@ -311,6 +337,7 @@ pub async fn pay(
                 .melt_bip353_quote(
                     &bip353_addr,
                     options.expect("Amount is required").amount_msat(),
+                    sub_command_args.network.into(),
                 )
                 .await?;
 

@@ -6,6 +6,7 @@
 #![allow(missing_docs)]
 #![allow(missing_debug_implementations)]
 
+pub mod bip321;
 pub mod database;
 pub mod error;
 pub mod logging;

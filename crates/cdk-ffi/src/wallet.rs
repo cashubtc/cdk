@@ -8,6 +8,7 @@ use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
 use crate::token::Token;
+use crate::types::bip321::BitcoinNetwork;
 use crate::types::payment_request::PaymentRequest;
 use crate::types::*;
 
@@ -22,6 +23,10 @@ impl Wallet {
     /// Create a Wallet from an existing CDK wallet (internal use only)
     pub(crate) fn from_inner(inner: Arc<CdkWallet>) -> Self {
         Self { inner }
+    }
+
+    pub(crate) fn inner(&self) -> Arc<CdkWallet> {
+        self.inner.clone()
     }
 }
 
@@ -596,17 +601,21 @@ impl Wallet {
 impl Wallet {
     /// Get a quote for a BIP353 melt
     ///
-    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Lightning offer
-    /// and then creates a melt quote for that offer.
+    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Bitcoin
+    /// payment instruction, requires a BOLT12 offer, and then creates a melt quote for it.
+    ///
+    /// The `network` parameter controls which on-chain address prefixes are accepted
+    /// in the resolved URI.
     pub async fn melt_bip353_quote(
         &self,
         bip353_address: String,
         amount_msat: Amount,
+        network: BitcoinNetwork,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_amount: cdk::Amount = amount_msat.into();
         let quote = self
             .inner
-            .melt_bip353_quote(&bip353_address, cdk_amount)
+            .melt_bip353_quote(&bip353_address, cdk_amount, network.into())
             .await?;
         Ok(quote.into())
     }
@@ -634,18 +643,22 @@ impl Wallet {
     /// or a Lightning address. It intelligently determines which to try based on mint support:
     ///
     /// 1. If the mint supports Bolt12, it tries BIP353 first
-    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
-    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 2. Falls back to Lightning address only if BIP353 resolution fails
+    /// 3. If BIP353 resolves but has no usable BOLT12 offer, it does NOT fall back
     /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
+    ///
+    /// The `network` parameter is forwarded to the BIP353 resolver for on-chain address
+    /// validation in the resolved URI.
     pub async fn melt_human_readable(
         &self,
         address: String,
         amount_msat: Amount,
+        network: BitcoinNetwork,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_amount: cdk::Amount = amount_msat.into();
         let quote = self
             .inner
-            .melt_human_readable_quote(&address, cdk_amount)
+            .melt_human_readable_quote(&address, cdk_amount, network.into())
             .await?;
         Ok(quote.into())
     }
