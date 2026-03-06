@@ -1,4 +1,5 @@
 #![allow(missing_docs)]
+#![allow(clippy::unwrap_used)]
 use cdk::dhke;
 use cdk::nuts::nut01::{PublicKey, SecretKey};
 use cdk::util::hex;

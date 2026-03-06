@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use cashu::nuts::nut01::SecretKey;
 use cashu::PublicKey;
 use cdk_common::wallet::TransactionId;

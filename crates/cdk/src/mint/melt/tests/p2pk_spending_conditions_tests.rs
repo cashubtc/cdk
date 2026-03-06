@@ -97,7 +97,7 @@ async fn test_p2pk_basic_sig_inputs() {
 
     // Step 6: Try to melt P2PK proof WITHOUT signature (should fail)
     let melt_request_no_sig =
-        cdk_common::MeltRequest::new(melt_quote.quote.clone(), p2pk_proofs.clone().into(), None);
+        cdk_common::MeltRequest::new(melt_quote.quote.clone(), p2pk_proofs.clone(), None);
 
     let result = melt_request_no_sig.verify_spending_conditions();
     assert!(result.is_err(), "Should fail without signature");
@@ -119,8 +119,7 @@ async fn test_p2pk_basic_sig_inputs() {
         proof.sign_p2pk(alice_secret.clone()).unwrap();
     }
 
-    let melt_request =
-        cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_signed.into(), None);
+    let melt_request = cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_signed, None);
 
     // Verify spending conditions pass
     melt_request.verify_spending_conditions().unwrap();
@@ -129,6 +128,6 @@ async fn test_p2pk_basic_sig_inputs() {
     // Perform the actual melt - this also verifies spending conditions internally
     let melt_response = mint.melt(&melt_request).await.unwrap();
     println!("✓ Melt operation completed successfully!");
-    println!("  Quote state: {:?}", melt_response.state);
+    println!("  Quote state: {}", melt_response.state);
     assert_eq!(melt_response.quote, melt_quote.quote);
 }

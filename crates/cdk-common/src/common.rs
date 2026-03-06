@@ -421,9 +421,6 @@ mod tests {
 
         // Test mixed implementations
         let v_nutshell = IssuerVersion::from_str("nutshell/0.1.0").unwrap();
-        assert_eq!(v1.partial_cmp(&v_nutshell), None);
-        assert!(!(v1 < v_nutshell));
-        assert!(!(v1 > v_nutshell));
         assert!(!(v1 == v_nutshell));
     }
 

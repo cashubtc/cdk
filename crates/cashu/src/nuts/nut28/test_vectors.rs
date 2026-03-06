@@ -1,5 +1,6 @@
 use super::{blind_public_key, derive_signing_key_bip340, ecdh_kdf};
 use crate::nuts::nut01::{PublicKey, SecretKey};
+use crate::util::hex;
 
 /// Tests for the NUT-28 test vectors
 /// Based on: https://github.com/cashubtc/nuts/blob/main/tests/28-tests.md
@@ -85,10 +86,10 @@ fn test_p2bk_test_vectors() {
 
         if r.to_secret_bytes() != expected_key.to_secret_bytes() {
             println!(
-                "FAIL: Slot {} - Expected: {}, Got: {:?}",
+                "FAIL: Slot {} - Expected: {}, Got: {}",
                 slot,
                 expected_hex,
-                r.to_secret_bytes()
+                hex::encode(r.to_secret_bytes())
             );
             fail = true;
         } else {
@@ -143,7 +144,7 @@ fn test_p2bk_test_vectors() {
                 }
             }
             Err(e) => {
-                println!("FAIL: Slot {} - Key derivation error: {:?}", slot, e);
+                println!("FAIL: Slot {} - Key derivation error: {}", slot, e);
                 fail = true;
             }
         }

@@ -70,17 +70,16 @@ impl Mint {
                     return Err(Error::MppUnitMethodNotSupported(unit, method));
                 }
             }
-            Some(MeltOptions::Amountless { amountless: _ }) => {
+            Some(MeltOptions::Amountless { amountless: _ })
                 if method.is_bolt11()
                     && !matches!(
                         settings.options,
                         Some(MeltMethodOptions::Bolt11 { amountless: true })
-                    )
-                {
-                    return Err(Error::AmountlessInvoiceNotSupported(unit, method));
-                }
+                    ) =>
+            {
+                return Err(Error::AmountlessInvoiceNotSupported(unit, method));
             }
-            None => {}
+            _ => {}
         };
 
         // Compare using raw values since settings use Amount without unit

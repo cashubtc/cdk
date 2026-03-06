@@ -214,8 +214,8 @@ impl AuthWallet {
 
         let auth_keysets = metadata
             .keysets
-            .iter()
-            .filter_map(|(_, k)| {
+            .values()
+            .filter_map(|k| {
                 if k.unit == CurrencyUnit::Auth {
                     Some((*(k.clone())).clone())
                 } else {

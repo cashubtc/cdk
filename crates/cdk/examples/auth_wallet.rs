@@ -47,15 +47,15 @@ async fn main() -> Result<(), Error> {
     // Request a mint quote from the wallet
     let quote = wallet
         .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
-        .await;
+        .await?;
 
-    println!("Minting nuts ... {:?}", quote);
+    println!("Minting nuts ... Quote ID: {}", quote.id);
 
     // Getting the CAT token is not inscope of cdk and expected to be handled by the implemntor
     // We just use this helper fn with password auth for testing
     let access_token = get_access_token(&mint_info).await;
 
-    wallet.set_cat(access_token).await.unwrap();
+    wallet.set_cat(access_token).await?;
 
     wallet
         .mint_blind_auth(10.into())
@@ -64,12 +64,10 @@ async fn main() -> Result<(), Error> {
 
     let quote = wallet
         .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
-        .await
-        .unwrap();
+        .await?;
     let proofs = wallet
         .wait_and_mint_quote(quote, SplitTarget::default(), None, Duration::from_secs(10))
-        .await
-        .unwrap();
+        .await?;
 
     println!("Received: {}", proofs.total_amount()?);
 

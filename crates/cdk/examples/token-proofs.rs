@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for keyset in &keysets {
         println!(
-            "  - Keyset ID: {}, Unit: {:?}, Active: {}",
+            "  - Keyset ID: {}, Unit: {}, Active: {}",
             keyset.id, keyset.unit, keyset.active
         );
     }

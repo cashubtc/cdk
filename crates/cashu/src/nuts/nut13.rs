@@ -131,9 +131,9 @@ impl PreMintSecrets {
     ) -> Result<Self, Error> {
         let mut pre_mint_secrets = PreMintSecrets::new(keyset_id);
 
-        let mut counter = counter;
-
-        for amount in amount.split_targeted(amount_split_target, fee_and_amounts)? {
+        for (counter, amount) in
+            (counter..).zip(amount.split_targeted(amount_split_target, fee_and_amounts)?)
+        {
             let secret = Secret::from_seed(seed, keyset_id, counter)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, counter)?;
 
@@ -149,7 +149,6 @@ impl PreMintSecrets {
             };
 
             pre_mint_secrets.secrets.push(pre_mint);
-            counter += 1;
         }
 
         Ok(pre_mint_secrets)
@@ -168,9 +167,7 @@ impl PreMintSecrets {
         let count = ((u64::from(amount) as f64).log2().ceil() as u64).max(1);
         let mut pre_mint_secrets = PreMintSecrets::new(keyset_id);
 
-        let mut counter = counter;
-
-        for _ in 0..count {
+        for counter in counter..(counter + count as u32) {
             let secret = Secret::from_seed(seed, keyset_id, counter)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, counter)?;
 
@@ -188,7 +185,6 @@ impl PreMintSecrets {
             };
 
             pre_mint_secrets.secrets.push(pre_mint);
-            counter += 1;
         }
 
         Ok(pre_mint_secrets)

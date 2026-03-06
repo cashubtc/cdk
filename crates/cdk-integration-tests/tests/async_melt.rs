@@ -53,7 +53,7 @@ async fn test_async_melt_returns_pending() {
     // Collect Y values of proofs before melt
     let ys_before: HashSet<_> = proofs_before
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     let balance = wallet.total_balance().await.unwrap();
@@ -89,7 +89,7 @@ async fn test_async_melt_returns_pending() {
         .proofs()
         .iter()
         .chain(prepared.proofs_to_swap().iter())
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     let confirmed = prepared.confirm().await.unwrap();
@@ -123,7 +123,7 @@ async fn test_async_melt_returns_pending() {
     let proofs_after = wallet.get_proofs_with(None, None).await.unwrap();
     let ys_after: HashSet<_> = proofs_after
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     // All original proofs should still exist (not deleted)
@@ -142,7 +142,7 @@ async fn test_async_melt_returns_pending() {
         .unwrap();
     let spent_ys: HashSet<_> = spent_proofs
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     for y in &proofs_to_use {
@@ -185,7 +185,7 @@ async fn test_sync_melt_completes_fully() {
     // Collect Y values of proofs before melt
     let ys_before: HashSet<_> = proofs_before
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     let balance = wallet.total_balance().await.unwrap();
@@ -220,7 +220,7 @@ async fn test_sync_melt_completes_fully() {
         .proofs()
         .iter()
         .chain(prepared.proofs_to_swap().iter())
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     let confirmed = prepared.confirm().await.unwrap();
@@ -265,7 +265,7 @@ async fn test_sync_melt_completes_fully() {
     let proofs_after = wallet.get_proofs_with(None, None).await.unwrap();
     let ys_after: HashSet<_> = proofs_after
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     // All original proofs should still exist (not deleted)
@@ -284,7 +284,7 @@ async fn test_sync_melt_completes_fully() {
         .unwrap();
     let spent_ys: HashSet<_> = spent_proofs
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     for y in &proofs_to_use {
@@ -405,7 +405,7 @@ async fn test_confirm_prefer_async_pending_can_be_awaited() {
     // Collect Y values of proofs before melt
     let ys_before: HashSet<_> = proofs_before
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     let fake_invoice_description = FakeInvoiceDescription {
@@ -436,7 +436,7 @@ async fn test_confirm_prefer_async_pending_can_be_awaited() {
         .proofs()
         .iter()
         .chain(prepared.proofs_to_swap().iter())
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     let result = prepared.confirm_prefer_async().await.unwrap();
@@ -480,7 +480,7 @@ async fn test_confirm_prefer_async_pending_can_be_awaited() {
     let proofs_after = wallet.get_proofs_with(None, None).await.unwrap();
     let ys_after: HashSet<_> = proofs_after
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     // All original proofs should still exist (not deleted)
@@ -499,7 +499,7 @@ async fn test_confirm_prefer_async_pending_can_be_awaited() {
         .unwrap();
     let spent_ys: HashSet<_> = spent_proofs
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     for y in &proofs_to_use {
@@ -542,7 +542,7 @@ async fn test_confirm_prefer_async_pending_can_be_dropped_and_polled() {
     // Collect Y values of proofs before melt
     let ys_before: HashSet<_> = proofs_before
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     // Step 2: Create a melt quote
@@ -576,7 +576,7 @@ async fn test_confirm_prefer_async_pending_can_be_dropped_and_polled() {
         .proofs()
         .iter()
         .chain(prepared.proofs_to_swap().iter())
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     let result = prepared.confirm_prefer_async().await.unwrap();
@@ -637,7 +637,7 @@ async fn test_confirm_prefer_async_pending_can_be_dropped_and_polled() {
     let proofs_after = wallet.get_proofs_with(None, None).await.unwrap();
     let ys_after: HashSet<_> = proofs_after
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     // All original proofs should still exist (not deleted)
@@ -656,7 +656,7 @@ async fn test_confirm_prefer_async_pending_can_be_dropped_and_polled() {
         .unwrap();
     let spent_ys: HashSet<_> = spent_proofs
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     for y in &proofs_to_use {
@@ -710,7 +710,7 @@ async fn test_confirm_vs_confirm_prefer_async_behavior() {
     // Collect Y values of proofs before melt for wallet A
     let ys_before_a: HashSet<_> = proofs_before_a
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     let mint_quote_b = wallet_b
@@ -729,7 +729,7 @@ async fn test_confirm_vs_confirm_prefer_async_behavior() {
     // Collect Y values of proofs before melt for wallet B
     let ys_before_b: HashSet<_> = proofs_before_b
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     // Step 2: Create melt quotes for both wallets (separate invoices with unique payment hashes)
@@ -772,7 +772,7 @@ async fn test_confirm_vs_confirm_prefer_async_behavior() {
         .proofs()
         .iter()
         .chain(prepared_a.proofs_to_swap().iter())
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     let finalized_a = prepared_a.confirm().await.unwrap();
@@ -788,7 +788,7 @@ async fn test_confirm_vs_confirm_prefer_async_behavior() {
         .proofs()
         .iter()
         .chain(prepared_b.proofs_to_swap().iter())
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     let result_b = prepared_b.confirm_prefer_async().await.unwrap();
@@ -849,11 +849,11 @@ async fn test_confirm_vs_confirm_prefer_async_behavior() {
 
     let ys_after_a: HashSet<_> = proofs_after_a
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
     let ys_after_b: HashSet<_> = proofs_after_b
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     // All original proofs should still exist (not deleted)
@@ -885,11 +885,11 @@ async fn test_confirm_vs_confirm_prefer_async_behavior() {
 
     let spent_ys_a: HashSet<_> = spent_a
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
     let spent_ys_b: HashSet<_> = spent_b
         .iter()
-        .map(|p| p.y().expect("Invalid proof Y value").clone())
+        .map(|p| p.y().expect("Invalid proof Y value"))
         .collect();
 
     for y in &proofs_to_use_a {
