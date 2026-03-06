@@ -808,62 +808,31 @@ ffi-release-kotlin VERSION:
   
   echo "✅ Kotlin workflow triggered successfully!"
 
-# Generate Dart FFI bindings (for maintainers only)
-bindings-dart:
+# Generate Dart FFI bindings
+binding-dart:
   #!/usr/bin/env bash
   set -euo pipefail
-
-  DART_PKG_DIR="{{justfile_directory()}}/bindings/dart"
-  RUST_DIR="$DART_PKG_DIR/rust"
-  OS=$(uname -s)
-
-  echo "🚀 CDK Dart Bindings Generator"
-  echo "===================================="
-  echo "Running on: $OS"
-  echo ""
-
-  cd "$DART_PKG_DIR"
-  echo "📦 Checking Dart version..."
-  dart --version
-  echo ""
-
-  echo "📥 Getting Dart dependencies..."
-  dart pub get
-  echo ""
-
-  if [[ "$OS" == "Darwin" ]]; then
-      LIB_EXT="dylib"
-  elif [[ "$OS" == "Linux" ]]; then
-      LIB_EXT="so"
-  else
-      echo "❌ Unsupported OS: $OS"
-      exit 1
-  fi
-
-  cd "$RUST_DIR"
-  echo "🔨 Building cdk_ffi_dart..."
-  cargo build --release
-
-  CDK_FFI_LIB=$(find "$DART_PKG_DIR/../../target/release/deps" -name "libcdk_ffi*.$LIB_EXT" -type f | head -1)
-
-  if [ -z "$CDK_FFI_LIB" ]; then
-      echo "❌ Error: Could not find cdk-ffi library in target/release/deps"
-      exit 1
-  fi
-
-  echo "📚 Using cdk-ffi library: $CDK_FFI_LIB"
-  echo ""
-
-  echo "🔧 Generating Dart bindings..."
-  cargo run --release --bin uniffi-bindgen -- "$CDK_FFI_LIB" --out-dir "$DART_PKG_DIR/lib/src/generated"
-
-  echo ""
-  echo "✅ Dart bindings generated successfully!"
-  echo "📄 Output: $DART_PKG_DIR/lib/src/generated/cdk.dart"
+  cd "{{justfile_directory()}}/bindings/dart"
+  ./generate-bindings.sh
 
 # Run the Flutter wallet example
-example-dart-wallet:
+example-dart:
   #!/usr/bin/env bash
   set -euo pipefail
   cd "{{justfile_directory()}}/bindings/dart/flutter_example"
-  flutter run -d macos
+  flutter run
+
+# Generate Swift FFI bindings and XCFramework
+binding-swift:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/swift"
+  ./generate-bindings.sh
+
+# Run the Swift wallet example
+example-swift:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/swift/example"
+  swift build
+  open "$(swift build --show-bin-path)/CdkExample"

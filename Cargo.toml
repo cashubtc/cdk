@@ -1,5 +1,6 @@
 [workspace]
-members = ["bindings/dart/rust",
+members = [
+    "bindings/*/rust",
     "crates/*",
 ]
 exclude = [
