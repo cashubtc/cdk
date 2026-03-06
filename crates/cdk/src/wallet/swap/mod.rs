@@ -28,6 +28,7 @@ impl Wallet {
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
+        use_p2bk: bool,
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
 
@@ -38,6 +39,7 @@ impl Wallet {
                 amount_split_target,
                 input_proofs,
                 spending_conditions,
+                use_p2bk,
                 include_fees,
             )
             .await?;
@@ -58,6 +60,7 @@ impl Wallet {
         proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
+        use_p2bk: bool,
         proofs_fee_breakdown: &ProofsFeeBreakdown,
     ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
@@ -155,6 +158,7 @@ impl Wallet {
 
         let mut count = starting_counter;
 
+        let mut p2bk_ephemeral_key = None;
         let (mut desired_messages, change_messages) = match spending_conditions {
             Some(conditions) => {
                 let change_premint_secrets = PreMintSecrets::from_seed(
@@ -168,16 +172,48 @@ impl Wallet {
 
                 derived_secret_count = change_premint_secrets.len();
 
-                (
-                    PreMintSecrets::with_conditions(
-                        active_keyset_id,
-                        send_amount.unwrap_or(Amount::ZERO),
-                        &SplitTarget::default(),
-                        &conditions,
-                        fee_and_amounts,
-                    )?,
-                    change_premint_secrets,
-                )
+                let (send_secrets, ephemeral_key) = if use_p2bk {
+                    if let SpendingConditions::P2PKConditions { data, conditions } = conditions {
+                        let is_sig_all = conditions
+                            .as_ref()
+                            .is_some_and(|c| c.sig_flag == crate::nuts::nut11::SigFlag::SigAll);
+                        let amount_split = send_amount
+                            .unwrap_or(Amount::ZERO)
+                            .split_targeted(&SplitTarget::default(), fee_and_amounts)?;
+                        let keys_count = if is_sig_all { 1 } else { amount_split.len() };
+                        let ephemeral_keys: Vec<_> = (0..keys_count)
+                            .map(|_| crate::nuts::nut01::SecretKey::generate())
+                            .collect();
+                        (
+                            PreMintSecrets::with_p2bk(
+                                active_keyset_id,
+                                send_amount.unwrap_or(Amount::ZERO),
+                                &SplitTarget::default(),
+                                data,
+                                conditions,
+                                &ephemeral_keys,
+                                fee_and_amounts,
+                            )?,
+                            Some(ephemeral_keys),
+                        )
+                    } else {
+                        return Err(Error::Custom("P2BK requires P2PK conditions".to_string()));
+                    }
+                } else {
+                    (
+                        PreMintSecrets::with_conditions(
+                            active_keyset_id,
+                            send_amount.unwrap_or(Amount::ZERO),
+                            &SplitTarget::default(),
+                            &conditions,
+                            fee_and_amounts,
+                        )?,
+                        None,
+                    )
+                };
+
+                p2bk_ephemeral_key = ephemeral_key;
+                (send_secrets, change_premint_secrets)
             }
             None => {
                 let premint_secrets = PreMintSecrets::from_seed(
@@ -218,6 +254,7 @@ impl Wallet {
             swap_request,
             derived_secret_count: derived_secret_count as u32,
             fee: proofs_fee_breakdown.total,
+            p2bk_secret_keys: p2bk_ephemeral_key,
         })
     }
 }

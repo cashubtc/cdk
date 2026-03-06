@@ -38,6 +38,7 @@ pub struct Prepared {
     pub spending_conditions: Option<SpendingConditions>,
     /// Pre-swap data (request and secrets)
     pub pre_swap: PreSwap,
+    /// Ephemeral key if P2BK was used
     /// The persisted saga for optimistic locking (contains recovery data)
     pub saga: WalletSaga,
 }

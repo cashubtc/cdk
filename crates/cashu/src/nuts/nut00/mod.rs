@@ -59,6 +59,9 @@ pub trait ProofsMethods {
 
     /// Create a copy of proofs without dleqs
     fn without_dleqs(&self) -> Proofs;
+
+    /// Create a copy of proofs without P2BK nonce
+    fn without_p2pk_e(&self) -> Proofs;
 }
 
 impl ProofsMethods for Proofs {
@@ -87,6 +90,16 @@ impl ProofsMethods for Proofs {
             })
             .collect()
     }
+
+    fn without_p2pk_e(&self) -> Proofs {
+        self.iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.p2pk_e = None;
+                p
+            })
+            .collect()
+    }
 }
 
 impl ProofsMethods for HashSet<Proof> {
@@ -111,6 +124,16 @@ impl ProofsMethods for HashSet<Proof> {
             .map(|p| {
                 let mut p = p.clone();
                 p.dleq = None;
+                p
+            })
+            .collect()
+    }
+
+    fn without_p2pk_e(&self) -> Proofs {
+        self.iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.p2pk_e = None;
                 p
             })
             .collect()
@@ -192,6 +215,10 @@ pub enum Error {
     /// Short keyset id -> id error
     #[error(transparent)]
     NUT02(#[from] crate::nuts::nut02::Error),
+    #[cfg(feature = "wallet")]
+    #[error(transparent)]
+    /// NUT28 P2BK error
+    NUT28(#[from] crate::nuts::nut28::Error),
 }
 
 /// Blinded Message (also called `output`)
@@ -217,7 +244,7 @@ pub struct BlindedMessage {
     /// Witness
     ///
     /// <https://github.com/cashubtc/nuts/blob/main/11.md>
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
 }
 
@@ -263,7 +290,7 @@ pub struct BlindSignature {
     /// DLEQ Proof
     ///
     /// <https://github.com/cashubtc/nuts/blob/main/12.md>
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<BlindSignatureDleq>,
 }
 
@@ -361,11 +388,15 @@ pub struct Proof {
     #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub c: PublicKey,
     /// Witness
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
     /// DLEQ Proof
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
+    /// P2BK Ephemeral Public Key (NUT-28)
+    /// Used for Pay-to-Blinded-Key privacy feature
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p2pk_e: Option<PublicKey>,
 }
 
 impl Proof {
@@ -378,6 +409,7 @@ impl Proof {
             c,
             witness: None,
             dleq: None,
+            p2pk_e: None,
         }
     }
 
@@ -428,12 +460,14 @@ pub struct ProofV4 {
     )]
     pub c: PublicKey,
     /// Witness
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
     /// DLEQ Proof
     #[serde(rename = "d")]
     pub dleq: Option<ProofDleq>,
+    /// P2BK Ephemeral Public Key (NUT-28)
+    #[serde(rename = "pe", default, skip_serializing_if = "Option::is_none")]
+    pub p2pk_e: Option<PublicKey>,
 }
 
 impl ProofV4 {
@@ -446,6 +480,7 @@ impl ProofV4 {
             c: self.c,
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
+            p2pk_e: self.p2pk_e,
         }
     }
 }
@@ -464,6 +499,7 @@ impl From<Proof> for ProofV4 {
             c,
             witness,
             dleq,
+            p2pk_e,
             ..
         } = proof;
         ProofV4 {
@@ -472,6 +508,7 @@ impl From<Proof> for ProofV4 {
             c,
             witness,
             dleq,
+            p2pk_e,
         }
     }
 }
@@ -484,6 +521,7 @@ impl From<ProofV3> for ProofV4 {
             c: proof.c,
             witness: proof.witness,
             dleq: proof.dleq,
+            p2pk_e: None,
         }
     }
 }
@@ -502,10 +540,10 @@ pub struct ProofV3 {
     #[serde(rename = "C")]
     pub c: PublicKey,
     /// Witness
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
     /// DLEQ Proof
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
 }
 
@@ -519,6 +557,7 @@ impl ProofV3 {
             c: self.c,
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
+            p2pk_e: None,
         }
     }
 }
@@ -532,6 +571,7 @@ impl From<Proof> for ProofV3 {
             c,
             witness,
             dleq,
+            ..
         } = proof;
         ProofV3 {
             amount,
@@ -982,6 +1022,91 @@ impl PreMintSecrets {
                 r,
                 amount: Amount::ZERO,
             })
+        }
+
+        Ok(PreMintSecrets {
+            secrets: output,
+            keyset_id,
+        })
+    }
+
+    /// Outputs with P2BK spending conditions
+    #[cfg(feature = "wallet")]
+    pub fn with_p2bk(
+        keyset_id: Id,
+        amount: Amount,
+        amount_split_target: &SplitTarget,
+        receiver_pubkey: PublicKey,
+        conditions: Option<crate::nuts::nut11::Conditions>,
+        ephemeral_keys: &[crate::nuts::nut01::SecretKey],
+        fee_and_amounts: &FeeAndAmounts,
+    ) -> Result<Self, Error> {
+        use crate::nuts::nut28::{blind_public_key, ecdh_kdf};
+
+        let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
+
+        let mut output = Vec::with_capacity(amount_split.len());
+
+        let is_sig_all = conditions
+            .as_ref()
+            .is_some_and(|c| c.sig_flag == crate::nuts::nut11::SigFlag::SigAll);
+        if !is_sig_all && ephemeral_keys.len() != amount_split.len() {
+            return Err(Error::NUT28(
+                crate::nuts::nut28::Error::InvalidCanonicalSlot(255),
+            ));
+        }
+
+        for (i, amount) in amount_split.into_iter().enumerate() {
+            let ephemeral_key = if is_sig_all {
+                &ephemeral_keys[0]
+            } else {
+                &ephemeral_keys[i]
+            };
+
+            // Blind data pubkey (slot 0)
+            let r0 = ecdh_kdf(ephemeral_key, &receiver_pubkey, 0).map_err(Error::NUT28)?;
+            let blinded_pubkey = blind_public_key(&receiver_pubkey, &r0).map_err(Error::NUT28)?;
+
+            let mut blinded_conditions = conditions.clone();
+
+            // Blind tags pubkeys
+            if let Some(ref mut cond) = blinded_conditions {
+                let mut slot_idx = 1;
+
+                if let Some(ref mut pubkeys) = cond.pubkeys {
+                    for pk in pubkeys.iter_mut() {
+                        let r = ecdh_kdf(ephemeral_key, pk, slot_idx).map_err(Error::NUT28)?;
+                        *pk = blind_public_key(pk, &r).map_err(Error::NUT28)?;
+                        slot_idx += 1;
+                    }
+                }
+
+                if let Some(ref mut refund_keys) = cond.refund_keys {
+                    for pk in refund_keys.iter_mut() {
+                        let r = ecdh_kdf(ephemeral_key, pk, slot_idx).map_err(Error::NUT28)?;
+                        *pk = blind_public_key(pk, &r).map_err(Error::NUT28)?;
+                        slot_idx += 1;
+                    }
+                }
+            }
+
+            let p2pk_conditions = crate::nuts::SpendingConditions::P2PKConditions {
+                data: blinded_pubkey,
+                conditions: blinded_conditions,
+            };
+
+            let secret: crate::nuts::nut10::Secret = p2pk_conditions.into();
+            let secret: Secret = secret.try_into()?;
+            let (blinded, rs) = blind_message(&secret.to_bytes(), None)?;
+
+            let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
+
+            output.push(PreMint {
+                secret,
+                blinded_message,
+                r: rs,
+                amount,
+            });
         }
 
         Ok(PreMintSecrets {
