@@ -39,22 +39,25 @@
       system:
       let
         # Architecture-specific configuration for static musl builds
-        muslTarget = {
-          "x86_64-linux" = "x86_64-unknown-linux-musl";
-          "aarch64-linux" = "aarch64-unknown-linux-musl";
-        }.${system} or null;
+        muslTarget =
+          {
+            "x86_64-linux" = "x86_64-unknown-linux-musl";
+            "aarch64-linux" = "aarch64-unknown-linux-musl";
+          }.${system} or null;
 
-        archSuffix = {
-          "x86_64-linux" = "x86_64";
-          "aarch64-linux" = "aarch64";
-          "x86_64-darwin" = "x86_64-apple-darwin";
-          "aarch64-darwin" = "aarch64-apple-darwin";
-        }.${system} or null;
+        archSuffix =
+          {
+            "x86_64-linux" = "x86_64";
+            "aarch64-linux" = "aarch64";
+            "x86_64-darwin" = "x86_64-apple-darwin";
+            "aarch64-darwin" = "aarch64-apple-darwin";
+          }.${system} or null;
 
-        cargoTargetEnvName = {
-          "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER";
-          "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER";
-        }.${system} or null;
+        cargoTargetEnvName =
+          {
+            "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER";
+            "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER";
+          }.${system} or null;
 
         overlays = [ (import rust-overlay) ];
 
@@ -64,11 +67,10 @@
         lib = pkgs.lib;
         stdenv = pkgs.stdenv;
         isDarwin = stdenv.isDarwin;
-        libsDarwin =
-          lib.optionals isDarwin [
-            # Additional drwin specific inputs can be set here
-            # Note: Security and SystemConfiguration frameworks are provided by the default SDK
-          ];
+        libsDarwin = lib.optionals isDarwin [
+          # Additional drwin specific inputs can be set here
+          # Note: Security and SystemConfiguration frameworks are provided by the default SDK
+        ];
 
         # Dependencies
         pkgs = import nixpkgs {
@@ -81,13 +83,18 @@
         };
 
         # Static/musl packages for fully static binary builds (Linux only)
-        pkgsMusl = if muslTarget != null then import nixpkgs {
-          localSystem = system;
-          crossSystem = {
-            config = muslTarget;
-            isStatic = true;
-          };
-        } else null;
+        pkgsMusl =
+          if muslTarget != null then
+            import nixpkgs
+              {
+                localSystem = system;
+                crossSystem = {
+                  config = muslTarget;
+                  isStatic = true;
+                };
+              }
+          else
+            null;
 
         # Toolchains
         # latest stable
@@ -125,33 +132,42 @@
         );
 
         # Stable toolchain with musl target for static builds (Linux only)
-        static_toolchain = if muslTarget != null then pkgs.rust-bin.stable."1.93.1".default.override {
-          targets = [ muslTarget ];
-        } else null;
+        static_toolchain =
+          if muslTarget != null then
+            pkgs.rust-bin.stable."1.93.1".default.override
+              {
+                targets = [ muslTarget ];
+              }
+          else
+            null;
 
         # ========================================
         # Crane setup for cached builds
         # ========================================
         craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
-        craneLibStatic = if static_toolchain != null then (crane.mkLib pkgs).overrideToolchain static_toolchain else null;
+        craneLibStatic =
+          if static_toolchain != null then (crane.mkLib pkgs).overrideToolchain static_toolchain else null;
+        craneLibNightly = (crane.mkLib pkgs).overrideToolchain nightly_toolchain;
 
         # Source for crane builds - uses lib.fileset for efficient filtering
         # This is much faster than nix-gitignore when large directories (like target/) exist
         # because it uses a whitelist approach rather than scanning everything first
         src = lib.fileset.toSource {
           root = ./.;
-          fileset = lib.fileset.intersection
-            (lib.fileset.fromSource (lib.sources.cleanSource ./.))
-            (lib.fileset.unions [
+          fileset = lib.fileset.intersection (lib.fileset.fromSource (lib.sources.cleanSource ./.)) (
+            lib.fileset.unions [
               ./Cargo.toml
               ./Cargo.lock
               ./Cargo.lock.msrv
+              ./.typos.toml
+              ./rustfmt.toml
               ./README.md
               ./.cargo
               ./crates
               ./fuzz
-            ]);
+            ]
+          );
         };
 
         # Source for MSRV builds - uses Cargo.lock.msrv with MSRV-compatible deps
@@ -159,16 +175,18 @@
         # We include both lock files and use cargoLock override to point to MSRV version
         srcMsrv = lib.fileset.toSource {
           root = ./.;
-          fileset = lib.fileset.intersection
-            (lib.fileset.fromSource (lib.sources.cleanSource ./.))
-            (lib.fileset.unions [
+          fileset = lib.fileset.intersection (lib.fileset.fromSource (lib.sources.cleanSource ./.)) (
+            lib.fileset.unions [
               ./Cargo.toml
               ./Cargo.lock.msrv
+              ./.typos.toml
+              ./rustfmt.toml
               ./README.md
               ./.cargo
               ./crates
               ./fuzz
-            ]);
+            ]
+          );
         };
 
         # Common args for all Crane builds
@@ -181,11 +199,14 @@
             protobuf
           ];
 
-          buildInputs = with pkgs; [
-            openssl
-            sqlite
-            zlib
-          ] ++ libsDarwin;
+          buildInputs =
+            with pkgs;
+            [
+              openssl
+              sqlite
+              zlib
+            ]
+            ++ libsDarwin;
 
           # Environment variables
           PROTOC = "${pkgs.protobuf}/bin/protoc";
@@ -205,185 +226,246 @@
 
         # Common args for static musl builds (Linux only)
         # Produces fully statically-linked binaries that run on any Linux system
-        commonCraneArgsStatic = if muslTarget != null then ({
-          inherit src version;
-          pname = "cdk-static";
+        commonCraneArgsStatic =
+          if muslTarget != null then
+            (
+              {
+                inherit src version;
+                pname = "cdk-static";
 
-          # Cross-compile to musl for fully static linking
-          CARGO_BUILD_TARGET = muslTarget;
-          CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+                # Cross-compile to musl for fully static linking
+                CARGO_BUILD_TARGET = muslTarget;
+                CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
 
-          # Host-side build tools (run on build machine)
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-            protobuf
-            muslCC
-          ];
+                # Host-side build tools (run on build machine)
+                nativeBuildInputs = with pkgs; [
+                  pkg-config
+                  protobuf
+                  muslCC
+                ];
 
-          # Target-side libraries (musl static libs linked into the binary)
-          buildInputs = with pkgsMusl; [
-            openssl.dev
-            zlib.static
-          ];
+                # Target-side libraries (musl static libs linked into the binary)
+                buildInputs = with pkgsMusl; [
+                  openssl.dev
+                  zlib.static
+                ];
 
-          # Tell the cc crate and cargo to use the musl-targeting C compiler/linker
-          TARGET_CC = "${muslCC}/bin/${muslCC.targetPrefix}cc";
+                # Tell the cc crate and cargo to use the musl-targeting C compiler/linker
+                TARGET_CC = "${muslCC}/bin/${muslCC.targetPrefix}cc";
 
-          # Force static OpenSSL linking (needed by postgres/native-tls)
-          OPENSSL_STATIC = "1";
-          OPENSSL_DIR = "${pkgsMusl.openssl.dev}";
-          OPENSSL_LIB_DIR = "${pkgsMusl.openssl.out}/lib";
-          OPENSSL_INCLUDE_DIR = "${pkgsMusl.openssl.dev}/include";
+                # Force static OpenSSL linking (needed by postgres/native-tls)
+                OPENSSL_STATIC = "1";
+                OPENSSL_DIR = "${pkgsMusl.openssl.dev}";
+                OPENSSL_LIB_DIR = "${pkgsMusl.openssl.out}/lib";
+                OPENSSL_INCLUDE_DIR = "${pkgsMusl.openssl.dev}/include";
 
-          # Protobuf (build-time code generation, runs on host)
-          PROTOC = "${pkgs.protobuf}/bin/protoc";
-          PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+                # Protobuf (build-time code generation, runs on host)
+                PROTOC = "${pkgs.protobuf}/bin/protoc";
+                PROTOC_INCLUDE = "${pkgs.protobuf}/include";
 
-          # Tell pkg-config to find musl static libraries
-          PKG_CONFIG_ALL_STATIC = "1";
+                # Tell pkg-config to find musl static libraries
+                PKG_CONFIG_ALL_STATIC = "1";
 
-          # Use the release-static profile for reproducible, optimized builds
-          CARGO_PROFILE = "release-static";
-        } // {
-          # Dynamic attribute name for the cargo linker env var (arch-specific)
-          ${cargoTargetEnvName} = "${muslCC}/bin/${muslCC.targetPrefix}cc";
-        }) else null;
+                # Use the release-static profile for reproducible, optimized builds
+                CARGO_PROFILE = "release-static";
+              }
+              // {
+                # Dynamic attribute name for the cargo linker env var (arch-specific)
+                ${cargoTargetEnvName} = "${muslCC}/bin/${muslCC.targetPrefix}cc";
+              }
+            )
+          else
+            null;
 
         # Build ALL dependencies once - this is what gets cached by Cachix
         # Note: We exclude swagger feature as it tries to download assets during build
-        workspaceDeps = craneLib.buildDepsOnly (commonCraneArgs // {
-          pname = "cdk-deps";
-          # Build deps for workspace - swagger excluded (downloads during build)
-          cargoExtraArgs = "--workspace";
-        });
+        workspaceDeps = craneLib.buildDepsOnly (
+          commonCraneArgs
+          // {
+            pname = "cdk-deps";
+            # Build deps for workspace - swagger excluded (downloads during build)
+            cargoExtraArgs = "--workspace";
+          }
+        );
 
         # MSRV dependencies (separate cache due to different toolchain)
         # Exclude cdk-redb (and its dependents) since redb requires a higher MSRV
-        workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (commonCraneArgsMsrv // {
-          pname = "cdk-deps-msrv";
-          cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests";
-        });
+        workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (
+          commonCraneArgsMsrv
+          // {
+            pname = "cdk-deps-msrv";
+            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests";
+          }
+        );
 
         # Static musl dependencies (separate cache for static builds, Linux only)
-        workspaceDepsStatic = if muslTarget != null then craneLibStatic.buildDepsOnly (commonCraneArgsStatic // {
-          pname = "cdk-deps-static";
-          cargoExtraArgs = "--workspace";
-        }) else null;
+        workspaceDepsStatic =
+          if muslTarget != null then
+            craneLibStatic.buildDepsOnly
+              (
+                commonCraneArgsStatic
+                // {
+                  pname = "cdk-deps-static";
+                  cargoExtraArgs = "--workspace";
+                }
+              )
+          else
+            null;
+
+        # Nightly dependencies (separate cache due to different toolchain)
+        workspaceDepsNightly = craneLibNightly.buildDepsOnly (
+          commonCraneArgs
+          // {
+            pname = "cdk-deps-nightly";
+            cargoExtraArgs = "--workspace";
+          }
+        );
 
         # Helper function to create combined clippy + test checks
         # Runs both in a single derivation to share build artifacts
-        mkClippyAndTest = name: cargoArgs: craneLib.mkCargoDerivation (commonCraneArgs // {
-          pname = "cdk-check-${name}";
-          cargoArtifacts = workspaceDeps;
-          buildPhaseCargoCommand = ''
-            cargo clippy ${cargoArgs} -- -D warnings
-            cargo test ${cargoArgs}
-          '';
-          installPhaseCommand = "mkdir -p $out";
-        });
+        mkClippyAndTest =
+          name: cargoArgs:
+          craneLib.mkCargoDerivation (
+            commonCraneArgs
+            // {
+              pname = "cdk-check-${name}";
+              cargoArtifacts = workspaceDeps;
+              buildPhaseCargoCommand = ''
+                cargo clippy ${cargoArgs} -- -D warnings
+                cargo test ${cargoArgs}
+              '';
+              installPhaseCommand = "mkdir -p $out";
+            }
+          );
 
         # Helper function to create example checks (compile only, no network access in sandbox)
-        mkExample = name: craneLib.mkCargoDerivation (commonCraneArgs // {
-          pname = "cdk-example-${name}";
-          cargoArtifacts = workspaceDeps;
-          buildPhaseCargoCommand = "cargo build --example ${name}";
-          # Examples are compiled but not run (no network in Nix sandbox)
-          installPhaseCommand = "mkdir -p $out";
-        });
+        mkExample =
+          name:
+          craneLib.mkCargoDerivation (
+            commonCraneArgs
+            // {
+              pname = "cdk-example-${name}";
+              cargoArtifacts = workspaceDeps;
+              buildPhaseCargoCommand = "cargo build --example ${name}";
+              # Examples are compiled but not run (no network in Nix sandbox)
+              installPhaseCommand = "mkdir -p $out";
+            }
+          );
 
         # Helper function to create example packages (outputs binary for running outside sandbox)
-        mkExamplePackage = name: craneLib.mkCargoDerivation (commonCraneArgs // {
-          pname = "cdk-example-${name}";
-          cargoArtifacts = workspaceDeps;
-          buildPhaseCargoCommand = "cargo build --release --example ${name}";
-          installPhaseCommand = ''
-            mkdir -p $out/bin
-            cp target/release/examples/${name} $out/bin/
-          '';
-        });
+        mkExamplePackage =
+          name:
+          craneLib.mkCargoDerivation (
+            commonCraneArgs
+            // {
+              pname = "cdk-example-${name}";
+              cargoArtifacts = workspaceDeps;
+              buildPhaseCargoCommand = "cargo build --release --example ${name}";
+              installPhaseCommand = ''
+                mkdir -p $out/bin
+                cp target/release/examples/${name} $out/bin/
+              '';
+            }
+          );
 
         # Helper function to create MSRV build checks
-        mkMsrvBuild = name: cargoArgs: craneLibMsrv.cargoBuild (commonCraneArgsMsrv // {
-          pname = "cdk-msrv-${name}";
-          cargoArtifacts = workspaceDepsMsrv;
-          cargoExtraArgs = cargoArgs;
-        });
+        mkMsrvBuild =
+          name: cargoArgs:
+          craneLibMsrv.cargoBuild (
+            commonCraneArgsMsrv
+            // {
+              pname = "cdk-msrv-${name}";
+              cargoArtifacts = workspaceDepsMsrv;
+              cargoExtraArgs = cargoArgs;
+            }
+          );
 
         # Helper function to create WASM build checks
         # WASM builds don't need native libs like openssl
-        mkWasmBuild = name: cargoArgs: craneLib.cargoBuild ({
-          inherit src version;
-          pname = "cdk-wasm-${name}";
-          cargoArtifacts = workspaceDeps;
-          cargoExtraArgs = "${cargoArgs} --target wasm32-unknown-unknown";
-          # WASM doesn't need native build inputs
-          nativeBuildInputs = with pkgs; [ pkg-config ];
-          buildInputs = [ ];
-          # Disable tests for WASM (can't run in sandbox)
-          doCheck = false;
-        });
+        mkWasmBuild =
+          name: cargoArgs:
+          craneLib.cargoBuild ({
+            inherit src version;
+            pname = "cdk-wasm-${name}";
+            cargoArtifacts = workspaceDeps;
+            cargoExtraArgs = "${cargoArgs} --target wasm32-unknown-unknown";
+            # WASM doesn't need native build inputs
+            nativeBuildInputs = with pkgs; [ pkg-config ];
+            buildInputs = [ ];
+            # Disable tests for WASM (can't run in sandbox)
+            doCheck = false;
+          });
 
         # Doc tests check
-        docTests = craneLib.cargoTest (commonCraneArgs // {
-          pname = "cdk-doc-tests";
-          cargoArtifacts = workspaceDeps;
-          cargoTestExtraArgs = "--doc";
-        });
+        docTests = craneLib.cargoTest (
+          commonCraneArgs
+          // {
+            pname = "cdk-doc-tests";
+            cargoArtifacts = workspaceDeps;
+            cargoTestExtraArgs = "--doc";
+          }
+        );
 
         # Strict docs check - build docs with warnings as errors
         # Uses mkCargoDerivation for custom RUSTDOCFLAGS
-        strictDocs = craneLib.mkCargoDerivation (commonCraneArgs // {
-          pname = "cdk-strict-docs";
-          cargoArtifacts = workspaceDeps;
-          buildPhaseCargoCommand = ''
-            export RUSTDOCFLAGS="-D warnings"
-            cargo doc --no-deps \
-              -p cashu \
-              -p cdk-common \
-              -p cdk-sql-common \
-              -p cdk \
-              -p cdk-redb \
-              -p cdk-sqlite \
-              -p cdk-axum \
-              -p cdk-cln \
-              -p cdk-lnd \
-              -p cdk-lnbits \
-              -p cdk-fake-wallet \
-              -p cdk-mint-rpc \
-              -p cdk-payment-processor \
-              -p cdk-signatory \
-              -p cdk-cli \
-              -p cdk-mintd
-          '';
-          installPhaseCommand = "mkdir -p $out";
-        });
+        strictDocs = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-strict-docs";
+            cargoArtifacts = workspaceDeps;
+            buildPhaseCargoCommand = ''
+              export RUSTDOCFLAGS="-D warnings"
+              cargo doc --no-deps \
+                -p cashu \
+                -p cdk-common \
+                -p cdk-sql-common \
+                -p cdk \
+                -p cdk-redb \
+                -p cdk-sqlite \
+                -p cdk-axum \
+                -p cdk-cln \
+                -p cdk-lnd \
+                -p cdk-lnbits \
+                -p cdk-fake-wallet \
+                -p cdk-mint-rpc \
+                -p cdk-payment-processor \
+                -p cdk-signatory \
+                -p cdk-cli \
+                -p cdk-mintd
+            '';
+            installPhaseCommand = "mkdir -p $out";
+          }
+        );
 
         # FFI Python tests
-        ffiTests = craneLib.mkCargoDerivation (commonCraneArgs // {
-          pname = "cdk-ffi-tests";
-          cargoArtifacts = workspaceDeps;
-          nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
-            pkgs.python311
-          ];
-          buildPhaseCargoCommand = ''
-            # Build the FFI library
-            cargo build --release --package cdk-ffi --features postgres
+        ffiTests = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-ffi-tests";
+            cargoArtifacts = workspaceDeps;
+            nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
+              pkgs.python311
+            ];
+            buildPhaseCargoCommand = ''
+              # Build the FFI library
+              cargo build --release --package cdk-ffi --features postgres
 
-            # Generate Python bindings
-            cargo run --bin uniffi-bindgen generate \
-              --library target/release/libcdk_ffi.so \
-              --language python \
-              --out-dir target/bindings/python
+              # Generate Python bindings
+              cargo run --bin uniffi-bindgen generate \
+                --library target/release/libcdk_ffi.so \
+                --language python \
+                --out-dir target/bindings/python
 
-            # Copy library to bindings directory
-            cp target/release/libcdk_ffi.so target/bindings/python/
+              # Copy library to bindings directory
+              cp target/release/libcdk_ffi.so target/bindings/python/
 
-            # Run Python tests
-            python3 crates/cdk-ffi/tests/test_transactions.py
-            python3 crates/cdk-ffi/tests/test_kvstore.py
-          '';
-          installPhaseCommand = "mkdir -p $out";
-        });
+              # Run Python tests
+              python3 crates/cdk-ffi/tests/test_transactions.py
+              python3 crates/cdk-ffi/tests/test_kvstore.py
+            '';
+            installPhaseCommand = "mkdir -p $out";
+          }
+        );
 
         # ========================================
         # Example definitions - single source of truth
@@ -463,14 +545,19 @@
           "cdk-mintd-cln-postgres" = "-p cdk-mintd --no-default-features --features cln,postgres";
           "cdk-mintd-lnbits-sqlite" = "-p cdk-mintd --no-default-features --features lnbits,sqlite";
           "cdk-mintd-fakewallet-sqlite" = "-p cdk-mintd --no-default-features --features fakewallet,sqlite";
-          "cdk-mintd-grpc-processor-sqlite" = "-p cdk-mintd --no-default-features --features grpc-processor,sqlite";
-          "cdk-mintd-management-rpc-lnd-sqlite" = "-p cdk-mintd --no-default-features --features management-rpc,lnd,sqlite";
+          "cdk-mintd-grpc-processor-sqlite" =
+            "-p cdk-mintd --no-default-features --features grpc-processor,sqlite";
+          "cdk-mintd-management-rpc-lnd-sqlite" =
+            "-p cdk-mintd --no-default-features --features management-rpc,lnd,sqlite";
           "cdk-mintd-cln-sqlite" = "-p cdk-mintd --no-default-features --features cln,sqlite";
           "cdk-mintd-lnd-postgres" = "-p cdk-mintd --no-default-features --features lnd,postgres";
           "cdk-mintd-lnbits-postgres" = "-p cdk-mintd --no-default-features --features lnbits,postgres";
-          "cdk-mintd-fakewallet-postgres" = "-p cdk-mintd --no-default-features --features fakewallet,postgres";
-          "cdk-mintd-grpc-processor-postgres" = "-p cdk-mintd --no-default-features --features grpc-processor,postgres";
-          "cdk-mintd-management-rpc-cln-postgres" = "-p cdk-mintd --no-default-features --features management-rpc,cln,postgres";
+          "cdk-mintd-fakewallet-postgres" =
+            "-p cdk-mintd --no-default-features --features fakewallet,postgres";
+          "cdk-mintd-grpc-processor-postgres" =
+            "-p cdk-mintd --no-default-features --features grpc-processor,postgres";
+          "cdk-mintd-management-rpc-cln-postgres" =
+            "-p cdk-mintd --no-default-features --features management-rpc,cln,postgres";
 
           # Binaries: cdk-mint-cli (binary name, package is cdk-mint-rpc)
           "cdk-mint-cli" = "-p cdk-mint-rpc";
@@ -484,7 +571,8 @@
           "cdk-all-features" = "-p cdk --features \"mint,wallet\"";
 
           # Mintd with all backends, databases, and features (no swagger)
-          "cdk-mintd-all" = "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
+          "cdk-mintd-all" =
+            "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
 
           # CLI - default features (excludes redb which breaks MSRV)
           "cdk-cli" = "-p cdk-cli";
@@ -543,18 +631,21 @@
             # c22538ec (milestone v26.04) but not yet released. The override is
             # Darwin-only so Linux builds still use the binary cache unmodified.
             # TODO: Remove this override once clightning >= 26.04 lands in nixpkgs.
-            (if pkgs.stdenv.hostPlatform.isDarwin then
-              (clightning.overrideAttrs (old: {
-                env = (old.env or {}) // {
-                  NIX_CFLAGS_COMPILE = (old.env.NIX_CFLAGS_COMPILE or "")
-                    + " -Wno-error=uninitialized-const-pointer"
-                    + " -Wno-error=gnu-folding-constant"
-                    + " -Wno-error=default-const-init-var-unsafe"
-                    + " -Wno-error=sometimes-uninitialized";
-                };
-              }))
-            else
-              clightning)
+            (
+              if pkgs.stdenv.hostPlatform.isDarwin then
+                (clightning.overrideAttrs (old: {
+                  env = (old.env or { }) // {
+                    NIX_CFLAGS_COMPILE =
+                      (old.env.NIX_CFLAGS_COMPILE or "")
+                      + " -Wno-error=uninitialized-const-pointer"
+                      + " -Wno-error=gnu-folding-constant"
+                      + " -Wno-error=default-const-init-var-unsafe"
+                      + " -Wno-error=sometimes-uninitialized";
+                  };
+                }))
+              else
+                clightning
+            )
             bitcoind
           ])
           ++ (with pkgs; [
@@ -660,38 +751,61 @@
         # name: the output binary name prefix (e.g. "cdk-mintd-ldk")
         # cargoExtraArgs: additional cargo args (e.g. "--bin cdk-mintd --features ldk-node")
         staticVersion = if commonCraneArgsStatic != null then commonCraneArgsStatic.version else version;
-        mkStaticPackage = if muslTarget != null then ({ bin, name, cargoExtraArgs }: craneLibStatic.buildPackage (commonCraneArgsStatic // {
-          pname = name;
-          cargoArtifacts = workspaceDepsStatic;
-          inherit cargoExtraArgs;
-          nativeBuildInputs = commonCraneArgsStatic.nativeBuildInputs ++ [
-            pkgs.removeReferencesTo
-          ];
-          installPhaseCommand = ''
-            mkdir -p $out/bin
-            cp target/${muslTarget}/release-static/${bin} $out/bin/${name}-${staticVersion}-${archSuffix}
-          '';
-          # Strip Nix store references from binaries for reproducibility
-          postFixup = ''
-            find "$out" -type f -executable -exec remove-references-to -t ${static_toolchain} '{}' +
-          '';
-        })) else null;
+        mkStaticPackage =
+          if muslTarget != null then
+            (
+              { bin
+              , name
+              , cargoExtraArgs
+              ,
+              }:
+              craneLibStatic.buildPackage (
+                commonCraneArgsStatic
+                // {
+                  pname = name;
+                  cargoArtifacts = workspaceDepsStatic;
+                  inherit cargoExtraArgs;
+                  nativeBuildInputs = commonCraneArgsStatic.nativeBuildInputs ++ [
+                    pkgs.removeReferencesTo
+                  ];
+                  installPhaseCommand = ''
+                    mkdir -p $out/bin
+                    cp target/${muslTarget}/release-static/${bin} $out/bin/${name}-${staticVersion}-${archSuffix}
+                  '';
+                  # Strip Nix store references from binaries for reproducibility
+                  postFixup = ''
+                    find "$out" -type f -executable -exec remove-references-to -t ${static_toolchain} '{}' +
+                  '';
+                }
+              )
+            )
+          else
+            null;
 
         # Helper to build a macOS release binary package (dynamically linked, as is standard on macOS)
         # Uses the same release-static Cargo profile for consistent optimization settings
         # bin: the cargo binary name (e.g. "cdk-mintd")
         # name: the output binary name prefix (e.g. "cdk-mintd-ldk")
         # cargoExtraArgs: additional cargo args (e.g. "--bin cdk-mintd --features ldk-node")
-        mkDarwinPackage = { bin, name, cargoExtraArgs }: craneLib.buildPackage (commonCraneArgs // {
-          pname = name;
-          cargoArtifacts = workspaceDeps;
-          inherit cargoExtraArgs;
-          CARGO_PROFILE = "release-static";
-          installPhaseCommand = ''
-            mkdir -p $out/bin
-            cp target/release-static/${bin} $out/bin/${name}-${version}-${archSuffix}
-          '';
-        });
+        mkDarwinPackage =
+          { bin
+          , name
+          , cargoExtraArgs
+          ,
+          }:
+          craneLib.buildPackage (
+            commonCraneArgs
+            // {
+              pname = name;
+              cargoArtifacts = workspaceDeps;
+              inherit cargoExtraArgs;
+              CARGO_PROFILE = "release-static";
+              installPhaseCommand = ''
+                mkdir -p $out/bin
+                cp target/release-static/${bin} $out/bin/${name}-${version}-${archSuffix}
+              '';
+            }
+          );
 
         # Common arguments can be set here to avoid repeating them later
         nativeBuildInputs = [
@@ -752,16 +866,67 @@
           };
         }
         # Example packages (binaries that can be run outside sandbox with network access)
-        // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExamplePackage name; }) exampleChecks));
+        // (builtins.listToAttrs (
+          map
+            (name: {
+              name = "example-${name}";
+              value = mkExamplePackage name;
+            })
+            exampleChecks
+        ));
         checks =
           # Generate clippy + test checks from clippyAndTestChecks attrset
           (builtins.mapAttrs (name: args: mkClippyAndTest name args) clippyAndTestChecks)
           # Generate MSRV build checks (prefixed with msrv-)
-          // (builtins.listToAttrs (map (name: { name = "msrv-${name}"; value = mkMsrvBuild name msrvChecks.${name}; }) (builtins.attrNames msrvChecks)))
+          // (builtins.listToAttrs (
+            map
+              (name: {
+                name = "msrv-${name}";
+                value = mkMsrvBuild name msrvChecks.${name};
+              })
+              (builtins.attrNames msrvChecks)
+          ))
+          // (builtins.listToAttrs (
+            map
+              (name: {
+                name = "msrv-${name}";
+                value = mkMsrvBuild name msrvChecks.${name};
+              })
+              (builtins.attrNames msrvChecks)
+          ))
           # Generate WASM build checks (prefixed with wasm-)
-          // (builtins.listToAttrs (map (name: { name = "wasm-${name}"; value = mkWasmBuild name wasmChecks.${name}; }) (builtins.attrNames wasmChecks)))
-          # Generate example checks from exampleChecks list
-          // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExample name; }) exampleChecks))
+          // (builtins.listToAttrs (
+            map
+              (name: {
+                name = "wasm-${name}";
+                value = mkWasmBuild name wasmChecks.${name};
+              })
+              (builtins.attrNames wasmChecks)
+          ))
+          // (builtins.listToAttrs (
+            map
+              (name: {
+                name = "wasm-${name}";
+                value = mkWasmBuild name wasmChecks.${name};
+              })
+              (builtins.attrNames wasmChecks)
+          ))
+          // (builtins.listToAttrs (
+            map
+              (name: {
+                name = "example-${name}";
+                value = mkExample name;
+              })
+              exampleChecks
+          ))
+          // (builtins.listToAttrs (
+            map
+              (name: {
+                name = "example-${name}";
+                value = mkExample name;
+              })
+              exampleChecks
+          ))
           // {
             # Doc tests
             doc-tests = docTests;
@@ -807,9 +972,12 @@
             regtest = pkgs.mkShell (
               {
                 shellHook = commonShellHook + pgShellHook;
-                buildInputs = baseBuildInputs ++ regtestBuildInputs ++ [
-                  stable_toolchain
-                ];
+                buildInputs =
+                  baseBuildInputs
+                  ++ regtestBuildInputs
+                  ++ [
+                    stable_toolchain
+                  ];
                 inherit nativeBuildInputs;
               }
               // envVars
@@ -829,9 +997,12 @@
             nightly-regtest = pkgs.mkShell (
               {
                 shellHook = commonShellHook + pgShellHook;
-                buildInputs = baseBuildInputs ++ regtestBuildInputs ++ [
-                  nightly_toolchain
-                ];
+                buildInputs =
+                  baseBuildInputs
+                  ++ regtestBuildInputs
+                  ++ [
+                    nightly_toolchain
+                  ];
                 inherit nativeBuildInputs;
               }
               // envVars
@@ -849,12 +1020,17 @@
                   fi
                   echo "Docker is available at $(which docker)"
                   echo "Docker version: $(docker --version)"
-                '' + commonShellHook + pgShellHook;
-                buildInputs = baseBuildInputs ++ regtestBuildInputs ++ [
-                  stable_toolchain
-                  pkgs.docker-client
-                  pkgs.python311
-                ];
+                ''
+                + commonShellHook
+                + pgShellHook;
+                buildInputs =
+                  baseBuildInputs
+                  ++ regtestBuildInputs
+                  ++ [
+                    stable_toolchain
+                    pkgs.docker-client
+                    pkgs.python311
+                  ];
                 inherit nativeBuildInputs;
               }
               // envVars
@@ -863,11 +1039,14 @@
             # Shell for FFI development (Python bindings)
             ffi = pkgs.mkShell (
               {
-                shellHook = commonShellHook + pgShellHook + ''
-                  echo "FFI development shell"
-                  echo "  just ffi-test        - Run Python FFI tests"
-                  echo "  just ffi-dev-python  - Launch Python REPL with CDK FFI"
-                '';
+                shellHook =
+                  commonShellHook
+                  + pgShellHook
+                  + ''
+                    echo "FFI development shell"
+                    echo "  just ffi-test        - Run Python FFI tests"
+                    echo "  just ffi-dev-python  - Launch Python REPL with CDK FFI"
+                  '';
                 buildInputs = baseBuildInputs ++ [
                   stable_toolchain
                   pkgs.python311
