@@ -30,5 +30,3 @@ __pycache__
 libcdk_ffi*
 cdk_ffi.py
 
-# llm artifacts
-AGENTS.md
