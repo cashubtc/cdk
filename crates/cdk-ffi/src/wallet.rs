@@ -23,6 +23,10 @@ impl Wallet {
     pub(crate) fn from_inner(inner: Arc<CdkWallet>) -> Self {
         Self { inner }
     }
+
+    pub(crate) fn inner(&self) -> Arc<CdkWallet> {
+        self.inner.clone()
+    }
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -559,8 +563,8 @@ impl Wallet {
 impl Wallet {
     /// Get a quote for a BIP353 melt
     ///
-    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Lightning offer
-    /// and then creates a melt quote for that offer.
+    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Bitcoin
+    /// payment instruction, requires a BOLT12 offer, and then creates a melt quote for it.
     pub async fn melt_bip353_quote(
         &self,
         bip353_address: String,
@@ -597,8 +601,8 @@ impl Wallet {
     /// or a Lightning address. It intelligently determines which to try based on mint support:
     ///
     /// 1. If the mint supports Bolt12, it tries BIP353 first
-    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
-    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 2. Falls back to Lightning address only if BIP353 resolution fails
+    /// 3. If BIP353 resolves but has no usable BOLT12 offer, it does NOT fall back
     /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
     pub async fn melt_human_readable(
         &self,

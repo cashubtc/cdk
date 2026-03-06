@@ -824,8 +824,8 @@ impl Wallet {
     /// or a Lightning address. It intelligently determines which to try based on mint support:
     ///
     /// 1. If the mint supports Bolt12, it tries BIP353 first
-    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
-    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 2. Falls back to Lightning address only if BIP353 resolution fails
+    /// 3. If BIP353 resolves but does not contain a usable BOLT12 offer, it does NOT fall back
     /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
     #[cfg(all(feature = "bip353", feature = "wallet", not(target_arch = "wasm32")))]
     pub async fn melt_human_readable_quote(

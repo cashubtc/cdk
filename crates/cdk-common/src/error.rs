@@ -131,9 +131,9 @@ pub enum Error {
     /// BIP353 address resolution error
     #[error("Failed to resolve BIP353 address: {0}")]
     Bip353Resolve(String),
-    /// BIP353 no Lightning offer found
-    #[error("No Lightning offer found in BIP353 payment instructions")]
-    Bip353NoLightningOffer,
+    /// BIP353 no BOLT12 offer found
+    #[error("No BOLT12 offer found in BIP353 payment instructions")]
+    Bip353NoBolt12Offer,
 
     /// Lightning Address parsing error
     #[error("Failed to parse Lightning address: {0}")]

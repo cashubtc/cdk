@@ -59,6 +59,7 @@ jsonwebtoken.workspace = true
 nostr-sdk = { workspace = true, optional = true }
 cdk-npubcash = { workspace = true, optional = true }
 cdk-prometheus = {workspace = true, optional = true}
+bitcoin-payment-instructions = { workspace = true }
 web-time.workspace = true
 zeroize = "1"
 tokio-util.workspace = true

@@ -9,7 +9,7 @@
 //! BIP-353 uses DNS TXT records to resolve human-readable addresses to BOLT12 offers.
 //! 1. Parse a human-readable address like `user@domain.com`
 //! 2. Query DNS TXT records at `user.user._bitcoin-payment.domain.com`
-//! 3. Extract Lightning offers (BOLT12) from the TXT records
+//! 3. Parse the resolved `bitcoin:` URI and inspect the available payment methods
 //! 4. Use the offer to create a melt quote
 //!
 //! ## Lightning Address (LNURL-pay)
@@ -24,6 +24,9 @@
 //!
 //! The `melt_human_readable_quote()` method automatically tries BIP-353 first
 //! (if the mint supports BOLT12), then falls back to Lightning Address if needed.
+//!
+//! If you want to inspect the resolved payment instruction before melting, see
+//! `examples/resolve_human_readable.rs`.
 //!
 //! ## Usage
 //!
@@ -163,7 +166,7 @@ async fn main() -> anyhow::Result<()> {
             println!("✗ Failed to get BIP-353 melt quote: {}", e);
             println!("\nPossible reasons:");
             println!("  • DNS resolution failed or no DNS records found");
-            println!("  • No Lightning offer (BOLT12) in DNS TXT records");
+            println!("  • No BOLT12 offer in the resolved BIP-353 payment instruction");
             println!("  • DNSSEC validation failed");
             println!("  • Mint doesn't support BOLT12");
             println!("  • Network connectivity issues");
@@ -256,7 +259,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("The `melt_human_readable_quote()` method intelligently chooses:");
     println!("1. If mint supports BOLT12 AND address has BIP-353 DNS: Use BIP-353");
-    println!("2. If BIP-353 DNS fails OR address has no DNS: Fall back to LNURL");
+    println!("2. If BIP-353 resolution fails OR address has no DNS: Fall back to LNURL");
     println!("3. If mint doesn't support BOLT12: Use LNURL directly\n");
 
     // Test 1: Address with BIP-353 support (has DNS records)
