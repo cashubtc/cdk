@@ -548,28 +548,22 @@ async fn configure_lightning_backend(
                 .await?;
             }
 
-            if fake_wallet.create_test_keysets {
+            for rotation_cfg in &fake_wallet.keyset_rotations {
                 use cdk::mint::KeysetRotation;
 
                 let amounts = cdk::mint::UnitConfig::default().amounts;
-                let past_expiry = cdk::util::unix_time().saturating_sub(3600);
+                let final_expiry = if rotation_cfg.expired {
+                    Some(cdk::util::unix_time().saturating_sub(3600))
+                } else {
+                    None
+                };
 
-                // Rotation 1: Sat V0 with past expiry (creates an expired keyset)
                 mint_builder = mint_builder.with_keyset_rotation(KeysetRotation {
-                    unit: CurrencyUnit::Sat,
-                    amounts: amounts.clone(),
-                    input_fee_ppk: 0,
-                    use_keyset_v2: false,
-                    final_expiry: Some(past_expiry),
-                });
-
-                // Rotation 2: Sat V1 with no expiry (rotation-deactivated keyset)
-                mint_builder = mint_builder.with_keyset_rotation(KeysetRotation {
-                    unit: CurrencyUnit::Sat,
+                    unit: rotation_cfg.unit.clone(),
                     amounts,
-                    input_fee_ppk: 0,
-                    use_keyset_v2: true,
-                    final_expiry: None,
+                    input_fee_ppk: rotation_cfg.input_fee_ppk,
+                    use_keyset_v2: rotation_cfg.version == "v2",
+                    final_expiry,
                 });
             }
         }
