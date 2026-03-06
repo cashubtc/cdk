@@ -70,7 +70,21 @@ fn patch_generated(path: &camino::Utf8Path) {
         "removedState ?? _futureState",
     );
 
-    // 2. Insert _RustOwnedWalletDatabase proxy class before FfiConverterCallbackInterfaceWalletDatabase
+    // 2. Remove WalletDatabase from implements clause of concrete database classes.
+    // The codegen adds it because they implement the trait in Rust, but the Dart
+    // WalletDatabase callback interface uses positional params while the Object
+    // interfaces use named params, causing override errors.
+    content = content.replace(
+        "implements WalletPostgresDatabaseInterface, WalletDatabase",
+        "implements WalletPostgresDatabaseInterface",
+    );
+    content = content.replace(
+        "implements WalletSqliteDatabaseInterface, WalletDatabase",
+        "implements WalletSqliteDatabaseInterface",
+    );
+
+    // 3. Insert _RustOwnedWalletDatabase proxy class before FfiConverterCallbackInterfaceWalletDatabase
+    // (renumbered from original patch 2)
     let proxy_class = r#"
 /// Proxy for Rust-created WalletDatabase objects.
 /// Holds a raw Rust Arc pointer; all trait methods throw because
@@ -97,13 +111,13 @@ class _RustOwnedWalletDatabase implements WalletDatabase {
     let anchor = "class FfiConverterCallbackInterfaceWalletDatabase {";
     content = content.replace(anchor, &format!("{}{}", proxy_class, anchor));
 
-    // 3. Patch lift() to handle Rust-created pointers
+    // 4. Patch lift() to handle Rust-created pointers
     content = content.replace(
         "  static WalletDatabase lift(Pointer<Void> handle) {\n    return _handleMap.get(handle.address);\n  }",
         "  static WalletDatabase lift(Pointer<Void> handle) {\n    try {\n      return _handleMap.get(handle.address);\n    } catch (_) {\n      // Rust-created object — wrap the pointer in a proxy\n      return _RustOwnedWalletDatabase(handle);\n    }\n  }",
     );
 
-    // 4. Patch lower() to handle _RustOwnedWalletDatabase
+    // 5. Patch lower() to handle _RustOwnedWalletDatabase
     content = content.replace(
         "  static Pointer<Void> lower(WalletDatabase value) {\n    _ensureVTableInitialized();\n    final handle = _handleMap.insert(value);\n    return Pointer<Void>.fromAddress(handle);\n  }",
         "  static Pointer<Void> lower(WalletDatabase value) {\n    if (value is _RustOwnedWalletDatabase) {\n      return value.clonePointer();\n    }\n    _ensureVTableInitialized();\n    final handle = _handleMap.insert(value);\n    return Pointer<Void>.fromAddress(handle);\n  }",
