@@ -1577,3 +1577,67 @@ async fn test_p2bk_send_and_receive() {
         "Receiver should get exactly the requested amount after fees"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_p2bk_multi_key_receive() {
+    setup_tracing();
+
+    let mint = create_mint_with_fee(1000)
+        .await
+        .expect("Failed to create test mint with fees");
+    let wallet_sender = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create sender wallet");
+    let wallet_receiver = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create receiver wallet");
+
+    // Fund sender with 64 sats
+    fund_wallet(wallet_sender.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let secret1 = SecretKey::generate();
+    let secret2 = SecretKey::generate();
+    
+    // Multisig 1-of-2 (data key + 1 pubkey in tags)
+    let conds = cashu::nuts::Conditions::new(None, Some(vec![secret2.public_key()]), None, Some(1), None, None).unwrap();
+    let spending_conditions = SpendingConditions::P2PKConditions {
+        data: secret1.public_key(),
+        conditions: Some(conds),
+    };
+    
+    let send_amount = Amount::from(10);
+
+    let prepared = wallet_sender
+        .prepare_send(
+            send_amount,
+            SendOptions {
+                conditions: Some(spending_conditions),
+                include_fee: true,
+                use_p2bk: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("Failed to prepare send");
+
+    let token = prepared
+        .confirm(None)
+        .await
+        .expect("Failed to confirm send");
+
+    // Try to receive with ONLY the second key
+    let received_amount = wallet_receiver
+        .receive(
+            &token.to_string(),
+            ReceiveOptions {
+                p2pk_signing_keys: vec![secret2.clone()],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("Receiver should be able to redeem P2PK token with second key");
+        
+    assert_eq!(send_amount, received_amount);
+}
