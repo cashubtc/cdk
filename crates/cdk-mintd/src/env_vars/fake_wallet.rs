@@ -54,7 +54,9 @@ impl FakeWallet {
         }
 
         if let Ok(rotations_str) = env::var(ENV_FAKE_WALLET_KEYSET_ROTATIONS) {
-            if let Ok(rotations) = serde_json::from_str::<Vec<FakeWalletKeysetRotation>>(&rotations_str) {
+            if let Ok(rotations) =
+                serde_json::from_str::<Vec<FakeWalletKeysetRotation>>(&rotations_str)
+            {
                 self.keyset_rotations = rotations;
             }
         }
