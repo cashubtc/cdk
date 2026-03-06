@@ -1,13 +1,26 @@
 use std::io::{self, Write};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::WalletRepository;
 
+static NON_INTERACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_non_interactive(enabled: bool) {
+    NON_INTERACTIVE.store(enabled, Ordering::Relaxed);
+}
+
 /// Helper function to get user input with a prompt
 pub fn get_user_input(prompt: &str) -> Result<String> {
+    if NON_INTERACTIVE.load(Ordering::Relaxed) {
+        bail!(
+            "Interactive input is disabled (--non-interactive). Missing required argument for prompt: {prompt}"
+        );
+    }
+
     println!("{prompt}");
     let mut user_input = String::new();
     io::stdout().flush()?;

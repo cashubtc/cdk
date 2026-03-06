@@ -70,12 +70,19 @@ pub struct MeltSubCommand {
     /// Bitcoin network to use for BIP353 (bitcoin, testnet, signet, regtest)
     #[arg(long, default_value = "bitcoin")]
     network: BitcoinNetwork,
+    /// Amount in sats for amountless payments (bolt11 amountless, bolt12 amountless, bip353)
+    #[arg(long)]
+    amount: Option<u64>,
+    /// MPP split entry in the form <mint_url>=<amount_sats>; repeat for multiple mints
+    #[arg(long = "mpp-split", value_name = "MINT_URL=AMOUNT", action = clap::ArgAction::Append, requires = "mpp")]
+    mpp_split: Vec<String>,
 }
 
 /// Helper function to check if there are enough funds and create appropriate MeltOptions
 fn create_melt_options(
     available_funds: u64,
     payment_amount: Option<u64>,
+    cli_amount_sat: Option<u64>,
     prompt: &str,
 ) -> Result<Option<MeltOptions>> {
     match payment_amount {
@@ -87,8 +94,11 @@ fn create_melt_options(
             Ok(None) // Use default options
         }
         None => {
-            // Payment doesn't have an amount, ask user for it
-            let user_amount = get_number_input::<u64>(prompt)? * MSAT_IN_SAT;
+            // Payment doesn't have an amount; use CLI amount if supplied, otherwise prompt.
+            let user_amount = match cli_amount_sat {
+                Some(amount_sat) => amount_sat * MSAT_IN_SAT,
+                None => get_number_input::<u64>(prompt)? * MSAT_IN_SAT,
+            };
 
             if user_amount > available_funds {
                 bail!("Not enough funds");
@@ -104,6 +114,24 @@ fn input_or_prompt(arg: Option<&String>, prompt: &str) -> Result<String> {
         Some(value) => Ok(value.clone()),
         None => get_user_input(prompt),
     }
+}
+
+fn parse_mpp_split(entry: &str) -> Result<(MintUrl, Amount)> {
+    let (mint, amount) = entry.split_once('=').ok_or_else(|| {
+        anyhow::anyhow!("Invalid --mpp-split value '{entry}'. Expected MINT_URL=AMOUNT")
+    })?;
+
+    let mint_url = MintUrl::from_str(mint.trim())?;
+    let amount_sat: u64 = amount.trim().parse()?;
+
+    if amount_sat == 0 {
+        bail!(
+            "MPP split amount must be greater than zero for mint {}",
+            mint_url
+        );
+    }
+
+    Ok((mint_url, Amount::from(amount_sat)))
 }
 
 pub async fn pay(
@@ -183,8 +211,12 @@ pub async fn pay(
                 "Enter the amount you would like to pay in {} for this amountless invoice.",
                 unit
             );
-            let options =
-                create_melt_options(available_funds, bolt11.amount_milli_satoshis(), &prompt)?;
+            let options = create_melt_options(
+                available_funds,
+                bolt11.amount_milli_satoshis(),
+                sub_command_args.amount,
+                &prompt,
+            )?;
 
             // Get or select a mint with sufficient balance
             let mint_url = if let Some(specific_mint) = selected_mint {
@@ -254,7 +286,12 @@ pub async fn pay(
                 Err(_) => None,
             };
 
-            let options = create_melt_options(available_funds, amount_msat, &prompt)?;
+            let options = create_melt_options(
+                available_funds,
+                amount_msat,
+                sub_command_args.amount,
+                &prompt,
+            )?;
 
             // Get wallet for BOLT12 using the selected mint
             let mint_url = if let Some(specific_mint) = selected_mint {
@@ -314,7 +351,8 @@ pub async fn pay(
                 unit
             );
             // BIP353 payments are always amountless for now
-            let options = create_melt_options(available_funds, None, &prompt)?;
+            let options =
+                create_melt_options(available_funds, None, sub_command_args.amount, &prompt)?;
 
             // Get wallet for BIP353 using the selected mint
             let mint_url = if let Some(specific_mint) = selected_mint {
@@ -387,35 +425,69 @@ async fn pay_mpp(
     let balances = wallet_repository.get_balances().await?;
     let balances_vec: Vec<(WalletKey, Amount)> = balances.into_iter().collect();
 
-    println!("\nAvailable mints and balances:");
-    for (i, (key, balance)) in balances_vec.iter().enumerate() {
-        println!(
-            "  {}: {} ({}) - {} {}",
-            i, key.mint_url, key.unit, balance, unit
-        );
-    }
-
-    // Collect mint selections and amounts from user
-    let mut mint_amounts: Vec<(MintUrl, Amount)> = Vec::new();
-    loop {
-        let mint_input = get_user_input("Enter mint number to use (or 'done' to finish)")?;
-
-        if mint_input.to_lowercase() == "done" || mint_input.is_empty() {
-            break;
+    // Collect mint selections and amounts from CLI when provided, otherwise prompt interactively.
+    let mint_amounts: Vec<(MintUrl, Amount)> = if sub_command_args.mpp_split.is_empty() {
+        println!("\nAvailable mints and balances:");
+        for (i, (key, balance)) in balances_vec.iter().enumerate() {
+            println!(
+                "  {}: {} ({}) - {} {}",
+                i, key.mint_url, key.unit, balance, unit
+            );
         }
 
-        let mint_index: usize = mint_input.parse()?;
-        let (key, _) = balances_vec
-            .get(mint_index)
-            .ok_or_else(|| anyhow::anyhow!("Invalid mint index"))?;
+        let mut selected = Vec::new();
+        loop {
+            let mint_input = get_user_input("Enter mint number to use (or 'done' to finish)")?;
 
-        let amount: u64 =
-            get_number_input(&format!("Enter amount to use from this mint ({})", unit))?;
-        mint_amounts.push((key.mint_url.clone(), Amount::from(amount)));
-    }
+            if mint_input.to_lowercase() == "done" || mint_input.is_empty() {
+                break;
+            }
+
+            let mint_index: usize = mint_input.parse()?;
+            let (key, _) = balances_vec
+                .get(mint_index)
+                .ok_or_else(|| anyhow::anyhow!("Invalid mint index"))?;
+
+            let amount: u64 =
+                get_number_input(&format!("Enter amount to use from this mint ({})", unit))?;
+            selected.push((key.mint_url.clone(), Amount::from(amount)));
+        }
+
+        selected
+    } else {
+        let mut selected = Vec::new();
+        for split in &sub_command_args.mpp_split {
+            selected.push(parse_mpp_split(split)?);
+        }
+        selected
+    };
 
     if mint_amounts.is_empty() {
         bail!("No mints selected for MPP payment");
+    }
+
+    for (mint_url, amount) in &mint_amounts {
+        if !wallet_repository.has_mint(mint_url).await {
+            bail!("MPP split mint {} is not in the wallet", mint_url);
+        }
+
+        let key = WalletKey::new(mint_url.clone(), unit.clone());
+        let mint_balance = balances_vec
+            .iter()
+            .find(|(wallet_key, _)| *wallet_key == key)
+            .map(|(_, balance)| *balance)
+            .unwrap_or(Amount::ZERO);
+
+        if *amount > mint_balance {
+            bail!(
+                "MPP split exceeds balance for mint {}. Available: {} {}, requested: {} {}",
+                mint_url,
+                mint_balance,
+                unit,
+                amount,
+                unit
+            );
+        }
     }
 
     // Get quotes from each mint with MPP options
