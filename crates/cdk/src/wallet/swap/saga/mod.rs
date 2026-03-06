@@ -115,8 +115,8 @@ impl<'a> SwapSaga<'a, Initial> {
                 amount_split_target.clone(),
                 input_proofs.clone(),
                 spending_conditions.clone(),
-                use_p2bk,
                 include_fees,
+                use_p2bk,
                 &fee_breakdown,
             )
             .await?;
