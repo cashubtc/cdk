@@ -1850,7 +1850,7 @@ async fn test_wallet_proof_recovery_after_failed_swap() {
 
     // Verify we can perform a successful swap operation
     let successful_swap = wallet
-        .swap(None, SplitTarget::None, unspent_proofs, None, false)
+        .swap(None, SplitTarget::None, unspent_proofs, None, false, false)
         .await;
 
     assert!(

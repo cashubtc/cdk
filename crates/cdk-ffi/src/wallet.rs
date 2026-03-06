@@ -379,6 +379,7 @@ impl Wallet {
                 cdk_proofs,
                 conditions,
                 include_fees,
+                false,
             )
             .await?;
 

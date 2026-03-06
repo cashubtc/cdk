@@ -28,6 +28,8 @@ pub mod nut25;
 pub mod nut26;
 #[cfg(all(feature = "wallet", feature = "nostr"))]
 pub mod nut27;
+#[cfg(feature = "wallet")]
+pub mod nut28;
 
 mod auth;
 

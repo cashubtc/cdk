@@ -54,6 +54,7 @@ pub fn test_proof(keyset_id: Id, amount: u64) -> Proof {
         c: SecretKey::generate().public_key(),
         witness: None,
         dleq: None,
+        p2pk_e: None,
     }
 }
 

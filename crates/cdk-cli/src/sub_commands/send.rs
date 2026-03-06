@@ -48,6 +48,9 @@ pub struct SendSubCommand {
     /// Mint URL to use for sending
     #[arg(long)]
     mint_url: Option<String>,
+    /// Use P2BK (NUT-28) to blind the receiver's pubkey
+    #[arg(long)]
+    use_p2bk: bool,
     /// Amount to send
     #[arg(short, long)]
     amount: Option<u64>,
@@ -245,6 +248,7 @@ pub async fn send(
         send_kind,
         include_fee: sub_command_args.include_fee,
         conditions,
+        use_p2bk: sub_command_args.use_p2bk,
         ..Default::default()
     };
 

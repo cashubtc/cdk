@@ -468,6 +468,7 @@ impl<'a> SendSaga<'a, Prepared> {
                         proofs_to_swap,
                         options.conditions.clone(),
                         false,
+                        options.use_p2bk,
                     )
                     .await?
                 {
@@ -636,6 +637,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
                 SplitTarget::default(),
                 self.state_data.proofs.clone(),
                 None,
+                false,
                 false,
             )
             .await;
