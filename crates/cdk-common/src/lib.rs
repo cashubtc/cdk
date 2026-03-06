@@ -20,7 +20,6 @@ pub mod grpc;
 pub mod common;
 pub mod database;
 pub mod error;
-#[cfg(feature = "mint")]
 pub mod melt;
 #[cfg(feature = "mint")]
 pub mod mint;
@@ -54,6 +53,7 @@ pub use cdk_http_client::{
 // Re-export common types
 pub use common::FinalizedMelt;
 pub use error::Error;
+pub use melt::{MeltQuoteRequest, MeltQuoteResponse};
 pub use mint_quote::{MintQuoteRequest, MintQuoteResponse};
 /// Re-export parking_lot for reuse
 pub use parking_lot;

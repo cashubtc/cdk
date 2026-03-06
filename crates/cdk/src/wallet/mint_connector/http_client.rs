@@ -4,8 +4,9 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use cdk_common::{
-    nut19, MeltQuoteCustomResponse, Method, MintQuoteBolt11Response, MintQuoteBolt12Response,
-    MintQuoteCustomResponse, MintQuoteRequest, MintQuoteResponse, ProtectedEndpoint, RoutePath,
+    nut19, MeltQuoteRequest, MeltQuoteResponse, Method, MintQuoteBolt11Response,
+    MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteRequest, MintQuoteResponse,
+    ProtectedEndpoint, RoutePath,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -21,8 +22,8 @@ use crate::nuts::nut00::{KnownMethod, PaymentMethod};
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteCustomRequest, MeltRequest, MintInfo,
-    MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    MeltQuoteBolt11Response, MeltRequest, MintInfo, MintRequest, MintResponse, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 
@@ -375,39 +376,94 @@ where
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_melt_quote(
         &self,
-        request: MeltQuoteBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        request: MeltQuoteRequest,
+    ) -> Result<MeltQuoteResponse<String>, Error> {
+        let method = request.method().to_string();
+        let path = format!("v1/melt/quote/{}", method);
+
         let url = self
             .mint_url
-            .join_paths(&["v1", "melt", "quote", "bolt11"])?;
+            .join_paths(&path.split('/').collect::<Vec<_>>())?;
         let auth_token = self
-            .get_auth_token(
-                Method::Post,
-                RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
-            )
+            .get_auth_token(Method::Post, RoutePath::MeltQuote(method))
             .await?;
 
-        self.transport.http_post(url, auth_token, &request).await
+        match &request {
+            MeltQuoteRequest::Bolt11(req) => {
+                let response: cdk_common::nut23::MeltQuoteBolt11Response<String> =
+                    self.transport.http_post(url, auth_token, req).await?;
+                Ok(MeltQuoteResponse::Bolt11(response))
+            }
+            MeltQuoteRequest::Bolt12(req) => {
+                let response: cdk_common::nut25::MeltQuoteBolt12Response<String> =
+                    self.transport.http_post(url, auth_token, req).await?;
+                Ok(MeltQuoteResponse::Bolt12(response))
+            }
+            MeltQuoteRequest::Custom(req) => {
+                let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
+                    self.transport.http_post(url, auth_token, req).await?;
+                Ok(MeltQuoteResponse::Custom((request.method(), response)))
+            }
+        }
     }
 
     /// Melt Quote Status
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_melt_quote_status(
         &self,
+        method: PaymentMethod,
         quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "melt", "quote", "bolt11", quote_id])?;
+    ) -> Result<MeltQuoteResponse<String>, Error> {
+        match &method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                let url = self
+                    .mint_url
+                    .join_paths(&["v1", "melt", "quote", "bolt11", quote_id])?;
 
-        let auth_token = self
-            .get_auth_token(
-                Method::Get,
-                RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
-            )
-            .await?;
+                let auth_token = self
+                    .get_auth_token(
+                        Method::Get,
+                        RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+                    )
+                    .await?;
 
-        self.transport.http_get(url, auth_token).await
+                let response: cdk_common::nut23::MeltQuoteBolt11Response<String> =
+                    self.transport.http_get(url, auth_token).await?;
+
+                Ok(MeltQuoteResponse::Bolt11(response))
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                let url = self
+                    .mint_url
+                    .join_paths(&["v1", "melt", "quote", "bolt12", quote_id])?;
+
+                let auth_token = self
+                    .get_auth_token(
+                        Method::Get,
+                        RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+                    )
+                    .await?;
+
+                let response: cdk_common::nut25::MeltQuoteBolt12Response<String> =
+                    self.transport.http_get(url, auth_token).await?;
+
+                Ok(MeltQuoteResponse::Bolt12(response))
+            }
+            PaymentMethod::Custom(method_name) => {
+                let url =
+                    self.mint_url
+                        .join_paths(&["v1", "melt", "quote", method_name, quote_id])?;
+
+                let auth_token = self
+                    .get_auth_token(Method::Get, RoutePath::MeltQuote(method_name.clone()))
+                    .await?;
+
+                let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
+                    self.transport.http_get(url, auth_token).await?;
+
+                Ok(MeltQuoteResponse::Custom((method.clone(), response)))
+            }
+        }
     }
 
     /// Melt [NUT-05]
@@ -480,45 +536,6 @@ where
         *self.auth_wallet.write().await = wallet;
     }
 
-    /// Melt Quote Bolt12 [NUT-23]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_melt_bolt12_quote(
-        &self,
-        request: cdk_common::nut25::MeltQuoteBolt12Request,
-    ) -> Result<cdk_common::nut25::MeltQuoteBolt12Response<String>, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "melt", "quote", "bolt12"])?;
-        let auth_token = self
-            .get_auth_token(
-                Method::Post,
-                RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
-            )
-            .await?;
-
-        self.transport.http_post(url, auth_token, &request).await
-    }
-
-    /// Melt Quote Bolt12 Status [NUT-23]
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
-    async fn get_melt_bolt12_quote_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<cdk_common::nut25::MeltQuoteBolt12Response<String>, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "melt", "quote", "bolt12", quote_id])?;
-
-        let auth_token = self
-            .get_auth_token(
-                Method::Get,
-                RoutePath::MeltQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
-            )
-            .await?;
-
-        self.transport.http_get(url, auth_token).await
-    }
-
     /// Spendable check [NUT-07]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_check_state(
@@ -542,41 +559,6 @@ where
             .await?;
 
         self.transport.http_post(url, auth_token, &request).await
-    }
-
-    /// Melt Quote for Custom Payment Method
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_melt_custom_quote(
-        &self,
-        request: MeltQuoteCustomRequest,
-    ) -> Result<MeltQuoteCustomResponse<String>, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "melt", "quote", &request.method])?;
-
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MeltQuote(request.method.clone()))
-            .await?;
-
-        self.transport.http_post(url, auth_token, &request).await
-    }
-
-    /// Melt Quote Status for Custom Payment Method
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
-    async fn get_melt_quote_custom_status(
-        &self,
-        method: &str,
-        quote_id: &str,
-    ) -> Result<MeltQuoteCustomResponse<String>, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "melt", "quote", method, quote_id])?;
-
-        let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MeltQuote(method.to_string()))
-            .await?;
-
-        self.transport.http_get(url, auth_token).await
     }
 }
 

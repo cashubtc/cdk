@@ -3,18 +3,15 @@
 use std::fmt::Debug;
 
 use async_trait::async_trait;
-use cdk_common::{
-    MeltQuoteBolt12Request, MeltQuoteBolt12Response, MeltQuoteCustomResponse, MintQuoteRequest,
-    MintQuoteResponse,
-};
+use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest, MintQuoteResponse};
 
 use super::Error;
 // Re-export Lightning address types for trait implementers
 pub use crate::lightning_address::{LnurlPayInvoiceResponse, LnurlPayResponse};
 use crate::nuts::{
-    CheckStateRequest, CheckStateResponse, Id, KeySet, KeysetResponse, MeltQuoteBolt11Request,
-    MeltQuoteBolt11Response, MeltQuoteCustomRequest, MeltRequest, MintInfo, MintRequest,
-    MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    CheckStateRequest, CheckStateResponse, Id, KeySet, KeysetResponse, MeltQuoteBolt11Response,
+    MeltRequest, MintInfo, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::AuthWallet;
 
@@ -70,8 +67,8 @@ pub trait MintConnector: Debug {
     /// Melt Quote [NUT-05]
     async fn post_melt_quote(
         &self,
-        request: MeltQuoteBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+        request: MeltQuoteRequest,
+    ) -> Result<MeltQuoteResponse<String>, Error>;
 
     /// Mint Quote status with payment method
     async fn get_mint_quote_status(
@@ -84,8 +81,9 @@ pub trait MintConnector: Debug {
     /// Melt Quote Status
     async fn get_melt_quote_status(
         &self,
+        method: PaymentMethod,
         quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+    ) -> Result<MeltQuoteResponse<String>, Error>;
 
     /// [Nut-08] Lightning fee return if outputs defined
     async fn post_melt(
@@ -111,29 +109,4 @@ pub trait MintConnector: Debug {
 
     /// Set auth wallet on client
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>);
-
-    /// Melt Quote [NUT-23]
-    async fn post_melt_bolt12_quote(
-        &self,
-        request: MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt12Response<String>, Error>;
-
-    /// Melt Quote Status [NUT-23]
-    async fn get_melt_bolt12_quote_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MeltQuoteBolt12Response<String>, Error>;
-
-    /// Melt Quote for Custom Payment Method
-    async fn post_melt_custom_quote(
-        &self,
-        request: MeltQuoteCustomRequest,
-    ) -> Result<MeltQuoteCustomResponse<String>, Error>;
-
-    /// Melt Quote Status for Custom Payment Method
-    async fn get_melt_quote_custom_status(
-        &self,
-        method: &str,
-        quote_id: &str,
-    ) -> Result<MeltQuoteCustomResponse<String>, Error>;
 }

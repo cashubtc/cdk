@@ -278,8 +278,18 @@ impl Transport for SubscriptionClient {
                     ));
                 }
                 NotificationId::MeltQuoteBolt11(id) => {
-                    let response = match self.http_client.get_melt_quote_status(&id).await {
-                        Ok(success) => success,
+                    let response = match self
+                        .http_client
+                        .get_melt_quote_status(PaymentMethod::BOLT11, &id)
+                        .await
+                    {
+                        Ok(success) => match success {
+                            cdk_common::MeltQuoteResponse::Bolt11(r) => r,
+                            _ => {
+                                tracing::error!("Unexpected response type for MeltBolt11 {}", id);
+                                continue;
+                            }
+                        },
                         Err(err) => {
                             tracing::error!("Error with MeltBolt11 {} with {:?}", id, err);
                             continue;
@@ -314,8 +324,18 @@ impl Transport for SubscriptionClient {
                     ));
                 }
                 NotificationId::MeltQuoteBolt12(id) => {
-                    let response = match self.http_client.get_melt_bolt12_quote_status(&id).await {
-                        Ok(success) => success,
+                    let response = match self
+                        .http_client
+                        .get_melt_quote_status(PaymentMethod::BOLT12, &id)
+                        .await
+                    {
+                        Ok(success) => match success {
+                            cdk_common::MeltQuoteResponse::Bolt12(r) => r,
+                            _ => {
+                                tracing::error!("Unexpected response type for MeltBolt12 {}", id);
+                                continue;
+                            }
+                        },
                         Err(err) => {
                             tracing::error!("Error with MeltBolt12 {} with {:?}", id, err);
                             continue;
@@ -355,10 +375,19 @@ impl Transport for SubscriptionClient {
                 NotificationId::MeltQuoteCustom(method, id) => {
                     let response = match self
                         .http_client
-                        .get_melt_quote_custom_status(&method, &id)
+                        .get_melt_quote_status(PaymentMethod::Custom(method.clone()), &id)
                         .await
                     {
-                        Ok(success) => success,
+                        Ok(success) => match success {
+                            cdk_common::MeltQuoteResponse::Custom((_, r)) => r,
+                            _ => {
+                                tracing::error!(
+                                    "Unexpected response type for Custom Melt Quote {}",
+                                    id
+                                );
+                                continue;
+                            }
+                        },
                         Err(err) => {
                             tracing::error!("Error with Custom Melt Quote {} with {:?}", id, err);
                             continue;
