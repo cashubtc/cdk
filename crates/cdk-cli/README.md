@@ -202,8 +202,14 @@ cdk-cli receive --nostr-key <nostr_key> --relay wss://relay.example.com
 ### Lightning Payments
 
 ```bash
-# Pay a Lightning invoice (interactive - will prompt for invoice)
+# Pay a Lightning invoice (interactive)
 cdk-cli melt
+
+# Pay a Lightning invoice non-interactively
+cdk-cli melt --mint-url http://127.0.0.1:8085 --invoice <bolt11_invoice>
+
+# Pay an amountless invoice non-interactively (amount in sats)
+cdk-cli melt --mint-url http://127.0.0.1:8085 --invoice <amountless_bolt11_invoice> --amount 1000
 
 # Specify mint and payment method
 cdk-cli melt --mint-url http://127.0.0.1:8085 --method bolt11
@@ -214,8 +220,13 @@ cdk-cli melt --method bolt12
 # Pay BIP353 address
 cdk-cli melt --method bip353
 
-# Multi-path payment
+# Multi-path payment (interactive split selection)
 cdk-cli melt --mpp
+
+# Multi-path payment non-interactively (repeat --mpp-split)
+cdk-cli melt --mpp --invoice <bolt11_invoice> \
+  --mpp-split http://mint1.example.com=500 \
+  --mpp-split http://mint2.example.com=700
 ```
 
 ### Payment Requests

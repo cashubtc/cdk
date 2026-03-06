@@ -59,6 +59,9 @@ struct Cli {
     /// Currency unit to use for the wallet
     #[arg(short, long, default_value = "sat")]
     unit: String,
+    /// Disable all interactive prompts; commands must provide required arguments.
+    #[arg(short, long)]
+    non_interactive: bool,
     /// NpubCash API URL
     #[cfg(feature = "npubcash")]
     #[arg(long, default_value = "https://npubx.cash")]
@@ -138,6 +141,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Cli = Cli::parse();
+    utils::set_non_interactive(args.non_interactive);
     let default_filter = args.log_level;
 
     let filter = "rustls=warn,hyper_util=warn,reqwest=warn";
