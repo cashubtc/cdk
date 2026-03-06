@@ -44,6 +44,8 @@
         archSuffix = {
           "x86_64-linux" = "x86_64";
           "aarch64-linux" = "aarch64";
+          "x86_64-darwin" = "x86_64-apple-darwin";
+          "aarch64-darwin" = "aarch64-apple-darwin";
         }.${system} or null;
 
         cargoTargetEnvName = {
@@ -71,13 +73,13 @@
         };
 
         # Static/musl packages for fully static binary builds (Linux only)
-        pkgsMusl = import nixpkgs {
+        pkgsMusl = if muslTarget != null then import nixpkgs {
           localSystem = system;
           crossSystem = {
             config = muslTarget;
             isStatic = true;
           };
-        };
+        } else null;
 
         # Toolchains
         # latest stable
@@ -114,17 +116,22 @@
           }
         );
 
+<<<<<<< HEAD
         # Stable toolchain with musl target for static builds
         static_toolchain = pkgs.rust-bin.stable."1.93.0".default.override {
+=======
+        # Stable toolchain with musl target for static builds (Linux only)
+        static_toolchain = if muslTarget != null then pkgs.rust-bin.stable."1.93.1".default.override {
+>>>>>>> a5c39c1b (feat: add macos builds to release (#1702))
           targets = [ muslTarget ];
-        };
+        } else null;
 
         # ========================================
         # Crane setup for cached builds
         # ========================================
         craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
-        craneLibStatic = (crane.mkLib pkgs).overrideToolchain static_toolchain;
+        craneLibStatic = if static_toolchain != null then (crane.mkLib pkgs).overrideToolchain static_toolchain else null;
 
         # Source for crane builds - uses lib.fileset for efficient filtering
         # This is much faster than nix-gitignore when large directories (like target/) exist
@@ -191,11 +198,11 @@
 
         # Musl-targeting C compiler for crates that compile bundled C code
         # (libsqlite3-sys, secp256k1-sys, aws-lc-sys, etc.)
-        muslCC = pkgs.pkgsStatic.stdenv.cc;
+        muslCC = if muslTarget != null then pkgs.pkgsStatic.stdenv.cc else null;
 
         # Common args for static musl builds (Linux only)
         # Produces fully statically-linked binaries that run on any Linux system
-        commonCraneArgsStatic = {
+        commonCraneArgsStatic = if muslTarget != null then ({
           inherit src version;
           pname = "cdk-static";
 
@@ -237,7 +244,7 @@
         } // {
           # Dynamic attribute name for the cargo linker env var (arch-specific)
           ${cargoTargetEnvName} = "${muslCC}/bin/${muslCC.targetPrefix}cc";
-        };
+        }) else null;
 
         # Build ALL dependencies once - this is what gets cached by Cachix
         # Note: We exclude swagger feature as it tries to download assets during build
@@ -253,11 +260,11 @@
           cargoExtraArgs = "--workspace";
         });
 
-        # Static musl dependencies (separate cache for static builds)
-        workspaceDepsStatic = craneLibStatic.buildDepsOnly (commonCraneArgsStatic // {
+        # Static musl dependencies (separate cache for static builds, Linux only)
+        workspaceDepsStatic = if muslTarget != null then craneLibStatic.buildDepsOnly (commonCraneArgsStatic // {
           pname = "cdk-deps-static";
           cargoExtraArgs = "--workspace";
-        });
+        }) else null;
 
         # Helper function to create combined clippy + test checks
         # Runs both in a single derivation to share build artifacts
@@ -611,12 +618,12 @@
           ${pkgs.postgresql_16}/bin/psql "postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
         '';
 
-        # Helper to build a statically-linked binary package
+        # Helper to build a statically-linked binary package (Linux only)
         # bin: the cargo binary name (e.g. "cdk-mintd")
         # name: the output binary name prefix (e.g. "cdk-mintd-ldk")
         # cargoExtraArgs: additional cargo args (e.g. "--bin cdk-mintd --features ldk-node")
-        staticVersion = commonCraneArgsStatic.version;
-        mkStaticPackage = { bin, name, cargoExtraArgs }: craneLibStatic.buildPackage (commonCraneArgsStatic // {
+        staticVersion = if commonCraneArgsStatic != null then commonCraneArgsStatic.version else version;
+        mkStaticPackage = if muslTarget != null then ({ bin, name, cargoExtraArgs }: craneLibStatic.buildPackage (commonCraneArgsStatic // {
           pname = name;
           cargoArtifacts = workspaceDepsStatic;
           inherit cargoExtraArgs;
@@ -630,6 +637,22 @@
           # Strip Nix store references from binaries for reproducibility
           postFixup = ''
             find "$out" -type f -executable -exec remove-references-to -t ${static_toolchain} '{}' +
+          '';
+        })) else null;
+
+        # Helper to build a macOS release binary package (dynamically linked, as is standard on macOS)
+        # Uses the same release-static Cargo profile for consistent optimization settings
+        # bin: the cargo binary name (e.g. "cdk-mintd")
+        # name: the output binary name prefix (e.g. "cdk-mintd-ldk")
+        # cargoExtraArgs: additional cargo args (e.g. "--bin cdk-mintd --features ldk-node")
+        mkDarwinPackage = { bin, name, cargoExtraArgs }: craneLib.buildPackage (commonCraneArgs // {
+          pname = name;
+          cargoArtifacts = workspaceDeps;
+          inherit cargoExtraArgs;
+          CARGO_PROFILE = "release-static";
+          installPhaseCommand = ''
+            mkdir -p $out/bin
+            cp target/release-static/${bin} $out/bin/${name}-${version}-${archSuffix}
           '';
         });
 
@@ -646,10 +669,13 @@
         packages = {
           deps = workspaceDeps;
           deps-msrv = workspaceDepsMsrv;
+        }
+        # Static build deps (Linux only)
+        // lib.optionalAttrs (muslTarget != null) {
           deps-static = workspaceDepsStatic;
         }
-        # Static binary packages (fully statically-linked, runs on any x86_64 Linux)
-        // {
+        # Static binary packages (fully statically-linked, Linux only)
+        // lib.optionalAttrs (muslTarget != null) {
           cdk-mintd-static = mkStaticPackage {
             bin = "cdk-mintd";
             name = "cdk-mintd";
@@ -663,6 +689,26 @@
           };
 
           cdk-cli-static = mkStaticPackage {
+            bin = "cdk-cli";
+            name = "cdk-cli";
+            cargoExtraArgs = "--bin cdk-cli";
+          };
+        }
+        # macOS release binary packages (dynamically linked, Apple Silicon only)
+        // lib.optionalAttrs isDarwin {
+          cdk-mintd-darwin = mkDarwinPackage {
+            bin = "cdk-mintd";
+            name = "cdk-mintd";
+            cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
+          };
+
+          cdk-mintd-ldk-darwin = mkDarwinPackage {
+            bin = "cdk-mintd";
+            name = "cdk-mintd-ldk";
+            cargoExtraArgs = "--bin cdk-mintd --features ldk-node,postgres,prometheus,redis";
+          };
+
+          cdk-cli-darwin = mkDarwinPackage {
             bin = "cdk-cli";
             name = "cdk-cli";
             cargoExtraArgs = "--bin cdk-cli";
