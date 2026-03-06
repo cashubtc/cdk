@@ -1599,14 +1599,22 @@ async fn test_p2bk_multi_key_receive() {
 
     let secret1 = SecretKey::generate();
     let secret2 = SecretKey::generate();
-    
+
     // Multisig 1-of-2 (data key + 1 pubkey in tags)
-    let conds = cashu::nuts::Conditions::new(None, Some(vec![secret2.public_key()]), None, Some(1), None, None).unwrap();
+    let conds = cashu::nuts::Conditions::new(
+        None,
+        Some(vec![secret2.public_key()]),
+        None,
+        Some(1),
+        None,
+        None,
+    )
+    .unwrap();
     let spending_conditions = SpendingConditions::P2PKConditions {
         data: secret1.public_key(),
         conditions: Some(conds),
     };
-    
+
     let send_amount = Amount::from(10);
 
     let prepared = wallet_sender
@@ -1638,6 +1646,6 @@ async fn test_p2bk_multi_key_receive() {
         )
         .await
         .expect("Receiver should be able to redeem P2PK token with second key");
-        
+
     assert_eq!(send_amount, received_amount);
 }
