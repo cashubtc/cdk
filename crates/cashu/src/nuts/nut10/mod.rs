@@ -8,10 +8,15 @@ use std::str::FromStr;
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use serde::ser::SerializeTuple;
 use serde::{Deserialize, Serialize, Serializer};
-use thiserror::Error;
 
 use super::nut01::PublicKey;
 use super::Conditions;
+
+pub mod spending_conditions;
+pub use spending_conditions::SpendingConditions;
+
+pub mod error;
+pub use error::Error;
 
 /// Refund path requirements (available after locktime for HTLC)
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,17 +42,6 @@ pub(crate) struct SpendingRequirements {
     /// Refund path (available after locktime for HTLC)
     /// Per NUT-14: receiver path is ALWAYS available, refund path is available after locktime
     pub refund_path: Option<RefundPath>,
-}
-
-/// NUT13 Error
-#[derive(Debug, Error)]
-pub enum Error {
-    /// Secret error
-    #[error(transparent)]
-    Secret(#[from] crate::secret::Error),
-    /// Serde Json error
-    #[error(transparent)]
-    SerdeJsonError(#[from] serde_json::Error),
 }
 
 ///  NUT10 Secret Kind
@@ -157,7 +151,7 @@ impl Secret {
 pub(crate) fn get_pubkeys_and_required_sigs(
     secret: &Secret,
     current_time: u64,
-) -> Result<SpendingRequirements, super::nut11::Error> {
+) -> Result<SpendingRequirements, Error> {
     debug_assert!(
         secret.kind() == Kind::P2PK || secret.kind() == Kind::HTLC,
         "get_pubkeys_and_required_sigs called with invalid kind - this is a bug"
@@ -168,7 +162,8 @@ pub(crate) fn get_pubkeys_and_required_sigs(
         .tags()
         .cloned()
         .unwrap_or_default()
-        .try_into()?;
+        .try_into()
+        .map_err(|_| Error::CannotParseConditions)?;
 
     // Check if locktime has passed
     let locktime_passed = conditions
@@ -297,18 +292,16 @@ pub fn verify_htlc_preimage(
 /// into bitcoin secp256k1 Schnorr signatures.
 pub fn extract_signatures_from_witness(
     witness: &super::Witness,
-) -> Result<Vec<bitcoin::secp256k1::schnorr::Signature>, super::nut11::Error> {
+) -> Result<Vec<bitcoin::secp256k1::schnorr::Signature>, Error> {
     use std::str::FromStr;
 
-    let witness_sigs = witness
-        .signatures()
-        .ok_or(super::nut11::Error::SignaturesNotProvided)?;
+    let witness_sigs = witness.signatures().ok_or(Error::SignaturesNotProvided)?;
 
     witness_sigs
         .iter()
         .map(|s| bitcoin::secp256k1::schnorr::Signature::from_str(s))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| super::nut11::Error::InvalidSignature)
+        .map_err(|_| Error::InvalidSignature)
 }
 
 /// Trait for requests that spend proofs (SwapRequest, MeltRequest)
@@ -327,7 +320,7 @@ pub trait SpendingConditionVerification {
     ///
     /// SIG_ALL requires all proofs in the transaction to be signed.
     /// If any proof has this flag, we need to verify signatures on all proofs.
-    fn has_at_least_one_sig_all(&self) -> Result<bool, super::nut11::Error> {
+    fn has_at_least_one_sig_all(&self) -> Result<bool, Error> {
         for proof in self.inputs() {
             // Try to extract spending conditions from the proof's secret
             if let Ok(spending_conditions) = super::SpendingConditions::try_from(&proof.secret) {
@@ -345,7 +338,7 @@ pub trait SpendingConditionVerification {
                     return Ok(true);
                 }
             } else if proof.witness.is_some() {
-                return Err(super::nut11::Error::IncorrectWitnessKind);
+                return Err(Error::IncorrectWitnessKind);
             }
         }
 
@@ -359,46 +352,43 @@ pub trait SpendingConditionVerification {
     /// 2. SIG_ALL flag set
     /// 3. Same Secret.data
     /// 4. Same Secret.tags
-    fn verify_all_inputs_match_for_sig_all(&self) -> Result<(), super::nut11::Error> {
+    fn verify_all_inputs_match_for_sig_all(&self) -> Result<(), Error> {
         let inputs = self.inputs();
 
         // Get first input's properties
-        let first_input = inputs
-            .first()
-            .ok_or(super::nut11::Error::SpendConditionsNotMet)?;
-        let first_secret = Secret::try_from(&first_input.secret)
-            .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
+        let first_input = inputs.first().ok_or(Error::SpendConditionsNotMet)?;
+        let first_secret =
+            Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
         let first_kind = first_secret.kind();
         let first_data = first_secret.secret_data().data();
         let first_tags = first_secret.secret_data().tags();
 
         // Get first input's conditions to check SIG_ALL flag
-        let first_conditions =
-            super::Conditions::try_from(first_tags.cloned().unwrap_or_default())?;
+        let first_conditions = super::Conditions::try_from(first_tags.cloned().unwrap_or_default())
+            .map_err(|_| Error::CannotParseConditions)?;
 
         // Verify first input has SIG_ALL (it should, since we only call this function when SIG_ALL is detected)
         if first_conditions.sig_flag != super::SigFlag::SigAll {
-            return Err(super::nut11::Error::SpendConditionsNotMet);
+            return Err(Error::SpendConditionsNotMet);
         }
 
         // Verify all remaining inputs match
         for proof in inputs.iter().skip(1) {
-            let secret = Secret::try_from(&proof.secret)
-                .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
+            let secret = Secret::try_from(&proof.secret).map_err(|_| Error::IncorrectSecretKind)?;
 
             // Check kind matches
             if secret.kind() != first_kind {
-                return Err(super::nut11::Error::SpendConditionsNotMet);
+                return Err(Error::SpendConditionsNotMet);
             }
 
             // Check data matches
             if secret.secret_data().data() != first_data {
-                return Err(super::nut11::Error::SpendConditionsNotMet);
+                return Err(Error::SpendConditionsNotMet);
             }
 
             // Check tags match (this also ensures SIG_ALL flag matches, since sig_flag is part of tags)
             if secret.secret_data().tags() != first_tags {
-                return Err(super::nut11::Error::SpendConditionsNotMet);
+                return Err(Error::SpendConditionsNotMet);
             }
         }
 
@@ -409,7 +399,7 @@ pub trait SpendingConditionVerification {
     ///
     /// This is the main entry point for spending condition verification.
     /// It checks if any input has SIG_ALL and dispatches to the appropriate verification path.
-    fn verify_spending_conditions(&self) -> Result<(), super::nut11::Error> {
+    fn verify_spending_conditions(&self) -> Result<(), Error> {
         // Check if any input has SIG_ALL flag
         if self.has_at_least_one_sig_all()? {
             // at least one input has SIG_ALL
@@ -419,8 +409,8 @@ pub trait SpendingConditionVerification {
             // each independently and verify any spending conditions
             // that may - or may not - be there.
             self.verify_inputs_individually().map_err(|e| match e {
-                super::nut14::Error::NUT11(nut11_err) => nut11_err,
-                _ => super::nut11::Error::SpendConditionsNotMet,
+                super::nut14::Error::NUT10(nut10_err) => nut10_err,
+                _ => Error::SpendConditionsNotMet,
             })
         }
     }
@@ -428,7 +418,7 @@ pub trait SpendingConditionVerification {
     /// Verify spending conditions when SIG_ALL is present
     ///
     /// When SIG_ALL is set, all proofs in the transaction must be signed together.
-    fn verify_full_sig_all_check(&self) -> Result<(), super::nut11::Error> {
+    fn verify_full_sig_all_check(&self) -> Result<(), Error> {
         debug_assert!(
             self.has_at_least_one_sig_all()?,
             "verify_full_sig_all_check() called on proofs without SIG_ALL. This shouldn't happen"
@@ -438,12 +428,9 @@ pub trait SpendingConditionVerification {
         self.verify_all_inputs_match_for_sig_all()?;
 
         // Get the first input to determine the kind
-        let first_input = self
-            .inputs()
-            .first()
-            .ok_or(super::nut11::Error::SpendConditionsNotMet)?;
-        let first_secret = Secret::try_from(&first_input.secret)
-            .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
+        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
+        let first_secret =
+            Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
 
         // Dispatch based on secret kind
         match first_secret.kind() {
@@ -504,14 +491,11 @@ pub trait SpendingConditionVerification {
     /// Per NUT-11, there are two spending pathways after locktime:
     /// 1. Primary path (data + pubkeys): ALWAYS available
     /// 2. Refund path (refund keys): available AFTER locktime
-    fn verify_sig_all_p2pk(&self) -> Result<(), super::nut11::Error> {
+    fn verify_sig_all_p2pk(&self) -> Result<(), Error> {
         // Get the first input, as it's the one with the signatures
-        let first_input = self
-            .inputs()
-            .first()
-            .ok_or(super::nut11::Error::SpendConditionsNotMet)?;
-        let first_secret = Secret::try_from(&first_input.secret)
-            .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
+        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
+        let first_secret =
+            Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
 
         // Record current time for locktime evaluation
         let current_time = crate::util::unix_time();
@@ -539,7 +523,7 @@ pub trait SpendingConditionVerification {
         let first_witness = first_input
             .witness
             .as_ref()
-            .ok_or(super::nut11::Error::SignaturesNotProvided)?;
+            .ok_or(Error::SignaturesNotProvided)?;
 
         // Try primary path first (data + pubkeys)
         // Per NUT-11: "Locktime Multisig conditions continue to apply"
@@ -569,7 +553,8 @@ pub trait SpendingConditionVerification {
                     msg_to_sign.as_bytes(),
                     &refund_path.pubkeys,
                     &signatures,
-                )?;
+                )
+                .map_err(|_| Error::InvalidSignature)?;
 
                 if valid_sig_count >= refund_path.required_sigs {
                     return Ok(());
@@ -578,7 +563,7 @@ pub trait SpendingConditionVerification {
         }
 
         // Neither path succeeded
-        Err(super::nut11::Error::SpendConditionsNotMet)
+        Err(Error::SpendConditionsNotMet)
     }
 
     /// Verify HTLC SIG_ALL signatures
@@ -590,14 +575,11 @@ pub trait SpendingConditionVerification {
     /// Per NUT-14, there are two spending pathways:
     /// 1. Receiver path (preimage + pubkeys): ALWAYS available
     /// 2. Sender/Refund path (refund keys, no preimage): available AFTER locktime
-    fn verify_sig_all_htlc(&self) -> Result<(), super::nut11::Error> {
+    fn verify_sig_all_htlc(&self) -> Result<(), Error> {
         // Get the first input, as it's the one with the signatures
-        let first_input = self
-            .inputs()
-            .first()
-            .ok_or(super::nut11::Error::SpendConditionsNotMet)?;
-        let first_secret = Secret::try_from(&first_input.secret)
-            .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
+        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
+        let first_secret =
+            Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
 
         // Record current time for locktime evaluation
         let current_time = crate::util::unix_time();
@@ -633,7 +615,7 @@ pub trait SpendingConditionVerification {
         let first_witness = first_input
             .witness
             .as_ref()
-            .ok_or(super::nut11::Error::SignaturesNotProvided)?;
+            .ok_or(Error::SignaturesNotProvided)?;
 
         // Determine which path to use:
         // - If preimage is valid → use receiver path (always available)
@@ -649,12 +631,13 @@ pub trait SpendingConditionVerification {
                 msg_to_sign.as_bytes(),
                 &requirements.pubkeys,
                 &signatures,
-            )?;
+            )
+            .map_err(|_| Error::InvalidSignature)?;
 
             if valid_sig_count >= requirements.required_sigs {
                 Ok(())
             } else {
-                Err(super::nut11::Error::SpendConditionsNotMet)
+                Err(Error::SpendConditionsNotMet)
             }
         } else if let Some(refund_path) = &requirements.refund_path {
             // Refund path: preimage not valid/provided, but locktime has passed
@@ -664,16 +647,17 @@ pub trait SpendingConditionVerification {
                 msg_to_sign.as_bytes(),
                 &refund_path.pubkeys,
                 &signatures,
-            )?;
+            )
+            .map_err(|_| Error::InvalidSignature)?;
 
             if valid_sig_count >= refund_path.required_sigs {
                 Ok(())
             } else {
-                Err(super::nut11::Error::SpendConditionsNotMet)
+                Err(Error::SpendConditionsNotMet)
             }
         } else {
             // No valid preimage and refund path not available (locktime not passed)
-            Err(super::nut11::Error::SpendConditionsNotMet)
+            Err(Error::SpendConditionsNotMet)
         }
     }
 }

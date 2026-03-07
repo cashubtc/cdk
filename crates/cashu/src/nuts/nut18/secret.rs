@@ -1,8 +1,8 @@
 //! Secret types for NUT-18: Payment Requests
 use serde::{Deserialize, Serialize};
 
-use crate::nuts::nut10::Kind;
-use crate::nuts::{Nut10Secret, SpendingConditions};
+use crate::nuts::nut10::{Kind, SpendingConditions};
+use crate::nuts::Nut10Secret;
 
 /// Nut10Secret without nonce for payment requests
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]

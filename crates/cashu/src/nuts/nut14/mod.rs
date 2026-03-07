@@ -49,6 +49,9 @@ pub enum Error {
     /// Secp256k1 error
     #[error(transparent)]
     Secp256k1(#[from] bitcoin::secp256k1::Error),
+    /// NUT10 Error
+    #[error(transparent)]
+    NUT10(#[from] super::nut10::Error),
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] super::nut11::Error),
@@ -121,7 +124,7 @@ impl Proof {
         // Get the spending requirements (includes both receiver and refund paths)
         let now = unix_time();
         let requirements =
-            super::nut10::get_pubkeys_and_required_sigs(&secret, now).map_err(Error::NUT11)?;
+            super::nut10::get_pubkeys_and_required_sigs(&secret, now).map_err(Error::NUT10)?;
 
         // Try to extract HTLC witness - must be correct type
         let htlc_witness = match &self.witness {

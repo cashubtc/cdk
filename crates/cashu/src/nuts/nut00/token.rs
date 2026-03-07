@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::{Error, Proof, ProofV3, ProofV4, Proofs};
 use crate::mint_url::MintUrl;
 use crate::nut02::ShortKeysetId;
-use crate::nuts::nut11::SpendingConditions;
+use crate::nuts::nut10::SpendingConditions;
 use crate::nuts::{CurrencyUnit, Id, Kind, PublicKey};
 use crate::{ensure_cdk, Amount, KeySetInfo};
 
@@ -627,7 +627,8 @@ mod tests {
     use super::*;
     use crate::dhke::hash_to_curve;
     use crate::mint_url::MintUrl;
-    use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+    use crate::nuts::nut10::SpendingConditions;
+    use crate::nuts::nut11::{Conditions, SigFlag};
     use crate::secret::Secret;
     use crate::util::hex;
 
