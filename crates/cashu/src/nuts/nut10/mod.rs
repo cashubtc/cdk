@@ -10,8 +10,13 @@ use serde::ser::SerializeTuple;
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
+use crate::util::hex;
+
 use super::nut01::PublicKey;
 use super::Conditions;
+
+pub mod spending_conditions;
+pub use spending_conditions::SpendingConditions;
 
 /// Refund path requirements (available after locktime for HTLC)
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +47,18 @@ pub(crate) struct SpendingRequirements {
 /// NUT13 Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// HTLC hash invalid
+    #[error("Invalid hash")]
+    InvalidHash,
+    /// HTLC preimage too large
+    #[error("Preimage exceeds maximum size of 32 bytes (64 hex characters)")]
+    PreimageTooLarge,
+    /// From hex error
+    #[error(transparent)]
+    HexError(#[from] hex::Error),
+    /// NUT01 Error
+    #[error(transparent)]
+    NUT01(#[from] crate::nuts::nut01::Error),
     /// Secret error
     #[error(transparent)]
     Secret(#[from] crate::secret::Error),
