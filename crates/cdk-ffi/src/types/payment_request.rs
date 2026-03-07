@@ -98,6 +98,11 @@ impl PaymentRequest {
         self.inner.to_string()
     }
 
+    /// Encode the payment request to a NUT-26 bech32m string (creqB prefix)
+    pub fn to_bech32_string(&self) -> Result<String, FfiError> {
+        self.inner.to_bech32_string().map_err(FfiError::internal)
+    }
+
     /// Get the payment ID
     pub fn payment_id(&self) -> Option<String> {
         self.inner.payment_id.clone()
@@ -415,6 +420,30 @@ mod tests {
             req.amount().map(|a| a.value),
             decoded.amount().map(|a| a.value)
         );
+    }
+
+    #[test]
+    fn test_to_bech32_string() {
+        let req = PaymentRequest::from_string(PAYMENT_REQUEST.to_string()).unwrap();
+        let bech32 = req.to_bech32_string().unwrap();
+
+        // NUT-26 bech32m strings use the CREQB prefix (uppercase for QR compat)
+        assert!(
+            bech32.starts_with("CREQB1"),
+            "Expected bech32 string to start with CREQB1, got: {}",
+            &bech32[..10.min(bech32.len())]
+        );
+
+        // Round-trip: decode the bech32m string and verify fields match
+        let decoded = PaymentRequest::from_string(bech32).unwrap();
+        assert_eq!(req.payment_id(), decoded.payment_id());
+        assert_eq!(
+            req.amount().map(|a| a.value),
+            decoded.amount().map(|a| a.value)
+        );
+        assert_eq!(req.mints(), decoded.mints());
+        assert_eq!(req.single_use(), decoded.single_use());
+        assert_eq!(req.description(), decoded.description());
     }
 
     #[test]
