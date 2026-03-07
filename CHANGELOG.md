@@ -5,7 +5,15 @@
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
 
-## [Unreleased]
+## [0.15.2](https://github.com/cashubtc/cdk/releases/tag/v0.15.2)
+
+### Added
+- cdk-ffi: Export `to_bech32_string` for payment requests ([thesimplekid])
+- cdk-cli: Add `recover-incomplete-sagas` command to recover from interrupted wallet operations ([thesimplekid])
+
+### Fixed
+- cashu: Allow denomination reuse in amount split for restricted keysets ([thesimplekid])
+- cdk: Compensate prepared saga in mint ([thesimplekid])
 
 ## [0.15.1](https://github.com/cashubtc/cdk/releases/tag/v0.15.1)
 
