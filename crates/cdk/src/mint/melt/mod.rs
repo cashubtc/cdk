@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::str::FromStr;
 
 use cdk_common::melt::MeltQuoteRequest;
@@ -33,18 +35,53 @@ mod tests;
 
 use melt_saga::MeltSaga;
 
-#[derive(Debug, Clone, Copy)]
-enum MeltExecutionMode {
-    Await,
-    Background,
+/// Outcome of mint melt processing.
+#[derive(Debug)]
+pub enum MeltOutcome {
+    /// Melt completed immediately.
+    Paid(MeltQuoteBolt11Response<QuoteId>),
+    /// Melt was accepted and is completing in background.
+    Pending(PendingMelt),
+}
+
+/// A pending mint melt that can optionally be awaited.
+#[derive(Debug)]
+pub struct PendingMelt {
+    response: MeltQuoteBolt11Response<QuoteId>,
+    completion: tokio::task::JoinHandle<Result<MeltQuoteBolt11Response<QuoteId>, Error>>,
+}
+
+impl PendingMelt {
+    /// Return the immediate pending response (NUT-05 style).
+    pub fn into_pending_response(self) -> MeltQuoteBolt11Response<QuoteId> {
+        self.response
+    }
+
+    async fn wait(self) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        match self.completion.await {
+            Ok(result) => result,
+            Err(err) => {
+                tracing::error!("Background melt task failed to join: {}", err);
+                Err(Error::Internal)
+            }
+        }
+    }
+}
+
+impl std::future::IntoFuture for PendingMelt {
+    type Output = Result<MeltQuoteBolt11Response<QuoteId>, Error>;
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.wait())
+    }
 }
 
 impl Mint {
-    async fn melt_with_mode(
+    async fn melt_with_outcome_impl(
         &self,
         melt_request: &MeltRequest<QuoteId>,
-        mode: MeltExecutionMode,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltOutcome, Error> {
         // Check max outputs limit (if change outputs are provided)
         if let Some(outputs) = melt_request.outputs() {
             let outputs_count = outputs.len();
@@ -97,48 +134,49 @@ impl Mint {
             payment_saga.finalize().await
         };
 
-        match mode {
-            MeltExecutionMode::Await => completion.await,
-            MeltExecutionMode::Background => {
-                let quote_id_for_log = quote_id.clone();
+        let quote_id_for_log = quote_id.clone();
+        let completion = tokio::spawn(async move {
+            tracing::debug!(
+                "Starting background melt completion for quote: {}",
+                quote_id_for_log
+            );
 
-                tokio::spawn(async move {
-                    tracing::debug!(
-                        "Starting background melt completion for quote: {}",
+            let result = completion.await;
+
+            match &result {
+                Ok(_) => {
+                    tracing::info!(
+                        "Background melt completed successfully for quote: {}",
                         quote_id_for_log
                     );
-
-                    match completion.await {
-                        Ok(_) => {
-                            tracing::info!(
-                                "Background melt completed successfully for quote: {}",
-                                quote_id_for_log
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Background melt completion failed for quote {}: {}",
-                                quote_id_for_log,
-                                e
-                            );
-                        }
-                    }
-                });
-
-                // Return immediately with the quote in PENDING state
-                Ok(MeltQuoteBolt11Response {
-                    quote: quote_id,
-                    amount: quote.amount().into(),
-                    fee_reserve: quote.fee_reserve().into(),
-                    state: MeltQuoteState::Pending,
-                    expiry: quote.expiry,
-                    payment_preimage: None,
-                    change: None,
-                    request: Some(quote.request.to_string()),
-                    unit: Some(quote.unit),
-                })
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Background melt completion failed for quote {}: {}",
+                        quote_id_for_log,
+                        e
+                    );
+                }
             }
-        }
+
+            result
+        });
+
+        // Return immediately with the quote in PENDING state and an awaitable completion future.
+        Ok(MeltOutcome::Pending(PendingMelt {
+            response: MeltQuoteBolt11Response {
+                quote: quote_id,
+                amount: quote.amount().into(),
+                fee_reserve: quote.fee_reserve().into(),
+                state: MeltQuoteState::Pending,
+                expiry: quote.expiry,
+                payment_preimage: None,
+                change: None,
+                request: Some(quote.request.to_string()),
+                unit: Some(quote.unit),
+            },
+            completion,
+        }))
     }
 
     #[instrument(skip_all)]
@@ -656,8 +694,10 @@ impl Mint {
         &self,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
-        self.melt_with_mode(melt_request, MeltExecutionMode::Await)
-            .await
+        match self.melt_with_outcome_impl(melt_request).await? {
+            MeltOutcome::Paid(response) => Ok(response),
+            MeltOutcome::Pending(pending) => pending.await,
+        }
     }
 
     /// Process melt asynchronously - returns immediately after setup with PENDING state
@@ -669,7 +709,18 @@ impl Mint {
         &self,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
-        self.melt_with_mode(melt_request, MeltExecutionMode::Background)
-            .await
+        match self.melt_with_outcome_impl(melt_request).await? {
+            MeltOutcome::Paid(response) => Ok(response),
+            MeltOutcome::Pending(pending) => Ok(pending.into_pending_response()),
+        }
+    }
+
+    /// Process melt and return an outcome with an optional awaitable pending future.
+    #[instrument(skip_all)]
+    pub async fn melt_outcome(
+        &self,
+        melt_request: &MeltRequest<QuoteId>,
+    ) -> Result<MeltOutcome, Error> {
+        self.melt_with_outcome_impl(melt_request).await
     }
 }
