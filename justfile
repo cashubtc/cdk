@@ -807,3 +807,32 @@ ffi-release-kotlin VERSION:
     --field cdk_ref="v{{VERSION}}"
   
   echo "✅ Kotlin workflow triggered successfully!"
+
+# Generate Dart FFI bindings
+binding-dart:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/dart"
+  ./generate-bindings.sh
+
+# Run the Flutter wallet example
+example-dart:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/dart/flutter_example"
+  flutter run
+
+# Generate Swift FFI bindings and XCFramework
+binding-swift:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/swift"
+  ./generate-bindings.sh
+
+# Run the Swift wallet example
+example-swift:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/swift/example"
+  swift build
+  open "$(swift build --show-bin-path)/CdkExample"
