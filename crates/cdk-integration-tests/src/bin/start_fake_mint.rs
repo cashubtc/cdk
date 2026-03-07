@@ -76,6 +76,20 @@ async fn start_fake_mint(
         reserve_fee_min: 1.into(),
         min_delay_time: 1,
         max_delay_time: 3,
+        keyset_rotations: vec![
+            cdk_mintd::config::FakeWalletKeysetRotation {
+                unit: CurrencyUnit::Sat,
+                input_fee_ppk: 0,
+                version: "v1".into(),
+                expired: true,
+            },
+            cdk_mintd::config::FakeWalletKeysetRotation {
+                unit: CurrencyUnit::Sat,
+                input_fee_ppk: 0,
+                version: "v2".into(),
+                expired: false,
+            },
+        ],
     });
 
     // Create settings struct for fake mint using shared function

@@ -405,6 +405,27 @@ fn default_webserver_port() -> Option<u16> {
 
 #[cfg(feature = "fakewallet")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FakeWalletKeysetRotation {
+    /// Currency unit (e.g. "sat", "usd")
+    pub unit: CurrencyUnit,
+    /// Input fee in parts per thousand
+    #[serde(default)]
+    pub input_fee_ppk: u64,
+    /// Keyset version: "v1" (Version00) or "v2" (Version01)
+    #[serde(default = "default_keyset_version")]
+    pub version: String,
+    /// If true, the keyset will be created with a past expiry (expired)
+    #[serde(default)]
+    pub expired: bool,
+}
+
+#[cfg(feature = "fakewallet")]
+fn default_keyset_version() -> String {
+    "v1".to_string()
+}
+
+#[cfg(feature = "fakewallet")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FakeWallet {
     pub supported_units: Vec<CurrencyUnit>,
     pub fee_percent: f32,
@@ -413,6 +434,9 @@ pub struct FakeWallet {
     pub min_delay_time: u64,
     #[serde(default = "default_max_delay_time")]
     pub max_delay_time: u64,
+    /// Additional keyset rotations to create during mint build
+    #[serde(default)]
+    pub keyset_rotations: Vec<FakeWalletKeysetRotation>,
 }
 
 #[cfg(feature = "fakewallet")]
@@ -424,6 +448,7 @@ impl Default for FakeWallet {
             reserve_fee_min: 2.into(),
             min_delay_time: 1,
             max_delay_time: 3,
+            keyset_rotations: Vec::new(),
         }
     }
 }
