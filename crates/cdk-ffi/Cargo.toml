@@ -28,7 +28,7 @@ serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
-uniffi = { version = "0.30", features = ["cli", "tokio"] }
+uniffi = { workspace = true, features = ["cli", "tokio"] }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 cdk-common.workspace = true

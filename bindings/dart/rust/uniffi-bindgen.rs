@@ -51,8 +51,8 @@ fn main() {
 
 /// Patches the generated cdk_ffi.dart to fix uniffi-dart codegen issues.
 fn patch_generated(path: &camino::Utf8Path) {
-    let content = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path, e));
+    let content =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("Failed to read {}: {}", path, e));
 
     let mut content = content;
 
@@ -65,10 +65,7 @@ fn patch_generated(path: &camino::Utf8Path) {
         "_uniffiForeignFutureHandleMap.insert(state)",
         "_uniffiForeignFutureHandleMap.insert(_futureState)",
     );
-    content = content.replace(
-        "removedState ?? state",
-        "removedState ?? _futureState",
-    );
+    content = content.replace("removedState ?? state", "removedState ?? _futureState");
 
     // 2. Remove WalletDatabase from implements clause of concrete database classes.
     // The codegen adds it because they implement the trait in Rust, but the Dart
@@ -123,8 +120,7 @@ class _RustOwnedWalletDatabase implements WalletDatabase {
         "  static Pointer<Void> lower(WalletDatabase value) {\n    if (value is _RustOwnedWalletDatabase) {\n      return value.clonePointer();\n    }\n    _ensureVTableInitialized();\n    final handle = _handleMap.insert(value);\n    return Pointer<Void>.fromAddress(handle);\n  }",
     );
 
-    std::fs::write(path, content)
-        .unwrap_or_else(|e| panic!("Failed to write {}: {}", path, e));
+    std::fs::write(path, content).unwrap_or_else(|e| panic!("Failed to write {}: {}", path, e));
 
     eprintln!("Patched {}", path);
 }

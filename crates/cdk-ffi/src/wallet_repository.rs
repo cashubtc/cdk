@@ -26,10 +26,7 @@ impl WalletRepository {
     /// - `Postgres { url }` — built-in Rust Postgres backend
     /// - `Custom { db }` — foreign-language implementation of `WalletDatabase`
     #[uniffi::constructor]
-    pub fn new(
-        mnemonic: String,
-        store: crate::database::WalletStore,
-    ) -> Result<Self, FfiError> {
+    pub fn new(mnemonic: String, store: crate::database::WalletStore) -> Result<Self, FfiError> {
         let db = crate::database::resolve_wallet_store(store)?;
 
         // Parse mnemonic and generate seed without passphrase
