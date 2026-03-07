@@ -8,6 +8,7 @@ use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
 use cdk_common::Amount;
 
+use crate::mint::MeltOutcome;
 use crate::test_helpers::nut10::{create_test_keypair, unzip3, TestMintHelper};
 
 /// Test: P2PK with SIG_ALL flag requires transaction signature
@@ -161,7 +162,10 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
     println!("✓ P2PK SIG_ALL spending conditions verified successfully");
 
     // Perform the actual melt - this also verifies spending conditions internally
-    let melt_response = mint.melt(&melt_request).await.unwrap();
+    let melt_response = match mint.melt(&melt_request).await.unwrap() {
+        MeltOutcome::Paid(response) => response,
+        MeltOutcome::Pending(pending) => pending.await.unwrap(),
+    };
     println!("✓ Melt operation completed successfully!");
     println!("  Quote state: {}", melt_response.state);
     assert_eq!(melt_response.quote, melt_quote.quote);

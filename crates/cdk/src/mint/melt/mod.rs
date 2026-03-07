@@ -78,107 +78,6 @@ impl std::future::IntoFuture for PendingMelt {
 }
 
 impl Mint {
-    async fn melt_with_outcome_impl(
-        &self,
-        melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<MeltOutcome, Error> {
-        // Check max outputs limit (if change outputs are provided)
-        if let Some(outputs) = melt_request.outputs() {
-            let outputs_count = outputs.len();
-            if outputs_count > self.max_outputs {
-                tracing::warn!(
-                    "Melt request exceeds max outputs limit: {} > {}",
-                    outputs_count,
-                    self.max_outputs
-                );
-                return Err(Error::MaxOutputsExceeded {
-                    actual: outputs_count,
-                    max: self.max_outputs,
-                });
-            }
-        }
-
-        let verification = self.verify_inputs(melt_request.inputs()).await?;
-
-        // Fetch the quote to get payment_method for operation tracking
-        let quote_id = melt_request.quote().clone();
-        let quote = self
-            .localstore
-            .get_melt_quote(&quote_id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
-
-        let init_saga = MeltSaga::new(
-            std::sync::Arc::new(self.clone()),
-            self.localstore.clone(),
-            std::sync::Arc::clone(&self.pubsub_manager),
-        );
-
-        // Step 1: Setup (TX1 - reserves inputs and outputs)
-        let setup_saga = init_saga
-            .setup_melt(melt_request, verification, quote.payment_method.clone())
-            .await?;
-
-        let melt_request_owned = melt_request.clone();
-        let completion = async move {
-            // Step 2: Attempt internal settlement (returns saga + SettlementDecision)
-            // Note: Compensation is handled internally if this fails
-            let (setup_saga, settlement) = setup_saga
-                .attempt_internal_settlement(&melt_request_owned)
-                .await?;
-
-            // Step 3: Make payment (internal or external)
-            let payment_saga = setup_saga.make_payment(settlement).await?;
-
-            // Step 4: Finalize (TX2 - marks spent, issues change)
-            payment_saga.finalize().await
-        };
-
-        let quote_id_for_log = quote_id.clone();
-        let completion = tokio::spawn(async move {
-            tracing::debug!(
-                "Starting background melt completion for quote: {}",
-                quote_id_for_log
-            );
-
-            let result = completion.await;
-
-            match &result {
-                Ok(_) => {
-                    tracing::info!(
-                        "Background melt completed successfully for quote: {}",
-                        quote_id_for_log
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Background melt completion failed for quote {}: {}",
-                        quote_id_for_log,
-                        e
-                    );
-                }
-            }
-
-            result
-        });
-
-        // Return immediately with the quote in PENDING state and an awaitable completion future.
-        Ok(MeltOutcome::Pending(PendingMelt {
-            response: MeltQuoteBolt11Response {
-                quote: quote_id,
-                amount: quote.amount().into(),
-                fee_reserve: quote.fee_reserve().into(),
-                state: MeltQuoteState::Pending,
-                expiry: quote.expiry,
-                payment_preimage: None,
-                change: None,
-                request: Some(quote.request.to_string()),
-                unit: Some(quote.unit),
-            },
-            completion,
-        }))
-    }
-
     #[instrument(skip_all)]
     async fn check_melt_request_acceptable(
         &self,
@@ -690,37 +589,104 @@ impl Mint {
     ///
     /// Uses MeltSaga typestate pattern for atomic transaction handling with automatic rollback on failure.
     #[instrument(skip_all)]
-    pub async fn melt(
-        &self,
-        melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
-        match self.melt_with_outcome_impl(melt_request).await? {
-            MeltOutcome::Paid(response) => Ok(response),
-            MeltOutcome::Pending(pending) => pending.await,
+    pub async fn melt(&self, melt_request: &MeltRequest<QuoteId>) -> Result<MeltOutcome, Error> {
+        // Check max outputs limit (if change outputs are provided)
+        if let Some(outputs) = melt_request.outputs() {
+            let outputs_count = outputs.len();
+            if outputs_count > self.max_outputs {
+                tracing::warn!(
+                    "Melt request exceeds max outputs limit: {} > {}",
+                    outputs_count,
+                    self.max_outputs
+                );
+                return Err(Error::MaxOutputsExceeded {
+                    actual: outputs_count,
+                    max: self.max_outputs,
+                });
+            }
         }
-    }
 
-    /// Process melt asynchronously - returns immediately after setup with PENDING state
-    ///
-    /// This method is called when the client includes the `Prefer: respond-async` header.
-    /// It performs the setup phase (TX1) to validate and reserve proofs, then spawns a
-    /// background task to complete the payment and finalization phases.
-    pub async fn melt_async(
-        &self,
-        melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
-        match self.melt_with_outcome_impl(melt_request).await? {
-            MeltOutcome::Paid(response) => Ok(response),
-            MeltOutcome::Pending(pending) => Ok(pending.into_pending_response()),
-        }
-    }
+        let verification = self.verify_inputs(melt_request.inputs()).await?;
 
-    /// Process melt and return an outcome with an optional awaitable pending future.
-    #[instrument(skip_all)]
-    pub async fn melt_outcome(
-        &self,
-        melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<MeltOutcome, Error> {
-        self.melt_with_outcome_impl(melt_request).await
+        // Fetch the quote to get payment_method for operation tracking
+        let quote_id = melt_request.quote().clone();
+        let quote = self
+            .localstore
+            .get_melt_quote(&quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        let init_saga = MeltSaga::new(
+            std::sync::Arc::new(self.clone()),
+            self.localstore.clone(),
+            std::sync::Arc::clone(&self.pubsub_manager),
+        );
+
+        // Step 1: Setup (TX1 - reserves inputs and outputs)
+        let setup_saga = init_saga
+            .setup_melt(melt_request, verification, quote.payment_method.clone())
+            .await?;
+
+        let melt_request_owned = melt_request.clone();
+        let quote_id_for_log = quote_id.clone();
+        let completion = tokio::spawn(async move {
+            tracing::debug!(
+                "Starting background melt completion for quote: {}",
+                quote_id_for_log
+            );
+
+            // Step 2: Attempt internal settlement (returns saga + SettlementDecision)
+            // Note: Compensation is handled internally if this fails
+            let result = match setup_saga
+                .attempt_internal_settlement(&melt_request_owned)
+                .await
+            {
+                Ok((setup_saga, settlement)) => {
+                    // Step 3: Make payment (internal or external)
+                    match setup_saga.make_payment(settlement).await {
+                        Ok(payment_saga) => {
+                            // Step 4: Finalize (TX2 - marks spent, issues change)
+                            payment_saga.finalize().await
+                        }
+                        Err(err) => Err(err),
+                    }
+                }
+                Err(err) => Err(err),
+            };
+
+            match &result {
+                Ok(_) => {
+                    tracing::info!(
+                        "Background melt completed successfully for quote: {}",
+                        quote_id_for_log
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Background melt completion failed for quote {}: {}",
+                        quote_id_for_log,
+                        e
+                    );
+                }
+            }
+
+            result
+        });
+
+        // Return immediately with the quote in PENDING state and an awaitable completion future.
+        Ok(MeltOutcome::Pending(PendingMelt {
+            response: MeltQuoteBolt11Response {
+                quote: quote_id,
+                amount: quote.amount().into(),
+                fee_reserve: quote.fee_reserve().into(),
+                state: MeltQuoteState::Pending,
+                expiry: quote.expiry,
+                payment_preimage: None,
+                change: None,
+                request: Some(quote.request.to_string()),
+                unit: Some(quote.unit),
+            },
+            completion,
+        }))
     }
 }

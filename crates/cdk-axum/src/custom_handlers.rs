@@ -341,11 +341,7 @@ pub async fn post_melt_custom(
     // Check for async preference in either the Prefer header or the request body
     let respond_async = prefer.respond_async || payload.is_prefer_async();
 
-    let outcome = state
-        .mint
-        .melt_outcome(&payload)
-        .await
-        .map_err(into_response)?;
+    let outcome = state.mint.melt(&payload).await.map_err(into_response)?;
 
     let res = match outcome {
         MeltOutcome::Paid(response) => response,
