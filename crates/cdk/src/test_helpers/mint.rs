@@ -148,9 +148,12 @@ pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Err
 
     loop {
         let check: MintQuoteBolt11Response<_> = mint
-            .check_mint_quote(&cdk_common::QuoteId::from_str(&mint_quote.quote).unwrap())
+            .check_mint_quotes(&[cdk_common::QuoteId::from_str(&mint_quote.quote).unwrap()])
             .await
             .unwrap()
+            .first()
+            .unwrap()
+            .clone()
             .into();
 
         if check.state == MintQuoteState::Paid {
@@ -182,7 +185,7 @@ pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Err
     };
 
     let mint_res = mint
-        .process_mint_request(request.try_into().unwrap())
+        .process_mint_request(crate::mint::MintInput::Single(request.try_into().unwrap()))
         .await?;
 
     Ok(construct_proofs(

@@ -20,10 +20,10 @@ use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
-    CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
+    CurrencyUnit, Id, KeySet, KeysetResponse, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    MeltRequest, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, MintRequest,
+    MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
@@ -105,9 +105,14 @@ impl MintConnector for DirectMintConnection {
         quote_id: &str,
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         self.mint
-            .check_mint_quote(&QuoteId::from_str(quote_id)?)
+            .check_mint_quotes(&[QuoteId::from_str(quote_id)?])
             .await
-            .map(Into::into)
+            .and_then(|v| {
+                v.first()
+                    .cloned()
+                    .map(Into::into)
+                    .ok_or(Error::UnknownQuote)
+            })
     }
 
     async fn post_mint(
@@ -116,7 +121,48 @@ impl MintConnector for DirectMintConnection {
         request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
         let request_id: MintRequest<QuoteId> = request.try_into().unwrap();
-        self.mint.process_mint_request(request_id).await
+        self.mint
+            .process_mint_request(cdk::mint::MintInput::Single(request_id))
+            .await
+    }
+
+    async fn post_batch_check_mint_quote_status(
+        &self,
+        _method: &PaymentMethod,
+        request: BatchCheckMintQuoteRequest<String>,
+    ) -> Result<Vec<MintQuoteBolt11Response<String>>, Error> {
+        let quote_ids: Vec<QuoteId> = request
+            .quotes
+            .iter()
+            .filter_map(|s| QuoteId::from_str(s).ok())
+            .collect();
+        self.mint
+            .check_mint_quotes(&quote_ids)
+            .await
+            .map(|responses| responses.into_iter().map(Into::into).collect())
+    }
+
+    async fn post_batch_mint(
+        &self,
+        _method: &PaymentMethod,
+        request: BatchMintRequest<String>,
+    ) -> Result<MintResponse, Error> {
+        let quotes: Vec<QuoteId> = request
+            .quotes
+            .iter()
+            .filter_map(|s| QuoteId::from_str(s).ok())
+            .collect();
+
+        let request_id = BatchMintRequest {
+            quotes,
+            quote_amounts: request.quote_amounts,
+            outputs: request.outputs,
+            signatures: request.signatures,
+        };
+
+        self.mint
+            .process_mint_request(cdk::mint::MintInput::Batch(request_id))
+            .await
     }
 
     async fn post_melt_quote(
@@ -335,7 +381,8 @@ pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
         .with_name("pure test mint".to_string())
         .with_description("pure test mint".to_string())
         .with_urls(vec!["https://aaa".to_string()])
-        .with_limits(2000, 2000);
+        .with_limits(2000, 2000)
+        .with_batch_minting(Some(100), Some(vec!["bolt11".to_string()]));
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
@@ -397,7 +444,8 @@ pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<M
     mint_builder = mint_builder
         .with_name("pure test mint".to_string())
         .with_description("pure test mint".to_string())
-        .with_urls(vec!["https://aaa".to_string()]);
+        .with_urls(vec!["https://aaa".to_string()])
+        .with_batch_minting(Some(100), Some(vec!["bolt11".to_string()]));
 
     if let Some((max_inputs, max_outputs)) = limits {
         mint_builder = mint_builder.with_limits(max_inputs, max_outputs);
