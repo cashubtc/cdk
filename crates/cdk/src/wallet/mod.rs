@@ -36,6 +36,7 @@ use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::{Amount, OidcClient};
 
 mod auth;
+pub mod bip321;
 #[cfg(feature = "nostr")]
 mod nostr_backup;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
@@ -66,6 +67,7 @@ pub mod util;
 pub mod wallet_repository;
 
 pub use auth::{AuthMintConnector, AuthWallet};
+pub use bip321::{Bip321UriBuilder, ParsedPaymentInstruction, PaymentRequestBip321Ext};
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
