@@ -1,8 +1,9 @@
 //! Secret types for NUT-18: Payment Requests
 use serde::{Deserialize, Serialize};
 
-use crate::nuts::nut10::Kind;
-use crate::nuts::{Nut10Secret, SpendingConditions};
+use crate::nuts::nut10::{Kind, SpendingConditions};
+use crate::nuts::Nut10Secret;
+use crate::SecretData;
 
 /// Nut10Secret without nonce for payment requests
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,7 +46,7 @@ impl From<Nut10Secret> for Nut10SecretRequest {
 
 impl From<Nut10SecretRequest> for Nut10Secret {
     fn from(value: Nut10SecretRequest) -> Self {
-        Self::new(value.kind, value.data, value.tags)
+        Self::new(value.kind, SecretData::new(value.data, value.tags))
     }
 }
 
@@ -100,8 +101,10 @@ mod tests {
     fn test_from_nut10_secret() {
         let secret = Nut10Secret::new(
             Kind::P2PK,
-            "test_data",
-            Some(vec![vec!["key".to_string(), "value".to_string()]]),
+            SecretData::new(
+                "test_data",
+                Some(vec![vec!["key".to_string(), "value".to_string()]]),
+            ),
         );
 
         let request: Nut10SecretRequest = secret.clone().into();

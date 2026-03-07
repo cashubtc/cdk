@@ -438,6 +438,9 @@ pub enum Error {
     /// NUT05 error
     #[error(transparent)]
     NUT05(#[from] crate::nuts::nut05::Error),
+    /// NUT10 Error
+    #[error(transparent)]
+    NUT10(#[from] crate::nuts::nut10::Error),
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),

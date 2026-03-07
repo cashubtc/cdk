@@ -490,7 +490,9 @@ async fn test_swap_p2pk_signature_validation() {
         SwapRequest::new(p2pk_proofs.clone(), preswap_unsigned.blinded_messages());
 
     match mint.process_swap_request(swap_request_unsigned).await {
-        Err(cdk::Error::NUT11(cdk::nuts::nut11::Error::SignaturesNotProvided)) => {
+        Err(cdk::Error::NUT10(cdk::nuts::nut10::Error::NUT11(
+            cdk::nuts::nut11::Error::SignaturesNotProvided,
+        ))) => {
             // Expected error
         }
         Err(err) => panic!("Wrong error type: {:?}", err),

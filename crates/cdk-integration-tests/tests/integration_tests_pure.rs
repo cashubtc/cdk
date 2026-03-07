@@ -511,7 +511,9 @@ pub async fn test_p2pk_swap() {
     match mint_bob.process_swap_request(swap_request).await {
         Ok(_) => panic!("Proofs spent without sig"),
         Err(err) => match err {
-            cdk::Error::NUT11(cdk::nuts::nut11::Error::SignaturesNotProvided) => (),
+            cdk::Error::NUT10(cdk::nuts::nut10::Error::NUT11(
+                cdk::nuts::nut11::Error::SignaturesNotProvided,
+            )) => (),
             _ => {
                 println!("{:?}", err);
                 panic!("Wrong error returned")

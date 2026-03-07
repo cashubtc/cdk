@@ -19,8 +19,6 @@ use super::nut02::ShortKeysetId;
 #[cfg(feature = "wallet")]
 use super::nut10;
 #[cfg(feature = "wallet")]
-use super::nut11::SpendingConditions;
-#[cfg(feature = "wallet")]
 use crate::amount::FeeAndAmounts;
 #[cfg(feature = "wallet")]
 use crate::amount::SplitTarget;
@@ -1037,7 +1035,7 @@ impl PreMintSecrets {
         amount: Amount,
         amount_split_target: &SplitTarget,
         receiver_pubkey: PublicKey,
-        conditions: Option<crate::nuts::nut11::Conditions>,
+        conditions: Option<crate::nuts::nut10::Conditions>,
         ephemeral_keys: &[crate::nuts::nut01::SecretKey],
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
@@ -1120,7 +1118,7 @@ impl PreMintSecrets {
         keyset_id: Id,
         amount: Amount,
         amount_split_target: &SplitTarget,
-        conditions: &SpendingConditions,
+        conditions: &nut10::SpendingConditions,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
         let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
