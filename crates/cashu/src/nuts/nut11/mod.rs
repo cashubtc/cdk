@@ -18,7 +18,7 @@ use super::nut05::MeltRequest;
 use super::nut10::SpendingConditionVerification;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
 use crate::nuts::nut00::BlindedMessage;
-use crate::util::{hex, unix_time};
+use crate::util::unix_time;
 use crate::{ensure_cdk, SwapRequest};
 
 pub mod serde_p2pk_witness;
@@ -86,15 +86,9 @@ pub enum Error {
     /// SIG_ALL not supported in this context
     #[error("SIG_ALL proofs must be verified using a different method")]
     SigAllNotSupportedHere,
-    /// Parse Url Error
-    #[error(transparent)]
-    UrlParseError(#[from] url::ParseError),
     /// Parse int error
     #[error(transparent)]
     ParseInt(#[from] std::num::ParseIntError),
-    /// From hex error
-    #[error(transparent)]
-    HexError(#[from] hex::Error),
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
@@ -170,7 +164,11 @@ impl Proof {
 
         // Get spending requirements (includes both primary and refund paths)
         let now = unix_time();
-        let requirements = super::nut10::get_pubkeys_and_required_sigs(&secret, now)?;
+        let requirements =
+            super::nut10::get_pubkeys_and_required_sigs(&secret, now).map_err(|err| match err {
+                super::nut10::Error::NUT11(nut11_err) => nut11_err,
+                _ => Error::SpendConditionsNotMet,
+            })?;
 
         if requirements.preimage_needed {
             return Err(Error::PreimageNotSupportedInP2PK);

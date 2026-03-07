@@ -4,7 +4,7 @@
 
 use std::{collections::HashSet, str::FromStr};
 
-use crate::{nut10::Error, secret::Secret, util::hex, Kind, Nut10Secret};
+use crate::{nut10::Error, nut14, secret::Secret, util::hex, Kind, Nut10Secret};
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use serde::{Deserialize, Serialize};
@@ -38,13 +38,16 @@ pub enum SpendingConditions {
 
 impl SpendingConditions {
     /// New HTLC [SpendingConditions]
-    pub fn new_htlc(preimage: String, conditions: Option<Conditions>) -> Result<Self, Error> {
+    pub fn new_htlc(
+        preimage: String,
+        conditions: Option<Conditions>,
+    ) -> Result<Self, nut14::Error> {
         const MAX_PREIMAGE_BYTES: usize = 32;
 
         let preimage_bytes = hex::decode(preimage)?;
 
         if preimage_bytes.len() != MAX_PREIMAGE_BYTES {
-            return Err(Error::PreimageTooLarge);
+            return Err(nut14::Error::PreimageInvalidSize);
         }
 
         let htlc = Sha256Hash::hash(&preimage_bytes);
@@ -56,8 +59,8 @@ impl SpendingConditions {
     }
 
     /// New HTLC [SpendingConditions] from a hash directly instead of preimage
-    pub fn new_htlc_hash(hash: &str, conditions: Option<Conditions>) -> Result<Self, Error> {
-        let hash = Sha256Hash::from_str(hash).map_err(|_| Error::InvalidHash)?;
+    pub fn new_htlc_hash(hash: &str, conditions: Option<Conditions>) -> Result<Self, nut14::Error> {
+        let hash = Sha256Hash::from_str(hash).map_err(|_| nut14::Error::InvalidHash)?;
 
         Ok(Self::HTLCConditions {
             data: hash,
@@ -148,7 +151,7 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
             }),
             Kind::HTLC => Ok(Self::HTLCConditions {
                 data: Sha256Hash::from_str(secret.secret_data().data())
-                    .map_err(|_| Error::InvalidHash)?,
+                    .map_err(|_| Error::NUT14(nut14::Error::InvalidHash))?,
                 conditions: secret
                     .secret_data()
                     .tags()

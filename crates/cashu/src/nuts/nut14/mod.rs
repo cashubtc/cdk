@@ -46,6 +46,12 @@ pub enum Error {
     /// SIG_ALL not supported in this context
     #[error("SIG_ALL proofs must be verified using a different method")]
     SigAllNotSupportedHere,
+    /// HTLC Spend conditions not met
+    #[error("HTLC spend conditions are not met")]
+    SpendConditionsNotMet,
+    /// From hex error
+    #[error(transparent)]
+    HexError(#[from] hex::Error),
     /// Secp256k1 error
     #[error(transparent)]
     Secp256k1(#[from] bitcoin::secp256k1::Error),
@@ -121,7 +127,10 @@ impl Proof {
         // Get the spending requirements (includes both receiver and refund paths)
         let now = unix_time();
         let requirements =
-            super::nut10::get_pubkeys_and_required_sigs(&secret, now).map_err(Error::NUT11)?;
+            super::nut10::get_pubkeys_and_required_sigs(&secret, now).map_err(|err| match err {
+                super::nut10::Error::NUT14(nut14_err) => nut14_err,
+                _ => Error::SpendConditionsNotMet,
+            })?;
 
         // Try to extract HTLC witness - must be correct type
         let htlc_witness = match &self.witness {
