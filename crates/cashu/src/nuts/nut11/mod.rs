@@ -18,7 +18,7 @@ use super::nut05::MeltRequest;
 use super::nut10::SpendingConditionVerification;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
 use crate::nuts::nut00::BlindedMessage;
-use crate::util::{hex, unix_time};
+use crate::util::unix_time;
 use crate::{ensure_cdk, SwapRequest};
 
 pub mod serde_p2pk_witness;
@@ -29,27 +29,15 @@ pub enum Error {
     /// Incorrect secret kind
     #[error("Secret is not a p2pk secret")]
     IncorrectSecretKind,
-    /// Incorrect secret kind
-    #[error("Witness is not a p2pk witness")]
-    IncorrectWitnessKind,
     /// P2PK locktime has already passed
     #[error("Locktime in past")]
     LocktimeInPast,
-    /// Witness signature is not valid
-    #[error("Invalid signature")]
-    InvalidSignature,
-    /// Unknown tag in P2PK secret
-    #[error("Unknown tag P2PK secret")]
-    UnknownTag,
     /// Unknown Sigflag
     #[error("Unknown sigflag")]
     UnknownSigFlag,
     /// P2PK Spend conditions not meet
     #[error("P2PK spend conditions are not met")]
     SpendConditionsNotMet,
-    /// Pubkey must be in data field of P2PK
-    #[error("P2PK required in secret data")]
-    P2PKPubkeyRequired,
     /// Unknown Kind
     #[error("Kind not found")]
     KindNotFound,
@@ -68,15 +56,9 @@ pub enum Error {
     /// SIG_ALL not supported in this context
     #[error("SIG_ALL proofs must be verified using a different method")]
     SigAllNotSupportedHere,
-    /// Parse Url Error
-    #[error(transparent)]
-    UrlParseError(#[from] url::ParseError),
     /// Parse int error
     #[error(transparent)]
     ParseInt(#[from] std::num::ParseIntError),
-    /// From hex error
-    #[error(transparent)]
-    HexError(#[from] hex::Error),
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
@@ -86,6 +68,9 @@ pub enum Error {
     /// NUT01 Error
     #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),
+    /// NUT10 Error
+    #[error(transparent)]
+    NUT10(#[from] crate::nuts::nut10::Error),
 }
 
 /// P2Pk Witness
