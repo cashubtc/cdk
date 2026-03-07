@@ -19,11 +19,11 @@ path = "uniffi-bindgen-swift.rs"
 
 [dependencies]
 cdk-ffi.workspace = true
-uniffi = { version = "=0.30.0", features = ["cli"] }
+uniffi = { workspace = true, features = ["cli"] }
 
 
 [build-dependencies]
-uniffi = { version = "=0.30.0", features = ["build"] }
+uniffi = { workspace = true, features = ["build"] }
 
 [lints]
 workspace = true

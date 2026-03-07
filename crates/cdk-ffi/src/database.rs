@@ -1912,10 +1912,16 @@ pub enum WalletDbBackend {
 /// foreign-language implementation of the `WalletDatabase` callback interface.
 #[derive(uniffi::Enum)]
 pub enum WalletStore {
-    Sqlite { path: String },
+    Sqlite {
+        path: String,
+    },
     #[cfg(feature = "postgres")]
-    Postgres { url: String },
-    Custom { db: Arc<dyn WalletDatabase> },
+    Postgres {
+        url: String,
+    },
+    Custom {
+        db: Arc<dyn WalletDatabase>,
+    },
 }
 
 /// Resolve a `WalletStore` into an `Arc<dyn WalletDatabase>`.
