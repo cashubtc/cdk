@@ -3,19 +3,15 @@
 use std::fmt::Debug;
 
 use async_trait::async_trait;
-use cdk_common::{
-    MeltQuoteBolt12Request, MeltQuoteBolt12Response, MeltQuoteCustomResponse,
-    MintQuoteBolt12Request, MintQuoteBolt12Response,
-};
+use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest, MintQuoteResponse};
 
 use super::Error;
 // Re-export Lightning address types for trait implementers
 pub use crate::lightning_address::{LnurlPayInvoiceResponse, LnurlPayResponse};
 use crate::nuts::{
-    CheckStateRequest, CheckStateResponse, Id, KeySet, KeysetResponse, MeltQuoteBolt11Request,
-    MeltQuoteBolt11Response, MeltQuoteCustomRequest, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest,
-    MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    CheckStateRequest, CheckStateResponse, Id, KeySet, KeysetResponse, MeltQuoteBolt11Response,
+    MeltRequest, MintInfo, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::AuthWallet;
 
@@ -56,16 +52,11 @@ pub trait MintConnector: Debug {
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error>;
     /// Get Keysets [NUT-02]
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error>;
-    /// Mint Quote [NUT-04]
+    /// Mint Quote [NUT-04, NUT-23, NUT-25]
     async fn post_mint_quote(
         &self,
-        request: MintQuoteBolt11Request,
-    ) -> Result<MintQuoteBolt11Response<String>, Error>;
-    /// Mint Quote status
-    async fn get_mint_quote_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MintQuoteBolt11Response<String>, Error>;
+        request: MintQuoteRequest,
+    ) -> Result<MintQuoteResponse<String>, Error>;
     /// Mint Tokens [NUT-04]
     async fn post_mint(
         &self,
@@ -76,16 +67,24 @@ pub trait MintConnector: Debug {
     /// Melt Quote [NUT-05]
     async fn post_melt_quote(
         &self,
-        request: MeltQuoteBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+        request: MeltQuoteRequest,
+    ) -> Result<MeltQuoteResponse<String>, Error>;
 
+    /// Mint Quote status with payment method
+    async fn get_mint_quote_status(
+        &self,
+        method: PaymentMethod,
+        quote_id: &str,
+    ) -> Result<MintQuoteResponse<String>, Error>;
+
+    /// Melt [NUT-05]
     /// Melt Quote Status
     async fn get_melt_quote_status(
         &self,
+        method: PaymentMethod,
         quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+    ) -> Result<MeltQuoteResponse<String>, Error>;
 
-    /// Melt [NUT-05]
     /// [Nut-08] Lightning fee return if outputs defined
     async fn post_melt(
         &self,
@@ -110,51 +109,4 @@ pub trait MintConnector: Debug {
 
     /// Set auth wallet on client
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>);
-    /// Mint Quote [NUT-04]
-    async fn post_mint_bolt12_quote(
-        &self,
-        request: MintQuoteBolt12Request,
-    ) -> Result<MintQuoteBolt12Response<String>, Error>;
-    /// Mint Quote status
-    async fn get_mint_quote_bolt12_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MintQuoteBolt12Response<String>, Error>;
-    /// Melt Quote [NUT-23]
-    async fn post_melt_bolt12_quote(
-        &self,
-        request: MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt12Response<String>, Error>;
-    /// Melt Quote Status [NUT-23]
-    async fn get_melt_bolt12_quote_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MeltQuoteBolt12Response<String>, Error>;
-
-    /// Mint Quote for Custom Payment Method
-    async fn post_mint_custom_quote(
-        &self,
-        method: &PaymentMethod,
-        request: MintQuoteCustomRequest,
-    ) -> Result<MintQuoteCustomResponse<String>, Error>;
-
-    /// Mint Quote Status for Custom Payment Method
-    async fn get_mint_quote_custom_status(
-        &self,
-        method: &str,
-        quote_id: &str,
-    ) -> Result<MintQuoteCustomResponse<String>, Error>;
-
-    /// Melt Quote for Custom Payment Method
-    async fn post_melt_custom_quote(
-        &self,
-        request: MeltQuoteCustomRequest,
-    ) -> Result<MeltQuoteCustomResponse<String>, Error>;
-
-    /// Melt Quote Status for Custom Payment Method
-    async fn get_melt_quote_custom_status(
-        &self,
-        method: &str,
-        quote_id: &str,
-    ) -> Result<MeltQuoteCustomResponse<String>, Error>;
 }

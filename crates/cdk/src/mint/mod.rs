@@ -42,7 +42,9 @@ mod verification;
 
 pub use builder::{MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
-pub use issue::{MintQuoteRequest, MintQuoteResponse};
+pub use cdk_common::mint_quote::MintQuoteRequest;
+/// Mint quote response with internal quote identifier type.
+pub type MintQuoteResponse = cdk_common::mint_quote::MintQuoteResponse<QuoteId>;
 pub use verification::Verification;
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
