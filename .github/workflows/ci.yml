@@ -477,3 +477,42 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
           fail_ci_if_error: true
+
+  dart-binding-tests:
+    name: "Dart binding tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build native library and generate bindings
+        run: nix develop -L .#bindings --command just binding-dart
+      - name: Run Dart tests
+        run: nix develop -L .#bindings --command just test-dart
+
+  swift-binding-tests:
+    name: "Swift binding tests"
+    runs-on: macos-latest
+    timeout-minutes: 45
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build XCFramework and generate bindings
+        run: nix develop -L .#bindings --command just binding-swift
+      - name: Run Swift tests
+        run: nix develop -L .#bindings --command just test-swift

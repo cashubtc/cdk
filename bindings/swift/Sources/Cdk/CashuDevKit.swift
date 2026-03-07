@@ -1142,6 +1142,11 @@ public protocol PaymentRequestProtocol: AnyObject, Sendable {
     func singleUse()  -> Bool?
     
     /**
+     * Encode the payment request to a NUT-26 bech32m string (creqB prefix)
+     */
+    func toBech32String() throws  -> String
+    
+    /**
      * Encode the payment request to a string
      */
     func toStringEncoded()  -> String
@@ -1272,6 +1277,17 @@ open func paymentId() -> String?  {
 open func singleUse() -> Bool?  {
     return try!  FfiConverterOptionBool.lift(try! rustCall() {
     uniffi_cdk_ffi_fn_method_paymentrequest_single_use(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Encode the payment request to a NUT-26 bech32m string (creqB prefix)
+     */
+open func toBech32String()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+    uniffi_cdk_ffi_fn_method_paymentrequest_to_bech32_string(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -18692,6 +18708,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cdk_ffi_checksum_method_paymentrequest_single_use() != 17480) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cdk_ffi_checksum_method_paymentrequest_to_bech32_string() != 10557) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cdk_ffi_checksum_method_paymentrequest_to_string_encoded() != 63792) {
