@@ -1,4 +1,4 @@
-name: Publish Docker Image AMD64
+name: Publish Docker Images
 
 on:
   release:
@@ -8,15 +8,36 @@ on:
       tag:
         description: 'Tag to build and publish'
         required: true
-        default: 'latest'
 
 env:
   REGISTRY: docker.io
   IMAGE_NAME: cashubtc/mintd
 
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - name: x86_64
+            runner: self-hosted
+            docker_platform: linux/amd64
+            docker_arch: amd64
+            install_nix: false
+          - name: aarch64
+            runner: ubuntu-24.04-arm
+            docker_platform: linux/arm64
+            docker_arch: arm64
+            install_nix: true
+        variant:
+          - name: standard
+            nix_target: cdk-mintd-static
+            tag_suffix: ""
+          - name: ldk-node
+            nix_target: cdk-mintd-ldk-static
+            tag_suffix: "-ldk-node"
+    runs-on: ${{ matrix.arch.runner }}
+    timeout-minutes: 120
     permissions:
       contents: read
       packages: write
@@ -24,9 +45,33 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Nix
+        if: ${{ matrix.arch.install_nix }}
+        uses: DeterminateSystems/nix-installer-action@v14
+
+      - name: Set up Cachix
+        uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+          installCommand: ${{ matrix.arch.install_nix && '' || 'nix profile install nixpkgs#cachix' }}
+        continue-on-error: true
+
+      - name: Build static binary
+        run: |
+          nix build .#${{ matrix.variant.nix_target }} -L
+          mkdir -p ./docker-build
+          cp -f ./result/bin/* ./docker-build/cdk-mintd
+          cp Dockerfile.static ./docker-build/Dockerfile
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -34,28 +79,88 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease && !contains(github.ref_name, 'rc') }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha
-            ${{ github.event.inputs.tag != '' && github.event.inputs.tag || '' }}
+      - name: Determine tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "version=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
 
-      # Build and push AMD64 image with architecture suffix
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: ./docker-build
           push: true
-          platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}-amd64
-          labels: ${{ steps.meta.outputs.labels }}
+          platforms: ${{ matrix.arch.docker_platform }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-${{ matrix.arch.docker_arch }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: standard
+            tag_suffix: ""
+          - name: ldk-node
+            tag_suffix: "-ldk-node"
+
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "version=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            echo "is_stable=${{ !github.event.release.prerelease && !contains(github.event.release.tag_name, 'rc') }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "is_stable=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract semver components
+        id: semver
+        run: |
+          VERSION="${{ steps.tag.outputs.version }}"
+          # Strip leading 'v' if present
+          VERSION="${VERSION#v}"
+          MAJOR="${VERSION%%.*}"
+          MINOR="${VERSION#*.}"
+          MINOR="${MINOR%%.*}"
+          echo "major_minor=${MAJOR}.${MINOR}" >> "$GITHUB_OUTPUT"
+
+      - name: Create versioned manifest
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }} \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-arm64
+
+      - name: Create major.minor manifest
+        if: ${{ github.event_name == 'release' }}
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.semver.outputs.major_minor }}${{ matrix.variant.tag_suffix }} \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-arm64
+
+      - name: Create latest manifest
+        if: ${{ steps.tag.outputs.is_stable == 'true' }}
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest${{ matrix.variant.tag_suffix }} \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-arm64
