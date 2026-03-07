@@ -942,8 +942,7 @@ mod tests {
 
         let nut10_p2pk = crate::nuts::Nut10Secret::new(
             crate::nuts::Kind::P2PK,
-            pk1.to_string(),
-            Some(cond_p2pk.clone()),
+            crate::nuts::SecretData::new(pk1.to_string(), Some(cond_p2pk.clone())),
         );
         let secret_p2pk: Secret = nut10_p2pk.try_into().unwrap();
 
@@ -956,8 +955,7 @@ mod tests {
         };
         let nut10_htlc = crate::nuts::Nut10Secret::new(
             crate::nuts::Kind::HTLC,
-            htlc_hash.to_string(),
-            Some(cond_htlc.clone()),
+            crate::nuts::SecretData::new(htlc_hash.to_string(), Some(cond_htlc.clone())),
         );
         let secret_htlc: Secret = nut10_htlc.try_into().unwrap();
 
@@ -1028,8 +1026,7 @@ mod tests {
 
         let nut10 = crate::nuts::Nut10Secret::new(
             crate::nuts::Kind::P2PK,
-            pk.to_string(),
-            Some(cond.clone()),
+            crate::nuts::SecretData::new(pk.to_string(), Some(cond.clone())),
         );
         let secret: Secret = nut10.try_into().unwrap();
 

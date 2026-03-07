@@ -164,12 +164,14 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
 impl From<SpendingConditions> for super::Secret {
     fn from(conditions: SpendingConditions) -> super::Secret {
         match conditions {
-            SpendingConditions::P2PKConditions { data, conditions } => {
-                super::Secret::new(Kind::P2PK, data.to_hex(), conditions)
-            }
-            SpendingConditions::HTLCConditions { data, conditions } => {
-                super::Secret::new(Kind::HTLC, data.to_string(), conditions)
-            }
+            SpendingConditions::P2PKConditions { data, conditions } => super::Secret::new(
+                Kind::P2PK,
+                super::SecretData::new(data.to_hex(), conditions),
+            ),
+            SpendingConditions::HTLCConditions { data, conditions } => super::Secret::new(
+                Kind::HTLC,
+                super::SecretData::new(data.to_string(), conditions),
+            ),
         }
     }
 }

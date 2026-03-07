@@ -236,6 +236,7 @@ mod tests {
     use crate::nuts::nut10::Kind;
     use crate::nuts::Nut10Secret;
     use crate::secret::Secret as SecretString;
+    use crate::SecretData;
 
     /// Tests that verify_htlc correctly accepts a valid HTLC with the correct preimage.
     ///
@@ -251,7 +252,10 @@ mod tests {
         let hash = Sha256Hash::hash(&preimage_bytes);
         let hash_str = hash.to_string();
 
-        let nut10_secret = Nut10Secret::new(Kind::HTLC, hash_str, None::<Vec<Vec<String>>>);
+        let nut10_secret = Nut10Secret::new(
+            Kind::HTLC,
+            SecretData::new(hash_str, None::<Vec<Vec<String>>>),
+        );
         let secret: SecretString = nut10_secret.try_into().unwrap();
 
         let htlc_witness = HTLCWitness {
@@ -291,7 +295,10 @@ mod tests {
         let hash = Sha256Hash::hash(&correct_preimage_bytes);
         let hash_str = hash.to_string();
 
-        let nut10_secret = Nut10Secret::new(Kind::HTLC, hash_str, None::<Vec<Vec<String>>>);
+        let nut10_secret = Nut10Secret::new(
+            Kind::HTLC,
+            SecretData::new(hash_str, None::<Vec<Vec<String>>>),
+        );
         let secret: SecretString = nut10_secret.try_into().unwrap();
 
         // Use a different preimage in the witness
@@ -334,8 +341,7 @@ mod tests {
 
         let nut10_secret = Nut10Secret::new(
             Kind::HTLC,
-            invalid_hash.to_string(),
-            None::<Vec<Vec<String>>>,
+            SecretData::new(invalid_hash.to_string(), None::<Vec<Vec<String>>>),
         );
         let secret: SecretString = nut10_secret.try_into().unwrap();
 
@@ -378,7 +384,10 @@ mod tests {
         let hash = Sha256Hash::hash(preimage.as_bytes());
         let hash_str = hash.to_string();
 
-        let nut10_secret = Nut10Secret::new(Kind::HTLC, hash_str, None::<Vec<Vec<String>>>);
+        let nut10_secret = Nut10Secret::new(
+            Kind::HTLC,
+            SecretData::new(hash_str, None::<Vec<Vec<String>>>),
+        );
         let secret: SecretString = nut10_secret.try_into().unwrap();
 
         // Create proof with wrong witness type (P2PKWitness instead of HTLCWitness)
@@ -416,7 +425,10 @@ mod tests {
         let hash = Sha256Hash::hash(&preimage_bytes);
         let hash_str = hash.to_string();
 
-        let nut10_secret = Nut10Secret::new(Kind::HTLC, hash_str, None::<Vec<Vec<String>>>);
+        let nut10_secret = Nut10Secret::new(
+            Kind::HTLC,
+            SecretData::new(hash_str, None::<Vec<Vec<String>>>),
+        );
         let secret: SecretString = nut10_secret.try_into().unwrap();
 
         let mut proof = Proof {
@@ -487,7 +499,10 @@ mod tests {
             num_sigs_refund: None,
         };
 
-        let nut10_secret = Nut10Secret::new(Kind::HTLC, hash_str, Some(conditions_with_refund));
+        let nut10_secret = Nut10Secret::new(
+            Kind::HTLC,
+            SecretData::new(hash_str, Some(conditions_with_refund)),
+        );
         let secret: SecretString = nut10_secret.try_into().unwrap();
 
         let htlc_witness = HTLCWitness {

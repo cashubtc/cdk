@@ -2,12 +2,9 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/10.md>
 
-use std::fmt;
 use std::str::FromStr;
 
-use serde::de::{self, Deserializer, SeqAccess, Visitor};
-use serde::ser::SerializeTuple;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 use crate::nut11;
 
@@ -16,6 +13,9 @@ use super::Conditions;
 
 pub mod spending_conditions;
 pub use spending_conditions::SpendingConditions;
+
+pub mod secret;
+pub use secret::Secret;
 
 pub mod error;
 pub use error::Error;
@@ -96,37 +96,6 @@ impl SecretData {
     /// Get the tags
     pub fn tags(&self) -> Option<&Vec<Vec<String>>> {
         self.tags.as_ref()
-    }
-}
-
-/// NUT10 Secret
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Secret {
-    ///  Kind of the spending condition
-    kind: Kind,
-    /// Secret Data
-    secret_data: SecretData,
-}
-
-impl Secret {
-    /// Create new [`Secret`]
-    pub fn new<S, V>(kind: Kind, data: S, tags: Option<V>) -> Self
-    where
-        S: Into<String>,
-        V: Into<Vec<Vec<String>>>,
-    {
-        let secret_data = SecretData::new(data, tags);
-        Self { kind, secret_data }
-    }
-
-    /// Get the kind
-    pub fn kind(&self) -> Kind {
-        self.kind
-    }
-
-    /// Get the secret data
-    pub fn secret_data(&self) -> &SecretData {
-        &self.secret_data
     }
 }
 
@@ -661,74 +630,6 @@ pub trait SpendingConditionVerification {
     }
 }
 
-impl Serialize for Secret {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        // Create a tuple representing the struct fields
-        let secret_tuple = (&self.kind, &self.secret_data);
-
-        // Serialize the tuple as a JSON array
-        let mut s = serializer.serialize_tuple(2)?;
-
-        s.serialize_element(&secret_tuple.0)?;
-        s.serialize_element(&secret_tuple.1)?;
-        s.end()
-    }
-}
-
-impl TryFrom<Secret> for crate::secret::Secret {
-    type Error = Error;
-    fn try_from(secret: Secret) -> Result<crate::secret::Secret, Self::Error> {
-        Ok(crate::secret::Secret::from_str(&serde_json::to_string(
-            &secret,
-        )?)?)
-    }
-}
-
-// Custom visitor for deserializing Secret
-struct SecretVisitor;
-
-impl<'de> Visitor<'de> for SecretVisitor {
-    type Value = Secret;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a tuple with two elements: [Kind, SecretData]")
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        // Deserialize the kind (first element)
-        let kind = seq
-            .next_element()?
-            .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-
-        // Deserialize the secret_data (second element)
-        let secret_data = seq
-            .next_element()?
-            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
-
-        // Make sure there are no additional elements
-        if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
-            return Err(de::Error::invalid_length(3, &self));
-        }
-
-        Ok(Secret { kind, secret_data })
-    }
-}
-
-impl<'de> Deserialize<'de> for Secret {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_seq(SecretVisitor)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::assert_eq;
@@ -738,21 +639,21 @@ mod tests {
 
     #[test]
     fn test_secret_serialize() {
-        let secret = Secret {
-            kind: Kind::P2PK,
-            secret_data: SecretData {
-                nonce: "5d11913ee0f92fefdc82a6764fd2457a".to_string(),
-                data: "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198"
-                    .to_string(),
-                tags: Some(vec![vec![
-                    "key".to_string(),
-                    "value1".to_string(),
-                    "value2".to_string(),
-                ]]),
-            },
-        };
+        let secret_data = SecretData::new(
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198".to_string(),
+            Some(vec![vec![
+                "key".to_string(),
+                "value1".to_string(),
+                "value2".to_string(),
+            ]]),
+        );
 
-        let secret_str = r#"["P2PK",{"nonce":"5d11913ee0f92fefdc82a6764fd2457a","data":"026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198","tags":[["key","value1","value2"]]}]"#;
+        let secret = Secret::new(Kind::P2PK, secret_data.clone());
+
+        let secret_str = format!(
+            r#"["P2PK",{{"nonce":"{}","data":"026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198","tags":[["key","value1","value2"]]}}]"#,
+            secret_data.nonce(),
+        );
 
         assert_eq!(serde_json::to_string(&secret).unwrap(), secret_str);
     }
@@ -760,15 +661,13 @@ mod tests {
     #[test]
     fn test_secret_round_trip_serialization() {
         // Create a Secret instance
-        let original_secret = Secret {
-            kind: Kind::P2PK,
-            secret_data: SecretData {
-                nonce: "5d11913ee0f92fefdc82a6764fd2457a".to_string(),
-                data: "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198"
-                    .to_string(),
-                tags: None,
-            },
-        };
+        let original_secret = Secret::new(
+            Kind::P2PK,
+            SecretData::new(
+                "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198".to_string(),
+                None::<Vec<Vec<String>>>,
+            ),
+        );
 
         // Serialize the Secret to JSON string
         let serialized = serde_json::to_string(&original_secret).unwrap();
@@ -794,21 +693,17 @@ mod tests {
         let payment_hash = "5c23fc3aec9d985bd5fc88ca8bceaccc52cf892715dd94b42b84f1b43350751e";
 
         // Create a Secret instance with HTLC kind
-        let original_secret = Secret {
-            kind: Kind::HTLC,
-            secret_data: SecretData {
-                nonce: "7a9128b3f9612549f9278958337a5d7f".to_string(),
-                data: payment_hash.to_string(),
-                tags: None,
-            },
-        };
+        let secret_data = SecretData::new(payment_hash.to_string(), None::<Vec<Vec<String>>>);
+
+        let original_secret = Secret::new(Kind::HTLC, secret_data.clone());
 
         // Serialize the Secret to JSON string
         let serialized = serde_json::to_string(&original_secret).unwrap();
 
         // Validate serialized format
         let expected_json = format!(
-            r#"["HTLC",{{"nonce":"7a9128b3f9612549f9278958337a5d7f","data":"{}"}}]"#,
+            r#"["HTLC",{{"nonce":"{}","data":"{}"}}]"#,
+            secret_data.nonce(),
             payment_hash
         );
         assert_eq!(serialized, expected_json);
@@ -818,7 +713,7 @@ mod tests {
 
         // Verify the direct serde serialization/deserialization round trip works
         assert_eq!(original_secret, deserialized_secret);
-        assert_eq!(deserialized_secret.kind, Kind::HTLC);
-        assert_eq!(deserialized_secret.secret_data.data, payment_hash);
+        assert_eq!(deserialized_secret.kind(), Kind::HTLC);
+        assert_eq!(deserialized_secret.secret_data().data, payment_hash);
     }
 }
