@@ -1,7 +1,8 @@
 [workspace]
 members = [
-    "bindings/*/rust",
     "crates/*",
+    "bindings/dart/rust",
+    "bindings/swift/rust",
 ]
 exclude = [
     "fuzz",
@@ -89,6 +90,7 @@ tokio-stream = "0.1.15"
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tracing-appender = "0.2"
+uniffi = "0.30"
 url = "2.3"
 uuid = { version = "1.17", features = ["v4", "serde"] }
 utoipa = { version = "5.3.1", features = [
