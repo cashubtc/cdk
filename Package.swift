@@ -20,5 +20,10 @@ let package = Package(
             name: "CashuDevKitFFI",
             path: "bindings/swift/build/xcframework/CashuDevKitFFI.xcframework"
         ),
+        .testTarget(
+            name: "CdkTests",
+            dependencies: ["Cdk"],
+            path: "bindings/swift/Tests"
+        ),
     ]
 )

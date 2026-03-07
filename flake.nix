@@ -21,6 +21,11 @@
 
     flake-utils.url = "github:numtide/flake-utils";
 
+    dart-overlay = {
+      url = "github:roman-vanesyan/dart-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     crane = {
       url = "github:ipetkov/crane";
     };
@@ -32,6 +37,7 @@
     , nixpkgs-unstable
     , rust-overlay
     , flake-utils
+    , dart-overlay
     , crane
     , ...
     }@inputs:
@@ -82,6 +88,9 @@
           inherit system;
         };
 
+        # Dart SDK from dart-overlay
+        dartpkgs = dart-overlay.packages.${system};
+
         # Static/musl packages for fully static binary builds (Linux only)
         pkgsMusl =
           if muslTarget != null then
@@ -99,7 +108,14 @@
         # Toolchains
         # latest stable
         stable_toolchain = pkgs.rust-bin.stable."1.94.0".default.override {
-          targets = [ "wasm32-unknown-unknown" ]; # wasm
+          targets = [
+            "wasm32-unknown-unknown"
+            "aarch64-apple-ios"
+            "x86_64-apple-ios"
+            "aarch64-apple-ios-sim"
+            "aarch64-apple-darwin"
+            "x86_64-apple-darwin"
+          ];
           extensions = [
             "rustfmt"
             "clippy"
@@ -166,6 +182,7 @@
               ./.cargo
               ./crates
               ./fuzz
+              ./bindings
             ]
           );
         };
@@ -185,6 +202,7 @@
               ./.cargo
               ./crates
               ./fuzz
+              ./bindings
             ]
           );
         };
@@ -1056,6 +1074,25 @@
               // envVars
             );
 
+            # Shell for bindings development (Dart + Swift FFI)
+            bindings = pkgs.mkShell (
+              {
+                shellHook = commonShellHook;
+                buildInputs = baseBuildInputs ++ [
+                  stable_toolchain
+                  dartpkgs.default
+                  pkgs.openssl
+                ];
+                nativeBuildInputs = [
+                  pkgs.pkg-config
+                ];
+                OPENSSL_DIR = "${pkgs.openssl.dev}";
+                OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
+                OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
+              }
+              // envVars
+            );
+
           in
           {
             inherit
@@ -1066,6 +1103,7 @@
               nightly-regtest
               integration
               ffi
+              bindings
               ;
             default = stable;
           };

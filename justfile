@@ -807,12 +807,12 @@ binding-dart:
   cd "{{justfile_directory()}}/bindings/dart"
   ./generate-bindings.sh
 
-# Run the Flutter wallet example
-example-dart:
+# Run Dart binding tests
+test-dart:
   #!/usr/bin/env bash
   set -euo pipefail
-  cd "{{justfile_directory()}}/bindings/dart/flutter_example"
-  flutter run
+  cd "{{justfile_directory()}}/bindings/dart"
+  dart test
 
 # Generate Swift FFI bindings and XCFramework
 binding-swift:
@@ -821,10 +821,9 @@ binding-swift:
   cd "{{justfile_directory()}}/bindings/swift"
   ./generate-bindings.sh
 
-# Run the Swift wallet example
-example-swift:
+# Run Swift binding tests
+test-swift:
   #!/usr/bin/env bash
   set -euo pipefail
-  cd "{{justfile_directory()}}/bindings/swift/example"
-  swift build
-  open "$(swift build --show-bin-path)/CdkExample"
+  cd "{{justfile_directory()}}"
+  swift test
