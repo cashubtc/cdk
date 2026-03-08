@@ -137,7 +137,7 @@ fn verify_numeric_threshold(
 
 /// Record the attestation result and handle concurrent attestation races.
 async fn record_attestation(
-    localstore: &dyn cdk_common::database::MintDatabase<cdk_common::database::Error>,
+    localstore: &(dyn cdk_common::database::MintDatabase<cdk_common::database::Error> + Send + Sync),
     condition_id: &str,
     winning_value: &str,
 ) -> Result<(), Error> {
