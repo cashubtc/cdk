@@ -35,15 +35,6 @@ mod tests;
 
 use melt_saga::MeltSaga;
 
-/// Outcome of mint melt processing.
-#[derive(Debug)]
-pub enum MeltOutcome {
-    /// Melt completed immediately.
-    Paid(MeltQuoteBolt11Response<QuoteId>),
-    /// Melt was accepted and is completing in background.
-    Pending(PendingMelt),
-}
-
 /// A pending mint melt that can optionally be awaited.
 #[derive(Debug)]
 pub struct PendingMelt {
@@ -52,6 +43,11 @@ pub struct PendingMelt {
 }
 
 impl PendingMelt {
+    /// Return the immediate pending response (NUT-05 style) without consuming self.
+    pub fn pending_response(&self) -> &MeltQuoteBolt11Response<QuoteId> {
+        &self.response
+    }
+
     /// Return the immediate pending response (NUT-05 style).
     pub fn into_pending_response(self) -> MeltQuoteBolt11Response<QuoteId> {
         self.response
@@ -589,7 +585,7 @@ impl Mint {
     ///
     /// Uses MeltSaga typestate pattern for atomic transaction handling with automatic rollback on failure.
     #[instrument(skip_all)]
-    pub async fn melt(&self, melt_request: &MeltRequest<QuoteId>) -> Result<MeltOutcome, Error> {
+    pub async fn melt(&self, melt_request: &MeltRequest<QuoteId>) -> Result<PendingMelt, Error> {
         // Check max outputs limit (if change outputs are provided)
         if let Some(outputs) = melt_request.outputs() {
             let outputs_count = outputs.len();
@@ -674,7 +670,7 @@ impl Mint {
         });
 
         // Return immediately with the quote in PENDING state and an awaitable completion future.
-        Ok(MeltOutcome::Pending(PendingMelt {
+        Ok(PendingMelt {
             response: MeltQuoteBolt11Response {
                 quote: quote_id,
                 amount: quote.amount().into(),
@@ -687,6 +683,6 @@ impl Mint {
                 unit: Some(quote.unit),
             },
             completion,
-        }))
+        })
     }
 }

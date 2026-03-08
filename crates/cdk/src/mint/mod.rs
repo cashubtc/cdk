@@ -43,7 +43,7 @@ mod verification;
 pub use builder::{MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use issue::{MintQuoteRequest, MintQuoteResponse};
-pub use melt::{MeltOutcome, PendingMelt};
+pub use melt::PendingMelt;
 pub use verification::Verification;
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";

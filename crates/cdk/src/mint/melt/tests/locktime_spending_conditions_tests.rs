@@ -10,7 +10,6 @@ use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
 use cdk_common::{Amount, SpendingConditionVerification};
 
-use crate::mint::MeltOutcome;
 use crate::test_helpers::nut10::{create_test_keypair, unzip3, TestMintHelper};
 use crate::util::unix_time;
 
@@ -124,10 +123,7 @@ async fn test_p2pk_post_locktime_anyone_can_spend() {
     println!("✓ Post-locktime spending conditions verified successfully (anyone-can-spend)");
 
     // Perform the actual melt
-    let melt_response = match mint.melt(&melt_request_bob).await.unwrap() {
-        MeltOutcome::Paid(response) => response,
-        MeltOutcome::Pending(pending) => pending.await.unwrap(),
-    };
+    let melt_response = mint.melt(&melt_request_bob).await.unwrap().await.unwrap();
     println!("✓ Melt operation completed successfully with Bob's key after locktime!");
     println!("  Quote state: {}", melt_response.state);
     assert_eq!(melt_response.quote, melt_quote.quote);
@@ -273,10 +269,7 @@ async fn test_p2pk_before_locktime_requires_correct_key() {
     println!("✓ Pre-locktime spending conditions verified successfully with Alice's key");
 
     // Perform the actual melt
-    let melt_response = match mint.melt(&melt_request_alice).await.unwrap() {
-        MeltOutcome::Paid(response) => response,
-        MeltOutcome::Pending(pending) => pending.await.unwrap(),
-    };
+    let melt_response = mint.melt(&melt_request_alice).await.unwrap().await.unwrap();
     println!("✓ Melt operation completed successfully with Alice's key before locktime!");
     println!("  Quote state: {}", melt_response.state);
     assert_eq!(melt_response.quote, melt_quote.quote);

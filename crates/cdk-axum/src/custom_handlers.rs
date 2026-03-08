@@ -11,7 +11,7 @@ use axum::extract::{FromRequestParts, Json, Path, State};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use cdk::mint::{MeltOutcome, QuoteId};
+use cdk::mint::QuoteId;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteBolt12Request,
@@ -341,19 +341,14 @@ pub async fn post_melt_custom(
     // Check for async preference in either the Prefer header or the request body
     let respond_async = prefer.respond_async || payload.is_prefer_async();
 
-    let outcome = state.mint.melt(&payload).await.map_err(into_response)?;
+    let pending = state.mint.melt(&payload).await.map_err(into_response)?;
 
-    let res = match outcome {
-        MeltOutcome::Paid(response) => response,
-        MeltOutcome::Pending(pending) => {
-            if respond_async {
-                // Asynchronous processing - return immediately after setup
-                pending.into_pending_response()
-            } else {
-                // Synchronous processing - wait for completion
-                pending.await.map_err(into_response)?
-            }
-        }
+    let res = if respond_async {
+        // Asynchronous processing - return immediately after setup
+        pending.pending_response().clone()
+    } else {
+        // Synchronous processing - wait for completion
+        pending.await.map_err(into_response)?
     };
 
     Ok(Json(res))

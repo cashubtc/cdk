@@ -10,7 +10,6 @@ use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
 use cdk_common::{Amount, SpendingConditionVerification};
 
-use crate::mint::MeltOutcome;
 use crate::test_helpers::nut10::{
     create_test_hash_and_preimage, create_test_keypair, unzip3, TestMintHelper,
 };
@@ -174,10 +173,7 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
     println!("✓ HTLC SIG_ALL spending conditions verified successfully");
 
     // Perform the actual melt - this also verifies spending conditions internally
-    let melt_response = match mint.melt(&melt_request).await.unwrap() {
-        MeltOutcome::Paid(response) => response,
-        MeltOutcome::Pending(pending) => pending.await.unwrap(),
-    };
+    let melt_response = mint.melt(&melt_request).await.unwrap().await.unwrap();
     println!("✓ Melt operation completed successfully!");
     println!("  Quote state: {}", melt_response.state);
     assert_eq!(melt_response.quote, melt_quote.quote);
