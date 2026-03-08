@@ -11,6 +11,7 @@ use cdk_common::nuts::nut_ctf::{
 };
 use tracing::instrument;
 
+use super::conditions::STATUS_PENDING;
 use super::swap::swap_saga::SwapSaga;
 use super::Mint;
 use crate::Error;
@@ -41,7 +42,7 @@ impl Mint {
             .ok_or(Error::ConditionNotFound)?;
 
         // Check condition is still pending (not yet attested)
-        if condition.attestation_status != "pending" {
+        if condition.attestation_status != STATUS_PENDING {
             return Err(Error::ConditionNotActive);
         }
 
@@ -192,7 +193,7 @@ impl Mint {
             .await?
             .ok_or(Error::ConditionNotFound)?;
 
-        if condition.attestation_status != "pending" {
+        if condition.attestation_status != STATUS_PENDING {
             return Err(Error::ConditionNotActive);
         }
 

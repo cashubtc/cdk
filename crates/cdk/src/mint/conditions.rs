@@ -23,6 +23,10 @@ const MAX_PAGE_SIZE: u64 = 100;
 /// Valid values for the `status` query parameter on conditions.
 const VALID_CONDITION_STATUSES: &[&str] = &["pending", "attested", "expired", "violation"];
 
+/// Attestation status string constants matching DB storage values.
+pub(super) const STATUS_PENDING: &str = "pending";
+pub(super) const STATUS_ATTESTED: &str = "attested";
+
 impl Mint {
     /// Register a new condition (POST /v1/conditions)
     ///
@@ -75,7 +79,7 @@ impl Mint {
 
         // 3. Branch on condition_type
         let is_numeric = request.condition_type == "numeric";
-        let (outcomes, outcome_count, condition_id_bytes) = if is_numeric {
+        let (_outcomes, _outcome_count, condition_id_bytes) = if is_numeric {
             // NUT-CTF-numeric: numeric condition
             let lo_bound = request.lo_bound.ok_or_else(|| {
                 Error::Custom("lo_bound required for numeric conditions".into())
@@ -117,7 +121,6 @@ impl Mint {
             let cid = compute_condition_id(&oracle_pubkeys, &event_id, outcome_count);
             (outcomes, outcome_count, cid)
         };
-        let _ = (outcomes, outcome_count); // suppress unused warnings; used for validation above
         let condition_id = to_hex(&condition_id_bytes);
 
         // 4. Check for existing condition (idempotency or conflict)
@@ -150,7 +153,7 @@ impl Mint {
             threshold: request.threshold,
             description: request.description.clone(),
             announcements_json: serde_json::to_string(&request.announcements)?,
-            attestation_status: "pending".to_string(),
+            attestation_status: STATUS_PENDING.to_string(),
             winning_outcome: None,
             attested_at: None,
             created_at: now,
@@ -279,6 +282,10 @@ impl Mint {
         let mut keysets = std::collections::HashMap::new();
         let amounts = (0..32).map(|n| 2u64.pow(n)).collect::<Vec<u64>>();
         let mut new_signatory_keysets = Vec::new();
+        let keyset_created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         for partition_key in &partition {
             // Normalize: parse outcomes from the key, sort, rejoin
@@ -307,25 +314,22 @@ impl Mint {
                 .await?;
 
             // Store the keyset mapping
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
             self.localstore
                 .add_conditional_keyset_info(
                     condition_id,
                     &outcome_collection_string,
                     &outcome_collection_id,
                     &keyset.id,
-                    now,
+                    keyset_created_at,
                 )
                 .await?;
 
             // Conditional keysets must be active for swaps
             keyset.active = true;
-            new_signatory_keysets.push(keyset.clone());
+            let keyset_id = keyset.id;
+            new_signatory_keysets.push(keyset);
 
-            keysets.insert(outcome_collection_string, keyset.id);
+            keysets.insert(outcome_collection_string, keyset_id);
         }
 
         // 8. Persist partition only after all keysets were created successfully
@@ -366,6 +370,8 @@ impl Mint {
         let conditions = self.localstore.get_conditions(since, limit, status).await?;
         let mut infos = Vec::new();
 
+        // TODO: N+1 query — build_condition_info runs 2 DB queries per condition
+        // (get_partitions + get_keysets). Batch when condition count grows.
         for condition in conditions {
             let info = self.build_condition_info(condition).await?;
             infos.push(info);
@@ -440,7 +446,7 @@ impl Mint {
             partitions,
             attestation: Some(AttestationState {
                 status: match condition.attestation_status.as_str() {
-                    "attested" => AttestationStatus::Attested,
+                    STATUS_ATTESTED => AttestationStatus::Attested,
                     "expired" => AttestationStatus::Expired,
                     "violation" => AttestationStatus::Violation,
                     _ => AttestationStatus::Pending,

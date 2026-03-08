@@ -1,18 +1,169 @@
 //! NUT-CTF Redeem outcome processing
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cdk_common::nuts::nut_ctf::dlc;
 use cdk_common::nuts::nut_ctf::{
-    compute_numeric_payout, from_hex, parse_outcome_collection, OracleWitness,
+    compute_numeric_payout, from_hex, parse_outcome_collection, to_hex, OracleWitness,
     RedeemOutcomeRequest, RedeemOutcomeResponse,
 };
 use cdk_common::nuts::Witness;
 use tracing::instrument;
 
+use super::conditions::STATUS_ATTESTED;
 use super::Mint;
 use crate::Error;
+
+/// Parse announcements JSON and build a pubkey-to-hex-string lookup map.
+/// Returns (parsed announcement hex strings, pubkey->index map).
+fn parse_announcements_with_index(
+    announcements_json: &str,
+) -> Result<(Vec<String>, HashMap<String, usize>), Error> {
+    let hex_strings: Vec<String> = serde_json::from_str(announcements_json)?;
+    let mut pubkey_index = HashMap::with_capacity(hex_strings.len());
+    for (i, hex) in hex_strings.iter().enumerate() {
+        let ann = dlc::parse_oracle_announcement(hex)?;
+        let pubkey_hex = to_hex(&dlc::extract_oracle_pubkey(&ann));
+        pubkey_index.insert(pubkey_hex, i);
+    }
+    Ok((hex_strings, pubkey_index))
+}
+
+/// Verify enum oracle signatures and return the attested outcome.
+fn verify_enum_threshold(
+    ann_hex_strings: &[String],
+    pubkey_index: &HashMap<String, usize>,
+    witness: &OracleWitness,
+    threshold: u32,
+) -> Result<String, Error> {
+    let mut verified_oracle_pubkeys: HashSet<String> = HashSet::new();
+    let mut attested_outcome: Option<String> = None;
+
+    for sig in &witness.oracle_sigs {
+        if let Some(&idx) = pubkey_index.get(&sig.oracle_pubkey) {
+            let ann = dlc::parse_oracle_announcement(&ann_hex_strings[idx])?;
+            let nonce_points = dlc::extract_nonce_points(&ann.oracle_event);
+            if !nonce_points.is_empty() {
+                if let Some(ref oracle_sig_hex) = sig.oracle_sig {
+                    let pk_bytes = from_hex(&sig.oracle_pubkey)?;
+                    let sig_bytes = from_hex(oracle_sig_hex)?;
+                    if dlc::verify_oracle_attestation(
+                        &pk_bytes,
+                        &sig_bytes,
+                        &sig.outcome,
+                        &nonce_points[0],
+                    )
+                    .is_ok()
+                    {
+                        match &attested_outcome {
+                            Some(prev) if *prev != sig.outcome => {
+                                return Err(Error::OracleNotAttestedOutcome);
+                            }
+                            None => {
+                                attested_outcome = Some(sig.outcome.clone());
+                            }
+                            _ => {}
+                        }
+                        verified_oracle_pubkeys.insert(sig.oracle_pubkey.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    if (verified_oracle_pubkeys.len() as u32) < threshold {
+        return Err(Error::OracleThresholdNotMet);
+    }
+
+    attested_outcome.ok_or(Error::ConditionalKeysetRequiresWitness)
+}
+
+/// Verify numeric (digit decomposition) oracle signatures and return the attested value.
+fn verify_numeric_threshold(
+    ann_hex_strings: &[String],
+    pubkey_index: &HashMap<String, usize>,
+    witness: &OracleWitness,
+    threshold: u32,
+) -> Result<i64, Error> {
+    let mut verified_oracle_pubkeys: HashSet<String> = HashSet::new();
+    let mut attested_value: Option<i64> = None;
+
+    for sig_entry in &witness.oracle_sigs {
+        if let Some(&idx) = pubkey_index.get(&sig_entry.oracle_pubkey) {
+            let ann = dlc::parse_oracle_announcement(&ann_hex_strings[idx])?;
+
+            let digit_sigs_hex = sig_entry
+                .digit_sigs
+                .as_ref()
+                .ok_or(Error::ConditionalKeysetRequiresWitness)?;
+
+            let digit_sigs_bytes: Vec<Vec<u8>> = digit_sigs_hex
+                .iter()
+                .map(|h| from_hex(h))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let nonce_points = dlc::extract_nonce_points(&ann.oracle_event);
+            let dd_info = dlc::extract_digit_decomposition(&ann)?;
+
+            let pk_bytes = from_hex(&sig_entry.oracle_pubkey)?;
+            let value = dlc::verify_digit_attestation(
+                &pk_bytes,
+                &digit_sigs_bytes,
+                &nonce_points,
+                dd_info.base,
+                dd_info.is_signed,
+            )?;
+
+            match attested_value {
+                Some(prev) if prev != value => {
+                    return Err(Error::OracleNotAttestedOutcome);
+                }
+                None => {
+                    attested_value = Some(value);
+                }
+                _ => {}
+            }
+            verified_oracle_pubkeys.insert(sig_entry.oracle_pubkey.clone());
+        }
+    }
+
+    if (verified_oracle_pubkeys.len() as u32) < threshold {
+        return Err(Error::OracleThresholdNotMet);
+    }
+
+    attested_value.ok_or(Error::ConditionalKeysetRequiresWitness)
+}
+
+/// Record the attestation result and handle concurrent attestation races.
+async fn record_attestation(
+    localstore: &dyn cdk_common::database::MintDatabase<cdk_common::database::Error>,
+    condition_id: &str,
+    winning_value: &str,
+) -> Result<(), Error> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let updated = localstore
+        .update_condition_attestation(condition_id, STATUS_ATTESTED, Some(winning_value), Some(now))
+        .await
+        .map_err(Error::Database)?;
+
+    if !updated {
+        let refreshed = localstore
+            .get_condition(condition_id)
+            .await
+            .map_err(Error::Database)?
+            .ok_or(Error::ConditionNotFound)?;
+        if refreshed.winning_outcome.as_deref() != Some(winning_value) {
+            return Err(Error::OracleNotAttestedOutcome);
+        }
+    }
+
+    Ok(())
+}
 
 impl Mint {
     /// Process a redeem outcome request (POST /v1/redeem_outcome)
@@ -99,7 +250,7 @@ impl Mint {
         outputs: &[cdk_common::nuts::nut00::BlindedMessage],
     ) -> Result<RedeemOutcomeResponse, Error> {
         // 4. Check attestation state
-        if condition.attestation_status == "attested" {
+        if condition.attestation_status == STATUS_ATTESTED {
             // Already attested — verify inputs match the winning outcome
             if let Some(ref winner) = condition.winning_outcome {
                 if outcome_collection != *winner {
@@ -109,62 +260,10 @@ impl Mint {
         } else {
             // 5. Not yet attested — verify the oracle witness
             let witness = Self::extract_oracle_witness(inputs)?;
-
-            let announcements: Vec<String> =
-                serde_json::from_str(&condition.announcements_json)?;
-            let parsed_announcements: Vec<_> = announcements
-                .iter()
-                .map(|hex| dlc::parse_oracle_announcement(hex))
-                .collect::<Result<Vec<_>, _>>()?;
-
-            // Verify threshold oracle signatures (count unique oracle pubkeys)
-            let mut verified_oracle_pubkeys: HashSet<String> = HashSet::new();
-            let mut attested_outcome_from_sigs: Option<String> = None;
-            for sig in &witness.oracle_sigs {
-                for ann in &parsed_announcements {
-                    let pubkey_bytes = dlc::extract_oracle_pubkey(ann);
-                    let pubkey_hex =
-                        pubkey_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-                    if pubkey_hex == sig.oracle_pubkey {
-                        let nonce_points = dlc::extract_nonce_points(&ann.oracle_event);
-                        if !nonce_points.is_empty() {
-                            if let Some(ref oracle_sig_hex) = sig.oracle_sig {
-                                let pk_bytes = from_hex(&sig.oracle_pubkey)?;
-                                let sig_bytes = from_hex(oracle_sig_hex)?;
-                                if dlc::verify_oracle_attestation(
-                                    &pk_bytes,
-                                    &sig_bytes,
-                                    &sig.outcome,
-                                    &nonce_points[0],
-                                )
-                                .is_ok()
-                                {
-                                    match &attested_outcome_from_sigs {
-                                        Some(prev) if *prev != sig.outcome => {
-                                            return Err(Error::OracleNotAttestedOutcome);
-                                        }
-                                        None => {
-                                            attested_outcome_from_sigs =
-                                                Some(sig.outcome.clone());
-                                        }
-                                        _ => {}
-                                    }
-                                    verified_oracle_pubkeys
-                                        .insert(sig.oracle_pubkey.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (verified_oracle_pubkeys.len() as u32) < condition.threshold {
-                return Err(Error::OracleThresholdNotMet);
-            }
-
-            let attested_outcome = attested_outcome_from_sigs
-                .as_deref()
-                .ok_or(Error::ConditionalKeysetRequiresWitness)?;
+            let (ann_hex, pubkey_index) =
+                parse_announcements_with_index(&condition.announcements_json)?;
+            let attested_outcome =
+                verify_enum_threshold(&ann_hex, &pubkey_index, &witness, condition.threshold)?;
 
             // Find winning collection
             let stored_partitions = self
@@ -197,32 +296,7 @@ impl Mint {
                 return Err(Error::OracleNotAttestedOutcome);
             }
 
-            // Record attestation
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-
-            let updated = self
-                .localstore
-                .update_condition_attestation(
-                    condition_id,
-                    "attested",
-                    Some(&winning_collection),
-                    Some(now),
-                )
-                .await?;
-
-            if !updated {
-                let refreshed = self
-                    .localstore
-                    .get_condition(condition_id)
-                    .await?
-                    .ok_or(Error::ConditionNotFound)?;
-                if refreshed.winning_outcome.as_deref() != Some(&*winning_collection) {
-                    return Err(Error::OracleNotAttestedOutcome);
-                }
-            }
+            record_attestation(&*self.localstore, condition_id, &winning_collection).await?;
         }
 
         // 6. Balance check
@@ -280,7 +354,7 @@ impl Mint {
         })?;
 
         // Determine the attested value
-        let attested_value: i64 = if condition.attestation_status == "attested" {
+        let attested_value: i64 = if condition.attestation_status == STATUS_ATTESTED {
             // Already attested — parse stored value
             condition
                 .winning_outcome
@@ -291,107 +365,14 @@ impl Mint {
         } else {
             // Not yet attested — verify digit signatures
             let witness = Self::extract_oracle_witness(inputs)?;
-
-            let announcements: Vec<String> =
-                serde_json::from_str(&condition.announcements_json)?;
-            let parsed_announcements: Vec<_> = announcements
-                .iter()
-                .map(|hex| dlc::parse_oracle_announcement(hex))
-                .collect::<Result<Vec<_>, _>>()?;
-
-            // Verify digit attestation from each oracle (count unique oracle pubkeys)
-            let mut verified_oracle_pubkeys: HashSet<String> = HashSet::new();
-            let mut attested_value_from_sigs: Option<i64> = None;
-
-            for sig_entry in &witness.oracle_sigs {
-                for ann in &parsed_announcements {
-                    let pubkey_bytes = dlc::extract_oracle_pubkey(ann);
-                    let pubkey_hex = pubkey_bytes
-                        .iter()
-                        .map(|b| format!("{:02x}", b))
-                        .collect::<String>();
-                    if pubkey_hex != sig_entry.oracle_pubkey {
-                        continue;
-                    }
-
-                    let digit_sigs_hex = sig_entry
-                        .digit_sigs
-                        .as_ref()
-                        .ok_or(Error::ConditionalKeysetRequiresWitness)?;
-
-                    let digit_sigs_bytes: Vec<Vec<u8>> = digit_sigs_hex
-                        .iter()
-                        .map(|h| from_hex(h))
-                        .collect::<Result<Vec<_>, _>>()?;
-
-                    let nonce_points = dlc::extract_nonce_points(&ann.oracle_event);
-                    let dd_info = dlc::extract_digit_decomposition(ann)?;
-
-                    let pk_bytes = from_hex(&sig_entry.oracle_pubkey)?;
-                    let value = dlc::verify_digit_attestation(
-                        &pk_bytes,
-                        &digit_sigs_bytes,
-                        &nonce_points,
-                        dd_info.base,
-                        dd_info.is_signed,
-                    )?;
-
-                    // Verify all oracles attest to the same value
-                    match attested_value_from_sigs {
-                        Some(prev) if prev != value => {
-                            return Err(Error::OracleNotAttestedOutcome);
-                        }
-                        None => {
-                            attested_value_from_sigs = Some(value);
-                        }
-                        _ => {}
-                    }
-                    verified_oracle_pubkeys
-                        .insert(sig_entry.oracle_pubkey.clone());
-                }
-            }
-
-            if (verified_oracle_pubkeys.len() as u32) < condition.threshold {
-                return Err(Error::OracleThresholdNotMet);
-            }
-
-            let value = attested_value_from_sigs
-                .ok_or(Error::ConditionalKeysetRequiresWitness)?;
+            let (ann_hex, pubkey_index) =
+                parse_announcements_with_index(&condition.announcements_json)?;
+            let value =
+                verify_numeric_threshold(&ann_hex, &pubkey_index, &witness, condition.threshold)?;
 
             // Record attestation (store attested value as string)
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-
             let value_str = value.to_string();
-            let updated = self
-                .localstore
-                .update_condition_attestation(
-                    condition_id,
-                    "attested",
-                    Some(&value_str),
-                    Some(now),
-                )
-                .await?;
-
-            if !updated {
-                // Concurrent attestation — verify value matches
-                let refreshed = self
-                    .localstore
-                    .get_condition(condition_id)
-                    .await?
-                    .ok_or(Error::ConditionNotFound)?;
-                let stored_value: i64 = refreshed
-                    .winning_outcome
-                    .as_deref()
-                    .ok_or(Error::OracleNotAttestedOutcome)?
-                    .parse()
-                    .map_err(|_| Error::Custom("Invalid stored attested value".into()))?;
-                if stored_value != value {
-                    return Err(Error::OracleNotAttestedOutcome);
-                }
-            }
+            record_attestation(&*self.localstore, condition_id, &value_str).await?;
 
             value
         };
