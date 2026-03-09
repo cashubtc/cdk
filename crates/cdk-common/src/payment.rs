@@ -167,14 +167,24 @@ impl std::fmt::Debug for PaymentIdentifier {
 }
 
 /// Options for creating a BOLT11 incoming payment request
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Bolt11IncomingPaymentOptions {
     /// Optional description for the payment request
     pub description: Option<String>,
     /// Amount for the payment request in sats
-    pub amount: Amount,
+    pub amount: Amount<CurrencyUnit>,
     /// Optional expiry time as Unix timestamp in seconds
     pub unix_expiry: Option<u64>,
+}
+
+impl Default for Bolt11IncomingPaymentOptions {
+    fn default() -> Self {
+        Self {
+            description: None,
+            amount: Amount::new(0, CurrencyUnit::Sat),
+            unix_expiry: None,
+        }
+    }
 }
 
 /// Options for creating a BOLT12 incoming payment request
@@ -183,7 +193,7 @@ pub struct Bolt12IncomingPaymentOptions {
     /// Optional description for the payment request
     pub description: Option<String>,
     /// Optional amount for the payment request in sats
-    pub amount: Option<Amount>,
+    pub amount: Option<Amount<CurrencyUnit>>,
     /// Optional expiry time as Unix timestamp in seconds
     pub unix_expiry: Option<u64>,
 }
@@ -196,7 +206,7 @@ pub struct CustomIncomingPaymentOptions {
     /// Optional description for the payment request
     pub description: Option<String>,
     /// Amount for the payment request
-    pub amount: Amount,
+    pub amount: Amount<CurrencyUnit>,
     /// Optional expiry time as Unix timestamp in seconds
     pub unix_expiry: Option<u64>,
     /// Extra payment-method-specific fields as JSON string
@@ -223,7 +233,7 @@ pub struct Bolt11OutgoingPaymentOptions {
     /// Bolt11
     pub bolt11: Bolt11Invoice,
     /// Maximum fee amount allowed for the payment
-    pub max_fee_amount: Option<Amount>,
+    pub max_fee_amount: Option<Amount<CurrencyUnit>>,
     /// Optional timeout in seconds
     pub timeout_secs: Option<u64>,
     /// Melt options
@@ -236,7 +246,7 @@ pub struct Bolt12OutgoingPaymentOptions {
     /// Offer
     pub offer: Offer,
     /// Maximum fee amount allowed for the payment
-    pub max_fee_amount: Option<Amount>,
+    pub max_fee_amount: Option<Amount<CurrencyUnit>>,
     /// Optional timeout in seconds
     pub timeout_secs: Option<u64>,
     /// Melt options
@@ -251,7 +261,7 @@ pub struct CustomOutgoingPaymentOptions {
     /// Payment request string (method-specific format)
     pub request: String,
     /// Maximum fee amount allowed for the payment
-    pub max_fee_amount: Option<Amount>,
+    pub max_fee_amount: Option<Amount<CurrencyUnit>>,
     /// Optional timeout in seconds
     pub timeout_secs: Option<u64>,
     /// Melt options
@@ -282,7 +292,7 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
         match &melt_quote.request {
             MeltPaymentRequest::Bolt11 { bolt11 } => Ok(OutgoingPaymentOptions::Bolt11(Box::new(
                 Bolt11OutgoingPaymentOptions {
-                    max_fee_amount: Some(fee_reserve.to_owned().into()),
+                    max_fee_amount: Some(fee_reserve.to_owned()),
                     timeout_secs: None,
                     bolt11: bolt11.clone(),
                     melt_options: melt_quote.options,
@@ -297,7 +307,7 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
 
                 Ok(OutgoingPaymentOptions::Bolt12(Box::new(
                     Bolt12OutgoingPaymentOptions {
-                        max_fee_amount: Some(fee_reserve.clone().into()),
+                        max_fee_amount: Some(fee_reserve.clone()),
                         timeout_secs: None,
                         offer: *offer.clone(),
                         melt_options,
@@ -308,7 +318,7 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                 Box::new(CustomOutgoingPaymentOptions {
                     method: method.to_string(),
                     request: request.to_string(),
-                    max_fee_amount: Some(melt_quote.fee_reserve().into()),
+                    max_fee_amount: Some(melt_quote.fee_reserve()),
                     timeout_secs: None,
                     melt_options: melt_quote.options,
                     extra_json: None,

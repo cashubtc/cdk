@@ -535,7 +535,14 @@ impl MintPayment for CdkLdkNode {
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
             IncomingPaymentOptions::Bolt11(bolt11_options) => {
-                let amount_msat: Amount = Amount::new(bolt11_options.amount.into(), unit.clone())
+                debug_assert_eq!(
+                    bolt11_options.amount.unit(),
+                    unit,
+                    "amount unit must match unit parameter"
+                );
+
+                let amount_msat: Amount = bolt11_options
+                    .amount
                     .convert_to(&CurrencyUnit::Msat)?
                     .into();
                 let description = bolt11_options.description.unwrap_or_default();
@@ -579,9 +586,13 @@ impl MintPayment for CdkLdkNode {
 
                 let offer = match amount {
                     Some(amount) => {
-                        let amount_msat: Amount = Amount::new(amount.into(), unit.clone())
-                            .convert_to(&CurrencyUnit::Msat)?
-                            .into();
+                        debug_assert_eq!(
+                            amount.unit(),
+                            unit,
+                            "amount unit must match unit parameter"
+                        );
+
+                        let amount_msat: Amount = amount.convert_to(&CurrencyUnit::Msat)?.into();
 
                         self.inner
                             .bolt12_payment()
@@ -718,8 +729,7 @@ impl MintPayment for CdkLdkNode {
                 let send_params = match bolt11_options
                     .max_fee_amount
                     .map(|f| {
-                        Amount::new(f.into(), unit.clone())
-                            .convert_to(&CurrencyUnit::Msat)
+                        f.convert_to(&CurrencyUnit::Msat)
                             .map(|amount_msat| RouteParametersConfig {
                                 max_total_routing_fee_msat: Some(amount_msat.value()),
                                 ..Default::default()

@@ -432,7 +432,8 @@ impl MintPayment for Lnd {
                         {
                             let partial_amount_msat = mpp.amount;
                             let invoice = bolt11;
-                            let max_fee: Option<Amount> = bolt11_options.max_fee_amount;
+                            let max_fee: Option<Amount<CurrencyUnit>> =
+                                bolt11_options.max_fee_amount.clone();
 
                             // Extract information from invoice
                             let pub_key = invoice.get_payee_pub_key();
@@ -447,10 +448,9 @@ impl MintPayment for Lnd {
                                     pub_key: hex::encode(pub_key.serialize()),
                                     amt_msat: u64::from(partial_amount_msat) as i64,
                                     fee_limit: max_fee
+                                        .clone()
                                         .map(|f| {
-                                            let fee_msat = Amount::new(f.into(), unit.clone())
-                                                .convert_to(&CurrencyUnit::Msat)?
-                                                .value();
+                                            let fee_msat = f.to_msat()?;
                                             let limit = Limit::FixedMsat(fee_msat as i64);
                                             Ok::<_, Error>(FeeLimit { limit: Some(limit) })
                                         })
@@ -511,11 +511,10 @@ impl MintPayment for Lnd {
                                     _ => (MeltQuoteState::Unknown, None),
                                 };
 
-                                // Get the actual amount paid in sats
-                                let mut total_amt: u64 = 0;
-                                if let Some(route) = payment_response.route {
-                                    total_amt = (route.total_amt_msat / 1000) as u64;
-                                }
+                                // Get the actual amount paid in msats
+                                let total_amt_msat: u64 = payment_response
+                                    .route
+                                    .map_or(0, |route| route.total_amt_msat as u64);
 
                                 return Ok(MakePaymentResponse {
                                     payment_lookup_id: PaymentIdentifier::PaymentHash(
@@ -523,7 +522,8 @@ impl MintPayment for Lnd {
                                     ),
                                     payment_proof: payment_preimage,
                                     status,
-                                    total_spent: Amount::new(total_amt, CurrencyUnit::Sat),
+                                    total_spent: Amount::new(total_amt_msat, CurrencyUnit::Msat)
+                                        .convert_to(unit)?,
                                 });
                             }
 
@@ -536,7 +536,7 @@ impl MintPayment for Lnd {
                     _ => {
                         let mut lnd_client = self.lnd_client.clone();
 
-                        let max_fee: Option<Amount> = bolt11_options.max_fee_amount;
+                        let max_fee: Option<Amount<CurrencyUnit>> = bolt11_options.max_fee_amount;
 
                         let amount_msat = u64::from(
                             bolt11_options
@@ -546,9 +546,7 @@ impl MintPayment for Lnd {
                         );
 
                         let fee_limit_msat = match max_fee {
-                            Some(fee) => Amount::new(fee.into(), unit.clone())
-                                .convert_to(&CurrencyUnit::Msat)?
-                                .value() as i64,
+                            Some(fee) => fee.convert_to(&CurrencyUnit::Msat)?.value() as i64,
                             None => 0,
                         };
 
@@ -631,9 +629,9 @@ impl MintPayment for Lnd {
                 let amount = bolt11_options.amount;
                 let unix_expiry = bolt11_options.unix_expiry;
 
-                let amount_msat: Amount = Amount::new(amount.into(), unit.clone())
-                    .convert_to(&CurrencyUnit::Msat)?
-                    .into();
+                debug_assert_eq!(amount.unit(), unit, "amount unit must match unit parameter");
+
+                let amount_msat: Amount = amount.convert_to(&CurrencyUnit::Msat)?.into();
 
                 let invoice_request = lnrpc::Invoice {
                     value_msat: u64::from(amount_msat) as i64,
