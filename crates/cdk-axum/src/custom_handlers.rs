@@ -132,7 +132,7 @@ pub async fn post_mint_custom_quote(
                 })?;
 
             let quote_request = cdk::mint::MintQuoteRequest::Custom {
-                method,
+                method: method.clone(),
                 request: custom_request,
             };
 
@@ -196,7 +196,7 @@ pub async fn get_check_mint_custom_quote(
                     method: quote_method,
                     response,
                 } => {
-                    if quote_method != method {
+                    if quote_method != method.clone() {
                         return Err(into_response(cdk::Error::InvalidPaymentMethod));
                     }
                     Ok(Json(response).into_response())

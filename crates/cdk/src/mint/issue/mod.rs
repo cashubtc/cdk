@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
-use cdk_common::nut00::KnownMethod;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
     IncomingPaymentOptions, WaitPaymentResponse,
@@ -24,6 +23,8 @@ use crate::Mint;
 
 mod auth;
 
+use cdk_common::nut00::KnownMethod;
+
 /// Input enum to handle both single and batch mint formats (internal to CDK, not spec)
 #[derive(Debug, Clone)]
 pub enum MintInput {
@@ -38,18 +39,17 @@ pub enum MintInput {
 struct QuoteEntry {
     quote_id: QuoteId,
     signature: Option<String>,
-    /// For batch: optional expected amount from quote_amounts
     expected_amount: Option<u64>,
 }
 
 impl MintInput {
-    /// Validate the structural invariants of the input.
+    /// Validates the structure of the mint input
     ///
-    /// Checks that:
-    /// - The request contains at least one quote
-    /// - Quote IDs are unique (batch only)
-    /// - `quote_amounts` length matches `quotes` length (if present)
-    /// - `signatures` length matches `quotes` length (if present)
+    /// For single requests, this is a no-op. For batch requests, checks that:
+    /// - The quotes list is non-empty
+    /// - There are no duplicate quote IDs
+    /// - The `quote_amounts` array (if present) has the same length as `quotes`
+    /// - The `signatures` array (if present) has the same length as `quotes`
     pub fn validate(&self) -> Result<(), Error> {
         match self {
             MintInput::Single(_) => Ok(()),
@@ -58,7 +58,6 @@ impl MintInput {
                     return Err(Error::UnknownQuote);
                 }
 
-                // Validate unique quote IDs
                 let unique_ids: std::collections::HashSet<_> = batch.quotes.iter().collect();
                 if unique_ids.len() != batch.quotes.len() {
                     return Err(Error::DuplicateInputs);
@@ -81,10 +80,6 @@ impl MintInput {
         }
     }
 
-    /// Extract per-quote metadata entries.
-    ///
-    /// For single requests this returns a single entry.
-    /// For batch requests this zips quotes with their optional signatures and amounts.
     fn quote_entries(&self) -> Vec<QuoteEntry> {
         match self {
             MintInput::Single(req) => {
@@ -114,7 +109,7 @@ impl MintInput {
         }
     }
 
-    /// Get the quote IDs.
+    /// Returns the list of quote IDs referenced by this mint input
     pub fn quote_ids(&self) -> Vec<QuoteId> {
         match self {
             MintInput::Single(req) => vec![req.quote.clone()],
@@ -122,9 +117,7 @@ impl MintInput {
         }
     }
 
-    /// Get the blinded message outputs.
-    ///
-    /// Returns a reference to the shared outputs without cloning.
+    /// Returns a reference to the blinded messages (outputs) to be signed
     pub fn outputs(&self) -> &[BlindedMessage] {
         match self {
             MintInput::Single(req) => &req.outputs,
@@ -132,17 +125,17 @@ impl MintInput {
         }
     }
 
-    /// Whether this is a batch (NUT-29) request.
+    /// Returns `true` if this is a batch mint request (NUT-29)
     pub fn is_batch(&self) -> bool {
         matches!(self, MintInput::Batch(_))
     }
 }
 
-/// Request for creating a mint quote
+/// Unified request type for creating mint quotes across different payment methods
 ///
-/// This enum represents the different types of payment requests that can be used
-/// to create a mint quote.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Wraps the protocol-specific request types (BOLT11, BOLT12, custom) into a
+/// single enum so the mint can handle quote creation through a common interface.
+#[derive(Debug)]
 pub enum MintQuoteRequest {
     /// Lightning Network BOLT11 invoice request
     Bolt11(MintQuoteBolt11Request),
@@ -171,10 +164,6 @@ impl From<MintQuoteBolt12Request> for MintQuoteRequest {
 
 impl MintQuoteRequest {
     /// Get the amount from the mint quote request
-    ///
-    /// For Bolt11 requests, this returns `Some(amount)` as the amount is required.
-    /// For Bolt12 requests, this returns the optional amount.
-    /// For Custom requests, this returns `Some(amount)` as the amount is required.
     pub fn amount(&self) -> Option<Amount> {
         match self {
             MintQuoteRequest::Bolt11(request) => Some(request.amount),
@@ -202,10 +191,6 @@ impl MintQuoteRequest {
     }
 
     /// Get the pubkey from the mint quote request
-    ///
-    /// For Bolt11 requests, this returns the optional pubkey.
-    /// For Bolt12 requests, this returns `Some(pubkey)` as the pubkey is required.
-    /// For Custom requests, this returns the optional pubkey.
     pub fn pubkey(&self) -> Option<PublicKey> {
         match self {
             MintQuoteRequest::Bolt11(request) => request.pubkey,
@@ -216,9 +201,6 @@ impl MintQuoteRequest {
 }
 
 /// Response for a mint quote request
-///
-/// This enum represents the different types of payment responses that can be returned
-/// when creating a mint quote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MintQuoteResponse {
     /// Lightning Network BOLT11 invoice response
@@ -474,7 +456,7 @@ impl Mint {
                     };
 
                     let custom_options = CustomIncomingPaymentOptions {
-                        method,
+                        method: method.to_string(),
                         description: request.description,
                         amount: request.amount,
                         unix_expiry: Some(quote_expiry),

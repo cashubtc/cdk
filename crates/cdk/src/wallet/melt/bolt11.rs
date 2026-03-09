@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::MeltQuote;
-use cdk_common::PaymentMethod;
+use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, PaymentMethod};
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
@@ -25,7 +25,15 @@ impl Wallet {
             options,
         };
 
-        let quote_res = self.client.post_melt_quote(quote_request).await?;
+        let quote_res = self
+            .client
+            .post_melt_quote(MeltQuoteRequest::Bolt11(quote_request))
+            .await?;
+
+        let quote_res = match quote_res {
+            MeltQuoteResponse::Bolt11(response) => response,
+            _ => return Err(Error::InvalidPaymentMethod),
+        };
 
         if self.unit == CurrencyUnit::Msat || self.unit == CurrencyUnit::Sat {
             let amount_msat = options
