@@ -17,6 +17,7 @@ use tracing::instrument;
 use uuid::Uuid;
 
 use crate::common::IssuerVersion;
+use crate::mint_quote::MintQuoteResponse;
 use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::payment::PaymentIdentifier;
 use crate::{Amount, CurrencyUnit, Error, Id, KeySetInfo, PublicKey};
@@ -1002,6 +1003,63 @@ impl TryFrom<MintQuote> for crate::nuts::MintQuoteCustomResponse<String> {
         let quote: crate::nuts::MintQuoteCustomResponse<QuoteId> = quote.try_into()?;
 
         Ok(quote.into())
+    }
+}
+
+impl TryFrom<MintQuoteResponse<QuoteId>> for MintQuoteBolt11Response<QuoteId> {
+    type Error = Error;
+
+    fn try_from(response: MintQuoteResponse<QuoteId>) -> Result<Self, Self::Error> {
+        match response {
+            MintQuoteResponse::Bolt11(bolt11_response) => Ok(bolt11_response),
+            _ => Err(Error::InvalidPaymentMethod),
+        }
+    }
+}
+
+impl TryFrom<MintQuoteResponse<QuoteId>> for MintQuoteBolt12Response<QuoteId> {
+    type Error = Error;
+
+    fn try_from(response: MintQuoteResponse<QuoteId>) -> Result<Self, Self::Error> {
+        match response {
+            MintQuoteResponse::Bolt12(bolt12_response) => Ok(bolt12_response),
+            _ => Err(Error::InvalidPaymentMethod),
+        }
+    }
+}
+
+impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
+    type Error = Error;
+
+    fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
+        if quote.payment_method.is_bolt11() {
+            let bolt11_response: MintQuoteBolt11Response<QuoteId> = quote.into();
+            Ok(MintQuoteResponse::Bolt11(bolt11_response))
+        } else if quote.payment_method.is_bolt12() {
+            let bolt12_response = MintQuoteBolt12Response::try_from(quote)?;
+            Ok(MintQuoteResponse::Bolt12(bolt12_response))
+        } else {
+            let method = quote.payment_method.clone();
+            let custom_response = crate::nuts::MintQuoteCustomResponse::try_from(quote)?;
+            Ok(MintQuoteResponse::Custom((method, custom_response)))
+        }
+    }
+}
+
+impl From<MintQuoteResponse<QuoteId>> for MintQuoteBolt11Response<String> {
+    fn from(response: MintQuoteResponse<QuoteId>) -> Self {
+        match response {
+            MintQuoteResponse::Bolt11(bolt11_response) => MintQuoteBolt11Response {
+                quote: bolt11_response.quote.to_string(),
+                state: bolt11_response.state,
+                request: bolt11_response.request,
+                expiry: bolt11_response.expiry,
+                pubkey: bolt11_response.pubkey,
+                amount: bolt11_response.amount,
+                unit: bolt11_response.unit,
+            },
+            _ => panic!("Expected Bolt11 response"),
+        }
     }
 }
 
