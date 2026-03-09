@@ -406,6 +406,33 @@ impl TryFrom<BlindAuthSettings> for cdk::nuts::BlindAuthSettings {
     }
 }
 
+/// FFI-compatible Nut29Settings (NUT-29)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record, Default)]
+pub struct Nut29Settings {
+    /// Maximum number of quotes allowed in a single batch
+    pub max_batch_size: Option<u64>,
+    /// Supported payment methods for batch minting
+    pub methods: Option<Vec<String>>,
+}
+
+impl From<cdk::nuts::nut29::Settings> for Nut29Settings {
+    fn from(settings: cdk::nuts::nut29::Settings) -> Self {
+        Self {
+            max_batch_size: settings.max_batch_size,
+            methods: settings.methods,
+        }
+    }
+}
+
+impl From<Nut29Settings> for cdk::nuts::nut29::Settings {
+    fn from(settings: Nut29Settings) -> Self {
+        Self {
+            max_batch_size: settings.max_batch_size,
+            methods: settings.methods,
+        }
+    }
+}
+
 impl From<cdk::nuts::ProtectedEndpoint> for ProtectedEndpoint {
     fn from(endpoint: cdk::nuts::ProtectedEndpoint) -> Self {
         Self {
@@ -503,6 +530,8 @@ pub struct Nuts {
     pub nut21: Option<ClearAuthSettings>,
     /// NUT22 Settings - Blind authentication
     pub nut22: Option<BlindAuthSettings>,
+    /// NUT29 Settings - Batch minting
+    pub nut29: Nut29Settings,
     /// Supported currency units for minting
     pub mint_units: Vec<CurrencyUnit>,
     /// Supported currency units for melting
@@ -535,6 +564,7 @@ impl From<cdk::nuts::Nuts> for Nuts {
             nut20_supported: nuts.nut20.supported,
             nut21: nuts.nut21.map(Into::into),
             nut22: nuts.nut22.map(Into::into),
+            nut29: nuts.nut29.into(),
             mint_units,
             melt_units,
         }
@@ -577,6 +607,7 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
             },
             nut21: n.nut21.map(|s| s.try_into()).transpose()?,
             nut22: n.nut22.map(|s| s.try_into()).transpose()?,
+            nut29: n.nut29.into(),
         })
     }
 }
@@ -749,6 +780,7 @@ mod tests {
                     ),
                 )],
             }),
+            nut29: Default::default(),
         }
     }
 
@@ -888,6 +920,7 @@ mod tests {
             nut20: cdk::nuts::nut06::SupportedSettings { supported: false },
             nut21: None,
             nut22: None,
+            nut29: Default::default(),
         };
 
         let ffi_nuts: Nuts = cdk_nuts.into();
@@ -919,6 +952,7 @@ mod tests {
             nut20_supported: false,
             nut21: None,
             nut22: None,
+            nut29: Default::default(),
             mint_units: vec![],
             melt_units: vec![],
         };

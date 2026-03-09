@@ -679,13 +679,13 @@ mod tests {
             Amount::from(1000),
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
-            OperationData::Mint(MintOperationData {
-                quote_id: quote.id.clone(),
-                amount: Amount::from(1000),
-                counter_start: Some(0),
-                counter_end: Some(10),
-                blinded_messages: None,
-            }),
+            OperationData::Mint(MintOperationData::new_single(
+                quote.id.clone(),
+                Amount::from(1000),
+                Some(0),
+                Some(10),
+                None,
+            )),
         );
         db.add_saga(saga).await.unwrap();
 

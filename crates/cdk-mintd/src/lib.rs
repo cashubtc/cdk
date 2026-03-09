@@ -2,7 +2,7 @@
 //! Cdk mintd lib
 
 // std
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env::{self};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -71,6 +71,19 @@ pub mod env_vars;
 pub mod setup;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
+const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
+
+fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {
+    let mut seen = HashSet::new();
+    mint_info
+        .nuts
+        .nut04
+        .methods
+        .iter()
+        .map(|method| method.method.to_string())
+        .filter(|method| seen.insert(method.clone()))
+        .collect()
+}
 
 #[cfg(feature = "cln")]
 fn expand_path(path: &str) -> Option<PathBuf> {
@@ -361,13 +374,11 @@ async fn configure_mint_builder(
 
     // Extract configured payment methods from mint_builder
     let mint_info = mint_builder.current_mint_info();
-    let payment_methods: Vec<String> = mint_info
-        .nuts
-        .nut04
-        .methods
-        .iter()
-        .map(|m| m.method.to_string())
-        .collect();
+    let payment_methods = extract_supported_payment_methods(&mint_info);
+
+    // Enable batch minting by default for all supported methods
+    let mint_builder = mint_builder
+        .with_batch_minting(Some(DEFAULT_BATCH_MINT_SIZE), Some(payment_methods.clone()));
 
     // Configure caching with payment methods
     let mint_builder = configure_cache(settings, mint_builder, &payment_methods);
@@ -1405,6 +1416,8 @@ pub async fn run_mintd_with_shutdown(
 
 #[cfg(test)]
 mod tests {
+    use cdk::nuts::{CurrencyUnit, MintMethodSettings, PaymentMethod};
+
     use super::*;
 
     #[test]
@@ -1424,5 +1437,51 @@ mod tests {
             ..Default::default()
         };
         assert!(!auth_config.url.is_empty());
+    }
+
+    #[test]
+    fn test_extract_supported_payment_methods_unique_ordered() {
+        let mut mint_info = cdk::nuts::MintInfo::default();
+        mint_info.nuts.nut04.methods = vec![
+            MintMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Sat,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            },
+            MintMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt12),
+                unit: CurrencyUnit::Sat,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            },
+            MintMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Msat,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            },
+            MintMethodSettings {
+                method: PaymentMethod::Custom("paypal".to_string()),
+                unit: CurrencyUnit::Usd,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            },
+            MintMethodSettings {
+                method: PaymentMethod::Custom("paypal".to_string()),
+                unit: CurrencyUnit::Eur,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            },
+        ];
+
+        let methods = extract_supported_payment_methods(&mint_info);
+
+        assert_eq!(methods, vec!["bolt11", "bolt12", "paypal"]);
     }
 }

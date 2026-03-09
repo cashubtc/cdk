@@ -94,6 +94,8 @@ enum Commands {
     MintInfo(sub_commands::mint_info::MintInfoSubcommand),
     /// Mint proofs via bolt11
     Mint(sub_commands::mint::MintSubCommand),
+    /// Mint proofs for multiple existing quotes in one request
+    MintBatch(sub_commands::mint_batch::MintBatchSubCommand),
     /// Burn Spent tokens
     Burn(sub_commands::burn::BurnSubCommand),
     /// Restore proofs from seed
@@ -270,6 +272,14 @@ async fn main() -> Result<()> {
         }
         Commands::Mint(sub_command_args) => {
             sub_commands::mint::mint(&wallet_repository, sub_command_args, &currency_unit).await
+        }
+        Commands::MintBatch(sub_command_args) => {
+            sub_commands::mint_batch::mint_batch(
+                &wallet_repository,
+                sub_command_args,
+                &currency_unit,
+            )
+            .await
         }
         Commands::MintPending => {
             sub_commands::pending_mints::mint_pending(&wallet_repository).await

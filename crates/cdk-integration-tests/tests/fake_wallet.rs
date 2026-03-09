@@ -769,6 +769,226 @@ async fn test_fake_mint_inflated() {
     }
 }
 
+/// Tests that a failed inflated mint attempt does not consume the quote
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_mint_inflated_does_not_consume_quote() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
+
+    let mut payment_streams = wallet.payment_stream(&mint_quote);
+    payment_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+    let quote_info = wallet
+        .localstore
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .unwrap()
+        .expect("there is a quote");
+    let secret_key = quote_info.secret_key.expect("Secret key on quote");
+
+    let inflated_pre_mint = PreMintSecrets::random(
+        active_keyset_id,
+        500.into(),
+        &SplitTarget::None,
+        &fee_and_amounts,
+    )
+    .unwrap();
+
+    let mut inflated_request = MintRequest {
+        quote: mint_quote.id.clone(),
+        outputs: inflated_pre_mint.blinded_messages(),
+        signature: None,
+    };
+    inflated_request
+        .sign(secret_key.clone())
+        .expect("failed to sign inflated mint request");
+
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
+    let inflated_response = http_client
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            inflated_request.clone(),
+        )
+        .await;
+
+    assert!(matches!(
+        inflated_response,
+        Err(cdk::Error::TransactionUnbalanced(_, _, _))
+    ));
+
+    let valid_pre_mint = PreMintSecrets::random(
+        active_keyset_id,
+        100.into(),
+        &SplitTarget::None,
+        &fee_and_amounts,
+    )
+    .unwrap();
+    let mut valid_request = MintRequest {
+        quote: mint_quote.id.clone(),
+        outputs: valid_pre_mint.blinded_messages(),
+        signature: None,
+    };
+    valid_request
+        .sign(secret_key.clone())
+        .expect("failed to sign valid mint request");
+
+    let valid_response = http_client
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            valid_request.clone(),
+        )
+        .await
+        .expect("valid mint request should succeed");
+    let total_issued: u64 = valid_response
+        .signatures
+        .iter()
+        .map(|sig| sig.amount.to_u64())
+        .sum();
+    assert_eq!(total_issued, 100);
+
+    let second_valid_pre_mint = PreMintSecrets::random(
+        active_keyset_id,
+        100.into(),
+        &SplitTarget::None,
+        &fee_and_amounts,
+    )
+    .unwrap();
+    let mut second_valid_request = MintRequest {
+        quote: mint_quote.id,
+        outputs: second_valid_pre_mint.blinded_messages(),
+        signature: None,
+    };
+    second_valid_request
+        .sign(secret_key)
+        .expect("failed to sign second valid mint request");
+
+    let second_response = http_client
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            second_valid_request,
+        )
+        .await;
+
+    assert!(matches!(
+        second_response,
+        Err(cdk::Error::IssuedQuote) | Err(cdk::Error::TransactionUnbalanced(_, _, _))
+    ));
+}
+
+/// Tests concurrent mint attempts with different outputs for the same quote
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_fake_mint_concurrent_same_quote_different_outputs() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
+
+    let mut payment_streams = wallet.payment_stream(&mint_quote);
+    payment_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+    let quote_info = wallet
+        .localstore
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .unwrap()
+        .expect("there is a quote");
+    let secret_key = quote_info.secret_key.expect("Secret key on quote");
+
+    let pre_mint_one = PreMintSecrets::random(
+        active_keyset_id,
+        100.into(),
+        &SplitTarget::None,
+        &fee_and_amounts,
+    )
+    .unwrap();
+    let pre_mint_two = PreMintSecrets::random(
+        active_keyset_id,
+        100.into(),
+        &SplitTarget::None,
+        &fee_and_amounts,
+    )
+    .unwrap();
+
+    let mut request_one = MintRequest {
+        quote: mint_quote.id.clone(),
+        outputs: pre_mint_one.blinded_messages(),
+        signature: None,
+    };
+    request_one
+        .sign(secret_key.clone())
+        .expect("failed to sign first request");
+
+    let mut request_two = MintRequest {
+        quote: mint_quote.id,
+        outputs: pre_mint_two.blinded_messages(),
+        signature: None,
+    };
+    request_two
+        .sign(secret_key)
+        .expect("failed to sign second request");
+
+    let (result_one, result_two) = tokio::join!(
+        async {
+            HttpClient::new(MINT_URL.parse().unwrap(), None)
+                .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request_one)
+                .await
+        },
+        async {
+            HttpClient::new(MINT_URL.parse().unwrap(), None)
+                .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request_two)
+                .await
+        }
+    );
+
+    let results = [result_one, result_two];
+    let success_count = results.iter().filter(|res| res.is_ok()).count();
+    assert_eq!(
+        success_count, 1,
+        "exactly one concurrent mint should succeed"
+    );
+
+    let failure = results
+        .into_iter()
+        .find_map(Result::err)
+        .expect("one concurrent mint should fail");
+    assert!(matches!(
+        failure,
+        cdk::Error::IssuedQuote | cdk::Error::TransactionUnbalanced(_, _, _)
+    ));
+}
+
 /// Tests that attempting to mint with multiple currency units in the same request fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_multiple_units() {

@@ -9,6 +9,7 @@ pub mod decode_token;
 pub mod list_mint_proofs;
 pub mod melt;
 pub mod mint;
+pub mod mint_batch;
 pub mod mint_blind_auth;
 pub mod mint_info;
 #[cfg(feature = "npubcash")]

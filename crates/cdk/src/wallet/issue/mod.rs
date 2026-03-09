@@ -13,7 +13,8 @@ use tracing::instrument;
 
 use crate::amount::SplitTarget;
 use crate::nuts::{
-    MintQuoteBolt11Request, MintQuoteCustomRequest, Proofs, SecretKey, SpendingConditions,
+    BatchCheckMintQuoteRequest, MintQuoteBolt11Request, MintQuoteCustomRequest, Proofs, SecretKey,
+    SpendingConditions,
 };
 use crate::util::unix_time;
 use crate::wallet::recovery::RecoveryAction;
@@ -500,5 +501,104 @@ impl Wallet {
         self.localstore.add_mint_quote(quote.clone()).await?;
 
         Ok(quote)
+    }
+
+    /// Batch check status of multiple mint quotes from the mint.
+    ///
+    /// Calls `POST /v1/mint/quote/{method}/check` per NUT-29.
+    /// All quotes must share the same payment method.
+    /// Updates local store with current state from mint for each quote.
+    #[instrument(skip(self, quote_ids))]
+    pub async fn batch_check_mint_quote_status(
+        &self,
+        quote_ids: &[&str],
+    ) -> Result<Vec<MintQuote>, Error> {
+        if quote_ids.is_empty() {
+            return Err(Error::UnknownQuote);
+        }
+
+        // Load all quotes and determine payment method
+        let mut quotes: Vec<MintQuote> = Vec::new();
+        for quote_id in quote_ids {
+            let quote = self
+                .localstore
+                .get_mint_quote(quote_id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+            quotes.push(quote);
+        }
+
+        // All quotes must share the same payment method
+        let payment_method = quotes[0].payment_method.clone();
+        for quote in &quotes {
+            if quote.payment_method != payment_method {
+                return Err(Error::InvalidPaymentMethod);
+            }
+        }
+
+        // Call batch check endpoint
+        let request = BatchCheckMintQuoteRequest {
+            quotes: quote_ids.iter().map(|s| s.to_string()).collect(),
+        };
+
+        let responses = self
+            .client
+            .post_batch_check_mint_quote_status(&payment_method, request)
+            .await?;
+
+        // Update local quotes with response data
+        for (quote, response) in quotes.iter_mut().zip(responses.iter()) {
+            quote.state = response.state;
+            if let Some(amount) = response.amount {
+                if quote.state == MintQuoteState::Issued {
+                    quote.amount_paid = amount;
+                    quote.amount_issued = amount;
+                } else if quote.state == MintQuoteState::Paid {
+                    quote.amount_paid = amount;
+                }
+            }
+            self.localstore.add_mint_quote(quote.clone()).await?;
+        }
+
+        Ok(quotes)
+    }
+
+    /// Mint tokens for multiple quotes in a single batch operation.
+    ///
+    /// Calls `POST /v1/mint/{method}/batch` per NUT-29.
+    /// All quotes must share the same payment method and unit.
+    /// Uses the saga pattern for crash recovery.
+    ///
+    /// # Arguments
+    /// * `quote_ids` - Array of unique quote IDs to mint
+    /// * `amount_split_target` - How to split the minted amount into proofs
+    /// * `spending_conditions` - Optional conditions to attach to the proofs
+    /// * `external_keys` - Optional signing keys for quotes not in local store
+    #[instrument(skip(self, quote_ids, spending_conditions, external_keys))]
+    pub async fn batch_mint(
+        &self,
+        quote_ids: &[&str],
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+        external_keys: Option<std::collections::HashMap<String, SecretKey>>,
+    ) -> Result<Proofs, Error> {
+        self.refresh_keysets().await?;
+
+        // Create saga and prepare batch
+        let saga = MintSaga::new(self);
+
+        let prepared = saga
+            .prepare_batch(
+                quote_ids,
+                amount_split_target,
+                spending_conditions,
+                external_keys.as_ref(),
+            )
+            .await?;
+
+        // Execute the mint
+        let finalized = prepared.execute().await?;
+
+        Ok(finalized.into_proofs())
     }
 }

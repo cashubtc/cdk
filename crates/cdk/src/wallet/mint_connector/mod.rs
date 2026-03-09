@@ -12,10 +12,11 @@ use super::Error;
 // Re-export Lightning address types for trait implementers
 pub use crate::lightning_address::{LnurlPayInvoiceResponse, LnurlPayResponse};
 use crate::nuts::{
-    CheckStateRequest, CheckStateResponse, Id, KeySet, KeysetResponse, MeltQuoteBolt11Request,
-    MeltQuoteBolt11Response, MeltQuoteCustomRequest, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest,
-    MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse, Id,
+    KeySet, KeysetResponse, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    MeltQuoteCustomRequest, MeltRequest, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest, MintResponse, PaymentMethod,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::AuthWallet;
 
@@ -71,6 +72,26 @@ pub trait MintConnector: Debug {
         &self,
         method: &PaymentMethod,
         request: MintRequest<String>,
+    ) -> Result<MintResponse, Error>;
+
+    /// Batch check mint quote status [NUT-29]
+    ///
+    /// Checks the status of multiple mint quotes in a single request.
+    /// The response type is `Vec<MintQuoteBolt11Response>` for bolt11 quotes.
+    /// For other payment methods, the response is method-specific.
+    async fn post_batch_check_mint_quote_status(
+        &self,
+        method: &PaymentMethod,
+        request: BatchCheckMintQuoteRequest<String>,
+    ) -> Result<Vec<MintQuoteBolt11Response<String>>, Error>;
+
+    /// Batch mint tokens [NUT-29]
+    ///
+    /// Mints tokens for multiple quotes in a single atomic request.
+    async fn post_batch_mint(
+        &self,
+        method: &PaymentMethod,
+        request: BatchMintRequest<String>,
     ) -> Result<MintResponse, Error>;
 
     /// Melt Quote [NUT-05]
