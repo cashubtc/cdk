@@ -211,10 +211,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         &self,
         request: Request<CreatePaymentRequest>,
     ) -> Result<Response<CreatePaymentResponse>, Status> {
-        let CreatePaymentRequest { unit, options } = request.into_inner();
-
-        let unit = CurrencyUnit::from_str(&unit)
-            .map_err(|_| Status::invalid_argument("Invalid currency unit"))?;
+        let CreatePaymentRequest { options, .. } = request.into_inner();
 
         let options = options.ok_or_else(|| Status::invalid_argument("Missing payment options"))?;
 
@@ -270,7 +267,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
 
         let invoice_response = self
             .inner
-            .create_incoming_payment_request(&unit, proto_options)
+            .create_incoming_payment_request(proto_options)
             .await
             .map_err(|_| Status::internal("Could not create invoice"))?;
 
