@@ -20,11 +20,11 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut00::{KnownMethod, PaymentMethod};
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
-    AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteCustomRequest, MeltRequest, MintInfo,
-    MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteCustomRequest,
-    MintQuoteCustomResponse, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    AuthToken, BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
+    Id, KeySet, KeysResponse, KeysetResponse, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    MeltQuoteCustomRequest, MeltRequest, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest, MintResponse, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 
@@ -309,6 +309,41 @@ where
             }
             PaymentMethod::Custom(m) => nut19::Path::custom_mint(m),
         };
+
+        self.retriable_http_request(nut19::Method::Post, path, auth_token, &request)
+            .await
+    }
+
+    /// Batch check mint quote status [NUT-29]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_batch_check_mint_quote_status(
+        &self,
+        method: &PaymentMethod,
+        request: BatchCheckMintQuoteRequest<String>,
+    ) -> Result<Vec<MintQuoteBolt11Response<String>>, Error> {
+        let url =
+            self.mint_url
+                .join_paths(&["v1", "mint", "quote", &method.to_string(), "check"])?;
+
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MintQuote(method.to_string()))
+            .await?;
+
+        self.transport.http_post(url, auth_token, &request).await
+    }
+
+    /// Batch mint tokens [NUT-29]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_batch_mint(
+        &self,
+        method: &PaymentMethod,
+        request: BatchMintRequest<String>,
+    ) -> Result<MintResponse, Error> {
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::Mint(method.to_string()))
+            .await?;
+
+        let path = nut19::Path::Custom(format!("/v1/mint/{}/batch", method));
 
         self.retriable_http_request(nut19::Method::Post, path, auth_token, &request)
             .await
