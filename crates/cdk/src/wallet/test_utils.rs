@@ -23,8 +23,8 @@ use cdk_common::{
 };
 
 use crate::nuts::{
-    CheckStateRequest, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, PaymentMethod,
-    RestoreRequest,
+    BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, MeltQuoteBolt11Request,
+    MeltQuoteBolt11Response, MeltRequest, PaymentMethod, RestoreRequest,
 };
 use crate::wallet::{MintConnector, Wallet};
 use crate::Error;
@@ -362,6 +362,22 @@ impl MintConnector for MockMintConnector {
         _method: &PaymentMethod,
         _request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        unimplemented!()
+    }
+
+    async fn post_batch_check_mint_quote_status(
+        &self,
+        _method: &PaymentMethod,
+        _request: BatchCheckMintQuoteRequest<String>,
+    ) -> Result<Vec<MintQuoteBolt11Response<String>>, Error> {
+        unimplemented!()
+    }
+
+    async fn post_batch_mint(
+        &self,
+        _method: &PaymentMethod,
+        _request: BatchMintRequest<String>,
+    ) -> Result<MintResponse, Error> {
         unimplemented!()
     }
 }

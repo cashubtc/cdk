@@ -7,8 +7,9 @@ use axum::routing::{get, post};
 use axum::Router;
 
 use crate::custom_handlers::{
-    cache_post_melt_custom, cache_post_mint_custom, get_check_melt_custom_quote,
-    get_check_mint_custom_quote, post_melt_custom_quote, post_mint_custom_quote,
+    cache_post_batch_mint, cache_post_melt_custom, cache_post_mint_custom,
+    get_check_melt_custom_quote, get_check_mint_custom_quote, post_batch_check_mint_quote,
+    post_melt_custom_quote, post_mint_custom_quote,
 };
 use crate::MintState;
 
@@ -17,7 +18,9 @@ use crate::MintState;
 /// Creates a single set of parameterized routes that handle all custom methods:
 /// - `/mint/quote/{method}` - POST: Create mint quote
 /// - `/mint/quote/{method}/{quote_id}` - GET: Check mint quote status
+/// - `/mint/quote/{method}/check` - POST: Batch check mint quote status (NUT-29)
 /// - `/mint/{method}` - POST: Mint tokens
+/// - `/mint/{method}/batch` - POST: Batch mint tokens (NUT-29)
 /// - `/melt/quote/{method}` - POST: Create melt quote
 /// - `/melt/quote/{method}/{quote_id}` - GET: Check melt quote status
 /// - `/melt/{method}` - POST: Melt tokens
@@ -38,7 +41,12 @@ pub fn create_custom_routers(state: MintState, custom_methods: Vec<String>) -> R
             "/mint/quote/{method}/{quote_id}",
             get(get_check_mint_custom_quote),
         )
+        .route(
+            "/mint/quote/{method}/check",
+            post(post_batch_check_mint_quote),
+        )
         .route("/mint/{method}", post(cache_post_mint_custom))
+        .route("/mint/{method}/batch", post(cache_post_batch_mint))
         .route("/melt/quote/{method}", post(post_melt_custom_quote))
         .route(
             "/melt/quote/{method}/{quote_id}",
