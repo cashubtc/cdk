@@ -354,7 +354,6 @@ pub trait MintPayment {
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
-        unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err>;
 
@@ -595,16 +594,12 @@ where
 
     async fn create_incoming_payment_request(
         &self,
-        unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let start = std::time::Instant::now();
         METRICS.inc_in_flight_requests("create_incoming_payment_request");
 
-        let result = self
-            .inner
-            .create_incoming_payment_request(unit, options)
-            .await;
+        let result = self.inner.create_incoming_payment_request(options).await;
 
         let duration = start.elapsed().as_secs_f64();
         METRICS.record_mint_operation_histogram(

@@ -650,7 +650,6 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn create_incoming_payment_request(
         &self,
-        unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let (payment_hash, request, amount, expiry) = match options {
@@ -729,8 +728,8 @@ impl MintPayment for FakeWallet {
             use bitcoin::secp256k1::rand::Rng;
             let mut rng = OsRng;
             let random_amount: u64 = rng.gen_range(1000..=10000);
-            // Use the same unit as the wallet for any-amount invoices
-            Amount::new(random_amount, unit.clone())
+            // Use the same unit as the invoice for any-amount invoices
+            Amount::new(random_amount, amount.unit().clone())
         } else {
             amount
         };

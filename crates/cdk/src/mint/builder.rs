@@ -670,7 +670,6 @@ mod tests {
 
         async fn create_incoming_payment_request(
             &self,
-            _unit: &CurrencyUnit,
             _options: IncomingPaymentOptions,
         ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
             unimplemented!()

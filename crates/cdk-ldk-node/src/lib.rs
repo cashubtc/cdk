@@ -530,17 +530,10 @@ impl MintPayment for CdkLdkNode {
     #[instrument(skip(self))]
     async fn create_incoming_payment_request(
         &self,
-        unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
             IncomingPaymentOptions::Bolt11(bolt11_options) => {
-                debug_assert_eq!(
-                    bolt11_options.amount.unit(),
-                    unit,
-                    "amount unit must match unit parameter"
-                );
-
                 let amount_msat: Amount = bolt11_options
                     .amount
                     .convert_to(&CurrencyUnit::Msat)?
@@ -586,12 +579,6 @@ impl MintPayment for CdkLdkNode {
 
                 let offer = match amount {
                     Some(amount) => {
-                        debug_assert_eq!(
-                            amount.unit(),
-                            unit,
-                            "amount unit must match unit parameter"
-                        );
-
                         let amount_msat: Amount = amount.convert_to(&CurrencyUnit::Msat)?.into();
 
                         self.inner

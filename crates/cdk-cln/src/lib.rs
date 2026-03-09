@@ -561,7 +561,6 @@ impl MintPayment for Cln {
     #[instrument(skip_all)]
     async fn create_incoming_payment_request(
         &self,
-        unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
@@ -573,8 +572,6 @@ impl MintPayment for Cln {
                 amount,
                 unix_expiry,
             }) => {
-                debug_assert_eq!(amount.unit(), unit, "amount unit must match unit parameter");
-
                 let time_now = unix_time();
 
                 let mut cln_client = self.cln_client().await?;
@@ -624,12 +621,6 @@ impl MintPayment for Cln {
                 // Match like this until we change to option
                 let amount = match amount {
                     Some(amount) => {
-                        debug_assert_eq!(
-                            amount.unit(),
-                            unit,
-                            "amount unit must match unit parameter"
-                        );
-
                         let amount = amount.convert_to(&CurrencyUnit::Msat)?;
 
                         amount.value().to_string()

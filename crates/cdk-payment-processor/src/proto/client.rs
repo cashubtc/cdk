@@ -138,7 +138,6 @@ impl MintPayment for PaymentProcessorClient {
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
-        unit: &cdk_common::CurrencyUnit,
         options: CdkIncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let mut inner = self.inner.clone();
@@ -176,7 +175,6 @@ impl MintPayment for PaymentProcessorClient {
 
         let response = inner
             .create_payment(with_version_header(Request::new(CreatePaymentRequest {
-                unit: unit.to_string(),
                 options: Some(proto_options),
             })))
             .await

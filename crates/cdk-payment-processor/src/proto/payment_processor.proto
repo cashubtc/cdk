@@ -98,7 +98,6 @@ message IncomingPaymentOptions {
 }
 
 message CreatePaymentRequest {
-  string unit = 1;
   IncomingPaymentOptions options = 2;
 }
 
