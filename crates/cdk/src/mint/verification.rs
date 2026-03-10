@@ -6,6 +6,12 @@ use tracing::instrument;
 use super::{Error, Mint};
 use crate::cdk_database;
 
+/// Maximum allowed length in bytes for proof secret or witness content
+const MAX_PROOF_CONTENT_LEN: usize = 1024;
+
+/// Maximum allowed length in bytes for request fields (description, extra)
+pub(crate) const MAX_REQUEST_FIELD_LEN: usize = 1024;
+
 /// Verification result with typed amount
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Verification {
@@ -192,8 +198,59 @@ impl Mint {
     /// **NOTE: This does not check if inputs have been spent
     #[instrument(skip_all)]
     pub async fn verify_inputs(&self, inputs: &Proofs) -> Result<Verification, Error> {
+        // Check max inputs limit
+        let inputs_count = inputs.len();
+        if inputs_count > self.max_inputs {
+            tracing::warn!(
+                "Melt request exceeds max inputs limit: {} > {}",
+                inputs_count,
+                self.max_inputs
+            );
+            return Err(Error::MaxInputsExceeded {
+                actual: inputs_count,
+                max: self.max_inputs,
+            });
+        }
+
+        // Check proof content lengths (secret and witness) are within limits
+        for proof in inputs {
+            let secret_len = proof.secret.len();
+            if secret_len > MAX_PROOF_CONTENT_LEN {
+                tracing::warn!(
+                    "Proof secret exceeds max content length: {} > {}",
+                    secret_len,
+                    MAX_PROOF_CONTENT_LEN
+                );
+                return Err(Error::ProofContentTooLarge {
+                    actual: secret_len,
+                    max: MAX_PROOF_CONTENT_LEN,
+                });
+            }
+
+            if let Some(witness) = &proof.witness {
+                let witness_str = serde_json::to_string(witness)?;
+                let witness_len = witness_str.len();
+                if witness_len > MAX_PROOF_CONTENT_LEN {
+                    tracing::warn!(
+                        "Proof witness exceeds max content length: {} > {}",
+                        witness_len,
+                        MAX_PROOF_CONTENT_LEN
+                    );
+                    return Err(Error::ProofContentTooLarge {
+                        actual: witness_len,
+                        max: MAX_PROOF_CONTENT_LEN,
+                    });
+                }
+            }
+        }
+
         Mint::check_inputs_unique(inputs)?;
         let unit = self.verify_inputs_keyset(inputs).await?;
+
+        if unit == CurrencyUnit::Auth {
+            return Err(Error::UnsupportedUnit);
+        }
+
         let amount = inputs.total_amount()?.with_unit(unit);
 
         self.verify_proofs(inputs.clone()).await?;

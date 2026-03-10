@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
+use cdk_common::grpc::create_version_check_interceptor;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_stream::Stream;
 use tonic::metadata::MetadataMap;
@@ -266,9 +267,12 @@ where
         }
     };
 
+    let version_str = (proto::Constants::SchemaVersion as u8).to_string();
+    let version: &'static str = Box::leak(version_str.into_boxed_str());
     server
-        .add_service(signatory_server::SignatoryServer::new(
+        .add_service(signatory_server::SignatoryServer::with_interceptor(
             CdkSignatoryServer::new(signatory_loader),
+            create_version_check_interceptor(cdk_common::grpc::VERSION_SIGNATORY_HEADER, version),
         ))
         .serve(addr)
         .await?;
@@ -287,9 +291,12 @@ where
     IO: AsyncRead + AsyncWrite + Connected + Unpin + Send + 'static,
     IE: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
+    let version_str = (proto::Constants::SchemaVersion as u8).to_string();
+    let version: &'static str = Box::leak(version_str.into_boxed_str());
     Server::builder()
-        .add_service(signatory_server::SignatoryServer::new(
+        .add_service(signatory_server::SignatoryServer::with_interceptor(
             CdkSignatoryServer::new(signatory_loader),
+            create_version_check_interceptor(cdk_common::grpc::VERSION_SIGNATORY_HEADER, version),
         ))
         .serve_with_incoming(incoming)
         .await?;

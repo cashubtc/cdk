@@ -11,10 +11,8 @@ readme = "README.md"
 
 
 [features]
-default = ["auth"]
 redis = ["dep:redis"]
 swagger = ["cdk/swagger", "dep:utoipa"]
-auth = ["cdk/auth"]
 prometheus = ["dep:cdk-prometheus"]
 [dependencies]
 anyhow.workspace = true

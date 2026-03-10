@@ -15,10 +15,12 @@ name = "cdk_ffi"
 [dependencies]
 async-trait = { workspace = true }
 bip39 = { workspace = true }
-cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "bip353", "nostr"] }
+cdk = { workspace = true, default-features = false, features = ["wallet", "bip353", "nostr"] }
 cdk-sqlite = { workspace = true }
 cdk-postgres = { workspace = true, optional = true }
 cdk-supabase = { workspace = true, optional = true, features = ["wallet"] }
+cdk-npubcash = { workspace = true, optional = true }
+nostr-sdk = { workspace = true, optional = true }
 futures = { workspace = true }
 once_cell = { workspace = true }
 rand = { workspace = true }
@@ -40,10 +42,13 @@ log = "0.4"
 
 
 [features]
-default = ["postgres", "supabase"]
+default = ["postgres", "supabase", "npubcash"]
 # Enable Postgres-backed wallet database support in FFI
 postgres = ["cdk-postgres"]
+# Enable Supabase-backed wallet database support in FFI
 supabase = ["cdk-supabase"]
+# Enable NpubCash client bindings
+npubcash = ["cdk-npubcash", "nostr-sdk"]
 
 [dev-dependencies]
 

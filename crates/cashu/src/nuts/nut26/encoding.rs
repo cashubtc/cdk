@@ -1,4 +1,4 @@
-//! NUT-26: Bech32m encoding for payment requests  
+//! NUT-26: Bech32m encoding for payment requests
 //!
 //! This module provides bech32m encoding and decoding functionality for Cashu payment requests,
 //! implementing the CREQ-B format using TLV (Tag-Length-Value) encoding as specified in NUT-26.
@@ -63,7 +63,7 @@ impl<'a> TlvReader<'a> {
         Self { data, position: 0 }
     }
 
-    fn read_tlv(&mut self) -> Result<Option<(u8, Vec<u8>)>, &'static str> {
+    fn read_tlv(&mut self) -> Result<Option<(u8, Vec<u8>)>, Error> {
         if self.position + 3 > self.data.len() {
             return Ok(None);
         }
@@ -74,7 +74,7 @@ impl<'a> TlvReader<'a> {
         self.position += 3;
 
         if self.position + len > self.data.len() {
-            return Err("TLV value extends beyond buffer");
+            return Err(Error::InvalidLength);
         }
 
         let value = self.data[self.position..self.position + len].to_vec();
@@ -144,7 +144,7 @@ impl PaymentRequest {
     ///     amount: Some(Amount::from(1000)),
     ///     unit: Some(cashu::nuts::CurrencyUnit::Sat),
     ///     single_use: None,
-    ///     mints: Some(vec![MintUrl::from_str("https://mint.example.com")?]),
+    ///     mints: vec![MintUrl::from_str("https://mint.example.com")?],
     ///     description: None,
     ///     transports: vec![],
     ///     nut10: None,
@@ -156,11 +156,11 @@ impl PaymentRequest {
     /// ```
     pub fn to_bech32_string(&self) -> Result<String, Error> {
         let tlv_bytes = self.encode_tlv()?;
-        let hrp = Hrp::parse(CREQ_B_HRP).map_err(|_| Error::InvalidPrefix)?;
+        let hrp = Hrp::parse(CREQ_B_HRP).map_err(|_| Error::InvalidStructure)?;
 
         // Always emit uppercase for QR compatibility
-        let encoded =
-            bech32::encode_upper::<Bech32m>(hrp, &tlv_bytes).map_err(|_| Error::InvalidPrefix)?;
+        let encoded = bech32::encode_upper::<Bech32m>(hrp, &tlv_bytes)
+            .map_err(|_| Error::InvalidStructure)?;
         Ok(encoded)
     }
 
@@ -204,7 +204,7 @@ impl PaymentRequest {
     /// # Ok::<(), cashu::nuts::nut26::Error>(())
     /// ```
     pub fn from_bech32_string(s: &str) -> Result<Self, Error> {
-        let (hrp, data) = bech32::decode(s).map_err(|_| Error::InvalidPrefix)?;
+        let (hrp, data) = bech32::decode(s).map_err(Error::Bech32Error)?;
         if !hrp.as_str().eq_ignore_ascii_case(CREQ_B_HRP) {
             return Err(Error::InvalidPrefix);
         }
@@ -225,16 +225,22 @@ impl PaymentRequest {
         let mut transports: Vec<Transport> = Vec::new();
         let mut nut10: Option<Nut10SecretRequest> = None;
 
-        while let Some((tag, value)) = reader.read_tlv().map_err(|_| Error::InvalidPrefix)? {
+        while let Some((tag, value)) = reader.read_tlv()? {
             match tag {
                 0x01 => {
                     // id: string
-                    id = Some(String::from_utf8(value).map_err(|_| Error::InvalidPrefix)?);
+                    if id.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
+                    id = Some(String::from_utf8(value).map_err(|_| Error::InvalidUtf8)?);
                 }
                 0x02 => {
                     // amount: u64
+                    if amount.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     if value.len() != 8 {
-                        return Err(Error::InvalidPrefix);
+                        return Err(Error::InvalidLength);
                     }
                     let amount_val = u64::from_be_bytes([
                         value[0], value[1], value[2], value[3], value[4], value[5], value[6],
@@ -244,30 +250,38 @@ impl PaymentRequest {
                 }
                 0x03 => {
                     // unit: u8 or string
+                    if unit.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     if value.len() == 1 && value[0] == 0 {
                         unit = Some(CurrencyUnit::Sat);
                     } else {
-                        let unit_str =
-                            String::from_utf8(value).map_err(|_| Error::InvalidPrefix)?;
+                        let unit_str = String::from_utf8(value).map_err(|_| Error::InvalidUtf8)?;
                         unit = Some(TlvUnit::Custom(unit_str).into());
                     }
                 }
                 0x04 => {
                     // single_use: u8 (0 or 1)
+                    if single_use.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     if !value.is_empty() {
                         single_use = Some(value[0] != 0);
                     }
                 }
                 0x05 => {
                     // mint: string (repeatable)
-                    let mint_str = String::from_utf8(value).map_err(|_| Error::InvalidPrefix)?;
+                    let mint_str = String::from_utf8(value).map_err(|_| Error::InvalidUtf8)?;
                     let mint_url =
-                        MintUrl::from_str(&mint_str).map_err(|_| Error::InvalidPrefix)?;
+                        MintUrl::from_str(&mint_str).map_err(|_| Error::InvalidStructure)?;
                     mints.push(mint_url);
                 }
                 0x06 => {
                     // description: string
-                    description = Some(String::from_utf8(value).map_err(|_| Error::InvalidPrefix)?);
+                    if description.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
+                    description = Some(String::from_utf8(value).map_err(|_| Error::InvalidUtf8)?);
                 }
                 0x07 => {
                     // transport: sub-TLV (repeatable)
@@ -289,7 +303,7 @@ impl PaymentRequest {
             amount,
             unit,
             single_use,
-            mints: if mints.is_empty() { None } else { Some(mints) },
+            mints,
             description,
             transports,
             nut10,
@@ -326,10 +340,8 @@ impl PaymentRequest {
         }
 
         // 0x05 mint: string (repeatable)
-        if let Some(ref mints) = self.mints {
-            for mint in mints {
-                writer.write_tlv(0x05, mint.to_string().as_bytes());
-            }
+        for mint in &self.mints {
+            writer.write_tlv(0x05, mint.to_string().as_bytes());
         }
 
         // 0x06 description: string
@@ -338,12 +350,8 @@ impl PaymentRequest {
         }
 
         // 0x07 transport: sub-TLV (repeatable, order = priority)
-        // In-band transports are represented by the absence of a transport tag (NUT-18 semantics)
+        // Note: In-band transport is represented by absence of transport tag per NUT-26
         for transport in &self.transports {
-            if transport._type == TransportType::InBand {
-                // Skip in-band transports - absence of transport tag means in-band
-                continue;
-            }
             let transport_bytes = Self::encode_transport(transport)?;
             writer.write_tlv(0x07, &transport_bytes);
         }
@@ -366,12 +374,15 @@ impl PaymentRequest {
         let mut tags: Vec<(String, Vec<String>)> = Vec::new();
         let mut http_target: Option<String> = None;
 
-        while let Some((tag, value)) = reader.read_tlv().map_err(|_| Error::InvalidPrefix)? {
+        while let Some((tag, value)) = reader.read_tlv()? {
             match tag {
                 0x01 => {
                     // kind: u8
+                    if kind.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     if value.len() != 1 {
-                        return Err(Error::InvalidPrefix);
+                        return Err(Error::InvalidLength);
                     }
                     kind = Some(value[0]);
                 }
@@ -381,19 +392,19 @@ impl PaymentRequest {
                         Some(0x00) => {
                             // nostr: 32-byte x-only pubkey
                             if value.len() != 32 {
-                                return Err(Error::InvalidPrefix);
+                                return Err(Error::InvalidLength);
                             }
                             pubkey = Some(value);
                         }
                         Some(0x01) => {
                             // http_post: UTF-8 URL string
                             http_target =
-                                Some(String::from_utf8(value).map_err(|_| Error::InvalidPrefix)?);
+                                Some(String::from_utf8(value).map_err(|_| Error::InvalidUtf8)?);
                         }
                         None => {
                             // kind should always be present if there's a target
                         }
-                        _ => return Err(Error::InvalidPrefix),
+                        _ => return Err(Error::InvalidStructure),
                     }
                 }
                 0x03 => {
@@ -409,10 +420,10 @@ impl PaymentRequest {
 
         // In-band transport is represented by absence of transport tag (0x07)
         // If we're here, we have a transport tag, so it must be nostr or http_post
-        let transport_type = match kind.ok_or(Error::InvalidPrefix)? {
+        let transport_type = match kind.ok_or(Error::InvalidStructure)? {
             0x00 => TransportType::Nostr,
             0x01 => TransportType::HttpPost,
-            _ => return Err(Error::InvalidPrefix),
+            _ => return Err(Error::InvalidStructure),
         };
 
         // Extract relays from "r" tag tuples for Nostr transport
@@ -429,47 +440,27 @@ impl PaymentRequest {
                 if let Some(pk) = pubkey {
                     Self::encode_nprofile(&pk, &relays)?
                 } else {
-                    return Err(Error::InvalidPrefix);
+                    return Err(Error::InvalidStructure);
                 }
             }
-            TransportType::HttpPost => http_target.ok_or(Error::InvalidPrefix)?,
-            TransportType::InBand => {
-                // This case should not be reachable since InBand is not decoded from transport tag
-                unreachable!("InBand transport should not be decoded from transport tag")
-            }
+            TransportType::HttpPost => http_target.ok_or(Error::InvalidStructure)?,
         };
 
-        // Convert tags to the Transport format
-        // For Nostr: keep "n" tags as-is, convert "r" tags to "relay" for compatibility
-        let mut final_tags: Vec<(String, Vec<String>)> = Vec::new();
-        for (key, values) in tags {
-            if key == "r" {
-                // Convert "r" tag tuples to "relay" tags for compatibility
-                for relay in values {
-                    final_tags.push(("relay".to_string(), vec![relay]));
-                }
-            } else {
-                final_tags.push((key, values));
-            }
-        }
+        // Keep tags as-is per NUT-26 spec (no "r" to "relay" conversion)
+        // "r" tags are part of the transport encoding and should be preserved
+        let final_tags: Vec<(String, Vec<String>)> = tags;
 
         Ok(Transport {
             _type: transport_type,
             target,
-            tags: if final_tags.is_empty() {
-                None
-            } else {
-                Some(
-                    final_tags
-                        .into_iter()
-                        .map(|(k, v)| {
-                            let mut result = vec![k];
-                            result.extend(v);
-                            result
-                        })
-                        .collect(),
-                )
-            },
+            tags: final_tags
+                .into_iter()
+                .map(|(k, v)| {
+                    let mut result = vec![k];
+                    result.extend(v);
+                    result
+                })
+                .collect(),
         })
     }
 
@@ -478,20 +469,13 @@ impl PaymentRequest {
         let mut writer = TlvWriter::new();
 
         // 0x01 kind: u8
-        // Note: InBand transports should not reach here (filtered out in encode_tlv)
-        // but we handle it defensively
         let kind = match transport._type {
-            TransportType::InBand => {
-                // In-band is represented by absence of transport tag, not by encoding
-                return Err(Error::InvalidPrefix);
-            }
             TransportType::Nostr => 0x00u8,
             TransportType::HttpPost => 0x01u8,
         };
         writer.write_tlv(0x01, &[kind]);
 
         // 0x02 target: bytes
-        // Note: InBand already returned error above, so only Nostr and HttpPost reach here
         match transport._type {
             TransportType::Nostr => {
                 // For nostr, decode nprofile to extract pubkey and relays
@@ -504,23 +488,21 @@ impl PaymentRequest {
                 let mut all_relays = relays;
 
                 // Extract NIPs and other tags from the tags field
-                if let Some(ref tags) = transport.tags {
-                    for tag in tags {
-                        if tag.is_empty() {
-                            continue;
-                        }
-                        if tag[0] == "n" && tag.len() >= 2 {
-                            // Encode NIPs as tag tuples with key "n"
-                            let tag_bytes = Self::encode_tag_tuple(tag)?;
-                            writer.write_tlv(0x03, &tag_bytes);
-                        } else if tag[0] == "relay" && tag.len() >= 2 {
-                            // Collect relays from tags to encode as "r" tag tuples
-                            all_relays.push(tag[1].clone());
-                        } else {
-                            // Other tags as generic tag tuples
-                            let tag_bytes = Self::encode_tag_tuple(tag)?;
-                            writer.write_tlv(0x03, &tag_bytes);
-                        }
+                for tag in &transport.tags {
+                    if tag.is_empty() {
+                        continue;
+                    }
+                    if tag[0] == "n" && tag.len() >= 2 {
+                        // Encode NIPs as tag tuples with key "n"
+                        let tag_bytes = Self::encode_tag_tuple(tag)?;
+                        writer.write_tlv(0x03, &tag_bytes);
+                    } else if tag[0] == "relay" && tag.len() >= 2 {
+                        // Collect relays from tags to encode as "r" tag tuples
+                        all_relays.push(tag[1].clone());
+                    } else {
+                        // Other tags as generic tag tuples
+                        let tag_bytes = Self::encode_tag_tuple(tag)?;
+                        writer.write_tlv(0x03, &tag_bytes);
                     }
                 }
 
@@ -535,18 +517,12 @@ impl PaymentRequest {
                 writer.write_tlv(0x02, transport.target.as_bytes());
 
                 // 0x03 tag_tuple: generic tuple (repeatable)
-                if let Some(ref tags) = transport.tags {
-                    for tag in tags {
-                        if !tag.is_empty() {
-                            let tag_bytes = Self::encode_tag_tuple(tag)?;
-                            writer.write_tlv(0x03, &tag_bytes);
-                        }
+                for tag in &transport.tags {
+                    if !tag.is_empty() {
+                        let tag_bytes = Self::encode_tag_tuple(tag)?;
+                        writer.write_tlv(0x03, &tag_bytes);
                     }
                 }
-            }
-            TransportType::InBand => {
-                // This case is unreachable since we return early with error for InBand
-                unreachable!("InBand transport should not reach target encoding")
             }
         }
 
@@ -561,20 +537,26 @@ impl PaymentRequest {
         let mut data: Option<Vec<u8>> = None;
         let mut tags: Vec<(String, Vec<String>)> = Vec::new();
 
-        while let Some((tag, value)) = reader.read_tlv().map_err(|_| Error::InvalidPrefix)? {
+        while let Some((tag, value)) = reader.read_tlv()? {
             match tag {
                 0x01 => {
                     // kind: u8
+                    if kind.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     if value.len() != 1 {
-                        return Err(Error::InvalidPrefix);
+                        return Err(Error::InvalidLength);
                     }
                     kind = Some(value[0]);
                 }
                 0x02 => {
                     // data: bytes
+                    if data.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     data = Some(value);
                 }
-                0x03 | 0x05 => {
+                0x03 => {
                     // tag_tuple: generic tuple (repeatable)
                     let tag_tuple = Self::decode_tag_tuple(&value)?;
                     tags.push(tag_tuple);
@@ -585,7 +567,7 @@ impl PaymentRequest {
             }
         }
 
-        let kind_val = kind.ok_or(Error::InvalidPrefix)?;
+        let kind_val = kind.ok_or(Error::InvalidStructure)?;
         let data_val = data.unwrap_or_default();
 
         // Convert kind u8 to Kind enum
@@ -645,16 +627,16 @@ impl PaymentRequest {
     /// Decode tag tuple
     fn decode_tag_tuple(bytes: &[u8]) -> Result<(String, Vec<String>), Error> {
         if bytes.is_empty() {
-            return Err(Error::InvalidPrefix);
+            return Err(Error::InvalidLength);
         }
 
         let key_len = bytes[0] as usize;
         if bytes.len() < 1 + key_len {
-            return Err(Error::InvalidPrefix);
+            return Err(Error::InvalidLength);
         }
 
         let key =
-            String::from_utf8(bytes[1..1 + key_len].to_vec()).map_err(|_| Error::InvalidPrefix)?;
+            String::from_utf8(bytes[1..1 + key_len].to_vec()).map_err(|_| Error::InvalidUtf8)?;
 
         let mut values = Vec::new();
         let mut pos = 1 + key_len;
@@ -664,11 +646,11 @@ impl PaymentRequest {
             pos += 1;
 
             if pos + val_len > bytes.len() {
-                return Err(Error::InvalidPrefix);
+                return Err(Error::InvalidLength);
             }
 
             let value = String::from_utf8(bytes[pos..pos + val_len].to_vec())
-                .map_err(|_| Error::InvalidPrefix)?;
+                .map_err(|_| Error::InvalidUtf8)?;
             values.push(value);
             pos += val_len;
         }
@@ -679,7 +661,7 @@ impl PaymentRequest {
     /// Encode tag tuple
     fn encode_tag_tuple(tag: &[String]) -> Result<Vec<u8>, Error> {
         if tag.is_empty() {
-            return Err(Error::InvalidPrefix);
+            return Err(Error::InvalidStructure);
         }
 
         let mut bytes = Vec::new();
@@ -703,9 +685,9 @@ impl PaymentRequest {
     /// - Type 0: 32-byte pubkey (required, only one)
     /// - Type 1: relay URL string (optional, repeatable)
     fn decode_nprofile(nprofile: &str) -> Result<(Vec<u8>, Vec<String>), Error> {
-        let (hrp, data) = bech32::decode(nprofile).map_err(|_| Error::InvalidPrefix)?;
+        let (hrp, data) = bech32::decode(nprofile).map_err(Error::Bech32Error)?;
         if hrp.as_str() != "nprofile" {
-            return Err(Error::InvalidPrefix);
+            return Err(Error::InvalidStructure);
         }
 
         // Parse NIP-19 TLV format (Type: 1 byte, Length: 1 byte, Value: variable)
@@ -723,7 +705,7 @@ impl PaymentRequest {
             pos += 2;
 
             if pos + len > data.len() {
-                return Err(Error::InvalidPrefix);
+                return Err(Error::InvalidLength);
             }
 
             let value = &data[pos..pos + len];
@@ -733,14 +715,14 @@ impl PaymentRequest {
                 0 => {
                     // pubkey: 32 bytes
                     if value.len() != 32 {
-                        return Err(Error::InvalidPrefix);
+                        return Err(Error::InvalidLength);
                     }
                     pubkey = Some(value.to_vec());
                 }
                 1 => {
                     // relay: UTF-8 string
                     let relay =
-                        String::from_utf8(value.to_vec()).map_err(|_| Error::InvalidPrefix)?;
+                        String::from_utf8(value.to_vec()).map_err(|_| Error::InvalidUtf8)?;
                     relays.push(relay);
                 }
                 _ => {
@@ -749,7 +731,7 @@ impl PaymentRequest {
             }
         }
 
-        let pubkey = pubkey.ok_or(Error::InvalidPrefix)?;
+        let pubkey = pubkey.ok_or(Error::InvalidStructure)?;
         Ok((pubkey, relays))
     }
 
@@ -757,7 +739,7 @@ impl PaymentRequest {
     /// NIP-19 nprofile TLV format (Type: 1 byte, Length: 1 byte, Value: variable)
     fn encode_nprofile(pubkey: &[u8], relays: &[String]) -> Result<String, Error> {
         if pubkey.len() != 32 {
-            return Err(Error::InvalidPrefix);
+            return Err(Error::InvalidLength);
         }
 
         let mut tlv_bytes = Vec::new();
@@ -770,15 +752,15 @@ impl PaymentRequest {
         // Type 1: relays (repeatable) - Length must fit in 1 byte
         for relay in relays {
             if relay.len() > 255 {
-                return Err(Error::InvalidPrefix); // Relay URL too long for NIP-19
+                return Err(Error::TagTooLong); // Relay URL too long for NIP-19
             }
             tlv_bytes.push(1); // type
             tlv_bytes.push(relay.len() as u8); // length
             tlv_bytes.extend_from_slice(relay.as_bytes());
         }
 
-        let hrp = Hrp::parse("nprofile").map_err(|_| Error::InvalidPrefix)?;
-        bech32::encode::<Bech32>(hrp, &tlv_bytes).map_err(|_| Error::InvalidPrefix)
+        let hrp = Hrp::parse("nprofile").map_err(|_| Error::InvalidStructure)?;
+        bech32::encode::<Bech32>(hrp, &tlv_bytes).map_err(|_| Error::InvalidStructure)
     }
 }
 
@@ -796,7 +778,7 @@ mod tests {
         let transport = Transport {
             _type: TransportType::HttpPost,
             target: "https://api.example.com/payment".to_string(),
-            tags: None,
+            tags: vec![],
         };
 
         let payment_request = PaymentRequest {
@@ -804,7 +786,7 @@ mod tests {
             amount: Some(Amount::from(100)),
             unit: Some(CurrencyUnit::Sat),
             single_use: Some(true),
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: Some("Test payment".to_string()),
             transports: vec![transport],
             nut10: None,
@@ -833,7 +815,7 @@ mod tests {
             amount: None,
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: None,
             transports: vec![],
             nut10: None,
@@ -861,7 +843,7 @@ mod tests {
             amount: Some(Amount::from(500)),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: Some("P2PK locked payment".to_string()),
             transports: vec![],
             nut10: Some(nut10.clone()),
@@ -883,7 +865,7 @@ mod tests {
             amount: Some(Amount::from(100)),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: None,
             transports: vec![],
             nut10: None,
@@ -928,7 +910,7 @@ mod tests {
             amount: Some(Amount::from(100)),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: None,
             transports: vec![],
             nut10: None,
@@ -947,7 +929,7 @@ mod tests {
             amount: Some(Amount::from(100)),
             unit: Some(CurrencyUnit::Usd),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1115,7 +1097,7 @@ mod tests {
         let transport = Transport {
             _type: TransportType::Nostr,
             target: nprofile.clone(),
-            tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
+            tags: vec![vec!["n".to_string(), "17".to_string()]],
         };
 
         let payment_request = PaymentRequest {
@@ -1123,7 +1105,7 @@ mod tests {
             amount: Some(Amount::from(1000)),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: Some("Nostr payment".to_string()),
             transports: vec![transport],
             nut10: None,
@@ -1141,7 +1123,7 @@ mod tests {
         assert!(decoded.transports[0].target.starts_with("nprofile"));
 
         // Check that NIP-17 tag was preserved
-        let tags = decoded.transports[0].tags.as_ref().unwrap();
+        let tags = &decoded.transports[0].tags;
         assert!(tags
             .iter()
             .any(|t| t.len() >= 2 && t[0] == "n" && t[1] == "17"));
@@ -1159,7 +1141,7 @@ mod tests {
         let transport = Transport {
             _type: TransportType::Nostr,
             target: nprofile.clone(),
-            tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
+            tags: vec![vec!["n".to_string(), "17".to_string()]],
         };
 
         let payment_request = PaymentRequest {
@@ -1167,7 +1149,7 @@ mod tests {
             amount: Some(Amount::from(2100)),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: Some("Nostr payment with relays".to_string()),
             transports: vec![transport],
             nut10: None,
@@ -1186,11 +1168,11 @@ mod tests {
         // Should be encoded back as nprofile since it has relays
         assert!(decoded.transports[0].target.starts_with("nprofile"));
 
-        // Check that relay was preserved in tags
-        let tags = decoded.transports[0].tags.as_ref().unwrap();
+        // Check that relay was preserved in tags as "r" per NUT-26 spec
+        let tags = &decoded.transports[0].tags;
         assert!(tags
             .iter()
-            .any(|t| t.len() >= 2 && t[0] == "relay" && t[1] == "wss://relay.example.com"));
+            .any(|t| t.len() >= 2 && t[0] == "r" && t[1] == "wss://relay.example.com"));
     }
 
     #[test]
@@ -1206,7 +1188,7 @@ mod tests {
         let transport = Transport {
             _type: TransportType::Nostr,
             target: nprofile,
-            tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
+            tags: vec![vec!["n".to_string(), "17".to_string()]],
         };
 
         let payment_request = PaymentRequest {
@@ -1214,7 +1196,7 @@ mod tests {
             amount: Some(Amount::from(10)),
             unit: Some(CurrencyUnit::Sat),
             single_use: Some(true),
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: Some("Coffee".to_string()),
             transports: vec![transport],
             nut10: None,
@@ -1239,13 +1221,13 @@ mod tests {
         assert_eq!(decoded.transports[0]._type, TransportType::Nostr);
 
         // Verify relay and NIP are preserved
-        let tags = decoded.transports[0].tags.as_ref().unwrap();
+        let tags = &decoded.transports[0].tags;
         assert!(tags
             .iter()
             .any(|t| t.len() >= 2 && t[0] == "n" && t[1] == "17"));
         assert!(tags
             .iter()
-            .any(|t| t.len() >= 2 && t[0] == "relay" && t[1] == "wss://relay.damus.io"));
+            .any(|t| t.len() >= 2 && t[0] == "r" && t[1] == "wss://relay.damus.io"));
     }
 
     #[test]
@@ -1269,16 +1251,16 @@ mod tests {
         let transport1 = Transport {
             _type: TransportType::Nostr,
             target: nprofile1.clone(),
-            tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
+            tags: vec![vec!["n".to_string(), "17".to_string()]],
         };
 
         let transport2 = Transport {
             _type: TransportType::Nostr,
             target: nprofile2.clone(),
-            tags: Some(vec![
+            tags: vec![
                 vec!["n".to_string(), "17".to_string()],
                 vec!["n".to_string(), "44".to_string()],
-            ]),
+            ],
         };
 
         let payment_request = PaymentRequest {
@@ -1286,11 +1268,11 @@ mod tests {
             amount: Some(Amount::from(5000)),
             unit: Some(CurrencyUnit::Sat),
             single_use: Some(false),
-            mints: Some(vec![
+            mints: vec![
                 MintUrl::from_str("https://mint1.example.com").unwrap(),
                 MintUrl::from_str("https://mint2.example.com").unwrap(),
                 MintUrl::from_str("https://testnut.cashu.space").unwrap(),
-            ]),
+            ],
             description: Some("Payment with multiple transports and mints".to_string()),
             transports: vec![transport1, transport2],
             nut10: None,
@@ -1318,7 +1300,7 @@ mod tests {
         );
 
         // Verify mints
-        let mints = decoded.mints.as_ref().expect("should have mints");
+        let mints = &decoded.mints;
         assert_eq!(mints.len(), 3);
 
         // MintUrl normalizes URLs and may add trailing slashes
@@ -1352,7 +1334,7 @@ mod tests {
         assert!(decoded_relays1.is_empty());
 
         // Verify NIP-17 tag
-        let tags1 = transport1_decoded.tags.as_ref().unwrap();
+        let tags1 = &transport1_decoded.tags;
         assert!(tags1
             .iter()
             .any(|t| t.len() >= 2 && t[0] == "n" && t[1] == "17"));
@@ -1370,7 +1352,7 @@ mod tests {
         assert_eq!(decoded_relays2, relays2);
 
         // Verify tags include both NIPs and relays
-        let tags2 = transport2_decoded.tags.as_ref().unwrap();
+        let tags2 = &transport2_decoded.tags;
         assert!(tags2
             .iter()
             .any(|t| t.len() >= 2 && t[0] == "n" && t[1] == "17"));
@@ -1379,10 +1361,10 @@ mod tests {
             .any(|t| t.len() >= 2 && t[0] == "n" && t[1] == "44"));
         assert!(tags2
             .iter()
-            .any(|t| t.len() >= 2 && t[0] == "relay" && t[1] == "wss://relay.damus.io"));
+            .any(|t| t.len() >= 2 && t[0] == "r" && t[1] == "wss://relay.damus.io"));
         assert!(tags2
             .iter()
-            .any(|t| t.len() >= 2 && t[0] == "relay" && t[1] == "wss://nos.lol"));
+            .any(|t| t.len() >= 2 && t[0] == "r" && t[1] == "wss://nos.lol"));
     }
 
     // Test vectors from NUT-26 specification
@@ -1418,7 +1400,7 @@ mod tests {
         assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(10));
         assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            payment_request_cloned.mints.unwrap(),
+            payment_request_cloned.mints,
             vec![MintUrl::from_str("https://8333.space:3338").unwrap()]
         );
 
@@ -1427,7 +1409,7 @@ mod tests {
         assert_eq!(transport.target, "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n");
         assert_eq!(
             transport.tags,
-            Some(vec![vec!["n".to_string(), "17".to_string()]])
+            vec![vec!["n".to_string(), "17".to_string()]]
         );
 
         // Test bech32m encoding (CREQ-B format) - this is what NUT-26 is about
@@ -1449,14 +1431,14 @@ mod tests {
         assert_eq!(decoded.amount.unwrap(), Amount::from(10));
         assert_eq!(decoded.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            decoded.mints.unwrap(),
+            decoded.mints,
             vec![MintUrl::from_str("https://8333.space:3338").unwrap()]
         );
 
         // Verify transport type and that it has the NIP-17 tag
         assert_eq!(decoded.transports.len(), 1);
         assert_eq!(decoded.transports[0]._type, TransportType::Nostr);
-        let tags = decoded.transports[0].tags.as_ref().unwrap();
+        let tags = &decoded.transports[0].tags;
         assert!(tags
             .iter()
             .any(|t| t.len() >= 2 && t[0] == "n" && t[1] == "17"));
@@ -1503,7 +1485,7 @@ mod tests {
         assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(100));
         assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            payment_request_cloned.mints.unwrap(),
+            payment_request_cloned.mints,
             vec![
                 MintUrl::from_str("https://mint1.example.com").unwrap(),
                 MintUrl::from_str("https://mint2.example.com").unwrap()
@@ -1518,10 +1500,10 @@ mod tests {
         );
         assert_eq!(
             transport.tags,
-            Some(vec![
+            vec![
                 vec!["n".to_string(), "17".to_string()],
                 vec!["n".to_string(), "9735".to_string()]
-            ])
+            ]
         );
 
         // Test round-trip serialization
@@ -1562,7 +1544,7 @@ mod tests {
         assert_eq!(payment_request_cloned.amount, None);
         assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            payment_request_cloned.mints.unwrap(),
+            payment_request_cloned.mints,
             vec![MintUrl::from_str("https://mint.example.com").unwrap()]
         );
         assert_eq!(payment_request_cloned.transports, vec![]);
@@ -1607,7 +1589,7 @@ mod tests {
         assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(500));
         assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            payment_request_cloned.mints.unwrap(),
+            payment_request_cloned.mints,
             vec![MintUrl::from_str("https://mint.example.com").unwrap()]
         );
 
@@ -1698,7 +1680,7 @@ mod tests {
         );
 
         // Verify custom tags are preserved
-        let tags = decoded.transports[0].tags.as_ref().unwrap();
+        let tags = &decoded.transports[0].tags;
         assert!(tags
             .iter()
             .any(|t| t.len() >= 3 && t[0] == "custom" && t[1] == "value1" && t[2] == "value2"));
@@ -1710,7 +1692,7 @@ mod tests {
 
     #[test]
     fn test_relay_tag_extraction_from_nprofile() {
-        // Test that relays are properly extracted from nprofile and converted to "relay" tags
+        // Test that relays are properly extracted from nprofile as "r" tags per NUT-26 spec
         let json = r#"{
             "i": "relay_test",
             "a": 100,
@@ -1739,16 +1721,13 @@ mod tests {
         // Decode and verify round-trip
         let decoded = PaymentRequest::from_bech32_string(&encoded).expect("decoding should work");
 
-        // Verify relays were extracted and converted to "relay" tags
-        let tags = decoded.transports[0]
-            .tags
-            .as_ref()
-            .expect("should have tags");
+        // Verify relays were extracted as "r" tags per NUT-26 spec
+        let tags = &decoded.transports[0].tags;
 
-        // Check all three relays are present as "relay" tags
+        // Check all three relays are present as "r" tags per NUT-26 spec
         let relay_tags: Vec<&Vec<String>> = tags
             .iter()
-            .filter(|t| !t.is_empty() && t[0] == "relay")
+            .filter(|t| !t.is_empty() && t[0] == "r")
             .collect();
         assert_eq!(relay_tags.len(), 3);
 
@@ -1786,7 +1765,7 @@ mod tests {
             amount: Some(Amount::from(100)),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: Some("Test payment description".to_string()),
             transports: vec![],
             nut10: None,
@@ -1821,7 +1800,7 @@ mod tests {
             amount: Some(Amount::from(100)),
             unit: Some(CurrencyUnit::Sat),
             single_use: Some(true),
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1851,7 +1830,7 @@ mod tests {
             amount: Some(Amount::from(100)),
             unit: Some(CurrencyUnit::Sat),
             single_use: Some(false),
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1881,7 +1860,7 @@ mod tests {
             amount: Some(Amount::from(1000)),
             unit: Some(CurrencyUnit::Msat),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1912,7 +1891,7 @@ mod tests {
             amount: Some(Amount::from(500)),
             unit: Some(CurrencyUnit::Usd),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1995,7 +1974,7 @@ mod tests {
             decoded.transports[2].target,
             "https://api2.example.com/payment"
         );
-        let tags = decoded.transports[2].tags.as_ref().unwrap();
+        let tags = &decoded.transports[2].tags;
         assert!(tags
             .iter()
             .any(|t| t.len() >= 2 && t[0] == "priority" && t[1] == "backup"));
@@ -2043,7 +2022,7 @@ mod tests {
         assert!(decoded.transports[0].target.starts_with("nprofile"));
 
         // Tags should be None for minimal transport
-        assert!(decoded.transports[0].tags.is_none());
+        assert!(decoded.transports[0].tags.is_empty());
 
         // Test decoding the expected encoded string
         let decoded_from_spec = PaymentRequest::from_bech32_string(expected_encoded).unwrap();
@@ -2086,7 +2065,7 @@ mod tests {
         assert_eq!(decoded.transports.len(), 1);
         assert_eq!(decoded.transports[0]._type, TransportType::HttpPost);
         assert_eq!(decoded.transports[0].target, "https://api.example.com");
-        assert!(decoded.transports[0].tags.is_none());
+        assert!(decoded.transports[0].tags.is_empty());
 
         // Test decoding the expected encoded string
         let decoded_from_spec = PaymentRequest::from_bech32_string(expected_encoded).unwrap();
@@ -2098,23 +2077,17 @@ mod tests {
 
     #[test]
     fn test_in_band_transport_implicit() {
-        // Test in-band transport: absence of transport tag means in-band (NUT-18 semantics)
-        // In-band transports are NOT encoded - they're represented by the absence of a transport tag
-
-        let transport = Transport {
-            _type: TransportType::InBand,
-            target: String::new(), // In-band has no target
-            tags: None,
-        };
+        // Test that in-band transport is represented by absence of transport tag
+        // Per NUT-26: in-band transport means no transport entries in the list
 
         let payment_request = PaymentRequest {
             payment_id: Some("in_band_test".to_string()),
             amount: Some(Amount::from(100)),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: None,
-            transports: vec![transport],
+            transports: vec![], // Empty transports = in-band per NUT-26
             nut10: None,
         };
 
@@ -2125,8 +2098,7 @@ mod tests {
         // Decode the encoded string
         let decoded = PaymentRequest::from_bech32_string(&encoded).expect("decoding should work");
 
-        // In-band transports are not encoded, so when decoded, transports should be empty
-        // (absence of transport tag = in-band is implicit)
+        // Empty transports list means in-band transport per NUT-26
         assert_eq!(decoded.transports.len(), 0);
         assert_eq!(decoded.payment_id, Some("in_band_test".to_string()));
         assert_eq!(decoded.amount, Some(Amount::from(100)));
@@ -2174,7 +2146,7 @@ mod tests {
         assert_eq!(decoded.unit, Some(CurrencyUnit::Sat));
         assert_eq!(
             decoded.mints,
-            Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()])
+            vec![MintUrl::from_str("https://mint.example.com").unwrap()]
         );
         assert_eq!(decoded.description, Some("HTLC locked payment".to_string()));
 
@@ -2187,7 +2159,7 @@ mod tests {
         );
 
         // Verify all tags with exact values
-        let tags = nut10.tags.as_ref().unwrap();
+        let tags = nut10.tags.clone().unwrap();
         assert_eq!(tags.len(), 2);
         assert_eq!(
             tags[0],
@@ -2212,7 +2184,7 @@ mod tests {
             amount: Some(Amount::from(100)),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: None,
             transports: vec![],
             nut10: None,
@@ -2249,7 +2221,7 @@ mod tests {
             amount: Some(Amount::from(100)),
             unit: Some(CurrencyUnit::Custom("btc".to_string())),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: None,
             transports: vec![],
             nut10: None,

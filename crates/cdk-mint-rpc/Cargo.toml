@@ -23,7 +23,7 @@ anyhow.workspace = true
 cdk = { workspace = true, features = [
     "mint",
 ] }
-cdk-common.workspace = true
+cdk-common = { workspace = true, features = ["grpc"] }
 clap.workspace = true
 tonic = { workspace = true, features = ["transport", "tls-ring", "codegen", "router"] }
 tracing.workspace = true

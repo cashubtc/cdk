@@ -1,4 +1,4 @@
-use cdk_common::database::Acquired;
+use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::payment::{
@@ -17,10 +17,10 @@ use cdk_common::{
 use cdk_prometheus::METRICS;
 use tracing::instrument;
 
+use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
 use crate::mint::Verification;
 use crate::Mint;
 
-#[cfg(feature = "auth")]
 mod auth;
 
 /// Request for creating a mint quote
@@ -272,6 +272,16 @@ impl Mint {
 
             let payment_options = match mint_quote_request {
                 MintQuoteRequest::Bolt11(bolt11_request) => {
+                    if let Some(ref desc) = bolt11_request.description {
+                        if desc.len() > MAX_REQUEST_FIELD_LEN {
+                            return Err(Error::RequestFieldTooLarge {
+                                field: "description".to_string(),
+                                actual: desc.len(),
+                                max: MAX_REQUEST_FIELD_LEN,
+                            });
+                        }
+                    }
+
                     let mint_ttl = self.quote_ttl().await?.mint_ttl;
 
                     let quote_expiry = unix_time() + mint_ttl;
@@ -296,6 +306,16 @@ impl Mint {
                     IncomingPaymentOptions::Bolt11(bolt11_options)
                 }
                 MintQuoteRequest::Bolt12(bolt12_request) => {
+                    if let Some(ref desc) = bolt12_request.description {
+                        if desc.len() > MAX_REQUEST_FIELD_LEN {
+                            return Err(Error::RequestFieldTooLarge {
+                                field: "description".to_string(),
+                                actual: desc.len(),
+                                max: MAX_REQUEST_FIELD_LEN,
+                            });
+                        }
+                    }
+
                     let description = bolt12_request.description;
 
                     let bolt12_options = Bolt12IncomingPaymentOptions {
@@ -307,6 +327,27 @@ impl Mint {
                     IncomingPaymentOptions::Bolt12(Box::new(bolt12_options))
                 }
                 MintQuoteRequest::Custom { method, request } => {
+                    if let Some(ref desc) = request.description {
+                        if desc.len() > MAX_REQUEST_FIELD_LEN {
+                            return Err(Error::RequestFieldTooLarge {
+                                field: "description".to_string(),
+                                actual: desc.len(),
+                                max: MAX_REQUEST_FIELD_LEN,
+                            });
+                        }
+                    }
+
+                    if !request.extra.is_null() {
+                        let extra_str = request.extra.to_string();
+                        if extra_str.len() > MAX_REQUEST_FIELD_LEN {
+                            return Err(Error::RequestFieldTooLarge {
+                                field: "extra".to_string(),
+                                actual: extra_str.len(),
+                                max: MAX_REQUEST_FIELD_LEN,
+                            });
+                        }
+                    }
+
                     let mint_ttl = self.quote_ttl().await?.mint_ttl;
                     let quote_expiry = unix_time() + mint_ttl;
 
@@ -673,6 +714,16 @@ impl Mint {
                 return Err(err);
             }
         };
+
+        // Check max outputs limit
+        let outputs_count = mint_request.outputs.len();
+        if outputs_count > self.max_outputs {
+            tracing::warn!("Mint request exceeds max outputs limit: {} > {}", outputs_count, self.max_outputs);
+            return Err(Error::MaxOutputsExceeded {
+                actual: outputs_count,
+                max: self.max_outputs,
+            });
+        }
 
         // Get unit from the typed outputs amount
         let unit = outputs_amount.unit().clone();

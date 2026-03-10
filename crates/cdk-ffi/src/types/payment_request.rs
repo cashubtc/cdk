@@ -12,8 +12,6 @@ use crate::error::FfiError;
 /// Transport type for payment request delivery
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum TransportType {
-    /// In-band transport (tokens returned directly in response)
-    InBand,
     /// Nostr transport (privacy-preserving)
     Nostr,
     /// HTTP POST transport
@@ -23,7 +21,6 @@ pub enum TransportType {
 impl From<cdk::nuts::TransportType> for TransportType {
     fn from(t: cdk::nuts::TransportType) -> Self {
         match t {
-            cdk::nuts::TransportType::InBand => TransportType::InBand,
             cdk::nuts::TransportType::Nostr => TransportType::Nostr,
             cdk::nuts::TransportType::HttpPost => TransportType::HttpPost,
         }
@@ -33,7 +30,6 @@ impl From<cdk::nuts::TransportType> for TransportType {
 impl From<TransportType> for cdk::nuts::TransportType {
     fn from(t: TransportType) -> Self {
         match t {
-            TransportType::InBand => cdk::nuts::TransportType::InBand,
             TransportType::Nostr => cdk::nuts::TransportType::Nostr,
             TransportType::HttpPost => cdk::nuts::TransportType::HttpPost,
         }
@@ -47,8 +43,8 @@ pub struct Transport {
     pub transport_type: TransportType,
     /// Target (e.g., nprofile for Nostr, URL for HTTP)
     pub target: String,
-    /// Optional tags
-    pub tags: Option<Vec<Vec<String>>>,
+    /// Tags
+    pub tags: Vec<Vec<String>>,
 }
 
 impl From<cdk::nuts::Transport> for Transport {
@@ -81,11 +77,6 @@ pub struct PaymentRequest {
 }
 
 impl PaymentRequest {
-    /// Create from inner CDK type
-    pub(crate) fn from_inner(inner: cdk::nuts::PaymentRequest) -> Self {
-        Self { inner }
-    }
-
     /// Get inner reference
     pub(crate) fn inner(&self) -> &cdk::nuts::PaymentRequest {
         &self.inner
@@ -128,11 +119,8 @@ impl PaymentRequest {
     }
 
     /// Get the list of acceptable mint URLs
-    pub fn mints(&self) -> Option<Vec<String>> {
-        self.inner
-            .mints
-            .as_ref()
-            .map(|mints| mints.iter().map(|m| m.to_string()).collect())
+    pub fn mints(&self) -> Vec<String> {
+        self.inner.mints.iter().map(|m| m.to_string()).collect()
     }
 
     /// Get the description
@@ -256,12 +244,8 @@ pub struct NostrWaitInfo {
 }
 
 impl NostrWaitInfo {
-    /// Create from inner CDK type
-    pub(crate) fn from_inner(inner: cdk::wallet::payment_request::NostrWaitInfo) -> Self {
-        Self { inner }
-    }
-
     /// Get inner reference
+    #[allow(dead_code)]
     pub(crate) fn inner(&self) -> &cdk::wallet::payment_request::NostrWaitInfo {
         &self.inner
     }
@@ -408,7 +392,7 @@ mod tests {
         assert_eq!(req.amount().unwrap().value, 10);
         assert!(matches!(req.unit().unwrap(), CurrencyUnit::Sat));
 
-        let mints = req.mints().unwrap();
+        let mints = req.mints();
         assert_eq!(mints.len(), 1);
         assert_eq!(mints[0], "https://nofees.testnut.cashu.space");
 
@@ -435,7 +419,7 @@ mod tests {
         let ffi_transport = Transport {
             transport_type: TransportType::Nostr,
             target: "nprofile1...".to_string(),
-            tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
+            tags: vec![vec!["n".to_string(), "17".to_string()]],
         };
 
         let cdk_transport: cdk::nuts::Transport = ffi_transport.clone().into();

@@ -12,9 +12,6 @@ use crate::nuts::nut18::error::Error;
 /// Transport Type
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransportType {
-    /// In-band transport (tokens sent directly in the payment request response)
-    #[serde(rename = "in_band")]
-    InBand,
     /// Nostr
     #[serde(rename = "nostr")]
     Nostr,
@@ -36,7 +33,6 @@ impl FromStr for TransportType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "in_band" => Ok(Self::InBand),
             "nostr" => Ok(Self::Nostr),
             "post" => Ok(Self::HttpPost),
             _ => Err(Error::InvalidPrefix),
@@ -55,7 +51,8 @@ pub struct Transport {
     pub target: String,
     /// Tags
     #[serde(rename = "g")]
-    pub tags: Option<Vec<Vec<String>>>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub tags: Vec<Vec<String>>,
 }
 
 impl Transport {
@@ -82,7 +79,7 @@ impl FromStr for Transport {
 pub struct TransportBuilder {
     _type: Option<TransportType>,
     target: Option<String>,
-    tags: Option<Vec<Vec<String>>>,
+    tags: Vec<Vec<String>>,
 }
 
 impl TransportBuilder {
@@ -100,13 +97,13 @@ impl TransportBuilder {
 
     /// Add a tag
     pub fn add_tag(mut self, tag: Vec<String>) -> Self {
-        self.tags.get_or_insert_with(Vec::new).push(tag);
+        self.tags.push(tag);
         self
     }
 
     /// Set tags
     pub fn tags(mut self, tags: Vec<Vec<String>>) -> Self {
-        self.tags = Some(tags);
+        self.tags = tags;
         self
     }
 

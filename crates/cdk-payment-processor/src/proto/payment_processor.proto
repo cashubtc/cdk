@@ -195,6 +195,7 @@ message MakePaymentRequest {
   OutgoingPaymentVariant payment_options = 1;
   optional uint64 partial_amount = 2;
   optional uint64 max_fee_amount = 3;
+  string unit = 4;
 }
 
 message MakePaymentResponse {

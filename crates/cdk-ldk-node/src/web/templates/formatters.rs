@@ -47,7 +47,7 @@ pub fn format_msats_as_btc(msats: u64) -> String {
 
 /// Format a Unix timestamp as a human-readable date and time
 pub fn format_timestamp(timestamp: u64) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use web_time::{SystemTime, UNIX_EPOCH};
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn test_format_timestamp() {
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use web_time::{SystemTime, UNIX_EPOCH};
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

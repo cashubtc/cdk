@@ -1,6 +1,8 @@
 [package]
 name = "cdk-npubcash"
 version.workspace = true
+authors = ["CDK Developers"]
+description = "CDK npubcash sdk"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -11,15 +13,16 @@ repository.workspace = true
 # Use workspace dependencies
 async-trait = { workspace = true }
 cashu = { workspace = true }
-cdk-common = { workspace = true, features = ["wallet"] }
+cdk-common = { workspace = true, features = ["wallet", "http"] }
+cdk-http-client = { workspace = true }
 nostr-sdk = { workspace = true }
-reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 url = { workspace = true }
+web-time.workspace = true
 
 # Additional dependencies not in workspace
 base64 = "0.22"

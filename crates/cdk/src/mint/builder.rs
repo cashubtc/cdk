@@ -4,15 +4,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bitcoin::bip32::DerivationPath;
-use cdk_common::database::{DynMintDatabase, MintKeysDatabase};
+use cdk_common::database::{DynMintAuthDatabase, DynMintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::DynMintPayment;
-#[cfg(feature = "auth")]
-use cdk_common::{database::DynMintAuthDatabase, nut21, nut22};
-use cdk_signatory::signatory::Signatory;
+use cdk_common::{nut21, nut22};
+use cdk_signatory::signatory::{RotateKeyArguments, Signatory};
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
@@ -20,23 +19,41 @@ use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_database;
 use crate::mint::Mint;
-#[cfg(feature = "auth")]
-use crate::nuts::ProtectedEndpoint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
-    MppMethodSettings, PaymentMethod,
+    MppMethodSettings, PaymentMethod, ProtectedEndpoint,
 };
 use crate::types::PaymentProcessorKey;
+
+/// Configuration for a mint unit (keyset)
+#[derive(Debug, Clone)]
+pub struct UnitConfig {
+    /// List of amounts to support (e.g., [1, 2, 4, 8, 16, 32])
+    pub amounts: Vec<u64>,
+    /// Input fee in parts per thousand
+    pub input_fee_ppk: u64,
+}
+
+impl Default for UnitConfig {
+    fn default() -> Self {
+        Self {
+            amounts: (0..32).map(|i| 2_u64.pow(i)).collect(),
+            input_fee_ppk: 0,
+        }
+    }
+}
 
 /// Cashu Mint Builder
 pub struct MintBuilder {
     mint_info: MintInfo,
     localstore: DynMintDatabase,
-    #[cfg(feature = "auth")]
     auth_localstore: Option<DynMintAuthDatabase>,
     payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
-    supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+    supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+    use_keyset_v2: Option<bool>,
+    max_inputs: usize,
+    max_outputs: usize,
 }
 
 impl std::fmt::Debug for MintBuilder {
@@ -67,16 +84,23 @@ impl MintBuilder {
         MintBuilder {
             mint_info,
             localstore,
-            #[cfg(feature = "auth")]
             auth_localstore: None,
             payment_processors: HashMap::new(),
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
+            use_keyset_v2: None,
+            max_inputs: 1000,
+            max_outputs: 1000,
         }
     }
 
+    /// Set use keyset v2
+    pub fn with_keyset_v2(mut self, use_keyset_v2: Option<bool>) -> Self {
+        self.use_keyset_v2 = use_keyset_v2;
+        self
+    }
+
     /// Set clear auth settings
-    #[cfg(feature = "auth")]
     pub fn with_auth(
         mut self,
         auth_localstore: DynMintAuthDatabase,
@@ -119,7 +143,6 @@ impl MintBuilder {
     }
 
     /// Set blind auth settings
-    #[cfg(feature = "auth")]
     pub fn with_blind_auth(
         mut self,
         bat_max_mint: u64,
@@ -245,7 +268,73 @@ impl MintBuilder {
         self
     }
 
-    /// Add payment processor
+    /// Set transaction limits for DoS protection
+    pub fn with_limits(mut self, max_inputs: usize, max_outputs: usize) -> Self {
+        self.max_inputs = max_inputs;
+        self.max_outputs = max_outputs;
+        self
+    }
+
+    /// Configure a unit with custom amounts and fee
+    ///
+    /// This is optional - if not called before [`add_payment_processor`](Self::add_payment_processor),
+    /// the unit will be auto-configured with default values (powers of 2 amounts, zero fee).
+    ///
+    /// # Arguments
+    /// * `unit` - The currency unit to configure
+    /// * `config` - The unit configuration (amounts and fee)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// mint_builder.configure_unit(
+    ///     CurrencyUnit::Sat,
+    ///     UnitConfig {
+    ///         amounts: vec![1, 2, 4, 8, 16, 32],
+    ///         input_fee_ppk: 100,
+    ///     }
+    /// );
+    /// ```
+    pub fn configure_unit(&mut self, unit: CurrencyUnit, config: UnitConfig) -> Result<(), Error> {
+        // Validate amounts
+        if config.amounts.is_empty() {
+            return Err(Error::Custom("Amounts list cannot be empty".to_string()));
+        }
+
+        // Check for duplicates and ensure sorted
+        let mut sorted = config.amounts.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        if sorted.len() != config.amounts.len() {
+            return Err(Error::Custom(
+                "Amounts list contains duplicates".to_string(),
+            ));
+        }
+        if sorted != config.amounts {
+            return Err(Error::Custom(
+                "Amounts must be sorted in ascending order".to_string(),
+            ));
+        }
+
+        // Check all amounts are positive
+        if config.amounts.contains(&0) {
+            return Err(Error::Custom("Amounts must be greater than 0".to_string()));
+        }
+
+        self.supported_units
+            .insert(unit, (config.input_fee_ppk, config.amounts));
+        Ok(())
+    }
+
+    /// Add a payment processor for the given unit and payment method
+    ///
+    /// If the unit has not been configured via [`configure_unit`](Self::configure_unit),
+    /// it will be auto-configured with default values (powers of 2 amounts, zero fee).
+    ///
+    /// # Arguments
+    /// * `unit` - The currency unit for this payment processor
+    /// * `method` - The payment method (e.g., bolt11, bolt12)
+    /// * `limits` - Mint and melt amount limits
+    /// * `payment_processor` - The payment processor implementation
     pub async fn add_payment_processor(
         &mut self,
         unit: CurrencyUnit,
@@ -358,9 +447,10 @@ impl MintBuilder {
             }
         }
 
-        let mut supported_units = self.supported_units.clone();
-        supported_units.insert(key.unit.clone(), (0, 32));
-        self.supported_units = supported_units;
+        // Check that the unit has been pre-configured
+        if !self.supported_units.contains_key(&key.unit) {
+            self.configure_unit(key.unit.clone(), Default::default())?;
+        }
 
         self.payment_processors.insert(key, payment_processor);
         Ok(())
@@ -381,10 +471,81 @@ impl MintBuilder {
 
     /// Build the mint with the provided signatory
     pub async fn build_with_signatory(
-        self,
+        #[allow(unused_mut)] mut self,
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Mint, Error> {
-        #[cfg(feature = "auth")]
+        // Check active keysets and rotate if necessary
+        let active_keysets = signatory.keysets().await?;
+
+        // Ensure Auth keyset is created when auth is enabled
+        if self.auth_localstore.is_some() {
+            self.supported_units
+                .entry(CurrencyUnit::Auth)
+                .or_insert((0, vec![1]));
+        }
+
+        for (unit, (fee, amounts)) in &self.supported_units {
+            // Check if we have an active keyset for this unit
+            let keyset = active_keysets
+                .keysets
+                .iter()
+                .find(|k| k.active && k.unit == *unit);
+
+            let mut rotate = false;
+
+            if let Some(keyset) = keyset {
+                // Check if fee matches
+                if keyset.input_fee_ppk != *fee {
+                    tracing::info!(
+                        "Rotating keyset for unit {} due to fee mismatch (current: {}, expected: {})",
+                        unit,
+                        keyset.input_fee_ppk,
+                        fee
+                    );
+                    rotate = true;
+                }
+
+                // Check if amounts match
+                if keyset.amounts != *amounts {
+                    tracing::info!("Rotating keyset for unit {} due to amounts mismatch", unit);
+                    rotate = true;
+                }
+
+                // Check if version matches explicit preference
+                if let Some(want_v2) = self.use_keyset_v2 {
+                    let is_v2 =
+                        keyset.id.get_version() == cdk_common::nut02::KeySetVersion::Version01;
+                    if want_v2 && !is_v2 {
+                        tracing::info!("Rotating keyset for unit {} due to explicit V2 preference (current is V1)", unit);
+                        rotate = true;
+                    } else if !want_v2 && is_v2 {
+                        tracing::info!("Rotating keyset for unit {} due to explicit V1 preference (current is V2)", unit);
+                        rotate = true;
+                    }
+                }
+            } else {
+                // No active keyset for this unit
+                tracing::info!("Rotating keyset for unit {} (no active keyset found)", unit);
+                rotate = true;
+            }
+
+            if rotate {
+                signatory
+                    .rotate_keyset(RotateKeyArguments {
+                        unit: unit.clone(),
+                        amounts: amounts.clone(),
+                        input_fee_ppk: *fee,
+                        keyset_id_type: if self.use_keyset_v2.unwrap_or(true) {
+                            cdk_common::nut02::KeySetVersion::Version01
+                        } else {
+                            cdk_common::nut02::KeySetVersion::Version00
+                        },
+                        final_expiry: None,
+                    })
+                    .await?;
+            }
+        }
+
         if let Some(auth_localstore) = self.auth_localstore {
             return Mint::new_with_auth(
                 self.mint_info,
@@ -392,6 +553,8 @@ impl MintBuilder {
                 self.localstore,
                 auth_localstore,
                 self.payment_processors,
+                self.max_inputs,
+                self.max_outputs,
             )
             .await;
         }
@@ -400,6 +563,8 @@ impl MintBuilder {
             signatory,
             self.localstore,
             self.payment_processors,
+            self.max_inputs,
+            self.max_outputs,
         )
         .await
     }
@@ -414,7 +579,7 @@ impl MintBuilder {
             keystore,
             seed,
             self.supported_units.clone(),
-            HashMap::new(),
+            self.custom_paths.clone(),
         )
         .await?;
 
@@ -578,6 +743,17 @@ mod tests {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(localstore);
 
+        // Configure the unit first
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+
         let bolt11_settings = Bolt11Settings {
             mpp: true,
             amountless: true,
@@ -641,6 +817,17 @@ mod tests {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(localstore);
 
+        // Configure the unit first
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+
         let bolt11_settings = Bolt11Settings {
             mpp: false, // MPP disabled
             amountless: false,
@@ -678,6 +865,17 @@ mod tests {
     async fn test_add_payment_processor_bolt12() {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(localstore);
+
+        // Configure the unit first
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
 
         let bolt12_settings = Bolt12Settings { amountless: true };
 
@@ -725,6 +923,17 @@ mod tests {
     async fn test_add_payment_processor_custom() {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(localstore);
+
+        // Configure the unit first
+        builder
+            .configure_unit(
+                CurrencyUnit::Usd,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
 
         let mut custom_methods = HashMap::new();
         custom_methods.insert("paypal".to_string(), "{}".to_string());
@@ -777,6 +986,17 @@ mod tests {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(localstore);
 
+        // Configure the unit first
+        builder
+            .configure_unit(
+                CurrencyUnit::Usd,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+
         // Settings with no custom methods
         let settings = SettingsResponse {
             unit: "usd".to_string(),
@@ -806,6 +1026,17 @@ mod tests {
     async fn test_add_multiple_payment_processors() {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(localstore);
+
+        // Configure the unit first
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
 
         // Add Bolt11
         let bolt11_settings = Bolt11Settings {

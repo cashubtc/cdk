@@ -3,11 +3,12 @@
 //! Implements NIP-98 and JWT authentication
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use base64::Engine;
 use nostr_sdk::{EventBuilder, Keys, Kind, Tag};
 use tokio::sync::RwLock;
+use web_time::SystemTime;
 
 use crate::types::Nip98Response;
 use crate::{Error, Result};
@@ -23,7 +24,7 @@ struct CachedToken {
 pub struct JwtAuthProvider {
     base_url: String,
     keys: Keys,
-    http_client: reqwest::Client,
+    http_client: cdk_common::HttpClient,
     cached_token: Arc<RwLock<Option<CachedToken>>>,
 }
 
@@ -38,7 +39,7 @@ impl JwtAuthProvider {
         Self {
             base_url,
             keys,
-            http_client: reqwest::Client::new(),
+            http_client: cdk_common::HttpClient::new(),
             cached_token: Arc::new(RwLock::new(None)),
         }
     }
@@ -108,7 +109,7 @@ impl JwtAuthProvider {
         &self,
         auth_url: &str,
         nostr_token: &str,
-    ) -> Result<reqwest::Response> {
+    ) -> Result<cdk_common::RawResponse> {
         tracing::debug!("Sending request to: {}", auth_url);
         tracing::debug!(
             "Authorization header: Nostr {}",
@@ -130,10 +131,10 @@ impl JwtAuthProvider {
     }
 
     /// Parse the JWT response from the API
-    async fn parse_jwt_response(&self, response: reqwest::Response) -> Result<String> {
+    async fn parse_jwt_response(&self, response: cdk_common::RawResponse) -> Result<String> {
         let status = response.status();
 
-        if !status.is_success() {
+        if !response.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             tracing::error!("Auth failed - Status: {}, Body: {}", status, error_text);
             return Err(Error::Auth(format!(

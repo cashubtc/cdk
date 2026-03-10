@@ -35,14 +35,33 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
+        # Architecture-specific configuration for static musl builds
+        muslTarget = {
+          "x86_64-linux" = "x86_64-unknown-linux-musl";
+          "aarch64-linux" = "aarch64-unknown-linux-musl";
+        }.${system} or null;
+
+        archSuffix = {
+          "x86_64-linux" = "x86_64";
+          "aarch64-linux" = "aarch64";
+        }.${system} or null;
+
+        cargoTargetEnvName = {
+          "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER";
+          "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER";
+        }.${system} or null;
+
         overlays = [ (import rust-overlay) ];
+
+        # Derive version from Cargo.toml so there is a single source of truth
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
+
         lib = pkgs.lib;
         stdenv = pkgs.stdenv;
         isDarwin = stdenv.isDarwin;
         libsDarwin =
-          with pkgs;
           lib.optionals isDarwin [
-            # Additional darwin specific inputs can be set here
+            # Additional drwin specific inputs can be set here
             # Note: Security and SystemConfiguration frameworks are provided by the default SDK
           ];
 
@@ -51,9 +70,18 @@
           inherit system overlays;
         };
 
+        # Static/musl packages for fully static binary builds (Linux only)
+        pkgsMusl = import nixpkgs {
+          localSystem = system;
+          crossSystem = {
+            config = muslTarget;
+            isStatic = true;
+          };
+        };
+
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.92.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.93.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
           extensions = [
             "rustfmt"
@@ -86,11 +114,17 @@
           }
         );
 
+        # Stable toolchain with musl target for static builds
+        static_toolchain = pkgs.rust-bin.stable."1.93.0".default.override {
+          targets = [ muslTarget ];
+        };
+
         # ========================================
         # Crane setup for cached builds
         # ========================================
         craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
+        craneLibStatic = (crane.mkLib pkgs).overrideToolchain static_toolchain;
 
         # Source for crane builds - uses lib.fileset for efficient filtering
         # This is much faster than nix-gitignore when large directories (like target/) exist
@@ -129,9 +163,8 @@
 
         # Common args for all Crane builds
         commonCraneArgs = {
-          inherit src;
+          inherit src version;
           pname = "cdk";
-          version = "0.14.0";
 
           nativeBuildInputs = with pkgs; [
             pkg-config
@@ -156,6 +189,56 @@
           cargoLock = ./Cargo.lock.msrv;
         };
 
+        # Musl-targeting C compiler for crates that compile bundled C code
+        # (libsqlite3-sys, secp256k1-sys, aws-lc-sys, etc.)
+        muslCC = pkgs.pkgsStatic.stdenv.cc;
+
+        # Common args for static musl builds (Linux only)
+        # Produces fully statically-linked binaries that run on any Linux system
+        commonCraneArgsStatic = {
+          inherit src version;
+          pname = "cdk-static";
+
+          # Cross-compile to musl for fully static linking
+          CARGO_BUILD_TARGET = muslTarget;
+          CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+
+          # Host-side build tools (run on build machine)
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            protobuf
+            muslCC
+          ];
+
+          # Target-side libraries (musl static libs linked into the binary)
+          buildInputs = with pkgsMusl; [
+            openssl.dev
+            zlib.static
+          ];
+
+          # Tell the cc crate and cargo to use the musl-targeting C compiler/linker
+          TARGET_CC = "${muslCC}/bin/${muslCC.targetPrefix}cc";
+
+          # Force static OpenSSL linking (needed by postgres/native-tls)
+          OPENSSL_STATIC = "1";
+          OPENSSL_DIR = "${pkgsMusl.openssl.dev}";
+          OPENSSL_LIB_DIR = "${pkgsMusl.openssl.out}/lib";
+          OPENSSL_INCLUDE_DIR = "${pkgsMusl.openssl.dev}/include";
+
+          # Protobuf (build-time code generation, runs on host)
+          PROTOC = "${pkgs.protobuf}/bin/protoc";
+          PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+
+          # Tell pkg-config to find musl static libraries
+          PKG_CONFIG_ALL_STATIC = "1";
+
+          # Use the release-static profile for reproducible, optimized builds
+          CARGO_PROFILE = "release-static";
+        } // {
+          # Dynamic attribute name for the cargo linker env var (arch-specific)
+          ${cargoTargetEnvName} = "${muslCC}/bin/${muslCC.targetPrefix}cc";
+        };
+
         # Build ALL dependencies once - this is what gets cached by Cachix
         # Note: We exclude swagger feature as it tries to download assets during build
         workspaceDeps = craneLib.buildDepsOnly (commonCraneArgs // {
@@ -165,8 +248,15 @@
         });
 
         # MSRV dependencies (separate cache due to different toolchain)
+        # Exclude cdk-redb (and its dependents) since redb requires a higher MSRV
         workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (commonCraneArgsMsrv // {
           pname = "cdk-deps-msrv";
+          cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests";
+        });
+
+        # Static musl dependencies (separate cache for static builds)
+        workspaceDepsStatic = craneLibStatic.buildDepsOnly (commonCraneArgsStatic // {
+          pname = "cdk-deps-static";
           cargoExtraArgs = "--workspace";
         });
 
@@ -212,9 +302,8 @@
         # Helper function to create WASM build checks
         # WASM builds don't need native libs like openssl
         mkWasmBuild = name: cargoArgs: craneLib.cargoBuild ({
-          inherit src;
+          inherit src version;
           pname = "cdk-wasm-${name}";
-          version = "0.14.0";
           cargoArtifacts = workspaceDeps;
           cargoExtraArgs = "${cargoArgs} --target wasm32-unknown-unknown";
           # WASM doesn't need native build inputs
@@ -281,6 +370,7 @@
 
             # Run Python tests
             python3 crates/cdk-ffi/tests/test_transactions.py
+            python3 crates/cdk-ffi/tests/test_kvstore.py
           '';
           installPhaseCommand = "mkdir -p $out";
         });
@@ -306,21 +396,18 @@
           "cashu-no-default" = "-p cashu --no-default-features";
           "cashu-wallet" = "-p cashu --no-default-features --features wallet";
           "cashu-mint" = "-p cashu --no-default-features --features mint";
-          "cashu-auth" = "-p cashu --no-default-features --features auth";
 
           # Core crate: cdk-common
           "cdk-common" = "-p cdk-common";
           "cdk-common-no-default" = "-p cdk-common --no-default-features";
           "cdk-common-wallet" = "-p cdk-common --no-default-features --features wallet";
           "cdk-common-mint" = "-p cdk-common --no-default-features --features mint";
-          "cdk-common-auth" = "-p cdk-common --no-default-features --features auth";
 
           # Core crate: cdk
           "cdk" = "-p cdk";
           "cdk-no-default" = "-p cdk --no-default-features";
           "cdk-wallet" = "-p cdk --no-default-features --features wallet";
           "cdk-mint" = "-p cdk --no-default-features --features mint";
-          "cdk-auth" = "-p cdk --no-default-features --features auth";
 
           # SQL crates
           "cdk-sql-common" = "-p cdk-sql-common";
@@ -374,8 +461,6 @@
           "cdk-mintd-fakewallet-postgres" = "-p cdk-mintd --no-default-features --features fakewallet,postgres";
           "cdk-mintd-grpc-processor-postgres" = "-p cdk-mintd --no-default-features --features grpc-processor,postgres";
           "cdk-mintd-management-rpc-cln-postgres" = "-p cdk-mintd --no-default-features --features management-rpc,cln,postgres";
-          "cdk-mintd-auth-sqlite-fakewallet" = "-p cdk-mintd --no-default-features --features auth,sqlite,fakewallet";
-          "cdk-mintd-auth-postgres-lnd" = "-p cdk-mintd --no-default-features --features auth,postgres,lnd";
 
           # Binaries: cdk-mint-cli (binary name, package is cdk-mint-rpc)
           "cdk-mint-cli" = "-p cdk-mint-rpc";
@@ -386,10 +471,10 @@
         # ========================================
         msrvChecks = {
           # Core library with all features (except swagger which breaks MSRV)
-          "cdk-all-features" = "-p cdk --features \"mint,wallet,auth\"";
+          "cdk-all-features" = "-p cdk --features \"mint,wallet\"";
 
           # Mintd with all backends, databases, and features (no swagger)
-          "cdk-mintd-all" = "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,auth,redis,management-rpc\"";
+          "cdk-mintd-all" = "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
 
           # CLI - default features (excludes redb which breaks MSRV)
           "cdk-cli" = "-p cdk-cli";
@@ -425,7 +510,7 @@
           };
         });
 
-        buildInputs =
+        baseBuildInputs =
           with pkgs;
           [
             # Add additional build inputs here
@@ -436,20 +521,49 @@
             protobuf
             nixpkgs-fmt
             typos
-            lnd
-            clightningWithMako
-            bitcoind
-            sqlx-cli
-            mprocs
 
             cargo-outdated
             cargo-mutants
             cargo-fuzz
 
+            # Database
+            postgresql_16
+            startPostgres
+            stopPostgres
+            pgStatus
+            pgConnect
+
             # Needed for github ci
             libz
           ]
           ++ libsDarwin;
+
+        regtestBuildInputs =
+          with pkgs;
+          [
+            lnd
+            clightningWithMako
+            bitcoind
+            mprocs
+          ];
+
+        commonShellHook = ''
+          # Needed for github ci
+          export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [ pkgs.zlib ]}:$LD_LIBRARY_PATH
+        '';
+
+        pgShellHook = ''
+          # PostgreSQL environment variables
+          export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
+
+          echo ""
+          echo "PostgreSQL commands available:"
+          echo "  start-postgres  - Initialize and start PostgreSQL"
+          echo "  stop-postgres   - Stop PostgreSQL (run before exiting)"
+          echo "  pg-status       - Check PostgreSQL status"
+          echo "  pg-connect      - Connect to PostgreSQL with psql"
+          echo ""
+        '';
 
         # PostgreSQL configuration
         postgresConf = {
@@ -527,6 +641,28 @@
           ${pkgs.postgresql_16}/bin/psql "postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
         '';
 
+        # Helper to build a statically-linked binary package
+        # bin: the cargo binary name (e.g. "cdk-mintd")
+        # name: the output binary name prefix (e.g. "cdk-mintd-ldk")
+        # cargoExtraArgs: additional cargo args (e.g. "--bin cdk-mintd --features ldk-node")
+        staticVersion = commonCraneArgsStatic.version;
+        mkStaticPackage = { bin, name, cargoExtraArgs }: craneLibStatic.buildPackage (commonCraneArgsStatic // {
+          pname = name;
+          cargoArtifacts = workspaceDepsStatic;
+          inherit cargoExtraArgs;
+          nativeBuildInputs = commonCraneArgsStatic.nativeBuildInputs ++ [
+            pkgs.removeReferencesTo
+          ];
+          installPhaseCommand = ''
+            mkdir -p $out/bin
+            cp target/${muslTarget}/release-static/${bin} $out/bin/${name}-${staticVersion}-${archSuffix}
+          '';
+          # Strip Nix store references from binaries for reproducibility
+          postFixup = ''
+            find "$out" -type f -executable -exec remove-references-to -t ${static_toolchain} '{}' +
+          '';
+        });
+
         # Common arguments can be set here to avoid repeating them later
         nativeBuildInputs = [
           #Add additional build inputs here
@@ -540,6 +676,27 @@
         packages = {
           deps = workspaceDeps;
           deps-msrv = workspaceDepsMsrv;
+          deps-static = workspaceDepsStatic;
+        }
+        # Static binary packages (fully statically-linked, runs on any x86_64 Linux)
+        // {
+          cdk-mintd-static = mkStaticPackage {
+            bin = "cdk-mintd";
+            name = "cdk-mintd";
+            cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
+          };
+
+          cdk-mintd-ldk-static = mkStaticPackage {
+            bin = "cdk-mintd";
+            name = "cdk-mintd-ldk";
+            cargoExtraArgs = "--bin cdk-mintd --features ldk-node,postgres,prometheus,redis";
+          };
+
+          cdk-cli-static = mkStaticPackage {
+            bin = "cdk-cli";
+            name = "cdk-cli";
+            cargoExtraArgs = "--bin cdk-cli";
+          };
         }
         # Example packages (binaries that can be run outside sandbox with network access)
         // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExamplePackage name; }) exampleChecks));
@@ -572,8 +729,11 @@
                   cargo update
                   cargo update home --precise 0.5.11
                   cargo update typed-index-collections --precise 3.3.0
-              ";
-                buildInputs = buildInputs ++ [ msrv_toolchain ];
+                  cargo update simple_asn1 --precise 0.6.3
+                  cargo update cookie_store --precise 0.22.0
+                  cargo update time --precise 0.3.44
+               ";
+                buildInputs = baseBuildInputs ++ [ msrv_toolchain ];
                 inherit nativeBuildInputs;
               }
               // envVars
@@ -581,32 +741,9 @@
 
             stable = pkgs.mkShell (
               {
-                shellHook = ''
-                  # Needed for github ci
-                  export LD_LIBRARY_PATH=${
-                    pkgs.lib.makeLibraryPath [
-                      pkgs.zlib
-                    ]
-                  }:$LD_LIBRARY_PATH
-
-                  # PostgreSQL environment variables
-                  export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
-
-                  echo ""
-                  echo "PostgreSQL commands available:"
-                  echo "  start-postgres  - Initialize and start PostgreSQL"
-                  echo "  stop-postgres   - Stop PostgreSQL (run before exiting)"
-                  echo "  pg-status       - Check PostgreSQL status"
-                  echo "  pg-connect      - Connect to PostgreSQL with psql"
-                  echo ""
-                '';
-                buildInputs = buildInputs ++ [
+                shellHook = commonShellHook + pgShellHook;
+                buildInputs = baseBuildInputs ++ [
                   stable_toolchain
-                  pkgs.postgresql_16
-                  startPostgres
-                  stopPostgres
-                  pgStatus
-                  pgConnect
                 ];
                 inherit nativeBuildInputs;
 
@@ -614,34 +751,33 @@
               // envVars
             );
 
+            regtest = pkgs.mkShell (
+              {
+                shellHook = commonShellHook + pgShellHook;
+                buildInputs = baseBuildInputs ++ regtestBuildInputs ++ [
+                  stable_toolchain
+                ];
+                inherit nativeBuildInputs;
+              }
+              // envVars
+            );
+
             nightly = pkgs.mkShell (
               {
-                shellHook = ''
-                  # Needed for github ci
-                  export LD_LIBRARY_PATH=${
-                    pkgs.lib.makeLibraryPath [
-                      pkgs.zlib
-                    ]
-                  }:$LD_LIBRARY_PATH
-
-                  # PostgreSQL environment variables
-                  export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
-
-                  echo ""
-                  echo "PostgreSQL commands available:"
-                  echo "  start-postgres  - Initialize and start PostgreSQL"
-                  echo "  stop-postgres   - Stop PostgreSQL (run before exiting)"
-                  echo "  pg-status       - Check PostgreSQL status"
-                  echo "  pg-connect      - Connect to PostgreSQL with psql"
-                  echo ""
-                '';
-                buildInputs = buildInputs ++ [
+                shellHook = commonShellHook + pgShellHook;
+                buildInputs = baseBuildInputs ++ [
                   nightly_toolchain
-                  pkgs.postgresql_16
-                  startPostgres
-                  stopPostgres
-                  pgStatus
-                  pgConnect
+                ];
+                inherit nativeBuildInputs;
+              }
+              // envVars
+            );
+
+            nightly-regtest = pkgs.mkShell (
+              {
+                shellHook = commonShellHook + pgShellHook;
+                buildInputs = baseBuildInputs ++ regtestBuildInputs ++ [
+                  nightly_toolchain
                 ];
                 inherit nativeBuildInputs;
               }
@@ -660,8 +796,8 @@
                   fi
                   echo "Docker is available at $(which docker)"
                   echo "Docker version: $(docker --version)"
-                '';
-                buildInputs = buildInputs ++ [
+                '' + commonShellHook + pgShellHook;
+                buildInputs = baseBuildInputs ++ regtestBuildInputs ++ [
                   stable_toolchain
                   pkgs.docker-client
                   pkgs.python311
@@ -674,12 +810,12 @@
             # Shell for FFI development (Python bindings)
             ffi = pkgs.mkShell (
               {
-                shellHook = ''
+                shellHook = commonShellHook + pgShellHook + ''
                   echo "FFI development shell"
                   echo "  just ffi-test        - Run Python FFI tests"
                   echo "  just ffi-dev-python  - Launch Python REPL with CDK FFI"
                 '';
-                buildInputs = buildInputs ++ [
+                buildInputs = baseBuildInputs ++ [
                   stable_toolchain
                   pkgs.python311
                 ];
@@ -693,7 +829,9 @@
             inherit
               msrv
               stable
+              regtest
               nightly
+              nightly-regtest
               integration
               ffi
               ;

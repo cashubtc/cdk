@@ -59,7 +59,7 @@ impl Settings {
     }
 }
 
-// Custom deserializer for Settings to expand regex patterns in protected endpoints
+// Custom deserializer for Settings to expand patterns in protected endpoints
 impl<'de> Deserialize<'de> for Settings {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -85,15 +85,12 @@ impl<'de> Deserialize<'de> for Settings {
         // Deserialize into the temporary struct
         let raw = RawSettings::deserialize(deserializer)?;
 
-        // Process protected endpoints, expanding regex patterns if present
+        // Process protected endpoints, expanding patterns if present
         let mut protected_endpoints = HashSet::new();
 
         for raw_endpoint in raw.protected_endpoints {
             let expanded_paths = matching_route_paths(&raw_endpoint.path).map_err(|e| {
-                serde::de::Error::custom(format!(
-                    "Invalid regex pattern '{}': {}",
-                    raw_endpoint.path, e
-                ))
+                serde::de::Error::custom(format!("Invalid pattern '{}': {}", raw_endpoint.path, e))
             })?;
 
             for path in expanded_paths {
@@ -321,7 +318,7 @@ mod tests {
             "protected_endpoints": [
                 {
                     "method": "GET",
-                    "path": "^/v1/mint/.*"
+                    "path": "/v1/mint/*"
                 },
                 {
                     "method": "POST",
@@ -367,7 +364,7 @@ mod tests {
             "protected_endpoints": [
                 {
                     "method": "GET",
-                    "path": "(unclosed parenthesis"
+                    "path": "/*wildcard_start"
                 }
             ]
         }"#;
@@ -383,7 +380,7 @@ mod tests {
             "protected_endpoints": [
                 {
                     "method": "GET",
-                    "path": ".*"
+                    "path": "/v1/*"
                 }
             ]
         }"#;

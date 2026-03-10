@@ -411,7 +411,7 @@ async fn test_swap_saga_compensation_clears_on_success() {
 
     let saga = SwapSaga::new(&mint, db, pubsub);
 
-    let compensations_before = saga.compensations.lock().await.len();
+    let compensations_before = saga.compensations.len();
 
     let saga = saga
         .setup_swap(
@@ -423,7 +423,7 @@ async fn test_swap_saga_compensation_clears_on_success() {
         .await
         .expect("Setup should succeed");
 
-    let compensations_after_setup = saga.compensations.lock().await.len();
+    let compensations_after_setup = saga.compensations.len();
     assert_eq!(
         compensations_after_setup, 1,
         "Should have one compensation after setup"
@@ -431,7 +431,7 @@ async fn test_swap_saga_compensation_clears_on_success() {
 
     let saga = saga.sign_outputs().await.expect("Signing should succeed");
 
-    let compensations_after_sign = saga.compensations.lock().await.len();
+    let compensations_after_sign = saga.compensations.len();
     assert_eq!(
         compensations_after_sign, 1,
         "Should still have one compensation after signing"

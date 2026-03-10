@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use cdk_common::mint_url::MintUrl;
 use cdk_common::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState};
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 use super::error::Error;

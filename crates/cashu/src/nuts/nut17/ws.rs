@@ -167,7 +167,7 @@ pub enum WsMessageOrResponse<I> {
     /// An error response
     ErrorResponse(WsErrorResponse),
     /// A notification
-    Notification(WsNotification<NotificationInner<String, I>>),
+    Notification(Box<WsNotification<NotificationInner<String, I>>>),
 }
 
 impl<I> From<(usize, Result<WsResponseResult<I>, WsErrorBody>)> for WsMessageOrResponse<I> {

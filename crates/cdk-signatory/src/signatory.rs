@@ -6,8 +6,10 @@
 //! There is an in memory implementation, when the keys are stored in memory, in the same process,
 //! but it is isolated from the rest of the application, and they communicate through a channel with
 //! the defined API.
+use cdk_common::common::IssuerVersion;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
+use cdk_common::nuts::nut02::KeySetVersion;
 use cdk_common::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
 };
@@ -46,6 +48,10 @@ pub struct RotateKeyArguments {
     pub amounts: Vec<u64>,
     /// Input fee
     pub input_fee_ppk: u64,
+    /// KeySet Version
+    pub keyset_id_type: KeySetVersion,
+    /// FinalExpiry
+    pub final_expiry: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +83,10 @@ pub struct SignatoryKeySet {
     pub input_fee_ppk: u64,
     /// Final expiry of the keyset (unix timestamp in the future)
     pub final_expiry: Option<u64>,
+    /// Issuer Version
+    pub issuer_version: Option<IssuerVersion>,
+    /// Version is the derivation_path_index
+    pub version: u32,
 }
 
 impl From<&SignatoryKeySet> for KeySet {
@@ -115,6 +125,7 @@ impl From<SignatoryKeySet> for MintKeySetInfo {
             derivation_path_index: Default::default(),
             amounts: val.amounts,
             final_expiry: val.final_expiry,
+            issuer_version: val.issuer_version,
             valid_from: 0,
         }
     }
@@ -129,7 +140,9 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
             input_fee_ppk: info.input_fee_ppk,
             amounts: info.amounts.clone(),
             keys: key.keys.clone().into(),
+            version: info.derivation_path_index.unwrap_or(1),
             final_expiry: key.final_expiry,
+            issuer_version: info.issuer_version.clone(),
         }
     }
 }

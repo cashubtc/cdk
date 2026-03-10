@@ -33,6 +33,26 @@ build *ARGS="--workspace --all-targets":
   fi
   cargo build {{ARGS}}
 
+# Build a statically-linked binary by profile name (requires nix)
+# Profiles: cdk-mintd-static, cdk-mintd-ldk-static, cdk-cli-static
+build-static profile:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  nix build .#{{profile}}
+  mkdir -p ./static-bin
+  cp -f ./result/bin/* ./static-bin/
+  echo "Static binaries in ./static-bin/:"
+  ls -la ./static-bin/
+
+# Build all statically-linked binaries and generate checksums (requires nix)
+build-static-all: (build-static "cdk-mintd-static") (build-static "cdk-mintd-ldk-static") (build-static "cdk-cli-static")
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd ./static-bin
+  sha256sum -- *-x86_64 > SHA256SUMS
+  echo "Checksums:"
+  cat SHA256SUMS
+
 # run `cargo check` on everything
 check *ARGS="--workspace --all-targets":
   #!/usr/bin/env bash
@@ -78,6 +98,9 @@ test-pure db="memory":
   
   # Run swap flow tests (detailed testing of swap operation)
   CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test test_swap_flow -- --test-threads 1
+
+  # Run wallet saga tests
+  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test wallet_saga -- --test-threads 1
 
 test-all db="memory":
     #!/usr/bin/env bash
@@ -493,7 +516,9 @@ release m="":
   args=(
     "-p cashu"
     "-p cdk-prometheus"
+    "-p cdk-http-client"
     "-p cdk-common"
+    "-p cdk-npubcash"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"
@@ -527,31 +552,36 @@ release m="":
   echo "📦 Triggering Swift package release for version $VERSION..."
   just ffi-release-swift $VERSION
 
+  # Trigger Kotlin package release after Rust crates are published
+  echo "📦 Triggering Kotlin package release for version $VERSION..."
+  just ffi-release-kotlin $VERSION
+
 check-docs:
   #!/usr/bin/env bash
   set -euo pipefail
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-http-client"
+    "-p cdk-npubcash"
     "-p cdk-sql-common"
-    "-p cdk"
-    "-p cdk-redb"
     "-p cdk-sqlite"
     "-p cdk-postgres"
+    "-p cdk-redb"
+    "-p cdk-signatory"
+    "-p cdk-fake-wallet"
+    "-p cdk"
+    "-p cdk-ffi"
     "-p cdk-axum"
+    "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
     "-p cdk-ldk-node"
-    "-p cdk-fake-wallet"
-    "-p cdk-mint-rpc"
-    "-p cdk-npubcash"
     "-p cdk-prometheus"
     "-p cdk-payment-processor"
-    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
-    "-p cdk-ffi"
   )
 
   for arg in "${args[@]}"; do
@@ -567,25 +597,26 @@ docs-strict:
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-http-client"
+    "-p cdk-npubcash"
     "-p cdk-sql-common"
-    "-p cdk"
-    "-p cdk-redb"
     "-p cdk-sqlite"
     "-p cdk-postgres"
+    "-p cdk-redb"
+    "-p cdk-signatory"
+    "-p cdk-fake-wallet"
+    "-p cdk"
+    "-p cdk-ffi"
     "-p cdk-axum"
+    "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
     "-p cdk-ldk-node"
-    "-p cdk-fake-wallet"
-    "-p cdk-mint-rpc"
-    "-p cdk-npubcash"
     "-p cdk-prometheus"
     "-p cdk-payment-processor"
-    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
-    "-p cdk-ffi"
   )
 
   for arg in "${args[@]}"; do
@@ -745,4 +776,22 @@ ffi-release-swift VERSION:
     --field cdk_repo="cashubtc/cdk" \
     --field cdk_ref="v{{VERSION}}"
   
-  echo "✅ Workflow triggered successfully!"
+  echo "✅ Swift workflow triggered successfully!"
+
+# Trigger Kotlin Package release workflow
+ffi-release-kotlin VERSION:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  
+  echo "🚀 Triggering Publish Kotlin Package workflow..."
+  echo "   Version: {{VERSION}}"
+  echo "   CDK Ref: v{{VERSION}}"
+  
+  # Trigger the workflow using GitHub CLI
+  gh workflow run "Publish Kotlin Bindings" \
+    --repo cashubtc/cdk-kotlin \
+    --field version="{{VERSION}}" \
+    --field cdk_repo="cashubtc/cdk" \
+    --field cdk_ref="v{{VERSION}}"
+  
+  echo "✅ Kotlin workflow triggered successfully!"

@@ -9,8 +9,11 @@ use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::string::FromUtf8Error;
 
+#[cfg(feature = "mint")]
+use bitcoin::hashes::Hash as BitcoinHash;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 
 use super::nut02::ShortKeysetId;
 #[cfg(feature = "wallet")]
@@ -330,6 +333,16 @@ impl Witness {
     }
 }
 
+impl std::fmt::Display for Witness {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            serde_json::to_string(self).map_err(|_| std::fmt::Error)?
+        )
+    }
+}
+
 /// Proofs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
@@ -575,6 +588,10 @@ pub enum CurrencyUnit {
 #[cfg(feature = "mint")]
 impl CurrencyUnit {
     /// Derivation index mint will use for unit
+    #[deprecated(
+        since = "0.15.0",
+        note = "This function is outdated; use `hashed_derivation_index` instead."
+    )]
     pub fn derivation_index(&self) -> Option<u32> {
         match self {
             Self::Sat => Some(0),
@@ -585,6 +602,28 @@ impl CurrencyUnit {
             _ => None,
         }
     }
+
+    /// Construct a custom unit, normalizing to uppercase and trimming whitespace.
+    pub fn custom<S: AsRef<str>>(value: S) -> Self {
+        Self::Custom(normalize_custom_unit(value.as_ref()).to_uppercase())
+    }
+
+    ///  Big endian encoded integer of the first 4 bytes of the sha256 hash of the unit string.
+    pub fn hashed_derivation_index(&self) -> u32 {
+        use bitcoin::hashes::sha256;
+
+        // transform to uppercase
+        let unit_str = self.to_string().to_uppercase();
+
+        let bytes = <sha256::Hash as BitcoinHash>::hash(unit_str.as_bytes());
+        // Take the first 4 bytes and convert to u32 (big endian) make sure the integer
+        u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) & !(1 << 31)
+    }
+}
+
+fn normalize_custom_unit(value: &str) -> String {
+    let trimmed = value.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n'));
+    trimmed.nfc().collect::<String>()
 }
 
 impl FromStr for CurrencyUnit {
@@ -597,13 +636,14 @@ impl FromStr for CurrencyUnit {
             "USD" => Ok(Self::Usd),
             "EUR" => Ok(Self::Eur),
             "AUTH" => Ok(Self::Auth),
-            _ => Ok(Self::Custom(value.to_string())),
+            _ => Ok(Self::Custom(normalize_custom_unit(value))),
         }
     }
 }
 
 impl fmt::Display for CurrencyUnit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // let binding = normalize_custom_unit(&self).clone();
         let s = match self {
             CurrencyUnit::Sat => "SAT",
             CurrencyUnit::Msat => "MSAT",
@@ -612,10 +652,16 @@ impl fmt::Display for CurrencyUnit {
             CurrencyUnit::Auth => "AUTH",
             CurrencyUnit::Custom(unit) => unit,
         };
+
         if let Some(width) = f.width() {
-            write!(f, "{:width$}", s.to_lowercase(), width = width)
+            write!(
+                f,
+                "{:width$}",
+                normalize_custom_unit(s).to_lowercase(),
+                width = width
+            )
         } else {
-            write!(f, "{}", s.to_lowercase())
+            write!(f, "{}", normalize_custom_unit(s).to_lowercase())
         }
     }
 }
@@ -625,7 +671,7 @@ impl Serialize for CurrencyUnit {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        serializer.serialize_str(&self.to_string().to_lowercase())
     }
 }
 
@@ -1113,6 +1159,51 @@ mod tests {
     }
 
     #[test]
+    fn test_currency_unit_parsing() {
+        assert_eq!(CurrencyUnit::from_str("sat").unwrap(), CurrencyUnit::Sat);
+        assert_eq!(CurrencyUnit::from_str("SAT").unwrap(), CurrencyUnit::Sat);
+        assert_eq!(CurrencyUnit::from_str("msat").unwrap(), CurrencyUnit::Msat);
+        assert_eq!(CurrencyUnit::from_str("MSAT").unwrap(), CurrencyUnit::Msat);
+        assert_eq!(CurrencyUnit::from_str("usd").unwrap(), CurrencyUnit::Usd);
+        assert_eq!(CurrencyUnit::from_str("USD").unwrap(), CurrencyUnit::Usd);
+        assert_eq!(CurrencyUnit::from_str("eur").unwrap(), CurrencyUnit::Eur);
+        assert_eq!(CurrencyUnit::from_str("EUR").unwrap(), CurrencyUnit::Eur);
+        assert_eq!(CurrencyUnit::from_str("auth").unwrap(), CurrencyUnit::Auth);
+        assert_eq!(CurrencyUnit::from_str("AUTH").unwrap(), CurrencyUnit::Auth);
+
+        // Custom
+        assert_eq!(
+            CurrencyUnit::from_str("custom").unwrap(),
+            CurrencyUnit::Custom("custom".to_string())
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "mint")]
+    fn four_bytes_hash_currency_unit() {
+        let unit = CurrencyUnit::Sat;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 1967237907);
+
+        let unit = CurrencyUnit::Msat;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 142929756);
+
+        let unit = CurrencyUnit::Eur;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 1473545324);
+
+        let unit = CurrencyUnit::Usd;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 577560378);
+
+        let unit = CurrencyUnit::Auth;
+        let index = unit.hashed_derivation_index();
+
+        assert_eq!(index, 1222349093)
+    }
+
+    #[test]
     fn test_payment_method_parsing() {
         // Test known methods (case insensitive)
         assert_eq!(
@@ -1173,6 +1264,56 @@ mod tests {
             let deserialized: PaymentMethod = serde_json::from_str(&serialized).unwrap();
             assert_eq!(method, deserialized);
         }
+    }
+
+    /// Tests that is_bolt12 correctly identifies BOLT12 payment methods.
+    ///
+    /// This is critical for code that needs to distinguish between BOLT11 and BOLT12.
+    /// If is_bolt12 always returns true or false, the wrong payment flow may be used.
+    ///
+    /// Mutant testing: Kills mutations that:
+    /// - Replace is_bolt12 with true
+    /// - Replace is_bolt12 with false
+    #[test]
+    fn test_is_bolt12_with_bolt12() {
+        // BOLT12 should return true
+        let method = PaymentMethod::BOLT12;
+        assert!(method.is_bolt12());
+
+        // Known BOLT12 should also return true
+        let method = PaymentMethod::Known(KnownMethod::Bolt12);
+        assert!(method.is_bolt12());
+    }
+
+    #[test]
+    fn test_is_bolt12_with_non_bolt12() {
+        // BOLT11 should return false
+        let method = PaymentMethod::BOLT11;
+        assert!(!method.is_bolt12());
+
+        // Known BOLT11 should return false
+        let method = PaymentMethod::Known(KnownMethod::Bolt11);
+        assert!(!method.is_bolt12());
+
+        // Custom methods should return false
+        let method = PaymentMethod::Custom("paypal".to_string());
+        assert!(!method.is_bolt12());
+
+        let method = PaymentMethod::Custom("bolt12".to_string());
+        assert!(!method.is_bolt12()); // String match is not the same as actual BOLT12
+    }
+
+    /// Tests that is_bolt12 correctly distinguishes between all payment method variants.
+    #[test]
+    fn test_is_bolt12_comprehensive() {
+        // Test all variants
+        assert!(PaymentMethod::BOLT12.is_bolt12());
+        assert!(PaymentMethod::Known(KnownMethod::Bolt12).is_bolt12());
+
+        assert!(!PaymentMethod::BOLT11.is_bolt12());
+        assert!(!PaymentMethod::Known(KnownMethod::Bolt11).is_bolt12());
+        assert!(!PaymentMethod::Custom("anything".to_string()).is_bolt12());
+        assert!(!PaymentMethod::Custom("bolt12".to_string()).is_bolt12());
     }
 
     #[test]

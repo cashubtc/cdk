@@ -1,7 +1,7 @@
 //! # Nostr Mint Backup Example (NUT-XX)
 //!
 //! This example demonstrates how to backup and restore your mint list
-//! to/from Nostr relays using the MultiMintWallet.
+//! to/from Nostr relays using the WalletRepository.
 //!
 //! ## Features
 //!
@@ -24,9 +24,7 @@
 
 use std::sync::Arc;
 
-use cdk::nuts::CurrencyUnit;
-use cdk::wallet::multi_mint_wallet::MultiMintWallet;
-use cdk::wallet::{BackupOptions, RestoreOptions};
+use cdk::wallet::{BackupOptions, RestoreOptions, WalletRepositoryBuilder};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -44,14 +42,15 @@ async fn main() -> anyhow::Result<()> {
     // In production, this would be derived from a BIP-39 mnemonic
     let seed: [u8; 64] = random();
 
-    // Currency unit for the wallet
-    let unit = CurrencyUnit::Sat;
-
     // Initialize the memory store for the first wallet
     let localstore = Arc::new(memory::empty().await?);
 
-    // Create a new MultiMintWallet
-    let wallet = MultiMintWallet::new(localstore.clone(), seed, unit.clone()).await?;
+    // Create a new WalletRepository
+    let wallet = WalletRepositoryBuilder::new()
+        .localstore(localstore.clone())
+        .seed(seed)
+        .build()
+        .await?;
 
     // ============================================================================
     // Step 1: Add test mints to the wallet
@@ -67,14 +66,14 @@ async fn main() -> anyhow::Result<()> {
 
     for mint_url in &mints {
         println!("  Adding mint: {}", mint_url);
-        match wallet.add_mint(mint_url.parse()?).await {
-            Ok(()) => println!("    + Added successfully"),
+        match wallet.add_wallet(mint_url.parse()?).await {
+            Ok(_) => println!("    + Added successfully"),
             Err(e) => println!("    x Failed to add: {}", e),
         }
     }
 
     // Verify mints were added
-    let wallets = wallet.get_wallets().await;
+    let wallets: Vec<cdk::Wallet> = wallet.get_wallets().await;
     println!("\n  Wallet now contains {} mint(s):", wallets.len());
     for w in &wallets {
         println!("    - {}", w.mint_url);
@@ -129,10 +128,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Create a fresh wallet with the same seed (simulating a new device)
     let new_localstore = Arc::new(memory::empty().await?);
-    let new_wallet = MultiMintWallet::new(new_localstore, seed, unit.clone()).await?;
+    let new_wallet = WalletRepositoryBuilder::new()
+        .localstore(new_localstore)
+        .seed(seed)
+        .build()
+        .await?;
 
     // Verify the new wallet is empty
-    let new_wallets = new_wallet.get_wallets().await;
+    let new_wallets: Vec<cdk::Wallet> = new_wallet.get_wallets().await;
     println!("  New wallet starts with {} mint(s)", new_wallets.len());
 
     // Derive keys on the new wallet - should be the same!
@@ -172,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Verify the mints were restored
-    let restored_wallets = new_wallet.get_wallets().await;
+    let restored_wallets: Vec<cdk::Wallet> = new_wallet.get_wallets().await;
     println!(
         "\n  New wallet now contains {} mint(s):",
         restored_wallets.len()

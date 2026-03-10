@@ -1,10 +1,10 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::MintInfo;
-use cdk::wallet::MultiMintWallet;
+use cdk::wallet::WalletRepository;
 use cdk::OidcClient;
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -19,21 +19,18 @@ pub struct CatDeviceLoginSubCommand {
 }
 
 pub async fn cat_device_login(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     sub_command_args: &CatDeviceLoginSubCommand,
     work_dir: &Path,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
 
     // Ensure the mint exists
-    if !multi_mint_wallet.has_mint(&mint_url).await {
-        multi_mint_wallet.add_mint(mint_url.clone()).await?;
+    if !wallet_repository.has_mint(&mint_url).await {
+        wallet_repository.add_wallet(mint_url.clone()).await?;
     }
 
-    let mint_info = multi_mint_wallet
-        .fetch_mint_info(&mint_url)
-        .await?
-        .ok_or(anyhow!("Mint info not found"))?;
+    let mint_info = wallet_repository.fetch_mint_info(&mint_url).await?;
 
     let (access_token, refresh_token) = get_device_code_token(&mint_info).await;
 
@@ -82,21 +79,17 @@ async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
     let device_auth_url = oidc_config.device_authorization_endpoint;
 
     // Make the device code request
-    let client = reqwest::Client::new();
-    let device_code_response = client
-        .post(device_auth_url)
-        .form(&[
-            ("client_id", client_id.clone().as_str()),
-            ("scope", "openid offline_access"),
-        ])
-        .send()
+    let client = cdk_common::HttpClient::new();
+    let device_code_data: serde_json::Value = client
+        .post_form(
+            &device_auth_url,
+            &[
+                ("client_id", client_id.clone().as_str()),
+                ("scope", "openid offline_access"),
+            ],
+        )
         .await
         .expect("Failed to send device code request");
-
-    let device_code_data: serde_json::Value = device_code_response
-        .json()
-        .await
-        .expect("Failed to parse device code response");
 
     let device_code = device_code_data["device_code"]
         .as_str()
@@ -140,7 +133,7 @@ async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
             .await
             .expect("Failed to send token request");
 
-        if token_response.status().is_success() {
+        if token_response.is_success() {
             let token_data: serde_json::Value = token_response
                 .json()
                 .await

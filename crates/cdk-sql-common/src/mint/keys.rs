@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
+use cdk_common::common::IssuerVersion;
 use cdk_common::database::{Error, MintKeyDatabaseTransaction, MintKeysDatabase};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::{CurrencyUnit, Id};
@@ -29,7 +30,8 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
             derivation_path,
             derivation_path_index,
             amounts,
-            row_keyset_ppk
+            row_keyset_ppk,
+            issuer_version
         ) = row
     );
 
@@ -47,6 +49,19 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
         amounts,
         input_fee_ppk: column_as_nullable_number!(row_keyset_ppk).unwrap_or(0),
         final_expiry: column_as_nullable_number!(valid_to),
+        issuer_version: column_as_nullable_string!(issuer_version).and_then(|v| {
+            match IssuerVersion::from_str(&v) {
+                Ok(ver) => Some(ver),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse issuer_version from database: {}. Error: {}",
+                        v,
+                        e
+                    );
+                    None
+                }
+            }
+        }),
     })
 }
 
@@ -61,11 +76,11 @@ where
         INSERT INTO
             keyset (
                 id, unit, active, valid_from, valid_to, derivation_path,
-                amounts, input_fee_ppk, derivation_path_index
+                amounts, input_fee_ppk, derivation_path_index, issuer_version
             )
         VALUES (
             :id, :unit, :active, :valid_from, :valid_to, :derivation_path,
-            :amounts, :input_fee_ppk, :derivation_path_index
+            :amounts, :input_fee_ppk, :derivation_path_index, :issuer_version
         )
         ON CONFLICT(id) DO UPDATE SET
             unit = excluded.unit,
@@ -75,7 +90,8 @@ where
             derivation_path = excluded.derivation_path,
             amounts = excluded.amounts,
             input_fee_ppk = excluded.input_fee_ppk,
-            derivation_path_index = excluded.derivation_path_index
+            derivation_path_index = excluded.derivation_path_index,
+            issuer_version = excluded.issuer_version
         "#,
         )?
         .bind("id", keyset.id.to_string())
@@ -87,6 +103,10 @@ where
         .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
         .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
         .bind("derivation_path_index", keyset.derivation_path_index)
+        .bind(
+            "issuer_version",
+            keyset.issuer_version.map(|v| v.to_string()),
+        )
         .execute(&self.inner)
         .await?;
 
@@ -176,7 +196,8 @@ where
                 derivation_path,
                 derivation_path_index,
                 amounts,
-                input_fee_ppk
+                input_fee_ppk,
+                issuer_version
             FROM
                 keyset
                 WHERE id=:id"#,
@@ -200,7 +221,8 @@ where
                 derivation_path,
                 derivation_path_index,
                 amounts,
-                input_fee_ppk
+                input_fee_ppk,
+                issuer_version
             FROM
                 keyset
             "#,
@@ -233,10 +255,15 @@ mod test {
                 Column::Integer(0),
                 Column::Text(serde_json::to_string(&amounts).expect("valid json")),
                 Column::Integer(0),
+                Column::Text("cdk/0.1.0".to_owned()),
             ]);
             assert!(result.is_ok());
             let keyset = result.unwrap();
             assert_eq!(keyset.amounts.len(), 32);
+            assert_eq!(
+                keyset.issuer_version,
+                Some(IssuerVersion::from_str("cdk/0.1.0").unwrap())
+            );
         }
     }
 }

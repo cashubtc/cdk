@@ -1,8 +1,10 @@
 //! Transaction-related FFI types
 
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::amount::{Amount, CurrencyUnit};
 use super::keys::PublicKey;
@@ -42,6 +44,8 @@ pub struct Transaction {
     pub payment_proof: Option<String>,
     /// Payment method (e.g., Bolt11, Bolt12) for mint/melt transactions
     pub payment_method: Option<PaymentMethod>,
+    /// Saga ID if this transaction was part of a saga
+    pub saga_id: Option<String>,
 }
 
 impl From<cdk::wallet::types::Transaction> for Transaction {
@@ -61,6 +65,7 @@ impl From<cdk::wallet::types::Transaction> for Transaction {
             payment_request: tx.payment_request,
             payment_proof: tx.payment_proof,
             payment_method: tx.payment_method.map(Into::into),
+            saga_id: tx.saga_id.map(|id| id.to_string()),
         }
     }
 }
@@ -88,6 +93,7 @@ impl TryFrom<Transaction> for cdk::wallet::types::Transaction {
             payment_request: tx.payment_request,
             payment_proof: tx.payment_proof,
             payment_method: tx.payment_method.map(Into::into),
+            saga_id: tx.saga_id.and_then(|id| Uuid::from_str(&id).ok()),
         })
     }
 }

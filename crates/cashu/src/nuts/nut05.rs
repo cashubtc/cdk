@@ -92,6 +92,10 @@ pub struct MeltRequest<Q> {
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of BlindedMessages `SHOULD` be set to zero
     outputs: Option<Vec<BlindedMessage>>,
+    /// Whether the client prefers asynchronous processing
+    #[serde(default)]
+    #[cfg_attr(feature = "swagger", schema(value_type = bool))]
+    prefer_async: bool,
 }
 
 #[cfg(feature = "mint")]
@@ -103,6 +107,7 @@ impl TryFrom<MeltRequest<String>> for MeltRequest<QuoteId> {
             quote: QuoteId::from_str(&value.quote).map_err(|_e| Error::InvalidQuote)?,
             inputs: value.inputs,
             outputs: value.outputs,
+            prefer_async: value.prefer_async,
         })
     }
 }
@@ -140,7 +145,19 @@ where
             quote,
             inputs: inputs.without_dleqs(),
             outputs,
+            prefer_async: false,
         }
+    }
+
+    /// Set the prefer_async flag for asynchronous processing
+    pub fn prefer_async(mut self, prefer_async: bool) -> Self {
+        self.prefer_async = prefer_async;
+        self
+    }
+
+    /// Get the prefer_async flag
+    pub fn is_prefer_async(&self) -> bool {
+        self.prefer_async
     }
 
     /// Get quote

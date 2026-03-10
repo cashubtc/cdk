@@ -164,6 +164,8 @@ impl From<Quote> for MintQuote {
             } else {
                 Amount::ZERO
             },
+            used_by_operation: None,
+            version: 0,
         }
     }
 }

@@ -105,10 +105,7 @@ impl ExchangeRateCache {
     /// Fetch fresh rate and update cache
     async fn fetch_fresh_rate(&self, currency: &CurrencyUnit) -> Result<f64, Error> {
         let url = "https://mempool.space/api/v1/prices";
-        let response = reqwest::get(url)
-            .await
-            .map_err(|_| Error::UnknownInvoiceAmount)?
-            .json::<MempoolPricesResponse>()
+        let response: MempoolPricesResponse = cdk_common::fetch(url)
             .await
             .map_err(|_| Error::UnknownInvoiceAmount)?;
 
@@ -288,8 +285,8 @@ impl SecondaryRepaymentQueue {
                     use bitcoin::hashes::{sha256, Hash};
                     let mut random_bytes = [0u8; 16];
                     rng.fill(&mut random_bytes);
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
+                    let timestamp = web_time::SystemTime::now()
+                        .duration_since(web_time::UNIX_EPOCH)
                         .expect("System time before UNIX_EPOCH")
                         .as_nanos() as u64;
 

@@ -9,9 +9,7 @@ use cdk_common::payment::{
     OutgoingPaymentOptions,
 };
 use cdk_common::quote_id::QuoteId;
-use cdk_common::{
-    MeltOptions, MeltQuoteBolt12Request, MeltQuoteCustomRequest, SpendingConditionVerification,
-};
+use cdk_common::{MeltOptions, MeltQuoteBolt12Request, MeltQuoteCustomRequest};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use lightning::offers::offer::Offer;
@@ -21,6 +19,7 @@ use super::{
     CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, Mint,
     PaymentMethod,
 };
+use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
@@ -349,6 +348,17 @@ impl Mint {
             extra,
         } = melt_request;
 
+        if !extra.is_null() {
+            let extra_str = extra.to_string();
+            if extra_str.len() > MAX_REQUEST_FIELD_LEN {
+                return Err(Error::RequestFieldTooLarge {
+                    field: "extra".to_string(),
+                    actual: extra_str.len(),
+                    max: MAX_REQUEST_FIELD_LEN,
+                });
+            }
+        }
+
         let ln = self
             .payment_processors
             .get(&PaymentProcessorKey::new(
@@ -540,13 +550,21 @@ impl Mint {
         &self,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
-        // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
-        // and HTLC (including SIGALL)
-        melt_request.verify_spending_conditions()?;
-
-        // We don't need to check P2PK or HTLC again. It has all been checked above
-        // and the code doesn't reach here unless such verifications were satisfactory
-
+        // Check max outputs limit (if change outputs are provided)
+        if let Some(outputs) = melt_request.outputs() {
+            let outputs_count = outputs.len();
+            if outputs_count > self.max_outputs {
+                tracing::warn!(
+                    "Melt request exceeds max outputs limit: {} > {}",
+                    outputs_count,
+                    self.max_outputs
+                );
+                return Err(Error::MaxOutputsExceeded {
+                    actual: outputs_count,
+                    max: self.max_outputs,
+                });
+            }
+        }
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
         // Fetch the quote to get payment_method for operation tracking
@@ -587,6 +605,22 @@ impl Mint {
         &self,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        // Check max outputs limit (if change outputs are provided)
+        if let Some(outputs) = melt_request.outputs() {
+            let outputs_count = outputs.len();
+            if outputs_count > self.max_outputs {
+                tracing::warn!(
+                    "Melt request exceeds max outputs limit: {} > {}",
+                    outputs_count,
+                    self.max_outputs
+                );
+                return Err(Error::MaxOutputsExceeded {
+                    actual: outputs_count,
+                    max: self.max_outputs,
+                });
+            }
+        }
+
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
         // Get the quote first for payment_method and to return with PENDING state
@@ -661,14 +695,12 @@ impl Mint {
             }
         });
 
-        debug_assert!(quote.state == MeltQuoteState::Pending);
-
         // Return immediately with the quote in PENDING state
         Ok(MeltQuoteBolt11Response {
             quote: quote_id,
             amount: quote.amount().into(),
             fee_reserve: quote.fee_reserve().into(),
-            state: quote.state,
+            state: MeltQuoteState::Pending,
             expiry: quote.expiry,
             payment_preimage: None,
             change: None,

@@ -6,17 +6,19 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk_common::common::ProofInfo;
 use cdk_common::database::{ConversionError, Error, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
-use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
+use cdk_common::wallet::{
+    self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
+};
 use cdk_common::{
     database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PaymentMethod, Proof,
     ProofDleq, PublicKey, SecretKey, SpendingConditions, State,
 };
 use tracing::instrument;
+use uuid::Uuid;
 
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
@@ -39,191 +41,6 @@ where
     RM: DatabasePool + 'static,
 {
     pool: Arc<Pool<RM>>,
-}
-
-// Inline helper functions that work with both connections and transactions
-#[inline]
-async fn get_keyset_by_id_inner<T>(
-    executor: &T,
-    keyset_id: &Id,
-    for_update: bool,
-) -> Result<Option<KeySetInfo>, Error>
-where
-    T: DatabaseExecutor,
-{
-    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
-    let query_str = format!(
-        r#"
-        SELECT
-            id,
-            unit,
-            active,
-            input_fee_ppk,
-            final_expiry
-        FROM
-            keyset
-        WHERE id = :id
-        {for_update_clause}
-        "#
-    );
-
-    query(&query_str)?
-        .bind("id", keyset_id.to_string())
-        .fetch_one(executor)
-        .await?
-        .map(sql_row_to_keyset)
-        .transpose()
-}
-
-#[inline]
-async fn get_keys_inner<T>(executor: &T, id: &Id) -> Result<Option<Keys>, Error>
-where
-    T: DatabaseExecutor,
-{
-    query(
-        r#"
-        SELECT
-            keys
-        FROM key
-        WHERE id = :id
-        "#,
-    )?
-    .bind("id", id.to_string())
-    .pluck(executor)
-    .await?
-    .map(|keys| {
-        let keys = column_as_string!(keys);
-        serde_json::from_str(&keys).map_err(Error::from)
-    })
-    .transpose()
-}
-
-#[inline]
-async fn get_mint_quote_inner<T>(
-    executor: &T,
-    quote_id: &str,
-    for_update: bool,
-) -> Result<Option<MintQuote>, Error>
-where
-    T: DatabaseExecutor,
-{
-    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
-    let query_str = format!(
-        r#"
-        SELECT
-            id,
-            mint_url,
-            amount,
-            unit,
-            request,
-            state,
-            expiry,
-            secret_key,
-            payment_method,
-            amount_issued,
-            amount_paid
-        FROM
-            mint_quote
-        WHERE
-            id = :id
-        {for_update_clause}
-        "#
-    );
-
-    query(&query_str)?
-        .bind("id", quote_id.to_string())
-        .fetch_one(executor)
-        .await?
-        .map(sql_row_to_mint_quote)
-        .transpose()
-}
-
-#[inline]
-async fn get_melt_quote_inner<T>(
-    executor: &T,
-    quote_id: &str,
-    for_update: bool,
-) -> Result<Option<wallet::MeltQuote>, Error>
-where
-    T: DatabaseExecutor,
-{
-    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
-    let query_str = format!(
-        r#"
-        SELECT
-            id,
-            unit,
-            amount,
-            request,
-            fee_reserve,
-            state,
-            expiry,
-            payment_preimage,
-            payment_method
-        FROM
-            melt_quote
-        WHERE
-            id=:id
-        {for_update_clause}
-        "#
-    );
-
-    query(&query_str)?
-        .bind("id", quote_id.to_owned())
-        .fetch_one(executor)
-        .await?
-        .map(sql_row_to_melt_quote)
-        .transpose()
-}
-
-#[inline]
-async fn get_proofs_inner<T>(
-    executor: &T,
-    mint_url: Option<MintUrl>,
-    unit: Option<CurrencyUnit>,
-    state: Option<Vec<State>>,
-    spending_conditions: Option<Vec<SpendingConditions>>,
-    for_update: bool,
-) -> Result<Vec<ProofInfo>, Error>
-where
-    T: DatabaseExecutor,
-{
-    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
-    let query_str = format!(
-        r#"
-        SELECT
-            amount,
-            unit,
-            keyset_id,
-            secret,
-            c,
-            witness,
-            dleq_e,
-            dleq_s,
-            dleq_r,
-            y,
-            mint_url,
-            state,
-            spending_condition
-        FROM proof
-        {for_update_clause}
-        "#
-    );
-
-    Ok(query(&query_str)?
-        .fetch_all(executor)
-        .await?
-        .into_iter()
-        .filter_map(|row| {
-            let row = sql_row_to_proof_info(row).ok()?;
-
-            if row.matches_conditions(&mint_url, &unit, &state, &spending_conditions) {
-                Some(row)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>())
 }
 
 impl<RM> SQLWalletDatabase<RM>
@@ -344,7 +161,9 @@ where
                   state,
                   expiry,
                   payment_preimage,
-                  payment_method
+                  payment_method,
+                  used_by_operation,
+                  version
               FROM
                   melt_quote
               "#,
@@ -462,13 +281,56 @@ where
         keyset_id: &Id,
     ) -> Result<Option<KeySetInfo>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        get_keyset_by_id_inner(&*conn, keyset_id, false).await
+        query(
+            r#"
+            SELECT
+                id,
+                unit,
+                active,
+                input_fee_ppk,
+                final_expiry
+            FROM
+                keyset
+            WHERE id = :id
+            "#,
+        )?
+        .bind("id", keyset_id.to_string())
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_keyset)
+        .transpose()
     }
 
     #[instrument(skip(self))]
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        get_mint_quote_inner(&*conn, quote_id, false).await
+        query(
+            r#"
+            SELECT
+                id,
+                mint_url,
+                amount,
+                unit,
+                request,
+                state,
+                expiry,
+                secret_key,
+                payment_method,
+                amount_issued,
+                amount_paid,
+                used_by_operation,
+                version
+            FROM
+                mint_quote
+            WHERE
+                id = :id
+            "#,
+        )?
+        .bind("id", quote_id.to_string())
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_mint_quote)
+        .transpose()
     }
 
     #[instrument(skip(self))]
@@ -487,7 +349,9 @@ where
                 secret_key,
                 payment_method,
                 amount_issued,
-                amount_paid
+                amount_paid,
+                used_by_operation,
+                version
             FROM
                 mint_quote
             "#,
@@ -500,7 +364,7 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+    async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -515,7 +379,9 @@ where
                 secret_key,
                 payment_method,
                 amount_issued,
-                amount_paid
+                amount_paid,
+                used_by_operation,
+                version
             FROM
                 mint_quote
             WHERE
@@ -537,13 +403,52 @@ where
         quote_id: &str,
     ) -> Result<Option<wallet::MeltQuote>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        get_melt_quote_inner(&*conn, quote_id, false).await
+        query(
+            r#"
+            SELECT
+                id,
+                unit,
+                amount,
+                request,
+                fee_reserve,
+                state,
+                expiry,
+                payment_preimage,
+                payment_method,
+                used_by_operation,
+                version
+            FROM
+                melt_quote
+            WHERE
+                id=:id
+            "#,
+        )?
+        .bind("id", quote_id.to_owned())
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_melt_quote)
+        .transpose()
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        get_keys_inner(&*conn, keyset_id).await
+        query(
+            r#"
+            SELECT
+                keys
+            FROM key
+            WHERE id = :id
+            "#,
+        )?
+        .bind("id", keyset_id.to_string())
+        .pluck(&*conn)
+        .await?
+        .map(|keys| {
+            let keys = column_as_string!(keys);
+            serde_json::from_str(&keys).map_err(Error::from)
+        })
+        .transpose()
     }
 
     #[instrument(skip(self, state, spending_conditions))]
@@ -555,7 +460,40 @@ where
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        get_proofs_inner(&*conn, mint_url, unit, state, spending_conditions, false).await
+        Ok(query(
+            r#"
+            SELECT
+                amount,
+                unit,
+                keyset_id,
+                secret,
+                c,
+                witness,
+                dleq_e,
+                dleq_s,
+                dleq_r,
+                y,
+                mint_url,
+                state,
+                spending_condition,
+                used_by_operation,
+                created_by_operation
+            FROM proof
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .filter_map(|row| {
+            let row = sql_row_to_proof_info(row).ok()?;
+
+            if row.matches_conditions(&mint_url, &unit, &state, &spending_conditions) {
+                Some(row)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>())
     }
 
     #[instrument(skip(self, ys))]
@@ -583,7 +521,9 @@ where
                 y,
                 mint_url,
                 state,
-                spending_condition
+                spending_condition,
+                used_by_operation,
+                created_by_operation
             FROM proof
             WHERE y IN (:ys)
         "#,
@@ -681,7 +621,8 @@ where
                 quote_id,
                 payment_request,
                 payment_proof,
-                payment_method
+                payment_method,
+                saga_id
             FROM
                 transactions
             WHERE
@@ -719,7 +660,8 @@ where
                 quote_id,
                 payment_request,
                 payment_proof,
-                payment_method
+                payment_method,
+                saga_id
             FROM
                 transactions
             "#,
@@ -752,9 +694,9 @@ where
             query(
                 r#"
     INSERT INTO proof
-    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r)
+    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation)
     VALUES
-    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r)
+    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation)
     ON CONFLICT(y) DO UPDATE SET
         mint_url = excluded.mint_url,
         state = excluded.state,
@@ -767,7 +709,9 @@ where
         witness = excluded.witness,
         dleq_e = excluded.dleq_e,
         dleq_s = excluded.dleq_s,
-        dleq_r = excluded.dleq_r
+        dleq_r = excluded.dleq_r,
+        used_by_operation = excluded.used_by_operation,
+        created_by_operation = excluded.created_by_operation
     ;
             "#,
             )?
@@ -804,6 +748,8 @@ where
                 "dleq_r",
                 proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
             )
+            .bind("used_by_operation", proof.used_by_operation.map(|id| id.to_string()))
+            .bind("created_by_operation", proof.created_by_operation.map(|id| id.to_string()))
             .execute(&tx)
             .await?;
         }
@@ -860,9 +806,9 @@ where
         query(
                r#"
    INSERT INTO transactions
-   (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof, payment_method)
+   (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof, payment_method, saga_id)
    VALUES
-   (:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof, :payment_method)
+   (:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof, :payment_method, :saga_id)
    ON CONFLICT(id) DO UPDATE SET
        mint_url = excluded.mint_url,
        direction = excluded.direction,
@@ -875,7 +821,8 @@ where
        quote_id = excluded.quote_id,
        payment_request = excluded.payment_request,
        payment_proof = excluded.payment_proof,
-       payment_method = excluded.payment_method
+       payment_method = excluded.payment_method,
+       saga_id = excluded.saga_id
    ;
            "#,
            )?
@@ -896,6 +843,7 @@ where
            .bind("payment_request", transaction.payment_request)
            .bind("payment_proof", transaction.payment_proof)
            .bind("payment_method", transaction.payment_method.map(|pm| pm.to_string()))
+           .bind("saga_id", transaction.saga_id.map(|id| id.to_string()))
            .execute(&*conn)
            .await?;
 
@@ -939,38 +887,22 @@ where
     ) -> Result<u32, database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        let tx = ConnectionWithTransaction::new(conn).await?;
-
-        let current_counter = query(
+        let new_counter = query(
             r#"
-               SELECT counter
-               FROM keyset_counter
-               WHERE keyset_id=:keyset_id
-               "#,
+            INSERT INTO keyset_counter (keyset_id, counter)
+            VALUES (:keyset_id, :count)
+            ON CONFLICT(keyset_id) DO UPDATE SET
+                counter = keyset_counter.counter + :count
+            RETURNING counter
+            "#,
         )?
         .bind("keyset_id", keyset_id.to_string())
-        .pluck(&tx)
+        .bind("count", count)
+        .pluck(&*conn)
         .await?
         .map(|n| Ok::<_, Error>(column_as_number!(n)))
         .transpose()?
-        .unwrap_or(0);
-
-        let new_counter = current_counter + count;
-
-        query(
-            r#"
-               INSERT INTO keyset_counter (keyset_id, counter)
-               VALUES (:keyset_id, :new_counter)
-               ON CONFLICT(keyset_id) DO UPDATE SET
-                   counter = excluded.counter
-               "#,
-        )?
-        .bind("keyset_id", keyset_id.to_string())
-        .bind("new_counter", new_counter)
-        .execute(&tx)
-        .await?;
-
-        tx.commit().await?;
+        .ok_or_else(|| Error::Internal("Counter update returned no value".to_owned()))?;
 
         Ok(new_counter)
     }
@@ -1133,12 +1065,15 @@ where
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        query(
+        let expected_version = quote.version;
+        let new_version = expected_version.wrapping_add(1);
+
+        let rows_affected = query(
                 r#"
     INSERT INTO mint_quote
-    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid)
+    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, version)
     VALUES
-    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid)
+    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :version)
     ON CONFLICT(id) DO UPDATE SET
         mint_url = excluded.mint_url,
         amount = excluded.amount,
@@ -1149,7 +1084,9 @@ where
         secret_key = excluded.secret_key,
         payment_method = excluded.payment_method,
         amount_issued = excluded.amount_issued,
-        amount_paid = excluded.amount_paid
+        amount_paid = excluded.amount_paid,
+        version = :new_version
+    WHERE mint_quote.version = :expected_version
     ;
             "#,
             )?
@@ -1164,7 +1101,14 @@ where
             .bind("payment_method", quote.payment_method.to_string())
             .bind("amount_issued", quote.amount_issued.to_i64())
             .bind("amount_paid", quote.amount_paid.to_i64())
+            .bind("version", quote.version as i64)
+            .bind("new_version", new_version as i64)
+            .bind("expected_version", expected_version as i64)
             .execute(&*conn).await?;
+
+        if rows_affected == 0 {
+            return Err(database::Error::ConcurrentUpdate);
+        }
 
         Ok(())
     }
@@ -1185,12 +1129,15 @@ where
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), database::Error> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        query(
+        let expected_version = quote.version;
+        let new_version = expected_version.wrapping_add(1);
+
+        let rows_affected = query(
             r#"
  INSERT INTO melt_quote
- (id, unit, amount, request, fee_reserve, state, expiry, payment_method)
+ (id, unit, amount, request, fee_reserve, state, expiry, payment_method, version)
  VALUES
- (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method)
+ (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method, :version)
  ON CONFLICT(id) DO UPDATE SET
      unit = excluded.unit,
      amount = excluded.amount,
@@ -1198,7 +1145,9 @@ where
      fee_reserve = excluded.fee_reserve,
      state = excluded.state,
      expiry = excluded.expiry,
-     payment_method = excluded.payment_method
+     payment_method = excluded.payment_method,
+     version = :new_version
+ WHERE melt_quote.version = :expected_version
  ;
          "#,
         )?
@@ -1210,8 +1159,15 @@ where
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
         .bind("payment_method", quote.payment_method.to_string())
+        .bind("version", quote.version as i64)
+        .bind("new_version", new_version as i64)
+        .bind("expected_version", expected_version as i64)
         .execute(&*conn)
         .await?;
+
+        if rows_affected == 0 {
+            return Err(database::Error::ConcurrentUpdate);
+        }
 
         Ok(())
     }
@@ -1281,7 +1237,367 @@ where
         Ok(())
     }
 
-    // KV Store write methods (non-transactional)
+    #[instrument(skip(self))]
+    async fn add_saga(&self, saga: wallet::WalletSaga) -> Result<(), database::Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let state_json = serde_json::to_string(&saga.state).map_err(|e| {
+            Error::Database(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to serialize saga state: {}", e),
+            )))
+        })?;
+
+        let data_json = serde_json::to_string(&saga.data).map_err(|e| {
+            Error::Database(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to serialize saga data: {}", e),
+            )))
+        })?;
+
+        query(
+            r#"
+            INSERT INTO wallet_sagas
+            (id, kind, state, amount, mint_url, unit, quote_id, created_at, updated_at, data, version)
+            VALUES
+            (:id, :kind, :state, :amount, :mint_url, :unit, :quote_id, :created_at, :updated_at, :data, :version)
+            "#,
+        )?
+        .bind("id", saga.id.to_string())
+        .bind("kind", saga.kind.to_string())
+        .bind("state", state_json)
+        .bind("amount", u64::from(saga.amount) as i64)
+        .bind("mint_url", saga.mint_url.to_string())
+        .bind("unit", saga.unit.to_string())
+        .bind("quote_id", saga.quote_id)
+        .bind("created_at", saga.created_at as i64)
+        .bind("updated_at", saga.updated_at as i64)
+        .bind("data", data_json)
+        .bind("version", saga.version as i64)
+        .execute(&*conn)
+        .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_saga(
+        &self,
+        id: &uuid::Uuid,
+    ) -> Result<Option<wallet::WalletSaga>, database::Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let rows = query(
+            r#"
+            SELECT id, kind, state, amount, mint_url, unit, quote_id, created_at, updated_at, data, version
+            FROM wallet_sagas
+            WHERE id = :id
+            "#,
+        )?
+        .bind("id", id.to_string())
+        .fetch_all(&*conn)
+        .await?;
+
+        match rows.into_iter().next() {
+            Some(row) => Ok(Some(sql_row_to_wallet_saga(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    #[instrument(skip(self))]
+    async fn update_saga(&self, saga: wallet::WalletSaga) -> Result<bool, database::Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let state_json = serde_json::to_string(&saga.state).map_err(|e| {
+            Error::Database(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to serialize saga state: {}", e),
+            )))
+        })?;
+
+        let data_json = serde_json::to_string(&saga.data).map_err(|e| {
+            Error::Database(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to serialize saga data: {}", e),
+            )))
+        })?;
+
+        // Optimistic locking: only update if the version matches the expected value.
+        // The saga.version has already been incremented by the caller, so we check
+        // for (saga.version - 1) in the WHERE clause.
+        let expected_version = saga.version.saturating_sub(1);
+
+        let rows_affected = query(
+            r#"
+            UPDATE wallet_sagas
+            SET kind = :kind, state = :state, amount = :amount, mint_url = :mint_url,
+                unit = :unit, quote_id = :quote_id, updated_at = :updated_at, data = :data,
+                version = :new_version
+            WHERE id = :id AND version = :expected_version
+            "#,
+        )?
+        .bind("id", saga.id.to_string())
+        .bind("kind", saga.kind.to_string())
+        .bind("state", state_json)
+        .bind("amount", u64::from(saga.amount) as i64)
+        .bind("mint_url", saga.mint_url.to_string())
+        .bind("unit", saga.unit.to_string())
+        .bind("quote_id", saga.quote_id)
+        .bind("updated_at", saga.updated_at as i64)
+        .bind("data", data_json)
+        .bind("new_version", saga.version as i64)
+        .bind("expected_version", expected_version as i64)
+        .execute(&*conn)
+        .await?;
+
+        // Return true if the update succeeded (version matched), false if version mismatch
+        Ok(rows_affected > 0)
+    }
+
+    #[instrument(skip(self))]
+    async fn delete_saga(&self, id: &uuid::Uuid) -> Result<(), database::Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        query(r#"DELETE FROM wallet_sagas WHERE id = :id"#)?
+            .bind("id", id.to_string())
+            .execute(&*conn)
+            .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_incomplete_sagas(&self) -> Result<Vec<wallet::WalletSaga>, database::Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let rows = query(
+            r#"
+            SELECT id, kind, state, amount, mint_url, unit, quote_id, created_at, updated_at, data, version
+            FROM wallet_sagas
+            ORDER BY created_at ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?;
+
+        rows.into_iter().map(sql_row_to_wallet_saga).collect()
+    }
+
+    #[instrument(skip(self))]
+    async fn reserve_proofs(
+        &self,
+        ys: Vec<PublicKey>,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), database::Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        for y in ys {
+            let rows_affected = query(
+                r#"
+                UPDATE proof
+                SET state = 'RESERVED', used_by_operation = :operation_id
+                WHERE y = :y AND state = 'UNSPENT'
+                "#,
+            )?
+            .bind("y", y.to_bytes().to_vec())
+            .bind("operation_id", operation_id.to_string())
+            .execute(&*conn)
+            .await?;
+
+            if rows_affected == 0 {
+                return Err(database::Error::ProofNotUnspent);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn release_proofs(&self, operation_id: &uuid::Uuid) -> Result<(), database::Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        query(
+            r#"
+            UPDATE proof
+            SET state = 'UNSPENT', used_by_operation = NULL
+            WHERE used_by_operation = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .execute(&*conn)
+        .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_reserved_proofs(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<ProofInfo>, database::Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let rows = query(
+            r#"
+            SELECT
+                amount,
+                unit,
+                keyset_id,
+                secret,
+                c,
+                witness,
+                dleq_e,
+                dleq_s,
+                dleq_r,
+                y,
+                mint_url,
+                state,
+                spending_condition,
+                used_by_operation,
+                created_by_operation
+            FROM proof
+            WHERE used_by_operation = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_all(&*conn)
+        .await?;
+
+        rows.into_iter().map(sql_row_to_proof_info).collect()
+    }
+
+    #[instrument(skip(self))]
+    async fn reserve_melt_quote(
+        &self,
+        quote_id: &str,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), database::Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let rows_affected = query(
+            r#"
+            UPDATE melt_quote
+            SET used_by_operation = :operation_id
+            WHERE id = :quote_id AND used_by_operation IS NULL
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .bind("quote_id", quote_id)
+        .execute(&*conn)
+        .await?;
+
+        if rows_affected == 0 {
+            // Check if the quote exists
+            let exists = query(
+                r#"
+                SELECT 1 FROM melt_quote WHERE id = :quote_id
+                "#,
+            )?
+            .bind("quote_id", quote_id)
+            .fetch_one(&*conn)
+            .await?;
+
+            if exists.is_none() {
+                return Err(database::Error::UnknownQuote);
+            }
+            return Err(database::Error::QuoteAlreadyInUse);
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn release_melt_quote(&self, operation_id: &uuid::Uuid) -> Result<(), database::Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        query(
+            r#"
+            UPDATE melt_quote
+            SET used_by_operation = NULL
+            WHERE used_by_operation = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .execute(&*conn)
+        .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn reserve_mint_quote(
+        &self,
+        quote_id: &str,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), database::Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let rows_affected = query(
+            r#"
+            UPDATE mint_quote
+            SET used_by_operation = :operation_id
+            WHERE id = :quote_id AND used_by_operation IS NULL
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .bind("quote_id", quote_id)
+        .execute(&*conn)
+        .await?;
+
+        if rows_affected == 0 {
+            // Check if the quote exists
+            let exists = query(
+                r#"
+                SELECT 1 FROM mint_quote WHERE id = :quote_id
+                "#,
+            )?
+            .bind("quote_id", quote_id)
+            .fetch_one(&*conn)
+            .await?;
+
+            if exists.is_none() {
+                return Err(database::Error::UnknownQuote);
+            }
+            return Err(database::Error::QuoteAlreadyInUse);
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn release_mint_quote(&self, operation_id: &uuid::Uuid) -> Result<(), database::Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        query(
+            r#"
+            UPDATE mint_quote
+            SET used_by_operation = NULL
+            WHERE used_by_operation = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .execute(&*conn)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, database::Error> {
+        crate::keyvalue::kv_read(&self.pool, primary_namespace, secondary_namespace, key).await
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, database::Error> {
+        crate::keyvalue::kv_list(&self.pool, primary_namespace, secondary_namespace).await
+    }
 
     async fn kv_write(
         &self,
@@ -1386,7 +1702,9 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
             secret_key,
             row_method,
             row_amount_minted,
-            row_amount_paid
+            row_amount_paid,
+            used_by_operation,
+            version
         ) = row
     );
 
@@ -1394,6 +1712,8 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
 
     let amount_paid: u64 = column_as_number!(row_amount_paid);
     let amount_minted: u64 = column_as_number!(row_amount_minted);
+    let expiry_val: u64 = column_as_number!(expiry);
+    let version_val: u32 = column_as_number!(version);
     let payment_method =
         PaymentMethod::from_str(&column_as_string!(row_method)).map_err(Error::from)?;
 
@@ -1404,13 +1724,13 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         request: column_as_string!(request),
         state: column_as_string!(state, MintQuoteState::from_str),
-        expiry: column_as_number!(expiry),
-        secret_key: column_as_nullable_string!(secret_key)
-            .map(|v| SecretKey::from_str(&v))
-            .transpose()?,
+        expiry: expiry_val,
+        secret_key: column_as_nullable_string!(secret_key, |s| SecretKey::from_str(&s).ok()),
         payment_method,
-        amount_issued: amount_minted.into(),
-        amount_paid: amount_paid.into(),
+        amount_issued: Amount::from(amount_minted),
+        amount_paid: Amount::from(amount_paid),
+        used_by_operation: column_as_nullable_string!(used_by_operation),
+        version: version_val,
     })
 }
 
@@ -1425,26 +1745,32 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
             state,
             expiry,
             payment_preimage,
-            row_method
+            row_method,
+            used_by_operation,
+            version
         ) = row
     );
-
-    let amount: u64 = column_as_number!(amount);
-    let fee_reserve: u64 = column_as_number!(fee_reserve);
 
     let payment_method =
         PaymentMethod::from_str(&column_as_string!(row_method)).map_err(Error::from)?;
 
+    let amount_val: u64 = column_as_number!(amount);
+    let fee_reserve_val: u64 = column_as_number!(fee_reserve);
+    let expiry_val: u64 = column_as_number!(expiry);
+    let version_val: u32 = column_as_number!(version);
+
     Ok(wallet::MeltQuote {
         id: column_as_string!(id),
-        amount: Amount::from(amount),
         unit: column_as_string!(unit, CurrencyUnit::from_str),
+        amount: Amount::from(amount_val),
         request: column_as_string!(request),
-        fee_reserve: Amount::from(fee_reserve),
+        fee_reserve: Amount::from(fee_reserve_val),
         state: column_as_string!(state, MeltQuoteState::from_str),
-        expiry: column_as_number!(expiry),
+        expiry: expiry_val,
         payment_preimage: column_as_nullable_string!(payment_preimage),
         payment_method,
+        used_by_operation: column_as_nullable_string!(used_by_operation),
+        version: version_val,
     })
 }
 
@@ -1463,7 +1789,9 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
             y,
             mint_url,
             state,
-            spending_condition
+            spending_condition,
+            used_by_operation,
+            created_by_operation
         ) = row
     );
 
@@ -1494,6 +1822,11 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         dleq,
     };
 
+    let used_by_operation =
+        column_as_nullable_string!(used_by_operation).and_then(|id| Uuid::from_str(&id).ok());
+    let created_by_operation =
+        column_as_nullable_string!(created_by_operation).and_then(|id| Uuid::from_str(&id).ok());
+
     Ok(ProofInfo {
         proof,
         y: column_as_string!(y, PublicKey::from_str, PublicKey::from_slice),
@@ -1505,6 +1838,77 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
             |r| { serde_json::from_slice(&r).ok() }
         ),
         unit: column_as_string!(unit, CurrencyUnit::from_str),
+        used_by_operation,
+        created_by_operation,
+    })
+}
+
+fn sql_row_to_wallet_saga(row: Vec<Column>) -> Result<wallet::WalletSaga, Error> {
+    unpack_into!(
+        let (
+            id,
+            kind,
+            state,
+            amount,
+            mint_url,
+            unit,
+            quote_id,
+            created_at,
+            updated_at,
+            data,
+            version
+        ) = row
+    );
+
+    let id_str: String = column_as_string!(id);
+    let id = uuid::Uuid::parse_str(&id_str).map_err(|e| {
+        Error::Database(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Invalid UUID: {}", e),
+        )))
+    })?;
+    let kind_str: String = column_as_string!(kind);
+    let state_json: String = column_as_string!(state);
+    let amount: u64 = column_as_number!(amount);
+    let mint_url: MintUrl = column_as_string!(mint_url, MintUrl::from_str);
+    let unit: CurrencyUnit = column_as_string!(unit, CurrencyUnit::from_str);
+    let quote_id: Option<String> = column_as_nullable_string!(quote_id);
+    let created_at: u64 = column_as_number!(created_at);
+    let updated_at: u64 = column_as_number!(updated_at);
+    let data_json: String = column_as_string!(data);
+    let version: u32 = column_as_number!(version);
+
+    let kind = wallet::OperationKind::from_str(&kind_str).map_err(|_| {
+        Error::Database(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Invalid operation kind: {}", kind_str),
+        )))
+    })?;
+    let state: wallet::WalletSagaState = serde_json::from_str(&state_json).map_err(|e| {
+        Error::Database(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed to deserialize saga state: {}", e),
+        )))
+    })?;
+    let data: wallet::OperationData = serde_json::from_str(&data_json).map_err(|e| {
+        Error::Database(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed to deserialize saga data: {}", e),
+        )))
+    })?;
+
+    Ok(wallet::WalletSaga {
+        id,
+        kind,
+        state,
+        amount: Amount::from(amount),
+        mint_url,
+        unit,
+        quote_id,
+        created_at,
+        updated_at,
+        data,
+        version,
     })
 }
 
@@ -1523,12 +1927,17 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             quote_id,
             payment_request,
             payment_proof,
-            payment_method
+            payment_method,
+            saga_id
         ) = row
     );
 
     let amount: u64 = column_as_number!(amount);
     let fee: u64 = column_as_number!(fee);
+
+    let saga_id: Option<Uuid> = column_as_nullable_string!(saga_id)
+        .map(|id| Uuid::from_str(&id).ok())
+        .flatten();
 
     Ok(Transaction {
         mint_url: column_as_string!(mint_url, MintUrl::from_str),
@@ -1553,32 +1962,6 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             .map(|v| PaymentMethod::from_str(&v))
             .transpose()
             .map_err(Error::from)?,
+        saga_id,
     })
-}
-
-// KVStore implementations for wallet
-
-#[async_trait]
-impl<RM> database::KVStoreDatabase for SQLWalletDatabase<RM>
-where
-    RM: DatabasePool + 'static,
-{
-    type Err = Error;
-
-    async fn kv_read(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-    ) -> Result<Option<Vec<u8>>, Error> {
-        crate::keyvalue::kv_read(&self.pool, primary_namespace, secondary_namespace, key).await
-    }
-
-    async fn kv_list(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-    ) -> Result<Vec<String>, Error> {
-        crate::keyvalue::kv_list(&self.pool, primary_namespace, secondary_namespace).await
-    }
 }

@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::database::{self, Acquired, Error, MintProofsDatabase};
+use cdk_common::database::mint::Acquired;
+use cdk_common::database::{self, Error, MintProofsDatabase};
 use cdk_common::mint::{Operation, ProofsWithState};
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::quote_id::QuoteId;

@@ -4,7 +4,6 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
-#[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MintInfo,
@@ -14,7 +13,6 @@ use cdk::util::unix_time;
 use paste::paste;
 use tracing::instrument;
 
-#[cfg(feature = "auth")]
 use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
@@ -27,7 +25,7 @@ macro_rules! post_cache_wrapper {
             /// Cache wrapper function for $handler:
             /// Wrap $handler into a function that caches responses using the request as key
             pub async fn [<cache_ $handler>](
-                #[cfg(feature = "auth")] auth: AuthHeader,
+                auth: AuthHeader,
                 state: State<MintState>,
                 payload: Json<$request_type>
             ) -> Result<Json<$response_type>, Response> {
@@ -38,19 +36,13 @@ macro_rules! post_cache_wrapper {
                     Some(key) => key,
                     None => {
                         // Could not calculate key, just return the handler result
-                        #[cfg(feature = "auth")]
                         return $handler(auth, state, payload).await;
-                        #[cfg(not(feature = "auth"))]
-                        return $handler( state, payload).await;
                     }
                 };
                 if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
                     return Ok(Json(cached_response));
                 }
-                #[cfg(feature = "auth")]
                 let response = $handler(auth, state, payload).await?;
-                #[cfg(not(feature = "auth"))]
-                let response = $handler(state, payload).await?;
                 mint_state.cache.set(cache_key, &response.deref()).await;
                 Ok(response)
             }
@@ -66,7 +58,7 @@ macro_rules! post_cache_wrapper_with_prefer {
             /// Cache wrapper function for $handler with PreferHeader support:
             /// Wrap $handler into a function that caches responses using the request as key
             pub async fn [<cache_ $handler>](
-                #[cfg(feature = "auth")] auth: AuthHeader,
+                auth: AuthHeader,
                 prefer: PreferHeader,
                 state: State<MintState>,
                 payload: Json<$request_type>
@@ -79,19 +71,13 @@ macro_rules! post_cache_wrapper_with_prefer {
                     Some(key) => key,
                     None => {
                         // Could not calculate key, just return the handler result
-                        #[cfg(feature = "auth")]
                         return $handler(auth, prefer, state, payload).await;
-                        #[cfg(not(feature = "auth"))]
-                        return $handler(prefer, state, payload).await;
                     }
                 };
                 if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
                     return Ok(Json(cached_response));
                 }
-                #[cfg(feature = "auth")]
                 let response = $handler(auth, prefer, state, payload).await?;
-                #[cfg(not(feature = "auth"))]
-                let response = $handler(prefer, state, payload).await?;
                 mint_state.cache.set(cache_key, &response.deref()).await;
                 Ok(response)
             }
@@ -168,21 +154,18 @@ pub(crate) async fn get_keysets(
 
 #[instrument(skip_all)]
 pub(crate) async fn ws_handler(
-    #[cfg(feature = "auth")] auth: AuthHeader,
+    auth: AuthHeader,
     State(state): State<MintState>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Get, RoutePath::Ws),
-            )
-            .await
-            .map_err(into_response)?;
-    }
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Get, RoutePath::Ws),
+        )
+        .await
+        .map_err(into_response)?;
 
     Ok(ws.on_upgrade(|ws| main_websocket(ws, state)))
 }
@@ -202,21 +185,18 @@ pub(crate) async fn ws_handler(
 /// Check whether a secret has been spent already or not.
 #[instrument(skip_all, fields(y_count = ?payload.ys.len()))]
 pub(crate) async fn post_check(
-    #[cfg(feature = "auth")] auth: AuthHeader,
+    auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<CheckStateRequest>,
 ) -> Result<Json<CheckStateResponse>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate),
-            )
-            .await
-            .map_err(into_response)?;
-    }
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate),
+        )
+        .await
+        .map_err(into_response)?;
 
     let state = state.mint.check_state(&payload).await.map_err(|err| {
         tracing::error!("Could not check state of proofs");
@@ -270,21 +250,18 @@ pub(crate) async fn get_mint_info(
 /// This endpoint can be used by Alice to swap a set of proofs before making a payment to Carol. It can then used by Carol to redeem the tokens for new proofs.
 #[instrument(skip_all, fields(inputs_count = ?payload.inputs().len()))]
 pub(crate) async fn post_swap(
-    #[cfg(feature = "auth")] auth: AuthHeader,
+    auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<SwapRequest>,
 ) -> Result<Json<SwapResponse>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
-            )
-            .await
-            .map_err(into_response)?;
-    }
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
+        )
+        .await
+        .map_err(into_response)?;
 
     let swap_response = state
         .mint
@@ -311,21 +288,18 @@ pub(crate) async fn post_swap(
 /// Restores blind signature for a set of outputs.
 #[instrument(skip_all, fields(outputs_count = ?payload.outputs.len()))]
 pub(crate) async fn post_restore(
-    #[cfg(feature = "auth")] auth: AuthHeader,
+    auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<RestoreRequest>,
 ) -> Result<Json<RestoreResponse>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::Restore),
-            )
-            .await
-            .map_err(into_response)?;
-    }
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Restore),
+        )
+        .await
+        .map_err(into_response)?;
 
     let restore_response = state.mint.restore(payload).await.map_err(|err| {
         tracing::error!("Could not process restore: {}", err);

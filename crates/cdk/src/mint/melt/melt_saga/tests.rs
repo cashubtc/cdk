@@ -1311,8 +1311,8 @@ async fn test_saga_content_validation() {
     }
 
     // STEP 8: Verify timestamps are set and reasonable
-    let current_timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let current_timestamp = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
 
@@ -2994,8 +2994,10 @@ async fn test_duplicate_lookup_id_prevents_second_pending() {
     if let Err(error) = setup_result2 {
         let error_msg = error.to_string().to_lowercase();
         assert!(
-            error_msg.contains("duplicate") || error_msg.contains("pending"),
-            "Error should mention duplicate or pending, got: {}",
+            error_msg.contains("duplicate")
+                || error_msg.contains("pending")
+                || error_msg.contains("already paid"),
+            "Error should mention duplicate, pending, or already paid, got: {}",
             error
         );
     }

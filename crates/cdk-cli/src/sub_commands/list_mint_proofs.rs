@@ -1,19 +1,19 @@
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, Proof};
-use cdk::wallet::multi_mint_wallet::MultiMintWallet;
+use cdk::wallet::WalletRepository;
 
-pub async fn proofs(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
-    list_proofs(multi_mint_wallet).await?;
+pub async fn proofs(wallet_repository: &WalletRepository) -> Result<()> {
+    list_proofs(wallet_repository).await?;
     Ok(())
 }
 
 async fn list_proofs(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
 ) -> Result<Vec<(MintUrl, (Vec<Proof>, CurrencyUnit))>> {
     let mut proofs_vec = Vec::new();
 
-    let wallets = multi_mint_wallet.get_wallets().await;
+    let wallets = wallet_repository.get_wallets().await;
 
     for (i, wallet) in wallets.iter().enumerate() {
         let mint_url = wallet.mint_url.clone();

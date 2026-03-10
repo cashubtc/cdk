@@ -18,7 +18,6 @@ use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::{DatabasePool, Pool, PooledResource};
 
-#[cfg(feature = "auth")]
 mod auth;
 mod completed_operations;
 mod keys;
@@ -33,7 +32,6 @@ mod migrations {
     include!(concat!(env!("OUT_DIR"), "/migrations_mint.rs"));
 }
 
-#[cfg(feature = "auth")]
 pub use auth::SQLMintAuthDatabase;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;

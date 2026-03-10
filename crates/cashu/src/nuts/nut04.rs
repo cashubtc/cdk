@@ -18,6 +18,7 @@ use crate::nut23::QuoteState;
 use crate::quote_id::QuoteId;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteIdError;
+use crate::util::serde_helpers::deserialize_empty_string_as_none;
 use crate::{Amount, PublicKey};
 
 /// NUT04 Error
@@ -380,7 +381,11 @@ pub struct MintQuoteCustomResponse<Q> {
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
     /// NUT-19 Pubkey
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_empty_string_as_none"
+    )]
     pub pubkey: Option<PublicKey>,
     /// Extra payment-method-specific fields
     ///

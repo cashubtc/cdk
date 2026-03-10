@@ -9,6 +9,7 @@ use cdk::nuts::nut05::MeltMethodSettings;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk::Amount;
+use cdk_common::grpc::create_version_check_interceptor;
 use cdk_common::payment::WaitPaymentResponse;
 use thiserror::Error;
 use tokio::sync::Notify;
@@ -135,13 +136,25 @@ impl MintRPCServer {
                     .identity(server_identity)
                     .client_ca_root(client_ca_cert);
 
-                Server::builder()
-                    .tls_config(tls_config)?
-                    .add_service(CdkMintServer::new(self.clone()))
+                Server::builder().tls_config(tls_config)?.add_service(
+                    CdkMintServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ),
+                )
             }
             None => {
                 tracing::warn!("No valid TLS configuration found, starting insecure server");
-                Server::builder().add_service(CdkMintServer::new(self.clone()))
+                Server::builder().add_service(CdkMintServer::with_interceptor(
+                    self.clone(),
+                    create_version_check_interceptor(
+                        cdk_common::grpc::VERSION_HEADER,
+                        cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                    ),
+                ))
             }
         };
 
@@ -223,7 +236,7 @@ impl CdkMint for MintRPCServer {
             })
             .collect();
 
-        Ok(Response::new(GetInfoResponse {
+        let response = Response::new(GetInfoResponse {
             name: info.name,
             description: info.description,
             long_description: info.description_long,
@@ -234,7 +247,9 @@ impl CdkMint for MintRPCServer {
             urls: info.urls.unwrap_or_default(),
             total_issued: total_issued.into(),
             total_redeemed: total_redeemed.into(),
-        }))
+        });
+
+        Ok(response)
     }
 
     /// Updates the mint's message of the day
@@ -749,7 +764,12 @@ impl CdkMint for MintRPCServer {
 
         let keyset_info = self
             .mint
-            .rotate_keyset(unit, amounts, request.input_fee_ppk.unwrap_or(0))
+            .rotate_keyset(
+                unit,
+                amounts,
+                request.input_fee_ppk.unwrap_or(0),
+                request.use_keyset_v2.unwrap_or(true),
+            )
             .await
             .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))?;
 
