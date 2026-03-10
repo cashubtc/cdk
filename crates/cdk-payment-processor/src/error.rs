@@ -18,6 +18,9 @@ pub enum Error {
     /// Invalid currency unit
     #[error("Invalid currency unit: {0}")]
     InvalidCurrencyUnit(String),
+    /// Missing amount field
+    #[error("Missing amount field")]
+    MissingAmount,
     /// Parse invoice error
     #[error(transparent)]
     Invoice(#[from] lightning_invoice::ParseOrSemanticError),
@@ -49,6 +52,7 @@ impl From<Error> for Status {
             Error::InvalidCurrencyUnit(unit) => {
                 Status::invalid_argument(format!("Invalid currency unit: {unit}"))
             }
+            Error::MissingAmount => Status::invalid_argument("Missing amount field"),
             Error::Invoice(err) => Status::invalid_argument(format!("Invoice error: {err}")),
             Error::Hex(err) => Status::invalid_argument(format!("Hex decode error: {err}")),
             Error::Bolt12Parse => Status::invalid_argument("BOLT12 parse error"),
@@ -70,6 +74,7 @@ impl From<Error> for cdk_common::payment::Error {
             Error::InvalidCurrencyUnit(unit) => {
                 Self::Custom(format!("Invalid currency unit: {unit}"))
             }
+            Error::MissingAmount => Self::Custom("Missing amount field".to_string()),
             Error::Invoice(err) => Self::Custom(format!("Invoice error: {err}")),
             Error::Hex(err) => Self::Custom(format!("Hex decode error: {err}")),
             Error::Bolt12Parse => Self::Custom("BOLT12 parse error".to_string()),
