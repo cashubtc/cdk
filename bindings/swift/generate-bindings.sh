@@ -62,16 +62,48 @@ if [[ "$(uname)" == "Linux" ]]; then
     export CFLAGS_x86_64_apple_ios="-isysroot $IOS_SIM_SDK -target x86_64-apple-ios14.0-simulator"
 fi
 
+# On macOS, point DEVELOPER_DIR at the real Xcode installation so that
+# xcrun (including Nix's xcbuild wrapper) can find the iOS SDKs.
+if [[ "$(uname)" == "Darwin" ]]; then
+    XCODE_DEV_DIR=$(/usr/bin/xcrun xcode-select -p 2>/dev/null || echo "/Applications/Xcode.app/Contents/Developer")
+    export DEVELOPER_DIR="$XCODE_DEV_DIR"
+
+    # Use the system clang for iOS targets to avoid the nix-wrapped clang
+    # injecting -mmacos-version-min, which conflicts with -miphoneos-version-min.
+    export CC_aarch64_apple_ios=/usr/bin/clang
+    export CC_aarch64_apple_ios_sim=/usr/bin/clang
+    export CC_x86_64_apple_ios=/usr/bin/clang
+
+    # Also override the linker for iOS targets. rustc uses the default `cc`
+    # (Nix-wrapped) as linker, which hardcodes the macOS sysroot and causes
+    # "building for iOS Simulator, but linking in .tbd built for macOS" errors.
+    export CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=/usr/bin/clang
+    export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER=/usr/bin/clang
+    export CARGO_TARGET_X86_64_APPLE_IOS_LINKER=/usr/bin/clang
+fi
+
 # Build for iOS device (arm64)
 echo "🍎 Building for iOS device (arm64)..."
-env -u MACOSX_DEPLOYMENT_TARGET SDKROOT="$IOS_SDK" cargo build --release --target aarch64-apple-ios
+if [[ "$(uname)" == "Linux" ]]; then
+    env -u MACOSX_DEPLOYMENT_TARGET SDKROOT="$IOS_SDK" cargo build --release --target aarch64-apple-ios
+else
+    env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT cargo build --release --target aarch64-apple-ios
+fi
 
 # Build for iOS simulator (arm64 + x86_64)
 echo "📱 Building for iOS simulator (arm64)..."
-env -u MACOSX_DEPLOYMENT_TARGET SDKROOT="$IOS_SIM_SDK" cargo build --release --target aarch64-apple-ios-sim
+if [[ "$(uname)" == "Linux" ]]; then
+    env -u MACOSX_DEPLOYMENT_TARGET SDKROOT="$IOS_SIM_SDK" cargo build --release --target aarch64-apple-ios-sim
+else
+    env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT cargo build --release --target aarch64-apple-ios-sim
+fi
 
 echo "📱 Building for iOS simulator (x86_64)..."
-env -u MACOSX_DEPLOYMENT_TARGET SDKROOT="$IOS_SIM_SDK" cargo build --release --target x86_64-apple-ios
+if [[ "$(uname)" == "Linux" ]]; then
+    env -u MACOSX_DEPLOYMENT_TARGET SDKROOT="$IOS_SIM_SDK" cargo build --release --target x86_64-apple-ios
+else
+    env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT cargo build --release --target x86_64-apple-ios
+fi
 
 # Build for macOS (arm64 + x86_64)
 echo "💻 Building for macOS (arm64)..."

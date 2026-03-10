@@ -722,7 +722,7 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
   echo "$EMOJI Generating $LANG bindings..."
   mkdir -p target/bindings/$LANG
 
-  cargo run --bin uniffi-bindgen generate \
+  cargo run -p cdk-ffi --bin uniffi-bindgen generate \
     --library target/$BUILD_TYPE/libcdk_ffi.$LIB_EXT \
     --language $LANG \
     --out-dir target/bindings/$LANG
@@ -865,4 +865,12 @@ test-swift:
   #!/usr/bin/env bash
   set -euo pipefail
   cd "{{justfile_directory()}}"
-  swift test
+  if [[ "$(uname)" == "Darwin" ]]; then
+    # Inside a Nix shell, SDKROOT points to the Nix SDK (Swift 5.10 modules)
+    # which is incompatible with the Xcode Swift compiler. Override it with
+    # the Xcode SDK, and use the system swift to avoid Nix wrappers.
+    export SDKROOT=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
+    /usr/bin/swift test
+  else
+    swift test
+  fi
