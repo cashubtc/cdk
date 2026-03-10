@@ -274,12 +274,14 @@ impl CdkMetrics {
     }
 
     // HTTP metrics methods
+    /// Record an HTTP request
     pub fn record_http_request(&self, endpoint: &str, status: &str) {
         self.http_requests_total
             .with_label_values(&[endpoint, status])
             .inc();
     }
 
+    /// Record HTTP request duration
     pub fn record_http_request_duration(&self, duration_seconds: f64, endpoint: &str) {
         self.http_request_duration
             .with_label_values(&[endpoint])
@@ -287,15 +289,18 @@ impl CdkMetrics {
     }
 
     // Authentication metrics methods
+    /// Record an authentication attempt
     pub fn record_auth_attempt(&self) {
         self.auth_attempts_total.inc();
     }
 
+    /// Record a successful authentication
     pub fn record_auth_success(&self) {
         self.auth_successes_total.inc();
     }
 
     // Lightning metrics methods
+    /// Record a Lightning payment
     pub fn record_lightning_payment(&self, amount: f64, fee: f64) {
         self.lightning_payments_total.inc();
         self.lightning_payment_amount.observe(amount);
@@ -303,6 +308,7 @@ impl CdkMetrics {
     }
 
     // Database metrics methods
+    /// Record a database operation
     pub fn record_db_operation(&self, duration_seconds: f64, op: &str) {
         self.db_operations_total.inc();
         self.db_operation_duration
@@ -310,22 +316,27 @@ impl CdkMetrics {
             .observe(duration_seconds);
     }
 
+    /// Set the number of active database connections
     pub fn set_db_connections_active(&self, count: i64) {
         self.db_connections_active.set(count);
     }
 
     // Error metrics methods
+    /// Record an error
     pub fn record_error(&self) {
         self.errors_total.inc();
     }
 
     // Mint metrics methods
+    /// Record a mint operation
     pub fn record_mint_operation(&self, operation: &str, success: bool) {
         let status = if success { "success" } else { "error" };
         self.mint_operations_total
             .with_label_values(&[operation, status])
             .inc();
     }
+
+    /// Record a mint operation with duration
     pub fn record_mint_operation_histogram(
         &self,
         operation: &str,
@@ -337,12 +348,15 @@ impl CdkMetrics {
             .with_label_values(&[operation, status])
             .observe(duration_seconds);
     }
+
+    /// Increment in-flight mint requests
     pub fn inc_in_flight_requests(&self, operation: &str) {
         self.mint_in_flight_requests
             .with_label_values(&[operation])
             .inc();
     }
 
+    /// Decrement in-flight mint requests
     pub fn dec_in_flight_requests(&self, operation: &str) {
         self.mint_in_flight_requests
             .with_label_values(&[operation])

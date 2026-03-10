@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use anyhow::{anyhow, Result};
 use cdk::nuts::PaymentRequest;
-use cdk::wallet::MultiMintWallet;
+use cdk::wallet::WalletRepository;
 use cdk::Amount;
 use clap::Args;
 
@@ -15,7 +15,7 @@ pub struct PayRequestSubCommand {
 }
 
 pub async fn pay_request(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     sub_command_args: &PayRequestSubCommand,
 ) -> Result<()> {
     let payment_request = &sub_command_args.payment_request;
@@ -43,7 +43,7 @@ pub async fn pay_request(
 
     let request_mints = &payment_request.mints;
 
-    let wallet_mints = multi_mint_wallet.get_wallets().await;
+    let wallet_mints = wallet_repository.get_wallets().await;
 
     // Wallets where unit, balance and mint match request
     let mut matching_wallets = vec![];
@@ -51,10 +51,8 @@ pub async fn pay_request(
     for wallet in wallet_mints.iter() {
         let balance = wallet.total_balance().await?;
 
-        if let Some(request_mints) = request_mints {
-            if !request_mints.contains(&wallet.mint_url) {
-                continue;
-            }
+        if !request_mints.is_empty() && !request_mints.contains(&wallet.mint_url) {
+            continue;
         }
 
         if let Some(unit) = unit {

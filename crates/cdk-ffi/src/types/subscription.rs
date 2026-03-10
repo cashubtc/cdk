@@ -17,6 +17,8 @@ pub enum SubscriptionKind {
     Bolt11MintQuote,
     /// Bolt 12 Mint Quote
     Bolt12MintQuote,
+    /// Bolt 12 Melt Quote
+    Bolt12MeltQuote,
     /// Proof State
     ProofState,
 }
@@ -27,6 +29,7 @@ impl From<SubscriptionKind> for cdk::nuts::nut17::Kind {
             SubscriptionKind::Bolt11MeltQuote => cdk::nuts::nut17::Kind::Bolt11MeltQuote,
             SubscriptionKind::Bolt11MintQuote => cdk::nuts::nut17::Kind::Bolt11MintQuote,
             SubscriptionKind::Bolt12MintQuote => cdk::nuts::nut17::Kind::Bolt12MintQuote,
+            SubscriptionKind::Bolt12MeltQuote => cdk::nuts::nut17::Kind::Bolt12MeltQuote,
             SubscriptionKind::ProofState => cdk::nuts::nut17::Kind::ProofState,
         }
     }
@@ -38,6 +41,10 @@ impl From<cdk::nuts::nut17::Kind> for SubscriptionKind {
             cdk::nuts::nut17::Kind::Bolt11MeltQuote => SubscriptionKind::Bolt11MeltQuote,
             cdk::nuts::nut17::Kind::Bolt11MintQuote => SubscriptionKind::Bolt11MintQuote,
             cdk::nuts::nut17::Kind::Bolt12MintQuote => SubscriptionKind::Bolt12MintQuote,
+            cdk::nuts::nut17::Kind::Bolt12MeltQuote => SubscriptionKind::Bolt12MeltQuote,
+            cdk::nuts::nut17::Kind::Custom(_) => {
+                panic!("Custom subscription kind not supported in FFI")
+            }
             cdk::nuts::nut17::Kind::ProofState => SubscriptionKind::ProofState,
         }
     }
@@ -120,9 +127,7 @@ impl ActiveSubscription {
         guard
             .recv()
             .await
-            .ok_or(FfiError::Generic {
-                msg: "Subscription closed".to_string(),
-            })
+            .ok_or_else(|| FfiError::internal("Subscription closed"))
             .map(Into::into)
     }
 

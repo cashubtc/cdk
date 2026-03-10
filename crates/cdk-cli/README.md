@@ -13,9 +13,11 @@ A command-line Cashu wallet implementation built with the Cashu Development Kit 
 
 - **Multiple Mint Support**: Connect to and manage multiple Cashu mints simultaneously
 - **Token Operations**: Mint, melt, send, and receive Cashu tokens
+- **Batch Minting**: Mint multiple existing paid quotes in a single request
 - **Lightning Integration**: Pay Lightning invoices (BOLT11, BOLT12, BIP353) and receive payments
 - **Payment Requests**: Create and pay payment requests with various conditions (P2PK, HTLC)
 - **Token Transfer**: Transfer tokens between different mints
+- **NpubCash Integration**: Receive ecash via Nostr public key addresses (npub@npubx.cash)
 - **Multi-Currency Support**: Support for different currency units (sat, usd, eur, etc.)
 - **Database Options**: SQLite or Redb backend with optional encryption (SQLCipher)
 - **Tor Support**: Built-in Tor transport support (when compiled with feature)
@@ -27,15 +29,29 @@ A command-line Cashu wallet implementation built with the Cashu Development Kit 
 Download the latest release from the [GitHub releases page](https://github.com/cashubtc/cdk/releases).
 
 ### Option 2: Build from Source
+
+This project uses [Nix](https://nixos.org/) to manage development dependencies.
+
 ```bash
 git clone https://github.com/cashubtc/cdk.git
 cd cdk
+
+# Enter lean development environment
+nix develop
+
+# OR enter full regtest environment (with bitcoind, cln, lnd, postgres)
+nix develop .#regtest
+
+# Build binary
 cargo build --bin cdk-cli --release
 # Binary will be at ./target/release/cdk-cli
 ```
 
 ### Build with Optional Features
 ```bash
+# Default build (includes npubcash)
+cargo build --bin cdk-cli --release
+
 # With Tor support
 cargo build --bin cdk-cli --release --features tor
 
@@ -44,6 +60,9 @@ cargo build --bin cdk-cli --release --features sqlcipher
 
 # With Redb database
 cargo build --bin cdk-cli --release --features redb
+
+# Without npubcash (if you want to exclude it)
+cargo build --bin cdk-cli --release --no-default-features --features <other-features>
 ```
 
 ## Quick Start
@@ -131,9 +150,16 @@ cdk-cli mint http://127.0.0.1:8085 1000 \
 # Using an existing quote
 cdk-cli mint http://127.0.0.1:8085 --quote-id <quote_id>
 
+# Batch mint multiple existing quotes (repeat --quote-id)
+cdk-cli mint-batch http://127.0.0.1:8085 \
+  --quote-id <quote_id_1> \
+  --quote-id <quote_id_2>
+
 # Claim pending mint quotes that have been paid
 cdk-cli mint-pending
 ```
+
+`mint-batch` only mints existing quotes already stored in your wallet.
 
 ### Sending & Receiving Tokens
 
@@ -292,6 +318,93 @@ cdk-cli cat-login --username <username> --password <password>
 
 # Login with device code flow (OAuth-style)
 cdk-cli cat-device-login
+```
+
+#### NpubCash Integration
+
+> **Note**: Requires building with `--features npubcash` (enabled by default)
+
+NpubCash allows you to receive ecash payments via a Nostr public key address (npub@npubx.cash). The CLI automatically derives Nostr keys from your wallet seed for authentication.
+
+```bash
+# Set custom NpubCash server URL (optional, defaults to https://npubx.cash)
+cdk-cli --npubcash-url https://npubx.cash npub-cash <SUBCOMMANDS>
+```
+
+**Show Your NpubCash Address and Keys**
+
+```bash
+# Display your npub address and authentication keys
+cdk-cli npub-cash --mint-url <MINT_URL> show-keys
+
+# Example output shows:
+# - Your public key (npub) and npub.cash address (npub@npubx.cash)
+# - Your secret key (keep this safe!)
+```
+
+**Sync Quotes from NpubCash**
+
+```bash
+# Fetch all quotes from the NpubCash server and add to wallet
+cdk-cli npub-cash --mint-url <MINT_URL> sync
+```
+
+**List Quotes**
+
+```bash
+# List all quotes
+cdk-cli npub-cash --mint-url <MINT_URL> list
+
+# List quotes since a specific Unix timestamp
+cdk-cli npub-cash --mint-url <MINT_URL> list --since 1700000000
+
+# Output as JSON
+cdk-cli npub-cash --mint-url <MINT_URL> list --format json
+```
+
+**Subscribe to Quote Updates**
+
+```bash
+# Monitor for new quotes and automatically mint paid ones
+cdk-cli npub-cash --mint-url <MINT_URL> subscribe
+
+# Subscribe without auto-minting (just display quotes)
+cdk-cli npub-cash --mint-url <MINT_URL> subscribe --auto-mint false
+```
+
+The subscribe command:
+- Polls the NpubCash server every 5 seconds for new quotes
+- Automatically adds quotes to your wallet database
+- Optionally auto-mints paid quotes into your wallet
+- Press Ctrl+C to stop
+
+**Configure Mint URL on Server**
+
+```bash
+# Set which mint URL the NpubCash server should use for your quotes
+cdk-cli npub-cash --mint-url <MINT_URL> set-mint https://mint.example.com
+```
+
+This tells the NpubCash server which mint to use when creating quotes for payments to your npub address.
+
+**Complete NpubCash Workflow Example**
+
+```bash
+# 1. Show your NpubCash address
+cdk-cli npub-cash -m http://127.0.0.1:8085 show-keys
+# Share your npub@npubx.cash address with senders
+
+# 2. Subscribe to incoming payments
+cdk-cli npub-cash -m http://127.0.0.1:8085 subscribe
+# Leave this running to automatically receive and mint payments
+
+# 3. In another terminal, check your balance
+cdk-cli balance
+
+# 4. When someone sends sats to your npub address:
+#    - The subscribe command will show the new quote
+#    - If paid, tokens are automatically minted
+#    - Your balance increases
 ```
 
 ## Configuration

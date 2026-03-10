@@ -3,22 +3,20 @@
 Test suite for CDK FFI Key-Value Store operations
 
 Tests the KVStore trait functionality exposed through the FFI bindings,
-including read, write, list, and remove operations with transaction support.
+including read, write, list, and remove operations.
 """
 
 import asyncio
 import os
 import sys
 import tempfile
+import shutil
 from pathlib import Path
 
 # Setup paths before importing cdk_ffi
 repo_root = Path(__file__).parent.parent.parent.parent
 bindings_path = repo_root / "target" / "bindings" / "python"
 lib_path = repo_root / "target" / "release"
-
-# Copy the library to the bindings directory so Python can find it
-import shutil
 
 lib_file = "libcdk_ffi.dylib" if sys.platform == "darwin" else "libcdk_ffi.so"
 src_lib = lib_path / lib_file
@@ -59,17 +57,13 @@ async def test_kv_write_and_read():
     db, db_path = create_test_db()
 
     try:
-        # Write a value using KV transaction
-        kv_tx = await db.begin_db_transaction()
+        # Write a value
         test_data = b"Hello, KVStore!"
-        await kv_tx.kv_write("app", "config", "greeting", test_data)
-        await kv_tx.commit()
+        await db.kv_write("app", "config", "greeting", test_data)
         print("  Written value to KV store")
 
-        # Read it back using a new transaction
-        kv_tx2 = await db.begin_db_transaction()
-        result = await kv_tx2.kv_read("app", "config", "greeting")
-        await kv_tx2.rollback()
+        # Read it back
+        result = await db.kv_read("app", "config", "greeting")
 
         assert result is not None, "Expected to read back the value"
         assert bytes(result) == test_data, f"Expected {test_data}, got {bytes(result)}"
@@ -88,9 +82,7 @@ async def test_kv_read_nonexistent():
     db, db_path = create_test_db()
 
     try:
-        kv_tx = await db.begin_db_transaction()
-        result = await kv_tx.kv_read("nonexistent", "namespace", "key")
-        await kv_tx.rollback()
+        result = await db.kv_read("nonexistent", "namespace", "key")
 
         assert result is None, f"Expected None for nonexistent key, got {result}"
         print("  Correctly returns None for nonexistent key")
@@ -109,21 +101,15 @@ async def test_kv_overwrite():
 
     try:
         # Write initial value
-        kv_tx = await db.begin_db_transaction()
-        await kv_tx.kv_write("app", "data", "counter", b"1")
-        await kv_tx.commit()
+        await db.kv_write("app", "data", "counter", b"1")
         print("  Written initial value")
 
         # Overwrite with new value
-        kv_tx2 = await db.begin_db_transaction()
-        await kv_tx2.kv_write("app", "data", "counter", b"42")
-        await kv_tx2.commit()
+        await db.kv_write("app", "data", "counter", b"42")
         print("  Overwrote with new value")
 
         # Read back
-        kv_tx3 = await db.begin_db_transaction()
-        result = await kv_tx3.kv_read("app", "data", "counter")
-        await kv_tx3.rollback()
+        result = await db.kv_read("app", "data", "counter")
 
         assert result is not None, "Expected to read back the value"
         assert bytes(result) == b"42", f"Expected b'42', got {bytes(result)}"
@@ -143,28 +129,20 @@ async def test_kv_remove():
 
     try:
         # Write a value
-        kv_tx = await db.begin_db_transaction()
-        await kv_tx.kv_write("app", "temp", "to_delete", b"delete me")
-        await kv_tx.commit()
+        await db.kv_write("app", "temp", "to_delete", b"delete me")
         print("  Written value to delete")
 
         # Verify it exists
-        kv_tx2 = await db.begin_db_transaction()
-        result = await kv_tx2.kv_read("app", "temp", "to_delete")
-        await kv_tx2.rollback()
+        result = await db.kv_read("app", "temp", "to_delete")
         assert result is not None, "Value should exist before removal"
         print("  Verified value exists")
 
         # Remove it
-        kv_tx3 = await db.begin_db_transaction()
-        await kv_tx3.kv_remove("app", "temp", "to_delete")
-        await kv_tx3.commit()
+        await db.kv_remove("app", "temp", "to_delete")
         print("  Removed value")
 
         # Verify it's gone
-        kv_tx4 = await db.begin_db_transaction()
-        result_after = await kv_tx4.kv_read("app", "temp", "to_delete")
-        await kv_tx4.rollback()
+        result_after = await db.kv_read("app", "temp", "to_delete")
 
         assert result_after is None, f"Expected None after removal, got {result_after}"
         print("  Verified value is removed")
@@ -183,18 +161,14 @@ async def test_kv_list_keys():
 
     try:
         # Write multiple keys
-        kv_tx = await db.begin_db_transaction()
-        await kv_tx.kv_write("myapp", "settings", "theme", b"dark")
-        await kv_tx.kv_write("myapp", "settings", "language", b"en")
-        await kv_tx.kv_write("myapp", "settings", "timezone", b"UTC")
-        await kv_tx.kv_write("myapp", "other", "unrelated", b"data")
-        await kv_tx.commit()
+        await db.kv_write("myapp", "settings", "theme", b"dark")
+        await db.kv_write("myapp", "settings", "language", b"en")
+        await db.kv_write("myapp", "settings", "timezone", b"UTC")
+        await db.kv_write("myapp", "other", "unrelated", b"data")
         print("  Written multiple keys")
 
         # List keys in the settings namespace
-        kv_tx2 = await db.begin_db_transaction()
-        keys = await kv_tx2.kv_list("myapp", "settings")
-        await kv_tx2.rollback()
+        keys = await db.kv_list("myapp", "settings")
 
         assert len(keys) == 3, f"Expected 3 keys, got {len(keys)}"
         assert "theme" in keys, "Expected 'theme' in keys"
@@ -216,150 +190,13 @@ async def test_kv_list_empty_namespace():
     db, db_path = create_test_db()
 
     try:
-        kv_tx = await db.begin_db_transaction()
-        keys = await kv_tx.kv_list("nonexistent", "namespace")
-        await kv_tx.rollback()
+        keys = await db.kv_list("nonexistent", "namespace")
 
         assert isinstance(keys, list), "Expected a list"
         assert len(keys) == 0, f"Expected empty list, got {keys}"
         print("  Empty namespace returns empty list")
 
         print("  Test passed: KV list on empty namespace works")
-
-    finally:
-        cleanup_db(db_path)
-
-
-# Transaction Tests
-
-async def test_kv_transaction_commit():
-    """Test that KV changes persist after commit"""
-    print("\n=== Test: KV Transaction Commit ===")
-
-    db, db_path = create_test_db()
-
-    try:
-        # Write and commit
-        kv_tx = await db.begin_db_transaction()
-        await kv_tx.kv_write("test", "commit", "key1", b"committed")
-        await kv_tx.commit()
-        print("  Written and committed")
-
-        # Verify in new transaction
-        kv_tx2 = await db.begin_db_transaction()
-        result = await kv_tx2.kv_read("test", "commit", "key1")
-        await kv_tx2.rollback()
-
-        assert result is not None, "Value should persist after commit"
-        assert bytes(result) == b"committed", f"Expected b'committed', got {bytes(result)}"
-        print("  Value persists after commit")
-
-        print("  Test passed: KV transaction commit works")
-
-    finally:
-        cleanup_db(db_path)
-
-
-async def test_kv_transaction_rollback():
-    """Test that KV changes are reverted after rollback"""
-    print("\n=== Test: KV Transaction Rollback ===")
-
-    db, db_path = create_test_db()
-
-    try:
-        # Write and rollback
-        kv_tx = await db.begin_db_transaction()
-        await kv_tx.kv_write("test", "rollback", "key1", b"should_not_persist")
-        await kv_tx.rollback()
-        print("  Written and rolled back")
-
-        # Verify not persisted
-        kv_tx2 = await db.begin_db_transaction()
-        result = await kv_tx2.kv_read("test", "rollback", "key1")
-        await kv_tx2.rollback()
-
-        assert result is None, f"Value should not persist after rollback, got {bytes(result) if result else None}"
-        print("  Value not persisted after rollback")
-
-        print("  Test passed: KV transaction rollback works")
-
-    finally:
-        cleanup_db(db_path)
-
-
-async def test_kv_transaction_atomicity():
-    """Test that multiple operations in a transaction are atomic"""
-    print("\n=== Test: KV Transaction Atomicity ===")
-
-    db, db_path = create_test_db()
-
-    try:
-        # Perform multiple writes in one transaction
-        kv_tx = await db.begin_db_transaction()
-        await kv_tx.kv_write("atomic", "test", "key1", b"value1")
-        await kv_tx.kv_write("atomic", "test", "key2", b"value2")
-        await kv_tx.kv_write("atomic", "test", "key3", b"value3")
-
-        # Read within same transaction (should see uncommitted values)
-        keys_before = await kv_tx.kv_list("atomic", "test")
-        print(f"  Keys within transaction: {keys_before}")
-
-        # Rollback all
-        await kv_tx.rollback()
-        print("  Rolled back transaction")
-
-        # Verify none persisted
-        kv_tx2 = await db.begin_db_transaction()
-        keys_after = await kv_tx2.kv_list("atomic", "test")
-        await kv_tx2.rollback()
-
-        assert len(keys_after) == 0, f"Expected no keys after rollback, got {keys_after}"
-        print("  No keys persisted after rollback")
-
-        # Now do the same but commit
-        kv_tx3 = await db.begin_db_transaction()
-        await kv_tx3.kv_write("atomic", "test", "key1", b"value1")
-        await kv_tx3.kv_write("atomic", "test", "key2", b"value2")
-        await kv_tx3.kv_write("atomic", "test", "key3", b"value3")
-        await kv_tx3.commit()
-        print("  Committed transaction with 3 keys")
-
-        # Verify all persisted
-        kv_tx4 = await db.begin_db_transaction()
-        keys_final = await kv_tx4.kv_list("atomic", "test")
-        await kv_tx4.rollback()
-
-        assert len(keys_final) == 3, f"Expected 3 keys after commit, got {len(keys_final)}"
-        print(f"  All 3 keys persisted: {keys_final}")
-
-        print("  Test passed: KV transaction atomicity works")
-
-    finally:
-        cleanup_db(db_path)
-
-
-async def test_kv_read_within_transaction():
-    """Test reading values within the same transaction they were written"""
-    print("\n=== Test: KV Read Within Transaction ===")
-
-    db, db_path = create_test_db()
-
-    try:
-        kv_tx = await db.begin_db_transaction()
-
-        # Write a value
-        await kv_tx.kv_write("intra", "tx", "mykey", b"myvalue")
-
-        # Read it back in same transaction
-        result = await kv_tx.kv_read("intra", "tx", "mykey")
-
-        assert result is not None, "Should be able to read uncommitted value in same tx"
-        assert bytes(result) == b"myvalue", f"Expected b'myvalue', got {bytes(result)}"
-        print("  Can read uncommitted value within transaction")
-
-        await kv_tx.rollback()
-
-        print("  Test passed: KV read within transaction works")
 
     finally:
         cleanup_db(db_path)
@@ -375,21 +212,15 @@ async def test_kv_namespace_isolation():
 
     try:
         # Write same key in different namespaces
-        kv_tx = await db.begin_db_transaction()
-        await kv_tx.kv_write("app1", "config", "key", b"app1_value")
-        await kv_tx.kv_write("app2", "config", "key", b"app2_value")
-        await kv_tx.kv_write("app1", "other", "key", b"app1_other_value")
-        await kv_tx.commit()
+        await db.kv_write("app1", "config", "key", b"app1_value")
+        await db.kv_write("app2", "config", "key", b"app2_value")
+        await db.kv_write("app1", "other", "key", b"app1_other_value")
         print("  Written same key in different namespaces")
 
         # Read from each namespace
-        kv_tx2 = await db.begin_db_transaction()
-
-        result1 = await kv_tx2.kv_read("app1", "config", "key")
-        result2 = await kv_tx2.kv_read("app2", "config", "key")
-        result3 = await kv_tx2.kv_read("app1", "other", "key")
-
-        await kv_tx2.rollback()
+        result1 = await db.kv_read("app1", "config", "key")
+        result2 = await db.kv_read("app2", "config", "key")
+        result3 = await db.kv_read("app1", "other", "key")
 
         assert bytes(result1) == b"app1_value", f"Expected b'app1_value', got {bytes(result1)}"
         assert bytes(result2) == b"app2_value", f"Expected b'app2_value', got {bytes(result2)}"
@@ -420,21 +251,17 @@ async def test_kv_binary_data():
             ("random_binary", bytes([0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE])),
         ]
 
-        kv_tx = await db.begin_db_transaction()
         for name, data in test_cases:
-            await kv_tx.kv_write("binary", "test", name, data)
-        await kv_tx.commit()
+            await db.kv_write("binary", "test", name, data)
         print(f"  Written {len(test_cases)} binary test cases")
 
         # Read back and verify
-        kv_tx2 = await db.begin_db_transaction()
         for name, expected_data in test_cases:
-            result = await kv_tx2.kv_read("binary", "test", name)
+            result = await db.kv_read("binary", "test", name)
             assert result is not None, f"Expected data for {name}"
             actual_data = bytes(result)
             assert actual_data == expected_data, f"Mismatch for {name}: expected {expected_data!r}, got {actual_data!r}"
             print(f"    '{name}': OK ({len(actual_data)} bytes)")
-        await kv_tx2.rollback()
 
         print("  Test passed: KV binary data works")
 
@@ -452,15 +279,11 @@ async def test_kv_large_value():
         # Create a 1MB value
         large_data = bytes([i % 256 for i in range(1024 * 1024)])
 
-        kv_tx = await db.begin_db_transaction()
-        await kv_tx.kv_write("large", "data", "megabyte", large_data)
-        await kv_tx.commit()
+        await db.kv_write("large", "data", "megabyte", large_data)
         print(f"  Written {len(large_data)} bytes")
 
         # Read back
-        kv_tx2 = await db.begin_db_transaction()
-        result = await kv_tx2.kv_read("large", "data", "megabyte")
-        await kv_tx2.rollback()
+        result = await db.kv_read("large", "data", "megabyte")
 
         assert result is not None, "Expected to read large value"
         result_bytes = bytes(result)
@@ -493,17 +316,12 @@ async def test_kv_special_key_names():
             "empty_value",
         ]
 
-        kv_tx = await db.begin_db_transaction()
         for i, key in enumerate(special_keys):
-            print(key)
-            await kv_tx.kv_write("special", "keys", key, f"value_{i}".encode())
-        await kv_tx.commit()
+            await db.kv_write("special", "keys", key, f"value_{i}".encode())
         print(f"  Written {len(special_keys)} special keys")
 
         # List and verify
-        kv_tx2 = await db.begin_db_transaction()
-        keys = await kv_tx2.kv_list("special", "keys")
-        await kv_tx2.rollback()
+        keys = await db.kv_list("special", "keys")
 
         assert len(keys) == len(special_keys), f"Expected {len(special_keys)} keys, got {len(keys)}"
         for key in special_keys:
@@ -511,38 +329,6 @@ async def test_kv_special_key_names():
         print(f"  All special keys stored and listed correctly")
 
         print("  Test passed: KV special key names work")
-
-    finally:
-        cleanup_db(db_path)
-
-
-# Database Read Method Tests
-
-async def test_kv_database_read_methods():
-    """Test kv_read and kv_list methods on the database object (not transaction)"""
-    print("\n=== Test: KV Database Read Methods ===")
-
-    db, db_path = create_test_db()
-
-    try:
-        # Write some data first
-        kv_tx = await db.begin_db_transaction()
-        await kv_tx.kv_write("dbread", "test", "key1", b"value1")
-        await kv_tx.kv_write("dbread", "test", "key2", b"value2")
-        await kv_tx.commit()
-        print("  Written test data")
-
-        # Read back using database-level kv_read (not transaction)
-        result = await db.kv_read("dbread", "test", "key1")
-        assert result is not None, "Expected to read key1"
-        assert bytes(result) == b"value1", f"Expected b'value1', got {bytes(result)}"
-        print("  db.kv_read() works")
-
-        keys = await db.kv_list("dbread", "test")
-        assert len(keys) == 2, f"Expected 2 keys, got {len(keys)}"
-        print(f"  db.kv_list() works: {keys}")
-
-        print("  Test passed: KV database read methods work")
 
     finally:
         cleanup_db(db_path)
@@ -563,9 +349,7 @@ async def test_kv_persistence_across_instances():
         backend = cdk_ffi.WalletDbBackend.SQLITE(path=db_path)
         db1 = cdk_ffi.create_wallet_db(backend)
 
-        kv_tx = await db1.begin_db_transaction()
-        await kv_tx.kv_write("persist", "test", "mykey", b"persistent_value")
-        await kv_tx.commit()
+        await db1.kv_write("persist", "test", "mykey", b"persistent_value")
         print("  Written and committed with first db instance")
 
         # Delete reference to first db (simulating closing)
@@ -577,9 +361,7 @@ async def test_kv_persistence_across_instances():
         backend2 = cdk_ffi.WalletDbBackend.SQLITE(path=db_path)
         db2 = cdk_ffi.create_wallet_db(backend2)
 
-        kv_tx2 = await db2.begin_db_transaction()
-        result = await kv_tx2.kv_read("persist", "test", "mykey")
-        await kv_tx2.rollback()
+        result = await db2.kv_read("persist", "test", "mykey")
 
         assert result is not None, "Data should persist across db instances"
         assert bytes(result) == b"persistent_value", f"Expected b'persistent_value', got {bytes(result)}"
@@ -605,19 +387,12 @@ async def main():
         ("KV Remove", test_kv_remove),
         ("KV List Keys", test_kv_list_keys),
         ("KV List Empty Namespace", test_kv_list_empty_namespace),
-        # Transaction tests
-        ("KV Transaction Commit", test_kv_transaction_commit),
-        ("KV Transaction Rollback", test_kv_transaction_rollback),
-        ("KV Transaction Atomicity", test_kv_transaction_atomicity),
-        ("KV Read Within Transaction", test_kv_read_within_transaction),
         # Namespace tests
         ("KV Namespace Isolation", test_kv_namespace_isolation),
         # Data tests
         ("KV Binary Data", test_kv_binary_data),
         ("KV Large Value", test_kv_large_value),
         ("KV Special Key Names", test_kv_special_key_names),
-        # Database methods
-        ("KV Database Read Methods", test_kv_database_read_methods),
         # Persistence
         ("KV Persistence Across Instances", test_kv_persistence_across_instances),
     ]

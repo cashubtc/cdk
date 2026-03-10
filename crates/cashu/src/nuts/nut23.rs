@@ -11,6 +11,7 @@ use thiserror::Error;
 use super::{BlindSignature, CurrencyUnit, MeltQuoteState, Mpp, PublicKey};
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
+use crate::util::serde_helpers::deserialize_empty_string_as_none;
 use crate::Amount;
 
 /// NUT023 Error
@@ -100,7 +101,11 @@ pub struct MintQuoteBolt11Response<Q> {
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
     /// NUT-19 Pubkey
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_empty_string_as_none"
+    )]
     pub pubkey: Option<PublicKey>,
 }
 impl<Q: ToString> MintQuoteBolt11Response<Q> {

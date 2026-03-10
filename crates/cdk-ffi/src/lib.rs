@@ -3,22 +3,30 @@
 //! UniFFI bindings for the CDK Wallet and related types.
 
 #![warn(clippy::unused_async)]
+#![allow(missing_docs)]
+#![allow(missing_debug_implementations)]
 
 pub mod database;
 pub mod error;
-pub mod multi_mint_wallet;
+pub mod logging;
+#[cfg(feature = "npubcash")]
+pub mod npubcash;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 pub mod sqlite;
 pub mod token;
 pub mod types;
 pub mod wallet;
+pub mod wallet_repository;
 
 pub use database::*;
 pub use error::*;
-pub use multi_mint_wallet::*;
+pub use logging::*;
+#[cfg(feature = "npubcash")]
+pub use npubcash::*;
 pub use types::*;
 pub use wallet::*;
+pub use wallet_repository::*;
 
 uniffi::setup_scaffolding!();
 
@@ -185,6 +193,7 @@ mod tests {
             include_fee: true,
             max_proofs: Some(10),
             metadata,
+            use_p2bk: false,
         };
 
         assert!(options.memo.is_some());

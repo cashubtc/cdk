@@ -18,37 +18,17 @@ pub type DynKVStore = std::sync::Arc<dyn KVStore<Err = Error> + Send + Sync>;
 
 #[cfg(feature = "mint")]
 pub use mint::{
-    Database as MintDatabase, DynMintDatabase, KeysDatabase as MintKeysDatabase,
-    KeysDatabaseTransaction as MintKeyDatabaseTransaction, ProofsDatabase as MintProofsDatabase,
-    ProofsTransaction as MintProofsTransaction, QuotesDatabase as MintQuotesDatabase,
-    QuotesTransaction as MintQuotesTransaction, SignaturesDatabase as MintSignaturesDatabase,
+    Database as MintDatabase, DynMintDatabase, DynMintTransaction,
+    KeysDatabase as MintKeysDatabase, KeysDatabaseTransaction as MintKeyDatabaseTransaction,
+    ProofsDatabase as MintProofsDatabase, ProofsTransaction as MintProofsTransaction,
+    QuotesDatabase as MintQuotesDatabase, QuotesTransaction as MintQuotesTransaction,
+    SignaturesDatabase as MintSignaturesDatabase,
     SignaturesTransaction as MintSignatureTransaction, Transaction as MintTransaction,
 };
-#[cfg(all(feature = "mint", feature = "auth"))]
+#[cfg(feature = "mint")]
 pub use mint::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
 #[cfg(feature = "wallet")]
-pub use wallet::{
-    Database as WalletDatabase, DatabaseTransaction as WalletDatabaseTransaction,
-    DynWalletDatabaseTransaction,
-};
-
-/// Type alias for dynamic Wallet Database
-#[cfg(feature = "wallet")]
-pub type DynWalletDatabase = std::sync::Arc<dyn WalletDatabase<Error> + Send + Sync>;
-
-// Wallet-specific KVStore type aliases
-/// Wallet Key-Value Store trait object
-#[cfg(feature = "wallet")]
-pub type WalletKVStore = dyn KVStore<Err = Error> + Send + Sync;
-/// Arc-wrapped wallet KV store for shared ownership
-#[cfg(feature = "wallet")]
-pub type DynWalletKVStore = std::sync::Arc<WalletKVStore>;
-/// Wallet Key-Value Store Database trait object
-#[cfg(feature = "wallet")]
-pub type WalletKVStoreDatabase = dyn KVStoreDatabase<Err = Error> + Send + Sync;
-/// Wallet Key-Value Store Transaction trait object
-#[cfg(feature = "wallet")]
-pub type WalletKVStoreTransaction = dyn KVStoreTransaction<Error> + Send + Sync;
+pub use wallet::Database as WalletDatabase;
 
 /// Data conversion error
 #[derive(thiserror::Error, Debug)]
@@ -134,6 +114,11 @@ pub enum Error {
     /// Duplicate entry
     #[error("Duplicate entry")]
     Duplicate,
+
+    /// Locked resource
+    #[error("Locked resource")]
+    Locked,
+
     /// Amount overflow
     #[error("Amount overflow")]
     AmountOverflow,
@@ -155,7 +140,6 @@ pub enum Error {
     NUT02(#[from] crate::nuts::nut02::Error),
     /// NUT22 Error
     #[error(transparent)]
-    #[cfg(feature = "auth")]
     NUT22(#[from] crate::nuts::nut22::Error),
     /// NUT04 Error
     #[error(transparent)]
@@ -179,6 +163,12 @@ pub enum Error {
     /// Proof not found
     #[error("Proof not found")]
     ProofNotFound,
+    /// Proof not in unspent state (may be reserved, pending, or spent)
+    #[error("Proof not in unspent state")]
+    ProofNotUnspent,
+    /// Quote is already in use by another operation
+    #[error("Quote already in use by another operation")]
+    QuoteAlreadyInUse,
     /// Invalid keyset
     #[error("Unknown or invalid keyset")]
     InvalidKeysetId,
@@ -222,6 +212,10 @@ pub enum Error {
     /// KV Store invalid key or namespace
     #[error("Invalid KV store key or namespace: {0}")]
     KVStoreInvalidKey(String),
+
+    /// Concurrent update detected
+    #[error("Concurrent update detected")]
+    ConcurrentUpdate,
 }
 
 #[cfg(feature = "mint")]

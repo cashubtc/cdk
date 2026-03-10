@@ -6,8 +6,10 @@ pub enum PrometheusError {
     /// Server binding error
     #[error("Failed to bind to address {address}: {source}")]
     ServerBind {
+        /// Address that failed to bind
         address: String,
         #[source]
+        /// Underlying I/O error
         source: std::io::Error,
     },
 
@@ -19,6 +21,7 @@ pub enum PrometheusError {
     #[error("Registry error: {source}")]
     Registry {
         #[from]
+        /// Underlying Prometheus error
         source: prometheus::Error,
     },
 

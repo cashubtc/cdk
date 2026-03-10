@@ -4,13 +4,13 @@ use std::sync::Arc;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
-use cdk_common::{database, Amount, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
-use tokio::sync::Mutex;
+use cdk_common::{database, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tracing::instrument;
 
 use self::compensation::{CompensatingAction, RemoveSwapSetup};
 use self::state::{Initial, SetupComplete, Signed};
 use crate::mint::subscription::PubSubManager;
+use crate::Mint;
 
 pub mod compensation;
 mod state;
@@ -95,7 +95,7 @@ pub struct SwapSaga<'a, S> {
     db: DynMintDatabase,
     pubsub: Arc<PubSubManager>,
     /// Compensating actions in LIFO order (most recent first)
-    compensations: Arc<Mutex<VecDeque<Box<dyn CompensatingAction>>>>,
+    compensations: VecDeque<Box<dyn CompensatingAction>>,
     /// Operation ID (used for saga tracking, generated upfront)
     operation_id: uuid::Uuid,
     state_data: S,
@@ -109,7 +109,7 @@ impl<'a> SwapSaga<'a, Initial> {
             mint,
             db,
             pubsub,
-            compensations: Arc::new(Mutex::new(VecDeque::new())),
+            compensations: VecDeque::new(),
             operation_id,
             state_data: Initial { operation_id },
         }
@@ -141,91 +141,71 @@ impl<'a> SwapSaga<'a, Initial> {
     /// - `DuplicateOutputs`: Output blinded messages already exist
     #[instrument(skip_all)]
     pub async fn setup_swap(
-        self,
+        mut self,
         input_proofs: &Proofs,
         blinded_messages: &[BlindedMessage],
         quote_id: Option<QuoteId>,
         input_verification: crate::mint::Verification,
     ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
-        tracing::info!("TX1: Setting up swap (verify + inputs + outputs)");
-
-        let mut tx = self.db.begin_transaction().await?;
+        let output_verification = self.mint.verify_outputs(blinded_messages).map_err(|err| {
+            tracing::debug!("Output verification failed: {:?}", err);
+            err
+        })?;
 
         // Verify balance within the transaction
         self.mint
             .verify_transaction_balanced(
-                &mut tx,
                 input_verification.clone(),
+                output_verification.clone(),
                 input_proofs,
-                blinded_messages,
             )
             .await?;
 
         // Calculate amounts to create Operation
         let total_redeemed = input_verification.amount;
-        let total_issued = Amount::try_sum(blinded_messages.iter().map(|bm| bm.amount))?;
+        let total_issued = output_verification.amount;
+
         let fee_breakdown = self.mint.get_proofs_fee(input_proofs).await?;
 
         // Create Operation with actual amounts now that we know them
+        // Convert typed amounts to untyped for Operation::new
         let operation = Operation::new(
             self.state_data.operation_id,
             cdk_common::mint::OperationKind::Swap,
-            total_issued,
-            total_redeemed,
+            total_issued.clone().into(),
+            total_redeemed.clone().into(),
             fee_breakdown.total,
             None, // complete_at
             None, // payment_method (not applicable for swap)
         );
 
+        let mut tx = self.db.begin_transaction().await?;
+
         // Add input proofs to DB
-        if let Err(err) = tx
+        let mut new_proofs = match tx
             .add_proofs(input_proofs.clone(), quote_id.clone(), &operation)
             .await
         {
-            tx.rollback().await?;
-            return Err(match err {
-                database::Error::Duplicate => Error::TokenPending,
-                database::Error::AttemptUpdateSpentProof => Error::TokenAlreadySpent,
-                _ => Error::Database(err),
-            });
-        }
+            Ok(proofs) => proofs,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(match err {
+                    database::Error::Duplicate => Error::TokenPending,
+                    database::Error::AttemptUpdateSpentProof => Error::TokenAlreadySpent,
+                    _ => Error::Database(err),
+                });
+            }
+        };
 
         let ys = match input_proofs.ys() {
             Ok(ys) => ys,
             Err(err) => return Err(Error::NUT00(err)),
         };
 
-        // Update input proof states to Pending
-        let original_proof_states = match tx.update_proofs_states(&ys, State::Pending).await {
-            Ok(states) => states,
-            Err(database::Error::AttemptUpdateSpentProof)
-            | Err(database::Error::AttemptRemoveSpentProof) => {
-                tx.rollback().await?;
-                return Err(Error::TokenAlreadySpent);
-            }
-            Err(err) => {
-                tx.rollback().await?;
-                return Err(err.into());
-            }
-        };
-
-        // Verify proofs weren't already pending or spent
-        if ys.len() != original_proof_states.len() {
-            tracing::error!("Mismatched proof states");
+        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut new_proofs, State::Pending).await
+        {
             tx.rollback().await?;
-            return Err(Error::Internal);
-        }
-
-        let forbidden_states = [State::Pending, State::Spent];
-        for original_state in original_proof_states.iter().flatten() {
-            if forbidden_states.contains(original_state) {
-                tx.rollback().await?;
-                return Err(if *original_state == State::Pending {
-                    Error::TokenPending
-                } else {
-                    Error::TokenAlreadySpent
-                });
-            }
+            return Err(err);
         }
 
         // Add output blinded messages
@@ -240,11 +220,6 @@ impl<'a> SwapSaga<'a, Initial> {
             });
         }
 
-        // Publish proof state changes
-        for pk in &ys {
-            self.pubsub.proof_state((*pk, State::Pending));
-        }
-
         // Store data in saga struct (avoid duplication in state enum)
         let blinded_messages_vec = blinded_messages.to_vec();
         let blinded_secrets: Vec<PublicKey> = blinded_messages_vec
@@ -253,12 +228,7 @@ impl<'a> SwapSaga<'a, Initial> {
             .collect();
 
         // Persist saga state for crash recovery (atomic with TX1)
-        let saga = Saga::new_swap(
-            self.operation_id,
-            SwapSagaState::SetupComplete,
-            blinded_secrets.clone(),
-            ys.clone(),
-        );
+        let saga = Saga::new_swap(self.operation_id, SwapSagaState::SetupComplete);
 
         if let Err(err) = tx.add_saga(&saga).await {
             tx.rollback().await?;
@@ -266,17 +236,16 @@ impl<'a> SwapSaga<'a, Initial> {
         }
 
         tx.commit().await?;
-
+        // Publish proof state changes
+        for pk in &ys {
+            self.pubsub.proof_state((*pk, State::Pending));
+        }
         // Register compensation (uses LIFO via push_front)
-        let compensations = Arc::clone(&self.compensations);
-        compensations
-            .lock()
-            .await
-            .push_front(Box::new(RemoveSwapSetup {
-                blinded_secrets: blinded_secrets.clone(),
-                input_ys: ys.clone(),
-                operation_id: self.operation_id,
-            }));
+        self.compensations.push_front(Box::new(RemoveSwapSetup {
+            blinded_secrets: blinded_secrets.clone(),
+            input_ys: ys.clone(),
+            operation_id: self.operation_id,
+        }));
 
         // Transition to SetupComplete state
         Ok(SwapSaga {
@@ -317,8 +286,6 @@ impl<'a> SwapSaga<'a, SetupComplete> {
     /// - Propagates any errors from the blind signing operation
     #[instrument(skip_all)]
     pub async fn sign_outputs(self) -> Result<SwapSaga<'a, Signed>, Error> {
-        tracing::info!("Signing outputs (no DB)");
-
         match self
             .mint
             .blind_sign(self.state_data.blinded_messages.clone())
@@ -384,9 +351,7 @@ impl SwapSaga<'_, Signed> {
     /// - `TokenAlreadySpent`: Input proofs were already spent by another operation
     /// - Propagates any database errors
     #[instrument(skip_all)]
-    pub async fn finalize(self) -> Result<cdk_common::nuts::SwapResponse, Error> {
-        tracing::info!("TX2: Finalizing swap (signatures + mark spent)");
-
+    pub async fn finalize(mut self) -> Result<cdk_common::nuts::SwapResponse, Error> {
         let blinded_secrets: Vec<PublicKey> = self
             .state_data
             .blinded_messages
@@ -433,34 +398,32 @@ impl SwapSaga<'_, Signed> {
             }
         }
 
-        match tx
-            .update_proofs_states(&self.state_data.ys, State::Spent)
-            .await
-        {
-            Ok(_) => {}
-            Err(database::Error::AttemptUpdateSpentProof)
-            | Err(database::Error::AttemptRemoveSpentProof) => {
-                tx.rollback().await?;
-                self.compensate_all().await?;
-                return Err(Error::TokenAlreadySpent);
-            }
+        let mut proofs = match tx.get_proofs(&self.state_data.ys).await {
+            Ok(proofs) => proofs,
             Err(err) => {
                 tx.rollback().await?;
                 self.compensate_all().await?;
                 return Err(err.into());
             }
+        };
+
+        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
+            tx.rollback().await?;
+            self.compensate_all().await?;
+            return Err(err);
         }
 
-        // Publish proof state changes
-        for pk in &self.state_data.ys {
-            self.pubsub.proof_state((*pk, State::Spent));
+        if let Err(err) = tx
+            .add_completed_operation(
+                &self.state_data.operation,
+                &self.state_data.fee_breakdown.per_keyset,
+            )
+            .await
+        {
+            tx.rollback().await?;
+            self.compensate_all().await?;
+            return Err(err.into());
         }
-
-        tx.add_completed_operation(
-            &self.state_data.operation,
-            &self.state_data.fee_breakdown.per_keyset,
-        )
-        .await?;
 
         // Delete saga - swap completed successfully (best-effort, atomic with TX2)
         // Don't fail the swap if saga deletion fails - orphaned saga will be
@@ -474,9 +437,12 @@ impl SwapSaga<'_, Signed> {
         }
 
         tx.commit().await?;
-
+        // Publish proof state changes
+        for pk in &self.state_data.ys {
+            self.pubsub.proof_state((*pk, State::Spent));
+        }
         // Clear compensations - swap is complete
-        self.compensations.lock().await.clear();
+        self.compensations.clear();
 
         Ok(cdk_common::nuts::SwapResponse::new(
             self.state_data.signatures,
@@ -491,7 +457,7 @@ impl<S> SwapSaga<'_, S> {
     /// after compensation has been triggered.
     #[instrument(skip_all)]
     async fn compensate_all(self) -> Result<(), Error> {
-        let mut compensations = self.compensations.lock().await;
+        let mut compensations = self.compensations;
 
         if compensations.is_empty() {
             return Ok(());
@@ -509,7 +475,7 @@ impl<S> SwapSaga<'_, S> {
 
         while let Some(compensation) = compensations.pop_front() {
             tracing::debug!("Running compensation: {}", compensation.name());
-            if let Err(e) = compensation.execute(&self.db).await {
+            if let Err(e) = compensation.execute(&self.db, &self.pubsub).await {
                 tracing::error!(
                     "Compensation {} failed: {}. Continuing...",
                     compensation.name(),

@@ -2,7 +2,8 @@ use std::str::FromStr;
 
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse,
-    PaymentIdentifier as CdkPaymentIdentifier, WaitPaymentResponse,
+    PaymentIdentifier as CdkPaymentIdentifier, PaymentQuoteResponse as CdkPaymentQuoteResponse,
+    WaitPaymentResponse,
 };
 use cdk_common::{CurrencyUnit, MeltOptions as CdkMeltOptions};
 
@@ -76,7 +77,61 @@ impl TryFrom<PaymentIdentifier> for CdkPaymentIdentifier {
             (PaymentIdentifierType::CustomId, Some(payment_identifier::Value::Id(id))) => {
                 Ok(CdkPaymentIdentifier::CustomId(id))
             }
+            (PaymentIdentifierType::PaymentId, Some(payment_identifier::Value::Hash(hash))) => {
+                let decoded = hex::decode(hash)?;
+                let hash_array: [u8; 32] = decoded
+                    .try_into()
+                    .map_err(|_| crate::error::Error::InvalidHash)?;
+                Ok(CdkPaymentIdentifier::PaymentId(hash_array))
+            }
             _ => Err(crate::error::Error::InvalidPaymentIdentifier),
+        }
+    }
+}
+
+// Amount<CurrencyUnit> <-> proto AmountMessage conversions
+
+impl From<cdk_common::Amount<CurrencyUnit>> for AmountMessage {
+    fn from(value: cdk_common::Amount<CurrencyUnit>) -> Self {
+        Self {
+            value: value.value(),
+            unit: value.unit().to_string(),
+        }
+    }
+}
+
+impl TryFrom<AmountMessage> for cdk_common::Amount<CurrencyUnit> {
+    type Error = crate::error::Error;
+    fn try_from(value: AmountMessage) -> Result<Self, Self::Error> {
+        let unit = CurrencyUnit::from_str(&value.unit)?;
+        Ok(cdk_common::Amount::new(value.value, unit))
+    }
+}
+
+// Helper trait for converting Option<Amount<CurrencyUnit>> <-> Option<proto::AmountMessage>
+pub(crate) trait IntoProtoAmount {
+    fn into_proto(self) -> Option<AmountMessage>;
+}
+
+impl IntoProtoAmount for Option<cdk_common::Amount<CurrencyUnit>> {
+    fn into_proto(self) -> Option<AmountMessage> {
+        self.map(Into::into)
+    }
+}
+
+pub(crate) trait TryFromProtoAmount {
+    fn try_from_proto(
+        self,
+    ) -> Result<Option<cdk_common::Amount<CurrencyUnit>>, crate::error::Error>;
+}
+
+impl TryFromProtoAmount for Option<AmountMessage> {
+    fn try_from_proto(
+        self,
+    ) -> Result<Option<cdk_common::Amount<CurrencyUnit>>, crate::error::Error> {
+        match self {
+            Some(amount) => Ok(Some(amount.try_into()?)),
+            None => Ok(None),
         }
     }
 }
@@ -84,10 +139,14 @@ impl TryFrom<PaymentIdentifier> for CdkPaymentIdentifier {
 impl TryFrom<MakePaymentResponse> for CdkMakePaymentResponse {
     type Error = crate::error::Error;
     fn try_from(value: MakePaymentResponse) -> Result<Self, Self::Error> {
-        let status = value.status().as_str_name().parse()?;
+        // Use direct enum conversion instead of parsing string from as_str_name()
+        // as_str_name() returns "QUOTE_STATE_PAID" but MeltQuoteState::from_str expects "PAID"
+        let status: cdk_common::nuts::MeltQuoteState = value.status().into();
         let payment_proof = value.payment_proof;
-        let total_spent = value.total_spent.into();
-        let unit = CurrencyUnit::from_str(&value.unit)?;
+        let total_spent = value
+            .total_spent
+            .ok_or(crate::error::Error::MissingAmount)?
+            .try_into()?;
         let payment_identifier = value
             .payment_identifier
             .ok_or(crate::error::Error::InvalidPaymentIdentifier)?;
@@ -96,7 +155,6 @@ impl TryFrom<MakePaymentResponse> for CdkMakePaymentResponse {
             payment_proof,
             status,
             total_spent,
-            unit,
         })
     }
 }
@@ -107,8 +165,8 @@ impl From<CdkMakePaymentResponse> for MakePaymentResponse {
             payment_identifier: Some(value.payment_lookup_id.into()),
             payment_proof: value.payment_proof,
             status: QuoteState::from(value.status).into(),
-            total_spent: value.total_spent.into(),
-            unit: value.unit.to_string(),
+            total_spent: Some(value.total_spent.into()),
+            extra_json: None,
         }
     }
 }
@@ -119,6 +177,7 @@ impl From<CreateIncomingPaymentResponse> for CreatePaymentResponse {
             request_identifier: Some(value.request_lookup_id.into()),
             request: value.request,
             expiry: value.expiry,
+            extra_json: None,
         }
     }
 }
@@ -134,35 +193,44 @@ impl TryFrom<CreatePaymentResponse> for CreateIncomingPaymentResponse {
             request_lookup_id: request_identifier.try_into()?,
             request: value.request,
             expiry: value.expiry,
+            extra_json: Some(
+                serde_json::from_str(value.extra_json.unwrap_or_default().as_str())
+                    .unwrap_or_default(),
+            ),
         })
     }
 }
-
-impl From<cdk_common::payment::PaymentQuoteResponse> for PaymentQuoteResponse {
-    fn from(value: cdk_common::payment::PaymentQuoteResponse) -> Self {
+impl From<CdkPaymentQuoteResponse> for PaymentQuoteResponse {
+    fn from(value: CdkPaymentQuoteResponse) -> Self {
         Self {
             request_identifier: value.request_lookup_id.map(|i| i.into()),
-            amount: value.amount.into(),
-            fee: value.fee.into(),
-            unit: value.unit.to_string(),
+            amount: Some(value.amount.into()),
+            fee: Some(value.fee.into()),
             state: QuoteState::from(value.state).into(),
+            extra_json: None,
         }
     }
 }
 
-impl From<PaymentQuoteResponse> for cdk_common::payment::PaymentQuoteResponse {
-    fn from(value: PaymentQuoteResponse) -> Self {
+impl TryFrom<PaymentQuoteResponse> for CdkPaymentQuoteResponse {
+    type Error = crate::error::Error;
+    fn try_from(value: PaymentQuoteResponse) -> Result<Self, Self::Error> {
         let state_val = value.state();
         let request_identifier = value.request_identifier;
 
-        Self {
+        Ok(Self {
             request_lookup_id: request_identifier
                 .map(|i| i.try_into().expect("valid request identifier")),
-            amount: value.amount.into(),
-            fee: value.fee.into(),
-            unit: CurrencyUnit::from_str(&value.unit).unwrap_or_default(),
+            amount: value
+                .amount
+                .ok_or(crate::error::Error::MissingAmount)?
+                .try_into()?,
+            fee: value
+                .fee
+                .ok_or(crate::error::Error::MissingAmount)?
+                .try_into()?,
             state: state_val.into(),
-        }
+        })
     }
 }
 
@@ -209,6 +277,7 @@ impl From<QuoteState> for cdk_common::nuts::MeltQuoteState {
             QuoteState::Unknown => Self::Unknown,
             QuoteState::Failed => Self::Failed,
             QuoteState::Issued => Self::Unknown,
+            QuoteState::Unspecified => Self::Unknown,
         }
     }
 }
@@ -239,8 +308,7 @@ impl From<WaitPaymentResponse> for WaitIncomingPaymentResponse {
     fn from(value: WaitPaymentResponse) -> Self {
         Self {
             payment_identifier: Some(value.payment_identifier.into()),
-            payment_amount: value.payment_amount.into(),
-            unit: value.unit.to_string(),
+            payment_amount: Some(value.payment_amount.into()),
             payment_id: value.payment_id,
         }
     }
@@ -257,8 +325,10 @@ impl TryFrom<WaitIncomingPaymentResponse> for WaitPaymentResponse {
 
         Ok(Self {
             payment_identifier,
-            payment_amount: value.payment_amount.into(),
-            unit: CurrencyUnit::from_str(&value.unit)?,
+            payment_amount: value
+                .payment_amount
+                .ok_or(crate::error::Error::MissingAmount)?
+                .try_into()?,
             payment_id: value.payment_id,
         })
     }

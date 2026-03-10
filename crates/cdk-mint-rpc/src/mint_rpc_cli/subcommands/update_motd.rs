@@ -10,7 +10,7 @@ use crate::UpdateMotdRequest;
 ///
 /// This command sets a new message of the day (MOTD) for the mint, which can be used
 /// to communicate important announcements, updates, or status information to users.
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct UpdateMotdCommand {
     /// The new message of the day text
     motd: String,

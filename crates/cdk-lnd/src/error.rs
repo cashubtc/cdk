@@ -6,6 +6,9 @@ use tonic::Status;
 /// LND Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Amount Error
+    #[error(transparent)]
+    Amount(#[from] cdk_common::amount::Error),
     /// Invoice amount not defined
     #[error("Unknown invoice amount")]
     UnknownInvoiceAmount,
@@ -47,11 +50,5 @@ pub enum Error {
 impl From<Error> for cdk_common::payment::Error {
     fn from(e: Error) -> Self {
         Self::Lightning(Box::new(e))
-    }
-}
-
-impl From<tonic::transport::Error> for Error {
-    fn from(e: tonic::transport::Error) -> Self {
-        Error::InvalidConfig(format!("Transport error: {e}"))
     }
 }

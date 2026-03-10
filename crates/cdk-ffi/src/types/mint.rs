@@ -2,6 +2,7 @@
 
 use std::str::FromStr;
 
+use cdk::nuts::nut00::{KnownMethod, PaymentMethod as NutPaymentMethod};
 use serde::{Deserialize, Serialize};
 
 use super::amount::{Amount, CurrencyUnit};
@@ -18,7 +19,7 @@ pub struct MintUrl {
 impl MintUrl {
     pub fn new(url: String) -> Result<Self, FfiError> {
         // Validate URL format
-        url::Url::parse(&url).map_err(|e| FfiError::InvalidUrl { msg: e.to_string() })?;
+        url::Url::parse(&url).map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))?;
 
         Ok(Self { url })
     }
@@ -37,7 +38,7 @@ impl TryFrom<MintUrl> for cdk::mint_url::MintUrl {
 
     fn try_from(mint_url: MintUrl) -> Result<Self, Self::Error> {
         cdk::mint_url::MintUrl::from_str(&mint_url.url)
-            .map_err(|e| FfiError::InvalidUrl { msg: e.to_string() })
+            .map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))
     }
 }
 
@@ -192,10 +193,11 @@ impl TryFrom<MintMethodSettings> for cdk::nuts::nut04::MintMethodSettings {
     type Error = FfiError;
 
     fn try_from(s: MintMethodSettings) -> Result<Self, Self::Error> {
-        let options = match (s.method.clone(), s.description) {
-            (PaymentMethod::Bolt11, Some(description)) => {
-                Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 { description })
-            }
+        let options = match s.method {
+            PaymentMethod::Bolt11 => s
+                .description
+                .map(|description| cdk::nuts::nut04::MintMethodOptions::Bolt11 { description }),
+            PaymentMethod::Custom { .. } => Some(cdk::nuts::nut04::MintMethodOptions::Custom {}),
             _ => None,
         };
         Ok(Self {
@@ -270,10 +272,10 @@ impl TryFrom<MeltMethodSettings> for cdk::nuts::nut05::MeltMethodSettings {
     type Error = FfiError;
 
     fn try_from(s: MeltMethodSettings) -> Result<Self, Self::Error> {
-        let options = match (s.method.clone(), s.amountless) {
-            (PaymentMethod::Bolt11, Some(amountless)) => {
-                Some(cdk::nuts::nut05::MeltMethodOptions::Bolt11 { amountless })
-            }
+        let options = match s.method {
+            PaymentMethod::Bolt11 => s
+                .amountless
+                .map(|amountless| cdk::nuts::nut05::MeltMethodOptions::Bolt11 { amountless }),
             _ => None,
         };
         Ok(Self {
@@ -404,6 +406,33 @@ impl TryFrom<BlindAuthSettings> for cdk::nuts::BlindAuthSettings {
     }
 }
 
+/// FFI-compatible Nut29Settings (NUT-29)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record, Default)]
+pub struct Nut29Settings {
+    /// Maximum number of quotes allowed in a single batch
+    pub max_batch_size: Option<u64>,
+    /// Supported payment methods for batch minting
+    pub methods: Option<Vec<String>>,
+}
+
+impl From<cdk::nuts::nut29::Settings> for Nut29Settings {
+    fn from(settings: cdk::nuts::nut29::Settings) -> Self {
+        Self {
+            max_batch_size: settings.max_batch_size,
+            methods: settings.methods,
+        }
+    }
+}
+
+impl From<Nut29Settings> for cdk::nuts::nut29::Settings {
+    fn from(settings: Nut29Settings) -> Self {
+        Self {
+            max_batch_size: settings.max_batch_size,
+            methods: settings.methods,
+        }
+    }
+}
+
 impl From<cdk::nuts::ProtectedEndpoint> for ProtectedEndpoint {
     fn from(endpoint: cdk::nuts::ProtectedEndpoint) -> Self {
         Self {
@@ -424,34 +453,49 @@ impl TryFrom<ProtectedEndpoint> for cdk::nuts::ProtectedEndpoint {
             "GET" => cdk::nuts::Method::Get,
             "POST" => cdk::nuts::Method::Post,
             _ => {
-                return Err(FfiError::Generic {
-                    msg: format!(
-                        "Invalid HTTP method: {}. Only GET and POST are supported",
-                        endpoint.method
-                    ),
-                })
+                return Err(FfiError::internal(format!(
+                    "Invalid HTTP method: {}. Only GET and POST are supported",
+                    endpoint.method
+                )))
             }
         };
 
         // Convert path string to RoutePath by matching against known paths
         let route_path = match endpoint.path.as_str() {
-            "/v1/mint/quote/bolt11" => cdk::nuts::RoutePath::MintQuoteBolt11,
-            "/v1/mint/bolt11" => cdk::nuts::RoutePath::MintBolt11,
-            "/v1/melt/quote/bolt11" => cdk::nuts::RoutePath::MeltQuoteBolt11,
-            "/v1/melt/bolt11" => cdk::nuts::RoutePath::MeltBolt11,
+            "/v1/mint/quote/bolt11" => cdk::nuts::RoutePath::MintQuote(
+                NutPaymentMethod::Known(KnownMethod::Bolt11).to_string(),
+            ),
+            "/v1/mint/bolt11" => {
+                cdk::nuts::RoutePath::Mint(NutPaymentMethod::Known(KnownMethod::Bolt11).to_string())
+            }
+            "/v1/melt/quote/bolt11" => cdk::nuts::RoutePath::MeltQuote(
+                NutPaymentMethod::Known(KnownMethod::Bolt11).to_string(),
+            ),
+            "/v1/melt/bolt11" => {
+                cdk::nuts::RoutePath::Melt(NutPaymentMethod::Known(KnownMethod::Bolt11).to_string())
+            }
             "/v1/swap" => cdk::nuts::RoutePath::Swap,
             "/v1/ws" => cdk::nuts::RoutePath::Ws,
             "/v1/checkstate" => cdk::nuts::RoutePath::Checkstate,
             "/v1/restore" => cdk::nuts::RoutePath::Restore,
             "/v1/auth/blind/mint" => cdk::nuts::RoutePath::MintBlindAuth,
-            "/v1/mint/quote/bolt12" => cdk::nuts::RoutePath::MintQuoteBolt12,
-            "/v1/mint/bolt12" => cdk::nuts::RoutePath::MintBolt12,
-            "/v1/melt/quote/bolt12" => cdk::nuts::RoutePath::MeltQuoteBolt12,
-            "/v1/melt/bolt12" => cdk::nuts::RoutePath::MeltBolt12,
+            "/v1/mint/quote/bolt12" => cdk::nuts::RoutePath::MintQuote(
+                NutPaymentMethod::Known(KnownMethod::Bolt12).to_string(),
+            ),
+            "/v1/mint/bolt12" => {
+                cdk::nuts::RoutePath::Mint(NutPaymentMethod::Known(KnownMethod::Bolt12).to_string())
+            }
+            "/v1/melt/quote/bolt12" => cdk::nuts::RoutePath::MeltQuote(
+                NutPaymentMethod::Known(KnownMethod::Bolt12).to_string(),
+            ),
+            "/v1/melt/bolt12" => {
+                cdk::nuts::RoutePath::Melt(NutPaymentMethod::Known(KnownMethod::Bolt12).to_string())
+            }
             _ => {
-                return Err(FfiError::Generic {
-                    msg: format!("Unknown route path: {}", endpoint.path),
-                })
+                return Err(FfiError::internal(format!(
+                    "Unknown route path: {}",
+                    endpoint.path
+                )))
             }
         };
 
@@ -486,6 +530,8 @@ pub struct Nuts {
     pub nut21: Option<ClearAuthSettings>,
     /// NUT22 Settings - Blind authentication
     pub nut22: Option<BlindAuthSettings>,
+    /// NUT29 Settings - Batch minting
+    pub nut29: Nut29Settings,
     /// Supported currency units for minting
     pub mint_units: Vec<CurrencyUnit>,
     /// Supported currency units for melting
@@ -518,6 +564,7 @@ impl From<cdk::nuts::Nuts> for Nuts {
             nut20_supported: nuts.nut20.supported,
             nut21: nuts.nut21.map(Into::into),
             nut22: nuts.nut22.map(Into::into),
+            nut29: nuts.nut29.into(),
             mint_units,
             melt_units,
         }
@@ -560,6 +607,7 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
             },
             nut21: n.nut21.map(|s| s.try_into()).transpose()?,
             nut22: n.nut22.map(|s| s.try_into()).transpose()?,
+            nut29: n.nut29.into(),
         })
     }
 }
@@ -683,7 +731,7 @@ mod tests {
         cdk::nuts::Nuts {
             nut04: cdk::nuts::nut04::Settings {
                 methods: vec![cdk::nuts::nut04::MintMethodSettings {
-                    method: cdk::nuts::PaymentMethod::Bolt11,
+                    method: cdk::nuts::PaymentMethod::Known(KnownMethod::Bolt11),
                     unit: cdk::nuts::CurrencyUnit::Sat,
                     min_amount: Some(cdk::Amount::from(1)),
                     max_amount: Some(cdk::Amount::from(100000)),
@@ -695,7 +743,7 @@ mod tests {
             },
             nut05: cdk::nuts::nut05::Settings {
                 methods: vec![cdk::nuts::nut05::MeltMethodSettings {
-                    method: cdk::nuts::PaymentMethod::Bolt11,
+                    method: cdk::nuts::PaymentMethod::Known(KnownMethod::Bolt11),
                     unit: cdk::nuts::CurrencyUnit::Sat,
                     min_amount: Some(cdk::Amount::from(1)),
                     max_amount: Some(cdk::Amount::from(100000)),
@@ -727,9 +775,12 @@ mod tests {
                 bat_max_mint: 100,
                 protected_endpoints: vec![cdk::nuts::ProtectedEndpoint::new(
                     cdk::nuts::Method::Post,
-                    cdk::nuts::RoutePath::MintBolt11,
+                    cdk::nuts::RoutePath::Mint(
+                        NutPaymentMethod::Known(KnownMethod::Bolt11).to_string(),
+                    ),
                 )],
             }),
+            nut29: Default::default(),
         }
     }
 
@@ -869,6 +920,7 @@ mod tests {
             nut20: cdk::nuts::nut06::SupportedSettings { supported: false },
             nut21: None,
             nut22: None,
+            nut29: Default::default(),
         };
 
         let ffi_nuts: Nuts = cdk_nuts.into();
@@ -900,6 +952,7 @@ mod tests {
             nut20_supported: false,
             nut21: None,
             nut22: None,
+            nut29: Default::default(),
             mint_units: vec![],
             melt_units: vec![],
         };
@@ -948,7 +1001,7 @@ mod tests {
             .nut04
             .methods
             .push(cdk::nuts::nut04::MintMethodSettings {
-                method: cdk::nuts::PaymentMethod::Bolt11,
+                method: cdk::nuts::PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: cdk::nuts::CurrencyUnit::Msat,
                 min_amount: Some(cdk::Amount::from(1)),
                 max_amount: Some(cdk::Amount::from(100000)),
@@ -959,7 +1012,7 @@ mod tests {
             .nut05
             .methods
             .push(cdk::nuts::nut05::MeltMethodSettings {
-                method: cdk::nuts::PaymentMethod::Bolt11,
+                method: cdk::nuts::PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: cdk::nuts::CurrencyUnit::Usd,
                 min_amount: None,
                 max_amount: None,

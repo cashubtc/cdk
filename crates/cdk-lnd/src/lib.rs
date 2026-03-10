@@ -13,15 +13,15 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cdk_common::amount::{to_unit, Amount, MSAT_IN_SAT};
+use cdk_common::amount::Amount;
 use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
-    MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
-    PaymentQuoteResponse, WaitPaymentResponse,
+    self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
+    MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
+    WaitPaymentResponse,
 };
 use cdk_common::util::hex;
 use cdk_common::Bolt11Invoice;
@@ -58,7 +58,16 @@ pub struct Lnd {
     kv_store: DynKVStore,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
-    settings: Bolt11Settings,
+    settings: SettingsResponse,
+    unit: CurrencyUnit,
+}
+
+impl std::fmt::Debug for Lnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lnd")
+            .field("fee_reserve", &self.fee_reserve)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Lnd {
@@ -104,6 +113,7 @@ impl Lnd {
                 Error::Connection
             })?;
 
+        let unit = CurrencyUnit::Msat;
         Ok(Self {
             _address: address,
             _cert_file: cert_file,
@@ -113,13 +123,17 @@ impl Lnd {
             kv_store,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
-            settings: Bolt11Settings {
-                mpp: true,
-                unit: CurrencyUnit::Msat,
-                invoice_description: true,
-                amountless: true,
-                bolt12: false,
+            settings: SettingsResponse {
+                unit: unit.to_string(),
+                bolt11: Some(payment::Bolt11Settings {
+                    mpp: true,
+                    amountless: true,
+                    invoice_description: true,
+                }),
+                bolt12: None,
+                custom: std::collections::HashMap::new(),
             },
+            unit,
         })
     }
 
@@ -178,8 +192,8 @@ impl MintPayment for Lnd {
     type Err = payment::Error;
 
     #[instrument(skip_all)]
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
-        Ok(serde_json::to_value(&self.settings)?)
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        Ok(self.settings.clone())
     }
 
     #[instrument(skip_all)]
@@ -299,8 +313,7 @@ impl MintPayment for Lnd {
 
                                             let wait_response = WaitPaymentResponse {
                                                 payment_identifier: PaymentIdentifier::PaymentHash(hash_slice),
-                                                payment_amount: Amount::from(msg.amt_paid_msat as u64),
-                                                unit: CurrencyUnit::Msat,
+                                                payment_amount: Amount::new(msg.amt_paid_msat as u64, CurrencyUnit::Msat),
                                                 payment_id: hash,
                                             };
                                             let event = Event::PaymentReceived(wait_response);
@@ -356,10 +369,11 @@ impl MintPayment for Lnd {
                         .into(),
                 };
 
-                let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+                let amount =
+                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
 
                 let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
 
                 let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
 
@@ -370,21 +384,21 @@ impl MintPayment for Lnd {
                         *bolt11_options.bolt11.payment_hash().as_ref(),
                     )),
                     amount,
-                    fee: fee.into(),
+                    fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
+            OutgoingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
 
     #[instrument(skip_all)]
     async fn make_payment(
         &self,
-        _unit: &CurrencyUnit,
+        unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         match options {
@@ -418,7 +432,8 @@ impl MintPayment for Lnd {
                         {
                             let partial_amount_msat = mpp.amount;
                             let invoice = bolt11;
-                            let max_fee: Option<Amount> = bolt11_options.max_fee_amount;
+                            let max_fee: Option<Amount<CurrencyUnit>> =
+                                bolt11_options.max_fee_amount.clone();
 
                             // Extract information from invoice
                             let pub_key = invoice.get_payee_pub_key();
@@ -432,10 +447,14 @@ impl MintPayment for Lnd {
                                 let route_req = lnrpc::QueryRoutesRequest {
                                     pub_key: hex::encode(pub_key.serialize()),
                                     amt_msat: u64::from(partial_amount_msat) as i64,
-                                    fee_limit: max_fee.map(|f| {
-                                        let limit = Limit::Fixed(u64::from(f) as i64);
-                                        FeeLimit { limit: Some(limit) }
-                                    }),
+                                    fee_limit: max_fee
+                                        .clone()
+                                        .map(|f| {
+                                            let fee_msat = f.to_msat()?;
+                                            let limit = Limit::FixedMsat(fee_msat as i64);
+                                            Ok::<_, Error>(FeeLimit { limit: Some(limit) })
+                                        })
+                                        .transpose()?,
                                     use_mission_control: true,
                                     ..Default::default()
                                 };
@@ -492,11 +511,10 @@ impl MintPayment for Lnd {
                                     _ => (MeltQuoteState::Unknown, None),
                                 };
 
-                                // Get the actual amount paid in sats
-                                let mut total_amt: u64 = 0;
-                                if let Some(route) = payment_response.route {
-                                    total_amt = (route.total_amt_msat / 1000) as u64;
-                                }
+                                // Get the actual amount paid in msats
+                                let total_amt_msat: u64 = payment_response
+                                    .route
+                                    .map_or(0, |route| route.total_amt_msat as u64);
 
                                 return Ok(MakePaymentResponse {
                                     payment_lookup_id: PaymentIdentifier::PaymentHash(
@@ -504,8 +522,8 @@ impl MintPayment for Lnd {
                                     ),
                                     payment_proof: payment_preimage,
                                     status,
-                                    total_spent: total_amt.into(),
-                                    unit: CurrencyUnit::Sat,
+                                    total_spent: Amount::new(total_amt_msat, CurrencyUnit::Msat)
+                                        .convert_to(unit)?,
                                 });
                             }
 
@@ -518,7 +536,7 @@ impl MintPayment for Lnd {
                     _ => {
                         let mut lnd_client = self.lnd_client.clone();
 
-                        let max_fee: Option<Amount> = bolt11_options.max_fee_amount;
+                        let max_fee: Option<Amount<CurrencyUnit>> = bolt11_options.max_fee_amount;
 
                         let amount_msat = u64::from(
                             bolt11_options
@@ -527,19 +545,21 @@ impl MintPayment for Lnd {
                                 .unwrap_or_default(),
                         );
 
-                        let pay_req = lnrpc::SendRequest {
+                        let fee_limit_msat = match max_fee {
+                            Some(fee) => fee.convert_to(&CurrencyUnit::Msat)?.value() as i64,
+                            None => 0,
+                        };
+
+                        let pay_req = routerrpc::SendPaymentRequest {
                             payment_request: bolt11.to_string(),
-                            fee_limit: max_fee.map(|f| {
-                                let limit = Limit::Fixed(u64::from(f) as i64);
-                                FeeLimit { limit: Some(limit) }
-                            }),
+                            fee_limit_msat,
                             amt_msat: amount_msat as i64,
                             ..Default::default()
                         };
 
-                        let payment_response = lnd_client
-                            .lightning()
-                            .send_payment_sync(tonic::Request::new(pay_req))
+                        let mut payment_stream = lnd_client
+                            .router()
+                            .send_payment_v2(pay_req)
                             .await
                             .map_err(|err| {
                                 tracing::warn!("Lightning payment failed: {}", err);
@@ -547,42 +567,59 @@ impl MintPayment for Lnd {
                             })?
                             .into_inner();
 
-                        let total_amount = payment_response
-                            .payment_route
-                            .map_or(0, |route| route.total_amt_msat / MSAT_IN_SAT as i64)
-                            as u64;
+                        while let Some(update) = payment_stream.message().await.map_err(|err| {
+                            tracing::warn!("Lightning payment failed: {}", err);
+                            Error::PaymentFailed
+                        })? {
+                            let status = update.status();
 
-                        let (status, payment_preimage) = match total_amount == 0 {
-                            true => (MeltQuoteState::Unpaid, None),
-                            false => (
-                                MeltQuoteState::Paid,
-                                Some(hex::encode(payment_response.payment_preimage)),
-                            ),
-                        };
+                            let response_status = match status {
+                                PaymentStatus::InFlight | PaymentStatus::Initiated => {
+                                    continue;
+                                }
+                                PaymentStatus::Succeeded => MeltQuoteState::Paid,
+                                PaymentStatus::Failed => MeltQuoteState::Failed,
+                                #[allow(deprecated)]
+                                PaymentStatus::Unknown => MeltQuoteState::Unknown,
+                            };
 
-                        let payment_identifier =
-                            PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
+                            let total_msat = update
+                                .value_msat
+                                .checked_add(update.fee_msat)
+                                .ok_or(Error::AmountOverflow)?;
 
-                        Ok(MakePaymentResponse {
-                            payment_lookup_id: payment_identifier,
-                            payment_proof: payment_preimage,
-                            status,
-                            total_spent: total_amount.into(),
-                            unit: CurrencyUnit::Sat,
-                        })
+                            let payment_preimage = if update.payment_preimage.is_empty() {
+                                None
+                            } else {
+                                Some(update.payment_preimage)
+                            };
+
+                            let payment_identifier =
+                                PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
+
+                            return Ok(MakePaymentResponse {
+                                payment_lookup_id: payment_identifier,
+                                payment_proof: payment_preimage,
+                                status: response_status,
+                                total_spent: Amount::new(total_msat as u64, CurrencyUnit::Msat)
+                                    .convert_to(unit)?,
+                            });
+                        }
+
+                        Err(Error::UnknownPaymentStatus.into())
                     }
                 }
             }
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
+            OutgoingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
 
     #[instrument(skip(self, options))]
     async fn create_incoming_payment_request(
         &self,
-        unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
@@ -591,7 +628,7 @@ impl MintPayment for Lnd {
                 let amount = bolt11_options.amount;
                 let unix_expiry = bolt11_options.unix_expiry;
 
-                let amount_msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+                let amount_msat: Amount = amount.convert_to(&CurrencyUnit::Msat)?.into();
 
                 let invoice_request = lnrpc::Invoice {
                     value_msat: u64::from(amount_msat) as i64,
@@ -617,11 +654,13 @@ impl MintPayment for Lnd {
                     request_lookup_id: payment_identifier,
                     request: bolt11.to_string(),
                     expiry: unix_expiry,
+                    extra_json: None,
                 })
             }
             IncomingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
+            IncomingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
 
@@ -647,8 +686,7 @@ impl MintPayment for Lnd {
         if invoice.state() == InvoiceState::Settled {
             Ok(vec![WaitPaymentResponse {
                 payment_identifier: payment_identifier.clone(),
-                payment_amount: Amount::from(invoice.amt_paid_msat as u64),
-                unit: CurrencyUnit::Msat,
+                payment_amount: Amount::new(invoice.amt_paid_msat as u64, CurrencyUnit::Msat),
                 payment_id: hex::encode(invoice.r_hash),
             }])
         } else {
@@ -681,8 +719,7 @@ impl MintPayment for Lnd {
                         payment_lookup_id: payment_identifier.clone(),
                         payment_proof: None,
                         status: MeltQuoteState::Unknown,
-                        total_spent: Amount::ZERO,
-                        unit: self.settings.unit.clone(),
+                        total_spent: Amount::new(0, self.unit.clone()),
                     });
                 } else {
                     return Err(payment::Error::UnknownPaymentState);
@@ -696,12 +733,12 @@ impl MintPayment for Lnd {
                     let status = update.status();
 
                     let response = match status {
+                        #[allow(deprecated)]
                         PaymentStatus::Unknown => MakePaymentResponse {
                             payment_lookup_id: payment_identifier.clone(),
                             payment_proof: Some(update.payment_preimage),
                             status: MeltQuoteState::Unknown,
-                            total_spent: Amount::ZERO,
-                            unit: self.settings.unit.clone(),
+                            total_spent: Amount::new(0, self.unit.clone()),
                         },
                         PaymentStatus::InFlight | PaymentStatus::Initiated => {
                             // Continue waiting for the next update
@@ -711,21 +748,20 @@ impl MintPayment for Lnd {
                             payment_lookup_id: payment_identifier.clone(),
                             payment_proof: Some(update.payment_preimage),
                             status: MeltQuoteState::Paid,
-                            total_spent: Amount::from(
+                            total_spent: Amount::new(
                                 (update
                                     .value_sat
                                     .checked_add(update.fee_sat)
                                     .ok_or(Error::AmountOverflow)?)
                                     as u64,
+                                CurrencyUnit::Sat,
                             ),
-                            unit: CurrencyUnit::Sat,
                         },
                         PaymentStatus::Failed => MakePaymentResponse {
                             payment_lookup_id: payment_identifier.clone(),
                             payment_proof: Some(update.payment_preimage),
                             status: MeltQuoteState::Failed,
-                            total_spent: Amount::ZERO,
-                            unit: self.settings.unit.clone(),
+                            total_spent: Amount::new(0, self.unit.clone()),
                         },
                     };
 

@@ -23,6 +23,7 @@ mod tests {
     use std::str::FromStr;
 
     use cdk_common::database::WalletDatabase;
+    use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::{ProofDleq, State};
     use cdk_common::secret::Secret;
 
@@ -45,13 +46,9 @@ mod tests {
         let mint_info = MintInfo::new().description("test");
         let mint_url = MintUrl::from_str("https://mint.xyz").unwrap();
 
-        let mut tx = db.begin_db_transaction().await.expect("tx");
-
-        tx.add_mint(mint_url.clone(), Some(mint_info.clone()))
+        db.add_mint(mint_url.clone(), Some(mint_info.clone()))
             .await
             .unwrap();
-
-        tx.commit().await.expect("commit");
 
         let res = db.get_mint(mint_url).await.unwrap();
         assert_eq!(mint_info, res.clone().unwrap());
@@ -60,9 +57,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_proof_with_dleq() {
-        use cdk_common::common::ProofInfo;
         use cdk_common::mint_url::MintUrl;
         use cdk_common::nuts::{CurrencyUnit, Id, Proof, PublicKey, SecretKey};
+        use cdk_common::wallet::ProofInfo;
         use cdk_common::Amount;
 
         // Create a temporary database
@@ -107,14 +104,10 @@ mod tests {
         let proof_info =
             ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat).unwrap();
 
-        let mut tx = db.begin_db_transaction().await.expect("tx");
-
         // Store the proof in the database
-        tx.update_proofs(vec![proof_info.clone()], vec![])
+        db.update_proofs(vec![proof_info.clone()], vec![])
             .await
             .unwrap();
-
-        tx.commit().await.expect("commit");
 
         // Retrieve the proof from the database
         let retrieved_proofs = db
@@ -166,12 +159,10 @@ mod tests {
         // Test PaymentMethod variants
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
         let payment_methods = [
-            PaymentMethod::Bolt11,
-            PaymentMethod::Bolt12,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            PaymentMethod::Known(KnownMethod::Bolt11),
             PaymentMethod::Custom("custom".to_string()),
         ];
-
-        let mut tx = db.begin_db_transaction().await.expect("begin");
 
         for (i, payment_method) in payment_methods.iter().enumerate() {
             let quote = MintQuote {
@@ -186,25 +177,26 @@ mod tests {
                 payment_method: payment_method.clone(),
                 amount_issued: Amount::from(0),
                 amount_paid: Amount::from(0),
+                used_by_operation: None,
+                version: 0,
             };
 
             // Store the quote
-            tx.add_mint_quote(quote.clone()).await.unwrap();
+            db.add_mint_quote(quote.clone()).await.unwrap();
 
             // Retrieve and verify
-            let retrieved = tx.get_mint_quote(&quote.id).await.unwrap().unwrap();
+            let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
             assert_eq!(retrieved.payment_method, *payment_method);
             assert_eq!(retrieved.amount_issued, Amount::from(0));
             assert_eq!(retrieved.amount_paid, Amount::from(0));
         }
-        tx.commit().await.expect("commit");
     }
 
     #[tokio::test]
     async fn test_get_proofs_by_ys() {
-        use cdk_common::common::ProofInfo;
         use cdk_common::mint_url::MintUrl;
         use cdk_common::nuts::{CurrencyUnit, Id, Proof, SecretKey};
+        use cdk_common::wallet::ProofInfo;
         use cdk_common::Amount;
 
         // Create a temporary database
@@ -246,9 +238,7 @@ mod tests {
         }
 
         // Store all proofs in the database
-        let mut tx = db.begin_db_transaction().await.unwrap();
-        tx.update_proofs(proof_infos.clone(), vec![]).await.unwrap();
-        tx.commit().await.unwrap();
+        db.update_proofs(proof_infos.clone(), vec![]).await.unwrap();
 
         // Test 1: Retrieve all proofs by their Y values
         let retrieved_proofs = db.get_proofs_by_ys(expected_ys.clone()).await.unwrap();
@@ -324,9 +314,11 @@ mod tests {
             state: MintQuoteState::Paid,
             expiry: 1000000000,
             secret_key: None,
-            payment_method: PaymentMethod::Bolt11,
+            payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             amount_issued: Amount::from(100),
             amount_paid: Amount::from(100),
+            used_by_operation: None,
+            version: 0,
         };
 
         // Quote 2: Paid but not yet issued (should be returned - has pending balance)
@@ -339,9 +331,11 @@ mod tests {
             state: MintQuoteState::Paid,
             expiry: 1000000000,
             secret_key: None,
-            payment_method: PaymentMethod::Bolt11,
+            payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(100),
+            used_by_operation: None,
+            version: 0,
         };
 
         // Quote 3: Bolt12 quote with no balance (should be returned - bolt12 is reusable)
@@ -354,9 +348,11 @@ mod tests {
             state: MintQuoteState::Unpaid,
             expiry: 1000000000,
             secret_key: None,
-            payment_method: PaymentMethod::Bolt12,
+            payment_method: PaymentMethod::Known(KnownMethod::Bolt12),
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(0),
+            used_by_operation: None,
+            version: 0,
         };
 
         // Quote 4: Unpaid bolt11 quote (should be returned - wallet needs to check with mint)
@@ -369,22 +365,18 @@ mod tests {
             state: MintQuoteState::Unpaid,
             expiry: 1000000000,
             secret_key: None,
-            payment_method: PaymentMethod::Bolt11,
+            payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(0),
+            used_by_operation: None,
+            version: 0,
         };
 
-        {
-            let mut tx = db.begin_db_transaction().await.unwrap();
-
-            // Add all quotes to the database
-            tx.add_mint_quote(quote1).await.unwrap();
-            tx.add_mint_quote(quote2.clone()).await.unwrap();
-            tx.add_mint_quote(quote3.clone()).await.unwrap();
-            tx.add_mint_quote(quote4.clone()).await.unwrap();
-
-            tx.commit().await.unwrap();
-        }
+        // Add all quotes to the database
+        db.add_mint_quote(quote1).await.unwrap();
+        db.add_mint_quote(quote2.clone()).await.unwrap();
+        db.add_mint_quote(quote3.clone()).await.unwrap();
+        db.add_mint_quote(quote4.clone()).await.unwrap();
 
         // Get unissued mint quotes
         let unissued_quotes = db.get_unissued_mint_quotes().await.unwrap();

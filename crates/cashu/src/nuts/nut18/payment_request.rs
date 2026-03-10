@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Error, Nut10SecretRequest, Transport};
 use crate::mint_url::MintUrl;
+use crate::nut26::CREQ_B_HRP;
 use crate::nuts::{CurrencyUnit, Proofs};
 use crate::Amount;
 
@@ -33,7 +34,8 @@ pub struct PaymentRequest {
     pub single_use: Option<bool>,
     /// Mints
     #[serde(rename = "m")]
-    pub mints: Option<Vec<MintUrl>>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub mints: Vec<MintUrl>,
     /// Description
     #[serde(rename = "d")]
     pub description: Option<String>,
@@ -73,6 +75,13 @@ impl FromStr for PaymentRequest {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Check if it's a bech32m format (CREQ-B) - case insensitive
+        if s.to_lowercase().starts_with(CREQ_B_HRP) {
+            // Use the bech32 decoding from NUT-26
+            return Self::from_bech32_string(s).map_err(Error::Nut26Error);
+        }
+
+        // Otherwise, try the legacy CBOR format (CREQ-A)
         let s = s
             .strip_prefix(PAYMENT_REQUEST_PREFIX)
             .ok_or(Error::InvalidPrefix)?;
@@ -92,7 +101,7 @@ pub struct PaymentRequestBuilder {
     amount: Option<Amount>,
     unit: Option<CurrencyUnit>,
     single_use: Option<bool>,
-    mints: Option<Vec<MintUrl>>,
+    mints: Vec<MintUrl>,
     description: Option<String>,
     transports: Vec<Transport>,
     nut10: Option<Nut10SecretRequest>,
@@ -131,13 +140,13 @@ impl PaymentRequestBuilder {
 
     /// Add a mint URL
     pub fn add_mint(mut self, mint_url: MintUrl) -> Self {
-        self.mints.get_or_insert_with(Vec::new).push(mint_url);
+        self.mints.push(mint_url);
         self
     }
 
     /// Set mints
     pub fn mints(mut self, mints: Vec<MintUrl>) -> Self {
-        self.mints = Some(mints);
+        self.mints = mints;
         self
     }
 
@@ -180,7 +189,7 @@ impl PaymentRequestBuilder {
     }
 }
 
-/// Payment Request
+/// Payment Request Payload
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentRequestPayload {
     /// Id
@@ -206,7 +215,7 @@ mod tests {
     use crate::nuts::SpendingConditions;
     use crate::TransportType;
 
-    const PAYMENT_REQUEST: &str = "creqApWF0gaNhdGVub3N0cmFheKlucHJvZmlsZTFxeTI4d3VtbjhnaGo3dW45ZDNzaGp0bnl2OWtoMnVld2Q5aHN6OW1od2RlbjV0ZTB3ZmprY2N0ZTljdXJ4dmVuOWVlaHFjdHJ2NWhzenJ0aHdkZW41dGUwZGVoaHh0bnZkYWtxcWd5ZGFxeTdjdXJrNDM5eWtwdGt5c3Y3dWRoZGh1NjhzdWNtMjk1YWtxZWZkZWhrZjBkNDk1Y3d1bmw1YWeBgmFuYjE3YWloYjdhOTAxNzZhYQphdWNzYXRhbYF4Imh0dHBzOi8vbm9mZWVzLnRlc3RudXQuY2FzaHUuc3BhY2U=";
+    const PAYMENT_REQUEST: &str = "creqAp2FpaGI3YTkwMTc2YWEKYXVjc2F0YXP2YW2BeCJodHRwczovL25vZmVlcy50ZXN0bnV0LmNhc2h1LnNwYWNlYWT2YXSBo2F0ZW5vc3RyYWF4qW5wcm9maWxlMXFxc2dtNnFmYTNjOGR0ejJmdnpodmZxZWFjbXdtMGU1MHBlM2s1dGZtdnBqam1uMHZqN20ydGdwejNtaHh1ZTY5dWhoeWV0dnY5dWp1ZXJwZDQ2aHh0bmZkdXEzd2Ftbnd2YXo3dG1qdjRreHo3Znc4cWVueHZld3dkY3h6Y205OXVxczZhbW53dmF6N3Rtd2RhZWp1bXIwZHM0bGpoN25hZ4GCYW5iMTc=";
 
     #[test]
     fn test_decode_payment_req() {
@@ -216,30 +225,30 @@ mod tests {
         assert_eq!(req.amount.unwrap(), 10.into());
         assert_eq!(req.unit.clone().unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            req.mints.unwrap(),
+            req.mints,
             vec![MintUrl::from_str("https://nofees.testnut.cashu.space").expect("valid mint url")]
         );
         assert_eq!(req.unit.unwrap(), CurrencyUnit::Sat);
 
         let transport = req.transports.first().unwrap();
 
-        let expected_transport = Transport {_type: TransportType::Nostr, target: "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5".to_string(), tags: Some(vec![vec!["n".to_string(), "17".to_string()]])};
+        let expected_transport = Transport {_type: TransportType::Nostr, target: "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n".to_string(), tags: vec![vec!["n".to_string(), "17".to_string()]]};
 
         assert_eq!(transport, &expected_transport);
     }
 
     #[test]
     fn test_roundtrip_payment_req() {
-        let transport = Transport {_type: TransportType::Nostr, target: "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5".to_string(), tags: Some(vec![vec!["n".to_string(), "17".to_string()]])};
+        let transport = Transport {_type: TransportType::Nostr, target: "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n".to_string(), tags: vec![vec!["n".to_string(), "17".to_string()]]};
 
         let request = PaymentRequest {
             payment_id: Some("b7a90176".to_string()),
             amount: Some(10.into()),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec!["https://nofees.testnut.cashu.space"
+            mints: vec!["https://nofees.testnut.cashu.space"
                 .parse()
-                .expect("valid mint url")]),
+                .expect("valid mint url")],
             description: None,
             transports: vec![transport.clone()],
             nut10: None,
@@ -247,13 +256,15 @@ mod tests {
 
         let request_str = request.to_string();
 
+        assert_eq!(request_str, PAYMENT_REQUEST);
+
         let req = PaymentRequest::from_str(&request_str).expect("valid payment request");
 
         assert_eq!(&req.payment_id.unwrap(), "b7a90176");
         assert_eq!(req.amount.unwrap(), 10.into());
         assert_eq!(req.unit.clone().unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            req.mints.unwrap(),
+            req.mints,
             vec![MintUrl::from_str("https://nofees.testnut.cashu.space").expect("valid mint url")]
         );
         assert_eq!(req.unit.unwrap(), CurrencyUnit::Sat);
@@ -266,8 +277,8 @@ mod tests {
     fn test_payment_request_builder() {
         let transport = Transport {
             _type: TransportType::Nostr,
-            target: "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5".to_string(), 
-            tags: Some(vec![vec!["n".to_string(), "17".to_string()]])
+            target: "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n".to_string(),
+            tags: vec![vec!["n".to_string(), "17".to_string()]]
         };
 
         let mint_url =
@@ -286,7 +297,7 @@ mod tests {
         assert_eq!(&request.payment_id.clone().unwrap(), "b7a90176");
         assert_eq!(request.amount.unwrap(), 10.into());
         assert_eq!(request.unit.clone().unwrap(), CurrencyUnit::Sat);
-        assert_eq!(request.mints.clone().unwrap(), vec![mint_url]);
+        assert_eq!(request.mints.clone(), vec![mint_url]);
 
         let t = request.transports.first().unwrap();
         assert_eq!(&transport, t);
@@ -305,17 +316,17 @@ mod tests {
         // Build a transport using the builder pattern
         let transport = Transport::builder()
             .transport_type(TransportType::Nostr)
-            .target("nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5")
+            .target("nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n")
             .add_tag(vec!["n".to_string(), "17".to_string()])
             .build()
             .expect("Valid transport");
 
         // Verify the built transport
         assert_eq!(transport._type, TransportType::Nostr);
-        assert_eq!(transport.target, "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5");
+        assert_eq!(transport.target, "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n");
         assert_eq!(
             transport.tags,
-            Some(vec![vec!["n".to_string(), "17".to_string()]])
+            vec![vec!["n".to_string(), "17".to_string()]]
         );
 
         // Test error case - missing required fields
@@ -467,7 +478,7 @@ mod tests {
             "t": [
                 {
                     "t": "nostr",
-                    "a": "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5",
+                    "a": "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n",
                     "g": [["n", "17"]]
                 }
             ]
@@ -487,16 +498,16 @@ mod tests {
         assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(10));
         assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            payment_request_cloned.mints.unwrap(),
+            payment_request_cloned.mints,
             vec![MintUrl::from_str("https://8333.space:3338").unwrap()]
         );
 
         let transport = payment_request.transports.first().unwrap();
         assert_eq!(transport._type, TransportType::Nostr);
-        assert_eq!(transport.target, "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5");
+        assert_eq!(transport.target, "nprofile1qqsgm6qfa3c8dtz2fvzhvfqeacmwm0e50pe3k5tfmvpjjmn0vj7m2tgpz3mhxue69uhhyetvv9ujuerpd46hxtnfduq3wamnwvaz7tmjv4kxz7fw8qenxvewwdcxzcm99uqs6amnwvaz7tmwdaejumr0ds4ljh7n");
         assert_eq!(
             transport.tags,
-            Some(vec![vec!["n".to_string(), "17".to_string()]])
+            vec![vec!["n".to_string(), "17".to_string()]]
         );
 
         // Test encoding - the encoded form should match the expected output
@@ -512,7 +523,7 @@ mod tests {
         assert_eq!(decoded_from_spec.amount.unwrap(), Amount::from(10));
         assert_eq!(decoded_from_spec.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            decoded_from_spec.mints.unwrap(),
+            decoded_from_spec.mints,
             vec![MintUrl::from_str("https://8333.space:3338").unwrap()]
         );
     }
@@ -548,7 +559,7 @@ mod tests {
         assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(100));
         assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            payment_request_cloned.mints.unwrap(),
+            payment_request_cloned.mints,
             vec![
                 MintUrl::from_str("https://mint1.example.com").unwrap(),
                 MintUrl::from_str("https://mint2.example.com").unwrap()
@@ -563,10 +574,10 @@ mod tests {
         );
         assert_eq!(
             transport.tags,
-            Some(vec![
+            vec![
                 vec!["n".to_string(), "17".to_string()],
                 vec!["n".to_string(), "9735".to_string()]
-            ])
+            ]
         );
 
         // Test round-trip serialization
@@ -603,7 +614,7 @@ mod tests {
         assert_eq!(payment_request_cloned.amount, None);
         assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            payment_request_cloned.mints.unwrap(),
+            payment_request_cloned.mints,
             vec![MintUrl::from_str("https://mint.example.com").unwrap()]
         );
         assert_eq!(payment_request_cloned.transports, vec![]);
@@ -647,7 +658,7 @@ mod tests {
         assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(500));
         assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
         assert_eq!(
-            payment_request_cloned.mints.unwrap(),
+            payment_request_cloned.mints,
             vec![MintUrl::from_str("https://mint.example.com").unwrap()]
         );
 
@@ -671,5 +682,53 @@ mod tests {
         // Test decoding the expected encoded string
         let decoded_from_spec = PaymentRequest::from_str(expected_encoded).unwrap();
         assert_eq!(decoded_from_spec.payment_id.as_ref().unwrap(), "c9e45d2a");
+    }
+
+    #[test]
+    fn test_from_str_handles_both_formats() {
+        // Create a payment request
+        let payment_request = PaymentRequest {
+            payment_id: Some("test456".to_string()),
+            amount: Some(Amount::from(100)),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            description: Some("Test both formats".to_string()),
+            transports: vec![],
+            nut10: None,
+        };
+
+        // Test CBOR format (CREQ-A) - from Display trait
+        let cbor_encoded = payment_request.to_string();
+        assert!(cbor_encoded.starts_with("creqA"));
+        let decoded_cbor =
+            PaymentRequest::from_str(&cbor_encoded).expect("Should decode CBOR format");
+        assert_eq!(decoded_cbor.payment_id, payment_request.payment_id);
+        assert_eq!(decoded_cbor.amount, payment_request.amount);
+        assert_eq!(decoded_cbor.unit, payment_request.unit);
+        assert_eq!(decoded_cbor.description, payment_request.description);
+
+        // Test bech32 format (CREQ-B)
+        let bech32_encoded = payment_request
+            .to_bech32_string()
+            .expect("Should encode to bech32");
+        assert!(bech32_encoded.to_uppercase().starts_with("CREQB"));
+        let decoded_bech32 =
+            PaymentRequest::from_str(&bech32_encoded).expect("Should decode bech32 format");
+        assert_eq!(decoded_bech32.payment_id, payment_request.payment_id);
+        assert_eq!(decoded_bech32.amount, payment_request.amount);
+        assert_eq!(decoded_bech32.unit, payment_request.unit);
+        assert_eq!(decoded_bech32.description, payment_request.description);
+
+        // Test case insensitivity for bech32
+        let bech32_lowercase = bech32_encoded.to_lowercase();
+        let decoded_lowercase =
+            PaymentRequest::from_str(&bech32_lowercase).expect("Should decode lowercase bech32");
+        assert_eq!(decoded_lowercase.payment_id, payment_request.payment_id);
+
+        let bech32_uppercase = bech32_encoded.to_uppercase();
+        let decoded_uppercase =
+            PaymentRequest::from_str(&bech32_uppercase).expect("Should decode uppercase bech32");
+        assert_eq!(decoded_uppercase.payment_id, payment_request.payment_id);
     }
 }

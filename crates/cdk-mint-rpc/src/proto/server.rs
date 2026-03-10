@@ -9,6 +9,7 @@ use cdk::nuts::nut05::MeltMethodSettings;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk::Amount;
+use cdk_common::grpc::create_version_check_interceptor;
 use cdk_common::payment::WaitPaymentResponse;
 use thiserror::Error;
 use tokio::sync::Notify;
@@ -42,6 +43,7 @@ pub enum Error {
 
 /// CDK Mint RPC Server
 #[derive(Clone)]
+#[allow(missing_debug_implementations)]
 pub struct MintRPCServer {
     socket_addr: SocketAddr,
     mint: Arc<Mint>,
@@ -134,13 +136,25 @@ impl MintRPCServer {
                     .identity(server_identity)
                     .client_ca_root(client_ca_cert);
 
-                Server::builder()
-                    .tls_config(tls_config)?
-                    .add_service(CdkMintServer::new(self.clone()))
+                Server::builder().tls_config(tls_config)?.add_service(
+                    CdkMintServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ),
+                )
             }
             None => {
                 tracing::warn!("No valid TLS configuration found, starting insecure server");
-                Server::builder().add_service(CdkMintServer::new(self.clone()))
+                Server::builder().add_service(CdkMintServer::with_interceptor(
+                    self.clone(),
+                    create_version_check_interceptor(
+                        cdk_common::grpc::VERSION_HEADER,
+                        cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                    ),
+                ))
             }
         };
 
@@ -222,7 +236,7 @@ impl CdkMint for MintRPCServer {
             })
             .collect();
 
-        Ok(Response::new(GetInfoResponse {
+        let response = Response::new(GetInfoResponse {
             name: info.name,
             description: info.description,
             long_description: info.description_long,
@@ -233,7 +247,9 @@ impl CdkMint for MintRPCServer {
             urls: info.urls.unwrap_or_default(),
             total_issued: total_issued.into(),
             total_redeemed: total_redeemed.into(),
-        }))
+        });
+
+        Ok(response)
     }
 
     /// Updates the mint's message of the day
@@ -653,9 +669,11 @@ impl CdkMint for MintRPCServer {
             MintQuoteState::Paid => {
                 // Create a dummy payment response
                 let response = WaitPaymentResponse {
-                    payment_id: String::new(),
-                    payment_amount: mint_quote.amount_paid(),
-                    unit: mint_quote.unit.clone(),
+                    payment_id: mint_quote.request_lookup_id.to_string(),
+                    payment_amount: mint_quote.clone().amount.unwrap_or(cdk::Amount::new(
+                        mint_quote.amount_paid().value(),
+                        mint_quote.unit.clone(),
+                    )),
                     payment_identifier: mint_quote.request_lookup_id.clone(),
                 };
 
@@ -665,8 +683,19 @@ impl CdkMint for MintRPCServer {
                     .await
                     .map_err(|_| Status::internal("Could not start db transaction".to_string()))?;
 
+                // Re-fetch the mint quote within the transaction to lock it
+                let mut mint_quote = tx
+                    .get_mint_quote(&quote_id)
+                    .await
+                    .map_err(|_| {
+                        Status::internal("Could not get quote in transaction".to_string())
+                    })?
+                    .ok_or(Status::invalid_argument(
+                        "Quote not found in transaction".to_string(),
+                    ))?;
+
                 self.mint
-                    .pay_mint_quote(&mut tx, &mint_quote, response)
+                    .pay_mint_quote(&mut tx, &mut mint_quote, response)
                     .await
                     .map_err(|_| Status::internal("Could not process payment".to_string()))?;
 
@@ -680,7 +709,7 @@ impl CdkMint for MintRPCServer {
                     Some(mint_quote.id.clone()),          // id
                     mint_quote.request.clone(),           // request
                     mint_quote.unit.clone(),              // unit
-                    mint_quote.amount,                    // amount
+                    mint_quote.amount.clone(),            // amount
                     mint_quote.expiry,                    // expiry
                     mint_quote.request_lookup_id.clone(), // request_lookup_id
                     mint_quote.pubkey,                    // pubkey
@@ -690,6 +719,7 @@ impl CdkMint for MintRPCServer {
                     0,                                    // created_at
                     vec![],                               // blinded_messages
                     vec![],                               // payment_ids
+                    None,                                 // extra_json
                 );
 
                 let mint_store = self.mint.localstore();
@@ -730,15 +760,17 @@ impl CdkMint for MintRPCServer {
         let unit = CurrencyUnit::from_str(&request.unit)
             .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
 
-        let amounts = if request.amounts.is_empty() {
-            return Err(Status::invalid_argument("amounts cannot be empty"));
-        } else {
-            request.amounts
-        };
+        let amounts = request.amounts;
 
         let keyset_info = self
             .mint
-            .rotate_keyset(unit, amounts, request.input_fee_ppk.unwrap_or(0))
+            .rotate_keyset(
+                unit,
+                amounts,
+                request.input_fee_ppk.unwrap_or(0),
+                request.use_keyset_v2.unwrap_or(true),
+                request.final_expiry,
+            )
             .await
             .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))?;
 

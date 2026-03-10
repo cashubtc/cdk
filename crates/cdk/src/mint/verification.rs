@@ -4,15 +4,18 @@ use cdk_common::{Amount, BlindedMessage, CurrencyUnit, Id, Proofs, ProofsMethods
 use tracing::instrument;
 
 use super::{Error, Mint};
-use crate::cdk_database;
 
-/// Verification result
+/// Maximum allowed length in bytes for proof secret or witness content
+const MAX_PROOF_CONTENT_LEN: usize = 1024;
+
+/// Maximum allowed length in bytes for request fields (description, extra)
+pub(crate) const MAX_REQUEST_FIELD_LEN: usize = 1024;
+
+/// Verification result with typed amount
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Verification {
-    /// Value in request
-    pub amount: Amount,
-    /// Unit of request
-    pub unit: Option<CurrencyUnit>,
+    /// Verified amount with unit
+    pub amount: Amount<CurrencyUnit>,
 }
 
 impl Mint {
@@ -96,10 +99,7 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
-        Ok(keyset_units
-            .into_iter()
-            .next()
-            .expect("Length is check above"))
+        keyset_units.into_iter().next().ok_or(Error::Internal)
     }
 
     /// Verify input keyset
@@ -137,132 +137,140 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
-        Ok(keyset_units
-            .into_iter()
-            .next()
-            .expect("Length is check above"))
-    }
-
-    /// Verifies that the outputs have not already been signed
-    #[instrument(skip_all)]
-    pub async fn check_output_already_signed(
-        &self,
-        tx: &mut Box<dyn cdk_database::MintTransaction<cdk_database::Error> + Send + Sync>,
-        outputs: &[BlindedMessage],
-    ) -> Result<(), Error> {
-        let blinded_messages: Vec<PublicKey> = outputs.iter().map(|o| o.blinded_secret).collect();
-
-        if tx
-            .get_blind_signatures(&blinded_messages)
-            .await?
-            .iter()
-            .flatten()
-            .next()
-            .is_some()
-        {
-            tracing::debug!("Transaction attempted where output is already signed.");
-
-            return Err(Error::BlindedMessageAlreadySigned);
-        }
-
-        Ok(())
+        keyset_units.into_iter().next().ok_or(Error::Internal)
     }
 
     /// Verifies outputs
-    /// Checks outputs are unique, of the same unit and not signed before
+    ///
+    /// Checks outputs are unique, of the same unit and not signed before.
+    /// Returns an error if outputs are empty - callers should guard against
+    /// empty outputs before calling this function.
     #[instrument(skip_all)]
-    pub async fn verify_outputs(
-        &self,
-        tx: &mut Box<dyn cdk_database::MintTransaction<cdk_database::Error> + Send + Sync>,
-        outputs: &[BlindedMessage],
-    ) -> Result<Verification, Error> {
+    pub fn verify_outputs(&self, outputs: &[BlindedMessage]) -> Result<Verification, Error> {
         if outputs.is_empty() {
-            return Ok(Verification {
-                amount: Amount::ZERO,
-                unit: None,
+            tracing::debug!("verify_outputs called with empty outputs");
+            return Err(Error::TransactionUnbalanced(0, 0, 0));
+        }
+
+        // Check max outputs limit
+        let outputs_count = outputs.len();
+        if outputs_count > self.max_outputs {
+            tracing::warn!(
+                "Mint request exceeds max outputs limit: {} > {}",
+                outputs_count,
+                self.max_outputs
+            );
+            return Err(Error::MaxOutputsExceeded {
+                actual: outputs_count,
+                max: self.max_outputs,
             });
         }
 
         Mint::check_outputs_unique(outputs)?;
-        self.check_output_already_signed(tx, outputs).await?;
 
         let unit = self.verify_outputs_keyset(outputs)?;
 
-        let amount = Amount::try_sum(outputs.iter().map(|o| o.amount).collect::<Vec<Amount>>())?;
+        let amount = Amount::try_sum(outputs.iter().map(|o| o.amount))?.with_unit(unit);
 
-        Ok(Verification {
-            amount,
-            unit: Some(unit),
-        })
+        Ok(Verification { amount })
     }
 
     /// Verifies inputs
-    /// Checks that inputs are unique and of the same unit
+    ///
+    /// Checks that inputs are unique and of the same unit.
     /// **NOTE: This does not check if inputs have been spent
     #[instrument(skip_all)]
     pub async fn verify_inputs(&self, inputs: &Proofs) -> Result<Verification, Error> {
+        // Check max inputs limit
+        let inputs_count = inputs.len();
+        if inputs_count > self.max_inputs {
+            tracing::warn!(
+                "Melt request exceeds max inputs limit: {} > {}",
+                inputs_count,
+                self.max_inputs
+            );
+            return Err(Error::MaxInputsExceeded {
+                actual: inputs_count,
+                max: self.max_inputs,
+            });
+        }
+
+        // Check proof content lengths (secret and witness) are within limits
+        for proof in inputs {
+            let secret_len = proof.secret.len();
+            if secret_len > MAX_PROOF_CONTENT_LEN {
+                tracing::warn!(
+                    "Proof secret exceeds max content length: {} > {}",
+                    secret_len,
+                    MAX_PROOF_CONTENT_LEN
+                );
+                return Err(Error::ProofContentTooLarge {
+                    actual: secret_len,
+                    max: MAX_PROOF_CONTENT_LEN,
+                });
+            }
+
+            if let Some(witness) = &proof.witness {
+                let witness_str = serde_json::to_string(witness)?;
+                let witness_len = witness_str.len();
+                if witness_len > MAX_PROOF_CONTENT_LEN {
+                    tracing::warn!(
+                        "Proof witness exceeds max content length: {} > {}",
+                        witness_len,
+                        MAX_PROOF_CONTENT_LEN
+                    );
+                    return Err(Error::ProofContentTooLarge {
+                        actual: witness_len,
+                        max: MAX_PROOF_CONTENT_LEN,
+                    });
+                }
+            }
+        }
+
         Mint::check_inputs_unique(inputs)?;
         let unit = self.verify_inputs_keyset(inputs).await?;
-        let amount = inputs.total_amount()?;
+
+        if unit == CurrencyUnit::Auth {
+            return Err(Error::UnsupportedUnit);
+        }
+
+        let amount = inputs.total_amount()?.with_unit(unit);
 
         self.verify_proofs(inputs.clone()).await?;
 
-        Ok(Verification {
-            amount,
-            unit: Some(unit),
-        })
+        Ok(Verification { amount })
     }
 
     /// Verify that inputs and outputs are valid and balanced
     #[instrument(skip_all)]
     pub async fn verify_transaction_balanced(
         &self,
-        tx: &mut Box<dyn cdk_database::MintTransaction<cdk_database::Error> + Send + Sync>,
         input_verification: Verification,
+        output_verification: Verification,
         inputs: &Proofs,
-        outputs: &[BlindedMessage],
     ) -> Result<(), Error> {
-        let output_verification = self.verify_outputs(tx, outputs).await.map_err(|err| {
-            tracing::debug!("Output verification failed: {:?}", err);
-            err
-        })?;
-
         let fee_breakdown = self.get_proofs_fee(inputs).await?;
 
-        if output_verification
-            .unit
-            .as_ref()
-            .ok_or(Error::TransactionUnbalanced(
-                input_verification.amount.into(),
-                output_verification.amount.into(),
-                fee_breakdown.total.into(),
-            ))?
-            != input_verification
-                .unit
-                .as_ref()
-                .ok_or(Error::TransactionUnbalanced(
-                    input_verification.amount.to_u64(),
-                    output_verification.amount.to_u64(),
-                    0,
-                ))?
-        {
+        // Units are now embedded in the typed amounts - check they match
+        if output_verification.amount.unit() != input_verification.amount.unit() {
             tracing::debug!(
                 "Output unit {:?} does not match input unit {:?}",
-                output_verification.unit,
-                input_verification.unit
+                output_verification.amount.unit(),
+                input_verification.amount.unit()
             );
             return Err(Error::UnitMismatch);
         }
 
-        if output_verification.amount
-            != input_verification
-                .amount
-                .checked_sub(fee_breakdown.total)
-                .ok_or(Error::AmountOverflow)?
-        {
+        // Check amounts are balanced (inputs = outputs + fee)
+        let fee_typed = fee_breakdown
+            .total
+            .with_unit(input_verification.amount.unit().clone());
+        let expected_output = input_verification.amount.checked_sub(&fee_typed)?;
+
+        if output_verification.amount != expected_output {
             return Err(Error::TransactionUnbalanced(
-                input_verification.amount.into(),
-                output_verification.amount.into(),
+                input_verification.amount.value(),
+                output_verification.amount.value(),
                 fee_breakdown.total.into(),
             ));
         }

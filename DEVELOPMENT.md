@@ -122,11 +122,108 @@ cargo run --bin cdk-mintd
 
 Note: For cdk-mintd, you need to have the protobuf compiler installed as it's required for some dependencies.
 
-## Use Nix Shell
+## Nix Development Environments
 
-```sh
-  nix develop -c $SHELL  
+CDK uses Nix flakes to provide reproducible development environments. We offer a tiered shell strategy to ensure developers only download what they need for their specific tasks.
+
+### Available Shells
+
+| Shell | Command | Key Tools Included | Best For |
+| :--- | :--- | :--- | :--- |
+| **Stable (Default)** | `nix develop` | Rust Stable, **PostgreSQL**, Protobuf | Library, Wallet, and Mint development |
+| **Regtest** | `nix develop .#regtest` | Stable + **bitcoind, CLN, LND, mprocs** | Local integration testing and nodes |
+| **Nightly** | `nix develop .#nightly` | Rust Nightly, **PostgreSQL** | Formatting and experimental features |
+| **Nightly Regtest** | `nix develop .#nightly-regtest` | Nightly + **Full Regtest Stack** | Comprehensive testing on nightly |
+| **Integration** | `nix develop .#integration` | Stable + Regtest Stack + **Docker** | Binding, Auth, and Docker tests |
+| **MSRV** | `nix develop .#msrv` | Rust 1.85.0 (Minimum version) | Ensuring backward compatibility |
+| **FFI** | `nix develop .#ffi` | Stable + Python 3.11 | Working on UniFFI bindings |
+
+### PostgreSQL Helpers
+
+All CDK shells come with a built-in PostgreSQL instance and helper scripts to manage it locally within your project directory:
+
+- `start-postgres`: Initialize and start a local PostgreSQL instance (data stored in `.pg_data/`).
+- `stop-postgres`: Safely shut down the local database.
+- `pg-status`: Check if the database is running.
+- `pg-connect`: Open an interactive `psql` session to the local database.
+
+### Direct Flake Commands
+
+You can build project components directly using flake targets without manually entering a shell:
+
+```bash
+# Build the wallet CLI
+nix build .#cdk-cli
+./result/bin/cdk-cli --help
+
+# Build the mint daemon
+nix build .#cdk-mintd
+
+# Run a check (clippy + tests) for a specific crate
+nix build .#checks.x86_64-linux.cashu
 ```
+
+### Static Binaries
+
+CDK provides fully statically-linked Linux binaries built with [musl](https://musl.libc.org/). These binaries have zero runtime dependencies and run on any x86_64 Linux system.
+
+**Available static build targets:**
+
+| Target | Binary | Features |
+| :--- | :--- | :--- |
+| `cdk-mintd-static` | `cdk-mintd-{version}-x86_64` | `postgres`, `prometheus`, `redis` |
+| `cdk-mintd-ldk-static` | `cdk-mintd-ldk-{version}-x86_64` | `ldk-node`, `postgres`, `prometheus`, `redis` |
+| `cdk-cli-static` | `cdk-cli-{version}-x86_64` | default |
+
+**Building locally (requires Nix):**
+
+```bash
+# Build a single target
+just build-static cdk-mintd-static
+
+# Build all static targets
+just build-static-all
+
+# Or use nix directly
+nix build .#cdk-mintd-static
+cp ./result/bin/* ./static-bin/
+```
+
+Built binaries are placed in `./static-bin/`.
+
+**Release process:**
+
+When a GitHub release is published, the [`static-build-publish.yml`](.github/workflows/static-build-publish.yml) workflow automatically:
+
+1. Builds all three static binaries via Nix
+2. Generates a `SHA256SUMS` file with checksums for each binary
+3. Uploads the binaries and checksums to the GitHub release
+
+The workflow can also be triggered manually via `workflow_dispatch` with a tag input. Pre-built static binaries are available on the [GitHub releases page](https://github.com/cashubtc/cdk/releases).
+
+**Reproducibility:**
+
+Static builds are designed to be reproducible. Two builds from the same source and `flake.lock` should produce identical binaries. This is achieved through:
+
+- **Pinned toolchain and dependencies**: All inputs (Rust compiler, musl, OpenSSL, etc.) are pinned via the Nix flake lockfile.
+- **`release-static` Cargo profile**: Uses `codegen-units = 1` (eliminates parallel codegen ordering non-determinism), LTO, and `panic = "abort"`.
+- **Nix store path stripping**: A `postFixup` step runs `remove-references-to` on the final binaries to strip any embedded Nix store paths (e.g., the Rust toolchain path), which would otherwise differ across build machines.
+- **No non-deterministic metadata**: The codebase does not embed git hashes, build timestamps, or other non-deterministic values into binaries.
+
+You can verify a release binary by building locally and comparing checksums:
+
+```bash
+nix build .#cdk-mintd-static
+sha256sum ./result/bin/*
+# Compare against SHA256SUMS from the release
+```
+
+### Nix Troubleshooting
+
+- **Updating Dependencies**: If you notice dependencies are out of date or a new tool has been added to the flake, run `nix flake update` to refresh the `flake.lock` file.
+- **Command Not Found**: Ensure you have entered the shell (e.g., `nix develop`). Some tools like `mprocs` or `bitcoind` are only available in the `regtest` shell.
+- **Cache Issues**: If you suspect the environment is not reflecting recent flake changes, you can force a re-evaluation with `nix flake check`.
+- **Persistent Data**: The local PostgreSQL instance stores data in the `.pg_data/` directory. If you want to reset your database completely, stop the database and delete this directory.
 
 ## Regtest Environment
 
@@ -365,6 +462,28 @@ Not all changes should be backported to stable branches. **Don't add backport la
 - Experimental or unstable features
 
 If a backport isn't appropriate, simply don't add the backport label to the PR.
+
+## CI & Infrastructure
+
+CDK uses a specialized self-hosted infrastructure for CI/CD, specifically for fuzzing and integration tests.
+
+### Self-Hosted Runners
+
+Our infrastructure is defined in the [cdk-infra](https://github.com/thesimplekid/cdk-infra) repository. It utilizes a "warm pool" of ephemeral NixOS containers to provide reproducible, isolated, and high-performance runners.
+
+**Key Features:**
+- **Ephemeral:** Each job runs in a fresh, ephemeral NixOS container that is destroyed immediately after use.
+- **Warm Pool:** Containers are pre-provisioned to ensure instant job pickup.
+- **Nix Native:** Fully supports Nix builds and caching.
+- **Isolation:** Runners are network-isolated for security.
+
+### Architecture
+
+The system consists of:
+- **Runners:** Two dedicated hosts (`cdk-runner-01` and `cdk-runner-02`) running NixOS.
+- **Controller:** A custom Rust controller manages the lifecycle of the containers, monitoring the repository for queued jobs and maintaining the warm pool.
+
+For more details on the infrastructure implementation, deployment, and management, please refer to the [cdk-infra repository](https://github.com/thesimplekid/cdk-infra).
 
 ## Additional Resources
 

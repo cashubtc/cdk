@@ -59,7 +59,7 @@ impl Settings {
     }
 }
 
-// Custom deserializer for Settings to expand regex patterns in protected endpoints
+// Custom deserializer for Settings to expand patterns in protected endpoints
 impl<'de> Deserialize<'de> for Settings {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -85,15 +85,12 @@ impl<'de> Deserialize<'de> for Settings {
         // Deserialize into the temporary struct
         let raw = RawSettings::deserialize(deserializer)?;
 
-        // Process protected endpoints, expanding regex patterns if present
+        // Process protected endpoints, expanding patterns if present
         let mut protected_endpoints = HashSet::new();
 
         for raw_endpoint in raw.protected_endpoints {
             let expanded_paths = matching_route_paths(&raw_endpoint.path).map_err(|e| {
-                serde::de::Error::custom(format!(
-                    "Invalid regex pattern '{}': {}",
-                    raw_endpoint.path, e
-                ))
+                serde::de::Error::custom(format!("Invalid pattern '{}': {}", raw_endpoint.path, e))
             })?;
 
             for path in expanded_paths {
@@ -183,6 +180,7 @@ impl From<AuthProof> for Proof {
             c: value.c,
             witness: None,
             dleq: value.dleq,
+            p2pk_e: None,
         }
     }
 }
@@ -275,10 +273,10 @@ impl MintAuthRequest {
 mod tests {
     use std::collections::HashSet;
 
-    use strum::IntoEnumIterator;
-
     use super::super::nut21::{Method, RoutePath};
     use super::*;
+    use crate::nut00::KnownMethod;
+    use crate::PaymentMethod;
 
     #[test]
     fn test_settings_deserialize_direct_paths() {
@@ -305,9 +303,12 @@ mod tests {
         let paths = settings
             .protected_endpoints
             .iter()
-            .map(|ep| (ep.method, ep.path))
+            .map(|ep| (ep.method, ep.path.clone()))
             .collect::<Vec<_>>();
-        assert!(paths.contains(&(Method::Get, RoutePath::MintBolt11)));
+        assert!(paths.contains(&(
+            Method::Get,
+            RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string())
+        )));
         assert!(paths.contains(&(Method::Post, RoutePath::Swap)));
     }
 
@@ -318,7 +319,7 @@ mod tests {
             "protected_endpoints": [
                 {
                     "method": "GET",
-                    "path": "^/v1/mint/.*"
+                    "path": "/v1/mint/*"
                 },
                 {
                     "method": "POST",
@@ -334,10 +335,22 @@ mod tests {
 
         let expected_protected: HashSet<ProtectedEndpoint> = HashSet::from_iter(vec![
             ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt11),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt12),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt12),
+            ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+            ),
+            ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+            ),
+            ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            ),
+            ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+            ),
         ]);
 
         let deserialized_protected = settings.protected_endpoints.into_iter().collect();
@@ -352,7 +365,7 @@ mod tests {
             "protected_endpoints": [
                 {
                     "method": "GET",
-                    "path": "(unclosed parenthesis"
+                    "path": "/*wildcard_start"
                 }
             ]
         }"#;
@@ -368,7 +381,7 @@ mod tests {
             "protected_endpoints": [
                 {
                     "method": "GET",
-                    "path": ".*"
+                    "path": "/v1/*"
                 }
             ]
         }"#;
@@ -376,7 +389,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(
             settings.protected_endpoints.len(),
-            RoutePath::iter().count()
+            RoutePath::all_known_paths().len()
         );
     }
 }

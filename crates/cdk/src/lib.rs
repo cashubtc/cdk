@@ -8,7 +8,7 @@ compile_error!("The 'tor' feature is not supported on wasm32 targets (browser). 
 pub mod cdk_database {
     //! CDK Database
     pub use cdk_common::database::Error;
-    #[cfg(all(feature = "mint", feature = "auth"))]
+    #[cfg(feature = "mint")]
     pub use cdk_common::database::MintAuthDatabase;
     #[cfg(feature = "wallet")]
     pub use cdk_common::database::WalletDatabase;
@@ -33,12 +33,15 @@ mod bip353;
 #[cfg(feature = "wallet")]
 mod lightning_address;
 
-#[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
+#[cfg(any(feature = "wallet", feature = "mint"))]
 mod oidc_client;
 
 #[cfg(feature = "mint")]
 #[doc(hidden)]
 pub use cdk_common::payment as cdk_payment;
+#[cfg(feature = "wallet")]
+#[doc(hidden)]
+pub use cdk_common::wallet::WalletKey;
 /// Re-export amount type
 #[doc(hidden)]
 pub use cdk_common::{
@@ -46,7 +49,7 @@ pub use cdk_common::{
     error::{self, Error},
     lightning_invoice, mint_url, nuts, secret, util, ws, Amount, Bolt11Invoice,
 };
-#[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
+#[cfg(any(feature = "wallet", feature = "mint"))]
 pub use oidc_client::OidcClient;
 
 #[cfg(any(feature = "wallet", feature = "mint"))]
@@ -75,9 +78,15 @@ pub type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 /// Re-export subscription
 pub use cdk_common::subscription;
+#[cfg(any(feature = "wallet", feature = "mint"))]
+pub mod http_client {
+    //! Re-export HTTP client types from cdk-http-client (via cdk-common)
+    //!
+    //! HTTP client abstraction for making HTTP requests.
+    pub use cdk_common::{
+        fetch, HttpClient, HttpClientBuilder, HttpError, RawResponse, RequestBuilder, Response,
+    };
+}
 /// Re-export futures::Stream
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub use futures::{Stream, StreamExt};
-/// Payment Request
-#[cfg(feature = "wallet")]
-pub use wallet::payment_request;

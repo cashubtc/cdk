@@ -57,6 +57,8 @@ pub struct Info {
     pub signatory_url: Option<String>,
     pub signatory_certs: Option<String>,
     pub input_fee_ppk: Option<u64>,
+    /// Use keyset v2
+    pub use_keyset_v2: Option<bool>,
 
     pub http_cache: cache::Config,
 
@@ -88,6 +90,7 @@ impl Default for Info {
             signatory_url: None,
             signatory_certs: None,
             input_fee_ppk: None,
+            use_keyset_v2: None,
             http_cache: cache::Config::default(),
             enable_swagger_ui: None,
             logging: LoggingConfig::default(),
@@ -114,6 +117,7 @@ impl std::fmt::Debug for Info {
             .field("listen_port", &self.listen_port)
             .field("mnemonic", &mnemonic_display)
             .field("input_fee_ppk", &self.input_fee_ppk)
+            .field("use_keyset_v2", &self.use_keyset_v2)
             .field("http_cache", &self.http_cache)
             .field("logging", &self.logging)
             .field("enable_swagger_ui", &self.enable_swagger_ui)
@@ -186,7 +190,7 @@ impl Default for Ln {
 }
 
 #[cfg(feature = "lnbits")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LNbits {
     pub admin_api_key: String,
     pub invoice_api_key: String,
@@ -195,6 +199,19 @@ pub struct LNbits {
     pub fee_percent: f32,
     #[serde(default = "default_reserve_fee_min")]
     pub reserve_fee_min: Amount,
+}
+
+#[cfg(feature = "lnbits")]
+impl std::fmt::Debug for LNbits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LNbits")
+            .field("admin_api_key", &"[REDACTED]")
+            .field("invoice_api_key", &"[REDACTED]")
+            .field("lnbits_api", &self.lnbits_api)
+            .field("fee_percent", &self.fee_percent)
+            .field("reserve_fee_min", &self.reserve_fee_min)
+            .finish()
+    }
 }
 
 #[cfg(feature = "lnbits")]
@@ -265,7 +282,7 @@ impl Default for Lnd {
 }
 
 #[cfg(feature = "ldk-node")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LdkNode {
     /// Fee percentage (e.g., 0.02 for 2%)
     #[serde(default = "default_ldk_fee_percent")]
@@ -286,10 +303,14 @@ pub struct LdkNode {
     pub bitcoind_rpc_password: Option<String>,
     /// Storage directory path
     pub storage_dir_path: Option<String>,
+    /// Log directory path (logging stdout if omitted)
+    pub log_dir_path: Option<String>,
     /// LDK node listening host
     pub ldk_node_host: Option<String>,
     /// LDK node listening port
     pub ldk_node_port: Option<u16>,
+    /// LDK node announcement addresses
+    pub ldk_node_announce_addresses: Option<Vec<String>>,
     /// Gossip source type (p2p or rgs)
     pub gossip_source_type: Option<String>,
     /// Rapid Gossip Sync URL (when gossip_source_type = "rgs")
@@ -300,6 +321,9 @@ pub struct LdkNode {
     /// Webserver port
     #[serde(default = "default_webserver_port")]
     pub webserver_port: Option<u16>,
+    /// LDK node mnemonic
+    /// If not set, LDK node will use its default seed storage mechanism
+    pub ldk_node_mnemonic: Option<String>,
 }
 
 #[cfg(feature = "ldk-node")]
@@ -314,15 +338,48 @@ impl Default for LdkNode {
             bitcoind_rpc_host: None,
             bitcoind_rpc_port: None,
             bitcoind_rpc_user: None,
+            ldk_node_announce_addresses: None,
             bitcoind_rpc_password: None,
             storage_dir_path: None,
             ldk_node_host: None,
+            log_dir_path: None,
             ldk_node_port: None,
             gossip_source_type: None,
             rgs_url: None,
             webserver_host: default_webserver_host(),
             webserver_port: default_webserver_port(),
+            ldk_node_mnemonic: None,
         }
+    }
+}
+
+#[cfg(feature = "ldk-node")]
+impl std::fmt::Debug for LdkNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LdkNode")
+            .field("fee_percent", &self.fee_percent)
+            .field("reserve_fee_min", &self.reserve_fee_min)
+            .field("bitcoin_network", &self.bitcoin_network)
+            .field("chain_source_type", &self.chain_source_type)
+            .field("esplora_url", &self.esplora_url)
+            .field("bitcoind_rpc_host", &self.bitcoind_rpc_host)
+            .field("bitcoind_rpc_port", &self.bitcoind_rpc_port)
+            .field("bitcoind_rpc_user", &self.bitcoind_rpc_user)
+            .field("bitcoind_rpc_password", &"[REDACTED]")
+            .field("storage_dir_path", &self.storage_dir_path)
+            .field("log_dir_path", &self.log_dir_path)
+            .field("ldk_node_host", &self.ldk_node_host)
+            .field("ldk_node_port", &self.ldk_node_port)
+            .field(
+                "ldk_node_announce_addresses",
+                &self.ldk_node_announce_addresses,
+            )
+            .field("gossip_source_type", &self.gossip_source_type)
+            .field("rgs_url", &self.rgs_url)
+            .field("webserver_host", &self.webserver_host)
+            .field("webserver_port", &self.webserver_port)
+            .field("ldk_node_mnemonic", &"[REDACTED]")
+            .finish()
     }
 }
 
@@ -373,10 +430,12 @@ impl Default for FakeWallet {
 
 // Helper functions to provide default values
 // Common fee defaults for all backends
+#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
 fn default_fee_percent() -> f32 {
     0.02
 }
 
+#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
 fn default_reserve_fee_min() -> Amount {
     2.into()
 }
@@ -553,6 +612,9 @@ pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
     pub ln: Ln,
+    /// Transaction limits for DoS protection
+    #[serde(default)]
+    pub limits: Limits,
     #[cfg(feature = "cln")]
     pub cln: Option<Cln>,
     #[cfg(feature = "lnbits")]
@@ -565,7 +627,6 @@ pub struct Settings {
     pub fake_wallet: Option<FakeWallet>,
     pub grpc_processor: Option<GrpcProcessor>,
     pub database: Database,
-    #[cfg(feature = "auth")]
     pub auth_database: Option<AuthDatabase>,
     #[cfg(feature = "management-rpc")]
     pub mint_management_rpc: Option<MintManagementRpc>,
@@ -580,6 +641,34 @@ pub struct Prometheus {
     pub enabled: bool,
     pub address: Option<String>,
     pub port: Option<u16>,
+}
+
+/// Transaction limits configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Limits {
+    /// Maximum number of inputs allowed per transaction (swap/melt)
+    #[serde(default = "default_max_inputs")]
+    pub max_inputs: usize,
+    /// Maximum number of outputs allowed per transaction (mint/swap/melt)
+    #[serde(default = "default_max_outputs")]
+    pub max_outputs: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_inputs: 1000,
+            max_outputs: 1000,
+        }
+    }
+}
+
+fn default_max_inputs() -> usize {
+    1000
+}
+
+fn default_max_outputs() -> usize {
+    1000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -857,7 +946,7 @@ max_melt = 500000
         assert!(settings.cln.is_some());
         let cln_config = settings.cln.as_ref().unwrap();
         assert_eq!(cln_config.rpc_path, PathBuf::from("/tmp/lightning-rpc"));
-        assert_eq!(cln_config.bolt12, false);
+        assert!(!cln_config.bolt12);
         assert_eq!(cln_config.fee_percent, 0.01);
         let reserve_fee_u64: u64 = cln_config.reserve_fee_min.into();
         assert_eq!(reserve_fee_u64, 4);

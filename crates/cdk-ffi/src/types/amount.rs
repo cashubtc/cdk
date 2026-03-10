@@ -42,7 +42,7 @@ impl Amount {
         self_amount
             .checked_add(other_amount)
             .map(Into::into)
-            .ok_or(FfiError::AmountOverflow)
+            .ok_or_else(|| FfiError::internal("Amount overflow"))
     }
 
     pub fn subtract(&self, other: Amount) -> Result<Amount, FfiError> {
@@ -51,7 +51,7 @@ impl Amount {
         self_amount
             .checked_sub(other_amount)
             .map(Into::into)
-            .ok_or(FfiError::AmountOverflow)
+            .ok_or_else(|| FfiError::internal("Amount overflow"))
     }
 
     pub fn multiply(&self, factor: u64) -> Result<Amount, FfiError> {
@@ -60,19 +60,19 @@ impl Amount {
         self_amount
             .checked_mul(factor_amount)
             .map(Into::into)
-            .ok_or(FfiError::AmountOverflow)
+            .ok_or_else(|| FfiError::internal("Amount overflow"))
     }
 
     pub fn divide(&self, divisor: u64) -> Result<Amount, FfiError> {
         if divisor == 0 {
-            return Err(FfiError::DivisionByZero);
+            return Err(FfiError::internal("Division by zero"));
         }
         let self_amount = CdkAmount::from(self.value);
         let divisor_amount = CdkAmount::from(divisor);
         self_amount
             .checked_div(divisor_amount)
             .map(Into::into)
-            .ok_or(FfiError::AmountOverflow)
+            .ok_or_else(|| FfiError::internal("Amount overflow"))
     }
 }
 
@@ -91,7 +91,7 @@ impl From<Amount> for CdkAmount {
 }
 
 /// FFI-compatible Currency Unit
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum CurrencyUnit {
     Sat,
     Msat,

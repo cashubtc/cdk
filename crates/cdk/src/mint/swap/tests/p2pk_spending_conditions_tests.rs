@@ -90,10 +90,7 @@ async fn test_p2pk_single_pubkey_requires_all_proofs_signed() {
 
     let result = mint.process_swap_request(swap_request_no_sig).await;
     assert!(result.is_err(), "Should fail without signature");
-    println!(
-        "✓ Spending WITHOUT signature failed as expected: {:?}",
-        result.err()
-    );
+    println!("✓ Spending WITHOUT signature failed as expected");
 
     // Step 6: Sign only ONE of the proofs and try (should fail - need all signatures)
     let mut swap_request_partial_sig =
@@ -106,10 +103,7 @@ async fn test_p2pk_single_pubkey_requires_all_proofs_signed() {
 
     let result = mint.process_swap_request(swap_request_partial_sig).await;
     assert!(result.is_err(), "Should fail with only partial signatures");
-    println!(
-        "✓ Spending with PARTIAL signatures failed as expected: {:?}",
-        result.err()
-    );
+    println!("✓ Spending with PARTIAL signatures failed as expected");
 
     // Step 7: Now sign ALL the proofs and try again (should succeed)
     let mut swap_request_with_sig =
@@ -121,11 +115,7 @@ async fn test_p2pk_single_pubkey_requires_all_proofs_signed() {
     }
 
     let result = mint.process_swap_request(swap_request_with_sig).await;
-    assert!(
-        result.is_ok(),
-        "Should succeed with valid signature: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "Should succeed with valid signature");
     println!("✓ Spending WITH ALL signatures succeeded");
 }
 
@@ -218,10 +208,7 @@ async fn test_p2pk_multisig_2of3() {
         result.is_err(),
         "Should fail with only 1 signature (need 2)"
     );
-    println!(
-        "✓ Spending with only 1 signature (Alice) failed as expected: {:?}",
-        result.err()
-    );
+    println!("✓ Spending with only 1 signature (Alice) failed as expected");
 
     // Step 7: Try to spend with 2 invalid signatures (Dave + Eve - not in multisig set)
     let mut swap_request_invalid_sigs =
@@ -235,10 +222,7 @@ async fn test_p2pk_multisig_2of3() {
 
     let result = mint.process_swap_request(swap_request_invalid_sigs).await;
     assert!(result.is_err(), "Should fail with 2 invalid signatures");
-    println!(
-        "✓ Spending with 2 INVALID signatures (Dave + Eve) failed as expected: {:?}",
-        result.err()
-    );
+    println!("✓ Spending with 2 INVALID signatures (Dave + Eve) failed as expected");
 
     // Step 8: Spend with 2 valid signatures (Alice + Bob - should succeed)
     let mut swap_request_valid_sigs =
@@ -251,11 +235,7 @@ async fn test_p2pk_multisig_2of3() {
     }
 
     let result = mint.process_swap_request(swap_request_valid_sigs).await;
-    assert!(
-        result.is_ok(),
-        "Should succeed with 2 valid signatures: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "Should succeed with 2 valid signatures");
     println!("✓ Spending with 2 VALID signatures (Alice + Bob) succeeded");
 }
 
@@ -341,10 +321,7 @@ async fn test_p2pk_locktime_before_expiry() {
         result.is_err(),
         "Should fail - refund key cannot spend before locktime"
     );
-    println!(
-        "✓ Spending with refund key (Bob) BEFORE locktime failed as expected: {:?}",
-        result.err()
-    );
+    println!("✓ Spending with refund key (Bob) BEFORE locktime failed as expected");
 
     // Step 7: Spend with primary key (Alice) BEFORE locktime (should succeed)
     let mut swap_request_primary =
@@ -358,8 +335,7 @@ async fn test_p2pk_locktime_before_expiry() {
     let result = mint.process_swap_request(swap_request_primary).await;
     assert!(
         result.is_ok(),
-        "Should succeed - primary key can spend before locktime: {:?}",
-        result.err()
+        "Should succeed - primary key can spend before locktime"
     );
     println!("✓ Spending with primary key (Alice) BEFORE locktime succeeded");
 }
@@ -375,7 +351,7 @@ async fn test_p2pk_locktime_after_expiry() {
     let mint = test_mint.mint();
 
     let (alice_secret, alice_pubkey) = create_test_keypair();
-    let (bob_secret, bob_pubkey) = create_test_keypair();
+    let (_bob_secret, bob_pubkey) = create_test_keypair();
 
     // Set locktime in the past (already expired)
     let locktime = unix_time() - 3600;
@@ -544,7 +520,7 @@ async fn test_p2pk_multisig_locktime() {
     let (_carol_secret, carol_pubkey) = create_test_keypair();
 
     // After locktime: Need 1-of-2 from (Dave, Eve) as refund keys
-    let (dave_secret, dave_pubkey) = create_test_keypair();
+    let (_dave_secret, dave_pubkey) = create_test_keypair();
     let (_eve_secret, eve_pubkey) = create_test_keypair();
 
     let locktime = unix_time() - 100; // Already expired
@@ -680,10 +656,7 @@ async fn test_p2pk_signed_by_wrong_person() {
 
     let result = mint.process_swap_request(swap_request_wrong_sig).await;
     assert!(result.is_err(), "Should fail when signed with wrong key");
-    println!(
-        "✓ Spending signed by wrong person failed as expected: {:?}",
-        result.err()
-    );
+    println!("✓ Spending signed by wrong person failed as expected");
 }
 
 /// Test: Duplicate signatures are rejected
@@ -763,8 +736,5 @@ async fn test_p2pk_duplicate_signatures() {
         result.is_err(),
         "Should fail - duplicate signatures not allowed"
     );
-    println!(
-        "✓ Spending with duplicate signatures (Alice + Alice) failed as expected: {:?}",
-        result.err()
-    );
+    println!("✓ Spending with duplicate signatures (Alice + Alice) failed as expected");
 }

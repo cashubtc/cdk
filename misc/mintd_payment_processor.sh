@@ -94,14 +94,22 @@ if [ "$LN_BACKEND" != "FAKEWALLET" ]; then
                 ;;
         esac
     done < "$CDK_ITESTS_DIR/progress_pipe") &
-    # Wait for up to 120 seconds
-    for ((i=0; i<120; i++)); do
+    # Wait for up to 300 seconds (5 minutes) for regtest setup
+    # This needs to be long enough for cargo to compile start_regtest binary
+    for ((i=0; i<300; i++)); do
         if [ -f "$CDK_ITESTS_DIR/signal_received" ]; then
-            echo "break signal received"
+            echo "Checkpoint signal received"
             break
         fi
         sleep 1
     done
+
+    # Check if we actually received the signal or timed out
+    if [ ! -f "$CDK_ITESTS_DIR/signal_received" ]; then
+        echo "Timeout waiting for regtest setup after 300 seconds"
+        exit 1
+    fi
+
     echo "Regtest set up continuing"
     export CDK_PAYMENT_PROCESSOR_CLN_BOLT12=true
 fi
@@ -122,6 +130,29 @@ export CDK_PAYMENT_PROCESSOR_LISTEN_HOST="127.0.0.1";
 export CDK_PAYMENT_PROCESSOR_LISTEN_PORT="8090";
 
 echo "$CDK_PAYMENT_PROCESSOR_CLN_RPC_PATH"
+
+# Wait for LND certificate and macaroon files to exist (only if using LND backend)
+if [ "$LN_BACKEND" = "LND" ]; then
+    echo "Waiting for LND certificate and macaroon files..."
+    CERT_TIMEOUT=120
+    CERT_START_TIME=$(date +%s)
+    
+    while [ ! -f "$CDK_PAYMENT_PROCESSOR_LND_CERT_FILE" ] || [ ! -f "$CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE" ]; do
+        CURRENT_TIME=$(date +%s)
+        ELAPSED_TIME=$((CURRENT_TIME - CERT_START_TIME))
+        
+        if [ $ELAPSED_TIME -ge $CERT_TIMEOUT ]; then
+            echo "Timeout waiting for LND files after $CERT_TIMEOUT seconds"
+            echo "Expected cert file: $CDK_PAYMENT_PROCESSOR_LND_CERT_FILE"
+            echo "Expected macaroon file: $CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE"
+            exit 1
+        fi
+        
+        sleep 0.5
+    done
+    
+    echo "LND certificate and macaroon files found"
+fi
 
 cargo b --bin cdk-payment-processor
 

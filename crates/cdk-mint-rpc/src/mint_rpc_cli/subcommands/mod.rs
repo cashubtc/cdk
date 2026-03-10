@@ -1,3 +1,18 @@
+//! Subcommands for the mint RPC CLI
+
+use cdk_common::grpc::VERSION_HEADER;
+use tonic::metadata::MetadataValue;
+use tonic::Request;
+
+/// Helper function to add version header to a request
+pub fn with_version_header<T>(mut request: Request<T>) -> Request<T> {
+    request.metadata_mut().insert(
+        VERSION_HEADER,
+        MetadataValue::from_static(cdk_common::MINT_RPC_PROTOCOL_VERSION),
+    );
+    request
+}
+
 /// Module for rotating to the next keyset
 mod rotate_next_keyset;
 /// Module for updating mint contact information

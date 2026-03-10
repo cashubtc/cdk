@@ -2,18 +2,18 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/06.md>
 
-#[cfg(feature = "auth")]
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
 use super::nut17::SupportedMethods;
 use super::nut19::CachedEndpoint;
-use super::{nut04, nut05, nut15, nut19, MppMethodSettings};
-#[cfg(feature = "auth")]
-use super::{AuthRequired, BlindAuthSettings, ClearAuthSettings, ProtectedEndpoint};
+use super::{
+    nut04, nut05, nut15, nut19, nut29, AuthRequired, BlindAuthSettings, ClearAuthSettings,
+    MppMethodSettings, ProtectedEndpoint,
+};
+use crate::util::serde_helpers::deserialize_empty_string_as_none;
 use crate::CurrencyUnit;
 
 /// Mint Version
@@ -74,7 +74,11 @@ pub struct MintInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// hex pubkey of the mint
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_empty_string_as_none"
+    )]
     pub pubkey: Option<PublicKey>,
     /// implementation name and the version running
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -220,26 +224,24 @@ impl MintInfo {
     }
 
     /// Get protected endpoints
-    #[cfg(feature = "auth")]
     pub fn protected_endpoints(&self) -> HashMap<ProtectedEndpoint, AuthRequired> {
         let mut protected_endpoints = HashMap::new();
 
         if let Some(nut21_settings) = &self.nuts.nut21 {
             for endpoint in nut21_settings.protected_endpoints.iter() {
-                protected_endpoints.insert(*endpoint, AuthRequired::Clear);
+                protected_endpoints.insert(endpoint.clone(), AuthRequired::Clear);
             }
         }
 
         if let Some(nut22_settings) = &self.nuts.nut22 {
             for endpoint in nut22_settings.protected_endpoints.iter() {
-                protected_endpoints.insert(*endpoint, AuthRequired::Blind);
+                protected_endpoints.insert(endpoint.clone(), AuthRequired::Blind);
             }
         }
         protected_endpoints
     }
 
     /// Get Openid discovery of the mint if it is set
-    #[cfg(feature = "auth")]
     pub fn openid_discovery(&self) -> Option<String> {
         self.nuts
             .nut21
@@ -248,13 +250,11 @@ impl MintInfo {
     }
 
     /// Get Openid discovery of the mint if it is set
-    #[cfg(feature = "auth")]
     pub fn client_id(&self) -> Option<String> {
         self.nuts.nut21.as_ref().map(|s| s.client_id.clone())
     }
 
     /// Max bat mint
-    #[cfg(feature = "auth")]
     pub fn bat_max_mint(&self) -> Option<u64> {
         self.nuts.nut22.as_ref().map(|s| s.bat_max_mint)
     }
@@ -330,13 +330,16 @@ pub struct Nuts {
     /// NUT21 Settings
     #[serde(rename = "21")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg(feature = "auth")]
     pub nut21: Option<ClearAuthSettings>,
     /// NUT22 Settings
     #[serde(rename = "22")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg(feature = "auth")]
     pub nut22: Option<BlindAuthSettings>,
+    /// NUT29 Settings
+    #[serde(default)]
+    #[serde(rename = "29")]
+    #[serde(skip_serializing_if = "nut29::Settings::is_empty")]
+    pub nut29: nut29::Settings,
 }
 
 impl Nuts {
@@ -454,6 +457,14 @@ impl Nuts {
         }
     }
 
+    /// Nut29 settings
+    pub fn nut29(self, settings: nut29::Settings) -> Self {
+        Self {
+            nut29: settings,
+            ..self
+        }
+    }
+
     /// Units where minting is supported
     pub fn supported_mint_units(&self) -> Vec<&CurrencyUnit> {
         self.nut04
@@ -506,6 +517,7 @@ impl ContactInfo {
 mod tests {
 
     use super::*;
+    use crate::nut00::KnownMethod;
     use crate::nut04::MintMethodOptions;
 
     #[test]
@@ -668,7 +680,10 @@ mod tests {
         let t = mint_info
             .nuts
             .nut04
-            .get_settings(&crate::CurrencyUnit::Sat, &crate::PaymentMethod::Bolt11)
+            .get_settings(
+                &crate::CurrencyUnit::Sat,
+                &crate::PaymentMethod::Known(KnownMethod::Bolt11),
+            )
             .unwrap();
 
         let t = t.options.unwrap();
@@ -697,7 +712,7 @@ mod tests {
         let mint_info_with_nut15 = MintInfo {
             name: Some("Test Mint".to_string()),
             nuts: Nuts::default().nut15(vec![MppMethodSettings {
-                method: crate::PaymentMethod::Bolt11,
+                method: crate::PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: crate::CurrencyUnit::Sat,
             }]),
             ..Default::default()

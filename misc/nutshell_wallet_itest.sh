@@ -60,6 +60,9 @@ export CDK_MINTD_INPUT_FEE_PPK="100"
 
 export CDK_ITESTS_DIR="$CDK_ITESTS"
 
+# Build cdk-mintd first to avoid compilation time affecting the timeout timer
+echo "Building cdk-mintd..."
+cargo build --bin cdk-mintd
 
 echo "Starting fake mintd"
 cargo run --bin cdk-mintd &
@@ -155,6 +158,10 @@ fi
 export MINT_URL=${MINT_URL}
 export WALLET_URL=${WALLET_URL}
 export CDK_TEST_MINT_URL=${MINT_URL}
+
+# Build test binaries first to avoid compilation time affecting test execution
+echo "Building test binaries..."
+cargo build -p cdk-integration-tests --test nutshell_wallet --test test_fees
 
 # Run the integration test
 echo "Running integration test..."

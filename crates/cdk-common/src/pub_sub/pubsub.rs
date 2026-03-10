@@ -30,6 +30,7 @@ pub type TopicTree<T> = Arc<
 >;
 
 /// Manager
+#[allow(missing_debug_implementations)]
 pub struct Pubsub<S>
 where
     S: Spec + 'static,

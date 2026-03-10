@@ -18,8 +18,7 @@ use crate::test_helpers::mint::{
 /// Helper to create a verification result for testing
 fn create_verification(amount: Amount) -> Verification {
     Verification {
-        amount,
-        unit: Some(cdk_common::nuts::CurrencyUnit::Sat),
+        amount: amount.with_unit(cdk_common::nuts::CurrencyUnit::Sat),
     }
 }
 
@@ -412,7 +411,7 @@ async fn test_swap_saga_compensation_clears_on_success() {
 
     let saga = SwapSaga::new(&mint, db, pubsub);
 
-    let compensations_before = saga.compensations.lock().await.len();
+    let compensations_before = saga.compensations.len();
 
     let saga = saga
         .setup_swap(
@@ -424,7 +423,7 @@ async fn test_swap_saga_compensation_clears_on_success() {
         .await
         .expect("Setup should succeed");
 
-    let compensations_after_setup = saga.compensations.lock().await.len();
+    let compensations_after_setup = saga.compensations.len();
     assert_eq!(
         compensations_after_setup, 1,
         "Should have one compensation after setup"
@@ -432,7 +431,7 @@ async fn test_swap_saga_compensation_clears_on_success() {
 
     let saga = saga.sign_outputs().await.expect("Signing should succeed");
 
-    let compensations_after_sign = saga.compensations.lock().await.len();
+    let compensations_after_sign = saga.compensations.len();
     assert_eq!(
         compensations_after_sign, 1,
         "Should still have one compensation after signing"
@@ -1208,24 +1207,34 @@ async fn test_saga_state_persistence_after_setup() {
     // Verify operation_id matches
     assert_eq!(saga.operation_id, *operation_id);
 
-    // Verify blinded_secrets are stored correctly
+    // Verify blinded_secrets can be looked up by operation_id
     let expected_blinded_secrets: Vec<_> = output_blinded_messages
         .iter()
         .map(|bm| bm.blinded_secret)
         .collect();
-    assert_eq!(saga.blinded_secrets.len(), expected_blinded_secrets.len());
+    let stored_blinded_secrets = mint
+        .localstore()
+        .get_blinded_secrets_by_operation_id(&saga.operation_id)
+        .await
+        .unwrap();
+    assert_eq!(stored_blinded_secrets.len(), expected_blinded_secrets.len());
     for bs in &expected_blinded_secrets {
         assert!(
-            saga.blinded_secrets.contains(bs),
-            "Blinded secret should be in saga"
+            stored_blinded_secrets.contains(bs),
+            "Blinded secret should be stored"
         );
     }
 
-    // Verify input_ys are stored correctly
+    // Verify input_ys can be looked up by operation_id
     let expected_ys = input_proofs.ys().unwrap();
-    assert_eq!(saga.input_ys.len(), expected_ys.len());
+    let stored_input_ys = mint
+        .localstore()
+        .get_proof_ys_by_operation_id(&saga.operation_id)
+        .await
+        .unwrap();
+    assert_eq!(stored_input_ys.len(), expected_ys.len());
     for y in &expected_ys {
-        assert!(saga.input_ys.contains(y), "Input Y should be in saga");
+        assert!(stored_input_ys.contains(y), "Input Y should be stored");
     }
 }
 
@@ -1471,16 +1480,26 @@ async fn test_saga_content_validation() {
         SagaStateEnum::Swap(SwapSagaState::SetupComplete)
     );
 
-    // Validate blinded secrets
-    assert_eq!(saga.blinded_secrets.len(), expected_blinded_secrets.len());
+    // Validate blinded secrets can be looked up by operation_id
+    let stored_blinded_secrets = mint
+        .localstore()
+        .get_blinded_secrets_by_operation_id(&saga.operation_id)
+        .await
+        .unwrap();
+    assert_eq!(stored_blinded_secrets.len(), expected_blinded_secrets.len());
     for bs in &expected_blinded_secrets {
-        assert!(saga.blinded_secrets.contains(bs));
+        assert!(stored_blinded_secrets.contains(bs));
     }
 
-    // Validate input Ys
-    assert_eq!(saga.input_ys.len(), expected_ys.len());
+    // Validate input Ys can be looked up by operation_id
+    let stored_input_ys = mint
+        .localstore()
+        .get_proof_ys_by_operation_id(&saga.operation_id)
+        .await
+        .unwrap();
+    assert_eq!(stored_input_ys.len(), expected_ys.len());
     for y in &expected_ys {
-        assert!(saga.input_ys.contains(y));
+        assert!(stored_input_ys.contains(y));
     }
 
     // Validate timestamps
@@ -1578,11 +1597,6 @@ async fn test_saga_state_updates_persisted() {
 
     // Verify other fields unchanged
     assert_eq!(state_after_sign.operation_id, operation_id);
-    assert_eq!(
-        state_after_sign.blinded_secrets,
-        state_after_setup.blinded_secrets
-    );
-    assert_eq!(state_after_sign.input_ys, state_after_setup.input_ys);
     assert_eq!(state_after_sign.created_at, initial_created_at);
 
     // updated_at might not change since state wasn't updated

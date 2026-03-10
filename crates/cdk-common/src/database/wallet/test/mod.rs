@@ -3,21 +3,24 @@
 //! This module contains generic tests for wallet database implementations.
 //! These tests can be used to verify any wallet database implementation
 //! by using the `wallet_db_test!` macro.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::missing_panics_doc)]
 
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use cashu::nut00::KnownMethod;
 use cashu::secret::Secret;
-use cashu::{Amount, CurrencyUnit, PaymentMethod, SecretKey};
+use cashu::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
-use crate::common::ProofInfo;
 use crate::mint_url::MintUrl;
 use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, State};
-use crate::wallet::{MeltQuote, MintQuote, Transaction, TransactionDirection};
+use crate::wallet::{
+    MeltQuote, MintQuote, OperationData, ProofInfo, SwapOperationData, SwapSagaState, Transaction,
+    TransactionDirection, WalletSaga, WalletSagaState,
+};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -92,6 +95,7 @@ fn test_proof(keyset_id: Id, amount: u64) -> Proof {
         c: SecretKey::generate().public_key(),
         witness: None,
         dleq: None,
+        p2pk_e: None,
     }
 }
 
@@ -106,7 +110,7 @@ fn test_mint_quote(mint_url: MintUrl) -> MintQuote {
     MintQuote::new(
         unique_id(),
         mint_url,
-        PaymentMethod::Bolt11,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         Some(Amount::from(1000)),
         CurrencyUnit::Sat,
         "lnbc1000...".to_string(),
@@ -126,7 +130,9 @@ fn test_melt_quote() -> MeltQuote {
         state: cashu::MeltQuoteState::Unpaid,
         expiry: 9999999999,
         payment_preimage: None,
-        payment_method: PaymentMethod::Bolt11,
+        payment_method: cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        used_by_operation: None,
+        version: 0,
     }
 }
 
@@ -147,7 +153,26 @@ fn test_transaction(mint_url: MintUrl, direction: TransactionDirection) -> Trans
         payment_request: None,
         payment_proof: None,
         payment_method: None,
+        saga_id: None,
     }
+}
+
+/// Create a test wallet saga
+fn test_wallet_saga(mint_url: MintUrl) -> WalletSaga {
+    WalletSaga::new(
+        uuid::Uuid::new_v4(),
+        WalletSagaState::Swap(SwapSagaState::ProofsReserved),
+        Amount::from(1000),
+        mint_url,
+        CurrencyUnit::Sat,
+        OperationData::Swap(SwapOperationData {
+            input_amount: Amount::from(1000),
+            output_amount: Amount::from(990),
+            counter_start: Some(0),
+            counter_end: Some(10),
+            blinded_messages: None,
+        }),
+    )
 }
 
 // =============================================================================
@@ -163,11 +188,9 @@ where
     let mint_info = MintInfo::default();
 
     // Add mint
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_mint(mint_url.clone(), Some(mint_info.clone()))
+    db.add_mint(mint_url.clone(), Some(mint_info.clone()))
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Get mint
     let retrieved = db.get_mint(mint_url.clone()).await.unwrap();
@@ -185,9 +208,7 @@ where
 {
     let mint_url = test_mint_url();
 
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_mint(mint_url.clone(), None).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_mint(mint_url.clone(), None).await.unwrap();
 
     // Verify mint exists in the database
     let mints = db.get_mints().await.unwrap();
@@ -202,14 +223,10 @@ where
     let mint_url = test_mint_url();
 
     // Add mint
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_mint(mint_url.clone(), None).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_mint(mint_url.clone(), None).await.unwrap();
 
     // Remove mint
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.remove_mint(mint_url.clone()).await.unwrap();
-    tx.commit().await.unwrap();
+    db.remove_mint(mint_url.clone()).await.unwrap();
 
     let result = db.get_mint(mint_url).await.unwrap();
     assert!(result.is_none());
@@ -224,16 +241,12 @@ where
     let new_url = test_mint_url_2();
 
     // Add mint with old URL
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_mint(old_url.clone(), None).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_mint(old_url.clone(), None).await.unwrap();
 
     // Update URL
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.update_mint_url(old_url.clone(), new_url.clone())
+    db.update_mint_url(old_url.clone(), new_url.clone())
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 }
 
 // =============================================================================
@@ -250,12 +263,10 @@ where
     let keyset_info = test_keyset_info(keyset_id, &mint_url);
 
     // Add mint first
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_mint(mint_url.clone(), None).await.unwrap();
-    tx.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Get keyset by ID
     let retrieved = db.get_keyset_by_id(&keyset_id).await.unwrap();
@@ -278,18 +289,14 @@ where
     let keyset_info = test_keyset_info(keyset_id, &mint_url);
 
     // Add keyset
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_mint(mint_url.clone(), None).await.unwrap();
-    tx.add_mint_keysets(mint_url.clone(), vec![keyset_info])
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info])
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Get in transaction
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    let retrieved = tx.get_keyset_by_id(&keyset_id).await.unwrap();
+    let retrieved = db.get_keyset_by_id(&keyset_id).await.unwrap();
     assert!(retrieved.is_some());
-    tx.rollback().await.unwrap();
 }
 
 /// Test adding and retrieving keys
@@ -302,14 +309,14 @@ where
     let keyset = cashu::KeySet {
         id: keyset_id,
         unit: CurrencyUnit::Sat,
+        active: None,
         keys: keys.clone(),
+        input_fee_ppk: 0,
         final_expiry: None,
     };
 
     // Add keys
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_keys(keyset).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_keys(keyset).await.unwrap();
 
     // Get keys
     let retrieved = db.get_keys(&keyset_id).await.unwrap();
@@ -328,22 +335,20 @@ where
     let keyset = cashu::KeySet {
         id: keyset_id,
         unit: CurrencyUnit::Sat,
+        active: None,
         keys: keys.clone(),
+        input_fee_ppk: 0,
         final_expiry: None,
     };
 
     // Add keys
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_keys(keyset).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_keys(keyset).await.unwrap();
 
     // Get in transaction
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    let retrieved = tx.get_keys(&keyset_id).await.unwrap();
+    let retrieved = db.get_keys(&keyset_id).await.unwrap();
     assert!(retrieved.is_some());
     let retrieved_keys = retrieved.unwrap();
     assert_eq!(retrieved_keys.len(), keys.len());
-    tx.rollback().await.unwrap();
 }
 
 /// Test removing keys
@@ -356,23 +361,21 @@ where
     let keyset = cashu::KeySet {
         id: keyset_id,
         unit: CurrencyUnit::Sat,
+        active: None,
         keys,
+        input_fee_ppk: 0,
         final_expiry: None,
     };
 
     // Add keys
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_keys(keyset).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_keys(keyset).await.unwrap();
 
     // Verify keys were added
     let retrieved = db.get_keys(&keyset_id).await.unwrap();
     assert!(retrieved.is_some());
 
     // Remove keys
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.remove_keys(&keyset_id).await.unwrap();
-    tx.commit().await.unwrap();
+    db.remove_keys(&keyset_id).await.unwrap();
 
     let retrieved = db.get_keys(&keyset_id).await.unwrap();
     assert!(retrieved.is_none());
@@ -391,9 +394,7 @@ where
     let quote = test_mint_quote(mint_url);
 
     // Add quote
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_mint_quote(quote.clone()).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_mint_quote(quote.clone()).await.unwrap();
 
     // Get quote
     let retrieved = db.get_mint_quote(&quote.id).await.unwrap();
@@ -414,15 +415,11 @@ where
     let quote = test_mint_quote(mint_url);
 
     // Add quote
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_mint_quote(quote.clone()).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_mint_quote(quote.clone()).await.unwrap();
 
     // Get in transaction
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    let retrieved = tx.get_mint_quote(&quote.id).await.unwrap();
+    let retrieved = db.get_mint_quote(&quote.id).await.unwrap();
     assert!(retrieved.is_some());
-    tx.rollback().await.unwrap();
 }
 
 /// Test removing mint quote
@@ -434,14 +431,10 @@ where
     let quote = test_mint_quote(mint_url);
 
     // Add quote
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_mint_quote(quote.clone()).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_mint_quote(quote.clone()).await.unwrap();
 
     // Remove quote
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.remove_mint_quote(&quote.id).await.unwrap();
-    tx.commit().await.unwrap();
+    db.remove_mint_quote(&quote.id).await.unwrap();
 
     let retrieved = db.get_mint_quote(&quote.id).await.unwrap();
     assert!(retrieved.is_none());
@@ -459,9 +452,7 @@ where
     let quote = test_melt_quote();
 
     // Add quote
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_melt_quote(quote.clone()).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_melt_quote(quote.clone()).await.unwrap();
 
     // Get quote
     let retrieved = db.get_melt_quote(&quote.id).await.unwrap();
@@ -481,15 +472,11 @@ where
     let quote = test_melt_quote();
 
     // Add quote
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_melt_quote(quote.clone()).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_melt_quote(quote.clone()).await.unwrap();
 
     // Get in transaction
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    let retrieved = tx.get_melt_quote(&quote.id).await.unwrap();
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap();
     assert!(retrieved.is_some());
-    tx.rollback().await.unwrap();
 }
 
 /// Test removing melt quote
@@ -500,17 +487,93 @@ where
     let quote = test_melt_quote();
 
     // Add quote
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_melt_quote(quote.clone()).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_melt_quote(quote.clone()).await.unwrap();
 
     // Remove quote
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.remove_melt_quote(&quote.id).await.unwrap();
-    tx.commit().await.unwrap();
+    db.remove_melt_quote(&quote.id).await.unwrap();
 
     let retrieved = db.get_melt_quote(&quote.id).await.unwrap();
     assert!(retrieved.is_none());
+}
+
+/// Test mint quote optimistic locking
+pub async fn add_mint_quote_optimistic_locking<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let quote = test_mint_quote(mint_url);
+
+    // 1. Initial add (insert)
+    db.add_mint_quote(quote.clone()).await.unwrap();
+
+    let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 0);
+
+    // 2. Update (version 0 -> 1)
+    let mut quote_update_1 = quote.clone();
+    quote_update_1.state = MintQuoteState::Issued; // Change something
+    db.add_mint_quote(quote_update_1.clone()).await.unwrap();
+
+    let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert_eq!(retrieved.state, MintQuoteState::Issued);
+
+    // 3. Stale update (using version 0) - should fail
+    // quote_update_1 still has version 0
+    let mut stale_quote = quote_update_1.clone();
+    stale_quote.amount = Some(Amount::from(999));
+
+    let result = db.add_mint_quote(stale_quote).await;
+    assert!(matches!(
+        result,
+        Err(crate::database::Error::ConcurrentUpdate)
+    ));
+
+    // Verify DB wasn't changed
+    let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert_eq!(retrieved.state, MintQuoteState::Issued);
+    assert_ne!(retrieved.amount, Some(Amount::from(999)));
+}
+
+/// Test melt quote optimistic locking
+pub async fn add_melt_quote_optimistic_locking<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let quote = test_melt_quote();
+
+    // 1. Initial add (insert)
+    db.add_melt_quote(quote.clone()).await.unwrap();
+
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 0);
+
+    // 2. Update (version 0 -> 1)
+    let mut quote_update_1 = quote.clone();
+    quote_update_1.state = MeltQuoteState::Paid;
+    db.add_melt_quote(quote_update_1.clone()).await.unwrap();
+
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert_eq!(retrieved.state, MeltQuoteState::Paid);
+
+    // 3. Stale update (using version 0) - should fail
+    let mut stale_quote = quote_update_1.clone();
+    stale_quote.amount = Amount::from(999);
+
+    let result = db.add_melt_quote(stale_quote).await;
+    assert!(matches!(
+        result,
+        Err(crate::database::Error::ConcurrentUpdate)
+    ));
+
+    // Verify DB wasn't changed
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert_eq!(retrieved.state, MeltQuoteState::Paid);
+    assert_ne!(retrieved.amount, Amount::from(999));
 }
 
 // =============================================================================
@@ -527,11 +590,9 @@ where
     let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
 
     // Add proof
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.update_proofs(vec![proof_info.clone()], vec![])
+    db.update_proofs(vec![proof_info.clone()], vec![])
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Get proofs
     let proofs = db.get_proofs(None, None, None, None).await.unwrap();
@@ -560,17 +621,13 @@ where
     let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
 
     // Add proof
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.update_proofs(vec![proof_info.clone()], vec![])
+    db.update_proofs(vec![proof_info.clone()], vec![])
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Get proofs in transaction
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    let proofs = tx.get_proofs(None, None, None, None).await.unwrap();
+    let proofs = db.get_proofs(None, None, None, None).await.unwrap();
     assert!(!proofs.is_empty());
-    tx.rollback().await.unwrap();
 }
 
 /// Test updating proofs (add and remove)
@@ -584,18 +641,14 @@ where
     let proof_info_2 = test_proof_info(keyset_id, 200, mint_url.clone());
 
     // Add first proof
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.update_proofs(vec![proof_info_1.clone()], vec![])
+    db.update_proofs(vec![proof_info_1.clone()], vec![])
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Add second, remove first
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.update_proofs(vec![proof_info_2.clone()], vec![proof_info_1.y])
+    db.update_proofs(vec![proof_info_2.clone()], vec![proof_info_1.y])
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Verify
     let proofs = db.get_proofs(None, None, None, None).await.unwrap();
@@ -613,18 +666,14 @@ where
     let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
 
     // Add proof
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.update_proofs(vec![proof_info.clone()], vec![])
+    db.update_proofs(vec![proof_info.clone()], vec![])
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Update state
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.update_proofs_state(vec![proof_info.y], State::Pending)
+    db.update_proofs_state(vec![proof_info.y], State::Pending)
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Verify
     let proofs = db
@@ -644,11 +693,9 @@ where
     let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
 
     // Add proof
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.update_proofs(vec![proof_info.clone()], vec![])
+    db.update_proofs(vec![proof_info.clone()], vec![])
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Filter by unit
     let proofs = db
@@ -675,11 +722,9 @@ where
     let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
 
     // Add proof
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.update_proofs(vec![proof_info.clone()], vec![])
+    db.update_proofs(vec![proof_info.clone()], vec![])
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Filter by state
     let proofs = db
@@ -711,11 +756,9 @@ where
     let proof_info_2 = test_proof_info(keyset_id, 200, mint_url.clone());
 
     // Add proofs
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.update_proofs(vec![proof_info_1, proof_info_2], vec![])
+    db.update_proofs(vec![proof_info_1, proof_info_2], vec![])
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Get total balance
     let balance = db.get_balance(None, None, None).await.unwrap();
@@ -736,11 +779,9 @@ where
     let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
 
     // Add proof
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.update_proofs(vec![proof_info.clone()], vec![])
+    db.update_proofs(vec![proof_info.clone()], vec![])
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     // Get balance by state
     let balance = db
@@ -769,16 +810,12 @@ where
     let keyset_id = test_keyset_id();
 
     // Increment counter
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    let counter1 = tx.increment_keyset_counter(&keyset_id, 5).await.unwrap();
-    tx.commit().await.unwrap();
+    let counter1 = db.increment_keyset_counter(&keyset_id, 5).await.unwrap();
 
     assert_eq!(counter1, 5);
 
     // Increment again
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    let counter2 = tx.increment_keyset_counter(&keyset_id, 10).await.unwrap();
-    tx.commit().await.unwrap();
+    let counter2 = db.increment_keyset_counter(&keyset_id, 10).await.unwrap();
 
     assert_eq!(counter2, 15);
 }
@@ -792,22 +829,16 @@ where
     let keyset_id_2 = test_keyset_id_2();
 
     // Increment first keyset
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.increment_keyset_counter(&keyset_id_1, 5).await.unwrap();
-    tx.commit().await.unwrap();
+    db.increment_keyset_counter(&keyset_id_1, 5).await.unwrap();
 
     // Increment second keyset
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    let counter2 = tx.increment_keyset_counter(&keyset_id_2, 10).await.unwrap();
-    tx.commit().await.unwrap();
+    let counter2 = db.increment_keyset_counter(&keyset_id_2, 10).await.unwrap();
 
     // Second keyset should start from 0
     assert_eq!(counter2, 10);
 
     // First keyset should still be at 5
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    let counter1 = tx.increment_keyset_counter(&keyset_id_1, 0).await.unwrap();
-    tx.rollback().await.unwrap();
+    let counter1 = db.increment_keyset_counter(&keyset_id_1, 0).await.unwrap();
 
     assert_eq!(counter1, 5);
 }
@@ -826,9 +857,7 @@ where
     let tx_id = transaction.id();
 
     // Add transaction
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_transaction(transaction.clone()).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_transaction(transaction.clone()).await.unwrap();
 
     // Get transaction
     let retrieved = db.get_transaction(tx_id).await.unwrap();
@@ -846,10 +875,8 @@ where
     let tx_outgoing = test_transaction(mint_url.clone(), TransactionDirection::Outgoing);
 
     // Add transactions
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_transaction(tx_incoming).await.unwrap();
-    tx.add_transaction(tx_outgoing).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_transaction(tx_incoming).await.unwrap();
+    db.add_transaction(tx_outgoing).await.unwrap();
 
     // List all
     let transactions = db.list_transactions(None, None, None).await.unwrap();
@@ -880,10 +907,8 @@ where
     let tx_2 = test_transaction(mint_url_2.clone(), TransactionDirection::Incoming);
 
     // Add transactions
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_transaction(tx_1).await.unwrap();
-    tx.add_transaction(tx_2).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_transaction(tx_1).await.unwrap();
+    db.add_transaction(tx_2).await.unwrap();
 
     // Filter by mint
     let transactions = db
@@ -903,57 +928,490 @@ where
     let tx_id = transaction.id();
 
     // Add transaction
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_transaction(transaction).await.unwrap();
-    tx.commit().await.unwrap();
+    db.add_transaction(transaction).await.unwrap();
 
     // Remove transaction
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.remove_transaction(tx_id).await.unwrap();
-    tx.commit().await.unwrap();
+    db.remove_transaction(tx_id).await.unwrap();
 
     let retrieved = db.get_transaction(tx_id).await.unwrap();
     assert!(retrieved.is_none());
 }
 
-// =============================================================================
-// Transaction Rollback Tests
+// KV Store Tests
 // =============================================================================
 
-/// Test transaction rollback
-pub async fn transaction_rollback<DB>(db: DB)
+/// Test KV store write and read operations
+pub async fn kvstore_write_and_read<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    // Write some test data
+    db.kv_write("test_namespace", "sub_namespace", "key1", b"value1")
+        .await
+        .unwrap();
+    db.kv_write("test_namespace", "sub_namespace", "key2", b"value2")
+        .await
+        .unwrap();
+    db.kv_write("test_namespace", "other_sub", "key3", b"value3")
+        .await
+        .unwrap();
+
+    // Read back the data
+    let value1 = db
+        .kv_read("test_namespace", "sub_namespace", "key1")
+        .await
+        .unwrap();
+    assert_eq!(value1, Some(b"value1".to_vec()));
+
+    let value2 = db
+        .kv_read("test_namespace", "sub_namespace", "key2")
+        .await
+        .unwrap();
+    assert_eq!(value2, Some(b"value2".to_vec()));
+
+    let value3 = db
+        .kv_read("test_namespace", "other_sub", "key3")
+        .await
+        .unwrap();
+    assert_eq!(value3, Some(b"value3".to_vec()));
+
+    // Read non-existent key
+    let missing = db
+        .kv_read("test_namespace", "sub_namespace", "missing")
+        .await
+        .unwrap();
+    assert_eq!(missing, None);
+}
+
+/// Test KV store list operation
+pub async fn kvstore_list<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    // Write some test data
+    db.kv_write("test_namespace", "sub_namespace", "key1", b"value1")
+        .await
+        .unwrap();
+    db.kv_write("test_namespace", "sub_namespace", "key2", b"value2")
+        .await
+        .unwrap();
+    db.kv_write("test_namespace", "other_sub", "key3", b"value3")
+        .await
+        .unwrap();
+
+    // List keys in namespace
+    let mut keys = db.kv_list("test_namespace", "sub_namespace").await.unwrap();
+    keys.sort();
+    assert_eq!(keys, vec!["key1", "key2"]);
+
+    // List keys in other namespace
+    let other_keys = db.kv_list("test_namespace", "other_sub").await.unwrap();
+    assert_eq!(other_keys, vec!["key3"]);
+
+    // List keys in empty namespace
+    let empty_keys = db.kv_list("test_namespace", "empty_sub").await.unwrap();
+    assert!(empty_keys.is_empty());
+}
+
+/// Test KV store update operation
+pub async fn kvstore_update<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    // Write initial value
+    db.kv_write("test_namespace", "sub_namespace", "key1", b"value1")
+        .await
+        .unwrap();
+
+    // Verify initial value
+    let value = db
+        .kv_read("test_namespace", "sub_namespace", "key1")
+        .await
+        .unwrap();
+    assert_eq!(value, Some(b"value1".to_vec()));
+
+    // Update value
+    db.kv_write("test_namespace", "sub_namespace", "key1", b"updated_value1")
+        .await
+        .unwrap();
+
+    // Verify updated value
+    let value = db
+        .kv_read("test_namespace", "sub_namespace", "key1")
+        .await
+        .unwrap();
+    assert_eq!(value, Some(b"updated_value1".to_vec()));
+}
+
+/// Test KV store remove operation
+pub async fn kvstore_remove<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    // Write some test data
+    db.kv_write("test_namespace", "sub_namespace", "key1", b"value1")
+        .await
+        .unwrap();
+    db.kv_write("test_namespace", "sub_namespace", "key2", b"value2")
+        .await
+        .unwrap();
+
+    // Verify data exists
+    let keys = db.kv_list("test_namespace", "sub_namespace").await.unwrap();
+    assert_eq!(keys.len(), 2);
+
+    // Remove one key
+    db.kv_remove("test_namespace", "sub_namespace", "key1")
+        .await
+        .unwrap();
+
+    // Verify key is removed
+    let value = db
+        .kv_read("test_namespace", "sub_namespace", "key1")
+        .await
+        .unwrap();
+    assert_eq!(value, None);
+
+    // Verify other key still exists
+    let value = db
+        .kv_read("test_namespace", "sub_namespace", "key2")
+        .await
+        .unwrap();
+    assert_eq!(value, Some(b"value2".to_vec()));
+
+    // Verify list is updated
+    let keys = db.kv_list("test_namespace", "sub_namespace").await.unwrap();
+    assert_eq!(keys, vec!["key2"]);
+}
+
+/// Test KV store namespace isolation
+pub async fn kvstore_namespace_isolation<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    // Write same key to different namespaces
+    db.kv_write("ns1", "sub", "key", b"value_ns1")
+        .await
+        .unwrap();
+    db.kv_write("ns2", "sub", "key", b"value_ns2")
+        .await
+        .unwrap();
+    db.kv_write("ns1", "sub2", "key", b"value_sub2")
+        .await
+        .unwrap();
+
+    // Verify isolation by primary namespace
+    let value1 = db.kv_read("ns1", "sub", "key").await.unwrap();
+    assert_eq!(value1, Some(b"value_ns1".to_vec()));
+
+    let value2 = db.kv_read("ns2", "sub", "key").await.unwrap();
+    assert_eq!(value2, Some(b"value_ns2".to_vec()));
+
+    // Verify isolation by secondary namespace
+    let value3 = db.kv_read("ns1", "sub2", "key").await.unwrap();
+    assert_eq!(value3, Some(b"value_sub2".to_vec()));
+
+    // Remove from one namespace shouldn't affect others
+    db.kv_remove("ns1", "sub", "key").await.unwrap();
+
+    let value1 = db.kv_read("ns1", "sub", "key").await.unwrap();
+    assert_eq!(value1, None);
+
+    let value2 = db.kv_read("ns2", "sub", "key").await.unwrap();
+    assert_eq!(value2, Some(b"value_ns2".to_vec()));
+
+    let value3 = db.kv_read("ns1", "sub2", "key").await.unwrap();
+    assert_eq!(value3, Some(b"value_sub2".to_vec()));
+}
+
+// =============================================================================
+// Wallet Saga Tests
+// =============================================================================
+
+/// Test adding and retrieving a saga
+pub async fn add_and_get_saga<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let saga = test_wallet_saga(mint_url);
+    let saga_id = saga.id;
+
+    // Add saga
+    db.add_saga(saga.clone()).await.unwrap();
+
+    // Get saga
+    let retrieved = db.get_saga(&saga_id).await.unwrap();
+    assert!(retrieved.is_some());
+    let retrieved = retrieved.unwrap();
+    assert_eq!(retrieved.id, saga_id);
+    assert_eq!(retrieved.version, 0);
+    assert_eq!(retrieved.amount, Amount::from(1000));
+}
+
+/// Test saga optimistic locking
+pub async fn update_saga_optimistic_locking<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let saga = test_wallet_saga(mint_url);
+    let saga_id = saga.id;
+
+    // Add saga
+    db.add_saga(saga).await.unwrap();
+
+    // Get saga and update state
+    let mut saga = db.get_saga(&saga_id).await.unwrap().unwrap();
+    assert_eq!(saga.version, 0);
+
+    saga.update_state(WalletSagaState::Swap(SwapSagaState::SwapRequested));
+    assert_eq!(saga.version, 1);
+
+    // Update should succeed
+    let success = db.update_saga(saga.clone()).await.unwrap();
+    assert!(success);
+
+    // Verify updated state
+    let retrieved = db.get_saga(&saga_id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert!(matches!(
+        retrieved.state,
+        WalletSagaState::Swap(SwapSagaState::SwapRequested)
+    ));
+
+    // Try to update with stale version (simulating concurrent access)
+    let mut stale_saga = saga.clone();
+    stale_saga.version = 0; // Reset to old version
+    stale_saga.update_state(WalletSagaState::Swap(SwapSagaState::ProofsReserved));
+    // Now version is 1, but DB has version 1, so expected_version would be 0
+
+    // This should fail due to version mismatch
+    let success = db.update_saga(stale_saga).await.unwrap();
+    assert!(!success);
+
+    // Original state should be unchanged
+    let retrieved = db.get_saga(&saga_id).await.unwrap().unwrap();
+    assert_eq!(retrieved.version, 1);
+    assert!(matches!(
+        retrieved.state,
+        WalletSagaState::Swap(SwapSagaState::SwapRequested)
+    ));
+}
+
+/// Test deleting a saga
+pub async fn delete_saga<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let saga = test_wallet_saga(mint_url);
+    let saga_id = saga.id;
+
+    // Add saga
+    db.add_saga(saga).await.unwrap();
+
+    // Verify it exists
+    let retrieved = db.get_saga(&saga_id).await.unwrap();
+    assert!(retrieved.is_some());
+
+    // Delete saga
+    db.delete_saga(&saga_id).await.unwrap();
+
+    // Verify it's gone
+    let retrieved = db.get_saga(&saga_id).await.unwrap();
+    assert!(retrieved.is_none());
+}
+
+/// Test getting incomplete sagas
+pub async fn get_incomplete_sagas<DB>(db: DB)
 where
     DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
 
-    // Add mint but rollback
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.add_mint(mint_url.clone(), None).await.unwrap();
-    tx.rollback().await.unwrap();
+    // Add multiple sagas
+    let saga1 = test_wallet_saga(mint_url.clone());
+    let saga2 = test_wallet_saga(mint_url.clone());
+    let saga3 = test_wallet_saga(mint_url);
+    let saga1_id = saga1.id;
+    let saga3_id = saga3.id;
 
-    // Verify mint was not added
-    let result = db.get_mint(mint_url).await.unwrap();
-    assert!(result.is_none());
+    db.add_saga(saga1).await.unwrap();
+    db.add_saga(saga2.clone()).await.unwrap();
+    db.add_saga(saga3).await.unwrap();
+
+    // Get all incomplete sagas
+    let incomplete = db.get_incomplete_sagas().await.unwrap();
+    assert_eq!(incomplete.len(), 3);
+
+    // Delete one saga (simulating completion)
+    db.delete_saga(&saga2.id).await.unwrap();
+
+    // Should now have 2 incomplete
+    let incomplete = db.get_incomplete_sagas().await.unwrap();
+    assert_eq!(incomplete.len(), 2);
+
+    // Verify the correct ones remain
+    let ids: Vec<_> = incomplete.iter().map(|s| s.id).collect();
+    assert!(ids.contains(&saga1_id));
+    assert!(ids.contains(&saga3_id));
 }
 
-/// Test proof rollback
-pub async fn proof_rollback<DB>(db: DB)
+// =============================================================================
+// Proof Reservation Tests
+// =============================================================================
+
+/// Test reserving proofs for an operation
+pub async fn reserve_proofs<DB>(db: DB)
 where
     DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
-    let proof_info = test_proof_info(keyset_id, 100, mint_url);
+    let proof_info_1 = test_proof_info(keyset_id, 100, mint_url.clone());
+    let proof_info_2 = test_proof_info(keyset_id, 200, mint_url.clone());
 
-    // Add proof but rollback
-    let mut tx = db.begin_db_transaction().await.unwrap();
-    tx.update_proofs(vec![proof_info], vec![]).await.unwrap();
-    tx.rollback().await.unwrap();
+    // Add proofs
+    db.update_proofs(vec![proof_info_1.clone(), proof_info_2.clone()], vec![])
+        .await
+        .unwrap();
 
-    // Verify proof was not added
-    let proofs = db.get_proofs(None, None, None, None).await.unwrap();
-    assert!(proofs.is_empty());
+    // Reserve proofs for an operation
+    let operation_id = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_info_1.y, proof_info_2.y], &operation_id)
+        .await
+        .unwrap();
+
+    // Verify proofs are now reserved
+    let proofs = db
+        .get_proofs(None, None, Some(vec![State::Reserved]), None)
+        .await
+        .unwrap();
+    assert_eq!(proofs.len(), 2);
+}
+
+/// Test releasing reserved proofs
+pub async fn release_proofs<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let proof_info_1 = test_proof_info(keyset_id, 100, mint_url.clone());
+    let proof_info_2 = test_proof_info(keyset_id, 200, mint_url.clone());
+
+    // Add proofs
+    db.update_proofs(vec![proof_info_1.clone(), proof_info_2.clone()], vec![])
+        .await
+        .unwrap();
+
+    // Reserve proofs
+    let operation_id = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_info_1.y, proof_info_2.y], &operation_id)
+        .await
+        .unwrap();
+
+    // Verify they're reserved
+    let reserved = db
+        .get_proofs(None, None, Some(vec![State::Reserved]), None)
+        .await
+        .unwrap();
+    assert_eq!(reserved.len(), 2);
+
+    // Release proofs
+    db.release_proofs(&operation_id).await.unwrap();
+
+    // Verify proofs are back to unspent
+    let unspent = db
+        .get_proofs(None, None, Some(vec![State::Unspent]), None)
+        .await
+        .unwrap();
+    assert_eq!(unspent.len(), 2);
+
+    let reserved = db
+        .get_proofs(None, None, Some(vec![State::Reserved]), None)
+        .await
+        .unwrap();
+    assert!(reserved.is_empty());
+}
+
+/// Test getting proofs reserved by an operation
+pub async fn get_reserved_proofs<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let proof_info_1 = test_proof_info(keyset_id, 100, mint_url.clone());
+    let proof_info_2 = test_proof_info(keyset_id, 200, mint_url.clone());
+    let proof_info_3 = test_proof_info(keyset_id, 300, mint_url.clone());
+
+    // Add proofs
+    db.update_proofs(
+        vec![
+            proof_info_1.clone(),
+            proof_info_2.clone(),
+            proof_info_3.clone(),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    // Reserve some proofs for operation 1
+    let operation_id_1 = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_info_1.y, proof_info_2.y], &operation_id_1)
+        .await
+        .unwrap();
+
+    // Reserve other proofs for operation 2
+    let operation_id_2 = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_info_3.y], &operation_id_2)
+        .await
+        .unwrap();
+
+    // Get proofs for operation 1
+    let reserved_1 = db.get_reserved_proofs(&operation_id_1).await.unwrap();
+    assert_eq!(reserved_1.len(), 2);
+    let ys_1: Vec<_> = reserved_1.iter().map(|p| p.y).collect();
+    assert!(ys_1.contains(&proof_info_1.y));
+    assert!(ys_1.contains(&proof_info_2.y));
+
+    // Get proofs for operation 2
+    let reserved_2 = db.get_reserved_proofs(&operation_id_2).await.unwrap();
+    assert_eq!(reserved_2.len(), 1);
+    assert_eq!(reserved_2[0].y, proof_info_3.y);
+
+    // Get proofs for non-existent operation
+    let empty = db.get_reserved_proofs(&uuid::Uuid::new_v4()).await.unwrap();
+    assert!(empty.is_empty());
+}
+
+/// Test that reserving already reserved proofs fails
+pub async fn reserve_proofs_already_reserved<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+
+    // Add proof
+    db.update_proofs(vec![proof_info.clone()], vec![])
+        .await
+        .unwrap();
+
+    // Reserve proof
+    let operation_id_1 = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_info.y], &operation_id_1)
+        .await
+        .unwrap();
+
+    // Try to reserve the same proof for another operation - should fail
+    let operation_id_2 = uuid::Uuid::new_v4();
+    let result = db.reserve_proofs(vec![proof_info.y], &operation_id_2).await;
+    assert!(result.is_err());
 }
 
 /// Unit test that is expected to be passed for a correct wallet database implementation
@@ -977,6 +1435,8 @@ macro_rules! wallet_db_test {
             add_and_get_melt_quote,
             get_melt_quote_in_transaction,
             remove_melt_quote,
+            add_mint_quote_optimistic_locking,
+            add_melt_quote_optimistic_locking,
             add_and_get_proofs,
             get_proofs_in_transaction,
             update_proofs,
@@ -991,8 +1451,19 @@ macro_rules! wallet_db_test {
             list_transactions,
             filter_transactions_by_mint,
             remove_transaction,
-            transaction_rollback,
-            proof_rollback
+            kvstore_write_and_read,
+            kvstore_list,
+            kvstore_update,
+            kvstore_remove,
+            kvstore_namespace_isolation,
+            add_and_get_saga,
+            update_saga_optimistic_locking,
+            delete_saga,
+            get_incomplete_sagas,
+            reserve_proofs,
+            release_proofs,
+            get_reserved_proofs,
+            reserve_proofs_already_reserved
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

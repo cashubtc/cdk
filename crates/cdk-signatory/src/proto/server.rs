@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
+use cdk_common::grpc::create_version_check_interceptor;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_stream::Stream;
 use tonic::metadata::MetadataMap;
@@ -56,17 +57,14 @@ where
     ) -> Result<Response<proto::BlindSignResponse>, Status> {
         let metadata = request.metadata();
         let signatory = self.load_signatory(metadata).await?;
-        let result = match signatory
-            .blind_sign(
-                request
-                    .into_inner()
-                    .blinded_messages
-                    .into_iter()
-                    .map(|blind_message| blind_message.try_into())
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
-            .await
-        {
+
+        let blinded_messages = request.into_inner().blinded_messages;
+        let mut converted_messages = Vec::with_capacity(blinded_messages.len());
+        for msg in blinded_messages {
+            converted_messages.push(msg.try_into()?);
+        }
+
+        let result = match signatory.blind_sign(converted_messages).await {
             Ok(blind_signatures) => proto::BlindSignResponse {
                 sigs: Some(proto::BlindSignatures {
                     blind_signatures: blind_signatures
@@ -92,17 +90,15 @@ where
     ) -> Result<Response<proto::BooleanResponse>, Status> {
         let metadata = request.metadata();
         let signatory = self.load_signatory(metadata).await?;
-        let result = match signatory
-            .verify_proofs(
-                request
-                    .into_inner()
-                    .proof
-                    .into_iter()
-                    .map(|x| x.try_into())
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
-            .await
-        {
+
+        let proofs = request.into_inner().proof;
+
+        let mut converted_proofs = Vec::with_capacity(proofs.len());
+        for p in proofs {
+            converted_proofs.push(p.try_into()?);
+        }
+
+        let result = match signatory.verify_proofs(converted_proofs).await {
             Ok(()) => proto::BooleanResponse {
                 success: true,
                 ..Default::default()
@@ -271,9 +267,12 @@ where
         }
     };
 
+    let version_str = (proto::Constants::SchemaVersion as u8).to_string();
+    let version: &'static str = Box::leak(version_str.into_boxed_str());
     server
-        .add_service(signatory_server::SignatoryServer::new(
+        .add_service(signatory_server::SignatoryServer::with_interceptor(
             CdkSignatoryServer::new(signatory_loader),
+            create_version_check_interceptor(cdk_common::grpc::VERSION_SIGNATORY_HEADER, version),
         ))
         .serve(addr)
         .await?;
@@ -292,9 +291,12 @@ where
     IO: AsyncRead + AsyncWrite + Connected + Unpin + Send + 'static,
     IE: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
+    let version_str = (proto::Constants::SchemaVersion as u8).to_string();
+    let version: &'static str = Box::leak(version_str.into_boxed_str());
     Server::builder()
-        .add_service(signatory_server::SignatoryServer::new(
+        .add_service(signatory_server::SignatoryServer::with_interceptor(
             CdkSignatoryServer::new(signatory_loader),
+            create_version_check_interceptor(cdk_common::grpc::VERSION_SIGNATORY_HEADER, version),
         ))
         .serve_with_incoming(incoming)
         .await?;

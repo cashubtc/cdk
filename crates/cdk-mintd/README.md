@@ -28,12 +28,45 @@ For detailed configuration of each Lightning backend, see:
 ## Installation
 
 ### Option 1: Download Pre-built Binary
-Download the latest release from the [GitHub releases page](https://github.com/cashubtc/cdk/releases).
+
+Statically-linked x86_64 Linux binaries are published to each [GitHub release](https://github.com/cashubtc/cdk/releases). These have zero runtime dependencies and run on any x86_64 Linux system.
+
+Available binaries:
+- **`cdk-mintd-{version}-x86_64`** -- standard mint with `postgres`, `prometheus`, and `redis` support
+- **`cdk-mintd-ldk-{version}-x86_64`** -- mint with built-in `ldk-node` Lightning backend
+
+Each release also includes a `SHA256SUMS` file to verify downloads:
+
+```bash
+# Download the binary and checksums
+curl -LO https://github.com/cashubtc/cdk/releases/latest/download/cdk-mintd-{version}-x86_64
+curl -LO https://github.com/cashubtc/cdk/releases/latest/download/SHA256SUMS
+
+# Verify the checksum
+sha256sum -c SHA256SUMS --ignore-missing
+
+# Make executable and run
+chmod +x cdk-mintd-*-x86_64
+./cdk-mintd-*-x86_64 --help
+```
+
+To build static binaries locally, see the [Static Binaries](../../DEVELOPMENT.md#static-binaries) section in the Development Guide.
 
 ### Option 2: Build from Source
+
+This project uses [Nix](https://nixos.org/) to manage development dependencies.
+
 ```bash
 git clone https://github.com/cashubtc/cdk.git
 cd cdk
+
+# Enter lean development environment
+nix develop
+
+# OR enter full regtest environment (with bitcoind, cln, lnd, postgres)
+nix develop .#regtest
+
+# Build binary
 cargo build --bin cdk-mintd --release
 # Binary will be at ./target/release/cdk-mintd
 ```
@@ -83,6 +116,25 @@ export CDK_MINTD_LISTEN_PORT=3000
 export CDK_MINTD_LN_BACKEND=fakewallet
 export CDK_MINTD_DATABASE=sqlite
 cdk-mintd
+```
+
+### Keyset Version Management
+
+The mint supports rotating keysets to newer versions (e.g., migrating from V1 to V2).
+
+**Policy Configuration:**
+By default, the mint will use V2 (Version01) for *new* keysets but will preserve existing V1 (Version00) keysets to avoid unnecessary rotation. You can force a specific policy using `config.toml` or environment variables:
+
+- `use_keyset_v2 = true` (or `CDK_MINTD_USE_KEYSET_V2=true`): Forces V2. If the current active keyset is V1, it will be rotated to V2 on startup.
+- `use_keyset_v2 = false` (or `CDK_MINTD_USE_KEYSET_V2=false`): Forces V1. If the current active keyset is V2, it will be rotated to V1 on startup.
+- **Unset (Default)**: Preserves the current keyset version. If no keyset exists, V2 is created.
+
+**Manual Rotation:**
+You can manually trigger a rotation to a specific version using the CLI:
+
+```bash
+mint-cli rotate-next-keyset --use-keyset-v2       # Rotate to V2
+mint-cli rotate-next-keyset --use-keyset-v2=false # Rotate to V1
 ```
 
 ## Production Examples

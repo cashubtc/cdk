@@ -9,8 +9,11 @@ use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::string::FromUtf8Error;
 
-use serde::{de, Deserialize, Deserializer, Serialize};
+#[cfg(feature = "mint")]
+use bitcoin::hashes::Hash as BitcoinHash;
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 
 use super::nut02::ShortKeysetId;
 #[cfg(feature = "wallet")]
@@ -56,6 +59,9 @@ pub trait ProofsMethods {
 
     /// Create a copy of proofs without dleqs
     fn without_dleqs(&self) -> Proofs;
+
+    /// Create a copy of proofs without P2BK nonce
+    fn without_p2pk_e(&self) -> Proofs;
 }
 
 impl ProofsMethods for Proofs {
@@ -84,6 +90,16 @@ impl ProofsMethods for Proofs {
             })
             .collect()
     }
+
+    fn without_p2pk_e(&self) -> Proofs {
+        self.iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.p2pk_e = None;
+                p
+            })
+            .collect()
+    }
 }
 
 impl ProofsMethods for HashSet<Proof> {
@@ -108,6 +124,16 @@ impl ProofsMethods for HashSet<Proof> {
             .map(|p| {
                 let mut p = p.clone();
                 p.dleq = None;
+                p
+            })
+            .collect()
+    }
+
+    fn without_p2pk_e(&self) -> Proofs {
+        self.iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.p2pk_e = None;
                 p
             })
             .collect()
@@ -189,6 +215,10 @@ pub enum Error {
     /// Short keyset id -> id error
     #[error(transparent)]
     NUT02(#[from] crate::nuts::nut02::Error),
+    #[cfg(feature = "wallet")]
+    #[error(transparent)]
+    /// NUT28 P2BK error
+    NUT28(#[from] crate::nuts::nut28::Error),
 }
 
 /// Blinded Message (also called `output`)
@@ -214,7 +244,7 @@ pub struct BlindedMessage {
     /// Witness
     ///
     /// <https://github.com/cashubtc/nuts/blob/main/11.md>
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
 }
 
@@ -260,7 +290,7 @@ pub struct BlindSignature {
     /// DLEQ Proof
     ///
     /// <https://github.com/cashubtc/nuts/blob/main/12.md>
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<BlindSignatureDleq>,
 }
 
@@ -330,6 +360,16 @@ impl Witness {
     }
 }
 
+impl std::fmt::Display for Witness {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            serde_json::to_string(self).map_err(|_| std::fmt::Error)?
+        )
+    }
+}
+
 /// Proofs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
@@ -348,11 +388,15 @@ pub struct Proof {
     #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub c: PublicKey,
     /// Witness
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
     /// DLEQ Proof
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
+    /// P2BK Ephemeral Public Key (NUT-28)
+    /// Used for Pay-to-Blinded-Key privacy feature
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p2pk_e: Option<PublicKey>,
 }
 
 impl Proof {
@@ -365,6 +409,7 @@ impl Proof {
             c,
             witness: None,
             dleq: None,
+            p2pk_e: None,
         }
     }
 
@@ -415,12 +460,14 @@ pub struct ProofV4 {
     )]
     pub c: PublicKey,
     /// Witness
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
     /// DLEQ Proof
     #[serde(rename = "d")]
     pub dleq: Option<ProofDleq>,
+    /// P2BK Ephemeral Public Key (NUT-28)
+    #[serde(rename = "pe", default, skip_serializing_if = "Option::is_none")]
+    pub p2pk_e: Option<PublicKey>,
 }
 
 impl ProofV4 {
@@ -433,6 +480,7 @@ impl ProofV4 {
             c: self.c,
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
+            p2pk_e: self.p2pk_e,
         }
     }
 }
@@ -451,6 +499,7 @@ impl From<Proof> for ProofV4 {
             c,
             witness,
             dleq,
+            p2pk_e,
             ..
         } = proof;
         ProofV4 {
@@ -459,6 +508,7 @@ impl From<Proof> for ProofV4 {
             c,
             witness,
             dleq,
+            p2pk_e,
         }
     }
 }
@@ -471,6 +521,7 @@ impl From<ProofV3> for ProofV4 {
             c: proof.c,
             witness: proof.witness,
             dleq: proof.dleq,
+            p2pk_e: None,
         }
     }
 }
@@ -489,10 +540,10 @@ pub struct ProofV3 {
     #[serde(rename = "C")]
     pub c: PublicKey,
     /// Witness
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
     /// DLEQ Proof
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
 }
 
@@ -506,6 +557,7 @@ impl ProofV3 {
             c: self.c,
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
+            p2pk_e: None,
         }
     }
 }
@@ -519,6 +571,7 @@ impl From<Proof> for ProofV3 {
             c,
             witness,
             dleq,
+            ..
         } = proof;
         ProofV3 {
             amount,
@@ -575,6 +628,10 @@ pub enum CurrencyUnit {
 #[cfg(feature = "mint")]
 impl CurrencyUnit {
     /// Derivation index mint will use for unit
+    #[deprecated(
+        since = "0.15.0",
+        note = "This function is outdated; use `hashed_derivation_index` instead."
+    )]
     pub fn derivation_index(&self) -> Option<u32> {
         match self {
             Self::Sat => Some(0),
@@ -585,6 +642,28 @@ impl CurrencyUnit {
             _ => None,
         }
     }
+
+    /// Construct a custom unit, normalizing to uppercase and trimming whitespace.
+    pub fn custom<S: AsRef<str>>(value: S) -> Self {
+        Self::Custom(normalize_custom_unit(value.as_ref()).to_uppercase())
+    }
+
+    ///  Big endian encoded integer of the first 4 bytes of the sha256 hash of the unit string.
+    pub fn hashed_derivation_index(&self) -> u32 {
+        use bitcoin::hashes::sha256;
+
+        // transform to uppercase
+        let unit_str = self.to_string().to_uppercase();
+
+        let bytes = <sha256::Hash as BitcoinHash>::hash(unit_str.as_bytes());
+        // Take the first 4 bytes and convert to u32 (big endian) make sure the integer
+        u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) & !(1 << 31)
+    }
+}
+
+fn normalize_custom_unit(value: &str) -> String {
+    let trimmed = value.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n'));
+    trimmed.nfc().collect::<String>()
 }
 
 impl FromStr for CurrencyUnit {
@@ -597,13 +676,14 @@ impl FromStr for CurrencyUnit {
             "USD" => Ok(Self::Usd),
             "EUR" => Ok(Self::Eur),
             "AUTH" => Ok(Self::Auth),
-            _ => Ok(Self::Custom(value.to_string())),
+            _ => Ok(Self::Custom(normalize_custom_unit(value))),
         }
     }
 }
 
 impl fmt::Display for CurrencyUnit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // let binding = normalize_custom_unit(&self).clone();
         let s = match self {
             CurrencyUnit::Sat => "SAT",
             CurrencyUnit::Msat => "MSAT",
@@ -612,10 +692,16 @@ impl fmt::Display for CurrencyUnit {
             CurrencyUnit::Auth => "AUTH",
             CurrencyUnit::Custom(unit) => unit,
         };
+
         if let Some(width) = f.width() {
-            write!(f, "{:width$}", s.to_lowercase(), width = width)
+            write!(
+                f,
+                "{:width$}",
+                normalize_custom_unit(s).to_lowercase(),
+                width = width
+            )
         } else {
-            write!(f, "{}", s.to_lowercase())
+            write!(f, "{}", normalize_custom_unit(s).to_lowercase())
         }
     }
 }
@@ -625,7 +711,7 @@ impl Serialize for CurrencyUnit {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        serializer.serialize_str(&self.to_string().to_lowercase())
     }
 }
 
@@ -639,37 +725,157 @@ impl<'de> Deserialize<'de> for CurrencyUnit {
     }
 }
 
-/// Payment Method
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+/// Known payment methods
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub enum PaymentMethod {
-    /// Bolt11 payment type
-    #[default]
+pub enum KnownMethod {
+    /// Lightning BOLT11
     Bolt11,
-    /// Bolt12
+    /// Lightning BOLT12
     Bolt12,
-    /// Custom
-    Custom(String),
 }
 
-impl FromStr for PaymentMethod {
+impl KnownMethod {
+    /// Get the method name as a string
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Bolt11 => "bolt11",
+            Self::Bolt12 => "bolt12",
+        }
+    }
+}
+
+impl fmt::Display for KnownMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl FromStr for KnownMethod {
     type Err = Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_lowercase().as_str() {
             "bolt11" => Ok(Self::Bolt11),
             "bolt12" => Ok(Self::Bolt12),
-            c => Ok(Self::Custom(c.to_string())),
+            _ => Err(Error::UnsupportedPaymentMethod),
+        }
+    }
+}
+
+/// Payment Method
+///
+/// Represents either a known payment method (bolt11, bolt12) or a custom payment method.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub enum PaymentMethod {
+    /// Known payment method (bolt11, bolt12)
+    Known(KnownMethod),
+    /// Custom payment method (e.g., "paypal", "stripe")
+    Custom(String),
+}
+
+impl PaymentMethod {
+    /// BOLT11 payment method
+    pub const BOLT11: Self = Self::Known(KnownMethod::Bolt11);
+    /// BOLT12 payment method
+    pub const BOLT12: Self = Self::Known(KnownMethod::Bolt12);
+
+    /// Create a new PaymentMethod from a string
+    pub fn new(method: String) -> Self {
+        Self::from_str(&method).unwrap_or_else(|_| Self::Custom(method.to_lowercase()))
+    }
+
+    /// Get the method name as a string
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Known(known) => known.as_str(),
+            Self::Custom(custom) => custom.as_str(),
+        }
+    }
+
+    /// Check if this is a known method
+    pub fn is_known(&self) -> bool {
+        matches!(self, Self::Known(_))
+    }
+
+    /// Check if this is a custom method
+    pub fn is_custom(&self) -> bool {
+        matches!(self, Self::Custom(_))
+    }
+
+    /// Check if this is bolt11
+    pub fn is_bolt11(&self) -> bool {
+        matches!(self, Self::Known(KnownMethod::Bolt11))
+    }
+
+    /// Check if this is bolt12
+    pub fn is_bolt12(&self) -> bool {
+        matches!(self, Self::Known(KnownMethod::Bolt12))
+    }
+}
+
+impl FromStr for PaymentMethod {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match KnownMethod::from_str(value) {
+            Ok(known) => Ok(Self::Known(known)),
+            Err(_) => Ok(Self::Custom(value.to_lowercase())),
         }
     }
 }
 
 impl fmt::Display for PaymentMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PaymentMethod::Bolt11 => write!(f, "bolt11"),
-            PaymentMethod::Bolt12 => write!(f, "bolt12"),
-            PaymentMethod::Custom(p) => write!(f, "{p}"),
-        }
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl From<String> for PaymentMethod {
+    fn from(s: String) -> Self {
+        Self::from_str(&s).unwrap_or_else(|_| Self::Custom(s.to_lowercase()))
+    }
+}
+
+impl From<&str> for PaymentMethod {
+    fn from(s: &str) -> Self {
+        Self::from_str(s).unwrap_or_else(|_| Self::Custom(s.to_lowercase()))
+    }
+}
+
+impl From<KnownMethod> for PaymentMethod {
+    fn from(known: KnownMethod) -> Self {
+        Self::Known(known)
+    }
+}
+
+// Implement PartialEq with &str for ergonomic comparisons
+impl PartialEq<&str> for PaymentMethod {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<str> for PaymentMethod {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<PaymentMethod> for &str {
+    fn eq(&self, other: &PaymentMethod) -> bool {
+        *self == other.as_str()
+    }
+}
+
+impl PartialEq<KnownMethod> for PaymentMethod {
+    fn eq(&self, other: &KnownMethod) -> bool {
+        matches!(self, Self::Known(k) if k == other)
+    }
+}
+
+impl PartialEq<PaymentMethod> for KnownMethod {
+    fn eq(&self, other: &PaymentMethod) -> bool {
+        matches!(other, PaymentMethod::Known(k) if k == self)
     }
 }
 
@@ -678,7 +884,7 @@ impl Serialize for PaymentMethod {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -688,7 +894,7 @@ impl<'de> Deserialize<'de> for PaymentMethod {
         D: Deserializer<'de>,
     {
         let payment_method: String = String::deserialize(deserializer)?;
-        Self::from_str(&payment_method).map_err(|_| de::Error::custom("Unsupported payment method"))
+        Ok(Self::from_str(&payment_method).unwrap_or(Self::Custom(payment_method)))
     }
 }
 
@@ -824,6 +1030,91 @@ impl PreMintSecrets {
         })
     }
 
+    /// Outputs with P2BK spending conditions
+    #[cfg(feature = "wallet")]
+    pub fn with_p2bk(
+        keyset_id: Id,
+        amount: Amount,
+        amount_split_target: &SplitTarget,
+        receiver_pubkey: PublicKey,
+        conditions: Option<crate::nuts::nut11::Conditions>,
+        ephemeral_keys: &[crate::nuts::nut01::SecretKey],
+        fee_and_amounts: &FeeAndAmounts,
+    ) -> Result<Self, Error> {
+        use crate::nuts::nut28::{blind_public_key, ecdh_kdf};
+
+        let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
+
+        let mut output = Vec::with_capacity(amount_split.len());
+
+        let is_sig_all = conditions
+            .as_ref()
+            .is_some_and(|c| c.sig_flag == crate::nuts::nut11::SigFlag::SigAll);
+        if !is_sig_all && ephemeral_keys.len() != amount_split.len() {
+            return Err(Error::NUT28(
+                crate::nuts::nut28::Error::InvalidCanonicalSlot(255),
+            ));
+        }
+
+        for (i, amount) in amount_split.into_iter().enumerate() {
+            let ephemeral_key = if is_sig_all {
+                &ephemeral_keys[0]
+            } else {
+                &ephemeral_keys[i]
+            };
+
+            // Blind data pubkey (slot 0)
+            let r0 = ecdh_kdf(ephemeral_key, &receiver_pubkey, 0).map_err(Error::NUT28)?;
+            let blinded_pubkey = blind_public_key(&receiver_pubkey, &r0).map_err(Error::NUT28)?;
+
+            let mut blinded_conditions = conditions.clone();
+
+            // Blind tags pubkeys
+            if let Some(ref mut cond) = blinded_conditions {
+                let mut slot_idx = 1;
+
+                if let Some(ref mut pubkeys) = cond.pubkeys {
+                    for pk in pubkeys.iter_mut() {
+                        let r = ecdh_kdf(ephemeral_key, pk, slot_idx).map_err(Error::NUT28)?;
+                        *pk = blind_public_key(pk, &r).map_err(Error::NUT28)?;
+                        slot_idx += 1;
+                    }
+                }
+
+                if let Some(ref mut refund_keys) = cond.refund_keys {
+                    for pk in refund_keys.iter_mut() {
+                        let r = ecdh_kdf(ephemeral_key, pk, slot_idx).map_err(Error::NUT28)?;
+                        *pk = blind_public_key(pk, &r).map_err(Error::NUT28)?;
+                        slot_idx += 1;
+                    }
+                }
+            }
+
+            let p2pk_conditions = crate::nuts::SpendingConditions::P2PKConditions {
+                data: blinded_pubkey,
+                conditions: blinded_conditions,
+            };
+
+            let secret: crate::nuts::nut10::Secret = p2pk_conditions.into();
+            let secret: Secret = secret.try_into()?;
+            let (blinded, rs) = blind_message(&secret.to_bytes(), None)?;
+
+            let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
+
+            output.push(PreMint {
+                secret,
+                blinded_message,
+                r: rs,
+                amount,
+            });
+        }
+
+        Ok(PreMintSecrets {
+            secrets: output,
+            keyset_id,
+        })
+    }
+
     /// Outputs with specific spending conditions
     pub fn with_conditions(
         keyset_id: Id,
@@ -950,6 +1241,8 @@ impl PartialOrd for PreMintSecrets {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
     use std::str::FromStr;
 
     use super::*;
@@ -991,48 +1284,103 @@ mod tests {
     }
 
     #[test]
+    fn test_currency_unit_parsing() {
+        assert_eq!(CurrencyUnit::from_str("sat").unwrap(), CurrencyUnit::Sat);
+        assert_eq!(CurrencyUnit::from_str("SAT").unwrap(), CurrencyUnit::Sat);
+        assert_eq!(CurrencyUnit::from_str("msat").unwrap(), CurrencyUnit::Msat);
+        assert_eq!(CurrencyUnit::from_str("MSAT").unwrap(), CurrencyUnit::Msat);
+        assert_eq!(CurrencyUnit::from_str("usd").unwrap(), CurrencyUnit::Usd);
+        assert_eq!(CurrencyUnit::from_str("USD").unwrap(), CurrencyUnit::Usd);
+        assert_eq!(CurrencyUnit::from_str("eur").unwrap(), CurrencyUnit::Eur);
+        assert_eq!(CurrencyUnit::from_str("EUR").unwrap(), CurrencyUnit::Eur);
+        assert_eq!(CurrencyUnit::from_str("auth").unwrap(), CurrencyUnit::Auth);
+        assert_eq!(CurrencyUnit::from_str("AUTH").unwrap(), CurrencyUnit::Auth);
+
+        // Custom
+        assert_eq!(
+            CurrencyUnit::from_str("custom").unwrap(),
+            CurrencyUnit::Custom("custom".to_string())
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "mint")]
+    fn four_bytes_hash_currency_unit() {
+        let unit = CurrencyUnit::Sat;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 1967237907);
+
+        let unit = CurrencyUnit::Msat;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 142929756);
+
+        let unit = CurrencyUnit::Eur;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 1473545324);
+
+        let unit = CurrencyUnit::Usd;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 577560378);
+
+        let unit = CurrencyUnit::Auth;
+        let index = unit.hashed_derivation_index();
+
+        assert_eq!(index, 1222349093)
+    }
+
+    #[test]
     fn test_payment_method_parsing() {
-        // Test standard variants
+        // Test known methods (case insensitive)
         assert_eq!(
             PaymentMethod::from_str("bolt11").unwrap(),
-            PaymentMethod::Bolt11
+            PaymentMethod::BOLT11
         );
         assert_eq!(
             PaymentMethod::from_str("BOLT11").unwrap(),
-            PaymentMethod::Bolt11
+            PaymentMethod::BOLT11
         );
         assert_eq!(
             PaymentMethod::from_str("Bolt11").unwrap(),
-            PaymentMethod::Bolt11
+            PaymentMethod::Known(KnownMethod::Bolt11)
         );
 
         assert_eq!(
             PaymentMethod::from_str("bolt12").unwrap(),
-            PaymentMethod::Bolt12
+            PaymentMethod::BOLT12
         );
         assert_eq!(
             PaymentMethod::from_str("BOLT12").unwrap(),
-            PaymentMethod::Bolt12
-        );
-        assert_eq!(
-            PaymentMethod::from_str("Bolt12").unwrap(),
-            PaymentMethod::Bolt12
+            PaymentMethod::Known(KnownMethod::Bolt12)
         );
 
-        // Test custom variants
+        // Test custom methods
         assert_eq!(
             PaymentMethod::from_str("custom").unwrap(),
             PaymentMethod::Custom("custom".to_string())
         );
         assert_eq!(
-            PaymentMethod::from_str("CUSTOM").unwrap(),
-            PaymentMethod::Custom("custom".to_string())
+            PaymentMethod::from_str("PAYPAL").unwrap(),
+            PaymentMethod::Custom("paypal".to_string())
         );
+
+        // Test string conversion
+        assert_eq!(PaymentMethod::BOLT11.as_str(), "bolt11");
+        assert_eq!(PaymentMethod::BOLT12.as_str(), "bolt12");
+        assert_eq!(PaymentMethod::from("paypal").as_str(), "paypal");
+
+        // Test ergonomic comparisons with strings
+        assert!(PaymentMethod::BOLT11 == "bolt11");
+        assert!(PaymentMethod::BOLT12 == "bolt12");
+        assert!(PaymentMethod::Custom("paypal".to_string()) == "paypal");
+
+        // Test comparison with KnownMethod
+        assert!(PaymentMethod::BOLT11 == KnownMethod::Bolt11);
+        assert!(PaymentMethod::BOLT12 == KnownMethod::Bolt12);
 
         // Test serialization/deserialization consistency
         let methods = vec![
-            PaymentMethod::Bolt11,
-            PaymentMethod::Bolt12,
+            PaymentMethod::BOLT11,
+            PaymentMethod::BOLT12,
             PaymentMethod::Custom("test".to_string()),
         ];
 
@@ -1041,6 +1389,56 @@ mod tests {
             let deserialized: PaymentMethod = serde_json::from_str(&serialized).unwrap();
             assert_eq!(method, deserialized);
         }
+    }
+
+    /// Tests that is_bolt12 correctly identifies BOLT12 payment methods.
+    ///
+    /// This is critical for code that needs to distinguish between BOLT11 and BOLT12.
+    /// If is_bolt12 always returns true or false, the wrong payment flow may be used.
+    ///
+    /// Mutant testing: Kills mutations that:
+    /// - Replace is_bolt12 with true
+    /// - Replace is_bolt12 with false
+    #[test]
+    fn test_is_bolt12_with_bolt12() {
+        // BOLT12 should return true
+        let method = PaymentMethod::BOLT12;
+        assert!(method.is_bolt12());
+
+        // Known BOLT12 should also return true
+        let method = PaymentMethod::Known(KnownMethod::Bolt12);
+        assert!(method.is_bolt12());
+    }
+
+    #[test]
+    fn test_is_bolt12_with_non_bolt12() {
+        // BOLT11 should return false
+        let method = PaymentMethod::BOLT11;
+        assert!(!method.is_bolt12());
+
+        // Known BOLT11 should return false
+        let method = PaymentMethod::Known(KnownMethod::Bolt11);
+        assert!(!method.is_bolt12());
+
+        // Custom methods should return false
+        let method = PaymentMethod::Custom("paypal".to_string());
+        assert!(!method.is_bolt12());
+
+        let method = PaymentMethod::Custom("bolt12".to_string());
+        assert!(!method.is_bolt12()); // String match is not the same as actual BOLT12
+    }
+
+    /// Tests that is_bolt12 correctly distinguishes between all payment method variants.
+    #[test]
+    fn test_is_bolt12_comprehensive() {
+        // Test all variants
+        assert!(PaymentMethod::BOLT12.is_bolt12());
+        assert!(PaymentMethod::Known(KnownMethod::Bolt12).is_bolt12());
+
+        assert!(!PaymentMethod::BOLT11.is_bolt12());
+        assert!(!PaymentMethod::Known(KnownMethod::Bolt11).is_bolt12());
+        assert!(!PaymentMethod::Custom("anything".to_string()).is_bolt12());
+        assert!(!PaymentMethod::Custom("bolt12".to_string()).is_bolt12());
     }
 
     #[test]
@@ -1065,5 +1463,333 @@ mod tests {
         let deserialized: Witness = serde_json::from_str(&serialized).unwrap();
 
         assert!(matches!(deserialized, Witness::P2PKWitness(_)));
+    }
+
+    #[test]
+    fn test_proofs_methods_count_by_keyset() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"},
+                {"id":"00ad268c4d1f5826","amount":4,"secret":"secret3","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}
+            ]"#,
+        ).unwrap();
+
+        let counts = proofs.count_by_keyset();
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts[&Id::from_str("009a1f293253e41e").unwrap()], 2);
+        assert_eq!(counts[&Id::from_str("00ad268c4d1f5826").unwrap()], 1);
+    }
+
+    #[test]
+    fn test_proofs_methods_sum_by_keyset() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"},
+                {"id":"00ad268c4d1f5826","amount":4,"secret":"secret3","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}
+            ]"#,
+        ).unwrap();
+
+        let sums = proofs.sum_by_keyset();
+        assert_eq!(sums.len(), 2);
+        assert_eq!(
+            sums[&Id::from_str("009a1f293253e41e").unwrap()],
+            Amount::from(10)
+        );
+        assert_eq!(
+            sums[&Id::from_str("00ad268c4d1f5826").unwrap()],
+            Amount::from(4)
+        );
+    }
+
+    #[test]
+    fn test_proofs_methods_total_amount() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"},
+                {"id":"00ad268c4d1f5826","amount":4,"secret":"secret3","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}
+            ]"#,
+        ).unwrap();
+
+        let total = proofs.total_amount().unwrap();
+        assert_eq!(total, Amount::from(14));
+    }
+
+    #[test]
+    fn test_proofs_methods_ys() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}
+            ]"#,
+        ).unwrap();
+
+        let ys = proofs.ys().unwrap();
+        assert_eq!(ys.len(), 2);
+        // Each Y is hash_to_curve of the secret, verify they're different
+        assert_ne!(ys[0], ys[1]);
+    }
+
+    #[test]
+    fn test_proofs_methods_hashset() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"},
+                {"id":"00ad268c4d1f5826","amount":4,"secret":"secret3","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}
+            ]"#,
+        ).unwrap();
+
+        let proof_set: HashSet<Proof> = proofs.into_iter().collect();
+
+        // Test HashSet implementation of ProofsMethods
+        let counts = proof_set.count_by_keyset();
+        assert_eq!(counts.len(), 2);
+
+        let sums = proof_set.sum_by_keyset();
+        assert_eq!(sums.len(), 2);
+        // Total should be 14 (2 + 8 + 4)
+        let total: u64 = sums.values().map(|a| u64::from(*a)).sum();
+        assert_eq!(total, 14);
+    }
+
+    #[test]
+    fn test_hashset_total_amount() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"},
+                {"id":"00ad268c4d1f5826","amount":4,"secret":"secret3","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}
+            ]"#,
+        )
+        .unwrap();
+
+        let proof_set: HashSet<Proof> = proofs.into_iter().collect();
+
+        // Test total_amount directly on HashSet
+        let total = proof_set.total_amount().unwrap();
+        assert_eq!(total, Amount::from(14));
+    }
+
+    #[test]
+    fn test_hashset_ys() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}
+            ]"#,
+        )
+        .unwrap();
+
+        let proof_set: HashSet<Proof> = proofs.into_iter().collect();
+
+        // Test ys() directly on HashSet - should return 2 public keys
+        let ys = proof_set.ys().unwrap();
+        assert_eq!(ys.len(), 2);
+        // Each Y is hash_to_curve of the secret, verify they're different
+        assert_ne!(ys[0], ys[1]);
+    }
+
+    #[test]
+    fn test_hashset_without_dleqs() {
+        let proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"009a1f293253e41e","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}
+            ]"#,
+        )
+        .unwrap();
+
+        let proof_set: HashSet<Proof> = proofs.into_iter().collect();
+
+        // Test without_dleqs() directly on HashSet
+        let proofs_without_dleqs = proof_set.without_dleqs();
+        assert_eq!(proofs_without_dleqs.len(), 2);
+        // Verify all dleqs are None
+        for proof in &proofs_without_dleqs {
+            assert!(proof.dleq.is_none());
+        }
+    }
+
+    #[test]
+    fn test_blind_signature_partial_cmp() {
+        let sig1 = BlindSignature {
+            amount: Amount::from(10),
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            c: PublicKey::from_str(
+                "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea",
+            )
+            .unwrap(),
+            dleq: None,
+        };
+        let sig2 = BlindSignature {
+            amount: Amount::from(20),
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            c: PublicKey::from_str(
+                "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea",
+            )
+            .unwrap(),
+            dleq: None,
+        };
+        let sig3 = BlindSignature {
+            amount: Amount::from(10),
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            c: PublicKey::from_str(
+                "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea",
+            )
+            .unwrap(),
+            dleq: None,
+        };
+
+        // Test partial_cmp
+        assert_eq!(sig1.partial_cmp(&sig2), Some(Ordering::Less));
+        assert_eq!(sig2.partial_cmp(&sig1), Some(Ordering::Greater));
+        assert_eq!(sig1.partial_cmp(&sig3), Some(Ordering::Equal));
+
+        // Verify sorting works
+        let mut sigs = [sig2.clone(), sig1.clone(), sig3.clone()];
+        sigs.sort();
+        assert_eq!(sigs[0].amount, Amount::from(10));
+        assert_eq!(sigs[2].amount, Amount::from(20));
+    }
+
+    #[test]
+    fn test_witness_preimage() {
+        // Test HTLCWitness returns Some(preimage)
+        let htlc_witness = HTLCWitness {
+            preimage: "test_preimage".to_string(),
+            signatures: Some(vec!["sig1".to_string()]),
+        };
+        let witness = Witness::HTLCWitness(htlc_witness);
+        assert_eq!(witness.preimage(), Some("test_preimage".to_string()));
+
+        // Test P2PKWitness returns None
+        let p2pk_witness = P2PKWitness {
+            signatures: vec!["sig1".to_string()],
+        };
+        let witness = Witness::P2PKWitness(p2pk_witness);
+        assert_eq!(witness.preimage(), None);
+    }
+
+    #[test]
+    fn test_proof_is_active() {
+        let proof: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+
+        let active_keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let inactive_keyset_id = Id::from_str("00ad268c4d1f5826").unwrap();
+
+        // Test is_active returns true when keyset is in active list
+        assert!(proof.is_active(&[active_keyset_id]));
+
+        // Test is_active returns false when keyset is not in active list
+        assert!(!proof.is_active(&[inactive_keyset_id]));
+
+        // Test with empty list
+        assert!(!proof.is_active(&[]));
+
+        // Test with multiple active keysets
+        assert!(proof.is_active(&[inactive_keyset_id, active_keyset_id]));
+    }
+
+    /// Helper function to compute hash of a value
+    fn compute_hash<T: Hash>(value: &T) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn test_proof_hash_uses_secret() {
+        // Two proofs with same secret should hash to the same value
+        let proof1: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"same_secret","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+
+        let proof2: Proof = serde_json::from_str(
+            r#"{"id":"00ad268c4d1f5826","amount":8,"secret":"same_secret","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}"#,
+        ).unwrap();
+
+        // Same secret = same hash (even with different keyset_id and amount)
+        assert_eq!(compute_hash(&proof1), compute_hash(&proof2));
+
+        // Different secret = different hash
+        let proof3: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"different_secret","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+
+        assert_ne!(compute_hash(&proof1), compute_hash(&proof3));
+    }
+
+    #[test]
+    fn test_proof_v4_hash_uses_secret() {
+        let proof1: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"same_secret","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+
+        let proof2: Proof = serde_json::from_str(
+            r#"{"id":"00ad268c4d1f5826","amount":8,"secret":"same_secret","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}"#,
+        ).unwrap();
+
+        let proof_v4_1: ProofV4 = proof1.into();
+        let proof_v4_2: ProofV4 = proof2.into();
+
+        // Same secret = same hash
+        assert_eq!(compute_hash(&proof_v4_1), compute_hash(&proof_v4_2));
+
+        // Different secret = different hash
+        let proof3: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"different_secret","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+        let proof_v4_3: ProofV4 = proof3.into();
+
+        assert_ne!(compute_hash(&proof_v4_1), compute_hash(&proof_v4_3));
+    }
+
+    #[test]
+    fn test_proof_v3_hash_uses_secret() {
+        let proof1: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"same_secret","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+
+        let proof2: Proof = serde_json::from_str(
+            r#"{"id":"00ad268c4d1f5826","amount":8,"secret":"same_secret","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}"#,
+        ).unwrap();
+
+        let proof_v3_1: ProofV3 = proof1.into();
+        let proof_v3_2: ProofV3 = proof2.into();
+
+        // Same secret = same hash
+        assert_eq!(compute_hash(&proof_v3_1), compute_hash(&proof_v3_2));
+
+        // Different secret = different hash
+        let proof3: Proof = serde_json::from_str(
+            r#"{"id":"009a1f293253e41e","amount":2,"secret":"different_secret","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}"#,
+        ).unwrap();
+        let proof_v3_3: ProofV3 = proof3.into();
+
+        assert_ne!(compute_hash(&proof_v3_1), compute_hash(&proof_v3_3));
+    }
+
+    #[test]
+    #[cfg(feature = "mint")]
+    #[allow(deprecated)]
+    fn test_currency_unit_derivation_index() {
+        // Each currency unit should have a specific derivation index
+        // These values are important for key derivation compatibility
+        assert_eq!(CurrencyUnit::Sat.derivation_index(), Some(0));
+        assert_eq!(CurrencyUnit::Msat.derivation_index(), Some(1));
+        assert_eq!(CurrencyUnit::Usd.derivation_index(), Some(2));
+        assert_eq!(CurrencyUnit::Eur.derivation_index(), Some(3));
+        assert_eq!(CurrencyUnit::Auth.derivation_index(), Some(4));
+
+        // Custom units should return None
+        assert_eq!(
+            CurrencyUnit::Custom("btc".to_string()).derivation_index(),
+            None
+        );
     }
 }

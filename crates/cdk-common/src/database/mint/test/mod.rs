@@ -2,17 +2,17 @@
 //!
 //! This set is generic and checks the default and expected behaviour for a mint database
 //! implementation
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::missing_panics_doc)]
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 // For derivation path parsing
 use bitcoin::bip32::DerivationPath;
-use cashu::secret::Secret;
-use cashu::{Amount, CurrencyUnit, SecretKey};
+use cashu::CurrencyUnit;
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
+use crate::common::IssuerVersion;
 use crate::database::KVStoreDatabase;
 use crate::mint::MintKeySetInfo;
 
@@ -50,61 +50,12 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
     };
     let mut writer = db.begin_transaction().await.expect("db.begin()");
     writer.add_keyset_info(keyset_info).await.unwrap();
     writer.commit().await.expect("commit()");
     keyset_id
-}
-
-/// State transition test
-pub async fn state_transition<DB>(db: DB)
-where
-    DB: Database<crate::database::Error> + KeysDatabase<Err = crate::database::Error>,
-{
-    let keyset_id = setup_keyset(&db).await;
-
-    let proofs = vec![
-        Proof {
-            amount: Amount::from(100),
-            keyset_id,
-            secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
-            witness: None,
-            dleq: None,
-        },
-        Proof {
-            amount: Amount::from(200),
-            keyset_id,
-            secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
-            witness: None,
-            dleq: None,
-        },
-    ];
-
-    // Add proofs to database
-    let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(
-        proofs.clone(),
-        None,
-        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
-    )
-    .await
-    .unwrap();
-
-    // Mark one proof as `pending`
-    assert!(tx
-        .update_proofs_states(&[proofs[0].y().unwrap()], State::Pending)
-        .await
-        .is_ok());
-
-    // Attempt to select the `pending` proof, as `pending` again (which should fail)
-    assert!(tx
-        .update_proofs_states(&[proofs[0].y().unwrap()], State::Pending)
-        .await
-        .is_err());
-    tx.commit().await.unwrap();
 }
 
 /// Test KV store functionality including write, read, list, update, and remove operations
@@ -238,7 +189,6 @@ macro_rules! mint_db_test {
     ($make_db_fn:ident) => {
         mint_db_test!(
             $make_db_fn,
-            state_transition,
             add_and_find_proofs,
             add_duplicate_proofs,
             kvstore_functionality,
@@ -306,7 +256,11 @@ macro_rules! mint_db_test {
             get_mint_quote_by_request_lookup_id_in_transaction,
             get_blind_signatures_in_transaction,
             reject_duplicate_payment_ids,
-            remove_spent_proofs_should_fail
+            remove_spent_proofs_should_fail,
+            get_proofs_with_inconsistent_states_fails,
+            get_proofs_fails_when_some_not_found,
+            update_proofs_state_updates_proofs_with_state,
+            get_mint_quotes_by_ids,
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

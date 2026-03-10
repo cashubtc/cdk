@@ -1,3 +1,5 @@
+set positional-arguments
+
 alias b := build
 alias c := check
 alias t := test
@@ -22,7 +24,10 @@ new-migration target name:
     touch "$migration_path"
     echo "Created new migration: $migration_path"
 
-final-check: typos format clippy test
+
+final-check: lint clippy test
+
+quick-check: lint clippy test-units
 
 # run `cargo build` on everything
 build *ARGS="--workspace --all-targets":
@@ -32,6 +37,26 @@ build *ARGS="--workspace --all-targets":
     cd {{invocation_directory()}}
   fi
   cargo build {{ARGS}}
+
+# Build a statically-linked binary by profile name (requires nix)
+# Profiles: cdk-mintd-static, cdk-mintd-ldk-static, cdk-cli-static
+build-static profile:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  nix build .#{{profile}}
+  mkdir -p ./static-bin
+  cp -f ./result/bin/* ./static-bin/
+  echo "Static binaries in ./static-bin/:"
+  ls -la ./static-bin/
+
+# Build all statically-linked binaries and generate checksums (requires nix)
+build-static-all: (build-static "cdk-mintd-static") (build-static "cdk-mintd-ldk-static") (build-static "cdk-cli-static")
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd ./static-bin
+  sha256sum -- *-x86_64 > SHA256SUMS
+  echo "Checksums:"
+  cat SHA256SUMS
 
 # run `cargo check` on everything
 check *ARGS="--workspace --all-targets":
@@ -64,6 +89,13 @@ test:
   # Run pure integration tests
   cargo test -p cdk-integration-tests --test mint 
 
+test-units:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
   
 # run doc tests
 test-pure db="memory":
@@ -78,6 +110,9 @@ test-pure db="memory":
   
   # Run swap flow tests (detailed testing of swap operation)
   CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test test_swap_flow -- --test-threads 1
+
+  # Run wallet saga tests
+  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test wallet_saga -- --test-threads 1
 
 test-all db="memory":
     #!/usr/bin/env bash
@@ -126,6 +161,66 @@ mutants-quick:
   set -euo pipefail
   echo "Running mutations on changed files since HEAD..."
   cargo mutants --in-diff HEAD -vV
+
+# Fuzzing Commands
+
+# Run fuzzing on a specific target
+# Usage: just fuzz <target> [duration] [jobs]
+# Example: just fuzz fuzz_token
+# Example: just fuzz fuzz_token 60
+# Example: just fuzz fuzz_token 60 4  (run for 60s on 4 cores)
+fuzz TARGET DURATION="0" JOBS="1":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running fuzzer on target: {{TARGET}} (jobs: {{JOBS}})"
+  cd fuzz
+  # Create corpus directory if it doesn't exist
+  mkdir -p "corpus/{{TARGET}}"
+  # Use seeds directory if it exists
+  SEEDS_DIR=""
+  if [ -d "seeds/{{TARGET}}" ]; then
+    SEEDS_DIR="seeds/{{TARGET}}"
+  fi
+  FORK_FLAG=""
+  if [ "{{JOBS}}" != "1" ]; then
+    FORK_FLAG="-fork={{JOBS}}"
+  fi
+  if [ "{{DURATION}}" = "0" ]; then
+    cargo fuzz run {{TARGET}} corpus/{{TARGET}} $SEEDS_DIR -- $FORK_FLAG
+  else
+    cargo fuzz run {{TARGET}} corpus/{{TARGET}} $SEEDS_DIR -- -max_total_time={{DURATION}} $FORK_FLAG
+  fi
+
+# List available fuzz targets
+fuzz-list:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Available fuzz targets:"
+  cd fuzz
+  cargo fuzz list
+
+# Run all fuzz targets for a short duration (useful for CI)
+# Usage: just fuzz-ci [duration] [jobs]
+# Example: just fuzz-ci 30 4  (run each target for 30s on 4 cores)
+fuzz-ci DURATION="30" JOBS="1":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running all fuzz targets for {{DURATION}} seconds each (jobs: {{JOBS}})..."
+  cd fuzz
+  FORK_FLAG=""
+  if [ "{{JOBS}}" != "1" ]; then
+    FORK_FLAG="-fork={{JOBS}}"
+  fi
+  for target in $(cargo fuzz list); do
+    echo "Fuzzing $target..."
+    mkdir -p "corpus/$target"
+    SEEDS_DIR=""
+    if [ -d "seeds/$target" ]; then
+      SEEDS_DIR="seeds/$target"
+    fi
+    cargo fuzz run "$target" "corpus/$target" $SEEDS_DIR -- -max_total_time={{DURATION}} $FORK_FLAG
+  done
+  echo "All fuzz targets completed!"
 
 # Run mutation tests only on changed code since HEAD
 mutants-diff:
@@ -254,13 +349,28 @@ clippy *ARGS="--workspace --all-targets":
 clippy-fix *ARGS="--workspace --all-targets":
   cargo clippy {{ARGS}} --fix
 
-typos: 
+typos:
   typos
 
 # fix all typos
 [no-exit-message]
 typos-fix:
   just typos -w
+
+# run all linting checks (format check, typos, nix format)
+lint:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  echo "Checking Rust formatting..."
+  cargo fmt --all -- --check
+  echo "Checking Nix formatting..."
+  nixpkgs-fmt --check $(echo **.nix)
+  echo "Checking for typos..."
+  typos
+  echo "All checks passed!"
 
 # Goose AI Recipe Commands
 
@@ -321,31 +431,31 @@ regtest db="sqlite":
 ln-cln1 *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  bash ./misc/regtest_helper.sh ln-cln1 {{ARGS}}
+  bash ./misc/regtest_helper.sh ln-cln1 "$@"
 
 # Get CLN node 2 info  
 ln-cln2 *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  bash ./misc/regtest_helper.sh ln-cln2 {{ARGS}}
+  bash ./misc/regtest_helper.sh ln-cln2 "$@"
 
 # Get LND node 1 info
 ln-lnd1 *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  bash ./misc/regtest_helper.sh ln-lnd1 {{ARGS}}
+  bash ./misc/regtest_helper.sh ln-lnd1 "$@"
 
 # Get LND node 2 info
 ln-lnd2 *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  bash ./misc/regtest_helper.sh ln-lnd2 {{ARGS}}
+  bash ./misc/regtest_helper.sh ln-lnd2 "$@"
 
 # Bitcoin regtest commands
 btc *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  bash ./misc/regtest_helper.sh btc {{ARGS}}
+  bash ./misc/regtest_helper.sh btc "$@"
 
 # Mine blocks in regtest
 btc-mine blocks="10":
@@ -418,7 +528,9 @@ release m="":
   args=(
     "-p cashu"
     "-p cdk-prometheus"
+    "-p cdk-http-client"
     "-p cdk-common"
+    "-p cdk-npubcash"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"
@@ -452,24 +564,34 @@ release m="":
   echo "📦 Triggering Swift package release for version $VERSION..."
   just ffi-release-swift $VERSION
 
+  # Trigger Kotlin package release after Rust crates are published
+  echo "📦 Triggering Kotlin package release for version $VERSION..."
+  just ffi-release-kotlin $VERSION
+
 check-docs:
   #!/usr/bin/env bash
   set -euo pipefail
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-http-client"
+    "-p cdk-npubcash"
     "-p cdk-sql-common"
-    "-p cdk"
-    "-p cdk-redb"
     "-p cdk-sqlite"
+    "-p cdk-postgres"
+    "-p cdk-redb"
+    "-p cdk-signatory"
+    "-p cdk-fake-wallet"
+    "-p cdk"
+    "-p cdk-ffi"
     "-p cdk-axum"
+    "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
-    "-p cdk-fake-wallet"
-    "-p cdk-mint-rpc"
+    "-p cdk-ldk-node"
+    "-p cdk-prometheus"
     "-p cdk-payment-processor"
-    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
   )
@@ -487,18 +609,24 @@ docs-strict:
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-http-client"
+    "-p cdk-npubcash"
     "-p cdk-sql-common"
-    "-p cdk"
-    "-p cdk-redb"
     "-p cdk-sqlite"
+    "-p cdk-postgres"
+    "-p cdk-redb"
+    "-p cdk-signatory"
+    "-p cdk-fake-wallet"
+    "-p cdk"
+    "-p cdk-ffi"
     "-p cdk-axum"
+    "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
-    "-p cdk-fake-wallet"
-    "-p cdk-mint-rpc"
+    "-p cdk-ldk-node"
+    "-p cdk-prometheus"
     "-p cdk-payment-processor"
-    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
   )
@@ -660,4 +788,22 @@ ffi-release-swift VERSION:
     --field cdk_repo="cashubtc/cdk" \
     --field cdk_ref="v{{VERSION}}"
   
-  echo "✅ Workflow triggered successfully!"
+  echo "✅ Swift workflow triggered successfully!"
+
+# Trigger Kotlin Package release workflow
+ffi-release-kotlin VERSION:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  
+  echo "🚀 Triggering Publish Kotlin Package workflow..."
+  echo "   Version: {{VERSION}}"
+  echo "   CDK Ref: v{{VERSION}}"
+  
+  # Trigger the workflow using GitHub CLI
+  gh workflow run "Publish Kotlin Bindings" \
+    --repo cashubtc/cdk-kotlin \
+    --field version="{{VERSION}}" \
+    --field cdk_repo="cashubtc/cdk" \
+    --field cdk_ref="v{{VERSION}}"
+  
+  echo "✅ Kotlin workflow triggered successfully!"
