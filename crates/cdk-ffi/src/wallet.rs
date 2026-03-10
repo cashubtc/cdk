@@ -484,6 +484,43 @@ impl Wallet {
         )))
     }
 
+    /// Subscribe to mint quote state updates
+    ///
+    /// Convenience method that creates a subscription to receive notifications
+    /// when any of the given mint quotes change state (e.g., Unpaid → Paid → Issued).
+    ///
+    /// Use `recv()` on the returned `ActiveSubscription` to receive updates as
+    /// `NotificationPayload::MintQuoteUpdate`.
+    ///
+    /// All quote IDs must belong to the same payment method.
+    ///
+    /// # Arguments
+    /// * `quote_ids` - The IDs of the mint quotes to monitor
+    /// * `payment_method` - The payment method of the quotes
+    pub async fn subscribe_mint_quote_state(
+        &self,
+        quote_ids: Vec<String>,
+        payment_method: PaymentMethod,
+    ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
+        let kind = match payment_method {
+            PaymentMethod::Bolt11 => SubscriptionKind::Bolt11MintQuote,
+            PaymentMethod::Bolt12 => SubscriptionKind::Bolt12MintQuote,
+            PaymentMethod::Custom { .. } => {
+                return Err(FfiError::internal(
+                    "Custom payment method subscriptions are not yet supported",
+                ));
+            }
+        };
+
+        let params = SubscribeParams {
+            kind,
+            filters: quote_ids,
+            id: None,
+        };
+
+        self.subscribe(params).await
+    }
+
     /// Refresh keysets from the mint
     pub async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
         let keysets = self.inner.refresh_keysets().await?;
