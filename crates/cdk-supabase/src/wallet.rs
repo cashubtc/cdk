@@ -16,7 +16,9 @@ use cdk_common::nuts::{
     CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
 use cdk_common::secret::Secret;
-use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId, WalletSaga};
+use cdk_common::wallet::{
+    self, MintQuote, Transaction, TransactionDirection, TransactionId, WalletSaga,
+};
 use cdk_sql_common::database::DatabaseExecutor;
 use cdk_sql_common::stmt::{Column, Statement};
 use pbkdf2::pbkdf2;
@@ -1712,10 +1714,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         Ok(())
     }
 
-    async fn get_saga(
-        &self,
-        id: &uuid::Uuid,
-    ) -> Result<Option<WalletSaga>, DatabaseError> {
+    async fn get_saga(&self, id: &uuid::Uuid) -> Result<Option<WalletSaga>, DatabaseError> {
         let path = format!("rest/v1/saga?id=eq.{}", url_encode(&id.to_string()));
         let (status, text) = self.get_request(&path).await?;
 
@@ -1836,8 +1835,13 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             }
 
             let items = Self::parse_response::<ProofTable>(&text)?;
-            let item = items
-                .and_then(|mut v| if v.is_empty() { None } else { Some(v.remove(0)) });
+            let item = items.and_then(|mut v| {
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v.remove(0))
+                }
+            });
 
             match item {
                 Some(proof_row) => {
@@ -1935,8 +1939,13 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         }
 
         let items = Self::parse_response::<MeltQuoteTable>(&text)?;
-        let item = items
-            .and_then(|mut v| if v.is_empty() { None } else { Some(v.remove(0)) });
+        let item = items.and_then(|mut v| {
+            if v.is_empty() {
+                None
+            } else {
+                Some(v.remove(0))
+            }
+        });
 
         match item {
             Some(quote) => {
@@ -2002,8 +2011,13 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         }
 
         let items = Self::parse_response::<MintQuoteTable>(&text)?;
-        let item = items
-            .and_then(|mut v| if v.is_empty() { None } else { Some(v.remove(0)) });
+        let item = items.and_then(|mut v| {
+            if v.is_empty() {
+                None
+            } else {
+                Some(v.remove(0))
+            }
+        });
 
         match item {
             Some(quote) => {
@@ -2393,6 +2407,8 @@ struct ProofTable {
     used_by_operation: Option<String>,
     #[serde(default)]
     created_by_operation: Option<String>,
+    #[serde(default)]
+    p2pk_e: Option<String>,
     /// Extra fields from other applications (captured during deserialization, ignored during serialization)
     #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
@@ -2441,6 +2457,11 @@ impl TryInto<ProofInfo> for ProofTable {
                     }),
                     _ => None,
                 },
+                p2pk_e: self
+                    .p2pk_e
+                    .map(|s| PublicKey::from_hex(&s))
+                    .transpose()
+                    .map_err(|_| DatabaseError::Internal("Invalid p2pk_e".into()))?,
             },
             used_by_operation: self
                 .used_by_operation
@@ -2494,6 +2515,7 @@ impl TryFrom<ProofInfo> for ProofTable {
                 .map(|d| hex::encode(d.r.to_secret_bytes())),
             used_by_operation: p.used_by_operation.map(|u| u.to_string()),
             created_by_operation: p.created_by_operation.map(|u| u.to_string()),
+            p2pk_e: p.proof.p2pk_e.map(|e| hex::encode(e.to_bytes())),
             _extra: Default::default(),
         })
     }
