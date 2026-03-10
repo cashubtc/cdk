@@ -786,6 +786,7 @@ mod tests {
                 .unwrap(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         };
 
         let proof2 = proof1.clone(); // Duplicate proof
@@ -808,6 +809,7 @@ mod tests {
                 .unwrap(), // Different C value
             witness: None,
             dleq: None,
+            p2pk_e: None,
         };
 
         let proofs = vec![proof1, proof3].into_iter().collect();

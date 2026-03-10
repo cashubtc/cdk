@@ -946,7 +946,7 @@ max_melt = 500000
         assert!(settings.cln.is_some());
         let cln_config = settings.cln.as_ref().unwrap();
         assert_eq!(cln_config.rpc_path, PathBuf::from("/tmp/lightning-rpc"));
-        assert_eq!(cln_config.bolt12, false);
+        assert!(!cln_config.bolt12);
         assert_eq!(cln_config.fee_percent, 0.01);
         let reserve_fee_u64: u64 = cln_config.reserve_fee_min.into();
         assert_eq!(reserve_fee_u64, 4);

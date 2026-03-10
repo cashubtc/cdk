@@ -673,6 +673,7 @@ impl<'a> MeltSaga<'a, Prepared> {
                         self.state_data.proofs_to_swap.clone(),
                         None,
                         false,
+                        false,
                     )
                     .await?
                 {

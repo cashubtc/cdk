@@ -350,7 +350,7 @@ async fn test_restore() {
 
     let expected_fee = wallet.get_proofs_fee(&proofs).await.unwrap().total;
     wallet_2
-        .swap(None, SplitTarget::default(), proofs, None, false)
+        .swap(None, SplitTarget::default(), proofs, None, false, false)
         .await
         .unwrap();
 
@@ -458,7 +458,14 @@ async fn test_restore_large_proof_count() {
         let batch_fee = wallet_2.get_proofs_fee(&batch_vec).await.unwrap().total;
         total_fee += batch_fee;
         wallet_2
-            .swap(None, SplitTarget::default(), batch.to_vec(), None, false)
+            .swap(
+                None,
+                SplitTarget::default(),
+                batch.to_vec(),
+                None,
+                false,
+                false,
+            )
             .await
             .unwrap();
     }
@@ -586,7 +593,7 @@ async fn test_restore_with_counter_gap() {
     // Swap the restored proofs to verify they are valid
     let expected_fee = wallet_restored.get_proofs_fee(&proofs).await.unwrap().total;
     wallet_restored
-        .swap(None, SplitTarget::default(), proofs, None, false)
+        .swap(None, SplitTarget::default(), proofs, None, false, false)
         .await
         .expect("first swap after restore failed");
 
@@ -605,7 +612,14 @@ async fn test_restore_with_counter_gap() {
         }
 
         let swap_result = wallet_restored
-            .swap(None, SplitTarget::default(), proofs.clone(), None, false)
+            .swap(
+                None,
+                SplitTarget::default(),
+                proofs.clone(),
+                None,
+                false,
+                false,
+            )
             .await;
 
         match swap_result {
@@ -906,12 +920,18 @@ async fn test_fake_melt_change_in_quote() {
 
     assert!(melt_response.change.is_some());
 
-    let check = client.get_melt_quote_status(&melt_quote.id).await.unwrap();
+    let check = client
+        .get_melt_quote_status(PaymentMethod::BOLT11, &melt_quote.id)
+        .await
+        .unwrap();
     let mut melt_change = melt_response.change.unwrap();
-    melt_change.sort_by(|a, b| a.amount.cmp(&b.amount));
+    melt_change.sort_by_key(|a| a.amount);
 
-    let mut check = check.change.unwrap();
-    check.sort_by(|a, b| a.amount.cmp(&b.amount));
+    let mut check = match check {
+        cdk_common::MeltQuoteResponse::Bolt11(r) => r.change.unwrap(),
+        _ => panic!("Expected Bolt11 melt quote response"),
+    };
+    check.sort_by_key(|a| a.amount);
 
     assert_eq!(melt_change, check);
 }

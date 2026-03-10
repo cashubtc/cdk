@@ -47,8 +47,8 @@ impl Wallet {
             })
             .await?
             .keysets
-            .iter()
-            .filter_map(|(_, keyset)| {
+            .values()
+            .filter_map(|keyset| {
                 if keyset.unit == self.unit && keyset.active {
                     Some((*keyset.clone()).clone())
                 } else {
@@ -78,8 +78,8 @@ impl Wallet {
             .load_from_mint(&self.localstore, &self.client)
             .await?
             .keysets
-            .iter()
-            .filter_map(|(_, keyset)| {
+            .values()
+            .filter_map(|keyset| {
                 if keyset.unit == self.unit && keyset.active {
                     Some((*keyset.clone()).clone())
                 } else {
