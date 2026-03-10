@@ -16,7 +16,7 @@ use cdk_common::nuts::{
     CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
 use cdk_common::secret::Secret;
-use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
+use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId, WalletSaga};
 use cdk_sql_common::database::DatabaseExecutor;
 use cdk_sql_common::stmt::{Column, Statement};
 use pbkdf2::pbkdf2;
@@ -1663,6 +1663,392 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         }
         Ok(())
     }
+
+    async fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, DatabaseError> {
+        // Delegate to the KVStoreDatabase impl
+        KVStoreDatabase::kv_read(self, primary_namespace, secondary_namespace, key).await
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, DatabaseError> {
+        // Delegate to the KVStoreDatabase impl
+        KVStoreDatabase::kv_list(self, primary_namespace, secondary_namespace).await
+    }
+
+    // ========== Saga methods ==========
+
+    async fn add_saga(&self, saga: WalletSaga) -> Result<(), DatabaseError> {
+        let saga_json = serde_json::to_string(&saga)
+            .map_err(|e| DatabaseError::Internal(format!("Serialize saga: {e}")))?;
+
+        let item = SagaTable {
+            id: saga.id.to_string(),
+            data: saga_json,
+            version: saga.version as i32,
+            completed: false,
+            created_at: saga.created_at as i64,
+            updated_at: saga.updated_at as i64,
+            _extra: Default::default(),
+        };
+
+        let (status, response_text) = self
+            .post_request("rest/v1/saga?on_conflict=id,wallet_id", &item)
+            .await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "add_saga failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+        Ok(())
+    }
+
+    async fn get_saga(
+        &self,
+        id: &uuid::Uuid,
+    ) -> Result<Option<WalletSaga>, DatabaseError> {
+        let path = format!("rest/v1/saga?id=eq.{}", url_encode(&id.to_string()));
+        let (status, text) = self.get_request(&path).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_saga failed: HTTP {}",
+                status
+            )));
+        }
+
+        if let Some(items) = Self::parse_response::<SagaTable>(&text)? {
+            if let Some(item) = items.into_iter().next() {
+                let saga: WalletSaga = serde_json::from_str(&item.data)
+                    .map_err(|e| DatabaseError::Internal(format!("Deserialize saga: {e}")))?;
+                return Ok(Some(saga));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn update_saga(&self, saga: WalletSaga) -> Result<bool, DatabaseError> {
+        let expected_version = saga.version.saturating_sub(1);
+        let saga_json = serde_json::to_string(&saga)
+            .map_err(|e| DatabaseError::Internal(format!("Serialize saga: {e}")))?;
+
+        let item = SagaTable {
+            id: saga.id.to_string(),
+            data: saga_json,
+            version: saga.version as i32,
+            completed: false,
+            created_at: saga.created_at as i64,
+            updated_at: saga.updated_at as i64,
+            _extra: Default::default(),
+        };
+
+        // Use PostgREST filtering to only update if version matches (optimistic locking)
+        let path = format!(
+            "rest/v1/saga?id=eq.{}&version=eq.{}",
+            url_encode(&saga.id.to_string()),
+            expected_version
+        );
+
+        let (status, response_text) = self.patch_request(&path, &item).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "update_saga failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+
+        // PostgREST PATCH returns empty body for 0 rows updated. Check via GET.
+        // Alternatively, we check if the response indicates changes were made.
+        // A simpler approach: re-read and verify version was updated.
+        let current = self.get_saga(&saga.id).await?;
+        match current {
+            Some(s) => Ok(s.version == saga.version),
+            None => Ok(false),
+        }
+    }
+
+    async fn delete_saga(&self, id: &uuid::Uuid) -> Result<(), DatabaseError> {
+        let path = format!("rest/v1/saga?id=eq.{}", url_encode(&id.to_string()));
+        let (status, response_text) = self.delete_request(&path).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "delete_saga failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+        Ok(())
+    }
+
+    async fn get_incomplete_sagas(&self) -> Result<Vec<WalletSaga>, DatabaseError> {
+        let path = "rest/v1/saga?completed=eq.false&order=created_at.asc";
+        let (status, text) = self.get_request(path).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_incomplete_sagas failed: HTTP {}",
+                status
+            )));
+        }
+
+        if let Some(items) = Self::parse_response::<SagaTable>(&text)? {
+            let mut sagas = Vec::new();
+            for item in items {
+                let saga: WalletSaga = serde_json::from_str(&item.data)
+                    .map_err(|e| DatabaseError::Internal(format!("Deserialize saga: {e}")))?;
+                sagas.push(saga);
+            }
+            Ok(sagas)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    // ========== Proof reservation methods ==========
+
+    async fn reserve_proofs(
+        &self,
+        ys: Vec<PublicKey>,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), DatabaseError> {
+        let op_id_str = operation_id.to_string();
+        for y in &ys {
+            let y_hex = hex::encode(y.to_bytes());
+            // Fetch proof to verify it's unspent
+            let path = format!("rest/v1/proof?y=eq.{}", url_encode(&y_hex));
+            let (status, text) = self.get_request(&path).await?;
+
+            if !status.is_success() {
+                return Err(DatabaseError::Internal(format!(
+                    "reserve_proofs: fetch failed: HTTP {}",
+                    status
+                )));
+            }
+
+            let items = Self::parse_response::<ProofTable>(&text)?;
+            let item = items
+                .and_then(|mut v| if v.is_empty() { None } else { Some(v.remove(0)) });
+
+            match item {
+                Some(proof_row) => {
+                    if proof_row.state != State::Unspent.to_string() {
+                        return Err(DatabaseError::ProofNotUnspent);
+                    }
+                }
+                None => return Err(DatabaseError::ProofNotUnspent),
+            }
+
+            // Update proof state to Reserved with operation_id
+            let update = serde_json::json!({
+                "state": State::Reserved.to_string(),
+                "used_by_operation": op_id_str,
+            });
+            let patch_path = format!("rest/v1/proof?y=eq.{}", url_encode(&y_hex));
+            let (status, response_text) = self.patch_request(&patch_path, &update).await?;
+
+            if !status.is_success() {
+                return Err(DatabaseError::Internal(format!(
+                    "reserve_proofs: update failed: HTTP {} - {}",
+                    status, response_text
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    async fn release_proofs(&self, operation_id: &uuid::Uuid) -> Result<(), DatabaseError> {
+        let op_id_str = operation_id.to_string();
+
+        // Update all proofs reserved by this operation back to Unspent
+        let update = serde_json::json!({
+            "state": State::Unspent.to_string(),
+            "used_by_operation": null,
+        });
+        let path = format!(
+            "rest/v1/proof?used_by_operation=eq.{}",
+            url_encode(&op_id_str)
+        );
+        let (status, response_text) = self.patch_request(&path, &update).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "release_proofs failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+        Ok(())
+    }
+
+    async fn get_reserved_proofs(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<ProofInfo>, DatabaseError> {
+        let op_id_str = operation_id.to_string();
+        let path = format!(
+            "rest/v1/proof?used_by_operation=eq.{}",
+            url_encode(&op_id_str)
+        );
+        let (status, text) = self.get_request(&path).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "get_reserved_proofs failed: HTTP {}",
+                status
+            )));
+        }
+
+        if let Some(items) = Self::parse_response::<ProofTable>(&text)? {
+            items.into_iter().map(|p| p.try_into()).collect()
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    // ========== Quote reservation methods ==========
+
+    async fn reserve_melt_quote(
+        &self,
+        quote_id: &str,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), DatabaseError> {
+        let op_id_str = operation_id.to_string();
+
+        // Check if quote exists and is not already reserved
+        let path = format!("rest/v1/melt_quote?id=eq.{}", url_encode(quote_id));
+        let (status, text) = self.get_request(&path).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "reserve_melt_quote: fetch failed: HTTP {}",
+                status
+            )));
+        }
+
+        let items = Self::parse_response::<MeltQuoteTable>(&text)?;
+        let item = items
+            .and_then(|mut v| if v.is_empty() { None } else { Some(v.remove(0)) });
+
+        match item {
+            Some(quote) => {
+                if quote.used_by_operation.is_some() {
+                    return Err(DatabaseError::QuoteAlreadyInUse);
+                }
+            }
+            None => return Err(DatabaseError::UnknownQuote),
+        }
+
+        let update = serde_json::json!({
+            "used_by_operation": op_id_str,
+        });
+        let patch_path = format!("rest/v1/melt_quote?id=eq.{}", url_encode(quote_id));
+        let (status, response_text) = self.patch_request(&patch_path, &update).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "reserve_melt_quote failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+        Ok(())
+    }
+
+    async fn release_melt_quote(&self, operation_id: &uuid::Uuid) -> Result<(), DatabaseError> {
+        let op_id_str = operation_id.to_string();
+
+        let update = serde_json::json!({
+            "used_by_operation": null,
+        });
+        let path = format!(
+            "rest/v1/melt_quote?used_by_operation=eq.{}",
+            url_encode(&op_id_str)
+        );
+        let (status, response_text) = self.patch_request(&path, &update).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "release_melt_quote failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+        Ok(())
+    }
+
+    async fn reserve_mint_quote(
+        &self,
+        quote_id: &str,
+        operation_id: &uuid::Uuid,
+    ) -> Result<(), DatabaseError> {
+        let op_id_str = operation_id.to_string();
+
+        // Check if quote exists and is not already reserved
+        let path = format!("rest/v1/mint_quote?id=eq.{}", url_encode(quote_id));
+        let (status, text) = self.get_request(&path).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "reserve_mint_quote: fetch failed: HTTP {}",
+                status
+            )));
+        }
+
+        let items = Self::parse_response::<MintQuoteTable>(&text)?;
+        let item = items
+            .and_then(|mut v| if v.is_empty() { None } else { Some(v.remove(0)) });
+
+        match item {
+            Some(quote) => {
+                if quote.used_by_operation.is_some() {
+                    return Err(DatabaseError::QuoteAlreadyInUse);
+                }
+            }
+            None => return Err(DatabaseError::UnknownQuote),
+        }
+
+        let update = serde_json::json!({
+            "used_by_operation": op_id_str,
+        });
+        let patch_path = format!("rest/v1/mint_quote?id=eq.{}", url_encode(quote_id));
+        let (status, response_text) = self.patch_request(&patch_path, &update).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "reserve_mint_quote failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+        Ok(())
+    }
+
+    async fn release_mint_quote(&self, operation_id: &uuid::Uuid) -> Result<(), DatabaseError> {
+        let op_id_str = operation_id.to_string();
+
+        let update = serde_json::json!({
+            "used_by_operation": null,
+        });
+        let path = format!(
+            "rest/v1/mint_quote?used_by_operation=eq.{}",
+            url_encode(&op_id_str)
+        );
+        let (status, response_text) = self.patch_request(&path, &update).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "release_mint_quote failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+        Ok(())
+    }
 }
 
 // Data Structures for Supabase Tables (Serde)
@@ -1864,6 +2250,10 @@ struct MintQuoteTable {
     payment_method: String,
     amount_issued: i64,
     amount_paid: i64,
+    #[serde(default)]
+    used_by_operation: Option<String>,
+    #[serde(default)]
+    version: Option<i32>,
     /// Extra fields from other applications (captured during deserialization, ignored during serialization)
     #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
@@ -1894,6 +2284,8 @@ impl TryInto<MintQuote> for MintQuoteTable {
                 .map_err(|_| DatabaseError::Internal("Invalid payment method".into()))?,
             amount_issued: cdk_common::Amount::from(self.amount_issued as u64),
             amount_paid: cdk_common::Amount::from(self.amount_paid as u64),
+            used_by_operation: self.used_by_operation,
+            version: self.version.unwrap_or(0) as u32,
         })
     }
 }
@@ -1913,6 +2305,8 @@ impl TryFrom<MintQuote> for MintQuoteTable {
             payment_method: q.payment_method.to_string(),
             amount_issued: q.amount_issued.to_u64() as i64,
             amount_paid: q.amount_paid.to_u64() as i64,
+            used_by_operation: q.used_by_operation,
+            version: Some(q.version as i32),
             _extra: Default::default(),
         })
     }
@@ -1929,6 +2323,10 @@ struct MeltQuoteTable {
     expiry: i64,
     payment_preimage: Option<String>,
     payment_method: String,
+    #[serde(default)]
+    used_by_operation: Option<String>,
+    #[serde(default)]
+    version: Option<i32>,
     /// Extra fields from other applications (captured during deserialization, ignored during serialization)
     #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
@@ -1950,6 +2348,8 @@ impl TryInto<wallet::MeltQuote> for MeltQuoteTable {
             payment_preimage: self.payment_preimage,
             payment_method: cdk_common::PaymentMethod::from_str(&self.payment_method)
                 .map_err(|_| DatabaseError::Internal("Invalid payment method".into()))?,
+            used_by_operation: self.used_by_operation,
+            version: self.version.unwrap_or(0) as u32,
         })
     }
 }
@@ -1967,6 +2367,8 @@ impl TryFrom<wallet::MeltQuote> for MeltQuoteTable {
             expiry: q.expiry as i64,
             payment_preimage: q.payment_preimage,
             payment_method: q.payment_method.to_string(),
+            used_by_operation: q.used_by_operation,
+            version: Some(q.version as i32),
             _extra: Default::default(),
         })
     }
@@ -1987,6 +2389,10 @@ struct ProofTable {
     dleq_e: Option<String>,
     dleq_s: Option<String>,
     dleq_r: Option<String>,
+    #[serde(default)]
+    used_by_operation: Option<String>,
+    #[serde(default)]
+    created_by_operation: Option<String>,
     /// Extra fields from other applications (captured during deserialization, ignored during serialization)
     #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
@@ -2036,6 +2442,16 @@ impl TryInto<ProofInfo> for ProofTable {
                     _ => None,
                 },
             },
+            used_by_operation: self
+                .used_by_operation
+                .map(|s| uuid::Uuid::parse_str(&s))
+                .transpose()
+                .map_err(|_| DatabaseError::Internal("Invalid used_by_operation uuid".into()))?,
+            created_by_operation: self
+                .created_by_operation
+                .map(|s| uuid::Uuid::parse_str(&s))
+                .transpose()
+                .map_err(|_| DatabaseError::Internal("Invalid created_by_operation uuid".into()))?,
         })
     }
 }
@@ -2076,6 +2492,8 @@ impl TryFrom<ProofInfo> for ProofTable {
                 .dleq
                 .as_ref()
                 .map(|d| hex::encode(d.r.to_secret_bytes())),
+            used_by_operation: p.used_by_operation.map(|u| u.to_string()),
+            created_by_operation: p.created_by_operation.map(|u| u.to_string()),
             _extra: Default::default(),
         })
     }
@@ -2097,6 +2515,8 @@ struct TransactionTable {
     payment_request: Option<String>,
     payment_proof: Option<String>,
     payment_method: Option<String>,
+    #[serde(default)]
+    saga_id: Option<String>,
     /// Extra fields from other applications (captured during deserialization, ignored during serialization)
     #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
@@ -2148,6 +2568,11 @@ impl TryInto<Transaction> for TransactionTable {
                 .map(|p| cdk_common::PaymentMethod::from_str(&p))
                 .transpose()
                 .map_err(|_| DatabaseError::Internal("Invalid payment method".into()))?,
+            saga_id: self
+                .saga_id
+                .map(|s| uuid::Uuid::parse_str(&s))
+                .transpose()
+                .map_err(|_| DatabaseError::Internal("Invalid saga_id uuid".into()))?,
         })
     }
 }
@@ -2174,9 +2599,23 @@ impl TryFrom<Transaction> for TransactionTable {
             payment_request: t.payment_request,
             payment_proof: t.payment_proof,
             payment_method: t.payment_method.map(|p| p.to_string()),
+            saga_id: t.saga_id.map(|u| u.to_string()),
             _extra: Default::default(),
         })
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SagaTable {
+    id: String,
+    data: String, // JSON-serialized WalletSaga
+    version: i32,
+    completed: bool,
+    created_at: i64,
+    updated_at: i64,
+    /// Extra fields from other applications
+    #[serde(default, skip_serializing, flatten)]
+    _extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Response from Supabase Auth sign-up/sign-in

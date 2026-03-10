@@ -5,8 +5,6 @@ use std::sync::Arc;
 
 use cdk_common::database::WalletDatabase as CdkWalletDatabase;
 use cdk_common::wallet::WalletSaga;
-use cdk_sql_common::pool::DatabasePool;
-use cdk_sql_common::SQLWalletDatabase;
 
 use crate::error::FfiError;
 #[cfg(feature = "postgres")]
@@ -1015,7 +1013,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
 /// backend (SQLite, Postgres, Supabase, etc.) to be exposed through the FFI layer.
 pub(crate) struct FfiWalletDatabaseWrapper<T, E>
 where
-    T: CdkWalletDatabase<E> + CdkKVStoreDatabase<Err = E> + Send + Sync + 'static,
+    T: CdkWalletDatabase<E> + Send + Sync + 'static,
     E: std::error::Error
         + Send
         + Sync
@@ -1029,7 +1027,7 @@ where
 
 impl<T, E> std::fmt::Debug for FfiWalletDatabaseWrapper<T, E>
 where
-    T: CdkWalletDatabase<E> + CdkKVStoreDatabase<Err = E> + std::fmt::Debug + Send + Sync + 'static,
+    T: CdkWalletDatabase<E> + std::fmt::Debug + Send + Sync + 'static,
     E: std::error::Error
         + Send
         + Sync
@@ -1046,7 +1044,7 @@ where
 
 impl<T, E> FfiWalletDatabaseWrapper<T, E>
 where
-    T: CdkWalletDatabase<E> + CdkKVStoreDatabase<Err = E> + Send + Sync + 'static,
+    T: CdkWalletDatabase<E> + Send + Sync + 'static,
     E: std::error::Error
         + Send
         + Sync
@@ -1075,7 +1073,7 @@ where
 #[async_trait::async_trait]
 impl<T, E> WalletDatabase for FfiWalletDatabaseWrapper<T, E>
 where
-    T: CdkWalletDatabase<E> + CdkKVStoreDatabase<Err = E> + Send + Sync + 'static,
+    T: CdkWalletDatabase<E> + Send + Sync + 'static,
     E: std::error::Error
         + Send
         + Sync
