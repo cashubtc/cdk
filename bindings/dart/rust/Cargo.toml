@@ -20,12 +20,12 @@ path = "uniffi-bindgen.rs"
 [dependencies]
 cdk-ffi.workspace = true
 uniffi = { workspace = true, features = ["cli"] }
-uniffi-dart = { git = "https://github.com/Uniffi-Dart/uniffi-dart" }
+uniffi-dart = { git = "https://github.com/Uniffi-Dart/uniffi-dart", tag = "v0.1.0+v0.30.0"  }
 camino = "1.2"
 
 [build-dependencies]
 uniffi = { workspace = true, features = ["build"] }
-uniffi-dart = { git = "https://github.com/Uniffi-Dart/uniffi-dart", features = ["build"] }
+uniffi-dart = { git = "https://github.com/Uniffi-Dart/uniffi-dart", features = ["build"], tag = "v0.1.0+v0.30.0"  }
 
 [lints]
 workspace = true
