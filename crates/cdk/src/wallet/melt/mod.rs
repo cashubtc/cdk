@@ -1030,7 +1030,14 @@ impl Wallet {
 
         match &quote.payment_method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
-                let response = self.client.get_melt_quote_status(quote_id).await?;
+                let response = self
+                    .client
+                    .get_melt_quote_status(quote.payment_method.clone(), quote_id)
+                    .await?;
+                let response = match response {
+                    cdk_common::MeltQuoteResponse::Bolt11(response) => response,
+                    _ => return Err(Error::InvalidPaymentMethod),
+                };
                 self.update_melt_quote_state(
                     &mut quote,
                     response.state,
@@ -1041,7 +1048,14 @@ impl Wallet {
                 .await?;
             }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
-                let response = self.client.get_melt_bolt12_quote_status(quote_id).await?;
+                let response = self
+                    .client
+                    .get_melt_quote_status(quote.payment_method.clone(), quote_id)
+                    .await?;
+                let response = match response {
+                    cdk_common::MeltQuoteResponse::Bolt12(response) => response,
+                    _ => return Err(Error::InvalidPaymentMethod),
+                };
                 self.update_melt_quote_state(
                     &mut quote,
                     response.state,
@@ -1051,11 +1065,15 @@ impl Wallet {
                 )
                 .await?;
             }
-            PaymentMethod::Custom(method) => {
+            PaymentMethod::Custom(_) => {
                 let response = self
                     .client
-                    .get_melt_quote_custom_status(method, quote_id)
+                    .get_melt_quote_status(quote.payment_method.clone(), quote_id)
                     .await?;
+                let response = match response {
+                    cdk_common::MeltQuoteResponse::Custom((_, response)) => response,
+                    _ => return Err(Error::InvalidPaymentMethod),
+                };
                 let change_amount = response
                     .change
                     .as_ref()
@@ -1091,22 +1109,15 @@ impl Wallet {
             .ok_or(Error::UnknownQuote)?;
 
         // Route to correct endpoint based on payment method
-        let response = match &quote.payment_method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => {
-                let r = self.client.get_melt_quote_status(quote_id).await?;
-                MeltQuoteStatusResponse::Standard(r)
-            }
-            PaymentMethod::Known(KnownMethod::Bolt12) => {
-                let r = self.client.get_melt_bolt12_quote_status(quote_id).await?;
-                MeltQuoteStatusResponse::Bolt12(r)
-            }
-            PaymentMethod::Custom(method) => {
-                let r = self
-                    .client
-                    .get_melt_quote_custom_status(method, quote_id)
-                    .await?;
-                MeltQuoteStatusResponse::Custom(r)
-            }
+        let response = self
+            .client
+            .get_melt_quote_status(quote.payment_method.clone(), quote_id)
+            .await?;
+
+        let response = match response {
+            cdk_common::MeltQuoteResponse::Bolt11(r) => MeltQuoteStatusResponse::Standard(r),
+            cdk_common::MeltQuoteResponse::Bolt12(r) => MeltQuoteStatusResponse::Bolt12(r),
+            cdk_common::MeltQuoteResponse::Custom((_, r)) => MeltQuoteStatusResponse::Custom(r),
         };
 
         Ok(response)

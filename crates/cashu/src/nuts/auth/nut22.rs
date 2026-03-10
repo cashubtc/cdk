@@ -180,6 +180,7 @@ impl From<AuthProof> for Proof {
             c: value.c,
             witness: None,
             dleq: value.dleq,
+            p2pk_e: None,
         }
     }
 }

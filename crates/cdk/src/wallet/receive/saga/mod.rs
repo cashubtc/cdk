@@ -150,7 +150,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                     .unwrap_or_default()
                     .try_into();
                 if let Ok(conditions) = conditions {
-                    let mut pubkeys = conditions.pubkeys.unwrap_or_default();
+                    let mut pubkeys = Vec::new();
 
                     match secret.kind() {
                         Kind::P2PK => {
@@ -158,15 +158,50 @@ impl<'a> ReceiveSaga<'a, Initial> {
                             pubkeys.push(data_key);
                         }
                         Kind::HTLC => {
+                            // HTLC data is a hash, not a pubkey.
+                            // Add the pre-image and skip slot 0 pubkey.
                             let hashed_preimage = secret.secret_data().data();
                             let preimage = hashed_to_preimage
                                 .get(hashed_preimage)
                                 .ok_or(Error::PreimageNotProvided)?;
                             proof.add_preimage(preimage.to_string());
+
+                            // For HTLC, there is no slot 0 pubkey. But slot index for the tags still starts at 1!
                         }
                     }
-                    for pubkey in pubkeys {
-                        if let Some(signing) = p2pk_signing_keys.get(&pubkey.x_only_public_key()) {
+
+                    if let Some(mut cond_pubkeys) = conditions.pubkeys {
+                        pubkeys.append(&mut cond_pubkeys);
+                    }
+                    if let Some(mut refund_keys) = conditions.refund_keys {
+                        pubkeys.append(&mut refund_keys);
+                    }
+
+                    for (i, pubkey) in pubkeys.iter().enumerate() {
+                        let slot = match secret.kind() {
+                            Kind::P2PK => i as u8,
+                            _ => (i + 1) as u8, // HTLC skips slot 0 since it's a hash, not a pubkey
+                        };
+                        if let Some(ephemeral_key) = proof.p2pk_e {
+                            for signing_key in p2pk_signing_keys.values() {
+                                if let Ok(r) =
+                                    crate::nuts::nut28::ecdh_kdf(signing_key, &ephemeral_key, slot)
+                                {
+                                    if let Ok(derived_key) =
+                                        crate::nuts::nut28::derive_signing_key_bip340(
+                                            signing_key,
+                                            &r,
+                                            pubkey,
+                                        )
+                                    {
+                                        proof.sign_p2pk(derived_key)?;
+                                        break;
+                                    }
+                                }
+                            }
+                        } else if let Some(signing) =
+                            p2pk_signing_keys.get(&pubkey.x_only_public_key())
+                        {
                             proof.sign_p2pk(signing.to_owned().clone())?;
                         }
                     }
@@ -280,6 +315,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 proofs,
                 None,
                 false,
+                false,
                 &fee_breakdown,
             )
             .await?;
@@ -297,7 +333,9 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 
             for blinded_message in pre_swap.swap_request.outputs_mut() {
                 for signing_key in p2pk_signing_keys.values() {
-                    blinded_message.sign_p2pk(signing_key.to_owned().clone())?
+                    // Sign the outputs of the swap using standard P2PK since output
+                    // P2BK requires ephemeral keys which is handled at creation.
+                    blinded_message.sign_p2pk((**signing_key).clone())?
                 }
             }
         }

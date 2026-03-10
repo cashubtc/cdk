@@ -81,6 +81,7 @@ async fn test_correct_keyset() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
+        None,
     )
     .await
     .unwrap();
@@ -100,6 +101,7 @@ async fn test_correct_keyset() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
+        None,
     )
     .await
     .unwrap();
@@ -223,7 +225,7 @@ async fn test_concurrent_duplicate_payment_handling() {
             } else {
                 tx.update_mint_quote(&mut quote_from_db)
                     .await
-                    .map_err(|err| cdk_common::Error::Database(err))
+                    .map_err(cdk_common::Error::Database)
             };
 
             if result.is_ok() {

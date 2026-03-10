@@ -88,6 +88,7 @@ impl<'a> SwapSaga<'a, Initial> {
         amount_split_target: SplitTarget,
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
+        use_p2bk: bool,
         include_fees: bool,
     ) -> Result<SwapSaga<'a, Prepared>, Error> {
         tracing::info!(
@@ -115,6 +116,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 input_proofs.clone(),
                 spending_conditions.clone(),
                 include_fees,
+                use_p2bk,
                 &fee_breakdown,
             )
             .await?;
@@ -246,32 +248,45 @@ impl<'a> SwapSaga<'a, Prepared> {
                         nut10_secret.is_ok()
                     });
 
-                let (proofs_to_send, proofs_to_keep) = match &self.state_data.spending_conditions {
-                    Some(_) => (proofs_with_condition, proofs_without_condition),
-                    None => {
-                        let mut all_proofs = proofs_without_condition;
-                        all_proofs.reverse();
+                let (mut proofs_to_send, proofs_to_keep) =
+                    match &self.state_data.spending_conditions {
+                        Some(_) => (proofs_with_condition, proofs_without_condition),
+                        None => {
+                            let mut all_proofs = proofs_without_condition;
+                            all_proofs.reverse();
 
-                        let mut proofs_to_send = Proofs::new();
-                        let mut proofs_to_keep = Proofs::new();
-                        let mut amount_split = amount.split_targeted(
-                            &self.state_data.amount_split_target,
-                            &fee_and_amounts,
-                        )?;
+                            let mut proofs_to_send = Proofs::new();
+                            let mut proofs_to_keep = Proofs::new();
+                            let mut amount_split = amount.split_targeted(
+                                &self.state_data.amount_split_target,
+                                &fee_and_amounts,
+                            )?;
 
-                        for proof in all_proofs {
-                            if let Some(idx) = amount_split.iter().position(|&a| a == proof.amount)
-                            {
-                                proofs_to_send.push(proof);
-                                amount_split.remove(idx);
-                            } else {
-                                proofs_to_keep.push(proof);
+                            for proof in all_proofs {
+                                if let Some(idx) =
+                                    amount_split.iter().position(|&a| a == proof.amount)
+                                {
+                                    proofs_to_send.push(proof);
+                                    amount_split.remove(idx);
+                                } else {
+                                    proofs_to_keep.push(proof);
+                                }
                             }
-                        }
 
-                        (proofs_to_send, proofs_to_keep)
+                            (proofs_to_send, proofs_to_keep)
+                        }
+                    };
+
+                if let Some(ephemeral_keys) = &self.state_data.pre_swap.p2bk_secret_keys {
+                    for (i, proof) in proofs_to_send.iter_mut().enumerate() {
+                        let e_key = if ephemeral_keys.len() == 1 {
+                            &ephemeral_keys[0]
+                        } else {
+                            &ephemeral_keys[i]
+                        };
+                        proof.p2pk_e = Some(e_key.public_key());
                     }
-                };
+                }
 
                 let send_proofs_info = proofs_to_send
                     .clone()

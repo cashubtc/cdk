@@ -34,7 +34,7 @@ async fn main() -> Result<(), Error> {
     let amount = Amount::from(100);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, localstore, seed, None).unwrap();
+    let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
 
     let quote = wallet
         .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
@@ -49,10 +49,8 @@ async fn main() -> Result<(), Error> {
         .await?;
 
     // Mint the received amount
-    println!(
-        "Minted nuts: {:?}",
-        proofs.into_iter().map(|p| p.amount).collect::<Vec<_>>()
-    );
+    let proof_amounts: Vec<String> = proofs.iter().map(|p| p.amount.to_string()).collect();
+    println!("Minted nuts: [{}]", proof_amounts.join(", "));
 
     // Generate a secret key for spending conditions
     let secret = SecretKey::generate();

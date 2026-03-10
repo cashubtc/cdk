@@ -265,7 +265,7 @@ impl Amount<()> {
                 parts
             }
             SplitTarget::Values(values) => {
-                let values_total: Amount = Amount::try_sum(values.clone().into_iter())?;
+                let values_total: Amount = Amount::try_sum(values.clone())?;
 
                 match self.cmp(&values_total) {
                     Ordering::Equal => values.clone(),
@@ -559,6 +559,22 @@ impl Amount<CurrencyUnit> {
     /// Returns a string representation that includes the unit
     pub fn display_with_unit(&self) -> String {
         format!("{} {}", self.value, self.unit)
+    }
+
+    /// Convert to millisatoshis and return the raw u64 value
+    ///
+    /// Returns an error if the unit cannot be converted to Msat
+    /// (i.e., the unit is not Sat or Msat).
+    pub fn to_msat(&self) -> Result<u64, Error> {
+        self.convert_to(&CurrencyUnit::Msat).map(|a| a.value())
+    }
+
+    /// Convert to satoshis and return the raw u64 value
+    ///
+    /// Returns an error if the unit cannot be converted to Sat
+    /// (i.e., the unit is not Sat or Msat).
+    pub fn to_sat(&self) -> Result<u64, Error> {
+        self.convert_to(&CurrencyUnit::Sat).map(|a| a.value())
     }
 }
 
@@ -1477,6 +1493,7 @@ mod tests {
     /// - Some(0)
     /// - Some(1)
     /// - Some(-1)
+    ///
     /// Also catches mutation that replaces <= with > in the comparison.
     #[test]
     fn test_amount_to_i64_returns_correct_value() {
@@ -1901,11 +1918,11 @@ mod tests {
 
         // Greater than
         assert!(large > small);
-        assert!(!(small > large));
+        assert!(small <= large);
 
         // Less than
         assert!(small < large);
-        assert!(!(large < small));
+        assert!(large >= small);
 
         // Greater than or equal
         assert!(large >= small);
@@ -1960,24 +1977,14 @@ mod tests {
         // - >= returns false
         // - <= returns false
 
-        assert!(!(sat > msat));
-        assert!(!(sat < msat));
-        assert!(!(sat >= msat));
-        assert!(!(sat <= msat));
-
-        assert!(!(msat > sat));
-        assert!(!(msat < sat));
-        assert!(!(msat >= sat));
-        assert!(!(msat <= sat));
+        assert!(sat.partial_cmp(&msat).is_none());
+        assert!(msat.partial_cmp(&sat).is_none());
 
         // Even with same value, different units should return false
         let sat100 = Amount::new(100, CurrencyUnit::Sat);
         let msat100 = Amount::new(100, CurrencyUnit::Msat);
 
-        assert!(!(sat100 > msat100));
-        assert!(!(sat100 < msat100));
-        assert!(!(sat100 >= msat100));
-        assert!(!(sat100 <= msat100));
+        assert!(sat100.partial_cmp(&msat100).is_none());
     }
 
     /// Tests that Amount<()> (untyped) has total ordering and implements Ord.

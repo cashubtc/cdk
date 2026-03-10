@@ -71,6 +71,24 @@ pub enum Error {
     /// Duplicate signature from same pubkey
     #[error("Duplicate signature from the same pubkey detected")]
     DuplicateSignature,
+    /// Impossible multisig configuration: num_sigs exceeds available pubkeys
+    #[error(
+        "Impossible multisig: required {required} signatures but only {available} keys available"
+    )]
+    ImpossibleMultisigConfiguration {
+        /// Number of signatures required
+        required: u64,
+        /// Number of available keys
+        available: u64,
+    },
+    /// Impossible refund multisig configuration: num_sigs_refund exceeds refund keys
+    #[error("Impossible refund multisig: required {required} signatures but only {available} refund keys available")]
+    ImpossibleRefundMultisigConfiguration {
+        /// Number of refund signatures required
+        required: u64,
+        /// Number of available refund keys
+        available: u64,
+    },
     /// Preimage not supported in P2PK
     #[error("P2PK does not support preimage requirements")]
     PreimageNotSupportedInP2PK,
@@ -515,6 +533,26 @@ impl Conditions {
     ) -> Result<Self, Error> {
         if let Some(locktime) = locktime {
             ensure_cdk!(locktime.ge(&unix_time()), Error::LocktimeInPast);
+        }
+
+        if let Some(n) = num_sigs {
+            let available_keys = 1 + pubkeys.as_ref().map(Vec::len).unwrap_or(0);
+            if n > available_keys as u64 {
+                return Err(Error::ImpossibleMultisigConfiguration {
+                    required: n,
+                    available: available_keys as u64,
+                });
+            }
+        }
+
+        if let Some(n) = num_sigs_refund {
+            let refund_key_count = refund_keys.as_ref().map(Vec::len).unwrap_or(0);
+            if n > refund_key_count as u64 {
+                return Err(Error::ImpossibleRefundMultisigConfiguration {
+                    required: n,
+                    available: refund_key_count as u64,
+                });
+            }
         }
 
         Ok(Self {
@@ -1087,6 +1125,7 @@ mod tests {
             .unwrap(),
             witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
             dleq: None,
+            p2pk_e: None,
         };
 
         proof.sign_p2pk(secret_key).unwrap();
@@ -1190,6 +1229,7 @@ mod tests {
             .unwrap(),
             witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
             dleq: None,
+            p2pk_e: None,
         };
 
         proof.sign_p2pk(signing_key_three.clone()).unwrap();
@@ -1222,6 +1262,7 @@ mod tests {
             c: pubkey,
             witness: None,
             dleq: None,
+            p2pk_e: None,
         }
     }
 
@@ -2327,5 +2368,191 @@ mod tests {
             swap.verify_spending_conditions().is_ok(),
             "Both signatures should verify"
         );
+    }
+
+    #[test]
+    fn test_conditions_valid_multisig() {
+        let pubkey1 = PublicKey::from_str(
+            "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
+        )
+        .unwrap();
+        let pubkey2 = PublicKey::from_str(
+            "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+        )
+        .unwrap();
+
+        // 2 additional pubkeys + 1 data key = 3 available, requiring 2 should succeed
+        let result = Conditions::new(
+            None,
+            Some(vec![pubkey1, pubkey2]),
+            None,
+            Some(2),
+            None,
+            None,
+        );
+        assert!(result.is_ok(), "2-of-3 multisig should be valid");
+    }
+
+    #[test]
+    fn test_conditions_impossible_multisig() {
+        let pubkey1 = PublicKey::from_str(
+            "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
+        )
+        .unwrap();
+        let pubkey2 = PublicKey::from_str(
+            "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+        )
+        .unwrap();
+
+        // 2 additional pubkeys + 1 data key = 3 available, requiring 5 is impossible
+        let result = Conditions::new(
+            None,
+            Some(vec![pubkey1, pubkey2]),
+            None,
+            Some(5),
+            None,
+            None,
+        );
+        assert!(result.is_err(), "5-of-3 multisig should be impossible");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::ImpossibleMultisigConfiguration {
+                    required: 5,
+                    available: 3,
+                }
+            ),
+            "Expected ImpossibleMultisigConfiguration, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_conditions_valid_single_sig_no_pubkeys() {
+        // No additional pubkeys, only data key (1 available), requiring 1 should succeed
+        let result = Conditions::new(None, None, None, Some(1), None, None);
+        assert!(result.is_ok(), "1-of-1 (data key only) should be valid");
+    }
+
+    #[test]
+    fn test_conditions_impossible_no_pubkeys() {
+        // No additional pubkeys, only data key (1 available), requiring 2 is impossible
+        let result = Conditions::new(None, None, None, Some(2), None, None);
+        assert!(result.is_err(), "2-of-1 multisig should be impossible");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::ImpossibleMultisigConfiguration {
+                    required: 2,
+                    available: 1,
+                }
+            ),
+            "Expected ImpossibleMultisigConfiguration, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_conditions_impossible_refund_multisig() {
+        let refund_key1 = PublicKey::from_str(
+            "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
+        )
+        .unwrap();
+
+        // 1 refund key, requiring 3 refund sigs is impossible
+        let result = Conditions::new(None, None, Some(vec![refund_key1]), None, None, Some(3));
+        assert!(
+            result.is_err(),
+            "3-of-1 refund multisig should be impossible"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::ImpossibleRefundMultisigConfiguration {
+                    required: 3,
+                    available: 1,
+                }
+            ),
+            "Expected ImpossibleRefundMultisigConfiguration, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_conditions_valid_refund_multisig() {
+        let refund_key1 = PublicKey::from_str(
+            "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
+        )
+        .unwrap();
+        let refund_key2 = PublicKey::from_str(
+            "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+        )
+        .unwrap();
+
+        // 2 refund keys, requiring 2 should succeed
+        let result = Conditions::new(
+            None,
+            None,
+            Some(vec![refund_key1, refund_key2]),
+            None,
+            None,
+            Some(2),
+        );
+        assert!(result.is_ok(), "2-of-2 refund multisig should be valid");
+    }
+
+    #[test]
+    fn test_conditions_impossible_refund_no_keys() {
+        // No refund keys, requiring 1 refund sig is impossible
+        let result = Conditions::new(None, None, None, None, None, Some(1));
+        assert!(
+            result.is_err(),
+            "1-of-0 refund multisig should be impossible"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::ImpossibleRefundMultisigConfiguration {
+                    required: 1,
+                    available: 0,
+                }
+            ),
+            "Expected ImpossibleRefundMultisigConfiguration, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_conditions_num_sigs_exact_boundary() {
+        let pubkey1 = PublicKey::from_str(
+            "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
+        )
+        .unwrap();
+        let pubkey2 = PublicKey::from_str(
+            "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+        )
+        .unwrap();
+
+        // 2 additional pubkeys + 1 data key = 3, requiring exactly 3 should succeed
+        let result = Conditions::new(
+            None,
+            Some(vec![pubkey1, pubkey2]),
+            None,
+            Some(3),
+            None,
+            None,
+        );
+        assert!(result.is_ok(), "3-of-3 (exact keys count) should be valid");
+
+        // Requiring 4 should fail
+        let result = Conditions::new(
+            None,
+            Some(vec![pubkey1, pubkey2]),
+            None,
+            Some(4),
+            None,
+            None,
+        );
+        assert!(result.is_err(), "4-of-3 should be impossible");
     }
 }

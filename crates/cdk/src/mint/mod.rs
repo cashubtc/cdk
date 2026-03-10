@@ -42,7 +42,7 @@ mod verification;
 
 pub use builder::{MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
-pub use issue::{MintQuoteRequest, MintQuoteResponse};
+pub use issue::{MintInput, MintQuoteRequest, MintQuoteResponse};
 pub use verification::Verification;
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
@@ -1195,7 +1195,7 @@ mod tests {
         let first_keyset_id = keysets.keysets[0].id;
 
         // set the first keyset to inactive and generate a new keyset
-        mint.rotate_keyset(CurrencyUnit::default(), vec![1], 1, true)
+        mint.rotate_keyset(CurrencyUnit::default(), vec![1], 1, true, None)
             .await
             .expect("test");
 
@@ -1209,6 +1209,37 @@ mod tests {
                 assert!(keyset.active);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn mint_mod_rotate_keyset_with_expiry() {
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        let expiry: u64 = 1_000_000;
+        let keyset_info = mint
+            .rotate_keyset(CurrencyUnit::default(), vec![1], 0, true, Some(expiry))
+            .await
+            .expect("rotate with expiry");
+
+        assert_eq!(
+            keyset_info.final_expiry,
+            Some(expiry),
+            "final_expiry must be stored in the rotated keyset"
+        );
+
+        // Also verify it is retrievable through get_keyset_info
+        let stored = mint
+            .get_keyset_info(&keyset_info.id)
+            .expect("keyset should be found");
+        assert_eq!(stored.final_expiry, Some(expiry));
     }
 
     #[tokio::test]
