@@ -91,6 +91,7 @@ The project is split up into several crates in the `crates/` directory:
 | [25][25] | Payment Method: BOLT12 | :heavy_check_mark: |
 | [26][26] | Payment Request Bech32m Encoding | :heavy_check_mark: |
 | [27][27] | Nostr Mint Backup | :heavy_check_mark: |
+| [28][28] | Pay to Blinded Key (P2BK) | :heavy_check_mark: |
 
 
 ## License
@@ -133,3 +134,4 @@ Please see the [development guide](DEVELOPMENT.md).
 [25]: https://github.com/cashubtc/nuts/blob/main/25.md
 [26]: https://github.com/cashubtc/nuts/blob/main/26.md
 [27]: https://github.com/cashubtc/nuts/blob/main/27.md
+[28]: https://github.com/cashubtc/nuts/blob/main/28.md
