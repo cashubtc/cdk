@@ -430,7 +430,7 @@ pub async fn post_melt_custom(
 
     let res = if respond_async {
         // Asynchronous processing - return immediately after setup
-        pending.pending_response().clone()
+        pending.into_pending_response()
     } else {
         // Synchronous processing - wait for completion
         pending.await.map_err(into_response)?
