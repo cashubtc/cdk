@@ -6,6 +6,7 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
+use cdk_common::payment::OutgoingPaymentOptions;
 use cdk_common::{
     Amount, CurrencyUnit, Error, ProofsMethods, PublicKey, QuoteId, SpendingConditionVerification,
     State,
@@ -700,13 +701,10 @@ impl MeltSaga<SetupComplete> {
         >,
     ) -> Result<MakePaymentResponse, Error> {
         // Make payment with idempotent verification
-        match ln
-            .make_payment(
-                &self.state_data.quote.unit,
-                self.state_data.quote.clone().try_into()?,
-            )
-            .await
-        {
+        let quote = &self.state_data.quote;
+        let payment_options = OutgoingPaymentOptions::from_melt_quote_with_fee(quote.clone())?;
+
+        match ln.make_payment(&quote.unit, payment_options).await {
             Ok(pay) if pay.status == MeltQuoteState::Paid => Ok(pay),
             Ok(pay) => self.verify_ambiguous_payment(ln, pay).await,
             Err(err) => self.handle_payment_error(ln, err).await,
