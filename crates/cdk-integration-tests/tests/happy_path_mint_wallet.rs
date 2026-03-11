@@ -1026,10 +1026,7 @@ async fn test_pay_invoice_twice() {
                 && !err_str.contains("already paid")
                 && !err_str.contains("request already paid")
             {
-                panic!(
-                    "Expected duplicate/already paid error, got: {}",
-                    err.to_string()
-                );
+                panic!("Expected duplicate/already paid error, got: {}", err);
             }
         }
         Ok(_) => {
