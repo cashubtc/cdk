@@ -37,6 +37,9 @@ pub struct CreateRequestSubCommand {
     /// If not provided, defaults to standard relays
     #[arg(long, action = clap::ArgAction::Append)]
     nostr_relay: Option<Vec<String>>,
+    /// Use bech32 encoding (CREQ-B)
+    #[arg(short, long)]
+    bech32: bool,
 }
 
 pub async fn create_request(
@@ -61,7 +64,11 @@ pub async fn create_request(
     let (req, nostr_wait) = wallet_repository.create_request(params).await?;
 
     // Print the request to stdout
-    println!("{}", req);
+    if sub_command_args.bech32 {
+        println!("{}", req.to_bech32_string()?);
+    } else {
+        println!("{}", req);
+    }
 
     // If we set up Nostr transport, optionally wait for payment and receive it
     if let Some(info) = nostr_wait {
