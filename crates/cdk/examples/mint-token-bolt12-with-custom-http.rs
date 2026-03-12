@@ -11,6 +11,7 @@ use cdk::wallet::{BaseHttpClient, HttpTransport, SendOptions, WalletBuilder};
 use cdk::{Amount, StreamExt};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::{AuthToken, PaymentMethod};
+use cdk_http_client::HttpError;
 use cdk_sqlite::wallet::memory;
 use rand::random;
 use serde::de::DeserializeOwned;
@@ -42,31 +43,26 @@ impl Default for CustomHttp {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl HttpTransport for CustomHttp {
-    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
-        panic!("Not supported");
-    }
-
     fn with_proxy(
         &mut self,
         _proxy: Url,
         _host_matcher: Option<&str>,
         _accept_invalid_certs: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<(), HttpError> {
         panic!("Not supported");
     }
 
-    async fn http_get<R>(&self, url: Url, _auth: Option<AuthToken>) -> Result<R, Error>
+    async fn http_get<R>(&self, url: Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
     where
         R: DeserializeOwned,
     {
         self.agent
             .get(url.as_str())
             .call()
-            .map_err(|e| Error::HttpError(None, e.to_string()))?
+            .map_err(|e| HttpError::Connection(e.to_string()))?
             .body_mut()
             .read_json()
-            .map_err(|e| Error::HttpError(None, e.to_string()))
+            .map_err(|e| HttpError::Serialization(e.to_string()))
     }
 
     async fn http_post<P, R>(
@@ -74,7 +70,7 @@ impl HttpTransport for CustomHttp {
         url: Url,
         _auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, Error>
+    ) -> Result<R, HttpError>
     where
         P: Serialize + ?Sized + Send + Sync,
         R: DeserializeOwned,
@@ -82,10 +78,10 @@ impl HttpTransport for CustomHttp {
         self.agent
             .post(url.as_str())
             .send_json(payload)
-            .map_err(|e| Error::HttpError(None, e.to_string()))?
+            .map_err(|e| HttpError::Connection(e.to_string()))?
             .body_mut()
             .read_json()
-            .map_err(|e| Error::HttpError(None, e.to_string()))
+            .map_err(|e| HttpError::Serialization(e.to_string()))
     }
 }
 

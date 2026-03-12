@@ -33,7 +33,7 @@ pub enum HttpError {
     Other(String),
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "bitreq")]
 impl From<bitreq::Error> for HttpError {
     fn from(err: bitreq::Error) -> Self {
         use std::io;
@@ -41,6 +41,7 @@ impl From<bitreq::Error> for HttpError {
         use bitreq::Error;
 
         match err {
+            Error::SerdeJsonError(_) => HttpError::Serialization(err.to_string()),
             Error::InvalidUtf8InBody(_) => HttpError::Serialization(err.to_string()),
             Error::InvalidUtf8InResponse => HttpError::Serialization(err.to_string()),
             Error::IoError(io_err) => {

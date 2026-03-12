@@ -12,13 +12,9 @@ pub type Response<R, E = HttpError> = Result<R, E>;
 #[derive(Debug)]
 pub struct RawResponse {
     status: u16,
-    #[cfg(not(target_arch = "wasm32"))]
-    inner: bitreq::Response,
-    #[cfg(target_arch = "wasm32")]
     pub(crate) body: Vec<u8>,
 }
 
-#[cfg(target_arch = "wasm32")]
 impl RawResponse {
     /// Create a new RawResponse from status and body bytes
     pub(crate) fn new(status: u16, body: Vec<u8>) -> Self {
@@ -58,55 +54,6 @@ impl RawResponse {
     /// Get the response body as bytes
     pub async fn bytes(self) -> Response<Vec<u8>> {
         Ok(self.body)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl RawResponse {
-    /// Create a new RawResponse from a bitreq::Response
-    pub(crate) fn new(response: bitreq::Response) -> Self {
-        Self {
-            status: response.status_code as u16,
-            inner: response,
-        }
-    }
-
-    /// Get the HTTP status code
-    pub fn status(&self) -> u16 {
-        self.status
-    }
-
-    /// Check if the response status is a success (2xx)
-    pub fn is_success(&self) -> bool {
-        (200..300).contains(&self.status)
-    }
-
-    /// Check if the response status is a client error (4xx)
-    pub fn is_client_error(&self) -> bool {
-        (400..500).contains(&self.status)
-    }
-
-    /// Check if the response status is a server error (5xx)
-    pub fn is_server_error(&self) -> bool {
-        (500..600).contains(&self.status)
-    }
-
-    /// Get the response body as text
-    pub async fn text(self) -> Response<String> {
-        self.inner
-            .as_str()
-            .map(|s| s.to_string())
-            .map_err(HttpError::from)
-    }
-
-    /// Get the response body as JSON
-    pub async fn json<T: DeserializeOwned>(self) -> Response<T> {
-        self.inner.json().map_err(HttpError::from)
-    }
-
-    /// Get the response body as bytes
-    pub async fn bytes(self) -> Response<Vec<u8>> {
-        Ok(self.inner.into_bytes())
     }
 }
 

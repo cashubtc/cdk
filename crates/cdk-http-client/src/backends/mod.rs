@@ -1,12 +1,22 @@
 //! HTTP request builder backends
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "bitreq")]
 pub mod bitreq_backend;
 
-#[cfg(target_arch = "wasm32")]
-pub mod wasm_backend;
+#[cfg(feature = "reqwest")]
+pub mod reqwest_backend;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "bitreq", feature = "reqwest"))]
+compile_error!("`bitreq` and `reqwest` features are mutually exclusive for cdk-http-client.");
+
+#[cfg(not(any(feature = "bitreq", feature = "reqwest")))]
+compile_error!("Enable either the `bitreq` or `reqwest` feature for cdk-http-client.");
+
+#[cfg(feature = "bitreq")]
+pub use bitreq_backend::BitreqRequestBuilder as RequestBuilder;
+#[cfg(feature = "bitreq")]
 pub use bitreq_backend::{BitreqRequestBuilder, HttpClient, HttpClientBuilder};
-#[cfg(target_arch = "wasm32")]
-pub use wasm_backend::{HttpClient, HttpClientBuilder, WasmRequestBuilder};
+#[cfg(feature = "reqwest")]
+pub use reqwest_backend::ReqwestRequestBuilder as RequestBuilder;
+#[cfg(feature = "reqwest")]
+pub use reqwest_backend::{HttpClient, HttpClientBuilder, ReqwestRequestBuilder};
