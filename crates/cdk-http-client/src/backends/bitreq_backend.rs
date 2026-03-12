@@ -198,7 +198,10 @@ impl HttpClient {
             .send_async_with_client(&self.inner)
             .await
             .map_err(HttpError::from)?;
-        Ok(RawResponse::new(response))
+        Ok(RawResponse::new(
+            response.status_code as u16,
+            response.into_bytes(),
+        ))
     }
 
     /// POST request builder for complex cases
@@ -312,7 +315,10 @@ impl RequestBuilderExt for BitreqRequestBuilder {
             .send_async_with_client(&self.client)
             .await
             .map_err(HttpError::from)?;
-        Ok(RawResponse::new(response))
+        Ok(RawResponse::new(
+            response.status_code as u16,
+            response.into_bytes(),
+        ))
     }
 
     async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
