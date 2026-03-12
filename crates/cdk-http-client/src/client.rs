@@ -44,7 +44,39 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn test_builder_proxy() {
+        let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+        let result = HttpClientBuilder::default().proxy(proxy_url).build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_builder_proxy_with_valid_matcher() {
+        let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+        let result =
+            HttpClientBuilder::default().proxy_with_matcher(proxy_url, r".*\.example\.com$");
+        assert!(result.is_ok());
+
+        let builder = result.expect("Valid matcher should succeed");
+        let client_result = builder.build();
+        assert!(client_result.is_ok());
+    }
+
+    #[test]
+    fn test_builder_proxy_with_invalid_matcher() {
+        let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+        let result = HttpClientBuilder::default().proxy_with_matcher(proxy_url, r"[invalid");
+        assert!(result.is_err());
+
+        if let Err(crate::error::HttpError::Proxy(msg)) = result {
+            assert!(msg.contains("Invalid proxy pattern"));
+        } else {
+            panic!("Expected HttpError::Proxy");
+        }
+    }
+
+    #[cfg(feature = "bitreq")]
     mod bitreq_tests {
         use super::*;
         use crate::error::HttpError;
@@ -69,37 +101,18 @@ mod tests {
                 .build();
             assert!(result.is_ok());
         }
+    }
+
+    #[cfg(feature = "reqwest")]
+    mod reqwest_tests {
+        use super::*;
 
         #[test]
-        fn test_builder_proxy() {
-            let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
-            let result = HttpClientBuilder::default().proxy(proxy_url).build();
+        fn test_builder_accept_invalid_certs_true_ok() {
+            let result = HttpClientBuilder::default()
+                .danger_accept_invalid_certs(true)
+                .build();
             assert!(result.is_ok());
-        }
-
-        #[test]
-        fn test_builder_proxy_with_valid_matcher() {
-            let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
-            let result =
-                HttpClientBuilder::default().proxy_with_matcher(proxy_url, r".*\.example\.com$");
-            assert!(result.is_ok());
-
-            let builder = result.expect("Valid matcher should succeed");
-            let client_result = builder.build();
-            assert!(client_result.is_ok());
-        }
-
-        #[test]
-        fn test_builder_proxy_with_invalid_matcher() {
-            let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
-            let result = HttpClientBuilder::default().proxy_with_matcher(proxy_url, r"[invalid");
-            assert!(result.is_err());
-
-            if let Err(HttpError::Proxy(msg)) = result {
-                assert!(msg.contains("Invalid proxy pattern"));
-            } else {
-                panic!("Expected HttpError::Proxy");
-            }
         }
     }
 }
