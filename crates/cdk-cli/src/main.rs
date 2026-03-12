@@ -110,6 +110,8 @@ enum Commands {
     DecodeRequest(sub_commands::decode_request::DecodePaymentRequestSubCommand),
     /// Pay a payment request
     PayRequest(sub_commands::pay_request::PayRequestSubCommand),
+    /// Resolve a BIP353 address and inspect available payment methods
+    Resolve(sub_commands::resolve::ResolveSubCommand),
     /// Create Payment request
     CreateRequest(sub_commands::create_request::CreateRequestSubCommand),
     /// Mint blind auth proofs
@@ -312,6 +314,10 @@ async fn main() -> Result<()> {
         }
         Commands::PayRequest(sub_command_args) => {
             sub_commands::pay_request::pay_request(&wallet_repository, sub_command_args).await
+        }
+        Commands::Resolve(sub_command_args) => {
+            sub_commands::resolve::resolve(&wallet_repository, sub_command_args, &currency_unit)
+                .await
         }
         Commands::CreateRequest(sub_command_args) => {
             sub_commands::create_request::create_request(

@@ -18,6 +18,7 @@ pub mod npubcash;
 pub mod pay_request;
 pub mod pending_mints;
 pub mod receive;
+pub mod resolve;
 pub mod restore;
 pub mod send;
 pub mod transfer;
