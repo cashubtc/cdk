@@ -41,18 +41,12 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
 /// Default async transport backed by the crate `HttpClient`.
 #[cfg(any(feature = "bitreq", feature = "reqwest"))]
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct Async {
     inner: HttpClient,
 }
 
 #[cfg(any(feature = "bitreq", feature = "reqwest"))]
-impl Default for Async {
-    fn default() -> Self {
-        Self {
-            inner: HttpClient::new(),
-        }
-    }
-}
 
 #[cfg(any(feature = "bitreq", feature = "reqwest"))]
 #[async_trait]

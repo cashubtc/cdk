@@ -29,7 +29,6 @@ mod request_builder_ext;
 mod response;
 pub mod ws;
 mod transport;
-mod transport;
 
 #[cfg(feature = "bitreq")]
 pub use backends::BitreqRequestBuilder;

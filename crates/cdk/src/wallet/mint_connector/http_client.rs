@@ -491,7 +491,7 @@ where
             .get_auth_token(Method::Post, RoutePath::MintQuote(method.to_string()))
             .await?;
 
-        self.transport.http_post(url, auth_token, &request).await
+        self.transport_http_post(url, auth_token, &request).await
     }
 
     /// Batch mint tokens [NUT-29]
