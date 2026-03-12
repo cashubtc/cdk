@@ -17,9 +17,10 @@ use super::nut01::PublicKey;
 use super::nut05::MeltRequest;
 use super::nut10::SpendingConditionVerification;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
+use crate::nut10::get_pubkeys_and_required_sigs;
 use crate::nuts::nut00::BlindedMessage;
 use crate::util::unix_time;
-use crate::{ensure_cdk, SwapRequest};
+use crate::{ensure_cdk, SpendingConditions, SwapRequest};
 
 pub mod serde_p2pk_witness;
 
@@ -234,6 +235,107 @@ impl Proof {
             Err(Error::SpendConditionsNotMet)
         }
     }
+}
+
+impl SpendingConditions {
+    /// New P2PK [SpendingConditions]
+    pub fn new_p2pk(pubkey: PublicKey, conditions: Option<Conditions>) -> Self {
+        Self::P2PKConditions {
+            data: pubkey,
+            conditions,
+        }
+    }
+}
+
+/// Extract and parse Schnorr signatures from a witness
+///
+/// This helper function extracts signature strings from a witness and parses them
+/// into bitcoin secp256k1 Schnorr signatures.
+pub fn extract_signatures_from_witness(
+    witness: &super::Witness,
+) -> Result<Vec<bitcoin::secp256k1::schnorr::Signature>, Error> {
+    use std::str::FromStr;
+
+    let witness_sigs = witness.signatures().ok_or(Error::SignaturesNotProvided)?;
+
+    witness_sigs
+        .iter()
+        .map(|s| bitcoin::secp256k1::schnorr::Signature::from_str(s))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| Error::InvalidSignature)
+}
+
+/// Verify P2PK SIG_ALL signatures
+///
+/// Do NOT call this directly. This is called only from 'verify_full_sig_all_check',
+/// which has already done many important SIG_ALL checks. This performs the final
+/// signature verification for SIG_ALL+P2PK transactions.
+///
+/// Per NUT-11, there are two spending pathways after locktime:
+/// 1. Primary path (data + pubkeys): ALWAYS available
+/// 2. Refund path (refund keys): available AFTER locktime
+pub fn verify_sig_all_p2pk(first_input: &Proof, msg_to_sign: String) -> Result<(), Error> {
+    // Get the first input, as it's the one with the signatures
+    let first_secret =
+        Nut10Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
+
+    // Record current time for locktime evaluation
+    let current_time = crate::util::unix_time();
+
+    // Get spending requirements (includes both primary and refund paths)
+    let requirements = get_pubkeys_and_required_sigs(&first_secret, current_time)
+        .map_err(|_| Error::SpendConditionsNotMet)?;
+
+    debug_assert!(
+        !requirements.preimage_needed,
+        "P2PK should never require preimage"
+    );
+
+    // Check for "anyone can spend" case first (locktime passed, no refund keys)
+    // This doesn't require any signatures
+    if let Some(refund_path) = &requirements.refund_path {
+        if refund_path.required_sigs == 0 {
+            return Ok(());
+        }
+    }
+
+    // Get the witness (needed for signature extraction)
+    let first_witness = first_input
+        .witness
+        .as_ref()
+        .ok_or(Error::SignaturesNotProvided)?;
+
+    // Try primary path first (data + pubkeys)
+    // Per NUT-11: "Locktime Multisig conditions continue to apply"
+    {
+        let primary_valid = extract_signatures_from_witness(first_witness)
+            .ok()
+            .and_then(|sigs| {
+                valid_signatures(msg_to_sign.as_bytes(), &requirements.pubkeys, &sigs).ok()
+            })
+            .is_some_and(|count| count >= requirements.required_sigs);
+
+        if primary_valid {
+            return Ok(());
+        }
+    }
+
+    // Primary path failed - try refund path if available
+    {
+        if let Some(refund_path) = &requirements.refund_path {
+            let signatures = extract_signatures_from_witness(first_witness)?;
+            let valid_sig_count =
+                valid_signatures(msg_to_sign.as_bytes(), &refund_path.pubkeys, &signatures)
+                    .map_err(|_| Error::InvalidSignature)?;
+
+            if valid_sig_count >= refund_path.required_sigs {
+                return Ok(());
+            }
+        }
+    }
+
+    // Neither path succeeded
+    Err(Error::SpendConditionsNotMet)
 }
 
 /// Returns count of valid signatures (each public key is only counted once)

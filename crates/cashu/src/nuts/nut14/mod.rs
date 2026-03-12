@@ -4,6 +4,7 @@
 
 use std::str::FromStr;
 
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -12,7 +13,12 @@ use super::nut00::Witness;
 use super::nut10::Secret;
 use super::nut11::valid_signatures;
 use super::{Conditions, Proof};
+use crate::nut10::get_pubkeys_and_required_sigs;
+use crate::nut11::extract_signatures_from_witness;
 use crate::util::{hex, unix_time};
+use crate::SpendingConditions;
+
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
 
 pub mod serde_htlc_witness;
 
@@ -25,6 +31,9 @@ pub enum Error {
     /// HTLC locktime has already passed
     #[error("Locktime in past")]
     LocktimeInPast,
+    /// Witness signature is not valid
+    #[error("Invalid signature")]
+    InvalidSignature,
     /// Hash Required
     #[error("Hash required")]
     HashRequired,
@@ -148,7 +157,7 @@ impl Proof {
         };
 
         // Try to verify the preimage and capture the specific error if it fails
-        let preimage_result = super::nut10::verify_htlc_preimage(htlc_witness, &secret);
+        let preimage_result = verify_htlc_preimage(htlc_witness, &secret);
 
         // Determine which path to use:
         // - If preimage is valid → use receiver path (always available)
@@ -223,6 +232,154 @@ impl Proof {
             preimage,
             signatures,
         }))
+    }
+}
+
+impl SpendingConditions {
+    /// New HTLC [SpendingConditions]
+    pub fn new_htlc(preimage: String, conditions: Option<Conditions>) -> Result<Self, Error> {
+        const MAX_PREIMAGE_BYTES: usize = 32;
+
+        let preimage_bytes = hex::decode(preimage)?;
+
+        if preimage_bytes.len() != MAX_PREIMAGE_BYTES {
+            return Err(Error::PreimageInvalidSize);
+        }
+
+        let htlc = Sha256Hash::hash(&preimage_bytes);
+
+        Ok(Self::HTLCConditions {
+            data: htlc,
+            conditions,
+        })
+    }
+
+    /// New HTLC [SpendingConditions] from a hash directly instead of preimage
+    pub fn new_htlc_hash(hash: &str, conditions: Option<Conditions>) -> Result<Self, Error> {
+        let hash = Sha256Hash::from_str(hash).map_err(|_| Error::InvalidHash)?;
+
+        Ok(Self::HTLCConditions {
+            data: hash,
+            conditions,
+        })
+    }
+}
+
+/// Verify that a preimage matches the hash in the secret data
+///
+/// The preimage should be a 64-character hex string representing 32 bytes.
+/// We decode it from hex, hash it with SHA256, and compare to the hash in secret.data
+pub fn verify_htlc_preimage(witness: &HTLCWitness, secret: &Secret) -> Result<(), Error> {
+    use bitcoin::hashes::sha256::Hash as Sha256Hash;
+    use bitcoin::hashes::Hash;
+
+    // Get the hash lock from the secret data
+    let hash_lock =
+        Sha256Hash::from_str(secret.secret_data().data()).map_err(|_| Error::InvalidHash)?;
+
+    // Decode and validate the preimage (returns [u8; 32])
+    let preimage_bytes = witness.preimage_data()?;
+
+    // Hash the 32-byte preimage
+    let preimage_hash = Sha256Hash::hash(&preimage_bytes);
+
+    // Compare with the hash lock
+    if hash_lock.ne(&preimage_hash) {
+        return Err(Error::Preimage);
+    }
+
+    Ok(())
+}
+
+/// Verify HTLC SIG_ALL signatures
+///
+/// Do NOT call this directly. This is called only from 'verify_full_sig_all_check',
+/// which has already done many important SIG_ALL checks. This performs the final
+/// signature verification for SIG_ALL+HTLC transactions.
+///
+/// Per NUT-14, there are two spending pathways:
+/// 1. Receiver path (preimage + pubkeys): ALWAYS available
+/// 2. Sender/Refund path (refund keys, no preimage): available AFTER locktime
+pub fn verify_sig_all_htlc(first_input: &Proof, msg_to_sign: String) -> Result<(), Error> {
+    // Get the first input, as it's the one with the signatures
+    let first_secret =
+        Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
+
+    // Record current time for locktime evaluation
+    let current_time = crate::util::unix_time();
+
+    // Get the spending requirements (includes both receiver and refund paths)
+    let requirements = get_pubkeys_and_required_sigs(&first_secret, current_time)
+        .map_err(|_| Error::SpendConditionsNotMet)?;
+
+    // Try to extract HTLC witness and check if preimage is valid
+    let htlc_witness = match first_input.witness.as_ref() {
+        Some(super::Witness::HTLCWitness(witness)) => Some(witness),
+        _ => None,
+    };
+
+    // Check if a valid preimage is provided
+    let preimage_valid = htlc_witness
+        .map(|w| verify_htlc_preimage(w, &first_secret).is_ok())
+        .unwrap_or(false);
+
+    // Check for "anyone can spend" case first (preimage invalid, locktime passed, no refund keys)
+    // This doesn't require any signatures
+    if !preimage_valid {
+        if let Some(refund_path) = &requirements.refund_path {
+            if refund_path.required_sigs == 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    // Get the witness (needed for signature extraction)
+    let first_witness = first_input
+        .witness
+        .as_ref()
+        .ok_or(Error::SignaturesNotProvided)?;
+
+    // Determine which path to use:
+    // - If preimage is valid → use receiver path (always available)
+    // - If preimage is invalid/missing → try refund path (if available)
+    if preimage_valid {
+        // Receiver path: preimage valid, now check SIG_ALL signatures against pubkeys
+        if requirements.required_sigs == 0 {
+            return Ok(());
+        }
+
+        let signatures = extract_signatures_from_witness(first_witness)?;
+        let valid_sig_count = super::nut11::valid_signatures(
+            msg_to_sign.as_bytes(),
+            &requirements.pubkeys,
+            &signatures,
+        )
+        .map_err(|_| Error::InvalidSignature)?;
+
+        if valid_sig_count >= requirements.required_sigs {
+            Ok(())
+        } else {
+            Err(Error::SpendConditionsNotMet)
+        }
+    } else if let Some(refund_path) = &requirements.refund_path {
+        // Refund path: preimage not valid/provided, but locktime has passed
+        // Check SIG_ALL signatures against refund keys
+        let signatures = extract_signatures_from_witness(first_witness)?;
+        let valid_sig_count = super::nut11::valid_signatures(
+            msg_to_sign.as_bytes(),
+            &refund_path.pubkeys,
+            &signatures,
+        )
+        .map_err(|_| Error::InvalidSignature)?;
+
+        if valid_sig_count >= refund_path.required_sigs {
+            Ok(())
+        } else {
+            Err(Error::SpendConditionsNotMet)
+        }
+    } else {
+        // No valid preimage and refund path not available (locktime not passed)
+        Err(Error::SpendConditionsNotMet)
     }
 }
 
