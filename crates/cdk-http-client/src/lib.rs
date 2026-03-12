@@ -1,8 +1,8 @@
 //! HTTP client abstraction for CDK
 //!
-//! This crate provides an HTTP client wrapper that abstracts the underlying HTTP library
-//! (bitreq on native, fetch API on WASM).
+//! This crate provides an HTTP client wrapper that abstracts the underlying HTTP library.
 //! Using this crate allows other CDK crates to avoid direct dependencies on a specific backend.
+//! Backend selection is feature-based: enable either `bitreq` (default) or `reqwest`.
 //!
 //! # Example
 //!
@@ -28,12 +28,23 @@ mod request;
 mod request_builder_ext;
 mod response;
 pub mod ws;
+mod transport;
+mod transport;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "bitreq")]
 pub use backends::BitreqRequestBuilder;
-#[cfg(target_arch = "wasm32")]
-pub use backends::WasmRequestBuilder;
+#[cfg(feature = "reqwest")]
+pub use backends::ReqwestRequestBuilder;
 pub use client::{fetch, HttpClient, HttpClientBuilder};
 pub use error::HttpError;
 pub use request::{RequestBuilder, RequestBuilderExt};
 pub use response::{RawResponse, Response};
+#[cfg(any(feature = "bitreq", feature = "reqwest"))]
+pub use transport::Async;
+#[cfg(feature = "bitreq")]
+pub use transport::BitreqTransport;
+#[cfg(feature = "reqwest")]
+pub use transport::ReqwestTransport;
+#[cfg(feature = "tor")]
+pub use transport::TorAsync;
+pub use transport::Transport;

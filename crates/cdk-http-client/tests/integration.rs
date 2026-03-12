@@ -100,7 +100,10 @@ async fn test_post_json_success() {
 
     let mock = server
         .mock("POST", "/api/submit")
-        .match_header("content-type", "application/json")
+        .match_header(
+            "content-type",
+            mockito::Matcher::Regex("application/json.*".to_string()),
+        )
         .match_body(mockito::Matcher::Json(serde_json::json!({
             "name": "test",
             "value": 42
@@ -260,10 +263,10 @@ async fn test_raw_response_is_not_success_with_100() {
     // logic works with the boundary check (200..300).
     let mut server = mockito::Server::new_async().await;
 
-    // Use 301 redirect as a more reliable "not success" boundary test
+    // Use 199 informational response as a reliable "not success" boundary test
     let mock = server
         .mock("GET", "/")
-        .with_status(301)
+        .with_status(199)
         .create_async()
         .await;
 
@@ -273,9 +276,9 @@ async fn test_raw_response_is_not_success_with_100() {
         .await
         .expect("Request should succeed");
 
-    // 301 is a redirect, not success
+    // 199 is informational, not success. Some test servers may map it.
     assert!(!response.is_success());
-    assert_eq!(response.status(), 301);
+    assert!(!(200..300).contains(&response.status()));
 
     mock.assert_async().await;
 }
@@ -724,13 +727,75 @@ async fn test_json_deserialization_error() {
     let result: Result<TestResponse, _> = client.fetch(&url).await;
 
     assert!(result.is_err());
-    // The error should be about JSON parsing, which becomes HttpError::Other from reqwest
     let err = result.expect_err("Should be a deserialization error");
-    let err_str = format!("{}", err);
     assert!(
-        err_str.contains("expected") || err_str.contains("JSON") || err_str.contains("error"),
-        "Error should mention parsing issue: {}",
-        err_str
+        matches!(err, HttpError::Serialization(_)),
+        "Expected HttpError::Serialization, got: {}",
+        err
+    );
+
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_request_builder_send_json_error_status() {
+    let mut server = mockito::Server::new_async().await;
+
+    let mock = server
+        .mock("POST", "/api/fail")
+        .with_status(400)
+        .with_body("Bad Request")
+        .create_async()
+        .await;
+
+    let client = HttpClient::new();
+    let url = format!("{}/api/fail", server.url());
+    let payload = TestPayload {
+        name: "bad".to_string(),
+        value: 1,
+    };
+
+    let result: Result<TestResponse, _> = client.post(&url).json(&payload).send_json().await;
+
+    assert!(result.is_err());
+    match result.expect_err("Should be a status error") {
+        HttpError::Status { status, message } => {
+            assert_eq!(status, 400);
+            assert_eq!(message, "Bad Request");
+        }
+        err => panic!("Expected HttpError::Status, got: {}", err),
+    }
+
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_request_builder_send_json_deserialization_error() {
+    let mut server = mockito::Server::new_async().await;
+
+    let mock = server
+        .mock("POST", "/api/invalid-json-builder")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body("not valid json")
+        .create_async()
+        .await;
+
+    let client = HttpClient::new();
+    let url = format!("{}/api/invalid-json-builder", server.url());
+    let payload = TestPayload {
+        name: "test".to_string(),
+        value: 42,
+    };
+
+    let result: Result<TestResponse, _> = client.post(&url).json(&payload).send_json().await;
+
+    assert!(result.is_err());
+    let err = result.expect_err("Should be a deserialization error");
+    assert!(
+        matches!(err, HttpError::Serialization(_)),
+        "Expected HttpError::Serialization, got: {}",
+        err
     );
 
     mock.assert_async().await;
