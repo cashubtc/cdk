@@ -40,14 +40,12 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
 
 /// Default async transport backed by the crate `HttpClient`.
 #[cfg(any(feature = "bitreq", feature = "reqwest"))]
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Async {
     inner: HttpClient,
 }
 
 #[cfg(any(feature = "bitreq", feature = "reqwest"))]
-
 #[cfg(any(feature = "bitreq", feature = "reqwest"))]
 #[async_trait]
 impl Transport for Async {
