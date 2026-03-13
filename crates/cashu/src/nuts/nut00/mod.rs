@@ -1035,7 +1035,7 @@ impl PreMintSecrets {
         amount: Amount,
         amount_split_target: &SplitTarget,
         receiver_pubkey: PublicKey,
-        conditions: Option<crate::nuts::nut11::Conditions>,
+        conditions: Option<crate::nuts::nut10::Conditions>,
         ephemeral_keys: &[crate::nuts::nut01::SecretKey],
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {

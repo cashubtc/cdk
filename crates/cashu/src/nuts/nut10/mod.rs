@@ -10,9 +10,9 @@ use crate::nut11;
 use crate::nut14;
 
 use super::nut01::PublicKey;
-use super::Conditions;
 
 pub mod spending_conditions;
+pub use spending_conditions::Conditions;
 pub use spending_conditions::SpendingConditions;
 
 pub mod secret;

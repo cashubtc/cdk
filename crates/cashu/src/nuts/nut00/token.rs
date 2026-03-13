@@ -627,8 +627,8 @@ mod tests {
     use super::*;
     use crate::dhke::hash_to_curve;
     use crate::mint_url::MintUrl;
-    use crate::nuts::nut10::SpendingConditions;
-    use crate::nuts::nut11::{Conditions, SigFlag};
+    use crate::nuts::nut10::{Conditions, SpendingConditions};
+    use crate::nuts::nut11::SigFlag;
     use crate::secret::Secret;
     use crate::util::hex;
 

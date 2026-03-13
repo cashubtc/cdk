@@ -2,7 +2,7 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/11.md>
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::{fmt, vec};
 
@@ -15,10 +15,10 @@ use super::nut00::Witness;
 use super::nut01::PublicKey;
 use super::nut05::MeltRequest;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
-use crate::nut10::{get_pubkeys_and_required_sigs, SpendingConditionVerification, Tag, TagKind};
+use crate::nut10::{get_pubkeys_and_required_sigs, Conditions, SpendingConditionVerification};
 use crate::nuts::nut00::BlindedMessage;
 use crate::util::unix_time;
-use crate::{ensure_cdk, SpendingConditions, SwapRequest};
+use crate::{SpendingConditions, SwapRequest};
 
 pub mod serde_p2pk_witness;
 
@@ -142,7 +142,8 @@ impl Proof {
             .tags()
             .cloned()
             .unwrap_or_default()
-            .try_into()?;
+            .try_into()
+            .map_err(|_| Error::SpendConditionsNotMet)?;
 
         if spending_conditions.sig_flag == SigFlag::SigAll {
             return Err(Error::SigAllNotSupportedHere);
@@ -407,186 +408,6 @@ impl BlindedMessage {
         } else {
             Err(Error::SpendConditionsNotMet)
         }
-    }
-}
-
-/// P2PK and HTLC spending conditions
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub struct Conditions {
-    /// Unix locktime after which refund keys can be used
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub locktime: Option<u64>,
-    /// Additional Public keys
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pubkeys: Option<Vec<PublicKey>>,
-    /// Refund keys
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refund_keys: Option<Vec<PublicKey>>,
-    /// Number of signatures required
-    ///
-    /// Default is 1
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub num_sigs: Option<u64>,
-    /// Signature flag
-    ///
-    /// Default [`SigFlag::SigInputs`]
-    pub sig_flag: SigFlag,
-    /// Number of refund signatures required
-    ///
-    /// Default is 1
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub num_sigs_refund: Option<u64>,
-}
-
-impl Conditions {
-    /// Create new Spending [`Conditions`]
-    pub fn new(
-        locktime: Option<u64>,
-        pubkeys: Option<Vec<PublicKey>>,
-        refund_keys: Option<Vec<PublicKey>>,
-        num_sigs: Option<u64>,
-        sig_flag: Option<SigFlag>,
-        num_sigs_refund: Option<u64>,
-    ) -> Result<Self, Error> {
-        if let Some(locktime) = locktime {
-            ensure_cdk!(locktime.ge(&unix_time()), Error::LocktimeInPast);
-        }
-
-        if let Some(n) = num_sigs {
-            let available_keys = 1 + pubkeys.as_ref().map(Vec::len).unwrap_or(0);
-            if n > available_keys as u64 {
-                return Err(Error::ImpossibleMultisigConfiguration {
-                    required: n,
-                    available: available_keys as u64,
-                });
-            }
-        }
-
-        if let Some(n) = num_sigs_refund {
-            let refund_key_count = refund_keys.as_ref().map(Vec::len).unwrap_or(0);
-            if n > refund_key_count as u64 {
-                return Err(Error::ImpossibleRefundMultisigConfiguration {
-                    required: n,
-                    available: refund_key_count as u64,
-                });
-            }
-        }
-
-        Ok(Self {
-            locktime,
-            pubkeys,
-            refund_keys,
-            num_sigs,
-            sig_flag: sig_flag.unwrap_or_default(),
-            num_sigs_refund,
-        })
-    }
-}
-impl From<Conditions> for Vec<Vec<String>> {
-    fn from(conditions: Conditions) -> Vec<Vec<String>> {
-        let Conditions {
-            locktime,
-            pubkeys,
-            refund_keys,
-            num_sigs,
-            sig_flag,
-            num_sigs_refund,
-        } = conditions;
-
-        let mut tags = Vec::new();
-
-        if let Some(pubkeys) = pubkeys {
-            tags.push(Tag::PubKeys(pubkeys.into_iter().collect()).as_vec());
-        }
-
-        if let Some(locktime) = locktime {
-            tags.push(Tag::LockTime(locktime).as_vec());
-        }
-
-        if let Some(num_sigs) = num_sigs {
-            tags.push(Tag::NSigs(num_sigs).as_vec());
-        }
-
-        if let Some(refund_keys) = refund_keys {
-            tags.push(Tag::Refund(refund_keys).as_vec())
-        }
-
-        if let Some(num_sigs_refund) = num_sigs_refund {
-            tags.push(Tag::NSigsRefund(num_sigs_refund).as_vec())
-        }
-
-        tags.push(Tag::SigFlag(sig_flag).as_vec());
-        tags
-    }
-}
-
-impl TryFrom<Vec<Vec<String>>> for Conditions {
-    type Error = Error;
-    fn try_from(tags: Vec<Vec<String>>) -> Result<Conditions, Self::Error> {
-        let tags: HashMap<TagKind, Tag> = tags
-            .into_iter()
-            .map(|t| Tag::try_from(t).map(|tag| (tag.kind(), tag)))
-            .collect::<Result<_, _>>()
-            .map_err(|_| Error::UnknownTag)?;
-
-        let pubkeys = match tags.get(&TagKind::Pubkeys) {
-            Some(Tag::PubKeys(pubkeys)) => Some(pubkeys.clone()),
-            _ => None,
-        };
-
-        let locktime = if let Some(tag) = tags.get(&TagKind::Locktime) {
-            match tag {
-                Tag::LockTime(locktime) => Some(*locktime),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        let refund_keys = if let Some(tag) = tags.get(&TagKind::Refund) {
-            match tag {
-                Tag::Refund(keys) => Some(keys.clone()),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        let sig_flag = if let Some(tag) = tags.get(&TagKind::SigFlag) {
-            match tag {
-                Tag::SigFlag(sigflag) => *sigflag,
-                _ => SigFlag::SigInputs,
-            }
-        } else {
-            SigFlag::SigInputs
-        };
-
-        let num_sigs = if let Some(tag) = tags.get(&TagKind::NSigs) {
-            match tag {
-                Tag::NSigs(num_sigs) => Some(*num_sigs),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        let num_sigs_refund = if let Some(tag) = tags.get(&TagKind::NSigsRefund) {
-            match tag {
-                Tag::NSigsRefund(num_sigs) => Some(*num_sigs),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        Ok(Conditions {
-            locktime,
-            pubkeys,
-            refund_keys,
-            num_sigs,
-            sig_flag,
-            num_sigs_refund,
-        })
     }
 }
 
@@ -2136,10 +1957,10 @@ mod tests {
         assert!(
             matches!(
                 err,
-                Error::ImpossibleMultisigConfiguration {
+                crate::nut10::Error::NUT11(Error::ImpossibleMultisigConfiguration {
                     required: 5,
                     available: 3,
-                }
+                })
             ),
             "Expected ImpossibleMultisigConfiguration, got: {err:?}"
         );
@@ -2161,10 +1982,10 @@ mod tests {
         assert!(
             matches!(
                 err,
-                Error::ImpossibleMultisigConfiguration {
+                crate::nut10::Error::NUT11(Error::ImpossibleMultisigConfiguration {
                     required: 2,
                     available: 1,
-                }
+                })
             ),
             "Expected ImpossibleMultisigConfiguration, got: {err:?}"
         );
@@ -2187,10 +2008,10 @@ mod tests {
         assert!(
             matches!(
                 err,
-                Error::ImpossibleRefundMultisigConfiguration {
+                crate::nut10::Error::NUT11(Error::ImpossibleMultisigConfiguration {
                     required: 3,
                     available: 1,
-                }
+                })
             ),
             "Expected ImpossibleRefundMultisigConfiguration, got: {err:?}"
         );
@@ -2231,10 +2052,10 @@ mod tests {
         assert!(
             matches!(
                 err,
-                Error::ImpossibleRefundMultisigConfiguration {
+                crate::nut10::Error::NUT11(Error::ImpossibleMultisigConfiguration {
                     required: 1,
                     available: 0,
-                }
+                })
             ),
             "Expected ImpossibleRefundMultisigConfiguration, got: {err:?}"
         );

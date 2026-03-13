@@ -123,7 +123,8 @@ impl Proof {
             .tags()
             .cloned()
             .unwrap_or_default()
-            .try_into()?;
+            .try_into()
+            .map_err(|_| Error::SpendConditionsNotMet)?;
 
         if spending_conditions.sig_flag == super::SigFlag::SigAll {
             return Err(Error::SigAllNotSupportedHere);
@@ -630,7 +631,7 @@ mod tests {
     #[test]
     fn test_htlc_locktime_and_refund_keys_logic() {
         use crate::nuts::nut01::PublicKey;
-        use crate::nuts::nut11::Conditions;
+        use crate::nuts::nut10::Conditions;
 
         let correct_preimage_bytes = [42u8; 32]; // 32-byte preimage
         let hash = Sha256Hash::hash(&correct_preimage_bytes);

@@ -63,9 +63,10 @@ pub use nut06::{ContactInfo, MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
 pub use nut09::{RestoreRequest, RestoreResponse};
 pub use nut10::{
-    Kind, Secret as Nut10Secret, SecretData, SpendingConditionVerification, SpendingConditions,
+    Conditions, Kind, Secret as Nut10Secret, SecretData, SpendingConditionVerification,
+    SpendingConditions,
 };
-pub use nut11::{Conditions, P2PKWitness, SigFlag};
+pub use nut11::{P2PKWitness, SigFlag};
 pub use nut12::{BlindSignatureDleq, ProofDleq};
 pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};

@@ -2,13 +2,23 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/10.md>
 
-use std::{collections::HashSet, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 
-use crate::{nut10::Error, nut14, secret::Secret, Kind, Nut10Secret};
+use crate::{
+    ensure_cdk,
+    nut10::{Error, Tag, TagKind},
+    nut14,
+    secret::Secret,
+    util::unix_time,
+    Kind, Nut10Secret, SigFlag,
+};
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use serde::{Deserialize, Serialize};
 
-use crate::{Conditions, PublicKey};
+use crate::PublicKey;
 
 /// Spending Conditions
 ///
@@ -133,5 +143,191 @@ impl From<SpendingConditions> for super::Secret {
                 super::SecretData::new(data.to_string(), conditions),
             ),
         }
+    }
+}
+
+/// P2PK and HTLC spending conditions
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct Conditions {
+    /// Unix locktime after which refund keys can be used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locktime: Option<u64>,
+    /// Additional Public keys
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkeys: Option<Vec<PublicKey>>,
+    /// Refund keys
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refund_keys: Option<Vec<PublicKey>>,
+    /// Number of signatures required
+    ///
+    /// Default is 1
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_sigs: Option<u64>,
+    /// Signature flag
+    ///
+    /// Default [`SigFlag::SigInputs`]
+    pub sig_flag: SigFlag,
+    /// Number of refund signatures required
+    ///
+    /// Default is 1
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_sigs_refund: Option<u64>,
+}
+
+impl Conditions {
+    /// Create new Spending [`Conditions`]
+    pub fn new(
+        locktime: Option<u64>,
+        pubkeys: Option<Vec<PublicKey>>,
+        refund_keys: Option<Vec<PublicKey>>,
+        num_sigs: Option<u64>,
+        sig_flag: Option<SigFlag>,
+        num_sigs_refund: Option<u64>,
+    ) -> Result<Self, Error> {
+        if let Some(locktime) = locktime {
+            ensure_cdk!(
+                locktime.ge(&unix_time()),
+                Error::NUT11(crate::nut11::Error::LocktimeInPast)
+            );
+        }
+
+        if let Some(n) = num_sigs {
+            let available_keys = 1 + pubkeys.as_ref().map(Vec::len).unwrap_or(0);
+            if n > available_keys as u64 {
+                return Err(Error::NUT11(
+                    crate::nut11::Error::ImpossibleMultisigConfiguration {
+                        required: n,
+                        available: available_keys as u64,
+                    },
+                ));
+            }
+        }
+
+        if let Some(n) = num_sigs_refund {
+            let refund_key_count = refund_keys.as_ref().map(Vec::len).unwrap_or(0);
+            if n > refund_key_count as u64 {
+                return Err(Error::NUT11(
+                    crate::nut11::Error::ImpossibleMultisigConfiguration {
+                        required: n,
+                        available: refund_key_count as u64,
+                    },
+                ));
+            }
+        }
+
+        Ok(Self {
+            locktime,
+            pubkeys,
+            refund_keys,
+            num_sigs,
+            sig_flag: sig_flag.unwrap_or_default(),
+            num_sigs_refund,
+        })
+    }
+}
+impl From<Conditions> for Vec<Vec<String>> {
+    fn from(conditions: Conditions) -> Vec<Vec<String>> {
+        let Conditions {
+            locktime,
+            pubkeys,
+            refund_keys,
+            num_sigs,
+            sig_flag,
+            num_sigs_refund,
+        } = conditions;
+
+        let mut tags = Vec::new();
+
+        if let Some(pubkeys) = pubkeys {
+            tags.push(Tag::PubKeys(pubkeys.into_iter().collect()).as_vec());
+        }
+
+        if let Some(locktime) = locktime {
+            tags.push(Tag::LockTime(locktime).as_vec());
+        }
+
+        if let Some(num_sigs) = num_sigs {
+            tags.push(Tag::NSigs(num_sigs).as_vec());
+        }
+
+        if let Some(refund_keys) = refund_keys {
+            tags.push(Tag::Refund(refund_keys).as_vec())
+        }
+
+        if let Some(num_sigs_refund) = num_sigs_refund {
+            tags.push(Tag::NSigsRefund(num_sigs_refund).as_vec())
+        }
+
+        tags.push(Tag::SigFlag(sig_flag).as_vec());
+        tags
+    }
+}
+
+impl TryFrom<Vec<Vec<String>>> for Conditions {
+    type Error = Error;
+    fn try_from(tags: Vec<Vec<String>>) -> Result<Conditions, Self::Error> {
+        let tags: HashMap<TagKind, Tag> = tags
+            .into_iter()
+            .map(|t| Tag::try_from(t).map(|tag| (tag.kind(), tag)))
+            .collect::<Result<_, _>>()?;
+
+        let pubkeys = match tags.get(&TagKind::Pubkeys) {
+            Some(Tag::PubKeys(pubkeys)) => Some(pubkeys.clone()),
+            _ => None,
+        };
+
+        let locktime = if let Some(tag) = tags.get(&TagKind::Locktime) {
+            match tag {
+                Tag::LockTime(locktime) => Some(*locktime),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let refund_keys = if let Some(tag) = tags.get(&TagKind::Refund) {
+            match tag {
+                Tag::Refund(keys) => Some(keys.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let sig_flag = if let Some(tag) = tags.get(&TagKind::SigFlag) {
+            match tag {
+                Tag::SigFlag(sigflag) => *sigflag,
+                _ => SigFlag::SigInputs,
+            }
+        } else {
+            SigFlag::SigInputs
+        };
+
+        let num_sigs = if let Some(tag) = tags.get(&TagKind::NSigs) {
+            match tag {
+                Tag::NSigs(num_sigs) => Some(*num_sigs),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let num_sigs_refund = if let Some(tag) = tags.get(&TagKind::NSigsRefund) {
+            match tag {
+                Tag::NSigsRefund(num_sigs) => Some(*num_sigs),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        Ok(Conditions {
+            locktime,
+            pubkeys,
+            refund_keys,
+            num_sigs,
+            sig_flag,
+            num_sigs_refund,
+        })
     }
 }
