@@ -7,6 +7,12 @@ use thiserror::Error;
 /// NUT10 Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Unknown Kind
+    #[error("Kind not found")]
+    KindNotFound,
+    /// Tag value not found
+    #[error("Tag value not found")]
+    TagValueNotFound,
     /// Incorrect secret kind
     #[error("Incorrect secret kind")]
     IncorrectSecretKind,
@@ -17,6 +23,9 @@ pub enum Error {
     /// From hex error
     #[error(transparent)]
     HexError(#[from] hex::Error),
+    /// Parse int error
+    #[error(transparent)]
+    ParseInt(#[from] std::num::ParseIntError),
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),

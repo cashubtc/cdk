@@ -21,6 +21,10 @@ pub use secret::Secret;
 pub mod error;
 pub use error::Error;
 
+pub mod tag;
+pub use tag::Tag;
+pub use tag::TagKind;
+
 /// Refund path requirements (available after locktime for HTLC)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RefundPath {
