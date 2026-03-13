@@ -241,7 +241,7 @@ impl SpendingConditions {
 ///
 /// This helper function extracts signature strings from a witness and parses them
 /// into bitcoin secp256k1 Schnorr signatures.
-pub fn extract_signatures_from_witness(
+pub(crate) fn extract_signatures_from_witness(
     witness: &super::Witness,
 ) -> Result<Vec<bitcoin::secp256k1::schnorr::Signature>, Error> {
     use std::str::FromStr;
@@ -264,7 +264,7 @@ pub fn extract_signatures_from_witness(
 /// Per NUT-11, there are two spending pathways after locktime:
 /// 1. Primary path (data + pubkeys): ALWAYS available
 /// 2. Refund path (refund keys): available AFTER locktime
-pub fn verify_sig_all_p2pk(first_input: &Proof, msg_to_sign: String) -> Result<(), Error> {
+pub(crate) fn verify_sig_all_p2pk(first_input: &Proof, msg_to_sign: String) -> Result<(), Error> {
     // Get the first input, as it's the one with the signatures
     let first_secret =
         Nut10Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
@@ -330,7 +330,7 @@ pub fn verify_sig_all_p2pk(first_input: &Proof, msg_to_sign: String) -> Result<(
 
 /// Returns count of valid signatures (each public key is only counted once)
 /// Returns error if the same pubkey has multiple valid signatures
-pub fn valid_signatures(
+pub(crate) fn valid_signatures(
     msg: &[u8],
     pubkeys: &[PublicKey],
     signatures: &[Signature],

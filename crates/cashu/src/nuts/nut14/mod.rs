@@ -270,7 +270,7 @@ impl SpendingConditions {
 ///
 /// The preimage should be a 64-character hex string representing 32 bytes.
 /// We decode it from hex, hash it with SHA256, and compare to the hash in secret.data
-pub fn verify_htlc_preimage(witness: &HTLCWitness, secret: &Secret) -> Result<(), Error> {
+fn verify_htlc_preimage(witness: &HTLCWitness, secret: &Secret) -> Result<(), Error> {
     use bitcoin::hashes::sha256::Hash as Sha256Hash;
     use bitcoin::hashes::Hash;
 
@@ -301,7 +301,7 @@ pub fn verify_htlc_preimage(witness: &HTLCWitness, secret: &Secret) -> Result<()
 /// Per NUT-14, there are two spending pathways:
 /// 1. Receiver path (preimage + pubkeys): ALWAYS available
 /// 2. Sender/Refund path (refund keys, no preimage): available AFTER locktime
-pub fn verify_sig_all_htlc(first_input: &Proof, msg_to_sign: String) -> Result<(), Error> {
+pub(crate) fn verify_sig_all_htlc(first_input: &Proof, msg_to_sign: String) -> Result<(), Error> {
     // Get the first input, as it's the one with the signatures
     let first_secret =
         Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
