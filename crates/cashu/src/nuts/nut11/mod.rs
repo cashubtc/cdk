@@ -569,7 +569,7 @@ mod tests {
     use crate::nuts::Id;
     use crate::quote_id::QuoteId;
     use crate::secret::Secret;
-    use crate::{Amount, BlindedMessage, SecretData};
+    use crate::{Amount, BlindedMessage};
 
     #[test]
     fn test_secret_ser() {
@@ -599,10 +599,7 @@ mod tests {
             num_sigs_refund: None,
         };
 
-        let secret: Nut10Secret = Nut10Secret::new(
-            Kind::P2PK,
-            SecretData::new(data.to_string(), Some(conditions)),
-        );
+        let secret: Nut10Secret = SpendingConditions::new_p2pk(data, Some(conditions)).into();
 
         let secret_str = serde_json::to_string(&secret).unwrap();
 
@@ -637,12 +634,9 @@ mod tests {
             num_sigs_refund: None,
         };
 
-        let secret: Secret = Nut10Secret::new(
-            Kind::P2PK,
-            SecretData::new(v_key.to_string(), Some(conditions)),
-        )
-        .try_into()
-        .unwrap();
+        let secret: Secret = SpendingConditions::new_p2pk(v_key, Some(conditions))
+            .try_into()
+            .unwrap();
 
         let mut proof = Proof {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
@@ -744,12 +738,9 @@ mod tests {
             num_sigs_refund: Some(2),
         };
 
-        let secret: Secret = Nut10Secret::new(
-            Kind::P2PK,
-            SecretData::new(v_key.to_string(), Some(conditions)),
-        )
-        .try_into()
-        .unwrap();
+        let secret: Secret = SpendingConditions::new_p2pk(v_key, Some(conditions))
+            .try_into()
+            .unwrap();
 
         let mut proof = Proof {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
@@ -799,12 +790,9 @@ mod tests {
     }
 
     fn create_test_secret(pubkey: PublicKey, conditions: Conditions) -> Secret {
-        Nut10Secret::new(
-            Kind::P2PK,
-            SecretData::new(pubkey.to_string(), Some(conditions)),
-        )
-        .try_into()
-        .unwrap()
+        SpendingConditions::new_p2pk(pubkey, Some(conditions))
+            .try_into()
+            .unwrap()
     }
 
     fn create_test_blinded_msg(pubkey: PublicKey) -> BlindedMessage {
@@ -969,12 +957,12 @@ mod tests {
 
         // Create second secret with different data
         let conditions2 = conditions1.clone();
-        let secret2 = Nut10Secret::new(
-            Kind::P2PK,
-            SecretData::new(
+        let secret2: Secret = SpendingConditions::new_p2pk(
+            PublicKey::from_str(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
-                Some(conditions2),
-            ),
+            )
+            .unwrap(),
+            Some(conditions2),
         )
         .try_into()
         .unwrap();
@@ -1813,12 +1801,12 @@ mod tests {
         let secret1 = create_test_secret(pubkey, conditions.clone());
 
         // Create second proof with different secret data
-        let different_secret = Nut10Secret::new(
-            Kind::P2PK,
-            SecretData::new(
+        let different_secret: Secret = SpendingConditions::new_p2pk(
+            PublicKey::from_str(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
-                Some(conditions),
-            ),
+            )
+            .unwrap(),
+            Some(conditions),
         )
         .try_into()
         .unwrap();

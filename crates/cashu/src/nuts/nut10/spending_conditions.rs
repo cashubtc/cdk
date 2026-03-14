@@ -146,6 +146,14 @@ impl From<SpendingConditions> for super::Secret {
     }
 }
 
+impl TryFrom<SpendingConditions> for Secret {
+    type Error = Error;
+    fn try_from(conditions: SpendingConditions) -> Result<Secret, Self::Error> {
+        let secret: Nut10Secret = conditions.into();
+        Secret::try_from(secret)
+    }
+}
+
 /// P2PK and HTLC spending conditions
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Conditions {
