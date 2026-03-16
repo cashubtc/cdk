@@ -493,6 +493,8 @@ pub struct ProofInfo {
     pub used_by_operation: Option<String>,
     /// Operation ID that created this proof
     pub created_by_operation: Option<String>,
+    /// Keyset counter from which this proof was derived
+    pub keyset_counter: Option<u32>,
 }
 
 impl From<cdk::types::ProofInfo> for ProofInfo {
@@ -506,6 +508,7 @@ impl From<cdk::types::ProofInfo> for ProofInfo {
             unit: info.unit.into(),
             used_by_operation: info.used_by_operation.map(|u| u.to_string()),
             created_by_operation: info.created_by_operation.map(|u| u.to_string()),
+            keyset_counter: info.keyset_counter,
         }
     }
 }
@@ -539,6 +542,7 @@ pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
             .map(|id| uuid::Uuid::from_str(&id))
             .transpose()
             .map_err(|e| FfiError::internal(e.to_string()))?,
+        keyset_counter: info.keyset_counter,
     };
     Ok(serde_json::to_string(&cdk_info)?)
 }

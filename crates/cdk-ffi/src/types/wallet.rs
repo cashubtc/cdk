@@ -769,3 +769,36 @@ impl From<cdk::WalletKey> for WalletKey {
         }
     }
 }
+
+/// Recovery strategy for restoring wallet proofs
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum RecoveryStrategy {
+    /// Fast recovery using NUT-XX binary search (default)
+    Fast,
+    /// Legacy NUT-13 linear scan recovery
+    LinearScan,
+}
+
+impl From<RecoveryStrategy> for cdk::wallet::RecoveryStrategy {
+    fn from(strategy: RecoveryStrategy) -> Self {
+        match strategy {
+            RecoveryStrategy::Fast => cdk::wallet::RecoveryStrategy::Fast,
+            RecoveryStrategy::LinearScan => cdk::wallet::RecoveryStrategy::LinearScan,
+        }
+    }
+}
+
+/// Options for wallet recovery
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct RecoveryOptions {
+    /// Strategy to use for recovery
+    pub strategy: RecoveryStrategy,
+}
+
+impl From<RecoveryOptions> for cdk::wallet::RecoveryOptions {
+    fn from(options: RecoveryOptions) -> Self {
+        Self {
+            strategy: options.strategy.into(),
+        }
+    }
+}

@@ -356,6 +356,21 @@ impl Wallet {
             report.failed
         );
 
+        // ONE-TIME CONSOLIDATION MIGRATION (NUT-XX)
+        if let Ok(keysets) = self.load_mint_keysets().await {
+            for keyset in keysets {
+                // By passing 0 for new_outputs, ensure_depth_invariant will check if any proof
+                // has `keyset_counter` missing or violating T - d.
+                if let Err(e) = self.ensure_depth_invariant(keyset.id, 0).await {
+                    tracing::error!(
+                        "Failed to run depth invariant migration on startup for keyset {}: {}",
+                        keyset.id,
+                        e
+                    );
+                }
+            }
+        }
+
         Ok(report)
     }
 
