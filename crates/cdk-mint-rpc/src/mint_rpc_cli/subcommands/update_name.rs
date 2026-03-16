@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateNameRequest;
 
@@ -28,9 +29,9 @@ pub async fn update_name(
     sub_command_args: &UpdateNameCommand,
 ) -> Result<()> {
     let _response = client
-        .update_name(Request::new(UpdateNameRequest {
+        .update_name(with_version_header(Request::new(UpdateNameRequest {
             name: sub_command_args.name.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())

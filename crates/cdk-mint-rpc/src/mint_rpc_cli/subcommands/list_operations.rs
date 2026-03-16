@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_reporting_client::CdkMintReportingClient;
 use crate::mint_rpc_cli::utils::parse_csv;
 use crate::ListOperationsRequest;
@@ -54,7 +55,7 @@ pub async fn list_operations(
     args: &ListOperationsCommand,
 ) -> Result<()> {
     let response = client
-        .list_operations(Request::new(ListOperationsRequest {
+        .list_operations(with_version_header(Request::new(ListOperationsRequest {
             index_offset: args.offset,
             num_max_operations: args.limit,
             reversed: args.reversed,
@@ -62,7 +63,7 @@ pub async fn list_operations(
             creation_date_end: args.to,
             units: parse_csv(&args.units),
             operations: parse_csv(&args.operations),
-        }))
+        })))
         .await?;
 
     let resp = response.into_inner();

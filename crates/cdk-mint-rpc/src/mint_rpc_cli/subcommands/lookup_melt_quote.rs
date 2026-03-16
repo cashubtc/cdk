@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_reporting_client::CdkMintReportingClient;
 use crate::LookupQuoteRequest;
 
@@ -35,9 +36,9 @@ pub async fn lookup_melt_quote(
     args: &LookupMeltQuoteCommand,
 ) -> Result<()> {
     let response = client
-        .lookup_melt_quote(Request::new(LookupQuoteRequest {
+        .lookup_melt_quote(with_version_header(Request::new(LookupQuoteRequest {
             quote_id: args.quote_id.clone(),
-        }))
+        })))
         .await?;
 
     let quote = response

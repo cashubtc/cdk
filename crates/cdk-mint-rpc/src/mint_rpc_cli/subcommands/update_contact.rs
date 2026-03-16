@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateContactRequest;
 
@@ -30,10 +31,10 @@ pub async fn add_contact(
     sub_command_args: &AddContactCommand,
 ) -> Result<()> {
     let _response = client
-        .add_contact(Request::new(UpdateContactRequest {
+        .add_contact(with_version_header(Request::new(UpdateContactRequest {
             method: sub_command_args.method.clone(),
             info: sub_command_args.info.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())
@@ -63,10 +64,10 @@ pub async fn remove_contact(
     sub_command_args: &RemoveContactCommand,
 ) -> Result<()> {
     let _response = client
-        .remove_contact(Request::new(UpdateContactRequest {
+        .remove_contact(with_version_header(Request::new(UpdateContactRequest {
             method: sub_command_args.method.clone(),
             info: sub_command_args.info.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())

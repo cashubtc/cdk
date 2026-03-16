@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_reporting_client::CdkMintReportingClient;
 use crate::mint_rpc_cli::utils::parse_csv;
 use crate::ListQuotesRequest;
@@ -53,7 +54,7 @@ pub async fn list_mint_quotes(
     args: &ListMintQuotesCommand,
 ) -> Result<()> {
     let response = client
-        .list_mint_quotes(Request::new(ListQuotesRequest {
+        .list_mint_quotes(with_version_header(Request::new(ListQuotesRequest {
             index_offset: args.offset,
             num_max_quotes: args.limit,
             reversed: args.reversed,
@@ -61,7 +62,7 @@ pub async fn list_mint_quotes(
             creation_date_end: args.to,
             states: parse_csv(&args.states),
             units: parse_csv(&args.units),
-        }))
+        })))
         .await?;
 
     let resp = response.into_inner();

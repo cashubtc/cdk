@@ -3,6 +3,7 @@ use clap::{ArgAction, Args};
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_reporting_client::CdkMintReportingClient;
 use crate::GetKeysetsRequest;
 
@@ -48,12 +49,12 @@ pub async fn get_keysets(
         .unwrap_or_default();
 
     let response = client
-        .get_keysets(Request::new(GetKeysetsRequest {
+        .get_keysets(with_version_header(Request::new(GetKeysetsRequest {
             units,
             exclude_inactive: sub_command_args.exclude_inactive,
             include_auth: sub_command_args.include_auth,
             include_balances: sub_command_args.include_balances,
-        }))
+        })))
         .await?;
 
     let keysets = response.into_inner().keysets;

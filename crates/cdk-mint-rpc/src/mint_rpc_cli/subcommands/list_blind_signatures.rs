@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_reporting_client::CdkMintReportingClient;
 use crate::mint_rpc_cli::utils::parse_csv;
 use crate::ListBlindSignaturesRequest;
@@ -55,16 +56,18 @@ pub async fn list_blind_signatures(
     args: &ListBlindSignaturesCommand,
 ) -> Result<()> {
     let response = client
-        .list_blind_signatures(Request::new(ListBlindSignaturesRequest {
-            index_offset: args.offset,
-            num_max_signatures: args.limit,
-            reversed: args.reversed,
-            creation_date_start: args.from,
-            creation_date_end: args.to,
-            units: parse_csv(&args.units),
-            keyset_ids: parse_csv(&args.keyset_ids),
-            operations: parse_csv(&args.operations),
-        }))
+        .list_blind_signatures(with_version_header(Request::new(
+            ListBlindSignaturesRequest {
+                index_offset: args.offset,
+                num_max_signatures: args.limit,
+                reversed: args.reversed,
+                creation_date_start: args.from,
+                creation_date_end: args.to,
+                units: parse_csv(&args.units),
+                keyset_ids: parse_csv(&args.keyset_ids),
+                operations: parse_csv(&args.operations),
+            },
+        )))
         .await?;
 
     let resp = response.into_inner();

@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateIconUrlRequest;
 
@@ -28,9 +29,9 @@ pub async fn update_icon_url(
     sub_command_args: &UpdateIconUrlCommand,
 ) -> Result<()> {
     let _response = client
-        .update_icon_url(Request::new(UpdateIconUrlRequest {
+        .update_icon_url(with_version_header(Request::new(UpdateIconUrlRequest {
             icon_url: sub_command_args.name.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())

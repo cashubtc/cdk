@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateMotdRequest;
 
@@ -28,9 +29,9 @@ pub async fn update_motd(
     sub_command_args: &UpdateMotdCommand,
 ) -> Result<()> {
     let _response = client
-        .update_motd(Request::new(UpdateMotdRequest {
+        .update_motd(with_version_header(Request::new(UpdateMotdRequest {
             motd: sub_command_args.motd.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())

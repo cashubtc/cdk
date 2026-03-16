@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_reporting_client::CdkMintReportingClient;
 use crate::GetBalancesRequest;
 
@@ -31,9 +32,9 @@ pub async fn get_balances(
     sub_command_args: &GetBalancesCommand,
 ) -> Result<()> {
     let response = client
-        .get_balances(Request::new(GetBalancesRequest {
+        .get_balances(with_version_header(Request::new(GetBalancesRequest {
             unit: sub_command_args.unit.clone(),
-        }))
+        })))
         .await?;
 
     let balances = response.into_inner().balances;

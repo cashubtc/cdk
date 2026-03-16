@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateDescriptionRequest;
 
@@ -29,9 +30,11 @@ pub async fn update_short_description(
     sub_command_args: &UpdateShortDescriptionCommand,
 ) -> Result<()> {
     let _response = client
-        .update_short_description(Request::new(UpdateDescriptionRequest {
-            description: sub_command_args.description.clone(),
-        }))
+        .update_short_description(with_version_header(Request::new(
+            UpdateDescriptionRequest {
+                description: sub_command_args.description.clone(),
+            },
+        )))
         .await?;
 
     Ok(())

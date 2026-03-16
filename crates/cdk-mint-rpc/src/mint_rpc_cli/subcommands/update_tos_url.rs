@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateTosUrlRequest;
 
@@ -28,9 +29,9 @@ pub async fn update_tos_url(
     sub_command_args: &UpdateTosUrlCommand,
 ) -> Result<()> {
     let _response = client
-        .update_tos_url(Request::new(UpdateTosUrlRequest {
+        .update_tos_url(with_version_header(Request::new(UpdateTosUrlRequest {
             tos_url: sub_command_args.name.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())

@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateNut04QuoteRequest;
 
@@ -32,10 +33,10 @@ pub async fn update_nut04_quote_state(
     sub_command_args: &UpdateNut04QuoteCommand,
 ) -> Result<()> {
     let response = client
-        .update_nut04_quote(Request::new(UpdateNut04QuoteRequest {
+        .update_nut04_quote(with_version_header(Request::new(UpdateNut04QuoteRequest {
             quote_id: sub_command_args.quote_id.clone(),
             state: sub_command_args.state.clone(),
-        }))
+        })))
         .await?;
 
     let response = response.into_inner();

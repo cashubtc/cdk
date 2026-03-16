@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateUrlRequest;
 
@@ -29,9 +30,9 @@ pub async fn add_url(
     sub_command_args: &AddUrlCommand,
 ) -> Result<()> {
     let _response = client
-        .add_url(Request::new(UpdateUrlRequest {
+        .add_url(with_version_header(Request::new(UpdateUrlRequest {
             url: sub_command_args.url.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())
@@ -59,9 +60,9 @@ pub async fn remove_url(
     sub_command_args: &RemoveUrlCommand,
 ) -> Result<()> {
     let _response = client
-        .remove_url(Request::new(UpdateUrlRequest {
+        .remove_url(with_version_header(Request::new(UpdateUrlRequest {
             url: sub_command_args.url.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())

@@ -3,6 +3,7 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::RotateNextKeysetRequest;
 
@@ -52,13 +53,13 @@ pub async fn rotate_next_keyset(
     };
 
     let response = client
-        .rotate_next_keyset(Request::new(RotateNextKeysetRequest {
+        .rotate_next_keyset(with_version_header(Request::new(RotateNextKeysetRequest {
             unit: sub_command_args.unit.clone(),
             amounts,
             input_fee_ppk: sub_command_args.input_fee_ppk,
             use_keyset_v2: sub_command_args.use_keyset_v2,
             final_expiry: sub_command_args.final_expiry,
-        }))
+        })))
         .await?;
 
     let response = response.into_inner();

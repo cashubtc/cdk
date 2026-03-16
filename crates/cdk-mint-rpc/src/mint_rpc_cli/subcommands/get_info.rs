@@ -2,6 +2,7 @@ use anyhow::Result;
 use tonic::transport::Channel;
 use tonic::Request;
 
+use super::with_version_header;
 use crate::cdk_mint_reporting_client::CdkMintReportingClient;
 use crate::GetInfoRequest;
 
@@ -15,7 +16,9 @@ use crate::GetInfoRequest;
 /// # Arguments
 /// * `client` - The RPC client used to communicate with the mint
 pub async fn get_info(client: &mut CdkMintReportingClient<Channel>) -> Result<()> {
-    let response = client.get_info(Request::new(GetInfoRequest {})).await?;
+    let response = client
+        .get_info(with_version_header(Request::new(GetInfoRequest {})))
+        .await?;
     let info = response.into_inner();
 
     println!(
