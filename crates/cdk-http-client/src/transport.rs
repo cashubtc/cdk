@@ -11,7 +11,8 @@ use url::Url;
 use crate::{HttpClient, HttpClientBuilder, HttpError, RequestBuilderExt};
 
 /// Expected HTTP transport
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Transport: Default + Send + Sync + Debug + Clone {
     /// Make the transport use a proxy.
     fn with_proxy(
@@ -39,15 +40,15 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
 }
 
 /// Default async transport backed by the crate `HttpClient`.
-#[cfg(any(feature = "bitreq", feature = "reqwest"))]
+#[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
 #[derive(Debug, Clone, Default)]
 pub struct Async {
     inner: HttpClient,
 }
 
-#[cfg(any(feature = "bitreq", feature = "reqwest"))]
-#[cfg(any(feature = "bitreq", feature = "reqwest"))]
-#[async_trait]
+#[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl Transport for Async {
     fn with_proxy(
         &mut self,
@@ -102,11 +103,11 @@ impl Transport for Async {
     }
 }
 
-#[cfg(feature = "bitreq")]
+#[cfg(all(feature = "bitreq", not(target_arch = "wasm32")))]
 /// Bitreq-backed transport implementation.
 pub type BitreqTransport = Async;
 
-#[cfg(feature = "reqwest")]
+#[cfg(all(feature = "reqwest", not(target_arch = "wasm32")))]
 /// Reqwest-backed transport implementation.
 pub type ReqwestTransport = Async;
 
