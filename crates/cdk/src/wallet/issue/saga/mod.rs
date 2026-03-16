@@ -707,7 +707,7 @@ impl<'a> MintSaga<'a, Prepared> {
                 premint_secrets.secrets(),
                 &keys,
             )?;
-            
+
             let mut counter_map = std::collections::HashMap::new();
             if let OperationData::Mint(ref data) = saga.data {
                 if let Some(start) = data.counter_start {

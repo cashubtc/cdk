@@ -502,7 +502,7 @@ mod tests {
             amount: Some(Amount::from(1000)),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec![MintUrl::from_str("https://mint.example.com").unwrap()]),
+            mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             description: Some("Test".to_string()),
             transports: vec![],
             nut10: None,

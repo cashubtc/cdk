@@ -789,12 +789,11 @@ impl Wallet {
         keys: &Keys,
         mut restored_result: Restored,
     ) -> Result<Restored, Error> {
-        let t_candidate = self.find_t(keyset_id).await?;
-        if t_candidate.is_none() {
+        let Some(t_candidate) = self.find_t(keyset_id).await? else {
             return Ok(restored_result);
-        }
+        };
 
-        let t = self.scan_gap(keyset_id, t_candidate.unwrap(), 50).await?;
+        let t = self.scan_gap(keyset_id, t_candidate, 100).await?;
 
         // Depth window is `d` elements. NUT-XX specifies d=100.
         let d = 100u32;
@@ -935,13 +934,13 @@ impl Wallet {
             .increment_keyset_counter(&keyset_id, 0)
             .await?;
         let new_t = current_t + new_outputs;
-        let threshold = new_t.saturating_sub(d);
         let mut needs_consolidation = false;
         let mut to_consolidate = Vec::new();
         if keyset_proofs.len() as u32 + new_outputs > d {
             needs_consolidation = true;
             to_consolidate = keyset_proofs.clone();
-        } else {
+        } else if new_t > d {
+            let threshold = new_t - d;
             for p in &keyset_proofs {
                 if let Some(counter) = p.keyset_counter {
                     if counter <= threshold {
@@ -953,23 +952,65 @@ impl Wallet {
                     to_consolidate.push(p.clone());
                 }
             }
+        } else {
+            for p in &keyset_proofs {
+                if p.keyset_counter.is_none() {
+                    needs_consolidation = true;
+                    to_consolidate.push(p.clone());
+                }
+            }
         }
+
         if needs_consolidation {
             tracing::info!("Depth Invariant triggered consolidation");
-            let proofs_to_swap: Proofs = to_consolidate.into_iter().map(|p| p.proof).collect();
-            let saga = crate::wallet::swap::saga::SwapSaga::new(self);
-            let saga = Box::pin(saga.prepare(
-                None,
-                crate::amount::SplitTarget::None,
-                proofs_to_swap,
-                None,
-                false,
-                false,
-                crate::wallet::swap::ProofReservation::Reserve,
-                true,
-            ))
-            .await?;
-            saga.execute().await?;
+            let mut proofs_to_swap: Proofs = to_consolidate.into_iter().map(|p| p.proof).collect();
+            let mut total_amount = proofs_to_swap.total_amount()?;
+            let mut total_fee = self.get_proofs_fee(&proofs_to_swap).await?.total;
+
+            if total_amount <= total_fee {
+                tracing::debug!(
+                    "Proofs to consolidate cannot pay fee ({} <= {}), adding all keyset proofs",
+                    total_amount,
+                    total_fee
+                );
+                proofs_to_swap = keyset_proofs.into_iter().map(|p| p.proof).collect();
+                total_amount = proofs_to_swap.total_amount()?;
+                total_fee = self.get_proofs_fee(&proofs_to_swap).await?.total;
+
+                if total_amount <= total_fee {
+                    tracing::warn!(
+                        "Cannot consolidate: total keyset amount {} <= fee {}. Skipping.",
+                        total_amount,
+                        total_fee
+                    );
+                    return Ok(());
+                }
+            }
+
+            for chunk in proofs_to_swap.chunks(500) {
+                let chunk_proofs: Proofs = chunk.to_vec();
+                let chunk_amount = chunk_proofs.total_amount()?;
+                let chunk_fee = self.get_proofs_fee(&chunk_proofs).await?.total;
+
+                if chunk_amount <= chunk_fee {
+                    tracing::debug!("ensure_depth_invariant: skipping chunk because amount <= fee");
+                    continue;
+                }
+
+                let saga = crate::wallet::swap::saga::SwapSaga::new(self);
+                let saga = Box::pin(saga.prepare(
+                    None,
+                    crate::amount::SplitTarget::None,
+                    chunk_proofs,
+                    None,
+                    false,
+                    false,
+                    crate::wallet::swap::ProofReservation::Reserve,
+                    true,
+                ))
+                .await?;
+                saga.execute().await?;
+            }
         }
         Ok(())
     }
