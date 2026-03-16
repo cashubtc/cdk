@@ -30,19 +30,21 @@ mod response;
 mod transport;
 pub mod ws;
 
-#[cfg(feature = "bitreq")]
+#[cfg(all(feature = "bitreq", not(target_arch = "wasm32")))]
 pub use backends::BitreqRequestBuilder;
-#[cfg(feature = "reqwest")]
+#[cfg(all(feature = "reqwest", not(target_arch = "wasm32")))]
 pub use backends::ReqwestRequestBuilder;
+#[cfg(target_arch = "wasm32")]
+pub use backends::WasmRequestBuilder;
 pub use client::{fetch, HttpClient, HttpClientBuilder};
 pub use error::HttpError;
 pub use request::{RequestBuilder, RequestBuilderExt};
 pub use response::{RawResponse, Response};
-#[cfg(any(feature = "bitreq", feature = "reqwest"))]
+#[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
 pub use transport::Async;
-#[cfg(feature = "bitreq")]
+#[cfg(all(feature = "bitreq", not(target_arch = "wasm32")))]
 pub use transport::BitreqTransport;
-#[cfg(feature = "reqwest")]
+#[cfg(all(feature = "reqwest", not(target_arch = "wasm32")))]
 pub use transport::ReqwestTransport;
 #[cfg(feature = "tor")]
 pub use transport::TorAsync;
