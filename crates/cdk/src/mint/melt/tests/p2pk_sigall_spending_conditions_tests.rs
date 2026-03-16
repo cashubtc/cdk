@@ -161,7 +161,7 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
     println!("✓ P2PK SIG_ALL spending conditions verified successfully");
 
     // Perform the actual melt - this also verifies spending conditions internally
-    let melt_response = mint.melt(&melt_request).await.unwrap();
+    let melt_response = mint.melt(&melt_request).await.unwrap().await.unwrap();
     println!("✓ Melt operation completed successfully!");
     println!("  Quote state: {}", melt_response.state);
     assert_eq!(melt_response.quote, melt_quote.quote);
