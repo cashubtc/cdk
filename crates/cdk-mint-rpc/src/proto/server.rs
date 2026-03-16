@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use cdk::mint::Mint;
+use cdk_common::grpc::create_version_check_interceptor;
 use thiserror::Error;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -121,16 +122,36 @@ impl MintRPCServer {
                     .identity(server_identity)
                     .client_ca_root(client_ca_cert);
 
+                let interceptor = create_version_check_interceptor(
+                    cdk_common::grpc::VERSION_HEADER,
+                    cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                );
                 Server::builder()
                     .tls_config(tls_config)?
-                    .add_service(CdkMintManagementServer::new(self.clone()))
-                    .add_service(CdkMintReportingServer::new(self.clone()))
+                    .add_service(CdkMintManagementServer::with_interceptor(
+                        self.clone(),
+                        interceptor.clone(),
+                    ))
+                    .add_service(CdkMintReportingServer::with_interceptor(
+                        self.clone(),
+                        interceptor,
+                    ))
             }
             None => {
                 tracing::warn!("No valid TLS configuration found, starting insecure server");
+                let interceptor = create_version_check_interceptor(
+                    cdk_common::grpc::VERSION_HEADER,
+                    cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                );
                 Server::builder()
-                    .add_service(CdkMintManagementServer::new(self.clone()))
-                    .add_service(CdkMintReportingServer::new(self.clone()))
+                    .add_service(CdkMintManagementServer::with_interceptor(
+                        self.clone(),
+                        interceptor.clone(),
+                    ))
+                    .add_service(CdkMintReportingServer::with_interceptor(
+                        self.clone(),
+                        interceptor,
+                    ))
             }
         };
 

@@ -9,10 +9,12 @@
 config.toml
 .pre-commit-config.yaml
 result
+static-bin/
 .aider*
 **/postgres_data/
 .pg_data/
 **/.env
+tor-data
 
 # Mutation testing artifacts
 mutants.out/
@@ -29,5 +31,3 @@ __pycache__
 libcdk_ffi*
 cdk_ffi.py
 
-# llm artifacts
-AGENTS.md

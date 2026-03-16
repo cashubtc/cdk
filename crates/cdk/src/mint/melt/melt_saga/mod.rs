@@ -6,7 +6,11 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
-use cdk_common::{Amount, CurrencyUnit, Error, ProofsMethods, PublicKey, QuoteId, State};
+use cdk_common::payment::OutgoingPaymentOptions;
+use cdk_common::{
+    Amount, CurrencyUnit, Error, ProofsMethods, PublicKey, QuoteId, SpendingConditionVerification,
+    State,
+};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use tokio::sync::Mutex;
@@ -199,6 +203,19 @@ impl MeltSaga<Initial> {
         } = input_verification;
         let input_unit = Some(input_amount.unit().clone());
 
+        if let Some(outputs) = melt_request.outputs() {
+            if !outputs.is_empty() {
+                let output_verification = self.mint.verify_outputs(outputs)?;
+                if input_unit.as_ref() != Some(output_verification.amount.unit()) {
+                    return Err(Error::UnitMismatch);
+                }
+            }
+        }
+
+        // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
+        // and HTLC (including SIGALL)
+        melt_request.verify_spending_conditions()?;
+
         let mut tx = self.db.begin_transaction().await?;
 
         let mut quote =
@@ -313,24 +330,6 @@ impl MeltSaga<Initial> {
             ));
         }
 
-        // Verify outputs if provided
-        if let Some(outputs) = &melt_request.outputs() {
-            if !outputs.is_empty() {
-                let output_verification = match self.mint.verify_outputs(&mut tx, outputs).await {
-                    Ok(verification) => verification,
-                    Err(err) => {
-                        tx.rollback().await?;
-                        return Err(err);
-                    }
-                };
-
-                if input_unit.as_ref() != Some(output_verification.amount.unit()) {
-                    tx.rollback().await?;
-                    return Err(Error::UnitMismatch);
-                }
-            }
-        }
-
         // Add melt request tracking record
         tx.add_melt_request(
             melt_request.quote_id(),
@@ -376,7 +375,7 @@ impl MeltSaga<Initial> {
 
         // Publish melt quote status change AFTER transaction commits
         self.pubsub
-            .melt_quote_status(&*quote, None, None, MeltQuoteState::Pending);
+            .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
 
         // Store blinded messages for state
         let blinded_messages_vec = melt_request.outputs().clone().unwrap_or_default();
@@ -702,13 +701,10 @@ impl MeltSaga<SetupComplete> {
         >,
     ) -> Result<MakePaymentResponse, Error> {
         // Make payment with idempotent verification
-        match ln
-            .make_payment(
-                &self.state_data.quote.unit,
-                self.state_data.quote.clone().try_into()?,
-            )
-            .await
-        {
+        let quote = &self.state_data.quote;
+        let payment_options = OutgoingPaymentOptions::from_melt_quote_with_fee(quote.clone())?;
+
+        match ln.make_payment(&quote.unit, payment_options).await {
             Ok(pay) if pay.status == MeltQuoteState::Paid => Ok(pay),
             Ok(pay) => self.verify_ambiguous_payment(ln, pay).await,
             Err(err) => self.handle_payment_error(ln, err).await,
@@ -942,6 +938,12 @@ impl MeltSaga<PaymentConfirmed> {
         } else {
             // We commit tx here as process_change can make external call to blind sign
             // We do not want to hold db txs across external calls
+            // Persist Finalizing state so recovery knows TX1 completed
+            tx.update_saga(
+                &self.operation_id,
+                cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::Finalizing),
+            )
+            .await?;
             tx.commit().await?;
             super::shared::process_melt_change(
                 &self.mint,
@@ -984,7 +986,7 @@ impl MeltSaga<PaymentConfirmed> {
         tx.commit().await?;
 
         self.pubsub.melt_quote_status(
-            &self.state_data.quote,
+            &quote,
             payment_preimage.clone(),
             change.clone(),
             MeltQuoteState::Paid,

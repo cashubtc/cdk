@@ -13,6 +13,7 @@ A command-line Cashu wallet implementation built with the Cashu Development Kit 
 
 - **Multiple Mint Support**: Connect to and manage multiple Cashu mints simultaneously
 - **Token Operations**: Mint, melt, send, and receive Cashu tokens
+- **Batch Minting**: Mint multiple existing paid quotes in a single request
 - **Lightning Integration**: Pay Lightning invoices (BOLT11, BOLT12, BIP353) and receive payments
 - **Payment Requests**: Create and pay payment requests with various conditions (P2PK, HTLC)
 - **Token Transfer**: Transfer tokens between different mints
@@ -28,9 +29,20 @@ A command-line Cashu wallet implementation built with the Cashu Development Kit 
 Download the latest release from the [GitHub releases page](https://github.com/cashubtc/cdk/releases).
 
 ### Option 2: Build from Source
+
+This project uses [Nix](https://nixos.org/) to manage development dependencies.
+
 ```bash
 git clone https://github.com/cashubtc/cdk.git
 cd cdk
+
+# Enter lean development environment
+nix develop
+
+# OR enter full regtest environment (with bitcoind, cln, lnd, postgres)
+nix develop .#regtest
+
+# Build binary
 cargo build --bin cdk-cli --release
 # Binary will be at ./target/release/cdk-cli
 ```
@@ -138,9 +150,16 @@ cdk-cli mint http://127.0.0.1:8085 1000 \
 # Using an existing quote
 cdk-cli mint http://127.0.0.1:8085 --quote-id <quote_id>
 
+# Batch mint multiple existing quotes (repeat --quote-id)
+cdk-cli mint-batch http://127.0.0.1:8085 \
+  --quote-id <quote_id_1> \
+  --quote-id <quote_id_2>
+
 # Claim pending mint quotes that have been paid
 cdk-cli mint-pending
 ```
+
+`mint-batch` only mints existing quotes already stored in your wallet.
 
 ### Sending & Receiving Tokens
 

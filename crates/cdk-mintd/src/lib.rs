@@ -2,8 +2,7 @@
 //! Cdk mintd lib
 
 // std
-#[cfg(feature = "auth")]
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env::{self};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -34,9 +33,9 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
     feature = "ldk-node"
 ))]
 use cdk::nuts::CurrencyUnit;
-#[cfg(feature = "auth")]
-use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
-use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
+use cdk::nuts::{
+    AuthRequired, ContactInfo, Method, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
+};
 use cdk_axum::cache::HttpCache;
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
@@ -44,18 +43,16 @@ use cdk_common::database::DynMintDatabase;
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
-#[cfg(all(feature = "auth", feature = "postgres"))]
+#[cfg(feature = "postgres")]
 use cdk_postgres::MintPgAuthDatabase;
 #[cfg(feature = "postgres")]
 use cdk_postgres::MintPgDatabase;
-#[cfg(all(feature = "auth", feature = "sqlite"))]
+#[cfg(feature = "sqlite")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
-#[cfg(feature = "auth")]
-use config::AuthType;
-use config::{DatabaseEngine, LnBackend};
+use config::{AuthType, DatabaseEngine, LnBackend};
 use env_vars::ENV_WORK_DIR;
 use setup::LnBackendSetup;
 use tower::ServiceBuilder;
@@ -74,6 +71,19 @@ pub mod env_vars;
 pub mod setup;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
+const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
+
+fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {
+    let mut seen = HashSet::new();
+    mint_info
+        .nuts
+        .nut04
+        .methods
+        .iter()
+        .map(|method| method.method.to_string())
+        .filter(|method| seen.insert(method.clone()))
+        .collect()
+}
 
 #[cfg(feature = "cln")]
 fn expand_path(path: &str) -> Option<PathBuf> {
@@ -103,7 +113,9 @@ async fn initial_setup(
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
 )> {
+    tracing::info!("Initializing database...");
     let (localstore, keystore, kv) = setup_database(settings, work_dir, db_password).await?;
+    tracing::info!("Database initialized successfully");
     Ok((localstore, keystore, kv))
 }
 
@@ -269,6 +281,7 @@ async fn setup_database(
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
 )> {
+    tracing::info!("Using database engine: {:?}", settings.database.engine);
     match settings.database.engine {
         #[cfg(feature = "sqlite")]
         DatabaseEngine::Sqlite => {
@@ -291,6 +304,7 @@ async fn setup_database(
 
             #[cfg(feature = "postgres")]
             let pg_db = Arc::new(MintPgDatabase::new(pg_config.url.as_str()).await?);
+            tracing::info!("PostgreSQL database connection established");
             #[cfg(feature = "postgres")]
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
                 pg_db.clone();
@@ -323,6 +337,7 @@ async fn setup_sqlite_database(
     _password: Option<String>,
 ) -> Result<Arc<MintSqliteDatabase>> {
     let sql_db_path = work_dir.join("cdk-mintd.sqlite");
+    tracing::info!("SQLite database path: {}", sql_db_path.display());
 
     #[cfg(not(feature = "sqlcipher"))]
     let db = MintSqliteDatabase::new(&sql_db_path).await?;
@@ -331,9 +346,11 @@ async fn setup_sqlite_database(
         // Get password from command line arguments for sqlcipher
         let password = _password
             .ok_or_else(|| anyhow!("Password required when sqlcipher feature is enabled"))?;
+        tracing::info!("Using SQLCipher encryption for SQLite database");
         MintSqliteDatabase::new((sql_db_path, password)).await?
     };
 
+    tracing::info!("SQLite database initialized successfully");
     Ok(Arc::new(db))
 }
 
@@ -357,16 +374,18 @@ async fn configure_mint_builder(
 
     // Extract configured payment methods from mint_builder
     let mint_info = mint_builder.current_mint_info();
-    let payment_methods: Vec<String> = mint_info
-        .nuts
-        .nut04
-        .methods
-        .iter()
-        .map(|m| m.method.to_string())
-        .collect();
+    let payment_methods = extract_supported_payment_methods(&mint_info);
+
+    // Enable batch minting by default for all supported methods
+    let mint_builder = mint_builder
+        .with_batch_minting(Some(DEFAULT_BATCH_MINT_SIZE), Some(payment_methods.clone()));
 
     // Configure caching with payment methods
     let mint_builder = configure_cache(settings, mint_builder, &payment_methods);
+
+    // Configure transaction limits
+    let mint_builder =
+        mint_builder.with_limits(settings.limits.max_inputs, settings.limits.max_outputs);
 
     Ok(mint_builder)
 }
@@ -437,6 +456,8 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
             builder = builder.with_tos_url(tos_url.to_string());
         }
     }
+
+    builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
 
     builder
 }
@@ -683,7 +704,6 @@ fn configure_cache(
     mint_builder.with_cache(Some(cache.ttl.as_secs()), cached_endpoints)
 }
 
-#[cfg(feature = "auth")]
 async fn setup_authentication(
     settings: &config::Settings,
     _work_dir: &Path,
@@ -888,7 +908,7 @@ async fn start_services_with_shutdown(
     mint_builder_info: cdk::nuts::MintInfo,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     routers: Vec<Router>,
-    #[cfg(feature = "auth")] auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
+    auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
@@ -1001,7 +1021,6 @@ async fn start_services_with_shutdown(
     tracing::info!("Payment methods: {:?}", custom_methods);
 
     // Configure auth for custom payment methods if auth is enabled
-    #[cfg(feature = "auth")]
     if let (Some(ref auth_settings), Some(auth_db)) = (&settings.auth, &auth_localstore) {
         if auth_settings.auth_enabled {
             use std::collections::HashMap;
@@ -1372,7 +1391,6 @@ pub async fn run_mintd_with_shutdown(
 
     let mint_builder =
         configure_mint_builder(settings, maybe_mint_builder, runtime, work_dir, Some(kv)).await?;
-    #[cfg(feature = "auth")]
     let (mint_builder, auth_localstore) =
         setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 
@@ -1391,7 +1409,6 @@ pub async fn run_mintd_with_shutdown(
         config_mint_info,
         shutdown_signal,
         routers,
-        #[cfg(feature = "auth")]
         auth_localstore,
     )
     .await
@@ -1399,6 +1416,8 @@ pub async fn run_mintd_with_shutdown(
 
 #[cfg(test)]
 mod tests {
+    use cdk::nuts::{CurrencyUnit, MintMethodSettings, PaymentMethod};
+
     use super::*;
 
     #[test]
@@ -1418,5 +1437,51 @@ mod tests {
             ..Default::default()
         };
         assert!(!auth_config.url.is_empty());
+    }
+
+    #[test]
+    fn test_extract_supported_payment_methods_unique_ordered() {
+        let mut mint_info = cdk::nuts::MintInfo::default();
+        mint_info.nuts.nut04.methods = vec![
+            MintMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Sat,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            },
+            MintMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt12),
+                unit: CurrencyUnit::Sat,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            },
+            MintMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Msat,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            },
+            MintMethodSettings {
+                method: PaymentMethod::Custom("paypal".to_string()),
+                unit: CurrencyUnit::Usd,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            },
+            MintMethodSettings {
+                method: PaymentMethod::Custom("paypal".to_string()),
+                unit: CurrencyUnit::Eur,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            },
+        ];
+
+        let methods = extract_supported_payment_methods(&mint_info);
+
+        assert_eq!(methods, vec!["bolt11", "bolt12", "paypal"]);
     }
 }

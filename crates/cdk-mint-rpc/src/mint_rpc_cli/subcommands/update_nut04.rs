@@ -52,14 +52,16 @@ pub async fn update_nut04(
         .map(|description| MintMethodOptions { description });
 
     let _response = client
-        .update_nut04(Request::new(UpdateNut04Request {
-            method: sub_command_args.method.clone(),
-            unit: sub_command_args.unit.clone(),
-            disabled: sub_command_args.disabled,
-            min_amount: sub_command_args.min_amount,
-            max_amount: sub_command_args.max_amount,
-            options,
-        }))
+        .update_nut04(crate::mint_rpc_cli::subcommands::with_version_header(
+            Request::new(UpdateNut04Request {
+                method: sub_command_args.method.clone(),
+                unit: sub_command_args.unit.clone(),
+                disabled: sub_command_args.disabled,
+                min_amount: sub_command_args.min_amount,
+                max_amount: sub_command_args.max_amount,
+                options,
+            }),
+        ))
         .await?;
 
     Ok(())

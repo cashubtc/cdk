@@ -105,10 +105,7 @@ impl ExchangeRateCache {
     /// Fetch fresh rate and update cache
     async fn fetch_fresh_rate(&self, currency: &CurrencyUnit) -> Result<f64, Error> {
         let url = "https://mempool.space/api/v1/prices";
-        let response = reqwest::get(url)
-            .await
-            .map_err(|_| Error::UnknownInvoiceAmount)?
-            .json::<MempoolPricesResponse>()
+        let response: MempoolPricesResponse = cdk_common::fetch(url)
             .await
             .map_err(|_| Error::UnknownInvoiceAmount)?;
 
@@ -288,8 +285,8 @@ impl SecondaryRepaymentQueue {
                     use bitcoin::hashes::{sha256, Hash};
                     let mut random_bytes = [0u8; 16];
                     rng.fill(&mut random_bytes);
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
+                    let timestamp = web_time::SystemTime::now()
+                        .duration_since(web_time::UNIX_EPOCH)
                         .expect("System time before UNIX_EPOCH")
                         .as_nanos() as u64;
 
@@ -653,7 +650,6 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn create_incoming_payment_request(
         &self,
-        unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let (payment_hash, request, amount, expiry) = match options {
@@ -668,18 +664,18 @@ impl MintPayment for FakeWallet {
                 let offer_builder = OfferBuilder::new(secret_key.public_key(&secp_ctx))
                     .description(description.clone());
 
-                let offer_builder = match amount {
-                    Some(amount) => {
+                let (offer_builder, final_amount) = match amount {
+                    Some(ref amt) => {
                         let amount_msat = convert_currency_amount(
-                            u64::from(amount),
-                            unit,
+                            amt.value(),
+                            amt.unit(),
                             &CurrencyUnit::Msat,
                             &self.exchange_rate_cache,
                         )
                         .await?;
-                        offer_builder.amount_msats(amount_msat.value())
+                        (offer_builder.amount_msats(amount_msat.value()), amt.clone())
                     }
-                    None => offer_builder,
+                    None => (offer_builder, Amount::new(0, CurrencyUnit::Sat)),
                 };
 
                 let offer = offer_builder.build().expect("Failed to build BOLT12 offer");
@@ -687,7 +683,7 @@ impl MintPayment for FakeWallet {
                 (
                     PaymentIdentifier::OfferId(offer.id().to_string()),
                     offer.to_string(),
-                    amount.unwrap_or(Amount::ZERO),
+                    final_amount,
                     expiry,
                 )
             }
@@ -697,8 +693,8 @@ impl MintPayment for FakeWallet {
                 let expiry = bolt11_options.unix_expiry;
 
                 let amount_msat = convert_currency_amount(
-                    u64::from(amount),
-                    unit,
+                    amount.value(),
+                    amount.unit(),
                     &CurrencyUnit::Msat,
                     &self.exchange_rate_cache,
                 )
@@ -726,17 +722,20 @@ impl MintPayment for FakeWallet {
         let payment_hash_clone = payment_hash.clone();
         let incoming_payment = self.incoming_payments.clone();
 
-        let final_amount = if amount == Amount::ZERO {
+        let final_amount = if amount.value() == 0 {
             // For any-amount invoices, generate a random amount for the initial payment
             use bitcoin::secp256k1::rand::rngs::OsRng;
             use bitcoin::secp256k1::rand::Rng;
             let mut rng = OsRng;
             let random_amount: u64 = rng.gen_range(1000..=10000);
-            // Use the same unit as the wallet for any-amount invoices
-            Amount::new(random_amount, unit.clone())
+            // Use the same unit as the invoice for any-amount invoices
+            Amount::new(random_amount, amount.unit().clone())
         } else {
-            Amount::new(u64::from(amount), unit.clone())
+            amount
         };
+
+        // Check if this is an any-amount invoice before moving final_amount
+        let is_any_amount = final_amount.value() == 0;
 
         // Schedule the immediate payment (original behavior maintained)
         tokio::spawn(async move {
@@ -761,7 +760,7 @@ impl MintPayment for FakeWallet {
         });
 
         // For any-amount invoices ONLY, also add to the secondary repayment queue
-        if amount == Amount::ZERO {
+        if is_any_amount {
             tracing::info!(
                 "Adding any-amount invoice to secondary repayment queue: {:?}",
                 payment_hash

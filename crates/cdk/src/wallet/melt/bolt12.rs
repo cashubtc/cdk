@@ -7,17 +7,17 @@ use std::str::FromStr;
 use cdk_common::amount::amount_for_offer;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::MeltQuote;
-use cdk_common::PaymentMethod;
+use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, PaymentMethod};
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
-use crate::nuts::{CurrencyUnit, MeltOptions, MeltQuoteBolt11Response, MeltQuoteBolt12Request};
+use crate::nuts::{CurrencyUnit, MeltOptions, MeltQuoteBolt12Request};
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Melt Quote for BOLT12 offer
     #[instrument(skip(self, request))]
-    pub async fn melt_bolt12_quote(
+    pub(crate) async fn melt_bolt12_quote(
         &self,
         request: String,
         options: Option<MeltOptions>,
@@ -28,7 +28,15 @@ impl Wallet {
             options,
         };
 
-        let quote_res = self.client.post_melt_bolt12_quote(quote_request).await?;
+        let quote_res = self
+            .client
+            .post_melt_quote(MeltQuoteRequest::Bolt12(quote_request))
+            .await?;
+
+        let quote_res = match quote_res {
+            MeltQuoteResponse::Bolt12(response) => response,
+            _ => return Err(Error::InvalidPaymentMethod),
+        };
 
         if self.unit == CurrencyUnit::Sat || self.unit == CurrencyUnit::Msat {
             let offer = Offer::from_str(&request).map_err(|_| Error::Bolt12parse)?;
@@ -61,40 +69,12 @@ impl Wallet {
             expiry: quote_res.expiry,
             payment_preimage: quote_res.payment_preimage,
             payment_method: PaymentMethod::Known(KnownMethod::Bolt12),
+            used_by_operation: None,
+            version: 0,
         };
 
         self.localstore.add_melt_quote(quote.clone()).await?;
 
         Ok(quote)
-    }
-
-    /// BOLT12 melt quote status
-    #[instrument(skip(self, quote_id))]
-    pub async fn melt_bolt12_quote_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let response = self.client.get_melt_bolt12_quote_status(quote_id).await?;
-
-        match self.localstore.get_melt_quote(quote_id).await? {
-            Some(quote) => {
-                let mut quote = quote;
-
-                if let Err(e) = self
-                    .add_transaction_for_pending_melt(&quote, &response)
-                    .await
-                {
-                    tracing::error!("Failed to add transaction for pending melt: {}", e);
-                }
-
-                quote.state = response.state;
-                self.localstore.add_melt_quote(quote).await?;
-            }
-            None => {
-                tracing::info!("Quote melt {} unknown", quote_id);
-            }
-        }
-
-        Ok(response)
     }
 }

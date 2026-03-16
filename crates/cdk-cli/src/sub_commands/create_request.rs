@@ -1,5 +1,6 @@
 use anyhow::Result;
-use cdk::wallet::{payment_request as pr, MultiMintWallet};
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::{payment_request as pr, WalletRepository};
 use clap::Args;
 
 #[derive(Args)]
@@ -36,16 +37,20 @@ pub struct CreateRequestSubCommand {
     /// If not provided, defaults to standard relays
     #[arg(long, action = clap::ArgAction::Append)]
     nostr_relay: Option<Vec<String>>,
+    /// Use bech32 encoding (CREQ-B)
+    #[arg(short, long)]
+    bech32: bool,
 }
 
 pub async fn create_request(
-    multi_mint_wallet: &MultiMintWallet,
+    wallet_repository: &WalletRepository,
     sub_command_args: &CreateRequestSubCommand,
+    unit: &CurrencyUnit,
 ) -> Result<()> {
     // Gather parameters for library call
     let params = pr::CreateRequestParams {
         amount: sub_command_args.amount,
-        unit: multi_mint_wallet.unit().to_string(),
+        unit: unit.to_string(),
         description: sub_command_args.description.clone(),
         pubkeys: sub_command_args.pubkey.clone(),
         num_sigs: sub_command_args.num_sigs,
@@ -56,15 +61,19 @@ pub async fn create_request(
         nostr_relays: sub_command_args.nostr_relay.clone(),
     };
 
-    let (req, nostr_wait) = multi_mint_wallet.create_request(params).await?;
+    let (req, nostr_wait) = wallet_repository.create_request(params).await?;
 
     // Print the request to stdout
-    println!("{}", req);
+    if sub_command_args.bech32 {
+        println!("{}", req.to_bech32_string()?);
+    } else {
+        println!("{}", req);
+    }
 
     // If we set up Nostr transport, optionally wait for payment and receive it
     if let Some(info) = nostr_wait {
         println!("Listening for payment via Nostr...");
-        let amount = multi_mint_wallet.wait_for_nostr_payment(info).await?;
+        let amount = wallet_repository.wait_for_nostr_payment(info).await?;
         println!("Received {}", amount);
     }
 

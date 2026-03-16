@@ -15,12 +15,14 @@ pub const LDK_NODE_BITCOIND_RPC_PORT_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_BITCOIN
 pub const LDK_NODE_BITCOIND_RPC_USER_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_BITCOIND_RPC_USER";
 pub const LDK_NODE_BITCOIND_RPC_PASSWORD_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_BITCOIND_RPC_PASSWORD";
 pub const LDK_NODE_STORAGE_DIR_PATH_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_STORAGE_DIR_PATH";
+pub const LDK_NODE_LOG_DIR_PATH_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_LOG_DIR_PATH";
 pub const LDK_NODE_LDK_NODE_HOST_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_LDK_NODE_HOST";
 pub const LDK_NODE_LDK_NODE_PORT_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_LDK_NODE_PORT";
 pub const LDK_NODE_GOSSIP_SOURCE_TYPE_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE";
 pub const LDK_NODE_RGS_URL_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_RGS_URL";
 pub const LDK_NODE_WEBSERVER_HOST_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_WEBSERVER_HOST";
 pub const LDK_NODE_WEBSERVER_PORT_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_WEBSERVER_PORT";
+pub const LDK_NODE_MNEMONIC_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_MNEMONIC";
 
 impl LdkNode {
     pub fn from_env(mut self) -> Self {
@@ -70,6 +72,10 @@ impl LdkNode {
             self.storage_dir_path = Some(storage_dir_path);
         }
 
+        if let Ok(log_dir_path) = env::var(LDK_NODE_LOG_DIR_PATH_ENV_VAR) {
+            self.log_dir_path = Some(log_dir_path);
+        }
+
         if let Ok(ldk_node_host) = env::var(LDK_NODE_LDK_NODE_HOST_ENV_VAR) {
             self.ldk_node_host = Some(ldk_node_host);
         }
@@ -96,6 +102,10 @@ impl LdkNode {
             if let Ok(webserver_port) = webserver_port.parse::<u16>() {
                 self.webserver_port = Some(webserver_port);
             }
+        }
+
+        if let Ok(ldk_node_mnemonic) = env::var(LDK_NODE_MNEMONIC_ENV_VAR) {
+            self.ldk_node_mnemonic = Some(ldk_node_mnemonic);
         }
 
         self

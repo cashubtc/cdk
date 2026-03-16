@@ -8,13 +8,22 @@
 
 pub mod task;
 
+/// Protocol version for gRPC Mint RPC communication
+pub const MINT_RPC_PROTOCOL_VERSION: &str = "1.0.0";
+
+/// Protocol version for gRPC Payment Processor communication
+pub const PAYMENT_PROCESSOR_PROTOCOL_VERSION: &str = "1.0.0";
+
+#[cfg(feature = "grpc")]
+pub mod grpc;
+
 pub mod common;
 pub mod database;
 pub mod error;
-#[cfg(feature = "mint")]
 pub mod melt;
 #[cfg(feature = "mint")]
 pub mod mint;
+pub mod mint_quote;
 #[cfg(feature = "mint")]
 pub mod payment;
 pub mod pub_sub;
@@ -33,6 +42,18 @@ pub use cashu::nuts::{self, *};
 #[cfg(feature = "mint")]
 pub use cashu::quote_id::{self, *};
 pub use cashu::{dhke, ensure_cdk, mint_url, secret, util, SECP256K1};
+/// Re-export cdk-http-client WebSocket client
+#[cfg(feature = "http")]
+pub use cdk_http_client::ws as ws_client;
+/// Re-export cdk-http-client types
+#[cfg(feature = "http")]
+pub use cdk_http_client::{
+    fetch, HttpClient, HttpClientBuilder, HttpError, RawResponse, RequestBuilder, Response,
+};
+// Re-export common types
+pub use common::FinalizedMelt;
 pub use error::Error;
+pub use melt::{MeltQuoteRequest, MeltQuoteResponse};
+pub use mint_quote::{MintQuoteRequest, MintQuoteResponse};
 /// Re-export parking_lot for reuse
 pub use parking_lot;

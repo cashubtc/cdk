@@ -5,17 +5,17 @@
 //! is returned so callers can handle alternative delivery mechanisms explicitly.
 
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::Result;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use cdk_common::{Amount, PaymentRequest, PaymentRequestPayload, TransportType};
+use cdk_common::{Amount, HttpClient, PaymentRequest, PaymentRequestPayload, TransportType};
 #[cfg(feature = "nostr")]
 use nostr_sdk::nips::nip19::Nip19Profile;
 #[cfg(feature = "nostr")]
 use nostr_sdk::prelude::*;
 #[cfg(feature = "nostr")]
 use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32};
-use reqwest::Client;
 
 use crate::error::Error;
 use crate::mint_url::MintUrl;
@@ -23,8 +23,8 @@ use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
 use crate::nuts::nut18::Nut10SecretRequest;
 use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
 #[cfg(feature = "nostr")]
-use crate::wallet::MultiMintReceiveOptions;
-use crate::wallet::{MultiMintWallet, SendOptions};
+use crate::wallet::ReceiveOptions;
+use crate::wallet::{SendOptions, WalletRepository};
 use crate::Wallet;
 
 impl Wallet {
@@ -164,31 +164,23 @@ impl Wallet {
                 }
 
                 TransportType::HttpPost => {
-                    let client = Client::new();
+                    let client = HttpClient::new();
 
                     let res = client
-                        .post(transport.target.clone())
+                        .post(&transport.target)
                         .json(&payload)
                         .send()
                         .await
                         .map_err(|e| Error::HttpError(None, e.to_string()))?;
 
                     let status = res.status();
-                    if status.is_success() {
+                    if res.is_success() {
                         println!("Successfully posted payment");
                         Ok(())
                     } else {
                         let body = res.text().await.unwrap_or_default();
-                        Err(Error::HttpError(Some(status.as_u16()), body))
+                        Err(Error::HttpError(Some(status), body))
                     }
-                }
-                TransportType::InBand => {
-                    // In-band transport means tokens should be returned directly
-                    // in the payment request response, not sent via this method.
-                    // The caller should handle the proofs directly.
-                    Err(Error::Custom(
-                        "In-band transport: tokens should be returned directly, not sent via pay_payment_request".to_string(),
-                    ))
                 }
             }
         } else {
@@ -245,8 +237,8 @@ pub struct NostrWaitInfo {
     pub pubkey: nostr_sdk::PublicKey,
 }
 
-impl MultiMintWallet {
-    /// Pay a NUT-18 PaymentRequest using the MultiMintWallet.
+impl WalletRepository {
+    /// Pay a NUT-18 PaymentRequest using the WalletRepository.
     ///
     /// This method handles paying a payment request by selecting an appropriate mint:
     /// - If `mint_url` is provided, it verifies the payment request accepts that mint
@@ -282,39 +274,39 @@ impl MultiMintWallet {
             },
         };
 
-        // Get the list of mints accepted by the payment request (None means any mint is accepted)
-        let accepted_mints = payment_request.mints.as_ref();
+        // Get the list of mints accepted by the payment request (empty means any mint is accepted)
+        let accepted_mints = &payment_request.mints;
+
+        // Get the unit from the payment request, defaulting to Sat
+        let unit = payment_request.unit.clone().unwrap_or(CurrencyUnit::Sat);
 
         // Select the wallet to use for payment
         let selected_wallet = if let Some(specified_mint) = &mint_url {
             // User specified a mint - verify it's accepted by the payment request
-            if let Some(accepted) = accepted_mints {
-                if !accepted.contains(specified_mint) {
-                    return Err(Error::Custom(format!(
-                        "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
-                        specified_mint, accepted
-                    )));
-                }
+            if !accepted_mints.is_empty() && !accepted_mints.contains(specified_mint) {
+                return Err(Error::Custom(format!(
+                    "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
+                    specified_mint, accepted_mints
+                )));
             }
 
-            // Get the wallet for the specified mint
-            self.get_wallet(specified_mint)
-                .await
-                .ok_or_else(|| Error::UnknownMint {
-                    mint_url: specified_mint.to_string(),
-                })?
+            // Get the wallet for the specified mint and unit
+            self.get_wallet(specified_mint, &unit).await?
         } else {
             // No mint specified - find the best matching mint with highest balance
             let balances = self.get_balances().await?;
-            let mut best_wallet: Option<Wallet> = None;
+            let mut best_wallet: Option<Arc<Wallet>> = None;
             let mut best_balance = Amount::ZERO;
 
-            for (mint_url, balance) in balances.iter() {
+            for (wallet_key, balance) in balances.iter() {
+                // Only consider wallets with matching unit
+                if wallet_key.unit != unit {
+                    continue;
+                }
+
                 // Check if this mint is accepted by the payment request
-                let is_accepted = match accepted_mints {
-                    Some(accepted) => accepted.contains(mint_url),
-                    None => true, // No mints specified means any mint is accepted
-                };
+                let is_accepted =
+                    accepted_mints.is_empty() || accepted_mints.contains(&wallet_key.mint_url);
 
                 if !is_accepted {
                     continue;
@@ -322,14 +314,16 @@ impl MultiMintWallet {
 
                 // Check balance meets requirements and is best so far
                 if *balance >= amount && *balance > best_balance {
-                    if let Some(wallet) = self.get_wallet(mint_url).await {
+                    if let Ok(wallet) = self.get_wallet(&wallet_key.mint_url, &unit).await {
                         best_balance = *balance;
-                        best_wallet = Some(wallet);
+                        best_wallet = Some(Arc::new(wallet));
                     }
                 }
             }
 
-            best_wallet.ok_or(Error::InsufficientFunds)?
+            best_wallet
+                .map(|w| (*w).clone())
+                .ok_or(Error::InsufficientFunds)?
         };
 
         // Use the selected wallet to pay the request
@@ -471,12 +465,15 @@ impl MultiMintWallet {
         params: CreateRequestParams,
     ) -> Result<(PaymentRequest, Option<NostrWaitInfo>), Error> {
         // Collect available mints for the selected unit
-        let mints = self
+        // Filter by the requested unit and extract unique mint URLs
+        let requested_unit = CurrencyUnit::from_str(&params.unit)?;
+        let mints: Vec<MintUrl> = self
             .get_balances()
             .await?
             .keys()
-            .cloned()
-            .collect::<Vec<_>>();
+            .filter(|key| key.unit == requested_unit)
+            .map(|key| key.mint_url.clone())
+            .collect();
 
         // Transports
         let transport_type = params.transport.to_lowercase();
@@ -508,7 +505,7 @@ impl MultiMintWallet {
                         target: nprofile.to_bech32().map_err(|e| {
                             Error::Custom(format!("Couldn't convert nprofile to bech32: {e}"))
                         })?,
-                        tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
+                        tags: vec![vec!["n".to_string(), "17".to_string()]],
                     };
 
                     (
@@ -525,7 +522,7 @@ impl MultiMintWallet {
                         let http_transport = Transport {
                             _type: TransportType::HttpPost,
                             target: url.clone(),
-                            tags: None,
+                            tags: vec![],
                         };
                         (vec![http_transport], None)
                     } else {
@@ -546,7 +543,7 @@ impl MultiMintWallet {
             amount: params.amount.map(Amount::from),
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
-            mints: Some(mints),
+            mints,
             description: params.description,
             transports,
             nut10,
@@ -573,12 +570,15 @@ impl MultiMintWallet {
         params: CreateRequestParams,
     ) -> Result<PaymentRequest, Error> {
         // Collect available mints for the selected unit
-        let mints = self
+        // Filter by the requested unit and extract unique mint URLs
+        let requested_unit = CurrencyUnit::from_str(&params.unit)?;
+        let mints: Vec<MintUrl> = self
             .get_balances()
             .await?
             .keys()
-            .cloned()
-            .collect::<Vec<_>>();
+            .filter(|key| key.unit == requested_unit)
+            .map(|key| key.mint_url.clone())
+            .collect();
 
         // Transports
         let transport_type = params.transport.to_lowercase();
@@ -593,7 +593,7 @@ impl MultiMintWallet {
                     let http_transport = Transport {
                         _type: TransportType::HttpPost,
                         target: url.clone(),
-                        tags: None,
+                        tags: vec![],
                     };
                     vec![http_transport]
                 } else {
@@ -613,7 +613,7 @@ impl MultiMintWallet {
             amount: params.amount.map(Amount::from),
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
-            mints: Some(mints),
+            mints,
             description: params.description,
             transports,
             nut10,
@@ -645,19 +645,28 @@ impl MultiMintWallet {
             match item {
                 Ok(payload) => {
                     let token = crate::nuts::Token::new(
-                        payload.mint,
+                        payload.mint.clone(),
                         payload.proofs,
                         payload.memo,
-                        payload.unit,
+                        payload.unit.clone(),
                     );
 
-                    let amount = self
-                        .receive(&token.to_string(), MultiMintReceiveOptions::default())
+                    // Get or create wallet for the token's mint
+                    let unit = payload.unit.clone();
+                    let wallet = match self.get_wallet(&payload.mint, &unit).await {
+                        Ok(w) => w,
+                        Err(_) => self.create_wallet(payload.mint.clone(), unit, None).await?,
+                    };
+
+                    // Receive using the individual wallet
+                    let token_str = token.to_string();
+                    let received = wallet
+                        .receive(&token_str, ReceiveOptions::default())
                         .await?;
 
                     // Stop after first successful receipt
                     cancel.cancel();
-                    return Ok(amount);
+                    return Ok(received);
                 }
                 Err(_) => {
                     // Keep listening on parse errors; if you prefer fail-fast, return the error
@@ -711,17 +720,28 @@ impl MultiMintWallet {
                         match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {
                             Ok(payload) => {
                                 let token = crate::nuts::Token::new(
-                                    payload.mint,
+                                    payload.mint.clone(),
                                     payload.proofs,
                                     payload.memo,
-                                    payload.unit,
+                                    payload.unit.clone(),
                                 );
 
-                                let amount = self
-                                    .receive(&token.to_string(), MultiMintReceiveOptions::default())
+                                // Get or create wallet for the token's mint
+                                let unit = payload.unit.clone();
+                                let wallet = match self.get_wallet(&payload.mint, &unit).await {
+                                    Ok(w) => w,
+                                    Err(_) => {
+                                        self.create_wallet(payload.mint.clone(), unit, None).await?
+                                    }
+                                };
+
+                                // Receive using the individual wallet
+                                let token_str = token.to_string();
+                                let received = wallet
+                                    .receive(&token_str, ReceiveOptions::default())
                                     .await?;
 
-                                return Ok(amount);
+                                return Ok(received);
                             }
                             Err(_) => {
                                 // Ignore malformed payloads and continue listening

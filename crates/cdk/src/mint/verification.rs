@@ -4,7 +4,12 @@ use cdk_common::{Amount, BlindedMessage, CurrencyUnit, Id, Proofs, ProofsMethods
 use tracing::instrument;
 
 use super::{Error, Mint};
-use crate::cdk_database;
+
+/// Maximum allowed length in bytes for proof secret or witness content
+const MAX_PROOF_CONTENT_LEN: usize = 1024;
+
+/// Maximum allowed length in bytes for request fields (description, extra)
+pub(crate) const MAX_REQUEST_FIELD_LEN: usize = 1024;
 
 /// Verification result with typed amount
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -135,49 +140,33 @@ impl Mint {
         keyset_units.into_iter().next().ok_or(Error::Internal)
     }
 
-    /// Verifies that the outputs have not already been signed
-    #[instrument(skip_all)]
-    pub async fn check_output_already_signed(
-        &self,
-        tx: &mut Box<dyn cdk_database::MintTransaction<cdk_database::Error> + Send + Sync>,
-        outputs: &[BlindedMessage],
-    ) -> Result<(), Error> {
-        let blinded_messages: Vec<PublicKey> = outputs.iter().map(|o| o.blinded_secret).collect();
-
-        if tx
-            .get_blind_signatures(&blinded_messages)
-            .await?
-            .iter()
-            .flatten()
-            .next()
-            .is_some()
-        {
-            tracing::debug!("Transaction attempted where output is already signed.");
-
-            return Err(Error::BlindedMessageAlreadySigned);
-        }
-
-        Ok(())
-    }
-
     /// Verifies outputs
     ///
     /// Checks outputs are unique, of the same unit and not signed before.
     /// Returns an error if outputs are empty - callers should guard against
     /// empty outputs before calling this function.
     #[instrument(skip_all)]
-    pub async fn verify_outputs(
-        &self,
-        tx: &mut Box<dyn cdk_database::MintTransaction<cdk_database::Error> + Send + Sync>,
-        outputs: &[BlindedMessage],
-    ) -> Result<Verification, Error> {
+    pub fn verify_outputs(&self, outputs: &[BlindedMessage]) -> Result<Verification, Error> {
         if outputs.is_empty() {
             tracing::debug!("verify_outputs called with empty outputs");
             return Err(Error::TransactionUnbalanced(0, 0, 0));
         }
 
+        // Check max outputs limit
+        let outputs_count = outputs.len();
+        if outputs_count > self.max_outputs {
+            tracing::warn!(
+                "Mint request exceeds max outputs limit: {} > {}",
+                outputs_count,
+                self.max_outputs
+            );
+            return Err(Error::MaxOutputsExceeded {
+                actual: outputs_count,
+                max: self.max_outputs,
+            });
+        }
+
         Mint::check_outputs_unique(outputs)?;
-        self.check_output_already_signed(tx, outputs).await?;
 
         let unit = self.verify_outputs_keyset(outputs)?;
 
@@ -192,8 +181,59 @@ impl Mint {
     /// **NOTE: This does not check if inputs have been spent
     #[instrument(skip_all)]
     pub async fn verify_inputs(&self, inputs: &Proofs) -> Result<Verification, Error> {
+        // Check max inputs limit
+        let inputs_count = inputs.len();
+        if inputs_count > self.max_inputs {
+            tracing::warn!(
+                "Melt request exceeds max inputs limit: {} > {}",
+                inputs_count,
+                self.max_inputs
+            );
+            return Err(Error::MaxInputsExceeded {
+                actual: inputs_count,
+                max: self.max_inputs,
+            });
+        }
+
+        // Check proof content lengths (secret and witness) are within limits
+        for proof in inputs {
+            let secret_len = proof.secret.len();
+            if secret_len > MAX_PROOF_CONTENT_LEN {
+                tracing::warn!(
+                    "Proof secret exceeds max content length: {} > {}",
+                    secret_len,
+                    MAX_PROOF_CONTENT_LEN
+                );
+                return Err(Error::ProofContentTooLarge {
+                    actual: secret_len,
+                    max: MAX_PROOF_CONTENT_LEN,
+                });
+            }
+
+            if let Some(witness) = &proof.witness {
+                let witness_str = serde_json::to_string(witness)?;
+                let witness_len = witness_str.len();
+                if witness_len > MAX_PROOF_CONTENT_LEN {
+                    tracing::warn!(
+                        "Proof witness exceeds max content length: {} > {}",
+                        witness_len,
+                        MAX_PROOF_CONTENT_LEN
+                    );
+                    return Err(Error::ProofContentTooLarge {
+                        actual: witness_len,
+                        max: MAX_PROOF_CONTENT_LEN,
+                    });
+                }
+            }
+        }
+
         Mint::check_inputs_unique(inputs)?;
         let unit = self.verify_inputs_keyset(inputs).await?;
+
+        if unit == CurrencyUnit::Auth {
+            return Err(Error::UnsupportedUnit);
+        }
+
         let amount = inputs.total_amount()?.with_unit(unit);
 
         self.verify_proofs(inputs.clone()).await?;

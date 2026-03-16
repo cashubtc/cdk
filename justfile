@@ -1,3 +1,5 @@
+set positional-arguments
+
 alias b := build
 alias c := check
 alias t := test
@@ -13,16 +15,19 @@ new-migration target name:
         echo "Error: target must be either 'mint' or 'wallet'"
         exit 1
     fi
-    
+
     timestamp=$(date +%Y%m%d%H%M%S)
     migration_path="./crates/cdk-sql-common/src/{{target}}/migrations/${timestamp}_{{name}}.sql"
-    
+
     # Create the file
     mkdir -p "$(dirname "$migration_path")"
     touch "$migration_path"
     echo "Created new migration: $migration_path"
 
-final-check: typos format clippy test
+
+final-check: lint clippy test
+
+quick-check: lint clippy test-units
 
 # run `cargo build` on everything
 build *ARGS="--workspace --all-targets":
@@ -32,6 +37,26 @@ build *ARGS="--workspace --all-targets":
     cd {{invocation_directory()}}
   fi
   cargo build {{ARGS}}
+
+# Build a statically-linked binary by profile name (requires nix)
+# Profiles: cdk-mintd-static, cdk-mintd-ldk-static, cdk-cli-static
+build-static profile:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  nix build .#{{profile}}
+  mkdir -p ./static-bin
+  cp -f ./result/bin/* ./static-bin/
+  echo "Static binaries in ./static-bin/:"
+  ls -la ./static-bin/
+
+# Build all statically-linked binaries and generate checksums (requires nix)
+build-static-all: (build-static "cdk-mintd-static") (build-static "cdk-mintd-ldk-static") (build-static "cdk-cli-static")
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd ./static-bin
+  sha256sum -- *-x86_64 > SHA256SUMS
+  echo "Checksums:"
+  cat SHA256SUMS
 
 # run `cargo check` on everything
 check *ARGS="--workspace --all-targets":
@@ -62,9 +87,16 @@ test:
   cargo test --lib --workspace --exclude cdk-postgres
 
   # Run pure integration tests
-  cargo test -p cdk-integration-tests --test mint 
+  cargo test -p cdk-integration-tests --test mint
 
-  
+test-units:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
+
 # run doc tests
 test-pure db="memory":
   #!/usr/bin/env bash
@@ -75,18 +107,13 @@ test-pure db="memory":
 
   # Run pure integration tests (cargo test will only build what's needed for the test)
   CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
-  
+
   # Run swap flow tests (detailed testing of swap operation)
   CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test test_swap_flow -- --test-threads 1
 
-test-all db="memory":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    just test {{db}}
-    bash ./misc/itests.sh "{{db}}"
-    bash ./misc/fake_itests.sh "{{db}}" external_signatory
-    bash ./misc/fake_itests.sh "{{db}}"
-    
+  # Run wallet saga tests
+  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test wallet_saga -- --test-threads 1
+
 # Mutation Testing Commands
 
 # Run mutation tests on a specific crate
@@ -237,7 +264,7 @@ test-nutshell:
     docker rm nutshell 2>/dev/null || true
     unset CDK_ITESTS_DIR
   }
-  
+
   # Trap to ensure cleanup happens on exit (success or failure)
   trap cleanup EXIT
 
@@ -246,7 +273,7 @@ test-nutshell:
   docker rm nutshell 2>/dev/null || true
 
   docker run -d --network=host --name nutshell -e MINT_LIGHTNING_BACKEND=FakeWallet -e MINT_LISTEN_HOST=0.0.0.0 -e MINT_LISTEN_PORT=3338 -e MINT_PRIVATE_KEY=TEST_PRIVATE_KEY -e MINT_INPUT_FEE_PPK=100  cashubtc/nutshell:latest poetry run mint
-  
+
   export CDK_ITESTS_DIR=$(mktemp -d)
 
   # Wait for the Nutshell service to be ready
@@ -272,39 +299,39 @@ test-nutshell:
     sleep 1
   done
   echo "Nutshell is ready!"
-  
+
   # Set environment variables and run tests
   export CDK_TEST_MINT_URL=http://127.0.0.1:3338
   export LN_BACKEND=FAKEWALLET
-  
+
   # Track test results
   test_exit_code=0
-  
+
   # Run first test and capture exit code
   echo "Running happy_path_mint_wallet test..."
   if ! cargo test -p cdk-integration-tests --test happy_path_mint_wallet; then
     echo "ERROR: happy_path_mint_wallet test failed"
     test_exit_code=1
   fi
-  
+
   # Run second test and capture exit code
   echo "Running test_fees test..."
   if ! cargo test -p cdk-integration-tests --test test_fees; then
     echo "ERROR: test_fees test failed"
     test_exit_code=1
   fi
-  
+
   unset CDK_TEST_MINT_URL
   unset LN_BACKEND
-  
+
   # Exit with error code if any test failed
   if [ $test_exit_code -ne 0 ]; then
     echo "One or more tests failed"
     exit $test_exit_code
   fi
-  
+
   echo "All tests passed successfully"
-    
+
 
 # run `cargo clippy` on everything
 clippy *ARGS="--workspace --all-targets":
@@ -339,7 +366,7 @@ lint:
 
 # Goose AI Recipe Commands
 
-# Update changelog from staged changes using Goose AI  
+# Update changelog from staged changes using Goose AI
 goose-git-msg:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -396,31 +423,31 @@ regtest db="sqlite":
 ln-cln1 *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  bash ./misc/regtest_helper.sh ln-cln1 {{ARGS}}
+  bash ./misc/regtest_helper.sh ln-cln1 "$@"
 
-# Get CLN node 2 info  
+# Get CLN node 2 info
 ln-cln2 *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  bash ./misc/regtest_helper.sh ln-cln2 {{ARGS}}
+  bash ./misc/regtest_helper.sh ln-cln2 "$@"
 
 # Get LND node 1 info
 ln-lnd1 *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  bash ./misc/regtest_helper.sh ln-lnd1 {{ARGS}}
+  bash ./misc/regtest_helper.sh ln-lnd1 "$@"
 
 # Get LND node 2 info
 ln-lnd2 *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  bash ./misc/regtest_helper.sh ln-lnd2 {{ARGS}}
+  bash ./misc/regtest_helper.sh ln-lnd2 "$@"
 
 # Bitcoin regtest commands
 btc *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
-  bash ./misc/regtest_helper.sh btc {{ARGS}}
+  bash ./misc/regtest_helper.sh btc "$@"
 
 # Mine blocks in regtest
 btc-mine blocks="10":
@@ -493,7 +520,9 @@ release m="":
   args=(
     "-p cashu"
     "-p cdk-prometheus"
+    "-p cdk-http-client"
     "-p cdk-common"
+    "-p cdk-npubcash"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"
@@ -522,10 +551,14 @@ release m="":
 
   # Extract version from the cdk-ffi crate
   VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "cdk-ffi") | .version')
-  
+
   # Trigger Swift package release after Rust crates are published
   echo "📦 Triggering Swift package release for version $VERSION..."
   just ffi-release-swift $VERSION
+
+  # Trigger Kotlin package release after Rust crates are published
+  echo "📦 Triggering Kotlin package release for version $VERSION..."
+  just ffi-release-kotlin $VERSION
 
 check-docs:
   #!/usr/bin/env bash
@@ -533,25 +566,26 @@ check-docs:
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-http-client"
+    "-p cdk-npubcash"
     "-p cdk-sql-common"
-    "-p cdk"
-    "-p cdk-redb"
     "-p cdk-sqlite"
     "-p cdk-postgres"
+    "-p cdk-redb"
+    "-p cdk-signatory"
+    "-p cdk-fake-wallet"
+    "-p cdk"
+    "-p cdk-ffi"
     "-p cdk-axum"
+    "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
     "-p cdk-ldk-node"
-    "-p cdk-fake-wallet"
-    "-p cdk-mint-rpc"
-    "-p cdk-npubcash"
     "-p cdk-prometheus"
     "-p cdk-payment-processor"
-    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
-    "-p cdk-ffi"
   )
 
   for arg in "${args[@]}"; do
@@ -567,25 +601,26 @@ docs-strict:
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-http-client"
+    "-p cdk-npubcash"
     "-p cdk-sql-common"
-    "-p cdk"
-    "-p cdk-redb"
     "-p cdk-sqlite"
     "-p cdk-postgres"
+    "-p cdk-redb"
+    "-p cdk-signatory"
+    "-p cdk-fake-wallet"
+    "-p cdk"
+    "-p cdk-ffi"
     "-p cdk-axum"
+    "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
     "-p cdk-ldk-node"
-    "-p cdk-fake-wallet"
-    "-p cdk-mint-rpc"
-    "-p cdk-npubcash"
     "-p cdk-prometheus"
     "-p cdk-payment-processor"
-    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
-    "-p cdk-ffi"
   )
 
   for arg in "${args[@]}"; do
@@ -616,7 +651,7 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
   #!/usr/bin/env bash
   set -euo pipefail
   LANG="{{LANGUAGE}}"
-  
+
   # Validate language
   case "$LANG" in
     python|swift|kotlin)
@@ -627,14 +662,14 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
       exit 1
       ;;
   esac
-  
+
   # Set emoji and build type
   case "$LANG" in
     python) EMOJI="🐍" ;;
     swift) EMOJI="🍎" ;;
     kotlin) EMOJI="🎯" ;;
   esac
-  
+
   # Determine build type and library path
   if [[ "{{ARGS}}" == *"--release"* ]] || [[ "{{ARGS}}" == "" ]]; then
     BUILD_TYPE="release"
@@ -642,21 +677,21 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
     BUILD_TYPE="debug"
     cargo build --package cdk-ffi --features postgres
   fi
-  
+
   LIB_EXT=$(just _ffi-lib-ext)
-  
+
   echo "$EMOJI Generating $LANG bindings..."
   mkdir -p target/bindings/$LANG
-  
+
   cargo run --bin uniffi-bindgen generate \
     --library target/$BUILD_TYPE/libcdk_ffi.$LIB_EXT \
     --language $LANG \
     --out-dir target/bindings/$LANG
-  
+
   echo "✅ $LANG bindings generated in target/bindings/$LANG/"
 
 # Generate Python bindings (shorthand)
-ffi-generate-python *ARGS="--release": 
+ffi-generate-python *ARGS="--release":
   just ffi-generate python {{ARGS}}
 
 # Generate Swift bindings (shorthand)
@@ -688,15 +723,15 @@ ffi-test: ffi-generate-python
 ffi-dev-python:
   #!/usr/bin/env bash
   set -euo pipefail
-  
+
   # Generate Python bindings first
   just ffi-generate python --debug
-  
+
   # Copy library to Python bindings directory
   LIB_EXT=$(just _ffi-lib-ext)
   echo "📦 Copying library to Python bindings directory..."
   cp target/debug/libcdk_ffi.$LIB_EXT target/bindings/python/
-  
+
   # Launch Python REPL with CDK FFI loaded
   cd target/bindings/python
   echo "🐍 Launching Python REPL with CDK FFI library loaded..."
@@ -709,13 +744,13 @@ ffi-test-bindings LANGUAGE: (ffi-generate LANGUAGE "--debug")
   set -euo pipefail
   LANG="{{LANGUAGE}}"
   LIB_EXT=$(just _ffi-lib-ext)
-  
+
   echo "📦 Copying library to $LANG bindings directory..."
   cp target/debug/libcdk_ffi.$LIB_EXT target/bindings/$LANG/
-  
+
   cd target/bindings/$LANG
   echo "🧪 Testing $LANG bindings..."
-  
+
   case "$LANG" in
     python)
       python3 -c "import cdk_ffi; print('✅ Python bindings work!')"
@@ -733,16 +768,34 @@ ffi-test-python:
 ffi-release-swift VERSION:
   #!/usr/bin/env bash
   set -euo pipefail
-  
+
   echo "🚀 Triggering Publish Swift Package workflow..."
   echo "   Version: {{VERSION}}"
   echo "   CDK Ref: v{{VERSION}}"
-  
+
   # Trigger the workflow using GitHub CLI
   gh workflow run "Publish Swift Package" \
     --repo cashubtc/cdk-swift \
     --field version="{{VERSION}}" \
     --field cdk_repo="cashubtc/cdk" \
     --field cdk_ref="v{{VERSION}}"
-  
-  echo "✅ Workflow triggered successfully!"
+
+  echo "✅ Swift workflow triggered successfully!"
+
+# Trigger Kotlin Package release workflow
+ffi-release-kotlin VERSION:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  echo "🚀 Triggering Publish Kotlin Package workflow..."
+  echo "   Version: {{VERSION}}"
+  echo "   CDK Ref: v{{VERSION}}"
+
+  # Trigger the workflow using GitHub CLI
+  gh workflow run "Publish Kotlin Bindings" \
+    --repo cashubtc/cdk-kotlin \
+    --field version="{{VERSION}}" \
+    --field cdk_repo="cashubtc/cdk" \
+    --field cdk_ref="v{{VERSION}}"
+
+  echo "✅ Kotlin workflow triggered successfully!"

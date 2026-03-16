@@ -14,8 +14,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 use crate::nuts::{Proofs, SpendingConditions};
-use crate::wallet::multi_mint_wallet::MultiMintWallet;
 use crate::wallet::types::MintQuote;
+use crate::wallet::wallet_repository::WalletRepository;
 use crate::wallet::Wallet;
 
 /// Stream that continuously polls NpubCash and yields proofs as payments arrive
@@ -28,7 +28,7 @@ pub struct NpubCashProofStream {
 impl NpubCashProofStream {
     /// Create a new NpubCash proof stream
     pub fn new(
-        wallet: MultiMintWallet,
+        wallet: WalletRepository,
         poll_interval: Duration,
         split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
@@ -55,13 +55,15 @@ impl NpubCashProofStream {
                                         tracing::info!("Minting NpubCash quote {}...", quote_id);
 
                                         let result = async {
-                                            // Get wallet for this quote's mint
-                                            let wallet_instance = wallet.get_wallet(&mint_url).await.ok_or(Error::UnknownMint {
-                                                mint_url: mint_url.to_string(),
-                                            })?;
+                                            // Get wallet for this quote's mint and unit
+                                            let wallet_instance = wallet.get_wallet(&mint_url, &quote.unit).await?;
 
                                             let proofs = wallet_instance
-                                                .mint(&quote_id, split_target.clone(), spending_conditions.clone())
+                                                .mint(
+                                                    &quote_id,
+                                                    split_target.clone(),
+                                                    spending_conditions.clone(),
+                                                )
                                                 .await?;
 
                                             Ok((quote.clone(), proofs))
@@ -147,7 +149,11 @@ impl WalletNpubCashProofStream {
 
                                         let result = async {
                                             let proofs = wallet
-                                                .mint(&quote_id, split_target.clone(), spending_conditions.clone())
+                                                .mint(
+                                                    &quote_id,
+                                                    split_target.clone(),
+                                                    spending_conditions.clone(),
+                                                )
                                                 .await?;
                                             Ok((quote.clone(), proofs))
                                         }.await;

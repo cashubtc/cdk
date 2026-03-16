@@ -15,6 +15,7 @@ use cdk::nuts::{
 use cdk::wallet::{AuthHttpClient, AuthMintConnector, HttpClient, MintConnector, WalletBuilder};
 use cdk::{Error, OidcClient};
 use cdk_fake_wallet::create_fake_invoice;
+use cdk_http_client::HttpClient as CommonHttpClient;
 use cdk_integration_tests::fund_wallet;
 use cdk_sqlite::wallet::memory;
 
@@ -64,7 +65,10 @@ async fn test_quote_status_without_auth() {
     // Test mint quote status
     {
         let quote_res = client
-            .get_mint_quote_status("123e4567-e89b-12d3-a456-426614174000")
+            .get_mint_quote_status(
+                PaymentMethod::BOLT11,
+                "123e4567-e89b-12d3-a456-426614174000",
+            )
             .await;
 
         assert!(
@@ -77,7 +81,10 @@ async fn test_quote_status_without_auth() {
     // Test melt quote status
     {
         let quote_res = client
-            .get_melt_quote_status("123e4567-e89b-12d3-a456-426614174000")
+            .get_melt_quote_status(
+                PaymentMethod::BOLT11,
+                "123e4567-e89b-12d3-a456-426614174000",
+            )
             .await;
 
         assert!(
@@ -99,7 +106,7 @@ async fn test_mint_without_auth() {
             pubkey: None,
         };
 
-        let quote_res = client.post_mint_quote(request).await;
+        let quote_res = client.post_mint_quote(request.into()).await;
 
         assert!(
             matches!(quote_res, Err(Error::BlindAuthRequired)),
@@ -128,7 +135,10 @@ async fn test_mint_without_auth() {
 
     {
         let mint_res = client
-            .get_mint_quote_status("123e4567-e89b-12d3-a456-426614174000")
+            .get_mint_quote_status(
+                PaymentMethod::BOLT11,
+                "123e4567-e89b-12d3-a456-426614174000",
+            )
             .await;
 
         assert!(
@@ -181,7 +191,7 @@ async fn test_melt_without_auth() {
             options: None,
         };
 
-        let quote_res = client.post_melt_quote(request).await;
+        let quote_res = client.post_melt_quote(request.into()).await;
 
         assert!(
             matches!(quote_res, Err(Error::BlindAuthRequired)),
@@ -198,7 +208,7 @@ async fn test_melt_without_auth() {
             options: None,
         };
 
-        let quote_res = client.post_melt_quote(request).await;
+        let quote_res = client.post_melt_quote(request.into()).await;
 
         assert!(
             matches!(quote_res, Err(Error::BlindAuthRequired)),
@@ -229,7 +239,10 @@ async fn test_melt_without_auth() {
     // Check melt quote state
     {
         let melt_res = client
-            .get_melt_quote_status("123e4567-e89b-12d3-a456-426614174000")
+            .get_melt_quote_status(
+                PaymentMethod::BOLT11,
+                "123e4567-e89b-12d3-a456-426614174000",
+            )
             .await;
 
         assert!(
@@ -333,7 +346,10 @@ async fn test_mint_with_auth() {
 
     let mint_amount: Amount = 100.into();
 
-    let quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+        .await
+        .unwrap();
 
     let proofs = wallet
         .wait_and_mint_quote(
@@ -381,6 +397,7 @@ async fn test_swap_with_auth() {
             SplitTarget::default(),
             proofs.clone(),
             None,
+            false,
             false,
         )
         .await
@@ -432,13 +449,17 @@ async fn test_melt_with_auth() {
     let bolt11 = create_fake_invoice(2_000, "".to_string());
 
     let melt_quote = wallet
-        .melt_quote(bolt11.to_string(), None)
+        .melt_quote(PaymentMethod::BOLT11, bolt11.to_string(), None, None)
         .await
         .expect("Could not get melt quote");
 
-    let after_melt = wallet.melt(&melt_quote.id).await.expect("Could not melt");
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .expect("Could not prepare melt");
+    let after_melt = prepared.confirm().await.expect("Could not melt");
 
-    assert!(after_melt.state == MeltQuoteState::Paid);
+    assert!(after_melt.state() == MeltQuoteState::Paid);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -512,7 +533,7 @@ async fn test_reuse_auth_proof() {
 
     {
         let quote = wallet
-            .mint_quote(10.into(), None)
+            .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
             .await
             .expect("Quote should be allowed");
 
@@ -526,7 +547,9 @@ async fn test_reuse_auth_proof() {
         .unwrap();
 
     {
-        let quote_res = wallet.mint_quote(10.into(), None).await;
+        let quote_res = wallet
+            .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
+            .await;
         assert!(
             matches!(quote_res, Err(Error::TokenAlreadySpent)),
             "Expected AuthRequired error, got {:?}",
@@ -582,7 +605,7 @@ async fn test_melt_with_invalid_auth() {
             pubkey: None,
         };
 
-        let quote_res = client.post_mint_quote(request).await;
+        let quote_res = client.post_mint_quote(request.into()).await;
 
         assert!(
             matches!(quote_res, Err(Error::BlindAuthRequired)),
@@ -643,7 +666,7 @@ async fn test_refresh_access_token() {
 
     // Try to get a mint quote with the refreshed token
     let mint_quote = wallet
-        .mint_quote(mint_amount, None)
+        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
         .await
         .expect("failed to get mint quote with refreshed token");
 
@@ -729,7 +752,7 @@ async fn test_auth_token_spending_order() {
     // Use tokens and verify they're used in the expected order (FIFO)
     for i in 0..3 {
         let mint_quote = wallet
-            .mint_quote(10.into(), None)
+            .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
             .await
             .expect("failed to get mint quote");
 
@@ -774,15 +797,13 @@ async fn get_access_token(mint_info: &MintInfo) -> (String, String) {
     ];
 
     // Make the token request directly
-    let client = reqwest::Client::new();
-    let response = client
-        .post(token_url)
+    let client = CommonHttpClient::new();
+    let token_response: serde_json::Value = client
+        .post(&token_url)
         .form(&params)
         .send()
         .await
-        .expect("Failed to send token request");
-
-    let token_response: serde_json::Value = response
+        .expect("Failed to send token request")
         .json()
         .await
         .expect("Failed to parse token response");
@@ -831,15 +852,15 @@ async fn get_custom_access_token(
     ];
 
     // Make the token request directly
-    let client = reqwest::Client::new();
+    let client = CommonHttpClient::new();
     let response = client
-        .post(token_url)
+        .post(&token_url)
         .form(&params)
         .send()
         .await
         .map_err(|_| Error::Custom("Failed to send token request".to_string()))?;
 
-    if !response.status().is_success() {
+    if !response.is_success() {
         return Err(Error::Custom(format!(
             "Token request failed with status: {}",
             response.status()

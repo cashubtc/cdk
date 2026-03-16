@@ -65,6 +65,12 @@ impl Info {
             }
         }
 
+        if let Ok(use_keyset_v2_str) = env::var(ENV_USE_KEYSET_V2) {
+            if let Ok(use_keyset_v2) = use_keyset_v2_str.parse() {
+                self.use_keyset_v2 = Some(use_keyset_v2);
+            }
+        }
+
         // Logging configuration
         if let Ok(output_str) = env::var(ENV_LOGGING_OUTPUT) {
             if let Ok(output) = LoggingOutput::from_str(&output_str) {

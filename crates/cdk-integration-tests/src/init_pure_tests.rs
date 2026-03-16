@@ -10,18 +10,13 @@ use async_trait::async_trait;
 use bip39::Mnemonic;
 use cashu::nut00::KnownMethod;
 use cashu::quote_id::QuoteId;
-use cashu::{
-    MeltQuoteBolt12Request, MeltQuoteCustomRequest, MeltQuoteCustomResponse,
-    MintQuoteBolt12Request, MintQuoteBolt12Response, MintQuoteCustomRequest,
-    MintQuoteCustomResponse,
-};
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
-    CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
+    BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
+    CurrencyUnit, Id, KeySet, KeysetResponse, MeltQuoteBolt11Response, MeltRequest, MintInfo,
     MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
     RestoreResponse, SwapRequest, SwapResponse,
 };
@@ -29,6 +24,7 @@ use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
 use cdk::{Amount, Error, Mint, StreamExt};
+use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest, MintQuoteResponse};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
@@ -92,22 +88,31 @@ impl MintConnector for DirectMintConnection {
 
     async fn post_mint_quote(
         &self,
-        request: MintQuoteBolt11Request,
-    ) -> Result<MintQuoteBolt11Response<String>, Error> {
-        self.mint
-            .get_mint_quote(request.into())
-            .await
-            .map(Into::into)
+        request: MintQuoteRequest,
+    ) -> Result<MintQuoteResponse<String>, Error> {
+        match request {
+            MintQuoteRequest::Bolt11(req) => {
+                let response = self.mint.get_mint_quote(req.into()).await?.into();
+                Ok(MintQuoteResponse::Bolt11(response))
+            }
+            _ => unimplemented!(),
+        }
     }
 
     async fn get_mint_quote_status(
         &self,
+        _method: PaymentMethod,
         quote_id: &str,
-    ) -> Result<MintQuoteBolt11Response<String>, Error> {
-        self.mint
-            .check_mint_quote(&QuoteId::from_str(quote_id)?)
-            .await
-            .map(Into::into)
+    ) -> Result<MintQuoteResponse<String>, Error> {
+        let response = self
+            .mint
+            .check_mint_quotes(&[QuoteId::from_str(quote_id)?])
+            .await?
+            .first()
+            .ok_or(Error::UnknownQuote)?
+            .clone()
+            .into();
+        Ok(MintQuoteResponse::Bolt11(response))
     }
 
     async fn post_mint(
@@ -116,27 +121,83 @@ impl MintConnector for DirectMintConnection {
         request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
         let request_id: MintRequest<QuoteId> = request.try_into().unwrap();
-        self.mint.process_mint_request(request_id).await
+        self.mint
+            .process_mint_request(cdk::mint::MintInput::Single(request_id))
+            .await
+    }
+
+    async fn post_batch_check_mint_quote_status(
+        &self,
+        _method: &PaymentMethod,
+        request: BatchCheckMintQuoteRequest<String>,
+    ) -> Result<Vec<MintQuoteBolt11Response<String>>, Error> {
+        let quote_ids: Vec<QuoteId> = request
+            .quotes
+            .iter()
+            .filter_map(|s| QuoteId::from_str(s).ok())
+            .collect();
+        self.mint
+            .check_mint_quotes(&quote_ids)
+            .await
+            .map(|responses| responses.into_iter().map(Into::into).collect())
+    }
+
+    async fn post_batch_mint(
+        &self,
+        _method: &PaymentMethod,
+        request: BatchMintRequest<String>,
+    ) -> Result<MintResponse, Error> {
+        let quotes: Vec<QuoteId> = request
+            .quotes
+            .iter()
+            .filter_map(|s| QuoteId::from_str(s).ok())
+            .collect();
+
+        let request_id = BatchMintRequest {
+            quotes,
+            quote_amounts: request.quote_amounts,
+            outputs: request.outputs,
+            signatures: request.signatures,
+        };
+
+        self.mint
+            .process_mint_request(cdk::mint::MintInput::Batch(request_id))
+            .await
     }
 
     async fn post_melt_quote(
         &self,
-        request: MeltQuoteBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        self.mint
-            .get_melt_quote(request.into())
-            .await
-            .map(Into::into)
+        request: MeltQuoteRequest,
+    ) -> Result<MeltQuoteResponse<String>, Error> {
+        match request {
+            MeltQuoteRequest::Bolt11(req) => {
+                let response = self.mint.get_melt_quote(req.into()).await.map(Into::into)?;
+                Ok(MeltQuoteResponse::Bolt11(response))
+            }
+            MeltQuoteRequest::Bolt12(req) => {
+                let response = self.mint.get_melt_quote(req.into()).await.map(Into::into)?;
+                Ok(MeltQuoteResponse::Bolt12(response))
+            }
+            MeltQuoteRequest::Custom(_) => Err(Error::UnsupportedPaymentMethod),
+        }
     }
 
     async fn get_melt_quote_status(
         &self,
+        method: PaymentMethod,
         quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        self.mint
+    ) -> Result<MeltQuoteResponse<String>, Error> {
+        let response: MeltQuoteBolt11Response<String> = self
+            .mint
             .check_melt_quote(&QuoteId::from_str(quote_id)?)
             .await
-            .map(Into::into)
+            .map(Into::into)?;
+
+        match method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => Ok(MeltQuoteResponse::Bolt11(response)),
+            PaymentMethod::Known(KnownMethod::Bolt12) => Ok(MeltQuoteResponse::Bolt12(response)),
+            PaymentMethod::Custom(_) => Err(Error::UnsupportedPaymentMethod),
+        }
     }
 
     async fn post_melt(
@@ -145,7 +206,7 @@ impl MintConnector for DirectMintConnection {
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let request_uuid = request.try_into().unwrap();
-        self.mint.melt(&request_uuid).await.map(Into::into)
+        self.mint.melt(&request_uuid).await?.await.map(Into::into)
     }
 
     async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
@@ -178,88 +239,6 @@ impl MintConnector for DirectMintConnection {
 
         *auth_wallet = wallet;
     }
-
-    async fn post_mint_bolt12_quote(
-        &self,
-        request: MintQuoteBolt12Request,
-    ) -> Result<MintQuoteBolt12Response<String>, Error> {
-        let res: MintQuoteBolt12Response<QuoteId> =
-            self.mint.get_mint_quote(request.into()).await?.try_into()?;
-        Ok(res.into())
-    }
-
-    async fn get_mint_quote_bolt12_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MintQuoteBolt12Response<String>, Error> {
-        let quote: MintQuoteBolt12Response<QuoteId> = self
-            .mint
-            .check_mint_quote(&QuoteId::from_str(quote_id)?)
-            .await?
-            .try_into()?;
-
-        Ok(quote.into())
-    }
-
-    /// Melt Quote [NUT-23]
-    async fn post_melt_bolt12_quote(
-        &self,
-        request: MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        self.mint
-            .get_melt_quote(request.into())
-            .await
-            .map(Into::into)
-    }
-    /// Melt Quote Status [NUT-23]
-    async fn get_melt_bolt12_quote_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        self.mint
-            .check_melt_quote(&QuoteId::from_str(quote_id)?)
-            .await
-            .map(Into::into)
-    }
-
-    /// Mint Quote for Custom Payment Method
-    async fn post_mint_custom_quote(
-        &self,
-        _method: &PaymentMethod,
-        _request: MintQuoteCustomRequest,
-    ) -> Result<MintQuoteCustomResponse<String>, Error> {
-        // Custom payment methods not implemented in test mock
-        Err(Error::UnsupportedPaymentMethod)
-    }
-
-    /// Mint Quote Status for Custom Payment Method
-    async fn get_mint_quote_custom_status(
-        &self,
-        _method: &str,
-        _quote_id: &str,
-    ) -> Result<MintQuoteCustomResponse<String>, Error> {
-        // Custom payment methods not implemented in test mock
-        Err(Error::UnsupportedPaymentMethod)
-    }
-
-    /// Melt Quote for Custom Payment Method
-    async fn post_melt_custom_quote(
-        &self,
-        _request: MeltQuoteCustomRequest,
-    ) -> Result<MeltQuoteCustomResponse<String>, Error> {
-        // Custom payment methods not implemented in test mock
-        Err(Error::UnsupportedPaymentMethod)
-    }
-
-    /// Melt Quote Status for Custom Payment Method
-    async fn get_melt_quote_custom_status(
-        &self,
-        _method: &str,
-        _quote_id: &str,
-    ) -> Result<MeltQuoteCustomResponse<String>, Error> {
-        // Custom payment methods not implemented in test mock
-        Err(Error::UnsupportedPaymentMethod)
-    }
 }
 
 pub fn setup_tracing() {
@@ -267,10 +246,11 @@ pub fn setup_tracing() {
 
     let h2_filter = "h2=warn";
     let hyper_filter = "hyper=warn";
+    let tower_filter = "tower=warn";
     let tokio_postgres = "tokio_postgres=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{default_filter},{h2_filter},{hyper_filter},{tokio_postgres}"
+        "{default_filter},{h2_filter},{hyper_filter},{tower_filter},{tokio_postgres}"
     ));
 
     // Ok if successful, Err if already initialized
@@ -281,6 +261,76 @@ pub fn setup_tracing() {
 }
 
 pub async fn create_and_start_test_mint() -> Result<Mint> {
+    create_mint_with_limits(None).await
+}
+
+pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
+    // Read environment variable to determine database type
+    let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
+
+    let localstore = match db_type.to_lowercase().as_str() {
+        "memory" => Arc::new(cdk_sqlite::mint::memory::empty().await?),
+        _ => {
+            // Create a temporary directory for SQLite database
+            let temp_dir = create_temp_dir("cdk-test-sqlite-mint")?;
+            let path = temp_dir.join("mint.db").to_str().unwrap().to_string();
+            Arc::new(
+                cdk_sqlite::MintSqliteDatabase::new(path.as_str())
+                    .await
+                    .expect("Could not create sqlite db"),
+            )
+        }
+    };
+
+    let mut mint_builder = MintBuilder::new(localstore.clone());
+
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 1.into(),
+        percent_fee_reserve: 0.02,
+    };
+
+    let ln_fake_backend = FakeWallet::new(
+        fee_reserve.clone(),
+        HashMap::default(),
+        HashSet::default(),
+        2,
+        CurrencyUnit::Sat,
+    );
+
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 10_000),
+            Arc::new(ln_fake_backend),
+        )
+        .await?;
+
+    mint_builder.set_unit_fee(&CurrencyUnit::Sat, fee_ppk)?;
+
+    let mnemonic = Mnemonic::generate(12)?;
+
+    mint_builder = mint_builder
+        .with_name("pure test mint".to_string())
+        .with_description("pure test mint".to_string())
+        .with_urls(vec!["https://aaa".to_string()])
+        .with_limits(2000, 2000)
+        .with_batch_minting(Some(100), Some(vec!["bolt11".to_string()]));
+
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+
+    let mint = mint_builder
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await?;
+
+    mint.set_quote_ttl(quote_ttl).await?;
+
+    mint.start().await?;
+
+    Ok(mint)
+}
+
+pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<Mint> {
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
@@ -327,7 +377,14 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
     mint_builder = mint_builder
         .with_name("pure test mint".to_string())
         .with_description("pure test mint".to_string())
-        .with_urls(vec!["https://aaa".to_string()]);
+        .with_urls(vec!["https://aaa".to_string()])
+        .with_batch_minting(Some(100), Some(vec!["bolt11".to_string()]));
+
+    if let Some((max_inputs, max_outputs)) = limits {
+        mint_builder = mint_builder.with_limits(max_inputs, max_outputs);
+    } else {
+        mint_builder = mint_builder.with_limits(2000, 2000);
+    }
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
@@ -414,7 +471,9 @@ pub async fn fund_wallet(
     split_target: Option<SplitTarget>,
 ) -> Result<Amount> {
     let desired_amount = Amount::from(amount);
-    let quote = wallet.mint_quote(desired_amount, None).await?;
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(desired_amount), None, None)
+        .await?;
 
     Ok(wallet
         .proof_stream(quote, split_target.unwrap_or_default(), None)

@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use cdk_common::grpc::VERSION_HEADER;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, IncomingPaymentOptions as CdkIncomingPaymentOptions,
     MakePaymentResponse as CdkMakePaymentResponse, MintPayment,
@@ -11,6 +12,7 @@ use cdk_common::payment::{
 };
 use futures::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
+use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tonic::{async_trait, Request};
 use tracing::instrument;
@@ -18,8 +20,18 @@ use tracing::instrument;
 use crate::proto::cdk_payment_processor_client::CdkPaymentProcessorClient;
 use crate::proto::{
     CheckIncomingPaymentRequest, CheckOutgoingPaymentRequest, CreatePaymentRequest, EmptyRequest,
-    IncomingPaymentOptions, MakePaymentRequest, OutgoingPaymentRequestType, PaymentQuoteRequest,
+    IncomingPaymentOptions, IntoProtoAmount, MakePaymentRequest, OutgoingPaymentRequestType,
+    PaymentQuoteRequest,
 };
+
+/// Helper function to add version header to a request
+fn with_version_header<T>(mut request: Request<T>) -> Request<T> {
+    request.metadata_mut().insert(
+        VERSION_HEADER,
+        MetadataValue::from_static(cdk_common::PAYMENT_PROCESSOR_PROTOCOL_VERSION),
+    );
+    request
+}
 
 /// Payment Processor
 #[derive(Clone)]
@@ -96,7 +108,7 @@ impl MintPayment for PaymentProcessorClient {
     async fn get_settings(&self) -> Result<cdk_common::payment::SettingsResponse, Self::Err> {
         let mut inner = self.inner.clone();
         let response = inner
-            .get_settings(Request::new(EmptyRequest {}))
+            .get_settings(with_version_header(Request::new(EmptyRequest {})))
             .await
             .map_err(|err| {
                 tracing::error!("Could not get settings: {}", err);
@@ -126,7 +138,6 @@ impl MintPayment for PaymentProcessorClient {
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
-        unit: &cdk_common::CurrencyUnit,
         options: CdkIncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let mut inner = self.inner.clone();
@@ -146,7 +157,7 @@ impl MintPayment for PaymentProcessorClient {
                 options: Some(super::incoming_payment_options::Options::Bolt11(
                     super::Bolt11IncomingPaymentOptions {
                         description: opts.description,
-                        amount: opts.amount.into(),
+                        amount: Some(opts.amount.into()),
                         unix_expiry: opts.unix_expiry,
                     },
                 )),
@@ -163,10 +174,9 @@ impl MintPayment for PaymentProcessorClient {
         };
 
         let response = inner
-            .create_payment(Request::new(CreatePaymentRequest {
-                unit: unit.to_string(),
+            .create_payment(with_version_header(Request::new(CreatePaymentRequest {
                 options: Some(proto_options),
-            }))
+            })))
             .await
             .map_err(|err| {
                 tracing::error!("Could not create payment request: {}", err);
@@ -217,13 +227,13 @@ impl MintPayment for PaymentProcessorClient {
         };
 
         let response = inner
-            .get_payment_quote(Request::new(PaymentQuoteRequest {
+            .get_payment_quote(with_version_header(Request::new(PaymentQuoteRequest {
                 request: proto_request,
                 unit: unit.to_string(),
                 options: proto_options.map(Into::into),
                 request_type: request_type.into(),
                 extra_json,
-            }))
+            })))
             .await
             .map_err(|err| {
                 tracing::error!("Could not get payment quote: {}", err);
@@ -232,12 +242,16 @@ impl MintPayment for PaymentProcessorClient {
 
         let response = response.into_inner();
 
-        Ok(response.into())
+        Ok(response.try_into().map_err(|_| {
+            cdk_common::payment::Error::Custom(
+                "Failed to convert payment quote response".to_string(),
+            )
+        })?)
     }
 
     async fn make_payment(
         &self,
-        _unit: &cdk_common::CurrencyUnit,
+        unit: &cdk_common::CurrencyUnit,
         options: cdk_common::payment::OutgoingPaymentOptions,
     ) -> Result<CdkMakePaymentResponse, Self::Err> {
         let mut inner = self.inner.clone();
@@ -247,7 +261,7 @@ impl MintPayment for PaymentProcessorClient {
                     options: Some(super::outgoing_payment_variant::Options::Custom(
                         super::CustomOutgoingPaymentOptions {
                             offer: opts.request.to_string(),
-                            max_fee_amount: opts.max_fee_amount.map(Into::into),
+                            max_fee_amount: opts.max_fee_amount.into_proto(),
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),
                             extra_json: opts.extra_json.clone(),
@@ -260,7 +274,7 @@ impl MintPayment for PaymentProcessorClient {
                     options: Some(super::outgoing_payment_variant::Options::Bolt11(
                         super::Bolt11OutgoingPaymentOptions {
                             bolt11: opts.bolt11.to_string(),
-                            max_fee_amount: opts.max_fee_amount.map(Into::into),
+                            max_fee_amount: opts.max_fee_amount.into_proto(),
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),
                         },
@@ -272,7 +286,7 @@ impl MintPayment for PaymentProcessorClient {
                     options: Some(super::outgoing_payment_variant::Options::Bolt12(
                         super::Bolt12OutgoingPaymentOptions {
                             offer: opts.offer.to_string(),
-                            max_fee_amount: opts.max_fee_amount.map(Into::into),
+                            max_fee_amount: opts.max_fee_amount.into_proto(),
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),
                         },
@@ -282,11 +296,12 @@ impl MintPayment for PaymentProcessorClient {
         };
 
         let response = inner
-            .make_payment(Request::new(MakePaymentRequest {
+            .make_payment(with_version_header(Request::new(MakePaymentRequest {
                 payment_options: Some(payment_options),
                 partial_amount: None,
                 max_fee_amount: None,
-            }))
+                unit: unit.to_string(),
+            })))
             .await
             .map_err(|err| {
                 tracing::error!("Could not pay payment request: {}", err);
@@ -316,7 +331,7 @@ impl MintPayment for PaymentProcessorClient {
         tracing::debug!("Client waiting for payment");
         let mut inner = self.inner.clone();
         let stream = inner
-            .wait_incoming_payment(EmptyRequest {})
+            .wait_incoming_payment(with_version_header(Request::new(EmptyRequest {})))
             .await
             .map_err(|err| {
                 tracing::error!("Could not check incoming payment stream: {}", err);
@@ -372,9 +387,11 @@ impl MintPayment for PaymentProcessorClient {
     ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
         let mut inner = self.inner.clone();
         let response = inner
-            .check_incoming_payment(Request::new(CheckIncomingPaymentRequest {
-                request_identifier: Some(payment_identifier.clone().into()),
-            }))
+            .check_incoming_payment(with_version_header(Request::new(
+                CheckIncomingPaymentRequest {
+                    request_identifier: Some(payment_identifier.clone().into()),
+                },
+            )))
             .await
             .map_err(|err| {
                 tracing::error!("Could not check incoming payment: {}", err);
@@ -395,9 +412,11 @@ impl MintPayment for PaymentProcessorClient {
     ) -> Result<CdkMakePaymentResponse, Self::Err> {
         let mut inner = self.inner.clone();
         let response = inner
-            .check_outgoing_payment(Request::new(CheckOutgoingPaymentRequest {
-                request_identifier: Some(payment_identifier.clone().into()),
-            }))
+            .check_outgoing_payment(with_version_header(Request::new(
+                CheckOutgoingPaymentRequest {
+                    request_identifier: Some(payment_identifier.clone().into()),
+                },
+            )))
             .await
             .map_err(|err| {
                 tracing::error!("Could not check outgoing payment: {}", err);

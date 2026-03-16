@@ -7,7 +7,8 @@ use std::sync::Arc;
 use cdk_common::mint_url::MintUrl;
 use cdk_common::Id;
 use redb::{
-    Database, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, TableDefinition,
+    Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable,
+    TableDefinition,
 };
 
 use super::Error;

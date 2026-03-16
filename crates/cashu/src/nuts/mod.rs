@@ -28,11 +28,12 @@ pub mod nut25;
 pub mod nut26;
 #[cfg(all(feature = "wallet", feature = "nostr"))]
 pub mod nut27;
+#[cfg(feature = "wallet")]
+pub mod nut28;
+pub mod nut29;
 
-#[cfg(feature = "auth")]
 mod auth;
 
-#[cfg(feature = "auth")]
 pub use auth::{
     nut21, nut22, AuthProof, AuthRequired, AuthToken, BlindAuthSettings, BlindAuthToken,
     ClearAuthSettings, Method, MintAuthRequest, ProtectedEndpoint, RoutePath,
@@ -75,8 +76,12 @@ pub use nut23::{
     MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
     MintQuoteBolt11Response, QuoteState as MintQuoteState,
 };
-pub use nut25::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+pub use nut25::{
+    MeltQuoteBolt12Request, MeltQuoteBolt12Response, MintQuoteBolt12Request,
+    MintQuoteBolt12Response,
+};
 #[cfg(all(feature = "wallet", feature = "nostr"))]
 pub use nut27::{
     backup_filter_params, create_backup_event, decrypt_backup_event, derive_nostr_keys, MintBackup,
 };
+pub use nut29::{BatchCheckMintQuoteRequest, BatchMintRequest, Settings as Nut29Settings};

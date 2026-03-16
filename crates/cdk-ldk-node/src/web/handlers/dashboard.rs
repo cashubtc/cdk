@@ -21,7 +21,7 @@ pub struct UsageMetrics {
 
 /// Calculate usage metrics from payment history
 fn calculate_usage_metrics(payments: &[ldk_node::payment::PaymentDetails]) -> UsageMetrics {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use web_time::{SystemTime, UNIX_EPOCH};
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

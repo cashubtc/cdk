@@ -6,7 +6,6 @@ use super::{
 };
 use crate::Error;
 
-#[cfg(feature = "auth")]
 mod auth;
 
 impl Mint {
@@ -88,6 +87,8 @@ impl Mint {
         unit: CurrencyUnit,
         amounts: Vec<u64>,
         input_fee_ppk: u64,
+        use_keyset_v2: bool,
+        final_expiry: Option<u64>,
     ) -> Result<MintKeySetInfo, Error> {
         let result = self
             .signatory
@@ -95,6 +96,12 @@ impl Mint {
                 unit,
                 amounts,
                 input_fee_ppk,
+                keyset_id_type: if use_keyset_v2 {
+                    cdk_common::nut02::KeySetVersion::Version01
+                } else {
+                    cdk_common::nut02::KeySetVersion::Version00
+                },
+                final_expiry,
             })
             .await?;
 

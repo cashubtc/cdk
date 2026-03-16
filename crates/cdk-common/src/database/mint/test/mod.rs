@@ -5,13 +5,14 @@
 #![allow(clippy::unwrap_used, clippy::missing_panics_doc)]
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 // For derivation path parsing
 use bitcoin::bip32::DerivationPath;
 use cashu::CurrencyUnit;
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
+use crate::common::IssuerVersion;
 use crate::database::KVStoreDatabase;
 use crate::mint::MintKeySetInfo;
 
@@ -49,6 +50,7 @@ where
         derivation_path_index: Some(0),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
     };
     let mut writer = db.begin_transaction().await.expect("db.begin()");
     writer.add_keyset_info(keyset_info).await.unwrap();
@@ -259,6 +261,7 @@ macro_rules! mint_db_test {
             get_proofs_with_inconsistent_states_fails,
             get_proofs_fails_when_some_not_found,
             update_proofs_state_updates_proofs_with_state,
+            get_mint_quotes_by_ids,
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

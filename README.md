@@ -9,6 +9,19 @@ CDK is a collection of rust crates for [Cashu](https://github.com/cashubtc) wall
 
 **ALPHA** This library is in early development, the api will change and should be used with caution.
 
+## Quick Start
+
+CDK uses Nix flakes to manage development environments. We provide a lean default shell for standard development and a full-stack shell for integration testing.
+
+```bash
+# Enter the lean development shell (Rust + PostgreSQL)
+nix develop
+
+# OR enter the full regtest environment (Bitcoind + Lightning Nodes)
+nix develop .#regtest
+```
+
+For more details on available environments, see the [Development Guide](DEVELOPMENT.md).
 
 ## Project structure
 
@@ -39,10 +52,6 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-mintd**](./crates/cdk-mintd/): Cashu Mint Binary.
     * [**cdk-mint-cli**](./crates/cdk-mint-rpc/): Cashu Mint management gRPC client cli.
 
-
-## Development 
-
-For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVELOPMENT.md)
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
@@ -82,6 +91,7 @@ For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVE
 | [25][25] | Payment Method: BOLT12 | :heavy_check_mark: |
 | [26][26] | Payment Request Bech32m Encoding | :heavy_check_mark: |
 | [27][27] | Nostr Mint Backup | :heavy_check_mark: |
+| [28][28] | Pay to Blinded Key (P2BK) | :heavy_check_mark: |
 
 
 ## License
@@ -124,3 +134,4 @@ Please see the [development guide](DEVELOPMENT.md).
 [25]: https://github.com/cashubtc/nuts/blob/main/25.md
 [26]: https://github.com/cashubtc/nuts/blob/main/26.md
 [27]: https://github.com/cashubtc/nuts/blob/main/27.md
+[28]: https://github.com/cashubtc/nuts/blob/main/28.md

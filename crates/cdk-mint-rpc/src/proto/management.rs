@@ -568,7 +568,13 @@ impl CdkMintManagement for MintRPCServer {
 
         let keyset_info = self
             .mint()
-            .rotate_keyset(unit, amounts, request.input_fee_ppk.unwrap_or(0))
+            .rotate_keyset(
+                unit,
+                amounts,
+                request.input_fee_ppk.unwrap_or(0),
+                request.use_keyset_v2.unwrap_or(true),
+                request.final_expiry,
+            )
             .await
             .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))?;
 

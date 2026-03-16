@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cdk_common::grpc::create_version_check_interceptor;
 use cdk_common::payment::{IncomingPaymentOptions, MintPayment};
 use cdk_common::CurrencyUnit;
 use futures::{Stream, StreamExt};
@@ -19,7 +20,7 @@ use tracing::instrument;
 
 use super::cdk_payment_processor_server::{CdkPaymentProcessor, CdkPaymentProcessorServer};
 use crate::error::Error;
-use crate::proto::*;
+use crate::proto::{TryFromProtoAmount, *};
 
 type ResponseStream =
     Pin<Box<dyn Stream<Item = Result<WaitIncomingPaymentResponse, Status>> + Send>>;
@@ -103,13 +104,25 @@ impl PaymentProcessorServer {
                     .identity(server_identity)
                     .client_ca_root(client_ca_cert);
 
-                Server::builder()
-                    .tls_config(tls_config)?
-                    .add_service(CdkPaymentProcessorServer::new(self.clone()))
+                Server::builder().tls_config(tls_config)?.add_service(
+                    CdkPaymentProcessorServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::PAYMENT_PROCESSOR_PROTOCOL_VERSION,
+                        ),
+                    ),
+                )
             }
             None => {
                 tracing::warn!("No valid TLS configuration found, starting insecure server");
-                Server::builder().add_service(CdkPaymentProcessorServer::new(self.clone()))
+                Server::builder().add_service(CdkPaymentProcessorServer::with_interceptor(
+                    self.clone(),
+                    create_version_check_interceptor(
+                        cdk_common::grpc::VERSION_HEADER,
+                        cdk_common::PAYMENT_PROCESSOR_PROTOCOL_VERSION,
+                    ),
+                ))
             }
         };
 
@@ -198,10 +211,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         &self,
         request: Request<CreatePaymentRequest>,
     ) -> Result<Response<CreatePaymentResponse>, Status> {
-        let CreatePaymentRequest { unit, options } = request.into_inner();
-
-        let unit = CurrencyUnit::from_str(&unit)
-            .map_err(|_| Status::invalid_argument("Invalid currency unit"))?;
+        let CreatePaymentRequest { options, .. } = request.into_inner();
 
         let options = options.ok_or_else(|| Status::invalid_argument("Missing payment options"))?;
 
@@ -209,34 +219,55 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             .options
             .ok_or_else(|| Status::invalid_argument("Missing options"))?
         {
-            incoming_payment_options::Options::Custom(opts) => IncomingPaymentOptions::Custom(
-                Box::new(cdk_common::payment::CustomIncomingPaymentOptions {
-                    method: "".to_string(),
-                    description: opts.description,
-                    amount: opts.amount.unwrap_or(0).into(),
-                    unix_expiry: opts.unix_expiry,
-                    extra_json: opts.extra_json,
-                }),
-            ),
+            incoming_payment_options::Options::Custom(opts) => {
+                let amount = opts
+                    .amount
+                    .ok_or_else(|| Status::invalid_argument("Missing amount"))?
+                    .try_into()
+                    .map_err(|_| Status::invalid_argument("Invalid amount"))?;
+                IncomingPaymentOptions::Custom(Box::new(
+                    cdk_common::payment::CustomIncomingPaymentOptions {
+                        method: "".to_string(),
+                        description: opts.description,
+                        amount,
+                        unix_expiry: opts.unix_expiry,
+                        extra_json: opts.extra_json,
+                    },
+                ))
+            }
             incoming_payment_options::Options::Bolt11(opts) => {
+                let amount = opts
+                    .amount
+                    .ok_or_else(|| Status::invalid_argument("Missing amount"))?
+                    .try_into()
+                    .map_err(|_| Status::invalid_argument("Invalid amount"))?;
                 IncomingPaymentOptions::Bolt11(cdk_common::payment::Bolt11IncomingPaymentOptions {
                     description: opts.description,
-                    amount: opts.amount.into(),
+                    amount,
                     unix_expiry: opts.unix_expiry,
                 })
             }
-            incoming_payment_options::Options::Bolt12(opts) => IncomingPaymentOptions::Bolt12(
-                Box::new(cdk_common::payment::Bolt12IncomingPaymentOptions {
-                    description: opts.description,
-                    amount: opts.amount.map(Into::into),
-                    unix_expiry: opts.unix_expiry,
-                }),
-            ),
+            incoming_payment_options::Options::Bolt12(opts) => {
+                let amount: Option<cdk_common::Amount<CurrencyUnit>> = match opts.amount {
+                    Some(a) => Some(
+                        a.try_into()
+                            .map_err(|_| Status::invalid_argument("Invalid amount"))?,
+                    ),
+                    None => None,
+                };
+                IncomingPaymentOptions::Bolt12(Box::new(
+                    cdk_common::payment::Bolt12IncomingPaymentOptions {
+                        description: opts.description,
+                        amount,
+                        unix_expiry: opts.unix_expiry,
+                    },
+                ))
+            }
         };
 
         let invoice_response = self
             .inner
-            .create_incoming_payment_request(&unit, proto_options)
+            .create_incoming_payment_request(proto_options)
             .await
             .map_err(|_| Status::internal("Could not create invoice"))?;
 
@@ -316,11 +347,14 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
     ) -> Result<Response<MakePaymentResponse>, Status> {
         let request = request.into_inner();
 
+        let unit = CurrencyUnit::from_str(&request.unit)
+            .map_err(|_| Status::invalid_argument("Invalid currency unit"))?;
+
         let options = request
             .payment_options
             .ok_or_else(|| Status::invalid_argument("Missing payment options"))?;
 
-        let (unit, payment_options) = match options
+        let payment_options = match options
             .options
             .ok_or_else(|| Status::invalid_argument("Missing options"))?
         {
@@ -328,44 +362,53 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                 let bolt11: cdk_common::Bolt11Invoice =
                     opts.bolt11.parse().map_err(Error::Invoice)?;
 
-                let payment_options = cdk_common::payment::OutgoingPaymentOptions::Bolt11(
-                    Box::new(cdk_common::payment::Bolt11OutgoingPaymentOptions {
+                let max_fee_amount = opts
+                    .max_fee_amount
+                    .try_from_proto()
+                    .map_err(|_| Status::invalid_argument("Invalid max_fee_amount"))?;
+
+                cdk_common::payment::OutgoingPaymentOptions::Bolt11(Box::new(
+                    cdk_common::payment::Bolt11OutgoingPaymentOptions {
                         bolt11,
-                        max_fee_amount: opts.max_fee_amount.map(Into::into),
+                        max_fee_amount,
                         timeout_secs: opts.timeout_secs,
                         melt_options: opts.melt_options.map(Into::into),
-                    }),
-                );
-
-                (CurrencyUnit::Msat, payment_options)
+                    },
+                ))
             }
             outgoing_payment_variant::Options::Bolt12(opts) => {
                 let offer = Offer::from_str(&opts.offer).map_err(|_| Error::Bolt12Parse)?;
 
-                let payment_options = cdk_common::payment::OutgoingPaymentOptions::Bolt12(
-                    Box::new(cdk_common::payment::Bolt12OutgoingPaymentOptions {
+                let max_fee_amount = opts
+                    .max_fee_amount
+                    .try_from_proto()
+                    .map_err(|_| Status::invalid_argument("Invalid max_fee_amount"))?;
+
+                cdk_common::payment::OutgoingPaymentOptions::Bolt12(Box::new(
+                    cdk_common::payment::Bolt12OutgoingPaymentOptions {
                         offer,
-                        max_fee_amount: opts.max_fee_amount.map(Into::into),
+                        max_fee_amount,
                         timeout_secs: opts.timeout_secs,
                         melt_options: opts.melt_options.map(Into::into),
-                    }),
-                );
-
-                (CurrencyUnit::Msat, payment_options)
+                    },
+                ))
             }
             outgoing_payment_variant::Options::Custom(opts) => {
-                let payment_options = cdk_common::payment::OutgoingPaymentOptions::Custom(
-                    Box::new(cdk_common::payment::CustomOutgoingPaymentOptions {
+                let max_fee_amount = opts
+                    .max_fee_amount
+                    .try_from_proto()
+                    .map_err(|_| Status::invalid_argument("Invalid max_fee_amount"))?;
+
+                cdk_common::payment::OutgoingPaymentOptions::Custom(Box::new(
+                    cdk_common::payment::CustomOutgoingPaymentOptions {
                         method: String::new(), // Method will be determined from context
                         request: opts.offer,   // Reusing offer field for custom request string
-                        max_fee_amount: opts.max_fee_amount.map(Into::into),
+                        max_fee_amount,
                         timeout_secs: opts.timeout_secs,
                         melt_options: opts.melt_options.map(Into::into),
                         extra_json: opts.extra_json,
-                    }),
-                );
-
-                (CurrencyUnit::Msat, payment_options)
+                    },
+                ))
             }
         };
 

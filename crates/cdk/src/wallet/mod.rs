@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,9 +10,12 @@ use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
+use cdk_common::wallet::ProofInfo;
 use getrandom::getrandom;
+pub use mint_connector::http_client::{
+    AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
+};
 use subscription::{ActiveSubscription, SubscriptionManager};
-#[cfg(any(feature = "auth", feature = "npubcash"))]
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
@@ -29,14 +31,10 @@ use crate::nuts::{
     nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
 };
-use crate::types::ProofInfo;
 use crate::util::unix_time;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
-use crate::Amount;
-#[cfg(feature = "auth")]
-use crate::OidcClient;
+use crate::{Amount, OidcClient};
 
-#[cfg(feature = "auth")]
 mod auth;
 #[cfg(feature = "nostr")]
 mod nostr_backup;
@@ -49,41 +47,44 @@ mod keysets;
 mod melt;
 mod mint_connector;
 mod mint_metadata_cache;
-pub mod multi_mint_wallet;
 #[cfg(feature = "npubcash")]
 mod npubcash;
 pub mod payment_request;
 mod proofs;
 mod receive;
 mod reclaim;
+mod recovery;
+pub(crate) mod saga;
 mod send;
 #[cfg(not(target_arch = "wasm32"))]
 mod streams;
 pub mod subscription;
 mod swap;
+pub mod test_utils;
 mod transactions;
 pub mod util;
+pub mod wallet_repository;
 
-#[cfg(feature = "auth")]
 pub use auth::{AuthMintConnector, AuthWallet};
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
-#[cfg(feature = "auth")]
-pub use mint_connector::http_client::AuthHttpClient as BaseAuthHttpClient;
-pub use mint_connector::http_client::HttpClient as BaseHttpClient;
+pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
-#[cfg(feature = "auth")]
-pub use mint_connector::AuthHttpClient;
-pub use mint_connector::{HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector};
-pub use multi_mint_wallet::{MultiMintReceiveOptions, MultiMintSendOptions, MultiMintWallet};
+pub use mint_connector::{
+    AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector,
+};
 #[cfg(feature = "nostr")]
 pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResult};
 pub use payment_request::CreateRequestParams;
 #[cfg(feature = "nostr")]
 pub use payment_request::NostrWaitInfo;
 pub use receive::ReceiveOptions;
+pub use recovery::RecoveryReport;
 pub use send::{PreparedSend, SendMemo, SendOptions};
+#[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
+pub use streams::npubcash::NpubCashProofStream;
 pub use types::{MeltQuote, MintQuote, SendKind};
+pub use wallet_repository::{TokenData, WalletConfig, WalletRepository, WalletRepositoryBuilder};
 
 use crate::nuts::nut00::ProofsMethods;
 
@@ -92,6 +93,15 @@ use crate::nuts::nut00::ProofsMethods;
 /// The CDK [`Wallet`] is a high level cashu wallet.
 ///
 /// A [`Wallet`] is for a single mint and single unit.
+///
+/// # Initialization
+///
+/// After creating a wallet, call [`Wallet::recover_incomplete_sagas`] to recover
+/// from interrupted operations (swap, send, receive, melt). This is required to
+/// prevent proofs from being stuck in reserved states after a crash.
+///
+/// For pending mint quotes, call [`Wallet::mint_unissued_quotes`] which checks
+/// quote states with the mint and mints available tokens. This makes network calls.
 #[derive(Debug, Clone)]
 pub struct Wallet {
     /// Mint Url
@@ -105,14 +115,12 @@ pub struct Wallet {
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
     metadata_cache_ttl: Arc<RwLock<Option<Duration>>>,
-    #[cfg(feature = "auth")]
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
     #[cfg(feature = "npubcash")]
     npubcash_client: Arc<TokioRwLock<Option<Arc<cdk_npubcash::NpubCashClient>>>>,
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
-    in_error_swap_reverted_proofs: Arc<AtomicBool>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -126,8 +134,12 @@ pub enum WalletSubscription {
     Bolt11MintQuoteState(Vec<String>),
     /// Melt quote subscription
     Bolt11MeltQuoteState(Vec<String>),
+    /// Melt bolt12 quote subscription
+    Bolt12MeltQuoteState(Vec<String>),
     /// Mint bolt12 quote subscription
     Bolt12MintQuoteState(Vec<String>),
+    /// Custom melt quote subscription
+    MeltQuoteCustom(String, Vec<String>),
 }
 
 impl From<WalletSubscription> for WalletParams {
@@ -165,6 +177,16 @@ impl From<WalletSubscription> for WalletParams {
             WalletSubscription::Bolt12MintQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt12MintQuote,
+                id,
+            },
+            WalletSubscription::Bolt12MeltQuoteState(filters) => WalletParams {
+                filters,
+                kind: Kind::Bolt12MeltQuote,
+                id,
+            },
+            WalletSubscription::MeltQuoteCustom(method, filters) => WalletParams {
+                filters,
+                kind: Kind::Custom(format!("{}_melt_quote", method)),
                 id,
             },
         }
@@ -298,12 +320,10 @@ impl Wallet {
     /// its URL
     #[instrument(skip(self))]
     pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
-        // Update the mint URL in the wallet DB
         self.localstore
             .update_mint_url(self.mint_url.clone(), new_mint_url.clone())
             .await?;
 
-        // Update the mint URL in the wallet struct field
         self.mint_url = new_mint_url;
 
         Ok(())
@@ -333,7 +353,6 @@ impl Wallet {
         }
 
         // Create or update auth wallet
-        #[cfg(feature = "auth")]
         {
             let mut auth_wallet = self.auth_wallet.write().await;
             match &*auth_wallet {
@@ -615,8 +634,6 @@ impl Wallet {
                 start_counter += 100;
             }
 
-            // Set counter to highest found + 1 to avoid reusing any counter values
-            // that already have signatures at the mint
             if let Some(highest) = highest_counter {
                 self.localstore
                     .increment_keyset_counter(&keyset.id, highest + 1)
@@ -895,12 +912,12 @@ mod tests {
         };
 
         // Response in same order as request
-        let response_outputs = vec![
+        let response_outputs = [
             premint1.blinded_message.clone(),
             premint2.blinded_message.clone(),
             premint3.blinded_message.clone(),
         ];
-        let response_signatures = vec![sig1.clone(), sig2.clone(), sig3.clone()];
+        let response_signatures = [sig1.clone(), sig2.clone(), sig3.clone()];
 
         // Apply the matching logic (same as in restore)
         let signature_map: HashMap<_, _> = response_outputs
@@ -992,12 +1009,12 @@ mod tests {
         };
 
         // Response in REVERSED order (simulating out-of-order response from mint)
-        let response_outputs = vec![
+        let response_outputs = [
             premint3.blinded_message.clone(), // index 2 first
             premint1.blinded_message.clone(), // index 0 second
             premint2.blinded_message.clone(), // index 1 third
         ];
-        let response_signatures = vec![sig3.clone(), sig1.clone(), sig2.clone()];
+        let response_signatures = [sig3.clone(), sig1.clone(), sig2.clone()];
 
         // Apply the matching logic (same as in restore)
         let signature_map: HashMap<_, _> = response_outputs
@@ -1085,11 +1102,11 @@ mod tests {
 
         // Response only has signatures for premint1 and premint3 (gap at premint2)
         // Also out of order
-        let response_outputs = vec![
+        let response_outputs = [
             premint3.blinded_message.clone(),
             premint1.blinded_message.clone(),
         ];
-        let response_signatures = vec![sig3.clone(), sig1.clone()];
+        let response_signatures = [sig3.clone(), sig1.clone()];
 
         let signature_map: HashMap<_, _> = response_outputs
             .iter()

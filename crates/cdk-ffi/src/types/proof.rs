@@ -58,6 +58,8 @@ pub struct Proof {
     pub witness: Option<Witness>,
     /// Optional DLEQ proof
     pub dleq: Option<ProofDleq>,
+    /// Optional P2BK Ephemeral Public Key (NUT-28)
+    pub p2pk_e: Option<String>,
 }
 
 impl From<cdk::nuts::Proof> for Proof {
@@ -69,6 +71,7 @@ impl From<cdk::nuts::Proof> for Proof {
             keyset_id: proof.keyset_id.to_string(),
             witness: proof.witness.map(|w| w.into()),
             dleq: proof.dleq.map(|d| d.into()),
+            p2pk_e: proof.p2pk_e.map(|p| p.to_string()),
         }
     }
 }
@@ -91,6 +94,11 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
                 .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             witness: proof.witness.map(|w| w.into()),
             dleq: proof.dleq.map(|d| d.into()),
+            p2pk_e: proof
+                .p2pk_e
+                .map(|p| cdk::nuts::PublicKey::from_str(&p))
+                .transpose()
+                .map_err(|e| FfiError::internal(format!("Invalid p2pk_e: {}", e)))?,
         })
     }
 }
@@ -470,6 +478,10 @@ pub struct ProofInfo {
     pub spending_condition: Option<SpendingConditions>,
     /// Currency unit
     pub unit: CurrencyUnit,
+    /// Operation ID that is using/spending this proof
+    pub used_by_operation: Option<String>,
+    /// Operation ID that created this proof
+    pub created_by_operation: Option<String>,
 }
 
 impl From<cdk::types::ProofInfo> for ProofInfo {
@@ -481,6 +493,8 @@ impl From<cdk::types::ProofInfo> for ProofInfo {
             state: info.state.into(),
             spending_condition: info.spending_condition.map(Into::into),
             unit: info.unit.into(),
+            used_by_operation: info.used_by_operation.map(|u| u.to_string()),
+            created_by_operation: info.created_by_operation.map(|u| u.to_string()),
         }
     }
 }
@@ -495,6 +509,7 @@ pub fn decode_proof_info(json: String) -> Result<ProofInfo, FfiError> {
 /// Encode ProofInfo to JSON string
 #[uniffi::export]
 pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
+    use std::str::FromStr;
     // Convert to cdk::types::ProofInfo for serialization
     let cdk_info = cdk::types::ProofInfo {
         proof: info.proof.try_into()?,
@@ -503,6 +518,16 @@ pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
         state: info.state.into(),
         spending_condition: info.spending_condition.and_then(|c| c.try_into().ok()),
         unit: info.unit.into(),
+        used_by_operation: info
+            .used_by_operation
+            .map(|id| uuid::Uuid::from_str(&id))
+            .transpose()
+            .map_err(|e| FfiError::internal(e.to_string()))?,
+        created_by_operation: info
+            .created_by_operation
+            .map(|id| uuid::Uuid::from_str(&id))
+            .transpose()
+            .map_err(|e| FfiError::internal(e.to_string()))?,
     };
     Ok(serde_json::to_string(&cdk_info)?)
 }

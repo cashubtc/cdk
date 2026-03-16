@@ -22,7 +22,7 @@ impl pool::DatabaseConfig for Config {
     }
 
     fn max_size(&self) -> usize {
-        if self.password.is_none() {
+        if self.path.is_none() {
             1
         } else {
             20

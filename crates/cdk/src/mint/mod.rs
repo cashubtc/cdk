@@ -6,9 +6,8 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
-#[cfg(feature = "auth")]
-use cdk_common::database::DynMintAuthDatabase;
-use cdk_common::database::{self, Acquired, DynMintDatabase};
+use cdk_common::database::mint::Acquired;
+use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
@@ -16,7 +15,6 @@ pub use cdk_common::quote_id::QuoteId;
 use cdk_prometheus::global;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
-#[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
 use tokio::sync::{Mutex, Notify};
@@ -26,11 +24,8 @@ use tracing::instrument;
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
-use crate::Amount;
-#[cfg(feature = "auth")]
-use crate::OidcClient;
+use crate::{Amount, OidcClient};
 
-#[cfg(feature = "auth")]
 pub(crate) mod auth;
 mod builder;
 mod check_spendable;
@@ -45,9 +40,10 @@ mod subscription;
 mod swap;
 mod verification;
 
-pub use builder::{MintBuilder, MintMeltLimits};
+pub use builder::{MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
-pub use issue::{MintQuoteRequest, MintQuoteResponse};
+pub use issue::{MintInput, MintQuoteRequest, MintQuoteResponse};
+pub use melt::PendingMelt;
 pub use verification::Verification;
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
@@ -66,18 +62,20 @@ pub struct Mint {
     /// Mint Storage backend
     localstore: DynMintDatabase,
     /// Auth Storage backend (only available with auth feature)
-    #[cfg(feature = "auth")]
     auth_localstore: Option<DynMintAuthDatabase>,
     /// Payment processors for mint
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
     /// Subscription manager
     pubsub_manager: Arc<PubSubManager>,
-    #[cfg(feature = "auth")]
     oidc_client: Option<OidcClient>,
     /// In-memory keyset
     keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
+    /// Maximum number of inputs allowed per transaction
+    max_inputs: usize,
+    /// Maximum number of outputs allowed per transaction
+    max_outputs: usize,
 }
 
 impl std::fmt::Debug for Mint {
@@ -102,26 +100,30 @@ impl Mint {
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: DynMintDatabase,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        max_inputs: usize,
+        max_outputs: usize,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
             signatory,
             localstore,
-            #[cfg(feature = "auth")]
             None,
             payment_processors,
+            max_inputs,
+            max_outputs,
         )
         .await
     }
 
     /// Create new [`Mint`] with authentication support
-    #[cfg(feature = "auth")]
     pub async fn new_with_auth(
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: DynMintDatabase,
         auth_localstore: DynMintAuthDatabase,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        max_inputs: usize,
+        max_outputs: usize,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -129,6 +131,8 @@ impl Mint {
             localstore,
             Some(auth_localstore),
             payment_processors,
+            max_inputs,
+            max_outputs,
         )
         .await
     }
@@ -139,8 +143,10 @@ impl Mint {
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: DynMintDatabase,
-        #[cfg(feature = "auth")] auth_localstore: Option<DynMintAuthDatabase>,
+        auth_localstore: Option<DynMintAuthDatabase>,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        max_inputs: usize,
+        max_outputs: usize,
     ) -> Result<Self, Error> {
         let keysets = signatory.keysets().await?;
         if !keysets
@@ -182,6 +188,20 @@ impl Mint {
                     stored.pubkey = computed_info.pubkey;
                     mutated = true;
                 }
+
+                // Merge auth settings from computed_info if stored doesn't have them
+                // Protected endpoints will be populated dynamically from auth database
+                {
+                    if stored.nuts.nut21.is_none() && computed_info.nuts.nut21.is_some() {
+                        stored.nuts.nut21 = computed_info.nuts.nut21.clone();
+                        mutated = true;
+                    }
+                    if stored.nuts.nut22.is_none() && computed_info.nuts.nut22.is_some() {
+                        stored.nuts.nut22 = computed_info.nuts.nut22.clone();
+                        mutated = true;
+                    }
+                }
+
                 if mutated {
                     let updated = serde_json::to_vec(&stored)?;
                     let mut tx = localstore.begin_transaction().await?;
@@ -215,7 +235,6 @@ impl Mint {
             signatory,
             pubsub_manager: PubSubManager::new((localstore.clone(), payment_processors.clone())),
             localstore,
-            #[cfg(feature = "auth")]
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
                 OidcClient::new(
                     nut21.openid_discovery.clone(),
@@ -223,10 +242,11 @@ impl Mint {
                 )
             }),
             payment_processors,
-            #[cfg(feature = "auth")]
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
+            max_inputs,
+            max_outputs,
         })
     }
 
@@ -479,7 +499,6 @@ impl Mint {
 
         let mint_info: MintInfo = serde_json::from_slice(&mint_info)?;
 
-        #[cfg(feature = "auth")]
         let mint_info = if let Some(auth_db) = self.auth_localstore.as_ref() {
             let mut mint_info = mint_info;
             let auth_endpoints = auth_db.get_auth_for_endpoints().await?;
@@ -927,6 +946,19 @@ impl Mint {
         let result = async {
             let output_len = request.outputs.len();
 
+            // Check max outputs limit
+            if output_len > self.max_outputs {
+                tracing::warn!(
+                    "Restore request exceeds max outputs limit: {} > {}",
+                    output_len,
+                    self.max_outputs
+                );
+                return Err(Error::MaxOutputsExceeded {
+                    actual: output_len,
+                    max: self.max_outputs,
+                });
+            }
+
             let mut outputs = Vec::with_capacity(output_len);
             let mut signatures = Vec::with_capacity(output_len);
 
@@ -984,8 +1016,7 @@ impl Mint {
 
             Ok(RestoreResponse {
                 outputs,
-                signatures: signatures.clone(),
-                promises: Some(signatures),
+                signatures,
             })
         }
         .await;
@@ -1071,6 +1102,7 @@ mod tests {
 
     use std::str::FromStr;
 
+    use cdk_signatory::signatory::RotateKeyArguments;
     use cdk_sqlite::mint::memory::new_with_state;
 
     use super::*;
@@ -1085,7 +1117,7 @@ mod tests {
         spent_proofs: Proofs,
         seed: &'a [u8],
         mint_info: MintInfo,
-        supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+        supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Mint {
@@ -1107,22 +1139,43 @@ mod tests {
             cdk_signatory::db_signatory::DbSignatory::new(
                 localstore.clone(),
                 config.seed,
-                config.supported_units,
+                config.supported_units.clone(),
                 HashMap::new(),
             )
             .await
             .expect("Failed to create signatory"),
         );
 
-        Mint::new(MintInfo::default(), signatory, localstore, HashMap::new())
-            .await
-            .unwrap()
+        for (unit, (fee, amounts)) in &config.supported_units {
+            signatory
+                .rotate_keyset(RotateKeyArguments {
+                    unit: unit.clone(),
+                    amounts: amounts.clone(),
+                    input_fee_ppk: *fee,
+                    keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                    final_expiry: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        Mint::new(
+            MintInfo::default(),
+            signatory,
+            localstore,
+            HashMap::new(),
+            1000,
+            1000,
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
     async fn mint_mod_new_mint() {
         let mut supported_units = HashMap::new();
-        supported_units.insert(CurrencyUnit::default(), (0, 32));
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
         let config = MintConfig::<'_> {
             supported_units,
             ..Default::default()
@@ -1151,7 +1204,8 @@ mod tests {
     #[tokio::test]
     async fn mint_mod_rotate_keyset() {
         let mut supported_units = HashMap::new();
-        supported_units.insert(CurrencyUnit::default(), (0, 32));
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
 
         let config = MintConfig::<'_> {
             supported_units,
@@ -1163,7 +1217,7 @@ mod tests {
         let first_keyset_id = keysets.keysets[0].id;
 
         // set the first keyset to inactive and generate a new keyset
-        mint.rotate_keyset(CurrencyUnit::default(), vec![1], 1)
+        mint.rotate_keyset(CurrencyUnit::default(), vec![1], 1, true, None)
             .await
             .expect("test");
 
@@ -1180,13 +1234,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mint_mod_rotate_keyset_with_expiry() {
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        let expiry: u64 = 1_000_000;
+        let keyset_info = mint
+            .rotate_keyset(CurrencyUnit::default(), vec![1], 0, true, Some(expiry))
+            .await
+            .expect("rotate with expiry");
+
+        assert_eq!(
+            keyset_info.final_expiry,
+            Some(expiry),
+            "final_expiry must be stored in the rotated keyset"
+        );
+
+        // Also verify it is retrievable through get_keyset_info
+        let stored = mint
+            .get_keyset_info(&keyset_info.id)
+            .expect("keyset should be found");
+        assert_eq!(stored.final_expiry, Some(expiry));
+    }
+
+    #[tokio::test]
     async fn test_mint_keyset_gen() {
         let seed = bip39::Mnemonic::from_str(
             "dismiss price public alone audit gallery ignore process swap dance crane furnace",
         )
         .unwrap();
         let mut supported_units = HashMap::new();
-        supported_units.insert(CurrencyUnit::default(), (0, 32));
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
 
         let config = MintConfig::<'_> {
             seed: &seed.to_seed_normalized(""),
@@ -1197,7 +1283,8 @@ mod tests {
 
         let keys = mint.pubkeys();
 
-        let expected_keys = r#"{"keysets":[{"id":"005f6e8c540c9e61","unit":"sat","active":true,"keys":{"1":"03e8aded7525acee36e3394e28f2dcbc012533ef2a2b085a55fc291d311afee3ef","1024":"0351a68a667c5fc21d66c187baecefa1d65529d06b7ae13112d432b6bca16b0e8c","1048576":"02b016346e5a322d371c6e6164b28b31b4d93a51572351ca2f26cdc12e916d9ac3","1073741824":"03f12e6a0903ed0db87485a296b1dca9d953a8a6919ff88732238fbc672d6bd125","128":"0351e33a076f415c2cadc945bc9bcb75bf4a774b28df8a0605dea1557e5897fed8","131072":"027cdf7be8b20a49ac7f2f065f7c53764c8926799877858c6b00b888a8aa6741a5","134217728":"0380658e5163fcf274e1ace6c696d1feef4c6068e0d03083d676dc5ef21804f22d","16":"031dbab0e4f7fb4fb0030f0e1a1dc80668eadd0b1046df3337bb13a7b9c982d392","16384":"028e9c6ce70f34cd29aad48656bf8345bb5ba2cb4f31fdd978686c37c93f0ab411","16777216":"02f2508e7df981c32f7b0008a273e2a1f19c23bb60a1561dba6b2a95ed1251eb90","2":"02628c0919e5cb8ce9aed1f81ce313f40e1ab0b33439d5be2abc69d9bb574902e0","2048":"0376166d8dcf97d8b0e9f11867ff0dafd439c90255b36a25be01e37e14741b9c6a","2097152":"028f25283e36a11df7713934a5287267381f8304aca3c1eb1b89fddce973ef1436","2147483648":"02cece3fb38a54581e0646db4b29242b6d78e49313dda46764094f9d128c1059c1","256":"0314b9f4300367c7e64fa85770da90839d2fc2f57d63660f08bb3ebbf90ed76840","262144":"026939b8f766c3ebaf26408e7e54fc833805563e2ef14c8ee4d0435808b005ec4c","268435456":"031526f03de945c638acccb879de837ac3fabff8590057cfb8552ebcf51215f3aa","32":"037241f7ad421374eb764a48e7769b5e2473582316844fda000d6eef28eea8ffb8","32768":"0253e34bab4eec93e235c33994e01bf851d5caca4559f07d37b5a5c266de7cf840","33554432":"0381883a1517f8c9979a84fcd5f18437b1a2b0020376ecdd2e515dc8d5a157a318","4":"039e7c7f274e1e8a90c61669e961c944944e6154c0794fccf8084af90252d2848f","4096":"03d40f47b4e5c4d72f2a977fab5c66b54d945b2836eb888049b1dd9334d1d70304","4194304":"03e5841d310819a49ec42dfb24839c61f68bbfc93ac68f6dad37fd5b2d204cc535","512":"030d95abc7e881d173f4207a3349f4ee442b9e51cc461602d3eb9665b9237e8db3","524288":"03772542057493a46eed6513b40386e766eedada16560ffde2f776b65794e9f004","536870912":"035eb3e7262e126c5503e1b402db05f87de6556773ae709cb7aa1c3b0986b87566","64":"02bc9767b4abf88becdac47a59e67ee9a9a80b9864ef57d16084575273ac63c0e7","65536":"02684ede207f9ace309b796b5259fc81ef0d4492b4fb5d66cf866b0b4a6f27bec9","67108864":"02aa648d39c9a725ef5927db15af6895f0d43c17f0a31faff4406314fc80180086","8":"02ca0e563ae941700aefcb16a7fb820afbb3258ae924ab520210cb730227a76ca3","8192":"03be18afaf35a29d7bcd5dfd1936d82c1c14691a63f8aa6ece258e16b0c043049b","8388608":"0307ebfeb87b7bca9baa03fad00499e5cc999fa5179ef0b7ad4f555568bcb946f5"},"input_fee_ppk":0}]}"#;
+        let expected_keys = r#"{"keysets":[{"id":"00214f2e37bdebad","unit":"sat","active":true,"keys":{"1":"024aebe0f8be04b1ba1d7d6b7fe454c9ae43e0fa22b2fdc88b172f3c5a0d19aaa4","1024":"02f050a80caa51a655a4adfcb4c9f6954d9d3b465d4535055319090948d4e89eb5","1048576":"0270b4f86ee9b5a3b3e4ee7f0067af466676c57265c65ce91fbecac7d07ee507d1","1073741824":"035f7fd86429f45f19463840cb90a6053197e808b38ca2e32e2e8690e269c6d820","128":"0214318e5f69e01babdfc0fe923801a58e6e4fd24efe13432f2fec03eae746a0ca","131072":"02aee4305555703649245920911f9da6bc86d59ca7a016b753925454288bf05758","134217728":"02647036cd6c6e93a520968a33f20599f147debc4dce1994e83dc86946ff8c0183","16":"03e41c8e640ad4bcba9d39a0553a8ac1059a0bfd65fd9c19efbe6db844d0d04440","16384":"026c140e10dbdf282f47d0889b427a18c18ef9dfc87888c4487aea7093d3a9dd2e","16777216":"0204d4854439b387fdee5ad46806e4f8a38dabc0158ddcc189912fdc76e2f13161","2":"02c36fe78839c9ccbf3ea3f43b0d38ebd0e25df5310975de879b6fe9b53a3f4038","2048":"03b80c919d38ae697f28af7b5812f38ab886072179616d2b1636708473cd351cf3","2097152":"023a0d0e3a76b085df6f02b1b454758062a097c52927e682be458d549781cbcc96","2147483648":"03e47890abf0fc06b178500dc642e01a648a3674b89634eefc0269c0561023b135","256":"0294de1d276c4b092b41eb50a6545c1d07c4fe173214fd299925774ae1dc190925","262144":"02069c8cbd7e26d7cf84d7a1e2080a1006f4541c6ec75628bf2f4f15dff31ca39a","268435456":"03667e9818b5c49d7fb9ce6ddbfee8933a6ad62b9f15297c84adb251d9cb0db4a2","32":"03d49648d7137553edb6d9d45a47e271fff7301b84e7c854844292dc67d3f39aa2","32768":"02ac41bdfbfbdbb6ebedeb2651c05a6c01e44c15f69cc728878e988eab0af98265","33554432":"03502a5360cb536d3e32abd0bddb214c2a51d9a0c6dc41b346b603206b607074ae","4":"03d8deb39a4d45d120980c973aeb2b4aa9ca1ffbf222a2b7b83f7e1bc68453e6fb","4096":"03d131e59268288cb6a9af37e6ad3f6702cefb36cd4b7fb21120355acf2563749f","4194304":"029b1766c75b5c8789c81194551a65c7902e23fc974ae39a1e2f8a69fe1a786a1f","512":"030552b9dba664409946d5f895cdda030bf7bad8dc7ce085ffb93dbfa54ef2dbfc","524288":"0276c4ca58705002ae7319b33c63e4fcd0aca83e4bf731a1a047c64d4ca3fedd8d","536870912":"028263d89b6ca5fa838a37db6ab35606b2c2955aa717956afc872b9ed3f31c48c5","64":"03966b40fb692370864afe4f161909247b589f4c572a5aa0895b0f297fe00dc894","65536":"03434e6c95715e2cce9f09a40125cbf1dec8247784c22fc5d2629092401b177835","67108864":"03c3ac346a9b0671caffcc3a16e18fbf679b024a4e5f85d7edebc2ca0152b97b7b","8":"0360bb9c61e60f998585768a8893f89963da5699d6ee76c938d148ec3815ed5419","8192":"022cc0be442980edb83fa46771dc3c4303cc572b03d3b174879ca2e10b071f2b4b","8388608":"032818f6e7d6d6dec4bd349df6e609f6c2a9555012e924356c911ee2dbfa8a3d98"},"input_fee_ppk":0}]}"#;
+        println!("keys: {}", serde_json::to_string(&keys.clone()).unwrap());
 
         assert_eq!(expected_keys, serde_json::to_string(&keys.clone()).unwrap());
     }
@@ -1205,7 +1292,8 @@ mod tests {
     #[tokio::test]
     async fn test_start_stop_lifecycle() {
         let mut supported_units = HashMap::new();
-        supported_units.insert(CurrencyUnit::default(), (0, 32));
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
         let config = MintConfig::<'_> {
             supported_units,
             ..Default::default()
@@ -1227,5 +1315,34 @@ mod tests {
         // Should be able to start again after stopping
         mint.start().await.expect("Should be able to restart");
         mint.stop().await.expect("Final stop should work");
+    }
+
+    #[tokio::test]
+    async fn mint_unit_string_collision() {
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..32).map(|i| 2_u64.pow(i as u32)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts.clone()));
+        let config = MintConfig::<'_> {
+            supported_units: supported_units.clone(),
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        let currency_unit = CurrencyUnit::custom("sW8W2A_hTH_gapj1_vj5suO3JI_");
+        let rotate_argument = RotateKeyArguments {
+            unit: currency_unit,
+            amounts,
+            input_fee_ppk: 100,
+            keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            final_expiry: None,
+        };
+        let rotation_result = mint.signatory.rotate_keyset(rotate_argument).await;
+
+        assert!(rotation_result.is_err());
+
+        assert!(matches!(
+            rotation_result,
+            Err(Error::UnitStringCollision(_currency_unit))
+        ));
     }
 }

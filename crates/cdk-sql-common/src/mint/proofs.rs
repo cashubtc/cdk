@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::database::mint::{ProofFilter, ProofListResult, ProofRecord};
-use cdk_common::database::{self, Acquired, Error, MintProofsDatabase};
+use cdk_common::database::mint::{Acquired, ProofFilter, ProofListResult, ProofRecord};
+use cdk_common::database::{self, Error, MintProofsDatabase};
 use cdk_common::mint::{Operation, ProofsWithState};
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::quote_id::QuoteId;
@@ -72,6 +72,7 @@ pub(super) fn sql_row_to_proof(row: Vec<Column>) -> Result<Proof, Error> {
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
         witness: column_as_nullable_string!(witness).and_then(|w| serde_json::from_str(&w).ok()),
         dleq: None,
+        p2pk_e: None,
     })
 }
 
@@ -96,6 +97,7 @@ pub(super) fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, St
             witness: column_as_nullable_string!(witness)
                 .and_then(|w| serde_json::from_str(&w).ok()),
             dleq: None,
+            p2pk_e: None,
         },
         state,
     ))

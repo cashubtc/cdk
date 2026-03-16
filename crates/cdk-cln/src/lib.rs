@@ -422,7 +422,11 @@ impl MintPayment for Cln {
                     }
                 }
 
-                max_fee_msat = bolt11_options.max_fee_amount.map(|a| a.into());
+                max_fee_msat = bolt11_options
+                    .max_fee_amount
+                    .as_ref()
+                    .map(|a| a.to_msat())
+                    .transpose()?;
 
                 bolt11_options.bolt11.to_string()
             }
@@ -477,7 +481,11 @@ impl MintPayment for Cln {
 
                 self.check_outgoing_unpaided(&payment_identifier).await?;
 
-                max_fee_msat = bolt12_options.max_fee_amount.map(|a| a.into());
+                max_fee_msat = bolt12_options
+                    .max_fee_amount
+                    .clone()
+                    .map(|a| a.to_msat())
+                    .transpose()?;
 
                 cln_response.invoice
             }
@@ -489,6 +497,9 @@ impl MintPayment for Cln {
         if invoice.is_empty() {
             return Err(Error::UnknownInvoice.into());
         }
+
+        tracing::debug!("Attempting payment with max fee: {:?}", max_fee_msat);
+
         let cln_response = cln_client
             .call_typed(&PayRequest {
                 bolt11: invoice,
@@ -550,7 +561,6 @@ impl MintPayment for Cln {
     #[instrument(skip_all)]
     async fn create_incoming_payment_request(
         &self,
-        unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
@@ -568,8 +578,7 @@ impl MintPayment for Cln {
 
                 let label = Uuid::new_v4().to_string();
 
-                let amount_converted =
-                    Amount::new(amount.into(), unit.clone()).convert_to(&CurrencyUnit::Msat)?;
+                let amount_converted = amount.convert_to(&CurrencyUnit::Msat)?;
                 let amount_msat =
                     AmountOrAny::Amount(CLN_Amount::from_msat(amount_converted.value()));
 
@@ -612,8 +621,7 @@ impl MintPayment for Cln {
                 // Match like this until we change to option
                 let amount = match amount {
                     Some(amount) => {
-                        let amount = Amount::new(amount.into(), unit.clone())
-                            .convert_to(&CurrencyUnit::Msat)?;
+                        let amount = amount.convert_to(&CurrencyUnit::Msat)?;
 
                         amount.value().to_string()
                     }
