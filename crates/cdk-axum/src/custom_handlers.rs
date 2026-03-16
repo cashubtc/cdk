@@ -426,16 +426,14 @@ pub async fn post_melt_custom(
     // Check for async preference in either the Prefer header or the request body
     let respond_async = prefer.respond_async || payload.is_prefer_async();
 
+    let pending = state.mint.melt(&payload).await.map_err(into_response)?;
+
     let res = if respond_async {
         // Asynchronous processing - return immediately after setup
-        state
-            .mint
-            .melt_async(&payload)
-            .await
-            .map_err(into_response)?
+        pending.into_pending_response()
     } else {
         // Synchronous processing - wait for completion
-        state.mint.melt(&payload).await.map_err(into_response)?
+        pending.await.map_err(into_response)?
     };
 
     Ok(Json(res))

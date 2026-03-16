@@ -1138,14 +1138,15 @@ async fn test_fake_mint_multiple_unit_swap() {
         .await
         .unwrap();
 
-    let mut proof_streams =
-        wallet_usd.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let usd_proofs = proof_streams
-        .next()
+    let usd_proofs = wallet_usd
+        .wait_and_mint_quote(
+            mint_quote,
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(30),
+        )
         .await
-        .expect("payment")
-        .expect("no error");
+        .unwrap();
 
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
