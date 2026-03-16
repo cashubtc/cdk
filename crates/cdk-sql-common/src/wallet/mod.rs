@@ -478,7 +478,8 @@ where
                 spending_condition,
                 used_by_operation,
                 created_by_operation,
-                p2pk_e
+                p2pk_e,
+                keyset_counter
             FROM proof
             "#,
         )?
@@ -525,7 +526,8 @@ where
                 spending_condition,
                 used_by_operation,
                 created_by_operation,
-                p2pk_e
+                p2pk_e,
+                keyset_counter
             FROM proof
             WHERE y IN (:ys)
         "#,
@@ -696,9 +698,9 @@ where
             query(
                 r#"
     INSERT INTO proof
-    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, p2pk_e)
+    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, p2pk_e, keyset_counter)
     VALUES
-    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :p2pk_e)
+    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :p2pk_e, :keyset_counter)
     ON CONFLICT(y) DO UPDATE SET
         mint_url = excluded.mint_url,
         state = excluded.state,
@@ -714,7 +716,8 @@ where
         dleq_r = excluded.dleq_r,
         used_by_operation = excluded.used_by_operation,
         created_by_operation = excluded.created_by_operation,
-        p2pk_e = excluded.p2pk_e
+        p2pk_e = excluded.p2pk_e,
+        keyset_counter = excluded.keyset_counter
     ;
             "#,
             )?
@@ -761,6 +764,7 @@ where
                     .as_ref()
                     .map(|pk| pk.to_bytes().to_vec()),
             )
+            .bind("keyset_counter", proof.keyset_counter.map(|c| c as i64))
             .execute(&tx)
             .await?;
         }
@@ -1466,7 +1470,8 @@ where
                 spending_condition,
                 used_by_operation,
                 created_by_operation,
-                p2pk_e
+                p2pk_e,
+                keyset_counter
             FROM proof
             WHERE used_by_operation = :operation_id
             "#,
@@ -1804,7 +1809,8 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
             spending_condition,
             used_by_operation,
             created_by_operation,
-            p2pk_e
+            p2pk_e,
+            keyset_counter
         ) = row
     );
 
@@ -1842,6 +1848,8 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         column_as_nullable_string!(used_by_operation).and_then(|id| Uuid::from_str(&id).ok());
     let created_by_operation =
         column_as_nullable_string!(created_by_operation).and_then(|id| Uuid::from_str(&id).ok());
+    let keyset_counter: Option<u32> =
+        column_as_nullable_number!(keyset_counter).map(|v: i64| v as u32);
 
     Ok(ProofInfo {
         proof,
@@ -1856,6 +1864,7 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         used_by_operation,
         created_by_operation,
+        keyset_counter,
     })
 }
 

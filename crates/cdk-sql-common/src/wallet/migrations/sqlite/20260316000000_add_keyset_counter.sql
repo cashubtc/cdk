@@ -1,0 +1,1 @@
+ALTER TABLE proof ADD COLUMN keyset_counter INTEGER NULL;
