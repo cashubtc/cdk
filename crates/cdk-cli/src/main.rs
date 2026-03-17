@@ -90,6 +90,8 @@ enum Commands {
     Transfer(sub_commands::transfer::TransferSubCommand),
     /// Reclaim pending proofs that are no longer pending
     CheckPending,
+    /// Check incoming payments for stored payment requests.
+    CheckRequests,
     /// View mint info
     MintInfo(sub_commands::mint_info::MintInfoSubcommand),
     /// Mint proofs via bolt11
@@ -266,6 +268,9 @@ async fn main() -> Result<()> {
         }
         Commands::CheckPending => {
             sub_commands::check_pending::check_pending(&wallet_repository).await
+        }
+        Commands::CheckRequests => {
+            sub_commands::check_requests::check_requests(&wallet_repository).await
         }
         Commands::MintInfo(sub_command_args) => {
             sub_commands::mint_info::mint_info(args.proxy, sub_command_args).await
