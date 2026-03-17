@@ -98,7 +98,7 @@ CDK_MINTD_DATABASE=${1:-"sqlite"}  # Default to sqlite if not specified
 
 # Create a temporary directory
 export CDK_ITESTS_DIR=$(mktemp -d)
-export CDK_ITESTS_MINT_ADDR="127.0.0.1"
+export CDK_ITESTS_MINT_ADDR="${2:-127.0.0.1}" # Default to localhost if not specified
 export CDK_ITESTS_MINT_PORT_0=8085
 export CDK_ITESTS_MINT_PORT_1=8087
 export CDK_ITESTS_MINT_PORT_2=8089
@@ -182,10 +182,10 @@ cat > "$CDK_ITESTS_DIR/start_cln_mint.sh" << EOF
 #!/usr/bin/env bash
 cd "$PROJECT_ROOT"
 export CDK_MINTD_CLN_RPC_PATH="$CDK_ITESTS_DIR/cln/one/regtest/lightning-rpc"
-export CDK_MINTD_URL="http://127.0.0.1:8085"
+export CDK_MINTD_URL="$CDK_TEST_MINT_URL"
 export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/cln_mint"
-export CDK_MINTD_LISTEN_HOST="127.0.0.1"
-export CDK_MINTD_LISTEN_PORT=8085
+export CDK_MINTD_LISTEN_HOST="$CDK_ITESTS_MINT_ADDR"
+export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_0
 export CDK_MINTD_LN_BACKEND="cln"
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
 export CDK_MINTD_LOGGING_OUTPUT="both"
@@ -211,10 +211,10 @@ cd "$PROJECT_ROOT"
 export CDK_MINTD_LND_ADDRESS="https://localhost:10010"
 export CDK_MINTD_LND_CERT_FILE="$CDK_ITESTS_DIR/lnd/two/tls.cert"
 export CDK_MINTD_LND_MACAROON_FILE="$CDK_ITESTS_DIR/lnd/two/data/chain/bitcoin/regtest/admin.macaroon"
-export CDK_MINTD_URL="http://127.0.0.1:8087"
+export CDK_MINTD_URL="$CDK_TEST_MINT_URL_2"
 export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/lnd_mint"
-export CDK_MINTD_LISTEN_HOST="127.0.0.1"
-export CDK_MINTD_LISTEN_PORT=8087
+export CDK_MINTD_LISTEN_HOST="$CDK_ITESTS_MINT_ADDR"
+export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_1
 export CDK_MINTD_LN_BACKEND="lnd"
 export CDK_MINTD_MNEMONIC="cattle gold bind busy sound reduce tone addict baby spend february strategy"
 export CDK_MINTD_LOGGING_OUTPUT="both"
@@ -237,10 +237,10 @@ EOF
 cat > "$CDK_ITESTS_DIR/start_ldk_node_mint.sh" << EOF
 #!/usr/bin/env bash
 cd "$PROJECT_ROOT"
-export CDK_MINTD_URL="http://127.0.0.1:8089"
+export CDK_MINTD_URL="$CDK_TEST_MINT_URL_2"
 export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/ldk_node_mint"
-export CDK_MINTD_LISTEN_HOST="127.0.0.1"
-export CDK_MINTD_LISTEN_PORT=8089
+export CDK_MINTD_LISTEN_HOST="$CDK_ITESTS_MINT_ADDR"
+export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_2
 export CDK_MINTD_LN_BACKEND="ldk-node"
 export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
 export CDK_MINTD_LOGGING_FILE_LEVEL="debug"
