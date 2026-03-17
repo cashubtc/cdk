@@ -4,7 +4,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
-use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
+use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder, WalletTrait};
 
 use crate::error::FfiError;
 use crate::token::Token;
@@ -25,8 +25,9 @@ impl Wallet {
         Self { inner }
     }
 
-    pub(crate) fn inner(&self) -> Arc<CdkWallet> {
-        self.inner.clone()
+    /// Access the inner CDK wallet
+    pub(crate) fn inner(&self) -> &Arc<CdkWallet> {
+        &self.inner
     }
 }
 
@@ -223,7 +224,12 @@ impl Wallet {
     ) -> Result<MintQuote, FfiError> {
         let quote = self
             .inner
-            .mint_quote(payment_method, amount.map(Into::into), description, extra)
+            .mint_quote(
+                payment_method.into(),
+                amount.map(Into::into),
+                description,
+                extra,
+            )
             .await?;
         Ok(quote.into())
     }

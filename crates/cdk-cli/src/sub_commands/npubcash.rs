@@ -7,7 +7,7 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{Wallet, WalletRepository};
+use cdk::wallet::{Wallet, WalletRepository, WalletTrait};
 use cdk::StreamExt;
 use clap::Subcommand;
 use nostr_sdk::ToBech32;

@@ -20,6 +20,7 @@ use cashu::{
 };
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
+use cdk::wallet::WalletTrait;
 use cdk::Amount;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;

@@ -51,6 +51,7 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, State};
 use crate::util::unix_time;
 use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
+use crate::wallet::WalletTrait;
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
 pub(crate) mod compensation;

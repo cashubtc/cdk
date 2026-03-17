@@ -10,7 +10,7 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepositoryBuilder};
+use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepositoryBuilder, WalletTrait};
 use cdk::Amount;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_sqlite::wallet::memory;

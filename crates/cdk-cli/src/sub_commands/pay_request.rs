@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use anyhow::{anyhow, Result};
 use cdk::nuts::PaymentRequest;
-use cdk::wallet::WalletRepository;
+use cdk::wallet::{WalletRepository, WalletTrait};
 use cdk::Amount;
 use clap::Args;
 

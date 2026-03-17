@@ -1,0 +1,406 @@
+//! WalletTrait implementation for the FFI Wallet.
+//!
+//! Implements `cdk_common::wallet::Wallet` for the FFI `Wallet` type,
+//! converting between FFI types and CDK types at the boundary.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use cdk::wallet::WalletTrait as CdkWalletTrait;
+use cdk_common::wallet::Wallet as WalletTraitDef;
+
+use crate::error::FfiError;
+use crate::types::*;
+use crate::wallet::Wallet;
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+impl WalletTraitDef for Wallet {
+    type Error = FfiError;
+    type Amount = Amount;
+    type MintUrl = MintUrl;
+    type CurrencyUnit = CurrencyUnit;
+    type MintInfo = MintInfo;
+    type KeySetInfo = KeySetInfo;
+    type MintQuote = MintQuote;
+    type MeltQuote = MeltQuote;
+    type PaymentMethod = PaymentMethod;
+    type MeltOptions = MeltOptions;
+    type OperationId = String;
+    type PreparedSend = Arc<PreparedSend>;
+    type PreparedMelt = PreparedMelt;
+    type Subscription = Arc<crate::types::ActiveSubscription>;
+
+    fn mint_url(&self) -> Self::MintUrl {
+        self.inner().mint_url.clone().into()
+    }
+
+    fn unit(&self) -> Self::CurrencyUnit {
+        self.inner().unit.clone().into()
+    }
+
+    async fn total_balance(&self) -> Result<Self::Amount, Self::Error> {
+        let balance = CdkWalletTrait::total_balance(self.inner().as_ref()).await?;
+        Ok(balance.into())
+    }
+
+    async fn total_pending_balance(&self) -> Result<Self::Amount, Self::Error> {
+        let balance = CdkWalletTrait::total_pending_balance(self.inner().as_ref()).await?;
+        Ok(balance.into())
+    }
+
+    async fn total_reserved_balance(&self) -> Result<Self::Amount, Self::Error> {
+        let balance = CdkWalletTrait::total_reserved_balance(self.inner().as_ref()).await?;
+        Ok(balance.into())
+    }
+
+    async fn fetch_mint_info(&self) -> Result<Option<Self::MintInfo>, Self::Error> {
+        let info = CdkWalletTrait::fetch_mint_info(self.inner().as_ref()).await?;
+        Ok(info.map(Into::into))
+    }
+
+    async fn load_mint_info(&self) -> Result<Self::MintInfo, Self::Error> {
+        let info = CdkWalletTrait::load_mint_info(self.inner().as_ref()).await?;
+        Ok(info.into())
+    }
+
+    async fn refresh_keysets(&self) -> Result<Vec<Self::KeySetInfo>, Self::Error> {
+        let keysets = CdkWalletTrait::refresh_keysets(self.inner().as_ref()).await?;
+        Ok(keysets.into_iter().map(Into::into).collect())
+    }
+
+    async fn get_active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error> {
+        let keyset = CdkWalletTrait::get_active_keyset(self.inner().as_ref()).await?;
+        Ok(keyset.into())
+    }
+
+    async fn mint_quote(
+        &self,
+        method: Self::PaymentMethod,
+        amount: Option<Self::Amount>,
+        description: Option<String>,
+        extra: Option<String>,
+    ) -> Result<Self::MintQuote, Self::Error> {
+        let quote = CdkWalletTrait::mint_quote(
+            self.inner().as_ref(),
+            method.into(),
+            amount.map(Into::into),
+            description,
+            extra,
+        )
+        .await?;
+        Ok(quote.into())
+    }
+
+    async fn melt_quote(
+        &self,
+        method: Self::PaymentMethod,
+        request: String,
+        options: Option<Self::MeltOptions>,
+        extra: Option<String>,
+    ) -> Result<Self::MeltQuote, Self::Error> {
+        let quote = CdkWalletTrait::melt_quote(
+            self.inner().as_ref(),
+            method.into(),
+            request,
+            options.map(Into::into),
+            extra,
+        )
+        .await?;
+        Ok(quote.into())
+    }
+
+    // === Transactions ===
+
+    async fn list_transactions(
+        &self,
+        direction: Option<cdk_common::wallet::TransactionDirection>,
+    ) -> Result<Vec<cdk_common::wallet::Transaction>, Self::Error> {
+        let txs = CdkWalletTrait::list_transactions(self.inner().as_ref(), direction).await?;
+        Ok(txs)
+    }
+
+    async fn get_transaction(
+        &self,
+        id: cdk_common::wallet::TransactionId,
+    ) -> Result<Option<cdk_common::wallet::Transaction>, Self::Error> {
+        let tx = CdkWalletTrait::get_transaction(self.inner().as_ref(), id).await?;
+        Ok(tx)
+    }
+
+    async fn get_proofs_for_transaction(
+        &self,
+        id: cdk_common::wallet::TransactionId,
+    ) -> Result<cdk_common::Proofs, Self::Error> {
+        let proofs = CdkWalletTrait::get_proofs_for_transaction(self.inner().as_ref(), id).await?;
+        Ok(proofs)
+    }
+
+    async fn revert_transaction(
+        &self,
+        id: cdk_common::wallet::TransactionId,
+    ) -> Result<(), Self::Error> {
+        CdkWalletTrait::revert_transaction(self.inner().as_ref(), id).await?;
+        Ok(())
+    }
+
+    // === Proofs ===
+
+    async fn check_all_pending_proofs(&self) -> Result<Self::Amount, Self::Error> {
+        let amount = CdkWalletTrait::check_all_pending_proofs(self.inner().as_ref()).await?;
+        Ok(amount.into())
+    }
+
+    async fn check_proofs_spent(
+        &self,
+        proofs: cdk_common::Proofs,
+    ) -> Result<Vec<cdk_common::nuts::nut07::ProofState>, Self::Error> {
+        let states = CdkWalletTrait::check_proofs_spent(self.inner().as_ref(), proofs).await?;
+        Ok(states)
+    }
+
+    // === Fees ===
+
+    async fn get_keyset_fees_by_id(
+        &self,
+        keyset_id: cdk_common::nuts::Id,
+    ) -> Result<u64, Self::Error> {
+        let fee = CdkWalletTrait::get_keyset_fees_by_id(self.inner().as_ref(), keyset_id).await?;
+        Ok(fee)
+    }
+
+    async fn calculate_fee(
+        &self,
+        proof_count: u64,
+        keyset_id: cdk_common::nuts::Id,
+    ) -> Result<Self::Amount, Self::Error> {
+        let fee =
+            CdkWalletTrait::calculate_fee(self.inner().as_ref(), proof_count, keyset_id).await?;
+        Ok(fee.into())
+    }
+
+    // === Receive ===
+
+    async fn receive(
+        &self,
+        encoded_token: &str,
+        options: cdk_common::wallet::ReceiveOptions,
+    ) -> Result<Self::Amount, Self::Error> {
+        let amount = CdkWalletTrait::receive(self.inner().as_ref(), encoded_token, options).await?;
+        Ok(amount.into())
+    }
+
+    async fn receive_proofs(
+        &self,
+        proofs: cdk_common::Proofs,
+        options: cdk_common::wallet::ReceiveOptions,
+        memo: Option<String>,
+        token: Option<String>,
+    ) -> Result<Self::Amount, Self::Error> {
+        let amount =
+            CdkWalletTrait::receive_proofs(self.inner().as_ref(), proofs, options, memo, token)
+                .await?;
+        Ok(amount.into())
+    }
+
+    // === Send ===
+
+    async fn prepare_send(
+        &self,
+        amount: Self::Amount,
+        options: cdk_common::wallet::SendOptions,
+    ) -> Result<Arc<PreparedSend>, Self::Error> {
+        let data =
+            CdkWalletTrait::prepare_send(self.inner().as_ref(), amount.into(), options).await?;
+        Ok(Arc::new(PreparedSend::from_data(
+            self.inner().clone(),
+            data,
+        )))
+    }
+
+    async fn get_pending_sends(&self) -> Result<Vec<String>, Self::Error> {
+        let ids = CdkWalletTrait::get_pending_sends(self.inner().as_ref()).await?;
+        Ok(ids.into_iter().map(|id| id.to_string()).collect())
+    }
+
+    async fn revoke_send(&self, operation_id: String) -> Result<Self::Amount, Self::Error> {
+        let uuid = uuid::Uuid::parse_str(&operation_id)
+            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
+        let amount = CdkWalletTrait::revoke_send(self.inner().as_ref(), uuid).await?;
+        Ok(amount.into())
+    }
+
+    async fn check_send_status(&self, operation_id: String) -> Result<bool, Self::Error> {
+        let uuid = uuid::Uuid::parse_str(&operation_id)
+            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
+        let claimed = CdkWalletTrait::check_send_status(self.inner().as_ref(), uuid).await?;
+        Ok(claimed)
+    }
+
+    // === Mint (Issue) ===
+
+    async fn mint(
+        &self,
+        quote_id: &str,
+        split_target: cdk_common::amount::SplitTarget,
+        spending_conditions: Option<cdk_common::nuts::SpendingConditions>,
+    ) -> Result<cdk_common::Proofs, Self::Error> {
+        let proofs = CdkWalletTrait::mint(
+            self.inner().as_ref(),
+            quote_id,
+            split_target,
+            spending_conditions,
+        )
+        .await?;
+        Ok(proofs)
+    }
+
+    async fn check_mint_quote_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<Self::MintQuote, Self::Error> {
+        let quote =
+            CdkWalletTrait::check_mint_quote_status(self.inner().as_ref(), quote_id).await?;
+        Ok(quote.into())
+    }
+
+    async fn fetch_mint_quote(
+        &self,
+        quote_id: &str,
+        payment_method: Option<Self::PaymentMethod>,
+    ) -> Result<Self::MintQuote, Self::Error> {
+        let method = payment_method.map(Into::into);
+        let quote =
+            CdkWalletTrait::fetch_mint_quote(self.inner().as_ref(), quote_id, method).await?;
+        Ok(quote.into())
+    }
+
+    // === Melt ===
+
+    async fn prepare_melt(
+        &self,
+        quote_id: &str,
+        metadata: HashMap<String, String>,
+    ) -> Result<PreparedMelt, Self::Error> {
+        let data = CdkWalletTrait::prepare_melt(self.inner().as_ref(), quote_id, metadata).await?;
+        Ok(PreparedMelt::from_data(self.inner().clone(), data))
+    }
+
+    async fn prepare_melt_proofs(
+        &self,
+        quote_id: &str,
+        proofs: cdk_common::Proofs,
+        metadata: HashMap<String, String>,
+    ) -> Result<PreparedMelt, Self::Error> {
+        let data =
+            CdkWalletTrait::prepare_melt_proofs(self.inner().as_ref(), quote_id, proofs, metadata)
+                .await?;
+        Ok(PreparedMelt::from_data(self.inner().clone(), data))
+    }
+
+    // === Swap ===
+
+    async fn swap(
+        &self,
+        amount: Option<Self::Amount>,
+        split_target: cdk_common::amount::SplitTarget,
+        input_proofs: cdk_common::Proofs,
+        spending_conditions: Option<cdk_common::nuts::SpendingConditions>,
+        include_fees: bool,
+        use_p2bk: bool,
+    ) -> Result<Option<cdk_common::Proofs>, Self::Error> {
+        let result = CdkWalletTrait::swap(
+            self.inner().as_ref(),
+            amount.map(Into::into),
+            split_target,
+            input_proofs,
+            spending_conditions,
+            include_fees,
+            use_p2bk,
+        )
+        .await?;
+        Ok(result)
+    }
+
+    // === Auth ===
+
+    async fn set_cat(&self, cat: String) -> Result<(), Self::Error> {
+        CdkWalletTrait::set_cat(self.inner().as_ref(), cat).await?;
+        Ok(())
+    }
+
+    async fn set_refresh_token(&self, refresh_token: String) -> Result<(), Self::Error> {
+        CdkWalletTrait::set_refresh_token(self.inner().as_ref(), refresh_token).await?;
+        Ok(())
+    }
+
+    async fn refresh_access_token(&self) -> Result<(), Self::Error> {
+        CdkWalletTrait::refresh_access_token(self.inner().as_ref()).await?;
+        Ok(())
+    }
+
+    async fn mint_blind_auth(
+        &self,
+        amount: Self::Amount,
+    ) -> Result<cdk_common::Proofs, Self::Error> {
+        let proofs = CdkWalletTrait::mint_blind_auth(self.inner().as_ref(), amount.into()).await?;
+        Ok(proofs)
+    }
+
+    async fn get_unspent_auth_proofs(
+        &self,
+    ) -> Result<Vec<cdk_common::nuts::AuthProof>, Self::Error> {
+        let proofs = CdkWalletTrait::get_unspent_auth_proofs(self.inner().as_ref()).await?;
+        Ok(proofs)
+    }
+
+    // === Restore ===
+
+    async fn restore(&self) -> Result<cdk_common::wallet::Restored, Self::Error> {
+        let restored = CdkWalletTrait::restore(self.inner().as_ref()).await?;
+        Ok(restored)
+    }
+
+    // === Verification ===
+
+    async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error> {
+        CdkWalletTrait::verify_token_dleq(self.inner().as_ref(), token_str).await?;
+        Ok(())
+    }
+
+    // === Payment Requests ===
+
+    async fn pay_request(
+        &self,
+        request: cdk_common::nuts::nut18::PaymentRequest,
+        custom_amount: Option<Self::Amount>,
+    ) -> Result<(), Self::Error> {
+        CdkWalletTrait::pay_request(
+            self.inner().as_ref(),
+            request,
+            custom_amount.map(Into::into),
+        )
+        .await?;
+        Ok(())
+    }
+
+    // === Subscriptions ===
+
+    async fn subscribe_mint_quote_state(
+        &self,
+        quote_ids: Vec<String>,
+        method: Self::PaymentMethod,
+    ) -> Result<Arc<crate::types::ActiveSubscription>, Self::Error> {
+        let cdk_sub = CdkWalletTrait::subscribe_mint_quote_state(
+            self.inner().as_ref(),
+            quote_ids,
+            method.into(),
+        )
+        .await?;
+        let sub_id = uuid::Uuid::new_v4().to_string();
+        Ok(Arc::new(crate::types::ActiveSubscription::new(
+            cdk_sub, sub_id,
+        )))
+    }
+}
