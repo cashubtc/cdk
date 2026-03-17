@@ -3,7 +3,8 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cdk_mint_client::CdkMintClient;
+use super::with_version_header;
+use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::{MeltMethodOptions, UpdateNut05Request};
 
 /// Command to update NUT-05 (melt process) settings for the mint
@@ -43,7 +44,7 @@ pub struct UpdateNut05Command {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The NUT-05 configuration parameters to update
 pub async fn update_nut05(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut CdkMintManagementClient<Channel>,
     sub_command_args: &UpdateNut05Command,
 ) -> Result<()> {
     // Create options if amountless is set
@@ -52,14 +53,14 @@ pub async fn update_nut05(
         .map(|amountless| MeltMethodOptions { amountless });
 
     let _response = client
-        .update_nut05(Request::new(UpdateNut05Request {
+        .update_nut05(with_version_header(Request::new(UpdateNut05Request {
             method: sub_command_args.method.clone(),
             unit: sub_command_args.unit.clone(),
             disabled: sub_command_args.disabled,
             min_amount: sub_command_args.min_amount,
             max_amount: sub_command_args.max_amount,
             options,
-        }))
+        })))
         .await?;
 
     Ok(())

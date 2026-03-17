@@ -19,7 +19,9 @@ use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::{DatabasePool, Pool, PooledResource};
 
 mod auth;
+mod backup;
 mod completed_operations;
+mod filters;
 mod keys;
 mod keyvalue;
 mod proofs;

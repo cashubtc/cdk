@@ -3,7 +3,8 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cdk_mint_client::CdkMintClient;
+use super::with_version_header;
+use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::{MintMethodOptions, UpdateNut04Request};
 
 /// Command to update NUT-04 (mint process) settings for the mint
@@ -43,7 +44,7 @@ pub struct UpdateNut04Command {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The NUT-04 configuration parameters to update
 pub async fn update_nut04(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut CdkMintManagementClient<Channel>,
     sub_command_args: &UpdateNut04Command,
 ) -> Result<()> {
     // Create options if description is set
@@ -52,16 +53,14 @@ pub async fn update_nut04(
         .map(|description| MintMethodOptions { description });
 
     let _response = client
-        .update_nut04(crate::mint_rpc_cli::subcommands::with_version_header(
-            Request::new(UpdateNut04Request {
-                method: sub_command_args.method.clone(),
-                unit: sub_command_args.unit.clone(),
-                disabled: sub_command_args.disabled,
-                min_amount: sub_command_args.min_amount,
-                max_amount: sub_command_args.max_amount,
-                options,
-            }),
-        ))
+        .update_nut04(with_version_header(Request::new(UpdateNut04Request {
+            method: sub_command_args.method.clone(),
+            unit: sub_command_args.unit.clone(),
+            disabled: sub_command_args.disabled,
+            min_amount: sub_command_args.min_amount,
+            max_amount: sub_command_args.max_amount,
+            options,
+        })))
         .await?;
 
     Ok(())

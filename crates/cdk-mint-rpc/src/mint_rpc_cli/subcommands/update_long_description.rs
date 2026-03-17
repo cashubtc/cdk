@@ -3,7 +3,8 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cdk_mint_client::CdkMintClient;
+use super::with_version_header;
+use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateDescriptionRequest;
 
 /// Command to update the mint's long description
@@ -24,13 +25,15 @@ pub struct UpdateLongDescriptionCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new long description to set
 pub async fn update_long_description(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut CdkMintManagementClient<Channel>,
     sub_command_args: &UpdateLongDescriptionCommand,
 ) -> Result<()> {
     let _response = client
-        .update_long_description(Request::new(UpdateDescriptionRequest {
-            description: sub_command_args.description.clone(),
-        }))
+        .update_long_description(with_version_header(Request::new(
+            UpdateDescriptionRequest {
+                description: sub_command_args.description.clone(),
+            },
+        )))
         .await?;
 
     Ok(())

@@ -3,7 +3,8 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cdk_mint_client::CdkMintClient;
+use super::with_version_header;
+use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateNut04QuoteRequest;
 
 /// Command to update the state of a NUT-04 quote
@@ -28,14 +29,14 @@ pub struct UpdateNut04QuoteCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The quote ID and new state to set
 pub async fn update_nut04_quote_state(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut CdkMintManagementClient<Channel>,
     sub_command_args: &UpdateNut04QuoteCommand,
 ) -> Result<()> {
     let response = client
-        .update_nut04_quote(Request::new(UpdateNut04QuoteRequest {
+        .update_nut04_quote(with_version_header(Request::new(UpdateNut04QuoteRequest {
             quote_id: sub_command_args.quote_id.clone(),
             state: sub_command_args.state.clone(),
-        }))
+        })))
         .await?;
 
     let response = response.into_inner();

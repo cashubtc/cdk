@@ -3,7 +3,8 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cdk_mint_client::CdkMintClient;
+use super::with_version_header;
+use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateUrlRequest;
 
 /// Command to add a URL to the mint's list of endpoints
@@ -25,13 +26,13 @@ pub struct AddUrlCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The URL to add to the mint
 pub async fn add_url(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut CdkMintManagementClient<Channel>,
     sub_command_args: &AddUrlCommand,
 ) -> Result<()> {
     let _response = client
-        .add_url(Request::new(UpdateUrlRequest {
+        .add_url(with_version_header(Request::new(UpdateUrlRequest {
             url: sub_command_args.url.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())
@@ -55,13 +56,13 @@ pub struct RemoveUrlCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The URL to remove from the mint
 pub async fn remove_url(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut CdkMintManagementClient<Channel>,
     sub_command_args: &RemoveUrlCommand,
 ) -> Result<()> {
     let _response = client
-        .remove_url(Request::new(UpdateUrlRequest {
+        .remove_url(with_version_header(Request::new(UpdateUrlRequest {
             url: sub_command_args.url.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())

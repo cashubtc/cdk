@@ -3,7 +3,8 @@ use clap::Args;
 use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cdk_mint_client::CdkMintClient;
+use super::with_version_header;
+use crate::cdk_mint_management_client::CdkMintManagementClient;
 use crate::UpdateContactRequest;
 
 /// Command to add a contact method to the mint
@@ -26,14 +27,14 @@ pub struct AddContactCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The contact method and information to add
 pub async fn add_contact(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut CdkMintManagementClient<Channel>,
     sub_command_args: &AddContactCommand,
 ) -> Result<()> {
     let _response = client
-        .add_contact(Request::new(UpdateContactRequest {
+        .add_contact(with_version_header(Request::new(UpdateContactRequest {
             method: sub_command_args.method.clone(),
             info: sub_command_args.info.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())
@@ -59,14 +60,14 @@ pub struct RemoveContactCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The contact method and information to remove
 pub async fn remove_contact(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut CdkMintManagementClient<Channel>,
     sub_command_args: &RemoveContactCommand,
 ) -> Result<()> {
     let _response = client
-        .remove_contact(Request::new(UpdateContactRequest {
+        .remove_contact(with_version_header(Request::new(UpdateContactRequest {
             method: sub_command_args.method.clone(),
             info: sub_command_args.info.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())

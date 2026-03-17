@@ -4,16 +4,26 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
+use cdk_common::database::mint::{
+    BlindSignatureFilter, BlindSignatureListResult, BlindSignatureRecord,
+};
 use cdk_common::database::{self, Error, MintSignatureTransaction, MintSignaturesDatabase};
 use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{Amount, BlindSignature, BlindSignatureDleq, Id, PublicKey, SecretKey};
 
+use super::filters::{
+    apply_pagination_peek_ahead, bind_date_range, bind_keyset_ids, bind_operations, bind_units,
+    build_pagination_clause, build_where_clause, order_direction,
+};
 use super::proofs::sql_row_to_hashmap_amount;
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
-use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
+use crate::{
+    column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
+    unpack_into,
+};
 
 pub(crate) fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error> {
     unpack_into!(
@@ -40,6 +50,28 @@ pub(crate) fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignat
         keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
         dleq,
+    })
+}
+
+fn sql_row_to_blind_signature_record(row: Vec<Column>) -> Result<BlindSignatureRecord, Error> {
+    unpack_into!(
+        let (
+            amount, keyset_id, quote_id, created_time, signed_time, operation_kind, operation_id
+        ) = row
+    );
+
+    let amount: u64 = column_as_number!(amount);
+    let created_time: u64 = column_as_number!(created_time);
+    let signed_time: Option<u64> = column_as_nullable_number!(signed_time);
+
+    Ok(BlindSignatureRecord {
+        amount: Amount::from(amount),
+        keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
+        quote_id: column_as_nullable_string!(quote_id),
+        created_time,
+        signed_time,
+        operation_kind: column_as_nullable_string!(operation_kind),
+        operation_id: column_as_nullable_string!(operation_id),
     })
 }
 
@@ -403,5 +435,76 @@ where
             ))
         })
         .collect::<Result<Vec<_>, _>>()
+    }
+
+    async fn list_blind_signatures_filtered(
+        &self,
+        filter: BlindSignatureFilter,
+    ) -> Result<BlindSignatureListResult, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        // Build dynamic WHERE clauses
+        let mut where_clauses: Vec<String> = Vec::new();
+        let needs_keyset_join = !filter.units.is_empty();
+
+        if filter.creation_date_start.is_some() {
+            where_clauses.push("bs.created_time >= :creation_date_start".into());
+        }
+        if filter.creation_date_end.is_some() {
+            where_clauses.push("bs.created_time <= :creation_date_end".into());
+        }
+        if !filter.keyset_ids.is_empty() {
+            where_clauses.push("bs.keyset_id IN (:keyset_ids)".into());
+        }
+        if !filter.units.is_empty() {
+            where_clauses.push("k.unit IN (:units)".into());
+        }
+        if !filter.operations.is_empty() {
+            where_clauses.push("bs.operation_kind IN (:operations)".into());
+        }
+
+        let where_clause = build_where_clause(&where_clauses);
+        let join_clause = if needs_keyset_join {
+            "JOIN keyset k ON bs.keyset_id = k.id"
+        } else {
+            ""
+        };
+        let (limit_clause, requested_limit) = build_pagination_clause(filter.limit, filter.offset);
+
+        let query_str = format!(
+            r#"
+            SELECT bs.amount, bs.keyset_id, bs.quote_id, bs.created_time,
+                   bs.signed_time, bs.operation_kind, bs.operation_id
+            FROM blind_signature bs
+            {join_clause}
+            {where_clause}
+            ORDER BY bs.created_time {order}
+            {limit_clause}
+            "#,
+            join_clause = join_clause,
+            where_clause = where_clause,
+            order = order_direction(filter.reversed),
+            limit_clause = limit_clause,
+        );
+
+        let stmt = query(&query_str)?;
+        let stmt = bind_date_range(stmt, filter.creation_date_start, filter.creation_date_end);
+        let stmt = bind_keyset_ids(stmt, &filter.keyset_ids);
+        let stmt = bind_units(stmt, &filter.units);
+        let stmt = bind_operations(stmt, &filter.operations);
+
+        let mut signatures = stmt
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(sql_row_to_blind_signature_record)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let has_more = apply_pagination_peek_ahead(&mut signatures, requested_limit);
+
+        Ok(BlindSignatureListResult {
+            signatures,
+            has_more,
+        })
     }
 }
