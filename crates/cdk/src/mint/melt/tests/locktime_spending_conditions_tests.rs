@@ -123,7 +123,7 @@ async fn test_p2pk_post_locktime_anyone_can_spend() {
     println!("✓ Post-locktime spending conditions verified successfully (anyone-can-spend)");
 
     // Perform the actual melt
-    let melt_response = mint.melt(&melt_request_bob).await.unwrap();
+    let melt_response = mint.melt(&melt_request_bob).await.unwrap().await.unwrap();
     println!("✓ Melt operation completed successfully with Bob's key after locktime!");
     println!("  Quote state: {}", melt_response.state);
     assert_eq!(melt_response.quote, melt_quote.quote);
@@ -269,7 +269,7 @@ async fn test_p2pk_before_locktime_requires_correct_key() {
     println!("✓ Pre-locktime spending conditions verified successfully with Alice's key");
 
     // Perform the actual melt
-    let melt_response = mint.melt(&melt_request_alice).await.unwrap();
+    let melt_response = mint.melt(&melt_request_alice).await.unwrap().await.unwrap();
     println!("✓ Melt operation completed successfully with Alice's key before locktime!");
     println!("  Quote state: {}", melt_response.state);
     assert_eq!(melt_response.quote, melt_quote.quote);
