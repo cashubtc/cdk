@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use cdk::mint_url::MintUrl;
-use cdk::wallet::WalletRepository;
+use cdk::wallet::{WalletRepository, WalletTrait};
 use cdk::Amount;
 use cdk_common::wallet::WalletKey;
 use clap::Args;

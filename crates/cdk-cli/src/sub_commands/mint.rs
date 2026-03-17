@@ -5,7 +5,7 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::WalletRepository;
+use cdk::wallet::{WalletRepository, WalletTrait};
 use cdk::{Amount, StreamExt};
 use cdk_common::nut00::KnownMethod;
 use clap::Args;

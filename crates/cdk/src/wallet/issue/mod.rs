@@ -4,112 +4,18 @@
 
 pub(crate) mod saga;
 
-use cdk_common::nut00::KnownMethod;
-use cdk_common::nut04::MintMethodOptions;
-use cdk_common::{MintQuoteRequest, MintQuoteResponse, PaymentMethod};
+use cdk_common::{MintQuoteResponse, PaymentMethod};
 pub(crate) use saga::MintSaga;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
-use crate::nuts::{
-    BatchCheckMintQuoteRequest, MintQuoteCustomRequest, Proofs, SecretKey, SpendingConditions,
-};
+use crate::nuts::{BatchCheckMintQuoteRequest, Proofs, SecretKey, SpendingConditions};
 use crate::util::unix_time;
 use crate::wallet::recovery::RecoveryAction;
-use crate::wallet::{MintQuote, MintQuoteState};
+use crate::wallet::{MintQuote, MintQuoteState, WalletTrait};
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
-    /// Mint Quote
-    #[instrument(skip(self, method))]
-    pub async fn mint_quote<T>(
-        &self,
-        method: T,
-        amount: Option<Amount>,
-        description: Option<String>,
-        extra: Option<String>,
-    ) -> Result<MintQuote, Error>
-    where
-        T: Into<PaymentMethod>,
-    {
-        let mint_info = self.load_mint_info().await?;
-        let mint_url = self.mint_url.clone();
-        let unit = self.unit.clone();
-
-        let method: PaymentMethod = method.into();
-
-        // Check settings and description support
-        if description.is_some() {
-            let settings = mint_info
-                .nuts
-                .nut04
-                .get_settings(&unit, &method)
-                .ok_or(Error::UnsupportedUnit)?;
-
-            match settings.options {
-                Some(MintMethodOptions::Bolt11 { description }) if description => (),
-                _ => return Err(Error::InvoiceDescriptionUnsupported),
-            }
-        }
-
-        self.refresh_keysets().await?;
-
-        let secret_key = SecretKey::generate();
-
-        let request = match &method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => {
-                let amount = amount.ok_or(Error::AmountUndefined)?;
-                MintQuoteRequest::Bolt11(cdk_common::nut23::MintQuoteBolt11Request {
-                    amount,
-                    unit: unit.clone(),
-                    description,
-                    pubkey: Some(secret_key.public_key()),
-                })
-            }
-            PaymentMethod::Known(KnownMethod::Bolt12) => {
-                MintQuoteRequest::Bolt12(cdk_common::nut25::MintQuoteBolt12Request {
-                    amount,
-                    unit: unit.clone(),
-                    description,
-                    pubkey: secret_key.public_key(),
-                })
-            }
-            PaymentMethod::Custom(_) => {
-                let amount = amount.ok_or(Error::AmountUndefined)?;
-                MintQuoteRequest::Custom((
-                    method.clone(),
-                    MintQuoteCustomRequest {
-                        amount,
-                        unit: unit.clone(),
-                        description,
-                        pubkey: Some(secret_key.public_key()),
-                        extra: serde_json::from_str(&extra.unwrap_or_default())?,
-                    },
-                ))
-            }
-        };
-
-        let response: MintQuoteResponse<String> = self.client.post_mint_quote(request).await?;
-        let quote_id = response.quote().to_string();
-        let request_str = response.request().to_string();
-        let expiry = response.expiry();
-
-        let quote = MintQuote::new(
-            quote_id,
-            mint_url,
-            method.clone(),
-            amount,
-            unit,
-            request_str,
-            expiry.unwrap_or(0),
-            Some(secret_key),
-        );
-
-        self.localstore.add_mint_quote(quote.clone()).await?;
-
-        Ok(quote)
-    }
-
     /// Checks the state of a mint quote with the mint
     async fn check_state(&self, mint_quote: &mut MintQuote) -> Result<(), Error> {
         let mint_quote_response: MintQuoteResponse<String> = self

@@ -7,7 +7,7 @@ use std::time::Duration;
 use cdk::error::Error;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{BaseHttpClient, HttpTransport, SendOptions, WalletBuilder};
+use cdk::wallet::{BaseHttpClient, HttpTransport, SendOptions, WalletBuilder, WalletTrait};
 use cdk::{Amount, StreamExt};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::{AuthToken, PaymentMethod};

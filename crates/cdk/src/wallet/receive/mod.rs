@@ -2,31 +2,17 @@
 //!
 //! This module provides functionality for receiving ecash tokens and proofs.
 
-use std::collections::HashMap;
 use std::str::FromStr;
 
 use tracing::instrument;
 
-use crate::amount::SplitTarget;
-use crate::nuts::{Proofs, SecretKey, Token};
+use crate::nuts::{Proofs, Token};
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
 pub(crate) mod saga;
 
+pub use cdk_common::wallet::ReceiveOptions;
 use saga::ReceiveSaga;
-
-/// Receive options
-#[derive(Debug, Clone, Default)]
-pub struct ReceiveOptions {
-    /// Amount split target
-    pub amount_split_target: SplitTarget,
-    /// P2PK signing keys
-    pub p2pk_signing_keys: Vec<SecretKey>,
-    /// Preimages
-    pub preimages: Vec<String>,
-    /// Metadata
-    pub metadata: HashMap<String, String>,
-}
 
 impl Wallet {
     /// Receive proofs using the saga pattern

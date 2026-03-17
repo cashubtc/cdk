@@ -12,7 +12,9 @@ use cdk::nuts::{
     MeltQuoteState, MeltRequest, MintQuoteBolt11Request, MintRequest, PaymentMethod,
     RestoreRequest, State, SwapRequest,
 };
-use cdk::wallet::{AuthHttpClient, AuthMintConnector, HttpClient, MintConnector, WalletBuilder};
+use cdk::wallet::{
+    AuthHttpClient, AuthMintConnector, HttpClient, MintConnector, WalletBuilder, WalletTrait,
+};
 use cdk::{Error, OidcClient};
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_http_client::HttpClient as CommonHttpClient;
