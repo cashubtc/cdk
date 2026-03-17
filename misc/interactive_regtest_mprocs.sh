@@ -10,7 +10,7 @@ wait_for_endpoint() {
     local url=$1
     local timeout=${2:-60}
     local start_time=$(date +%s)
-    
+
     while true; do
         local current_time=$(date +%s)
         local elapsed_time=$((current_time - start_time))
@@ -26,7 +26,7 @@ wait_for_endpoint() {
             echo "✓ $url is ready"
             return 0
         fi
-        
+
         sleep 2
     done
 }
@@ -51,7 +51,7 @@ cleanup() {
         rm -rf "$CDK_ITESTS_DIR"
         echo "Temp directory removed: $CDK_ITESTS_DIR"
     fi
-    
+
     # Unset all environment variables
     unset CDK_ITESTS_DIR
     unset CDK_ITESTS_MINT_ADDR
@@ -287,7 +287,7 @@ echo
 echo "Network Information:"
 echo "  • Bitcoin RPC: 127.0.0.1:18443 (user: testuser, pass: testpass)"
 echo "  • CLN Node 1: $CDK_ITESTS_DIR/cln/one/regtest/lightning-rpc"
-echo "  • CLN Node 2: $CDK_ITESTS_DIR/cln/two/regtest/lightning-rpc"  
+echo "  • CLN Node 2: $CDK_ITESTS_DIR/cln/two/regtest/lightning-rpc"
 echo "  • LND Node 1: https://localhost:10009"
 echo "  • LND Node 2: https://localhost:10010"
 echo
@@ -329,41 +329,41 @@ procs:
     env:
       CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
       CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
-  
+
   lnd-mint:
     shell: "$CDK_ITESTS_DIR/start_lnd_mint.sh"
     autostart: true
     env:
       CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
       CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
-  
+
   ldk-node-mint:
     shell: "$CDK_ITESTS_DIR/start_ldk_node_mint.sh"
     autostart: true
     env:
       CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
       CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
-  
+
   bitcoind:
     shell: "while [ ! -f $CDK_ITESTS_DIR/bitcoin/regtest/debug.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/bitcoin/regtest/debug.log"
     autostart: true
-  
+
   cln-one:
     shell: "while [ ! -f $CDK_ITESTS_DIR/cln/one/debug.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/cln/one/debug.log"
     autostart: true
-  
+
   cln-two:
     shell: "while [ ! -f $CDK_ITESTS_DIR/cln/two/debug.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/cln/two/debug.log"
     autostart: true
-  
+
   lnd-one:
     shell: "while [ ! -f $CDK_ITESTS_DIR/lnd/one/logs/bitcoin/regtest/lnd.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/lnd/one/logs/bitcoin/regtest/lnd.log"
     autostart: true
-  
+
   lnd-two:
     shell: "while [ ! -f $CDK_ITESTS_DIR/lnd/two/logs/bitcoin/regtest/lnd.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/lnd/two/logs/bitcoin/regtest/lnd.log"
     autostart: true
-  
+
   ldk-node:
     shell: "while [ ! -f $CDK_ITESTS_DIR/ldk_mint/ldk_node.log ]; do sleep 1; done && $PROJECT_ROOT/misc/scripts/filtered_ldk_node_log.sh $CDK_ITESTS_DIR/ldk_mint/ldk_node.log"
     autostart: true
