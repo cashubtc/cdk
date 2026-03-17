@@ -588,20 +588,32 @@ impl Mint {
 
             let mut tx = self.localstore.begin_transaction().await?;
 
-            if let Ok(Some(mut mint_quote)) = tx
+            let should_notify = if let Ok(Some(mut mint_quote)) = tx
                 .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
                 .await
             {
-                self.pay_mint_quote(&mut tx, &mut mint_quote, wait_payment_response)
+                let notify = self
+                    .pay_mint_quote(&mut tx, &mut mint_quote, wait_payment_response)
                     .await?;
+                if notify {
+                    Some((mint_quote.clone(), mint_quote.amount_paid()))
+                } else {
+                    None
+                }
             } else {
                 tracing::warn!(
                     "Could not get request for request lookup id {:?}.",
                     wait_payment_response.payment_identifier
                 );
-            }
+                None
+            };
 
             tx.commit().await?;
+
+            // Publish notification AFTER transaction commits
+            if let Some((quote, amount_paid)) = should_notify {
+                self.pubsub_manager.mint_quote_payment(&quote, amount_paid);
+            }
 
             Ok(())
         }
@@ -621,15 +633,20 @@ impl Mint {
 
     /// Marks a specific mint quote as paid
     ///
-    /// Updates the mint quote with payment information and broadcasts
-    /// a notification about the payment status change.
+    /// Updates the mint quote with payment information and records it in the
+    /// database within the given transaction.
+    ///
+    /// Returns `true` if a payment was recorded and a pubsub notification should
+    /// be published **after** the enclosing transaction commits.
     ///
     /// # Arguments
+    /// * `tx` - The database transaction to use
     /// * `mint_quote` - The mint quote to mark as paid
     /// * `wait_payment_response` - Payment response containing payment details
     ///
     /// # Returns
-    /// * `Ok(())` if the update was successful
+    /// * `Ok(true)` if a payment was recorded and notification should be sent
+    /// * `Ok(false)` if no new payment was recorded
     /// * `Error` if the update fails
     #[instrument(skip_all)]
     pub async fn pay_mint_quote(
@@ -637,20 +654,13 @@ impl Mint {
         tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
         mint_quote: &mut Acquired<MintQuote>,
         wait_payment_response: WaitPaymentResponse,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("pay_mint_quote");
 
-        let result = async {
-            Self::handle_mint_quote_payment(
-                tx,
-                mint_quote,
-                wait_payment_response,
-                &self.pubsub_manager,
-            )
-            .await
-        }
-        .await;
+        let result =
+            async { Self::handle_mint_quote_payment(tx, mint_quote, wait_payment_response).await }
+                .await;
 
         #[cfg(feature = "prometheus")]
         {
