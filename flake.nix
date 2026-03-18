@@ -21,6 +21,11 @@
 
     flake-utils.url = "github:numtide/flake-utils";
 
+    dart-overlay = {
+      url = "github:roman-vanesyan/dart-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     crane = {
       url = "github:ipetkov/crane";
     };
@@ -32,6 +37,7 @@
     , nixpkgs-unstable
     , rust-overlay
     , flake-utils
+    , dart-overlay
     , crane
     , ...
     }@inputs:
@@ -82,6 +88,9 @@
           inherit system;
         };
 
+        # Dart SDK from dart-overlay
+        dartpkgs = dart-overlay.packages.${system};
+
         # Static/musl packages for fully static binary builds (Linux only)
         pkgsMusl =
           if muslTarget != null then
@@ -99,7 +108,14 @@
         # Toolchains
         # latest stable
         stable_toolchain = pkgs.rust-bin.stable."1.94.0".default.override {
-          targets = [ "wasm32-unknown-unknown" ]; # wasm
+          targets = [
+            "wasm32-unknown-unknown"
+            "aarch64-apple-ios"
+            "x86_64-apple-ios"
+            "aarch64-apple-ios-sim"
+            "aarch64-apple-darwin"
+            "x86_64-apple-darwin"
+          ];
           extensions = [
             "rustfmt"
             "clippy"
@@ -141,6 +157,29 @@
           else
             null;
 
+        # Shim for native_toolchain_rust (Dart package) which requires rustup.
+        # Nix provides Rust directly, so this fakes the rustup commands.
+        rustupShim = pkgs.writeShellScriptBin "rustup" ''
+          case "''${1:-}" in
+            show)
+              version=$(rustc --version | sed 's/rustc //')
+              echo "''${version} (nix)"
+              ;;
+            run)
+              shift  # drop "run"
+              shift  # drop channel
+              exec "$@"
+              ;;
+            target)
+              # no-op: Nix provides targets via stable_toolchain
+              ;;
+            *)
+              echo "rustup shim: unsupported command '$*'" >&2
+              exit 1
+              ;;
+          esac
+        '';
+
         # ========================================
         # Crane setup for cached builds
         # ========================================
@@ -166,6 +205,7 @@
               ./.cargo
               ./crates
               ./fuzz
+              ./bindings
             ]
           );
         };
@@ -185,13 +225,30 @@
               ./.cargo
               ./crates
               ./fuzz
+              ./bindings
             ]
           );
         };
 
+        # Vendor cargo dependencies
+        cargoVendorDir = craneLib.vendorMultipleCargoDeps {
+          inherit (craneLib.findCargoFiles src) cargoConfigs;
+          cargoLockList = [
+            ./Cargo.lock
+          ];
+        };
+
+        # Vendor cargo dependencies for MSRV builds (Cargo.lock.msrv has different versions)
+        cargoVendorDirMsrv = craneLibMsrv.vendorMultipleCargoDeps {
+          inherit (craneLibMsrv.findCargoFiles srcMsrv) cargoConfigs;
+          cargoLockList = [
+            ./Cargo.lock.msrv
+          ];
+        };
+
         # Common args for all Crane builds
         commonCraneArgs = {
-          inherit src version;
+          inherit src version cargoVendorDir;
           pname = "cdk";
 
           nativeBuildInputs = with pkgs; [
@@ -214,10 +271,11 @@
         };
 
         # Common args for MSRV builds - uses srcMsrv with pinned deps
-        # Override cargoLock to use Cargo.lock.msrv instead of Cargo.lock
+        # Override cargoLock and cargoVendorDir to use Cargo.lock.msrv instead of Cargo.lock
         commonCraneArgsMsrv = commonCraneArgs // {
           src = srcMsrv;
           cargoLock = ./Cargo.lock.msrv;
+          cargoVendorDir = cargoVendorDirMsrv;
         };
 
         # Musl-targeting C compiler for crates that compile bundled C code
@@ -230,7 +288,7 @@
           if muslTarget != null then
             (
               {
-                inherit src version;
+                inherit src version cargoVendorDir;
                 pname = "cdk-static";
 
                 # Cross-compile to musl for fully static linking
@@ -385,7 +443,7 @@
         mkWasmBuild =
           name: cargoArgs:
           craneLib.cargoBuild ({
-            inherit src version;
+            inherit src version cargoVendorDir;
             pname = "cdk-wasm-${name}";
             cargoArtifacts = workspaceDeps;
             cargoExtraArgs = "${cargoArgs} --target wasm32-unknown-unknown";
@@ -451,7 +509,7 @@
               cargo build --release --package cdk-ffi --features postgres
 
               # Generate Python bindings
-              cargo run --bin uniffi-bindgen generate \
+              cargo run -p cdk-ffi --bin uniffi-bindgen generate \
                 --library target/release/libcdk_ffi.so \
                 --language python \
                 --out-dir target/bindings/python
@@ -1056,6 +1114,26 @@
               // envVars
             );
 
+            # Shell for bindings development (Dart + Swift FFI)
+            bindings = pkgs.mkShell (
+              {
+                shellHook = commonShellHook;
+                buildInputs = baseBuildInputs ++ [
+                  stable_toolchain
+                  rustupShim
+                  dartpkgs.default
+                  pkgs.openssl
+                ];
+                nativeBuildInputs = [
+                  pkgs.pkg-config
+                ];
+                OPENSSL_DIR = "${pkgs.openssl.dev}";
+                OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
+                OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
+              }
+              // envVars
+            );
+
           in
           {
             inherit
@@ -1066,6 +1144,7 @@
               nightly-regtest
               integration
               ffi
+              bindings
               ;
             default = stable;
           };

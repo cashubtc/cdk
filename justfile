@@ -683,7 +683,7 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
   echo "$EMOJI Generating $LANG bindings..."
   mkdir -p target/bindings/$LANG
 
-  cargo run --bin uniffi-bindgen generate \
+  cargo run -p cdk-ffi --bin uniffi-bindgen generate \
     --library target/$BUILD_TYPE/libcdk_ffi.$LIB_EXT \
     --language $LANG \
     --out-dir target/bindings/$LANG
@@ -799,3 +799,39 @@ ffi-release-kotlin VERSION:
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Kotlin workflow triggered successfully!"
+
+# Generate Dart FFI bindings
+binding-dart:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/dart"
+  ./generate-bindings.sh
+
+# Run Dart binding tests
+test-dart:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/dart"
+  dart test
+
+# Generate Swift FFI bindings and XCFramework
+binding-swift:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/swift"
+  ./generate-bindings.sh
+
+# Run Swift binding tests
+test-swift:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    # Inside a Nix shell, SDKROOT points to the Nix SDK (Swift 5.10 modules)
+    # which is incompatible with the Xcode Swift compiler. Override it with
+    # the Xcode SDK, and use the system swift to avoid Nix wrappers.
+    export SDKROOT=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
+    /usr/bin/swift test
+  else
+    swift test
+  fi
