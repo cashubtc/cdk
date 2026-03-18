@@ -2,15 +2,44 @@
 //!
 //! This module provides functionality for resolving human-readable Bitcoin addresses
 //! according to BIP-353. It allows users to share simple email-like addresses such as
-//! `user@domain.com` instead of complex Bitcoin addresses or Lightning invoices.
+//! `user@domain.com` instead of complex Bitcoin payment instructions.
 
-use std::collections::HashMap;
+use core::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
-
 use crate::wallet::MintConnector;
+
+/// Errors that can occur when parsing or resolving a BIP-353 address.
+#[derive(Debug)]
+pub enum Bip353Error {
+    /// The address string is not in a valid `user@domain` format.
+    InvalidFormat,
+    /// The user or domain part of the address is empty.
+    EmptyUserOrDomain,
+    /// DNS resolution returned no `bitcoin:` URI.
+    NoBitcoinUri,
+    /// DNS resolution returned more than one `bitcoin:` URI.
+    MultipleBitcoinUris,
+    /// DNS resolution or network I/O failed.
+    DnsResolution(String),
+}
+
+impl fmt::Display for Bip353Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidFormat => write!(f, "Address is not formatted correctly"),
+            Self::EmptyUserOrDomain => {
+                write!(f, "User name and domain must not be empty")
+            }
+            Self::NoBitcoinUri => write!(f, "No Bitcoin URI found"),
+            Self::MultipleBitcoinUris => write!(f, "Multiple Bitcoin URIs found"),
+            Self::DnsResolution(e) => write!(f, "DNS resolution failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for Bip353Error {}
 
 /// BIP-353 human-readable Bitcoin address
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -22,13 +51,13 @@ pub struct Bip353Address {
 }
 
 impl Bip353Address {
-    /// Resolve a human-readable Bitcoin address to payment instructions
+    /// Resolve a human-readable Bitcoin address to a concrete Bitcoin URI.
     ///
     /// This method performs the following steps:
     /// 1. Constructs the DNS name according to BIP-353 format
     /// 2. Queries TXT records with DNSSEC validation
     /// 3. Extracts Bitcoin URIs from the records
-    /// 4. Parses the URIs into payment instructions
+    /// 4. Returns the single resolved URI for downstream parsing
     ///
     /// # Errors
     ///
@@ -37,32 +66,35 @@ impl Bip353Address {
     /// - DNSSEC validation fails
     /// - No Bitcoin URI is found
     /// - Multiple Bitcoin URIs are found (BIP-353 requires exactly one)
-    /// - The URI format is invalid
     pub(crate) async fn resolve(
         self,
         client: &Arc<dyn MintConnector + Send + Sync>,
-    ) -> Result<PaymentInstruction> {
-        // Construct DNS name according to BIP-353
+    ) -> Result<String, Bip353Error> {
         let dns_name = format!("{}.user._bitcoin-payment.{}", self.user, self.domain);
 
-        let bitcoin_uris = client
+        let mut bitcoin_uris: Vec<String> = client
             .resolve_dns_txt(&dns_name)
-            .await?
+            .await
+            .map_err(|e| Bip353Error::DnsResolution(e.to_string()))?
             .into_iter()
-            .filter(|txt_data| txt_data.to_lowercase().starts_with("bitcoin:"))
-            .collect::<Vec<_>>();
+            .filter(|txt_data| {
+                txt_data
+                    .get(..8)
+                    .map(|p| p.eq_ignore_ascii_case("bitcoin:"))
+                    .unwrap_or(false)
+            })
+            .collect();
 
-        // BIP-353 requires exactly one Bitcoin URI
         match bitcoin_uris.len() {
-            0 => bail!("No Bitcoin URI found"),
-            1 => PaymentInstruction::from_uri(&bitcoin_uris[0]),
-            _ => bail!("Multiple Bitcoin URIs found"),
+            0 => Err(Bip353Error::NoBitcoinUri),
+            1 => Ok(bitcoin_uris.swap_remove(0)),
+            _ => Err(Bip353Error::MultipleBitcoinUris),
         }
     }
 }
 
 impl FromStr for Bip353Address {
-    type Err = anyhow::Error;
+    type Err = Bip353Error;
 
     /// Parse a human-readable Bitcoin address from string format
     ///
@@ -77,21 +109,18 @@ impl FromStr for Bip353Address {
     /// - User or domain parts are empty
     fn from_str(address: &str) -> Result<Self, Self::Err> {
         let addr = address.trim();
-
-        // Remove Bitcoin prefix if present
         let addr = addr.strip_prefix("₿").unwrap_or(addr);
 
-        // Split by @
         let parts: Vec<&str> = addr.split('@').collect();
         if parts.len() != 2 {
-            bail!("Address is not formatted correctly")
+            return Err(Bip353Error::InvalidFormat);
         }
 
         let user = parts[0].trim();
         let domain = parts[1].trim();
 
         if user.is_empty() || domain.is_empty() {
-            bail!("User name and domain must not be empty")
+            return Err(Bip353Error::EmptyUserOrDomain);
         }
 
         Ok(Self {
@@ -101,95 +130,9 @@ impl FromStr for Bip353Address {
     }
 }
 
-impl std::fmt::Display for Bip353Address {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Bip353Address {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}@{}", self.user, self.domain)
-    }
-}
-
-/// Payment instruction type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PaymentType {
-    /// On-chain Bitcoin address
-    OnChain,
-    /// Lightning Offer (BOLT12)
-    LightningOffer,
-}
-
-/// BIP-353 payment instruction containing parsed payment methods
-#[derive(Debug, Clone)]
-pub struct PaymentInstruction {
-    /// Map of payment types to their corresponding values
-    pub parameters: HashMap<PaymentType, String>,
-}
-
-impl PaymentInstruction {
-    /// Create a new empty payment instruction
-    pub fn new() -> Self {
-        Self {
-            parameters: HashMap::new(),
-        }
-    }
-
-    /// Parse a payment instruction from a Bitcoin URI
-    ///
-    /// Extracts various payment methods from the URI:
-    /// - Lightning offers (parameters containing "lno")
-    /// - On-chain addresses (address part of the URI)
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the URI doesn't start with "bitcoin:"
-    pub fn from_uri(uri: &str) -> Result<Self> {
-        if !uri.to_lowercase().starts_with("bitcoin:") {
-            bail!("URI must start with 'bitcoin:'")
-        }
-
-        let mut parameters = HashMap::new();
-
-        // Parse URI parameters
-        if let Some(query_start) = uri.find('?') {
-            let query = &uri[query_start + 1..];
-            for pair in query.split('&') {
-                if let Some(eq_pos) = pair.find('=') {
-                    let key = pair[..eq_pos].to_string();
-                    let value = pair[eq_pos + 1..].to_string();
-
-                    // Determine payment type based on parameter key
-                    if key.contains("lno") {
-                        parameters.insert(PaymentType::LightningOffer, value);
-                    }
-                    // Could add more payment types here as needed
-                }
-            }
-        }
-
-        // Check if we have an on-chain address (address part after bitcoin:)
-        if let Some(query_start) = uri.find('?') {
-            let addr_part = &uri[8..query_start]; // Skip "bitcoin:"
-            if !addr_part.is_empty() {
-                parameters.insert(PaymentType::OnChain, addr_part.to_string());
-            }
-        } else {
-            // No query parameters, check if there's just an address
-            let addr_part = &uri[8..]; // Skip "bitcoin:"
-            if !addr_part.is_empty() {
-                parameters.insert(PaymentType::OnChain, addr_part.to_string());
-            }
-        }
-
-        Ok(PaymentInstruction { parameters })
-    }
-
-    /// Get a payment method by type
-    pub fn get(&self, payment_type: &PaymentType) -> Option<&String> {
-        self.parameters.get(payment_type)
-    }
-}
-
-impl Default for PaymentInstruction {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -197,31 +140,20 @@ impl Default for PaymentInstruction {
 mod tests {
     use super::*;
 
-    impl PaymentInstruction {
-        /// Check if a payment type is available
-        pub fn has_payment_type(&self, payment_type: &PaymentType) -> bool {
-            self.parameters.contains_key(payment_type)
-        }
-    }
-
     #[test]
     fn test_bip353_address_parsing() {
-        // Test basic parsing
         let addr = Bip353Address::from_str("alice@example.com").unwrap();
         assert_eq!(addr.user, "alice");
         assert_eq!(addr.domain, "example.com");
 
-        // Test with Bitcoin symbol
         let addr = Bip353Address::from_str("₿bob@bitcoin.org").unwrap();
         assert_eq!(addr.user, "bob");
         assert_eq!(addr.domain, "bitcoin.org");
 
-        // Test with whitespace
         let addr = Bip353Address::from_str("  charlie@test.net  ").unwrap();
         assert_eq!(addr.user, "charlie");
         assert_eq!(addr.domain, "test.net");
 
-        // Test display
         let addr = Bip353Address {
             user: "test".to_string(),
             domain: "example.com".to_string(),
@@ -231,7 +163,6 @@ mod tests {
 
     #[test]
     fn test_bip353_address_parsing_errors() {
-        // Test invalid formats
         assert!(Bip353Address::from_str("invalid").is_err());
         assert!(Bip353Address::from_str("@example.com").is_err());
         assert!(Bip353Address::from_str("user@").is_err());
@@ -240,32 +171,10 @@ mod tests {
     }
 
     #[test]
-    fn test_payment_instruction_parsing() {
-        // Test Lightning offer URI
-        let uri = "bitcoin:?lno=lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pxqrjszs5v2a5m5xwc4mxv6rdjdcn2d3kxccnjdgecf7fz3rf5g4t7gdxhkzm8mpsq5q";
-        let instruction = PaymentInstruction::from_uri(uri).unwrap();
-        assert!(instruction.has_payment_type(&PaymentType::LightningOffer));
-
-        // Test on-chain address URI
-        let uri = "bitcoin:bc1qexampleaddress";
-        let instruction = PaymentInstruction::from_uri(uri).unwrap();
-        assert!(instruction.has_payment_type(&PaymentType::OnChain));
-        assert_eq!(
-            instruction.get(&PaymentType::OnChain).unwrap(),
-            "bc1qexampleaddress"
-        );
-
-        // Test combined URI
-        let uri = "bitcoin:bc1qexampleaddress?lno=lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pxqrjszs5v2a5m5xwc4mxv6rdjdcn2d3kxccnjdgecf7fz3rf5g4t7gdxhkzm8mpsq5q";
-        let instruction = PaymentInstruction::from_uri(uri).unwrap();
-        assert!(instruction.has_payment_type(&PaymentType::OnChain));
-        assert!(instruction.has_payment_type(&PaymentType::LightningOffer));
-    }
-
-    #[test]
-    fn test_payment_instruction_errors() {
-        // Test invalid URI
-        assert!(PaymentInstruction::from_uri("invalid:uri").is_err());
-        assert!(PaymentInstruction::from_uri("").is_err());
+    fn test_bip353_address_with_subdomain() {
+        let addr = Bip353Address::from_str("alice@sub.domain.co.uk").unwrap();
+        assert_eq!(addr.user, "alice");
+        assert_eq!(addr.domain, "sub.domain.co.uk");
+        assert_eq!(addr.to_string(), "alice@sub.domain.co.uk");
     }
 }

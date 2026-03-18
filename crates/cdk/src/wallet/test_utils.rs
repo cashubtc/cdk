@@ -412,6 +412,9 @@ pub struct MockMintConnector {
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Response for post_swap calls
     pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
+    /// Response for DNS TXT resolution calls
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    pub dns_txt_response: Mutex<Option<Result<Vec<String>, Error>>>,
 }
 
 impl Default for MockMintConnector {
@@ -433,6 +436,8 @@ impl MockMintConnector {
             melt_quote_status_response: Mutex::new(None),
             post_mint_response: Mutex::new(None),
             post_swap_response: Mutex::new(None),
+            #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+            dns_txt_response: Mutex::new(None),
         }
     }
 
@@ -522,6 +527,11 @@ impl MockMintConnector {
     pub fn set_post_swap_response(&self, response: Result<SwapResponse, Error>) {
         *self.post_swap_response.lock().unwrap() = Some(response);
     }
+
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    pub fn set_dns_txt_response(&self, response: Result<Vec<String>, Error>) {
+        *self.dns_txt_response.lock().unwrap() = Some(response);
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -529,7 +539,11 @@ impl MockMintConnector {
 impl MintConnector for MockMintConnector {
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
-        unimplemented!()
+        self.dns_txt_response
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| Ok(Vec::new()))
     }
 
     async fn fetch_lnurl_pay_request(

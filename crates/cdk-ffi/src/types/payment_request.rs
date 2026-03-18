@@ -21,8 +21,8 @@ pub enum TransportType {
 impl From<cdk::nuts::TransportType> for TransportType {
     fn from(t: cdk::nuts::TransportType) -> Self {
         match t {
-            cdk::nuts::TransportType::Nostr => TransportType::Nostr,
-            cdk::nuts::TransportType::HttpPost => TransportType::HttpPost,
+            cdk::nuts::TransportType::Nostr => Self::Nostr,
+            cdk::nuts::TransportType::HttpPost => Self::HttpPost,
         }
     }
 }
@@ -71,7 +71,7 @@ impl From<Transport> for cdk::nuts::Transport {
 ///
 /// A payment request that can be shared to request Cashu tokens.
 /// Encoded as a string with the `creqA` prefix.
-#[derive(uniffi::Object)]
+#[derive(Debug, uniffi::Object)]
 pub struct PaymentRequest {
     inner: cdk::nuts::PaymentRequest,
 }
@@ -80,6 +80,11 @@ impl PaymentRequest {
     /// Get inner reference
     pub(crate) fn inner(&self) -> &cdk::nuts::PaymentRequest {
         &self.inner
+    }
+
+    /// Create from the inner CDK type
+    pub(crate) fn from_inner(inner: cdk::nuts::PaymentRequest) -> Self {
+        Self { inner }
     }
 }
 
@@ -101,6 +106,32 @@ impl PaymentRequest {
     /// Encode the payment request to a NUT-26 bech32m string (creqB prefix)
     pub fn to_bech32_string(&self) -> Result<String, FfiError> {
         self.inner.to_bech32_string().map_err(FfiError::internal)
+    }
+
+    /// Convert this payment request to a BIP 321 `bitcoin:` URI string.
+    ///
+    /// The cashu payment request is encoded as a NUT-26 bech32m `CREQB1...`
+    /// string in the `creq=` query parameter. Optionally include a BOLT11
+    /// invoice (`lightning=`) and/or BOLT12 offer (`lno=`) as fallback
+    /// payment methods for wallets that don't support cashu.
+    ///
+    /// ```text
+    /// val request = PaymentRequest.fromString("CREQB1...")
+    /// val uri = request.toBip321(
+    ///     bolt11 = "lnbc100n1p...",
+    ///     bolt12 = "lno1qgsq..."
+    /// )
+    /// // => "bitcoin:?creq=CREQB1...&lightning=lnbc100n1p...&lno=lno1qgsq..."
+    /// ```
+    pub fn to_bip321(
+        &self,
+        bolt11: Option<String>,
+        bolt12: Option<String>,
+    ) -> Result<String, FfiError> {
+        use cdk::wallet::bip321::PaymentRequestBip321Ext;
+        let builder = self.inner.to_bip321().map_err(FfiError::from)?;
+        let builder = crate::bip321::apply_optional_lightning_methods(builder, bolt11, bolt12);
+        Ok(builder.to_string())
     }
 
     /// Get the payment ID
@@ -324,12 +355,12 @@ impl PaymentRequestPayload {
     }
 }
 
-impl std::fmt::Display for PaymentRequestPayload {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for PaymentRequestPayload {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "{}",
-            serde_json::to_string(&self.inner).map_err(|_| std::fmt::Error)?
+            serde_json::to_string(&self.inner).map_err(|_| core::fmt::Error)?
         )
     }
 }

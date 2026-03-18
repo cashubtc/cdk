@@ -5,6 +5,7 @@
 
 // Module declarations
 pub mod amount;
+pub mod bip321;
 pub mod invoice;
 pub mod keys;
 pub mod mint;
@@ -18,6 +19,7 @@ pub mod wallet;
 
 // Re-export all types for convenient access
 pub use amount::*;
+pub use bip321::*;
 pub use invoice::*;
 pub use keys::*;
 pub use mint::*;
