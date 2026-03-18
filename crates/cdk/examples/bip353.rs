@@ -9,7 +9,7 @@
 //! 1. Parse a human-readable address like `alice@example.com`
 //! 2. Query DNS TXT records at `alice.user._bitcoin-payment.example.com`
 //! 3. Extract Bitcoin URIs from the TXT records
-//! 4. Parse payment instructions (Lightning offers, on-chain addresses)
+//! 4. Parse payment instructions (BOLT12 offers, on-chain addresses, Cashu requests)
 //! 5. Use CDK wallet to execute payments
 //!
 //! ## Usage
@@ -20,6 +20,8 @@
 //!
 //! Note: The example uses a placeholder address that will fail DNS resolution.
 //! To test with real addresses, you need a domain with proper BIP-353 DNS records.
+//! If you want to inspect the resolved payment instruction before melting, see
+//! `examples/resolve_human_readable.rs`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
     println!("BIP-353 CDK Example");
     println!("===================");
 
-    // Example BIP-353 address - replace with a real one that has BOLT12 offer
+    // Example BIP-353 address - replace with a real one that has a BOLT12 offer
     // For testing, you might need to set up your own DNS records
     let bip353_address = "tsk@thesimplekid.com"; // This is just an example
 
@@ -104,7 +106,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Use the new wallet method to resolve BIP353 address and get melt quote
     match wallet
-        .melt_bip353_quote(bip353_address, payment_amount_sats * 1_000)
+        .melt_bip353_quote(
+            bip353_address,
+            payment_amount_sats * 1_000,
+            bitcoin::Network::Bitcoin,
+        )
         .await
     {
         Ok(melt_quote) => {
@@ -151,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
             println!("This could be because:");
             println!("1. The BIP-353 address format is invalid");
             println!("2. DNS resolution failed (expected for this example)");
-            println!("3. No Lightning offer found in the DNS records");
+            println!("3. No BOLT12 offer found in the DNS records");
             println!("4. DNSSEC validation failed");
         }
     }

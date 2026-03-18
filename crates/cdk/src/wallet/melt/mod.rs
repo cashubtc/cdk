@@ -824,14 +824,18 @@ impl Wallet {
     /// or a Lightning address. It intelligently determines which to try based on mint support:
     ///
     /// 1. If the mint supports Bolt12, it tries BIP353 first
-    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
-    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 2. Falls back to Lightning address only if BIP353 resolution fails
+    /// 3. If BIP353 resolves but does not contain a usable BOLT12 offer, it does NOT fall back
     /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
+    ///
+    /// The `network` parameter is forwarded to the BIP353 resolver for on-chain address
+    /// validation in the resolved URI.
     #[cfg(all(feature = "bip353", feature = "wallet", not(target_arch = "wasm32")))]
     pub async fn melt_human_readable_quote(
         &self,
         address: &str,
         amount_msat: impl Into<crate::Amount>,
+        network: bitcoin::Network,
     ) -> Result<MeltQuote, Error> {
         use cdk_common::nuts::PaymentMethod;
 
@@ -857,7 +861,7 @@ impl Wallet {
 
         if supports_bolt12 {
             // Mint supports bolt12, try BIP353 first
-            match self.melt_bip353_quote(address, amount).await {
+            match self.melt_bip353_quote(address, amount, network).await {
                 Ok(quote) => Ok(quote),
                 Err(Error::Bip353Resolve(_)) => {
                     // DNS resolution failed, fall back to Lightning address
