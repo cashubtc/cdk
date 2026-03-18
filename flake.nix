@@ -949,6 +949,7 @@
                   cargo update typed-index-collections --precise 3.3.0
                   cargo update simple_asn1 --precise 0.6.3
                   cargo update cookie_store --precise 0.22.0
+                  cargo update serde_with --precise 3.17.0
                   cargo update time --precise 0.3.44
                ";
                 buildInputs = baseBuildInputs ++ [ msrv_toolchain ];
