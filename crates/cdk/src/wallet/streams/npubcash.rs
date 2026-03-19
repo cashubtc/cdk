@@ -3,6 +3,7 @@
 //! This stream continuously polls NpubCash for new paid quotes and yields them as proofs.
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -114,7 +115,7 @@ pub struct WalletNpubCashProofStream {
 impl WalletNpubCashProofStream {
     /// Create a new NpubCash proof stream for a single wallet
     pub fn new(
-        wallet: Wallet,
+        wallet: Arc<Wallet>,
         poll_interval: Duration,
         split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
