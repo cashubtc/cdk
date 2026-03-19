@@ -12,6 +12,9 @@ jobs:
     name: Daily Nix Flake Check
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - name: Check Nix flake inputs
@@ -21,19 +24,20 @@ jobs:
           fail-mode: true
       - name: Create Issue on Failure
         if: failure()
-        uses: actions/create-issue@v1
-        with:
-          title: "[Nix Flake Check] Failed - ${{ github.run_number }}"
-          body: |
-            The daily Nix flake check has failed.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "[Nix Flake Check] Failed - ${{ github.run_number }}" \
+            --label "flake,automated,bug" \
+            --body "$(cat <<'EOF'
+          The daily Nix flake check has failed.
 
-            **Run:** #${{ github.run_number }}
-            **Date:** ${{ github.event.schedule || 'Manual trigger' }}
+          **Run:** #${{ github.run_number }}
+          **Date:** ${{ github.event.schedule || 'Manual trigger' }}
 
-            Please investigate and update the flake inputs.
+          Please investigate and update the flake inputs.
 
-            [View workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-          labels: |
-            flake
-            automated
-            bug
+          [View workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          )"
