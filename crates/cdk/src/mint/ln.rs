@@ -14,7 +14,6 @@ use crate::Error;
 
 impl Mint {
     /// Static implementation of check_mint_quote_paid to avoid circular dependency to the Mint
-    #[inline(always)]
     pub(crate) async fn check_mint_quote_payments(
         localstore: DynMintDatabase,
         payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
@@ -65,6 +64,7 @@ impl Mint {
         if new_quote.payment_method.is_bolt11()
             && (current_state == MintQuoteState::Issued || current_state == MintQuoteState::Paid)
         {
+            *quote = new_quote.inner();
             return Ok(());
         }
 
