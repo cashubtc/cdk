@@ -337,6 +337,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_recover_melt_proofs_reserved_without_operation_link_leaves_reserved_proof() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_id = format!("test_melt_quote_{}", uuid::Uuid::new_v4());
+
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.update_proofs_state(vec![proof_y], State::Reserved)
+            .await
+            .unwrap();
+
+        let mut melt_quote = test_melt_quote();
+        melt_quote.id = quote_id.clone();
+        db.add_melt_quote(melt_quote).await.unwrap();
+        db.reserve_melt_quote(&quote_id, &saga_id).await.unwrap();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Melt(MeltSagaState::ProofsReserved),
+            Amount::from(100),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Melt(MeltOperationData {
+                quote_id,
+                amount: Amount::from(100),
+                fee_reserve: Amount::from(10),
+                counter_start: None,
+                counter_end: None,
+                change_amount: None,
+                change_blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await
+            .unwrap();
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().state(), MeltQuoteState::Unpaid);
+
+        let reserved = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(reserved.len(), 1);
+        assert_eq!(reserved[0].state, State::Reserved);
+        assert_eq!(reserved[0].used_by_operation, None);
+
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn test_recover_melt_melt_requested_quote_paid() {
         // Mock: quote Paid → complete melt, get change
         let db = create_test_db().await;

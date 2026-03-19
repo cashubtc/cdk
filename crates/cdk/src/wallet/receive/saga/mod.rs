@@ -54,6 +54,7 @@ use crate::util::hex;
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
 };
+use crate::wallet::swap::ProofReservation;
 use crate::{Amount, Error, Wallet, SECP256K1};
 
 pub(crate) mod compensation;
@@ -308,6 +309,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         let mut pre_swap = self
             .wallet
             .create_swap(
+                &operation_id,
                 self.state_data.active_keyset_id,
                 &fee_and_amounts,
                 None,
@@ -317,6 +319,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 false,
                 false,
                 &fee_breakdown,
+                ProofReservation::Skip,
             )
             .await?;
 

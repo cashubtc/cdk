@@ -307,7 +307,7 @@ impl<'a> MeltSaga<'a, Initial> {
 
             self.wallet
                 .localstore
-                .update_proofs_state(proof_ys.clone(), State::Reserved)
+                .reserve_proofs(proof_ys.clone(), &operation_id)
                 .await?;
 
             let saga = WalletSaga::new(
@@ -391,7 +391,7 @@ impl<'a> MeltSaga<'a, Initial> {
         if !proof_ys.is_empty() {
             self.wallet
                 .localstore
-                .update_proofs_state(proof_ys.clone(), State::Reserved)
+                .reserve_proofs(proof_ys.clone(), &operation_id)
                 .await?;
         }
 
@@ -476,16 +476,18 @@ impl<'a> MeltSaga<'a, Initial> {
         let proof_ys = proofs.ys()?;
 
         // Since proofs may be external (not in our database), add them first
-        // Set to Reserved state like the regular prepare() does
+        // while preserving the operation link needed for recovery.
         let proofs_info = proofs
             .clone()
             .into_iter()
             .map(|p| {
-                ProofInfo::new(
+                ProofInfo::new_with_operations(
                     p,
                     self.wallet.mint_url.clone(),
                     State::Reserved,
                     self.wallet.unit.clone(),
+                    Some(operation_id),
+                    None,
                 )
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
@@ -667,7 +669,7 @@ impl<'a> MeltSaga<'a, Prepared> {
 
                 if let Some(swapped) = self
                     .wallet
-                    .swap(
+                    .swap_no_reserve(
                         Some(target_swap_amount),
                         SplitTarget::None,
                         self.state_data.proofs_to_swap.clone(),
@@ -1150,5 +1152,99 @@ impl<'a> MeltSaga<'a, Finalized> {
     /// Consume the saga and return the change proofs
     pub fn into_change(self) -> Option<Proofs> {
         self.state_data.change
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use cdk_common::nuts::State;
+
+    use super::MeltSaga;
+    use crate::wallet::test_utils::{
+        create_test_db, create_test_wallet_with_mock, test_keyset_id, test_melt_quote,
+        test_mint_url, test_proof_info, MockMintConnector,
+    };
+
+    #[tokio::test]
+    async fn test_prepare_melt_reserves_exact_input_proofs_for_operation() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let proof_info = test_proof_info(keyset_id, 1010, mint_url.clone());
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let saga = MeltSaga::new(&wallet);
+        let prepared = saga
+            .prepare_with_proofs(&quote_id, vec![proof], HashMap::new())
+            .await
+            .unwrap();
+
+        let reserved = db
+            .get_reserved_proofs(&prepared.state_data.operation_id)
+            .await
+            .unwrap();
+        assert_eq!(reserved.len(), 1);
+        assert_eq!(reserved[0].y, proof_y);
+        assert_eq!(reserved[0].state, State::Reserved);
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Reserved);
+        assert_eq!(
+            stored[0].used_by_operation,
+            Some(prepared.state_data.operation_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prepare_melt_reserves_swap_input_proofs_for_operation() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let proof_info = test_proof_info(keyset_id, 2000, mint_url.clone());
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let saga = MeltSaga::new(&wallet);
+        let prepared = saga.prepare(&quote_id, HashMap::new()).await.unwrap();
+
+        assert_eq!(prepared.state_data.proofs_to_swap.len(), 1);
+
+        let reserved = db
+            .get_reserved_proofs(&prepared.state_data.operation_id)
+            .await
+            .unwrap();
+        assert_eq!(reserved.len(), 1);
+        assert_eq!(reserved[0].y, proof_y);
+        assert_eq!(reserved[0].state, State::Reserved);
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Reserved);
+        assert_eq!(
+            stored[0].used_by_operation,
+            Some(prepared.state_data.operation_id)
+        );
     }
 }

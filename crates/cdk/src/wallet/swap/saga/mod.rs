@@ -45,6 +45,7 @@ use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
     RevertProofReservation as RevertSwapProofReservation,
 };
+use crate::wallet::swap::ProofReservation;
 use crate::{Amount, Error, Wallet};
 
 pub(crate) mod resume;
@@ -81,7 +82,11 @@ impl<'a> SwapSaga<'a, Initial> {
     /// # Compensation
     ///
     /// On failure, reverts proof reservation and deletes the saga.
+    /// When `proof_reservation` is [`ProofReservation::Skip`], the swap does
+    /// not own the proof reservation and skips both the reservation call and
+    /// the corresponding compensation registration.
     #[instrument(skip_all)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn prepare(
         mut self,
         amount: Option<Amount>,
@@ -90,6 +95,7 @@ impl<'a> SwapSaga<'a, Initial> {
         spending_conditions: Option<SpendingConditions>,
         use_p2bk: bool,
         include_fees: bool,
+        proof_reservation: ProofReservation,
     ) -> Result<SwapSaga<'a, Prepared>, Error> {
         tracing::info!(
             "Preparing swap with operation {}",
@@ -109,6 +115,7 @@ impl<'a> SwapSaga<'a, Initial> {
         let pre_swap = self
             .wallet
             .create_swap(
+                &self.state_data.operation_id,
                 active_keyset_id,
                 &fee_and_amounts,
                 amount,
@@ -118,6 +125,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 include_fees,
                 use_p2bk,
                 &fee_breakdown,
+                proof_reservation,
             )
             .await?;
 
@@ -151,15 +159,21 @@ impl<'a> SwapSaga<'a, Initial> {
 
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
-        add_compensation(
-            &mut self.compensations,
-            Box::new(RevertSwapProofReservation {
-                localstore: self.wallet.localstore.clone(),
-                proof_ys: input_ys.clone(),
-                saga_id: self.state_data.operation_id,
-            }),
-        )
-        .await;
+        // Only register compensation if we own the proof reservation.
+        // When called from a parent saga (send, melt, receive) with
+        // ProofReservation::Skip, the parent is responsible for its own
+        // proof lifecycle management.
+        if proof_reservation == ProofReservation::Reserve {
+            add_compensation(
+                &mut self.compensations,
+                Box::new(RevertSwapProofReservation {
+                    localstore: self.wallet.localstore.clone(),
+                    proof_ys: input_ys.clone(),
+                    saga_id: self.state_data.operation_id,
+                }),
+            )
+            .await;
+        }
 
         Ok(SwapSaga {
             wallet: self.wallet,
@@ -352,5 +366,184 @@ impl<S: std::fmt::Debug> std::fmt::Debug for SwapSaga<'_, S> {
         f.debug_struct("SwapSaga")
             .field("state_data", &self.state_data)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk_common::nuts::State;
+
+    use super::SwapSaga;
+    use crate::amount::SplitTarget;
+    use crate::wallet::swap::ProofReservation;
+    use crate::wallet::test_utils::{
+        create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
+        test_proof_info, MockMintConnector,
+    };
+
+    #[tokio::test]
+    async fn test_prepare_swap_reserves_proofs_for_operation() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let proof_info = test_proof_info(keyset_id, 100, mint_url);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let saga = SwapSaga::new(&wallet);
+        let prepared = saga
+            .prepare(
+                None,
+                SplitTarget::default(),
+                wallet.get_unspent_proofs().await.unwrap(),
+                None,
+                false,
+                false,
+                ProofReservation::Reserve,
+            )
+            .await
+            .unwrap();
+
+        let reserved = db
+            .get_reserved_proofs(&prepared.state_data.operation_id)
+            .await
+            .unwrap();
+        assert_eq!(reserved.len(), 1);
+        assert_eq!(reserved[0].y, proof_y);
+        assert_eq!(reserved[0].state, State::Reserved);
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Reserved);
+        assert_eq!(
+            stored[0].used_by_operation,
+            Some(prepared.state_data.operation_id)
+        );
+    }
+
+    /// When proofs are already reserved by a parent saga and we call prepare
+    /// with `ProofReservation::Reserve` (the default), it should fail with
+    /// `ProofNotUnspent` because `reserve_proofs` requires `Unspent` state.
+    #[tokio::test]
+    async fn test_swap_prepare_fails_on_already_reserved_proofs() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let proof_info = test_proof_info(keyset_id, 100, mint_url);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        // Reserve the proof under a "parent" operation
+        let parent_op_id = uuid::Uuid::new_v4();
+        db.reserve_proofs(vec![proof_y], &parent_op_id)
+            .await
+            .unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        // Get the (now reserved) proofs directly from DB for the swap input
+        let reserved_proofs: Vec<_> = db
+            .get_reserved_proofs(&parent_op_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|pi| pi.proof)
+            .collect();
+        assert_eq!(reserved_proofs.len(), 1);
+
+        let saga = SwapSaga::new(&wallet);
+        let result = saga
+            .prepare(
+                None,
+                SplitTarget::default(),
+                reserved_proofs,
+                None,
+                false,
+                false,
+                ProofReservation::Reserve,
+            )
+            .await;
+
+        // Should fail because the proofs are already Reserved, not Unspent
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Proof not in unspent state"),
+            "Expected ProofNotUnspent error, got: {}",
+            err
+        );
+    }
+
+    /// When proofs are already reserved by a parent saga and we call prepare
+    /// with `ProofReservation::Skip`, it should succeed without attempting
+    /// to re-reserve the proofs. This is the fix for the double-reservation
+    /// bug that caused `ProofNotUnspent` errors in nested swap operations.
+    #[tokio::test]
+    async fn test_swap_prepare_with_skip_reservation_succeeds_on_reserved_proofs() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let proof_info = test_proof_info(keyset_id, 100, mint_url);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        // Reserve the proof under a "parent" operation
+        let parent_op_id = uuid::Uuid::new_v4();
+        db.reserve_proofs(vec![proof_y], &parent_op_id)
+            .await
+            .unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        // Get the (now reserved) proofs directly from DB for the swap input
+        let reserved_proofs: Vec<_> = db
+            .get_reserved_proofs(&parent_op_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|pi| pi.proof)
+            .collect();
+        assert_eq!(reserved_proofs.len(), 1);
+
+        let saga = SwapSaga::new(&wallet);
+        let prepared = saga
+            .prepare(
+                None,
+                SplitTarget::default(),
+                reserved_proofs,
+                None,
+                false,
+                false,
+                ProofReservation::Skip,
+            )
+            .await
+            .unwrap();
+
+        // Proofs should still be reserved under the parent operation, not the swap
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Reserved);
+        assert_eq!(
+            stored[0].used_by_operation,
+            Some(parent_op_id),
+            "Proof should still be reserved under the parent operation"
+        );
+
+        // The swap saga should NOT have registered any proof reversion
+        // compensation (since it doesn't own the reservation)
+        assert!(
+            prepared.compensations.is_empty(),
+            "No compensation should be registered when skipping reservation"
+        );
     }
 }

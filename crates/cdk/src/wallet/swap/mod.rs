@@ -9,17 +9,32 @@ use tracing::instrument;
 use crate::amount::SplitTarget;
 use crate::fees::ProofsFeeBreakdown;
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::{
-    PreMintSecrets, PreSwap, Proofs, PublicKey, SpendingConditions, State, SwapRequest,
-};
+use crate::nuts::{PreMintSecrets, PreSwap, Proofs, PublicKey, SpendingConditions, SwapRequest};
 use crate::{Amount, Error, Wallet};
 
 pub(crate) mod saga;
 
 use saga::SwapSaga;
 
+/// Controls whether swap operations should reserve proofs in the database.
+///
+/// When a swap is performed as a nested operation within a parent saga
+/// (send, melt, receive), the parent has already reserved the proofs.
+/// Passing [`ProofReservation::Skip`] avoids a double-reservation conflict
+/// that would otherwise fail with `ProofNotUnspent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProofReservation {
+    /// Reserve proofs as part of the swap (default for standalone swaps).
+    Reserve,
+    /// Skip reservation because a parent saga already reserved these proofs.
+    Skip,
+}
+
 impl Wallet {
-    /// Swap proofs using the saga pattern
+    /// Swap proofs using the saga pattern.
+    ///
+    /// This method reserves the input proofs before performing the swap,
+    /// ensuring they cannot be used by concurrent operations.
     #[instrument(skip(self, input_proofs))]
     pub async fn swap(
         &self,
@@ -29,6 +44,58 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
         use_p2bk: bool,
+    ) -> Result<Option<Proofs>, Error> {
+        self.swap_internal(
+            amount,
+            amount_split_target,
+            input_proofs,
+            spending_conditions,
+            include_fees,
+            use_p2bk,
+            ProofReservation::Reserve,
+        )
+        .await
+    }
+
+    /// Swap proofs without reserving them first.
+    ///
+    /// This is intended for internal use by parent sagas (send, melt, receive)
+    /// that have already reserved the proofs. Calling this on unreserved proofs
+    /// bypasses the reservation safety check.
+    #[instrument(skip(self, input_proofs))]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn swap_no_reserve(
+        &self,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        input_proofs: Proofs,
+        spending_conditions: Option<SpendingConditions>,
+        include_fees: bool,
+        use_p2bk: bool,
+    ) -> Result<Option<Proofs>, Error> {
+        self.swap_internal(
+            amount,
+            amount_split_target,
+            input_proofs,
+            spending_conditions,
+            include_fees,
+            use_p2bk,
+            ProofReservation::Skip,
+        )
+        .await
+    }
+
+    /// Internal swap implementation with explicit proof reservation control.
+    #[allow(clippy::too_many_arguments)]
+    async fn swap_internal(
+        &self,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        input_proofs: Proofs,
+        spending_conditions: Option<SpendingConditions>,
+        include_fees: bool,
+        use_p2bk: bool,
+        proof_reservation: ProofReservation,
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
 
@@ -41,6 +108,7 @@ impl Wallet {
                 spending_conditions,
                 use_p2bk,
                 include_fees,
+                proof_reservation,
             )
             .await?;
         let saga = saga.execute().await?;
@@ -53,6 +121,7 @@ impl Wallet {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_swap(
         &self,
+        operation_id: &uuid::Uuid,
         active_keyset_id: Id,
         fee_and_amounts: &FeeAndAmounts,
         amount: Option<Amount>,
@@ -62,16 +131,17 @@ impl Wallet {
         include_fees: bool,
         use_p2bk: bool,
         proofs_fee_breakdown: &ProofsFeeBreakdown,
+        proof_reservation: ProofReservation,
     ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
 
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;
 
-        let ys: Vec<PublicKey> = proofs.ys()?;
-        self.localstore
-            .update_proofs_state(ys, State::Reserved)
-            .await?;
+        if proof_reservation == ProofReservation::Reserve {
+            let ys: Vec<PublicKey> = proofs.ys()?;
+            self.localstore.reserve_proofs(ys, operation_id).await?;
+        }
 
         let total_to_subtract = amount
             .unwrap_or(Amount::ZERO)

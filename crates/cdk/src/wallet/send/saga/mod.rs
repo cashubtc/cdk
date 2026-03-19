@@ -275,7 +275,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         self.wallet
             .localstore
-            .update_proofs_state(proof_ys.clone(), State::Reserved)
+            .reserve_proofs(proof_ys.clone(), &self.state_data.operation_id)
             .await?;
 
         let memo_text = opts.memo.as_ref().map(|m| m.memo.clone());
@@ -462,7 +462,7 @@ impl<'a> SendSaga<'a, Prepared> {
 
                 if let Some(swapped_proofs) = self
                     .wallet
-                    .swap(
+                    .swap_no_reserve(
                         Some(swap_amount),
                         SplitTarget::None,
                         proofs_to_swap,
@@ -632,7 +632,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
         // Swap proofs back to wallet with fresh secrets
         let swap_result = self
             .wallet
-            .swap(
+            .swap_no_reserve(
                 None, // Swap all
                 SplitTarget::default(),
                 self.state_data.proofs.clone(),
@@ -758,5 +758,57 @@ impl std::fmt::Debug for SendSaga<'_, Prepared> {
             )
             .field("send_fee", &self.state_data.send_fee)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk_common::nuts::State;
+
+    use super::SendSaga;
+    use crate::wallet::send::SendOptions;
+    use crate::wallet::test_utils::{
+        create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
+        test_proof_info, MockMintConnector,
+    };
+    use crate::Amount;
+
+    #[tokio::test]
+    async fn test_prepare_send_reserves_proofs_for_operation() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let proof_info = test_proof_info(keyset_id, 100, mint_url);
+        let proof_y = proof_info.y;
+
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let saga = SendSaga::new(&wallet);
+        let prepared = saga
+            .prepare(Amount::from(100), SendOptions::default())
+            .await
+            .unwrap();
+
+        let reserved = db
+            .get_reserved_proofs(&prepared.operation_id())
+            .await
+            .unwrap();
+        assert_eq!(reserved.len(), 1);
+        assert_eq!(reserved[0].y, proof_y);
+        assert_eq!(reserved[0].state, State::Reserved);
+
+        let stored_proofs = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored_proofs.len(), 1);
+        assert_eq!(stored_proofs[0].state, State::Reserved);
+        assert_eq!(
+            stored_proofs[0].used_by_operation,
+            Some(prepared.operation_id())
+        );
     }
 }

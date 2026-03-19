@@ -473,6 +473,16 @@ async fn test_melt_swap_gap_recovery() -> Result<()> {
     // Note: this consumes the old proofs from the DB and adds new ones.
     // The `prepared` saga state in memory still points to old proofs,
     // and the DB saga state is still 'ProofsReserved' with old proofs.
+    //
+    // First unreserve the proofs so the public swap() can re-reserve them.
+    // In the real melt flow, swap_no_reserve() is used internally, but
+    // that is not accessible from outside the crate.
+    let swap_ys = proofs_to_swap.ys()?;
+    wallet
+        .localstore
+        .update_proofs_state(swap_ys, cdk::nuts::State::Unspent)
+        .await?;
+
     let swapped_proofs = wallet
         .swap(
             Some(target_swap_amount),
@@ -526,6 +536,140 @@ async fn test_melt_swap_gap_recovery() -> Result<()> {
         initial_amount,
         current_balance
     );
+
+    Ok(())
+}
+
+// =============================================================================
+// Send with Swap Tests (nested swap regression tests)
+// =============================================================================
+
+/// Regression test: Send that requires a swap during confirm should succeed.
+///
+/// This test reproduces the `ProofNotUnspent` error that occurred when:
+/// 1. `prepare_send` reserves proofs (Unspent → Reserved)
+/// 2. `confirm` calls `swap()` on a subset of those proofs
+/// 3. The swap saga's `create_swap()` tried to `reserve_proofs()` again
+/// 4. Failed because proofs are already Reserved, not Unspent
+///
+/// The fix passes `ProofReservation::Skip` to the nested swap, since the
+/// parent send saga already owns the reservation.
+#[tokio::test]
+async fn test_send_with_swap_succeeds() -> Result<()> {
+    use cdk::amount::SplitTarget;
+
+    setup_tracing();
+    let mint = create_and_start_test_mint().await?;
+    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
+
+    // Fund wallet with uniform 64-sat proofs (non-standard denomination).
+    // When we try to send 100 sats, the wallet can't construct it from
+    // exact 64-sat proofs, so it must swap some proofs for proper
+    // denominations during confirm.
+    let initial_amount = 1000u64;
+    fund_wallet(
+        wallet.clone(),
+        initial_amount,
+        Some(SplitTarget::Value(Amount::from(64))),
+    )
+    .await?;
+
+    let initial_balance = wallet.total_balance().await?;
+    assert_eq!(initial_balance, Amount::from(initial_amount));
+
+    // Send an amount that can't be constructed from 64-sat proofs alone
+    let send_amount = Amount::from(100);
+    let prepared = wallet
+        .prepare_send(send_amount, SendOptions::default())
+        .await?;
+
+    // Verify there are proofs to swap (the core of this regression test)
+    let has_proofs_to_swap = !prepared.proofs_to_swap().is_empty();
+    tracing::info!(
+        "Proofs to send: {}, Proofs to swap: {}",
+        prepared.proofs_to_send().len(),
+        prepared.proofs_to_swap().len()
+    );
+
+    // Confirm the send — this is where the ProofNotUnspent error occurred
+    let token = prepared.confirm(None).await?;
+
+    tracing::info!("Send confirmed. Token created successfully.");
+
+    // Verify balance decreased
+    let final_balance = wallet.total_balance().await?;
+    assert!(
+        final_balance < initial_balance,
+        "Balance should decrease after send"
+    );
+
+    // If a swap was needed, verify the swap + send worked correctly
+    if has_proofs_to_swap {
+        tracing::info!(
+            "Swap was required during send (regression scenario). Initial: {}, Final: {}",
+            initial_balance,
+            final_balance
+        );
+    }
+
+    // Verify token is valid by checking it's non-empty
+    let token_str = token.to_string();
+    assert!(!token_str.is_empty(), "Token string should not be empty");
+
+    Ok(())
+}
+
+/// Full round-trip test: Send with swap, then receive on a second wallet.
+///
+/// This verifies that the token produced by a send that required an
+/// internal swap is valid and can be received by another wallet.
+#[tokio::test]
+async fn test_send_with_swap_then_receive() -> Result<()> {
+    use cdk::amount::SplitTarget;
+    use cdk::wallet::ReceiveOptions;
+
+    setup_tracing();
+    let mint = create_and_start_test_mint().await?;
+    let wallet1 = create_test_wallet_for_mint(mint.clone()).await?;
+    let wallet2 = create_test_wallet_for_mint(mint.clone()).await?;
+
+    // Fund wallet1 with uniform 64-sat proofs so sending 100 sats
+    // forces a swap during confirm.
+    let initial_amount = 1000u64;
+    fund_wallet(
+        wallet1.clone(),
+        initial_amount,
+        Some(SplitTarget::Value(Amount::from(64))),
+    )
+    .await?;
+
+    // Send from wallet1 (will require swap due to non-matching denominations)
+    let send_amount = Amount::from(100);
+    let prepared = wallet1
+        .prepare_send(send_amount, SendOptions::default())
+        .await?;
+
+    let token = prepared.confirm(None).await?;
+    let token_str = token.to_string();
+
+    tracing::info!("Token created, attempting receive on wallet2");
+
+    // Receive on wallet2
+    let received_amount = wallet2
+        .receive(&token_str, ReceiveOptions::default())
+        .await?;
+
+    tracing::info!("Received {} on wallet2", received_amount);
+
+    // The received amount should match the send amount
+    assert_eq!(
+        received_amount, send_amount,
+        "Received amount should match sent amount"
+    );
+
+    // wallet2 balance should be exactly the send amount
+    let wallet2_balance = wallet2.total_balance().await?;
+    assert_eq!(wallet2_balance, send_amount);
 
     Ok(())
 }
