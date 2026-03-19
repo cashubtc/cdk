@@ -29,12 +29,10 @@ async fn get_wallet_for_mint(
         .get_wallet(&mint_url, &CurrencyUnit::Sat)
         .await
     {
-        Ok(wallet) => Ok(Arc::new(wallet)),
-        Err(_) => Ok(Arc::new(
-            wallet_repository
-                .create_wallet(mint_url, CurrencyUnit::Sat, None)
-                .await?,
-        )),
+        Ok(wallet) => Ok(wallet),
+        Err(_) => Ok(wallet_repository
+            .create_wallet(mint_url, CurrencyUnit::Sat, None)
+            .await?),
     }
 }
 
@@ -208,7 +206,9 @@ async fn subscribe(
 
     // Run polling and wait for Ctrl+C
     let mut stream =
-        wallet.npubcash_proof_stream(SplitTarget::default(), None, Duration::from_secs(5));
+        wallet
+            .clone()
+            .npubcash_proof_stream(SplitTarget::default(), None, Duration::from_secs(5));
 
     tokio::select! {
         _ = async {
