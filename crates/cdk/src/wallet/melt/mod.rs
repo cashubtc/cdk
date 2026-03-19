@@ -417,10 +417,19 @@ impl<'a> PreparedMelt<'a> {
         self,
         options: MeltConfirmOptions,
     ) -> Result<FinalizedMelt, Error> {
-        match self.confirm_prefer_async_with_options(options).await? {
-            MeltOutcome::Paid(finalized) => Ok(finalized),
-            MeltOutcome::Pending(pending) => pending.await,
-        }
+        self.saga
+            .wallet
+            .confirm_prepared_melt_with_options(
+                self.saga.operation_id(),
+                self.saga.quote().clone(),
+                self.saga.proofs().clone(),
+                self.saga.proofs_to_swap().clone(),
+                self.saga.input_fee(),
+                self.saga.input_fee_without_swap(),
+                self.metadata,
+                options,
+            )
+            .await
     }
 
     /// Confirm the prepared melt using async support (NUT-05).
