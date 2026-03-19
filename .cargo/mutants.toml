@@ -18,24 +18,22 @@ exclude_re = [
     # dhke.rs:61 - Mutating counter += to *= causes infinite loop (counter stays 0)
     "crates/cashu/src/dhke.rs:61:.*replace \\+= with \\*=",
 
-    # amount.rs:108 - Mutating % to / in split causes infinite loop
-    "crates/cashu/src/amount.rs:108:.*replace % with /",
-
-    # amount.rs:100 - split() returning empty vec causes infinite loops
-    "crates/cashu/src/amount.rs:100:.*replace.*split.*with vec!\\[\\]",
-    "crates/cashu/src/amount.rs:100:.*replace.*split.*with vec!\\[Default",
-
-    # amount.rs:203 - checked_add returning Some(Default/0) causes infinite increment loops
-    "crates/cashu/src/amount.rs:203:.*replace.*checked_add.*with Some\\(Default",
-
-    # amount.rs:226 - try_sum returning Ok(Default/0) causes infinite loops
-    "crates/cashu/src/amount.rs:226:.*replace.*try_sum.*with Ok\\(Default",
-
-    # amount.rs:288 - From<u64> returning Default/0 causes infinite loops
-    "crates/cashu/src/amount.rs:288:.*replace.*from.*with Default",
-
-    # amount.rs:331 - Sub returning Default/0 causes infinite loops
-    "crates/cashu/src/amount.rs:331:.*replace.*sub.*with Default",
+    # amount.rs hang-inducing or resource-exhaustion mutations.
+    # Match on mutant description instead of line numbers so these remain stable
+    # when amount.rs is refactored.
+    "crates/cashu/src/amount.rs:.*replace % with / in Amount<\\(\\)>::split",
+    "crates/cashu/src/amount.rs:.*replace % with \\+ in Amount<\\(\\)>::split",
+    "crates/cashu/src/amount.rs:.*replace / with \\* in Amount<\\(\\)>::split",
+    "crates/cashu/src/amount.rs:.*replace <impl Clone for Amount<\\(\\)>>::clone -> Self with Default::default\\(\\)",
+    "crates/cashu/src/amount.rs:.*replace Amount<\\(\\)>::split -> Result<Vec<Self>, Error> with Ok\\(vec!\\[\\]\\)",
+    "crates/cashu/src/amount.rs:.*replace Amount<\\(\\)>::split -> Result<Vec<Self>, Error> with Ok\\(vec!\\[Default::default\\(\\)\\]\\)",
+    "crates/cashu/src/amount.rs:.*replace Amount<\\(\\)>::checked_add -> Option<Amount<\\(\\)>> with Some\\(Amount::from\\(\\)\\)",
+    "crates/cashu/src/amount.rs:.*replace Amount<\\(\\)>::checked_add -> Option<Amount<\\(\\)>> with Some\\(Amount::new\\(\\)\\)",
+    "crates/cashu/src/amount.rs:.*replace Amount<\\(\\)>::checked_add -> Option<Amount<\\(\\)>> with Some\\(Amount::new\\(\\(\\)\\)\\)",
+    "crates/cashu/src/amount.rs:.*replace Amount<\\(\\)>::checked_add -> Option<Amount<\\(\\)>> with Some\\(Amount::from_iter\\(\\[\\(\\)\\]\\)\\)",
+    "crates/cashu/src/amount.rs:.*replace Amount<\\(\\)>::try_sum -> Result<Self, Error> with Ok\\(Default::default\\(\\)\\)",
+    "crates/cashu/src/amount.rs:.*replace <impl From<u64> for Amount<\\(\\)>>::from -> Self with Default::default\\(\\)",
+    "crates/cashu/src/amount.rs:.*replace <impl std::ops::Sub for Amount<\\(\\)>>::sub -> Self::Output with Default::default\\(\\)",
 
     # Trivial getters/setters - not worth testing
     "FeeAndAmounts::fee",
@@ -85,7 +83,7 @@ exclude_re = [
     "crates/cashu/src/nuts/nut00/mod.rs:.*impl PartialEq<PaymentMethod> for KnownMethod.*eq",
 
     # saturating_sub boundary comparison - extensively tested, mutation doesn't change behavior
-    "crates/cashu/src/amount.rs:344:.*replace > with >=",
+    "crates/cashu/src/amount.rs:.*replace > with >= in Amount<\\(\\)>::saturating_sub",
 
     # Secret trivial getters - standard Rust patterns, well-tested indirectly
     "crates/cashu/src/secret.rs:.*Secret::len",
