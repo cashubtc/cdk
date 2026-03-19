@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+source "$(dirname "$0")/itest_helpers.sh"
+
 # Function to perform cleanup
 cleanup() {
     echo "Cleaning up..."
@@ -47,8 +49,10 @@ export MINT_DATABASE="${1:-sqlite}"
 # Check if OPENID_DISCOVERY was provided as second argument, default to a test value
 export OPENID_DISCOVERY="${2:-http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration}"
 
-# Build the project
-cargo build -p cdk-integration-tests 
+# Build harness binary only if not available as pre-built
+if ! command -v start_fake_auth_mint &>/dev/null; then
+    cargo build -p cdk-integration-tests
+fi
 
 # Auth configuration
 export CDK_TEST_OIDC_USER="cdk-test"
@@ -57,7 +61,7 @@ export CDK_TEST_OIDC_PASSWORD="cdkpassword"
 # Start the fake auth mint in the background
 echo "Starting fake auth mint with discovery URL: $OPENID_DISCOVERY"
 echo "Using temp directory: $CDK_ITESTS_DIR"
-cargo run -p cdk-integration-tests --bin start_fake_auth_mint -- --enable-logging "$MINT_DATABASE" "$CDK_ITESTS_DIR" "$OPENID_DISCOVERY" "$CDK_ITESTS_MINT_PORT" &
+run_bin_bg start_fake_auth_mint --enable-logging "$MINT_DATABASE" "$CDK_ITESTS_DIR" "$OPENID_DISCOVERY" "$CDK_ITESTS_MINT_PORT"
 
 # Store the PID of the mint process
 FAKE_AUTH_MINT_PID=$!
@@ -75,7 +79,7 @@ echo "Fake auth mint started with PID: $FAKE_AUTH_MINT_PID"
 
 # Run cargo test
 echo "Running fake auth integration tests..."
-cargo test -p cdk-integration-tests --test fake_auth
+run_test fake_auth
 
 # Capture the exit status of cargo test
 test_status=$?
