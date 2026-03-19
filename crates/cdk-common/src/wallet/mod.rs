@@ -292,7 +292,7 @@ impl MintQuote {
     }
 }
 
-/// Amount that are recovered during restore operation
+/// Amounts recovered during a restore operation
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
 pub struct Restored {
     /// Amount in the restore that has already been spent
@@ -371,7 +371,7 @@ pub struct PreparedSendData {
     pub proofs_to_send: Proofs,
     /// Fee for swap
     pub swap_fee: Amount,
-    /// Fee for send
+    /// Fee the recipient will pay to redeem the token
     pub send_fee: Amount,
 }
 
@@ -713,15 +713,11 @@ pub trait Wallet: Send + Sync {
     /// Active subscription handle for receiving notifications
     type Subscription: Send + Sync;
 
-    // === Identity ===
-
     /// Get the mint URL this wallet is connected to
     fn mint_url(&self) -> Self::MintUrl;
 
     /// Get the currency unit of this wallet
     fn unit(&self) -> Self::CurrencyUnit;
-
-    // === Balance ===
 
     /// Total unspent balance of the wallet
     async fn total_balance(&self) -> Result<Self::Amount, Self::Error>;
@@ -732,23 +728,17 @@ pub trait Wallet: Send + Sync {
     /// Total reserved balance of the wallet
     async fn total_reserved_balance(&self) -> Result<Self::Amount, Self::Error>;
 
-    // === Mint Info ===
-
     /// Fetch mint info from the mint (always makes a network call)
     async fn fetch_mint_info(&self) -> Result<Option<Self::MintInfo>, Self::Error>;
 
     /// Load mint info (from cache if fresh, otherwise fetches)
     async fn load_mint_info(&self) -> Result<Self::MintInfo, Self::Error>;
 
-    // === Keysets ===
-
     /// Refresh keysets from the mint (always fetches fresh data)
     async fn refresh_keysets(&self) -> Result<Vec<Self::KeySetInfo>, Self::Error>;
 
     /// Get the active keyset with lowest fees
     async fn get_active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error>;
-
-    // === Minting ===
 
     /// Create a mint quote for the given payment method
     async fn mint_quote(
@@ -759,8 +749,6 @@ pub trait Wallet: Send + Sync {
         extra: Option<String>,
     ) -> Result<Self::MintQuote, Self::Error>;
 
-    // === Melting ===
-
     /// Create a melt quote for the given payment method
     async fn melt_quote(
         &self,
@@ -769,8 +757,6 @@ pub trait Wallet: Send + Sync {
         options: Option<Self::MeltOptions>,
         extra: Option<String>,
     ) -> Result<Self::MeltQuote, Self::Error>;
-
-    // === Transactions ===
 
     /// List transactions, optionally filtered by direction
     async fn list_transactions(
@@ -787,15 +773,11 @@ pub trait Wallet: Send + Sync {
     /// Revert a transaction by reclaiming unspent proofs
     async fn revert_transaction(&self, id: TransactionId) -> Result<(), Self::Error>;
 
-    // === Proofs ===
-
     /// Check all pending proofs and return total amount still pending
     async fn check_all_pending_proofs(&self) -> Result<Self::Amount, Self::Error>;
 
     /// Check if proofs are spent
     async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Self::Error>;
-
-    // === Fees ===
 
     /// Get fees for a specific keyset ID
     async fn get_keyset_fees_by_id(&self, keyset_id: Id) -> Result<u64, Self::Error>;
@@ -806,8 +788,6 @@ pub trait Wallet: Send + Sync {
         proof_count: u64,
         keyset_id: Id,
     ) -> Result<Self::Amount, Self::Error>;
-
-    // === Receive ===
 
     /// Receive an encoded token
     async fn receive(
@@ -824,8 +804,6 @@ pub trait Wallet: Send + Sync {
         memo: Option<String>,
         token: Option<String>,
     ) -> Result<Self::Amount, Self::Error>;
-
-    // === Send ===
 
     /// Prepare a send transaction
     async fn prepare_send(
@@ -847,8 +825,6 @@ pub trait Wallet: Send + Sync {
     async fn check_send_status(&self, operation_id: Self::OperationId)
         -> Result<bool, Self::Error>;
 
-    // === Mint (Issue) ===
-
     /// Mint tokens for a quote
     async fn mint(
         &self,
@@ -868,8 +844,6 @@ pub trait Wallet: Send + Sync {
         payment_method: Option<Self::PaymentMethod>,
     ) -> Result<Self::MintQuote, Self::Error>;
 
-    // === Melt ===
-
     /// Prepare a melt operation
     async fn prepare_melt(
         &self,
@@ -885,8 +859,6 @@ pub trait Wallet: Send + Sync {
         metadata: HashMap<String, String>,
     ) -> Result<Self::PreparedMelt, Self::Error>;
 
-    // === Swap ===
-
     /// Swap proofs
     async fn swap(
         &self,
@@ -897,8 +869,6 @@ pub trait Wallet: Send + Sync {
         include_fees: bool,
         use_p2bk: bool,
     ) -> Result<Option<Proofs>, Self::Error>;
-
-    // === Auth ===
 
     /// Set Clear Auth Token (CAT)
     async fn set_cat(&self, cat: String) -> Result<(), Self::Error>;
@@ -915,17 +885,11 @@ pub trait Wallet: Send + Sync {
     /// Get unspent auth proofs
     async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, Self::Error>;
 
-    // === Restore ===
-
     /// Restore wallet from seed
     async fn restore(&self) -> Result<Restored, Self::Error>;
 
-    // === Verification ===
-
     /// Verify DLEQ proofs in a token
     async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error>;
-
-    // === Payment Requests ===
 
     /// Pay a NUT-18 payment request
     async fn pay_request(
@@ -933,8 +897,6 @@ pub trait Wallet: Send + Sync {
         request: PaymentRequest,
         custom_amount: Option<Self::Amount>,
     ) -> Result<(), Self::Error>;
-
-    // === Subscriptions ===
 
     /// Subscribe to mint quote state updates
     ///

@@ -7,7 +7,7 @@ use cdk::amount::SplitTarget;
 use cdk::error::Error;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
-use cdk::wallet::{Wallet, WalletTrait};
+use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use rand::random;

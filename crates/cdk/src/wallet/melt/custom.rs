@@ -3,7 +3,6 @@ use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, PaymentMethod};
 use tracing::instrument;
 
 use crate::nuts::{MeltOptions, MeltQuoteCustomRequest};
-use crate::wallet::WalletTrait;
 use crate::{Error, Wallet};
 
 impl Wallet {

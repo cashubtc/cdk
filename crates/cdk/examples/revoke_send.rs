@@ -9,7 +9,7 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepositoryBuilder, WalletTrait};
+use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepositoryBuilder};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 

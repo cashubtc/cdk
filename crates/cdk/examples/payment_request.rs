@@ -32,7 +32,7 @@ use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::payment_request::CreateRequestParams;
-use cdk::wallet::{WalletRepositoryBuilder, WalletTrait};
+use cdk::wallet::WalletRepositoryBuilder;
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
