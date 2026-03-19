@@ -427,10 +427,10 @@ nutshell-wallet-itest:
   bash ./misc/nutshell_wallet_itest.sh
 
 # Start interactive regtest environment (Bitcoin + 4 LN nodes + 2 CDK mints)
-regtest db="sqlite":
+regtest db="sqlite" host="127.0.0.1":
   #!/usr/bin/env bash
   set -euo pipefail
-  bash ./misc/interactive_regtest_mprocs.sh {{db}}
+  bash ./misc/interactive_regtest_mprocs.sh {{db}} "{{host}}"
 
 # Lightning Network Commands (require regtest environment to be running)
 
