@@ -1055,6 +1055,30 @@ mod tests {
     }
 
     #[test]
+    fn test_amount_to_msat() {
+        let sat_amount = Amount::new(2, CurrencyUnit::Sat);
+        assert_eq!(sat_amount.to_msat().unwrap(), 2000);
+
+        let msat_amount = Amount::new(2500, CurrencyUnit::Msat);
+        assert_eq!(msat_amount.to_msat().unwrap(), 2500);
+
+        let usd_amount = Amount::new(1, CurrencyUnit::Usd);
+        assert!(usd_amount.to_msat().is_err());
+    }
+
+    #[test]
+    fn test_amount_to_sat() {
+        let msat_amount = Amount::new(2000, CurrencyUnit::Msat);
+        assert_eq!(msat_amount.to_sat().unwrap(), 2);
+
+        let sat_amount = Amount::new(5, CurrencyUnit::Sat);
+        assert_eq!(sat_amount.to_sat().unwrap(), 5);
+
+        let usd_amount = Amount::new(1, CurrencyUnit::Usd);
+        assert!(usd_amount.to_sat().is_err());
+    }
+
+    #[test]
     fn test_amount_from_typed_to_untyped() {
         // Test From<Amount<CurrencyUnit>> for Amount<()>
         let typed = Amount::new(1000, CurrencyUnit::Sat);
