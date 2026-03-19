@@ -20,7 +20,6 @@ use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
-use crate::wallet::WalletTrait;
 use crate::Wallet;
 
 /// Data extracted from a token

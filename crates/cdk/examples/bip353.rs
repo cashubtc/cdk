@@ -29,7 +29,7 @@ use std::time::Duration;
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{Wallet, WalletTrait};
+use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use rand::random;

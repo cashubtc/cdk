@@ -28,8 +28,8 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::nut17::Kind;
 use crate::nuts::{
-    nut10, CurrencyUnit, Id, Keys, MintQuoteState, PreMintSecrets, Proofs, RestoreRequest,
-    SpendingConditions, State,
+    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
+    RestoreRequest, SpendingConditions, State,
 };
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::Amount;
@@ -256,6 +256,29 @@ impl Wallet {
             .map_err(|e| Error::SubscriptionError(e.to_string()))
     }
 
+    /// Subscribe to mint quote state changes for the given quote IDs and payment method
+    #[instrument(skip(self, method))]
+    pub async fn subscribe_mint_quote_state(
+        &self,
+        quote_ids: Vec<String>,
+        method: cdk_common::PaymentMethod,
+    ) -> Result<ActiveSubscription, Error> {
+        use cdk_common::nut00::KnownMethod;
+
+        let sub = match method {
+            cdk_common::PaymentMethod::Known(KnownMethod::Bolt11) => {
+                WalletSubscription::Bolt11MintQuoteState(quote_ids)
+            }
+            cdk_common::PaymentMethod::Known(KnownMethod::Bolt12) => {
+                WalletSubscription::Bolt12MintQuoteState(quote_ids)
+            }
+            cdk_common::PaymentMethod::Custom(_) => {
+                return Err(Error::InvalidPaymentMethod);
+            }
+        };
+        self.subscribe(sub).await
+    }
+
     /// Fee required to redeem proof set
     #[instrument(skip_all)]
     pub async fn get_proofs_fee(
@@ -313,6 +336,12 @@ impl Wallet {
         Ok(Amount::from(fee))
     }
 
+    /// Calculate fee for a given number of proofs with the specified keyset
+    #[instrument(skip(self))]
+    pub async fn calculate_fee(&self, proof_count: u64, keyset_id: Id) -> Result<Amount, Error> {
+        self.get_keyset_count_fee(&keyset_id, proof_count).await
+    }
+
     /// Update Mint information and related entries in the event a mint changes
     /// its URL
     #[instrument(skip(self))]
@@ -324,6 +353,96 @@ impl Wallet {
         self.mint_url = new_mint_url;
 
         Ok(())
+    }
+
+    /// Query mint for current mint information
+    #[instrument(skip(self))]
+    pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, Error> {
+        let mint_info = self
+            .metadata_cache
+            .load_from_mint(&self.localstore, &self.client)
+            .await?
+            .mint_info
+            .clone();
+
+        // If mint provides time make sure it is accurate
+        if let Some(mint_unix_time) = mint_info.time {
+            let current_unix_time = crate::util::unix_time();
+            if current_unix_time.abs_diff(mint_unix_time) > 30 {
+                tracing::warn!(
+                    "Mint time does match wallet time. Mint: {}, Wallet: {}",
+                    mint_unix_time,
+                    current_unix_time
+                );
+                return Err(Error::MintTimeExceedsTolerance);
+            }
+        }
+
+        // Create or update auth wallet
+        {
+            let mut auth_wallet = self.auth_wallet.write().await;
+            match &*auth_wallet {
+                Some(auth_wallet) => {
+                    let mut protected_endpoints = auth_wallet.protected_endpoints.write().await;
+                    *protected_endpoints = mint_info.protected_endpoints();
+
+                    if let Some(oidc_client) = mint_info
+                        .openid_discovery()
+                        .map(|url| crate::OidcClient::new(url, None))
+                    {
+                        auth_wallet.set_oidc_client(Some(oidc_client)).await;
+                    }
+                }
+                None => {
+                    tracing::info!("Mint has auth enabled creating auth wallet");
+
+                    let oidc_client = mint_info
+                        .openid_discovery()
+                        .map(|url| crate::OidcClient::new(url, None));
+                    let new_auth_wallet = AuthWallet::new(
+                        self.mint_url.clone(),
+                        None,
+                        self.localstore.clone(),
+                        self.metadata_cache.clone(),
+                        mint_info.protected_endpoints(),
+                        oidc_client,
+                    );
+                    *auth_wallet = Some(new_auth_wallet.clone());
+
+                    self.client
+                        .set_auth_wallet(Some(new_auth_wallet.clone()))
+                        .await;
+
+                    if let Err(e) = new_auth_wallet.refresh_keysets().await {
+                        tracing::error!("Could not fetch auth keysets: {}", e);
+                    }
+                }
+            }
+        }
+
+        tracing::trace!("Mint info updated for {}", self.mint_url);
+
+        Ok(Some(mint_info))
+    }
+
+    /// Load mint info from cache
+    ///
+    /// This is a helper function that loads the mint info from the metadata cache
+    /// using the configured TTL. Unlike `fetch_mint_info()`, this does not make
+    /// a network call if the cache is fresh.
+    #[instrument(skip(self))]
+    pub async fn load_mint_info(&self) -> Result<MintInfo, Error> {
+        let mint_info = self
+            .metadata_cache
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.read();
+                *ttl
+            })
+            .await?
+            .mint_info
+            .clone();
+
+        Ok(mint_info)
     }
 
     /// Get amounts needed to refill proof state

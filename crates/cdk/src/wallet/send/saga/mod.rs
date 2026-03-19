@@ -81,7 +81,7 @@ use crate::wallet::saga::{
     add_compensation, execute_compensations, new_compensations, Compensations,
     RevertProofReservation,
 };
-use crate::wallet::{SendKind, WalletTrait};
+use crate::wallet::SendKind;
 use crate::{Amount, Error, Wallet};
 
 pub(crate) mod resume;

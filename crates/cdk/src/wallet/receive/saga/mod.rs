@@ -55,7 +55,6 @@ use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
 };
 use crate::wallet::swap::ProofReservation;
-use crate::wallet::WalletTrait;
 use crate::{Amount, Error, Wallet, SECP256K1};
 
 pub(crate) mod compensation;

@@ -17,7 +17,7 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{WalletRepositoryBuilder, WalletTrait};
+use cdk::wallet::WalletRepositoryBuilder;
 use cdk::StreamExt;
 use cdk_sqlite::wallet::memory;
 use nostr_sdk::ToBech32;

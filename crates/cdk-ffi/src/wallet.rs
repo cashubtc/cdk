@@ -4,7 +4,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
-use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder, WalletTrait};
+use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
 use crate::token::Token;
@@ -513,23 +513,15 @@ impl Wallet {
         quote_ids: Vec<String>,
         payment_method: PaymentMethod,
     ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
-        let kind = match payment_method {
-            PaymentMethod::Bolt11 => SubscriptionKind::Bolt11MintQuote,
-            PaymentMethod::Bolt12 => SubscriptionKind::Bolt12MintQuote,
-            PaymentMethod::Custom { .. } => {
-                return Err(FfiError::internal(
-                    "Custom payment method subscriptions are not yet supported",
-                ));
-            }
-        };
-
-        let params = SubscribeParams {
-            kind,
-            filters: quote_ids,
-            id: None,
-        };
-
-        self.subscribe(params).await
+        let cdk_method: cdk_common::PaymentMethod = payment_method.into();
+        let active_sub = self
+            .inner
+            .subscribe_mint_quote_state(quote_ids, cdk_method)
+            .await?;
+        let sub_id = uuid::Uuid::new_v4().to_string();
+        Ok(std::sync::Arc::new(ActiveSubscription::new(
+            active_sub, sub_id,
+        )))
     }
 
     /// Refresh keysets from the mint
@@ -547,11 +539,7 @@ impl Wallet {
     /// Get fees for a specific keyset ID
     pub async fn get_keyset_fees_by_id(&self, keyset_id: String) -> Result<u64, FfiError> {
         let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
-        Ok(self
-            .inner
-            .get_keyset_fees_and_amounts_by_id(id)
-            .await?
-            .fee())
+        Ok(self.inner.get_keyset_fees_by_id(id).await?)
     }
 
     /// Check all pending proofs and return the total amount still pending
@@ -570,10 +558,7 @@ impl Wallet {
         keyset_id: String,
     ) -> Result<Amount, FfiError> {
         let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
-        let fee = self
-            .inner
-            .get_keyset_count_fee(&id, proof_count as u64)
-            .await?;
+        let fee = self.inner.calculate_fee(proof_count as u64, id).await?;
         Ok(fee.into())
     }
 

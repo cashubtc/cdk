@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
 use cdk::wallet::types::SendKind;
-use cdk::wallet::{SendMemo, SendOptions, WalletRepository, WalletTrait};
+use cdk::wallet::{SendMemo, SendOptions, WalletRepository};
 use cdk::Amount;
 use clap::Args;
 
