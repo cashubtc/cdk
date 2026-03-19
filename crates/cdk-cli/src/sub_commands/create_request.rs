@@ -1,7 +1,25 @@
 use anyhow::Result;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{payment_request as pr, WalletRepository};
+use cdk::wallet::{payment_request as pr, NostrWaitInfo, WalletRepository};
 use clap::Args;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+struct NostrWaitInfoSerializable {
+    secret_key_hex: String,
+    relays: Vec<String>,
+    pubkey_hex: String,
+}
+
+impl From<NostrWaitInfo> for NostrWaitInfoSerializable {
+    fn from(info: NostrWaitInfo) -> Self {
+        Self {
+            secret_key_hex: info.keys.secret_key().to_secret_hex(),
+            relays: info.relays,
+            pubkey_hex: info.pubkey.to_hex(),
+        }
+    }
+}
 
 #[derive(Args)]
 pub struct CreateRequestSubCommand {
@@ -37,6 +55,9 @@ pub struct CreateRequestSubCommand {
     /// If not provided, defaults to standard relays
     #[arg(long, action = clap::ArgAction::Append)]
     nostr_relay: Option<Vec<String>>,
+    /// Use bech32 encoding (CREQ-B)
+    #[arg(short, long)]
+    bech32: bool,
 }
 
 pub async fn create_request(
@@ -61,10 +82,25 @@ pub async fn create_request(
     let (req, nostr_wait) = wallet_repository.create_request(params).await?;
 
     // Print the request to stdout
-    println!("{}", req);
+    if sub_command_args.bech32 {
+        println!("{}", req.to_bech32_string()?);
+    } else {
+        println!("{}", req);
+    }
 
     // If we set up Nostr transport, optionally wait for payment and receive it
     if let Some(info) = nostr_wait {
+        let key = info.pubkey.to_string();
+
+        if let Some(wallet) = wallet_repository.get_wallets().await.first() {
+            let serializable_info = NostrWaitInfoSerializable::from(info.clone());
+            let val = serde_json::to_vec(&serializable_info)?;
+            wallet
+                .localstore
+                .kv_write("cdk_cli", "pending_nostr_requests", &key, &val)
+                .await?;
+        }
+
         println!("Listening for payment via Nostr...");
         let amount = wallet_repository.wait_for_nostr_payment(info).await?;
         println!("Received {}", amount);

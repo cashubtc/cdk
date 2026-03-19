@@ -15,6 +15,7 @@ static-bin/
 .pg_data/
 **/.env
 logs/
+tor-data
 
 # Mutation testing artifacts
 mutants.out/

@@ -906,6 +906,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dee39a0ee5b4095224a0cfc6bf4cc1baf0f9624b96b367e53b66d974e51d953"
 
 [[package]]
+name = "bitcoin-payment-instructions"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c300c948b2ff78c965ea3a613372352125448a22f1acf49e95e3878149824091"
+dependencies = [
+ "bitcoin 0.32.8",
+ "lightning",
+ "lightning-invoice",
+]
+
+[[package]]
 name = "bitcoin-units"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1206,6 +1217,7 @@ dependencies = [
  "async-trait",
  "bip39",
  "bitcoin 0.32.8",
+ "bitcoin-payment-instructions",
  "cbor-diag",
  "cdk-common",
  "cdk-fake-wallet",
@@ -1589,6 +1601,7 @@ dependencies = [
  "home",
  "lightning-invoice",
  "serde",
+ "serde_json",
  "tokio",
  "tower 0.5.3",
  "tower-http",
@@ -2622,6 +2635,9 @@ name = "dnssec-prover"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec4f825369fc7134da70ca4040fddc8e03b80a46d249ae38d9c1c39b7b4476bf"
+dependencies = [
+ "bitcoin_hashes 0.14.1",
+]
 
 [[package]]
 name = "document-features"

@@ -131,9 +131,16 @@ pub enum Error {
     /// BIP353 address resolution error
     #[error("Failed to resolve BIP353 address: {0}")]
     Bip353Resolve(String),
-    /// BIP353 no Lightning offer found
-    #[error("No Lightning offer found in BIP353 payment instructions")]
-    Bip353NoLightningOffer,
+    /// BIP353 no BOLT12 offer found
+    #[error("No BOLT12 offer found in BIP353 payment instructions")]
+    Bip353NoBolt12Offer,
+
+    /// BIP321 payment instruction parsing error
+    #[error("Failed to parse BIP321 payment instruction: {0}")]
+    Bip321Parse(String),
+    /// BIP321 payment request encoding error
+    #[error("Failed to encode BIP321 payment request: {0}")]
+    Bip321Encode(String),
 
     /// Lightning Address parsing error
     #[error("Failed to parse Lightning address: {0}")]
@@ -582,7 +589,12 @@ impl Error {
             | Self::InvalidOperationKind
             | Self::InvalidOperationState
             | Self::OperationNotFound
-            | Self::KVStoreInvalidKey(_) => true,
+            | Self::KVStoreInvalidKey(_)
+            | Self::Bip353Parse(_)
+            | Self::Bip353NoBolt12Offer
+            | Self::Bip321Parse(_)
+            | Self::Bip321Encode(_)
+            | Self::LightningAddressParse(_) => true,
 
             // HTTP Errors
             Self::HttpError(Some(status), _) => {
@@ -601,7 +613,9 @@ impl Error {
             | Self::ConcurrentUpdate
             | Self::SendError(_)
             | Self::RecvError(_)
-            | Self::TransferTimeout { .. } => false,
+            | Self::TransferTimeout { .. }
+            | Self::Bip353Resolve(_)
+            | Self::LightningAddressRequest(_) => false,
 
             // Network/IO/Parsing Errors (Usually ambiguous as they could happen reading response)
             Self::HttpError(None, _) // No status code means network error

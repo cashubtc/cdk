@@ -4,7 +4,7 @@ use std::env;
 
 use cdk::nuts::CurrencyUnit;
 
-use crate::config::FakeWallet;
+use crate::config::{FakeWallet, FakeWalletKeysetRotation};
 
 // Fake Wallet environment variables
 pub const ENV_FAKE_WALLET_SUPPORTED_UNITS: &str = "CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS";
@@ -12,6 +12,9 @@ pub const ENV_FAKE_WALLET_FEE_PERCENT: &str = "CDK_MINTD_FAKE_WALLET_FEE_PERCENT
 pub const ENV_FAKE_WALLET_RESERVE_FEE_MIN: &str = "CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN";
 pub const ENV_FAKE_WALLET_MIN_DELAY: &str = "CDK_MINTD_FAKE_WALLET_MIN_DELAY";
 pub const ENV_FAKE_WALLET_MAX_DELAY: &str = "CDK_MINTD_FAKE_WALLET_MAX_DELAY";
+/// JSON array of keyset rotations, e.g.:
+/// `[{"unit":"sat","version":"v1","input_fee_ppk":0,"expired":true}]`
+pub const ENV_FAKE_WALLET_KEYSET_ROTATIONS: &str = "CDK_MINTD_FAKE_WALLET_KEYSET_ROTATIONS";
 
 impl FakeWallet {
     pub fn from_env(mut self) -> Self {
@@ -47,6 +50,14 @@ impl FakeWallet {
         if let Ok(max_delay_str) = env::var(ENV_FAKE_WALLET_MAX_DELAY) {
             if let Ok(max_delay) = max_delay_str.parse() {
                 self.max_delay_time = max_delay;
+            }
+        }
+
+        if let Ok(rotations_str) = env::var(ENV_FAKE_WALLET_KEYSET_ROTATIONS) {
+            if let Ok(rotations) =
+                serde_json::from_str::<Vec<FakeWalletKeysetRotation>>(&rotations_str)
+            {
+                self.keyset_rotations = rotations;
             }
         }
 

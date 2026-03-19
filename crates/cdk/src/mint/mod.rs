@@ -40,9 +40,10 @@ mod subscription;
 mod swap;
 mod verification;
 
-pub use builder::{MintBuilder, MintMeltLimits, UnitConfig};
+pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use issue::{MintInput, MintQuoteRequest, MintQuoteResponse};
+pub use melt::PendingMelt;
 pub use verification::Verification;
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
@@ -741,36 +742,47 @@ impl Mint {
 
         let mut tx = localstore.begin_transaction().await?;
 
-        if let Ok(Some(mut mint_quote)) = tx
+        let should_notify = if let Ok(Some(mut mint_quote)) = tx
             .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
             .await
         {
-            Self::handle_mint_quote_payment(
-                &mut tx,
-                &mut mint_quote,
-                wait_payment_response,
-                pubsub_manager,
-            )
-            .await?;
+            let notify =
+                Self::handle_mint_quote_payment(&mut tx, &mut mint_quote, wait_payment_response)
+                    .await?;
+            if notify {
+                Some((mint_quote.clone(), mint_quote.amount_paid()))
+            } else {
+                None
+            }
         } else {
             tracing::warn!(
                 "Could not get request for request lookup id {:?}",
                 wait_payment_response.payment_identifier
             );
-        }
+            None
+        };
 
         tx.commit().await?;
+
+        // Publish notification AFTER transaction commits so subscribers
+        // see the committed state when they query.
+        if let Some((quote, amount_paid)) = should_notify {
+            pubsub_manager.mint_quote_payment(&quote, amount_paid);
+        }
+
         Ok(())
     }
 
     /// Handle payment for a specific mint quote (extracted from pay_mint_quote)
+    ///
+    /// Returns `true` if a payment was recorded and a pubsub notification should
+    /// be published **after** the enclosing transaction commits.
     #[instrument(skip_all)]
     async fn handle_mint_quote_payment(
         tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
         mint_quote: &mut Acquired<MintQuote>,
         wait_payment_response: WaitPaymentResponse,
-        pubsub_manager: &Arc<PubSubManager>,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         tracing::debug!(
             "Received payment notification of {} {:?} for mint quote {} with payment id {}",
             wait_payment_response.payment_amount,
@@ -811,7 +823,7 @@ impl Mint {
                 ) {
                     Ok(()) => {
                         tx.update_mint_quote(mint_quote).await?;
-                        pubsub_manager.mint_quote_payment(mint_quote, mint_quote.amount_paid());
+                        return Ok(true);
                     }
                     Err(Error::DuplicatePaymentId) => {
                         tracing::info!(
@@ -827,7 +839,7 @@ impl Mint {
             tracing::info!("Received payment notification for already seen payment.");
         }
 
-        Ok(())
+        Ok(false)
     }
 
     /// Fee required for proof set

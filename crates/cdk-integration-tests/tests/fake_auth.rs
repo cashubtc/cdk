@@ -296,7 +296,9 @@ async fn test_mint_blind_auth() {
         .expect("Wallet");
     let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
 
-    let (access_token, _) = get_access_token(&mint_info).await;
+    let (access_token, _) = get_tokens(&mint_info, false)
+        .await
+        .expect("could not get access token");
 
     wallet.set_cat(access_token).await.unwrap();
 
@@ -331,7 +333,9 @@ async fn test_mint_with_auth() {
         .expect("mint info")
         .expect("could not get mint info");
 
-    let (access_token, _) = get_access_token(&mint_info).await;
+    let (access_token, _) = get_tokens(&mint_info, false)
+        .await
+        .expect("could not get access token");
 
     println!("st{}", access_token);
 
@@ -376,7 +380,9 @@ async fn test_swap_with_auth() {
         .build()
         .expect("Wallet");
     let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
-    let (access_token, _) = get_access_token(&mint_info).await;
+    let (access_token, _) = get_tokens(&mint_info, false)
+        .await
+        .expect("could not get access token");
 
     wallet.set_cat(access_token).await.unwrap();
 
@@ -436,7 +442,9 @@ async fn test_melt_with_auth() {
         .expect("Mint info not found")
         .expect("Mint info not found");
 
-    let (access_token, _) = get_access_token(&mint_info).await;
+    let (access_token, _) = get_tokens(&mint_info, false)
+        .await
+        .expect("could not get access token");
 
     wallet.set_cat(access_token).await.unwrap();
 
@@ -482,7 +490,9 @@ async fn test_mint_auth_over_max() {
         .expect("Mint info not found")
         .expect("Mint info not found");
 
-    let (access_token, _) = get_access_token(&mint_info).await;
+    let (access_token, _) = get_tokens(&mint_info, false)
+        .await
+        .expect("could not get access token");
 
     wallet.set_cat(access_token).await.unwrap();
 
@@ -517,7 +527,9 @@ async fn test_reuse_auth_proof() {
         .expect("Wallet");
     let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
 
-    let (access_token, _) = get_access_token(&mint_info).await;
+    let (access_token, _) = get_tokens(&mint_info, false)
+        .await
+        .expect("could not get access token");
 
     wallet.set_cat(access_token).await.unwrap();
 
@@ -571,7 +583,9 @@ async fn test_melt_with_invalid_auth() {
         .expect("Wallet");
     let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
 
-    let (access_token, _) = get_access_token(&mint_info).await;
+    let (access_token, _) = get_tokens(&mint_info, false)
+        .await
+        .expect("could not get access token");
 
     wallet.set_cat(access_token).await.unwrap();
 
@@ -615,7 +629,9 @@ async fn test_melt_with_invalid_auth() {
     }
 
     {
-        let (access_token, _) = get_access_token(&mint_info).await;
+        let (access_token, _) = get_tokens(&mint_info, false)
+            .await
+            .expect("could not get access token");
 
         wallet.set_cat(access_token).await.unwrap();
     }
@@ -639,7 +655,10 @@ async fn test_refresh_access_token() {
         .expect("mint info")
         .expect("could not get mint info");
 
-    let (access_token, refresh_token) = get_access_token(&mint_info).await;
+    let (access_token, refresh_token) = get_tokens(&mint_info, true)
+        .await
+        .expect("could not get access and refresh tokens");
+    let refresh_token = refresh_token.expect("No refresh token in response");
 
     // Set the initial access token and refresh token
     wallet.set_cat(access_token.clone()).await.unwrap();
@@ -695,7 +714,9 @@ async fn test_invalid_refresh_token() {
         .expect("mint info")
         .expect("could not get mint info");
 
-    let (access_token, _) = get_access_token(&mint_info).await;
+    let (access_token, _) = get_tokens(&mint_info, false)
+        .await
+        .expect("could not get access token");
 
     // Set the initial access token
     wallet.set_cat(access_token.clone()).await.unwrap();
@@ -731,7 +752,9 @@ async fn test_auth_token_spending_order() {
         .expect("mint info")
         .expect("could not get mint info");
 
-    let (access_token, _) = get_access_token(&mint_info).await;
+    let (access_token, _) = get_tokens(&mint_info, false)
+        .await
+        .expect("could not get access token");
 
     wallet.set_cat(access_token).await.unwrap();
 
@@ -770,7 +793,10 @@ async fn test_auth_token_spending_order() {
     }
 }
 
-async fn get_access_token(mint_info: &MintInfo) -> (String, String) {
+async fn get_tokens(
+    mint_info: &MintInfo,
+    request_refresh_token: bool,
+) -> Result<(String, Option<String>), Error> {
     let openid_discovery = mint_info
         .nuts
         .nut21
@@ -780,45 +806,53 @@ async fn get_access_token(mint_info: &MintInfo) -> (String, String) {
 
     let oidc_client = OidcClient::new(openid_discovery, None);
 
-    // Get the token endpoint from the OIDC configuration
     let token_url = oidc_client
         .get_oidc_config()
         .await
-        .expect("Failed to get OIDC config")
+        .map_err(|_| Error::Custom("Failed to get OIDC config".to_string()))?
         .token_endpoint;
 
-    // Create the request parameters
     let (user, password) = get_oidc_credentials();
-    let params = [
+    let mut params = vec![
         ("grant_type", "password"),
         ("client_id", "cashu-client"),
-        ("username", &user),
-        ("password", &password),
+        ("username", user.as_str()),
+        ("password", password.as_str()),
     ];
+    if request_refresh_token {
+        params.push(("scope", "openid offline_access"));
+    }
 
-    // Make the token request directly
     let client = CommonHttpClient::new();
-    let token_response: serde_json::Value = client
+    let response = client
         .post(&token_url)
         .form(&params)
         .send()
         .await
-        .expect("Failed to send token request")
+        .map_err(|_| Error::Custom("Failed to send token request".to_string()))?;
+
+    if !response.is_success() {
+        return Err(Error::Custom(format!(
+            "Token request failed with status: {}",
+            response.status()
+        )));
+    }
+
+    let token_response: serde_json::Value = response
         .json()
         .await
-        .expect("Failed to parse token response");
+        .map_err(|_| Error::Custom("Failed to parse token response".to_string()))?;
 
     let access_token = token_response["access_token"]
         .as_str()
-        .expect("No access token in response")
+        .ok_or_else(|| Error::Custom("No access token in response".to_string()))?
         .to_string();
 
     let refresh_token = token_response["refresh_token"]
         .as_str()
-        .expect("No access token in response")
-        .to_string();
+        .map(ToString::to_string);
 
-    (access_token, refresh_token)
+    Ok((access_token, refresh_token))
 }
 
 /// Get a new access token with custom credentials

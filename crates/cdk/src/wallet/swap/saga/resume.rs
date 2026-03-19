@@ -403,6 +403,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_recover_swap_proofs_reserved_without_operation_link_leaves_reserved_proof() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.update_proofs_state(vec![proof_y], State::Reserved)
+            .await
+            .unwrap();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Swap(SwapSagaState::ProofsReserved),
+            Amount::from(100),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Swap(SwapOperationData {
+                input_amount: Amount::from(100),
+                output_amount: Amount::from(90),
+                counter_start: Some(0),
+                counter_end: Some(10),
+                blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let wallet = create_test_wallet(db.clone()).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        assert_eq!(report.compensated, 1);
+        assert_eq!(report.recovered, 0);
+
+        let reserved = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(reserved.len(), 1);
+        assert_eq!(reserved[0].state, State::Reserved);
+        assert_eq!(reserved[0].used_by_operation, None);
+
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn test_recover_swap_requested_mint_unreachable() {
         // When mint is unreachable, should skip (retry later)
         let db = create_test_db().await;

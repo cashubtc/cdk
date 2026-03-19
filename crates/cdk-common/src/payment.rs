@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::mint::MeltPaymentRequest;
+use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::nuts::{CurrencyUnit, MeltQuoteState};
 use crate::Amount;
 
@@ -284,15 +284,16 @@ pub enum OutgoingPaymentOptions {
     Custom(Box<CustomOutgoingPaymentOptions>),
 }
 
-impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
-    type Error = Error;
-
-    fn try_from(melt_quote: crate::mint::MeltQuote) -> Result<Self, Self::Error> {
+impl OutgoingPaymentOptions {
+    /// Creates payment options from a melt quote
+    pub fn from_melt_quote_with_fee(
+        melt_quote: MeltQuote,
+    ) -> Result<OutgoingPaymentOptions, Error> {
         let fee_reserve = melt_quote.fee_reserve();
         match &melt_quote.request {
             MeltPaymentRequest::Bolt11 { bolt11 } => Ok(OutgoingPaymentOptions::Bolt11(Box::new(
                 Bolt11OutgoingPaymentOptions {
-                    max_fee_amount: Some(fee_reserve.to_owned()),
+                    max_fee_amount: Some(fee_reserve),
                     timeout_secs: None,
                     bolt11: bolt11.clone(),
                     melt_options: melt_quote.options,
@@ -300,14 +301,14 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
             ))),
             MeltPaymentRequest::Bolt12 { offer } => {
                 let melt_options = match melt_quote.options {
-                    None => None,
                     Some(MeltOptions::Mpp { mpp: _ }) => return Err(Error::UnsupportedUnit),
                     Some(options) => Some(options),
+                    _ => None,
                 };
 
                 Ok(OutgoingPaymentOptions::Bolt12(Box::new(
                     Bolt12OutgoingPaymentOptions {
-                        max_fee_amount: Some(fee_reserve.clone()),
+                        max_fee_amount: Some(fee_reserve),
                         timeout_secs: None,
                         offer: *offer.clone(),
                         melt_options,
@@ -318,7 +319,7 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                 Box::new(CustomOutgoingPaymentOptions {
                     method: method.to_string(),
                     request: request.to_string(),
-                    max_fee_amount: Some(melt_quote.fee_reserve()),
+                    max_fee_amount: Some(fee_reserve),
                     timeout_secs: None,
                     melt_options: melt_quote.options,
                     extra_json: None,

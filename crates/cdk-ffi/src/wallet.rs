@@ -8,6 +8,7 @@ use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
 use crate::token::Token;
+use crate::types::bip321::BitcoinNetwork;
 use crate::types::payment_request::PaymentRequest;
 use crate::types::*;
 
@@ -22,6 +23,10 @@ impl Wallet {
     /// Create a Wallet from an existing CDK wallet (internal use only)
     pub(crate) fn from_inner(inner: Arc<CdkWallet>) -> Self {
         Self { inner }
+    }
+
+    pub(crate) fn inner(&self) -> Arc<CdkWallet> {
+        self.inner.clone()
     }
 }
 
@@ -484,6 +489,43 @@ impl Wallet {
         )))
     }
 
+    /// Subscribe to mint quote state updates
+    ///
+    /// Convenience method that creates a subscription to receive notifications
+    /// when any of the given mint quotes change state (e.g., Unpaid → Paid → Issued).
+    ///
+    /// Use `recv()` on the returned `ActiveSubscription` to receive updates as
+    /// `NotificationPayload::MintQuoteUpdate`.
+    ///
+    /// All quote IDs must belong to the same payment method.
+    ///
+    /// # Arguments
+    /// * `quote_ids` - The IDs of the mint quotes to monitor
+    /// * `payment_method` - The payment method of the quotes
+    pub async fn subscribe_mint_quote_state(
+        &self,
+        quote_ids: Vec<String>,
+        payment_method: PaymentMethod,
+    ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
+        let kind = match payment_method {
+            PaymentMethod::Bolt11 => SubscriptionKind::Bolt11MintQuote,
+            PaymentMethod::Bolt12 => SubscriptionKind::Bolt12MintQuote,
+            PaymentMethod::Custom { .. } => {
+                return Err(FfiError::internal(
+                    "Custom payment method subscriptions are not yet supported",
+                ));
+            }
+        };
+
+        let params = SubscribeParams {
+            kind,
+            filters: quote_ids,
+            id: None,
+        };
+
+        self.subscribe(params).await
+    }
+
     /// Refresh keysets from the mint
     pub async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
         let keysets = self.inner.refresh_keysets().await?;
@@ -559,17 +601,21 @@ impl Wallet {
 impl Wallet {
     /// Get a quote for a BIP353 melt
     ///
-    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Lightning offer
-    /// and then creates a melt quote for that offer.
+    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Bitcoin
+    /// payment instruction, requires a BOLT12 offer, and then creates a melt quote for it.
+    ///
+    /// The `network` parameter controls which on-chain address prefixes are accepted
+    /// in the resolved URI.
     pub async fn melt_bip353_quote(
         &self,
         bip353_address: String,
         amount_msat: Amount,
+        network: BitcoinNetwork,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_amount: cdk::Amount = amount_msat.into();
         let quote = self
             .inner
-            .melt_bip353_quote(&bip353_address, cdk_amount)
+            .melt_bip353_quote(&bip353_address, cdk_amount, network.into())
             .await?;
         Ok(quote.into())
     }
@@ -597,18 +643,22 @@ impl Wallet {
     /// or a Lightning address. It intelligently determines which to try based on mint support:
     ///
     /// 1. If the mint supports Bolt12, it tries BIP353 first
-    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
-    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 2. Falls back to Lightning address only if BIP353 resolution fails
+    /// 3. If BIP353 resolves but has no usable BOLT12 offer, it does NOT fall back
     /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
+    ///
+    /// The `network` parameter is forwarded to the BIP353 resolver for on-chain address
+    /// validation in the resolved URI.
     pub async fn melt_human_readable(
         &self,
         address: String,
         amount_msat: Amount,
+        network: BitcoinNetwork,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_amount: cdk::Amount = amount_msat.into();
         let quote = self
             .inner
-            .melt_human_readable_quote(&address, cdk_amount)
+            .melt_human_readable_quote(&address, cdk_amount, network.into())
             .await?;
         Ok(quote.into())
     }

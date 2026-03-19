@@ -14,7 +14,6 @@ use crate::Error;
 
 impl Mint {
     /// Static implementation of check_mint_quote_paid to avoid circular dependency to the Mint
-    #[inline(always)]
     pub(crate) async fn check_mint_quote_payments(
         localstore: DynMintDatabase,
         payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
@@ -65,8 +64,11 @@ impl Mint {
         if new_quote.payment_method.is_bolt11()
             && (current_state == MintQuoteState::Issued || current_state == MintQuoteState::Paid)
         {
+            *quote = new_quote.inner();
             return Ok(());
         }
+
+        let mut should_notify = false;
 
         for payment in ln_status {
             if !new_quote.payment_ids().contains(&&payment.payment_id)
@@ -84,9 +86,7 @@ impl Mint {
                 match new_quote.add_payment(amount_paid, payment.payment_id.clone(), None) {
                     Ok(()) => {
                         tx.update_mint_quote(&mut new_quote).await?;
-                        if let Some(pubsub_manager) = pubsub_manager.as_ref() {
-                            pubsub_manager.mint_quote_payment(&new_quote, new_quote.amount_paid());
-                        }
+                        should_notify = true;
                     }
                     Err(crate::Error::DuplicatePaymentId) => {
                         tracing::debug!(
@@ -101,6 +101,14 @@ impl Mint {
         }
 
         tx.commit().await?;
+
+        // Publish notification AFTER transaction commits so subscribers
+        // see the committed state when they query.
+        if should_notify {
+            if let Some(pubsub_manager) = pubsub_manager.as_ref() {
+                pubsub_manager.mint_quote_payment(&new_quote, new_quote.amount_paid());
+            }
+        }
 
         *quote = new_quote.inner();
 
