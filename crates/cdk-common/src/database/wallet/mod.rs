@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 
 use async_trait::async_trait;
+use bitcoin::bip32::DerivationPath;
 use cashu::KeySet;
 
 use super::Error;
@@ -233,4 +234,24 @@ where
         secondary_namespace: &str,
         key: &str,
     ) -> Result<(), Err>;
+
+    // P2PK signing key methods
+
+    /// Store a P2PK signing key for the wallet
+    async fn add_p2pk_key(
+        &self,
+        pubkey: &PublicKey,
+        derivation_path: DerivationPath,
+        derivation_index: u32,
+    ) -> Result<(), Err>;
+
+    /// Get a stored P2PK signing key by pubkey.
+    async fn get_p2pk_key(&self, pubkey: &PublicKey)
+        -> Result<Option<wallet::P2PKSigningKey>, Err>;
+
+    /// List all stored P2PK signing keys.
+    async fn list_p2pk_keys(&self) -> Result<Vec<wallet::P2PKSigningKey>, Err>;
+
+    /// Tries to get the latest p2pk key generated
+    async fn latest_p2pk(&self) -> Result<Option<wallet::P2PKSigningKey>, Err>;
 }
