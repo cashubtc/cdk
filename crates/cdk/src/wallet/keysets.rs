@@ -29,16 +29,18 @@ impl Wallet {
     /// Alias of get_mint_keysets, kept for backwards compatibility reasons
     #[instrument(skip(self))]
     pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
-        self.get_mint_keysets().await
+        self.get_mint_keysets(true).await
     }
 
-    /// Get active keysets from metadata cache (may fetch if not populated)
+    /// Get keysets for this wallet's unit from the metadata cache
     ///
     /// Checks the metadata cache for keysets. If cache is not populated,
-    /// fetches from mint and updates cache. Returns error if no active keysets found.
+    /// fetches from mint and updates cache. When `only_active` is true,
+    /// returns only active keysets; when false, returns all keysets
+    /// (e.g. for restore, which needs to scan rotated keysets).
     #[instrument(skip(self))]
     #[inline(always)]
-    pub async fn get_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
+    pub async fn get_mint_keysets(&self, only_active: bool) -> Result<Vec<KeySetInfo>, Error> {
         let keysets = self
             .metadata_cache
             .load(&self.localstore, &self.client, {
@@ -49,39 +51,7 @@ impl Wallet {
             .keysets
             .values()
             .filter_map(|keyset| {
-                if keyset.unit == self.unit && keyset.active {
-                    Some((*keyset.clone()).clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        if !keysets.is_empty() {
-            Ok(keysets)
-        } else {
-            Err(Error::UnknownKeySet)
-        }
-    }
-
-    /// Get all keysets (active and inactive) for this wallet's unit
-    ///
-    /// Returns all keysets matching the wallet's unit from the metadata cache,
-    /// regardless of active status. Used by restore to scan proofs from
-    /// rotated keysets that are no longer active.
-    #[instrument(skip(self))]
-    pub async fn get_all_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
-        let keysets = self
-            .metadata_cache
-            .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.read();
-                *ttl
-            })
-            .await?
-            .keysets
-            .values()
-            .filter_map(|keyset| {
-                if keyset.unit == self.unit {
+                if keyset.unit == self.unit && (!only_active || keyset.active) {
                     Some((*keyset.clone()).clone())
                 } else {
                     None
@@ -134,7 +104,7 @@ impl Wallet {
     /// keyset information for operations.
     #[instrument(skip(self))]
     pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Error> {
-        self.get_mint_keysets()
+        self.get_mint_keysets(true)
             .await?
             .active()
             .min_by_key(|k| k.input_fee_ppk)

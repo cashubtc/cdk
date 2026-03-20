@@ -48,7 +48,7 @@ async fn test_swap() {
 
     println!("{:?}", proofs);
 
-    println!("{:?}", wallet.get_mint_keysets().await.unwrap());
+    println!("{:?}", wallet.get_mint_keysets(true).await.unwrap());
 
     let send = wallet
         .prepare_send(

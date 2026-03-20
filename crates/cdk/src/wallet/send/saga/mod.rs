@@ -173,7 +173,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         let active_keyset_ids = self
             .wallet
-            .get_mint_keysets()
+            .get_mint_keysets(true)
             .await?
             .active()
             .map(|k| k.id)
