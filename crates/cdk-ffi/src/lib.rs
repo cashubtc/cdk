@@ -195,6 +195,7 @@ mod tests {
             max_proofs: Some(10),
             metadata,
             use_p2bk: false,
+            p2pk_signing_keys: Vec::new(),
         };
 
         assert!(options.memo.is_some());

@@ -49,7 +49,7 @@ use super::ReceiveOptions;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
-use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State};
+use crate::nuts::{Conditions, Proofs, SecretKey, SigFlag, State};
 use crate::util::hex;
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
@@ -112,8 +112,6 @@ impl<'a> ReceiveSaga<'a, Initial> {
         let mut proofs = proofs;
         let proofs_amount = proofs.total_amount()?;
 
-        let mut _sig_flag = SigFlag::SigInputs;
-
         // Map hash of preimage to preimage
         let hashed_to_preimage: HashMap<String, &String> = opts
             .preimages
@@ -124,13 +122,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
             })
             .collect::<Result<HashMap<String, &String>, _>>()?;
 
-        let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = opts
-            .p2pk_signing_keys
-            .iter()
-            .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
-            .collect();
-
-        // Process each proof: verify DLEQ, handle P2PK/HTLC
+        // Process each proof: verify DLEQ and inject HTLC preimages
         for proof in &mut proofs {
             // Verify that proof DLEQ is valid
             if proof.dleq.is_some() {
@@ -144,75 +136,18 @@ impl<'a> ReceiveSaga<'a, Initial> {
                     proof.secret.clone(),
                 )
             {
-                let conditions: Result<Conditions, _> = secret
-                    .secret_data()
-                    .tags()
-                    .cloned()
-                    .unwrap_or_default()
-                    .try_into();
-                if let Ok(conditions) = conditions {
-                    let mut pubkeys = Vec::new();
-
-                    match secret.kind() {
-                        Kind::P2PK => {
-                            let data_key = PublicKey::from_str(secret.secret_data().data())?;
-                            pubkeys.push(data_key);
-                        }
-                        Kind::HTLC => {
-                            // HTLC data is a hash, not a pubkey.
-                            // Add the pre-image and skip slot 0 pubkey.
-                            let hashed_preimage = secret.secret_data().data();
-                            let preimage = hashed_to_preimage
-                                .get(hashed_preimage)
-                                .ok_or(Error::PreimageNotProvided)?;
-                            proof.add_preimage(preimage.to_string());
-
-                            // For HTLC, there is no slot 0 pubkey. But slot index for the tags still starts at 1!
-                        }
-                    }
-
-                    if let Some(mut cond_pubkeys) = conditions.pubkeys {
-                        pubkeys.append(&mut cond_pubkeys);
-                    }
-                    if let Some(mut refund_keys) = conditions.refund_keys {
-                        pubkeys.append(&mut refund_keys);
-                    }
-
-                    for (i, pubkey) in pubkeys.iter().enumerate() {
-                        let slot = match secret.kind() {
-                            Kind::P2PK => i as u8,
-                            _ => (i + 1) as u8, // HTLC skips slot 0 since it's a hash, not a pubkey
-                        };
-                        if let Some(ephemeral_key) = proof.p2pk_e {
-                            for signing_key in p2pk_signing_keys.values() {
-                                if let Ok(r) =
-                                    crate::nuts::nut28::ecdh_kdf(signing_key, &ephemeral_key, slot)
-                                {
-                                    if let Ok(derived_key) =
-                                        crate::nuts::nut28::derive_signing_key_bip340(
-                                            signing_key,
-                                            &r,
-                                            pubkey,
-                                        )
-                                    {
-                                        proof.sign_p2pk(derived_key)?;
-                                        break;
-                                    }
-                                }
-                            }
-                        } else if let Some(signing) =
-                            p2pk_signing_keys.get(&pubkey.x_only_public_key())
-                        {
-                            proof.sign_p2pk(signing.to_owned().clone())?;
-                        }
-                    }
-
-                    if conditions.sig_flag.eq(&SigFlag::SigAll) {
-                        _sig_flag = SigFlag::SigAll;
-                    }
+                if secret.kind() == Kind::HTLC {
+                    let hashed_preimage = secret.secret_data().data();
+                    let preimage = hashed_to_preimage
+                        .get(hashed_preimage)
+                        .ok_or(Error::PreimageNotProvided)?;
+                    proof.add_preimage(preimage.to_string());
                 }
             }
         }
+
+        // Sign P2PK-locked proofs (and HTLC condition keys)
+        crate::wallet::util::sign_proofs(&mut proofs, &opts.p2pk_signing_keys)?;
 
         Ok(ReceiveSaga {
             wallet: self.wallet,
@@ -486,9 +421,6 @@ impl<'a> ReceiveSaga<'a, Finalized> {
         self.state_data.amount
     }
 }
-
-// Required import for PublicKey::from_str
-use std::str::FromStr;
 
 impl<S: std::fmt::Debug> std::fmt::Debug for ReceiveSaga<'_, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

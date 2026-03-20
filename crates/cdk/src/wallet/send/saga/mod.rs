@@ -427,7 +427,7 @@ impl<'a> SendSaga<'a, Prepared> {
         let operation_id = self.state_data.operation_id;
         let amount = self.state_data.amount;
         let options = self.state_data.options.clone();
-        let proofs_to_swap = self.state_data.proofs_to_swap.clone();
+        let mut proofs_to_swap = self.state_data.proofs_to_swap.clone();
         let proofs_to_send = self.state_data.proofs_to_send.clone();
         let swap_fee = self.state_data.swap_fee;
         let send_fee = self.state_data.send_fee;
@@ -449,6 +449,13 @@ impl<'a> SendSaga<'a, Prepared> {
                     .unwrap_or(Amount::ZERO);
 
                 tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
+
+                if !options.p2pk_signing_keys.is_empty() {
+                    crate::wallet::util::sign_proofs(
+                        &mut proofs_to_swap,
+                        &options.p2pk_signing_keys,
+                    )?;
+                }
 
                 let keyset_id = self.wallet.fetch_active_keyset().await?.id;
 

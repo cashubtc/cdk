@@ -13,7 +13,7 @@ use super::SendKind;
 use crate::amount::SplitTarget;
 use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::{Proofs, SpendingConditions, Token};
+use crate::nuts::{Proofs, SecretKey, SpendingConditions, Token};
 use crate::{Amount, Error, Wallet};
 
 pub(crate) mod saga;
@@ -380,6 +380,11 @@ pub struct SendOptions {
     ///
     /// When true, P2PK conditions will be converted to P2BK by blinding the public key
     pub use_p2bk: bool,
+    /// Signing keys for P2PK-locked input proofs.
+    ///
+    /// When the wallet holds proofs locked with `SpendingConditions::new_p2pk`, provide the
+    /// corresponding secret keys here so they are signed before the swap in [`PreparedSend::confirm`].
+    pub p2pk_signing_keys: Vec<SecretKey>,
 }
 
 /// Send memo
