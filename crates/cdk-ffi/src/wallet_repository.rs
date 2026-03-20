@@ -229,7 +229,7 @@ impl WalletRepository {
         let wallets = self.inner.get_wallets().await;
         wallets
             .into_iter()
-            .map(|w| Arc::new(crate::wallet::Wallet::from_inner(Arc::new(w))))
+            .map(|w| Arc::new(crate::wallet::Wallet::from_inner(w)))
             .collect()
     }
 
@@ -244,9 +244,7 @@ impl WalletRepository {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
         let unit_cdk: cdk::nuts::CurrencyUnit = unit.into();
         let wallet = self.inner.get_wallet(&cdk_mint_url, &unit_cdk).await?;
-        Ok(Arc::new(crate::wallet::Wallet::from_inner(Arc::new(
-            wallet,
-        ))))
+        Ok(Arc::new(crate::wallet::Wallet::from_inner(wallet)))
     }
 }
 
