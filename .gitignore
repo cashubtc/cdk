@@ -14,6 +14,7 @@ static-bin/
 **/postgres_data/
 .pg_data/
 **/.env
+logs/
 tor-data
 
 # Mutation testing artifacts

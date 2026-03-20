@@ -65,6 +65,7 @@ cdk-postgres = { path = "./crates/cdk-postgres", default-features = true, versio
 cdk-signatory = { path = "./crates/cdk-signatory", version = "=0.15.1", default-features = false }
 cdk-mintd = { path = "./crates/cdk-mintd", version = "=0.15.1", default-features = false }
 cdk-prometheus = { path = "./crates/cdk-prometheus", version = "=0.15.1", default-features = false }
+cdk-supabase = { path = "./crates/cdk-supabase", version = "=0.15.1", default-features = false }
 cdk-npubcash = { path = "./crates/cdk-npubcash", version = "=0.15.1" }
 cdk-http-client = { path = "./crates/cdk-http-client", version = "=0.15.1" }
 clap = { version = "4.5.31", features = ["derive"] }
