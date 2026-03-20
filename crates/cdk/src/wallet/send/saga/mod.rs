@@ -315,6 +315,10 @@ impl<'a> SendSaga<'a, Initial> {
         let is_exact_or_offline =
             exact_proofs || opts.send_kind.is_offline() || opts.send_kind.has_tolerance();
 
+        // When p2pk_signing_keys are provided, all proofs must go through a swap so
+        // they are signed and the token contains fresh unconditioned proofs.
+        let force_swap = force_swap || !opts.p2pk_signing_keys.is_empty();
+
         let keyset_fees_and_amounts = self.wallet.get_keyset_fees_and_amounts().await?;
         let keyset_fees: HashMap<Id, u64> = keyset_fees_and_amounts
             .iter()

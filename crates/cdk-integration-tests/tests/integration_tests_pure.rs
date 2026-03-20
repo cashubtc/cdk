@@ -2228,3 +2228,124 @@ async fn test_p2pk_send_options_signing_keys() {
         "Bob should receive exactly the send amount"
     );
 }
+
+/// Regression test for the exact-denomination short-circuit bug in `p2pk_signing_keys`.
+///
+/// When a wallet holds P2PK-locked proofs whose total exactly equals the requested
+/// send amount, `prepare_send` takes a short-circuit path: all proofs go directly
+/// to `proofs_to_send` (no swap needed), so `proofs_to_swap` is empty.
+/// `confirm` only signs `proofs_to_swap`, so signing is skipped entirely and the
+/// P2PK-locked proofs flow out in the token unchanged.
+///
+/// Fix: when `p2pk_signing_keys` is non-empty, force any proofs in `proofs_to_send`
+/// into `proofs_to_swap` so they are always signed and unlocked via a real swap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_p2pk_signing_keys_exact_denomination_short_circuit() {
+    setup_tracing();
+
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create alice wallet");
+    let wallet_bob = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create bob wallet");
+
+    // Fund alice with 8 sats (plain proofs)
+    fund_wallet(wallet_alice.clone(), 8, None)
+        .await
+        .expect("Failed to fund alice");
+
+    let alice_secret = SecretKey::generate();
+    let spending_conditions = SpendingConditions::new_p2pk(alice_secret.public_key(), None);
+
+    // Replace alice's plain proofs with P2PK-locked proofs for the same total amount
+    let plain_proofs = wallet_alice
+        .get_unspent_proofs()
+        .await
+        .expect("Failed to get alice's proofs");
+    let plain_ys: Vec<_> = plain_proofs.iter().map(|p| p.y().unwrap()).collect();
+    let total_amount = plain_proofs.total_amount().unwrap();
+
+    let keyset_id = get_keyset_id(&mint).await;
+    let keys = mint.pubkeys().keysets.first().cloned().unwrap().keys;
+    let fee_and_amounts = (0u64, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
+
+    let pre_mint = PreMintSecrets::with_conditions(
+        keyset_id,
+        total_amount,
+        &SplitTarget::default(),
+        &spending_conditions,
+        &fee_and_amounts,
+    )
+    .unwrap();
+
+    let swap_request = SwapRequest::new(plain_proofs, pre_mint.blinded_messages());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let p2pk_proofs = construct_proofs(
+        swap_response.signatures,
+        pre_mint.rs(),
+        pre_mint.secrets(),
+        &keys,
+    )
+    .unwrap();
+
+    let p2pk_proof_infos: Vec<_> = p2pk_proofs
+        .iter()
+        .map(|p| {
+            ProofInfo::new(
+                p.clone(),
+                wallet_alice.mint_url.clone(),
+                State::Unspent,
+                CurrencyUnit::Sat,
+            )
+            .unwrap()
+        })
+        .collect();
+    wallet_alice
+        .localstore
+        .update_proofs(p2pk_proof_infos, plain_ys)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        total_amount,
+        wallet_alice.total_balance().await.unwrap(),
+        "Alice should have P2PK-locked proofs totalling the full amount"
+    );
+
+    // Send the EXACT total — this triggers the exact-denomination short-circuit:
+    // proofs_to_swap is empty, so signing is skipped and locked proofs go directly
+    // into the token.
+    let prepared = wallet_alice
+        .prepare_send(
+            total_amount,
+            SendOptions {
+                p2pk_signing_keys: vec![alice_secret],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("prepare_send should succeed");
+
+    // Before the fix, proofs_to_swap is empty (exact denomination match short-circuits
+    // the swap), so the token will contain P2PK-locked proofs that Bob cannot receive.
+    let token = prepared
+        .confirm(None)
+        .await
+        .expect("confirm should succeed");
+
+    // Bob must be able to receive the token without any signing keys.
+    // Before the fix this fails because the token proofs are still P2PK-locked.
+    let received = wallet_bob
+        .receive(&token.to_string(), ReceiveOptions::default())
+        .await
+        .expect("Bob should receive the unlocked token without signing keys");
+
+    assert_eq!(
+        total_amount, received,
+        "Bob should receive the full amount as unlocked proofs"
+    );
+}
