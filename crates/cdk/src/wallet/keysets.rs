@@ -32,7 +32,7 @@ impl Wallet {
         self.get_mint_keysets().await
     }
 
-    /// Get keysets from metadata cache (may fetch if not populated)
+    /// Get active keysets from metadata cache (may fetch if not populated)
     ///
     /// Checks the metadata cache for keysets. If cache is not populated,
     /// fetches from mint and updates cache. Returns error if no active keysets found.
@@ -50,6 +50,38 @@ impl Wallet {
             .values()
             .filter_map(|keyset| {
                 if keyset.unit == self.unit && keyset.active {
+                    Some((*keyset.clone()).clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if !keysets.is_empty() {
+            Ok(keysets)
+        } else {
+            Err(Error::UnknownKeySet)
+        }
+    }
+
+    /// Get all keysets (active and inactive) for this wallet's unit
+    ///
+    /// Returns all keysets matching the wallet's unit from the metadata cache,
+    /// regardless of active status. Used by restore to scan proofs from
+    /// rotated keysets that are no longer active.
+    #[instrument(skip(self))]
+    pub async fn get_all_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
+        let keysets = self
+            .metadata_cache
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.read();
+                *ttl
+            })
+            .await?
+            .keysets
+            .values()
+            .filter_map(|keyset| {
+                if keyset.unit == self.unit {
                     Some((*keyset.clone()).clone())
                 } else {
                     None

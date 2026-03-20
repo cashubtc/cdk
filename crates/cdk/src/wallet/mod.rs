@@ -500,7 +500,7 @@ impl Wallet {
             self.fetch_mint_info().await?;
         }
 
-        let keysets = self.load_mint_keysets().await?;
+        let keysets = self.get_all_mint_keysets().await?;
 
         let mut restored_result = Restored::default();
 
