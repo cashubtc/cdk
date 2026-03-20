@@ -1242,6 +1242,7 @@ impl PartialOrd for PreMintSecrets {
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::DefaultHasher;
+    use std::collections::HashSet;
     use std::hash::{Hash, Hasher};
     use std::str::FromStr;
 
@@ -1281,6 +1282,16 @@ mod tests {
         let serialized = serde_json::to_string(&unit).unwrap();
         let deserialized: CurrencyUnit = serde_json::from_str(&serialized).unwrap();
         assert_eq!(unit, deserialized)
+    }
+
+    #[test]
+    #[cfg(feature = "mint")]
+    fn test_currency_unit_custom_normalizes_and_stays_custom() {
+        let unit = CurrencyUnit::custom(" usd\n");
+
+        assert_eq!(unit, CurrencyUnit::Custom("USD".to_string()));
+        assert_ne!(unit, CurrencyUnit::default());
+        assert_eq!(unit.to_string(), "usd");
     }
 
     #[test]
@@ -1610,6 +1621,250 @@ mod tests {
         // Verify all dleqs are None
         for proof in &proofs_without_dleqs {
             assert!(proof.dleq.is_none());
+        }
+    }
+
+    #[test]
+    fn test_proofs_without_p2pk_e_preserves_other_fields() {
+        let p2pk_e = PublicKey::from_str(
+            "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea",
+        )
+        .unwrap();
+        let mut proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"00ad268c4d1f5826","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}
+            ]"#,
+        )
+        .unwrap();
+        proofs[0].p2pk_e = Some(p2pk_e);
+        proofs[1].p2pk_e = Some(p2pk_e);
+
+        let stripped = proofs.without_p2pk_e();
+
+        assert_eq!(stripped.len(), proofs.len());
+        assert!(stripped.iter().all(|proof| proof.p2pk_e.is_none()));
+        assert_eq!(stripped[0].amount, proofs[0].amount);
+        assert_eq!(stripped[0].keyset_id, proofs[0].keyset_id);
+        assert_eq!(stripped[0].secret, proofs[0].secret);
+        assert_eq!(stripped[0].c, proofs[0].c);
+        assert_eq!(proofs[0].p2pk_e, Some(p2pk_e));
+        assert_eq!(proofs[1].p2pk_e, Some(p2pk_e));
+    }
+
+    #[test]
+    fn test_hashset_without_p2pk_e_preserves_all_proofs() {
+        let p2pk_e = PublicKey::from_str(
+            "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea",
+        )
+        .unwrap();
+        let mut proofs: Proofs = serde_json::from_str(
+            r#"[
+                {"id":"009a1f293253e41e","amount":2,"secret":"secret1","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"},
+                {"id":"00ad268c4d1f5826","amount":8,"secret":"secret2","C":"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059"}
+            ]"#,
+        )
+        .unwrap();
+        proofs[0].p2pk_e = Some(p2pk_e);
+        proofs[1].p2pk_e = Some(p2pk_e);
+
+        let proof_set: HashSet<Proof> = proofs.clone().into_iter().collect();
+        let stripped = proof_set.without_p2pk_e();
+
+        assert_eq!(stripped.len(), proof_set.len());
+        assert!(stripped.iter().all(|proof| proof.p2pk_e.is_none()));
+
+        let stripped_keys: HashSet<_> = stripped.iter().map(|proof| proof.secret.clone()).collect();
+        let original_keys: HashSet<_> = proofs.iter().map(|proof| proof.secret.clone()).collect();
+        assert_eq!(stripped_keys, original_keys);
+    }
+
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn test_with_p2bk_rejects_mismatched_ephemeral_keys_when_not_sig_all() {
+        use crate::amount::{FeeAndAmounts, SplitTarget};
+        use crate::nuts::nut11::{Conditions, SigFlag};
+
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
+        let receiver_pubkey = receiver_secret_key.public_key();
+        let conditions =
+            Conditions::new(None, None, None, None, Some(SigFlag::SigInputs), None).unwrap();
+        let ephemeral_keys = vec![crate::nuts::nut01::SecretKey::generate()];
+        let fee_and_amounts = FeeAndAmounts::from((0, (0..32).map(|x| 2u64.pow(x)).collect()));
+
+        let result = PreMintSecrets::with_p2bk(
+            keyset_id,
+            Amount::from(3_u64),
+            &SplitTarget::default(),
+            receiver_pubkey,
+            Some(conditions),
+            &ephemeral_keys,
+            &fee_and_amounts,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn test_with_p2bk_allows_single_ephemeral_key_for_sig_all() {
+        use crate::amount::{FeeAndAmounts, SplitTarget};
+        use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
+        let receiver_pubkey = receiver_secret_key.public_key();
+        let conditions =
+            Conditions::new(None, None, None, None, Some(SigFlag::SigAll), None).unwrap();
+        let ephemeral_key = crate::nuts::nut01::SecretKey::generate();
+        let fee_and_amounts = FeeAndAmounts::from((0, (0..32).map(|x| 2u64.pow(x)).collect()));
+
+        let result = PreMintSecrets::with_p2bk(
+            keyset_id,
+            Amount::from(3_u64),
+            &SplitTarget::default(),
+            receiver_pubkey,
+            Some(conditions),
+            &[ephemeral_key],
+            &fee_and_amounts,
+        )
+        .unwrap();
+
+        assert_eq!(result.len(), 2);
+        for premint in result.iter() {
+            let spending_conditions = SpendingConditions::try_from(&premint.secret).unwrap();
+            match spending_conditions {
+                SpendingConditions::P2PKConditions { data, conditions } => {
+                    assert_ne!(data, receiver_pubkey);
+                    assert_eq!(conditions.unwrap().sig_flag, SigFlag::SigAll);
+                }
+                SpendingConditions::HTLCConditions { .. } => panic!("expected P2PK conditions"),
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn test_with_p2bk_allows_one_ephemeral_key_per_output_when_not_sig_all() {
+        use crate::amount::{FeeAndAmounts, SplitTarget};
+        use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
+        let receiver_pubkey = receiver_secret_key.public_key();
+        let conditions =
+            Conditions::new(None, None, None, None, Some(SigFlag::SigInputs), None).unwrap();
+        let ephemeral_keys = vec![
+            crate::nuts::nut01::SecretKey::generate(),
+            crate::nuts::nut01::SecretKey::generate(),
+        ];
+        let fee_and_amounts = FeeAndAmounts::from((0, (0..32).map(|x| 2u64.pow(x)).collect()));
+
+        let result = PreMintSecrets::with_p2bk(
+            keyset_id,
+            Amount::from(3_u64),
+            &SplitTarget::default(),
+            receiver_pubkey,
+            Some(conditions),
+            &ephemeral_keys,
+            &fee_and_amounts,
+        )
+        .unwrap();
+
+        assert_eq!(result.len(), 2);
+        for premint in result.iter() {
+            let spending_conditions = SpendingConditions::try_from(&premint.secret).unwrap();
+            match spending_conditions {
+                SpendingConditions::P2PKConditions { data, conditions } => {
+                    assert_ne!(data, receiver_pubkey);
+                    assert_eq!(conditions.unwrap().sig_flag, SigFlag::SigInputs);
+                }
+                SpendingConditions::HTLCConditions { .. } => panic!("expected P2PK conditions"),
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn test_with_p2bk_uses_canonical_slots_for_pubkeys_and_refund_keys() {
+        use crate::amount::{FeeAndAmounts, SplitTarget};
+        use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+        use crate::nuts::nut28::{blind_public_key, ecdh_kdf};
+
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
+        let receiver_pubkey = receiver_secret_key.public_key();
+        let additional_key_1 = crate::nuts::nut01::SecretKey::generate().public_key();
+        let additional_key_2 = crate::nuts::nut01::SecretKey::generate().public_key();
+        let refund_key_1 = crate::nuts::nut01::SecretKey::generate().public_key();
+        let refund_key_2 = crate::nuts::nut01::SecretKey::generate().public_key();
+        let conditions = Conditions::new(
+            None,
+            Some(vec![additional_key_1, additional_key_2]),
+            Some(vec![refund_key_1, refund_key_2]),
+            Some(1),
+            Some(SigFlag::SigAll),
+            Some(1),
+        )
+        .unwrap();
+        let ephemeral_key = crate::nuts::nut01::SecretKey::generate();
+        let fee_and_amounts = FeeAndAmounts::from((0, (0..32).map(|x| 2u64.pow(x)).collect()));
+
+        let premint_secrets = PreMintSecrets::with_p2bk(
+            keyset_id,
+            Amount::from(1_u64),
+            &SplitTarget::default(),
+            receiver_pubkey,
+            Some(conditions.clone()),
+            std::slice::from_ref(&ephemeral_key),
+            &fee_and_amounts,
+        )
+        .unwrap();
+
+        let premint = premint_secrets.iter().next().unwrap();
+        let spending_conditions = SpendingConditions::try_from(&premint.secret).unwrap();
+
+        match spending_conditions {
+            SpendingConditions::P2PKConditions { data, conditions } => {
+                let blinded_conditions = conditions.unwrap();
+
+                let expected_primary = blind_public_key(
+                    &receiver_pubkey,
+                    &ecdh_kdf(&ephemeral_key, &receiver_pubkey, 0).unwrap(),
+                )
+                .unwrap();
+                let expected_additional = vec![
+                    blind_public_key(
+                        &additional_key_1,
+                        &ecdh_kdf(&ephemeral_key, &additional_key_1, 1).unwrap(),
+                    )
+                    .unwrap(),
+                    blind_public_key(
+                        &additional_key_2,
+                        &ecdh_kdf(&ephemeral_key, &additional_key_2, 2).unwrap(),
+                    )
+                    .unwrap(),
+                ];
+                let expected_refund = vec![
+                    blind_public_key(
+                        &refund_key_1,
+                        &ecdh_kdf(&ephemeral_key, &refund_key_1, 3).unwrap(),
+                    )
+                    .unwrap(),
+                    blind_public_key(
+                        &refund_key_2,
+                        &ecdh_kdf(&ephemeral_key, &refund_key_2, 4).unwrap(),
+                    )
+                    .unwrap(),
+                ];
+
+                assert_eq!(data, expected_primary);
+                assert_eq!(blinded_conditions.pubkeys.unwrap(), expected_additional);
+                assert_eq!(blinded_conditions.refund_keys.unwrap(), expected_refund);
+                assert_eq!(blinded_conditions.sig_flag, SigFlag::SigAll);
+            }
+            SpendingConditions::HTLCConditions { .. } => panic!("expected P2PK conditions"),
         }
     }
 
