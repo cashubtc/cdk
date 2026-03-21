@@ -245,7 +245,8 @@ impl std::str::FromStr for BlindAuthToken {
         // Decode the base64 URL-safe string (accept with or without padding)
         let decode_config = GeneralPurposeConfig::new()
             .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
-        let json_string = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(encoded)?;
+        let json_string =
+            GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(encoded)?;
 
         // Convert bytes to UTF-8 string
         let json_str = String::from_utf8(json_string)?;
@@ -305,14 +306,14 @@ mod tests {
         assert!(token_str.starts_with("authA"));
 
         // Parse with padding
-        let parsed = BlindAuthToken::from_str(&token_str)
-            .expect("Failed to parse token with padding");
+        let parsed =
+            BlindAuthToken::from_str(&token_str).expect("Failed to parse token with padding");
         assert_eq!(token, parsed);
 
         // Strip padding and parse again
         let token_no_pad = token_str.trim_end_matches('=');
-        let parsed_no_pad = BlindAuthToken::from_str(token_no_pad)
-            .expect("Failed to parse token without padding");
+        let parsed_no_pad =
+            BlindAuthToken::from_str(token_no_pad).expect("Failed to parse token without padding");
         assert_eq!(token, parsed_no_pad);
     }
 
