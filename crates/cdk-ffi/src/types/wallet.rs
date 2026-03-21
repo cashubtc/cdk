@@ -117,6 +117,8 @@ pub struct SendOptions {
     pub max_proofs: Option<u32>,
     /// Metadata
     pub metadata: HashMap<String, String>,
+    /// Signing keys for P2PK-locked input proofs
+    pub p2pk_signing_keys: Vec<SecretKey>,
 }
 
 impl Default for SendOptions {
@@ -130,6 +132,7 @@ impl Default for SendOptions {
             max_proofs: None,
             metadata: HashMap::new(),
             use_p2bk: false,
+            p2pk_signing_keys: Vec::new(),
         }
     }
 }
@@ -145,6 +148,7 @@ impl From<SendOptions> for cdk::wallet::SendOptions {
             max_proofs: opts.max_proofs.map(|p| p as usize),
             metadata: opts.metadata,
             use_p2bk: opts.use_p2bk,
+            p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -160,6 +164,7 @@ impl From<cdk::wallet::SendOptions> for SendOptions {
             max_proofs: opts.max_proofs.map(|p| p as u32),
             metadata: opts.metadata,
             use_p2bk: opts.use_p2bk,
+            p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
         }
     }
 }
