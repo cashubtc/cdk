@@ -211,10 +211,8 @@ impl PreMintSecrets {
                     let secret = Secret::legacy_derive(seed, keyset_id, i)?;
                     let blinding_factor = SecretKey::legacy_derive(seed, keyset_id, i)?;
 
-                    let (blinded, r) =
-                        blind_message(&secret.to_bytes(), Some(blinding_factor))?;
-                    let blinded_message =
-                        BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
+                    let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+                    let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
                     pre_mint_secrets.secrets.push(PreMint {
                         blinded_message,
@@ -230,8 +228,7 @@ impl PreMintSecrets {
 
                     let (blinded, r) =
                         blind_message(&legacy_secret.to_bytes(), Some(legacy_blinding))?;
-                    let blinded_message =
-                        BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
+                    let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
                     pre_mint_secrets.secrets.push(PreMint {
                         blinded_message,
@@ -244,10 +241,8 @@ impl PreMintSecrets {
                     let secret = Secret::derive(seed, keyset_id, i)?;
                     let blinding_factor = SecretKey::derive(seed, keyset_id, i)?;
 
-                    let (blinded, r) =
-                        blind_message(&secret.to_bytes(), Some(blinding_factor))?;
-                    let blinded_message =
-                        BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
+                    let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+                    let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
                     pre_mint_secrets.secrets.push(PreMint {
                         blinded_message,
@@ -705,8 +700,7 @@ mod tests {
         assert_eq!(batch.secrets.len(), 6);
 
         // Collect all secrets from restore_batch
-        let restore_secrets: Vec<_> =
-            batch.secrets.iter().map(|p| p.secret.clone()).collect();
+        let restore_secrets: Vec<_> = batch.secrets.iter().map(|p| p.secret.clone()).collect();
 
         // Verify that both legacy and HMAC secrets are present for each counter
         for counter in 0..3u32 {
