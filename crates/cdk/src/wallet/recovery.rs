@@ -248,9 +248,11 @@ impl RecoveryHelpers for Wallet {
         // Get keyset ID from the first blinded message
         let keyset_id = blinded_messages[0].keyset_id;
 
-        // Re-derive premint secrets
+        // Re-derive premint secrets using single derivation (not dual).
+        // The original swap used from_seed() which produces one derivation
+        // per counter, so we must match that exactly.
         let premint_secrets =
-            PreMintSecrets::restore_batch(keyset_id, &self.seed, counter_start, counter_end)?;
+            PreMintSecrets::from_seed_batch(keyset_id, &self.seed, counter_start, counter_end)?;
 
         // Load keyset keys
         let keys = self.load_keyset_keys(keyset_id).await?;

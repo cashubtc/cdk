@@ -561,9 +561,16 @@ impl Wallet {
                     })
                     .collect();
 
-                // Update highest counter based on matched indices
+                // Update highest counter based on matched indices.
+                // For Version01, restore_batch produces 2 entries per counter
+                // (BIP32 legacy + HMAC-SHA256), so we divide index by 2.
                 if let Some(&(max_idx, _, _)) = matched_secrets.last() {
-                    let counter_value = start_counter + max_idx as u32;
+                    let counter_value = match keyset.id.get_version() {
+                        cdk_common::nut02::KeySetVersion::Version01 => {
+                            start_counter + (max_idx as u32) / 2
+                        }
+                        _ => start_counter + max_idx as u32,
+                    };
                     highest_counter =
                         Some(highest_counter.map_or(counter_value, |c| c.max(counter_value)));
                 }

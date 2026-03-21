@@ -345,7 +345,7 @@ impl Wallet {
 
             let keyset_id = blinded_messages[0].keyset_id;
 
-            let premint_secrets = crate::nuts::PreMintSecrets::restore_batch(
+            let premint_secrets = crate::nuts::PreMintSecrets::from_seed_batch(
                 keyset_id,
                 &self.seed,
                 counter_start,
@@ -450,7 +450,7 @@ impl Wallet {
 
         let keyset_id = blinded_messages[0].keyset_id;
 
-        let premint_secrets = crate::nuts::PreMintSecrets::restore_batch(
+        let premint_secrets = crate::nuts::PreMintSecrets::from_seed_batch(
             keyset_id,
             &self.seed,
             counter_start,
