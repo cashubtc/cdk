@@ -81,7 +81,10 @@ async fn test_swap_to_send() {
         .confirm(Some(SendMemo::for_token("test_swapt_to_send")))
         .await
         .expect("Failed to send token");
-    let keysets_info = wallet_alice.get_mint_keysets(KeysetFilter::Active).await.unwrap();
+    let keysets_info = wallet_alice
+        .get_mint_keysets(KeysetFilter::Active)
+        .await
+        .unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         Amount::from(40),
@@ -1474,7 +1477,10 @@ async fn test_p2pk_send_force_swap_with_fees_include_fee() {
         .expect("confirm should succeed");
 
     // Token should include amount + send_fee (so recipient can pay the redemption fee)
-    let keysets_info = wallet_sender.get_mint_keysets(KeysetFilter::Active).await.unwrap();
+    let keysets_info = wallet_sender
+        .get_mint_keysets(KeysetFilter::Active)
+        .await
+        .unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         send_amount + send_fee,
@@ -2011,13 +2017,19 @@ async fn test_p2bk_send_and_receive() {
         .expect("Failed to confirm send");
 
     // Check if the proofs have p2pk_e
-    let keysets_info = wallet_sender.get_mint_keysets(KeysetFilter::Active).await.unwrap();
+    let keysets_info = wallet_sender
+        .get_mint_keysets(KeysetFilter::Active)
+        .await
+        .unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     for proof in &token_proofs {
         assert!(proof.p2pk_e.is_some(), "Proof should have p2pk_e set");
     }
     // Check if the proofs have p2pk_e
-    let keysets_info = wallet_sender.get_mint_keysets(KeysetFilter::Active).await.unwrap();
+    let keysets_info = wallet_sender
+        .get_mint_keysets(KeysetFilter::Active)
+        .await
+        .unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     for proof in &token_proofs {
         assert!(proof.p2pk_e.is_some(), "Proof should have p2pk_e set");

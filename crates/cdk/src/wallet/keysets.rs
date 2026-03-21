@@ -49,10 +49,7 @@ impl Wallet {
     /// include rotated keysets (e.g. for restore).
     #[instrument(skip(self))]
     #[inline(always)]
-    pub async fn get_mint_keysets(
-        &self,
-        filter: KeysetFilter,
-    ) -> Result<Vec<KeySetInfo>, Error> {
+    pub async fn get_mint_keysets(&self, filter: KeysetFilter) -> Result<Vec<KeySetInfo>, Error> {
         let keysets = self
             .metadata_cache
             .load(&self.localstore, &self.client, {

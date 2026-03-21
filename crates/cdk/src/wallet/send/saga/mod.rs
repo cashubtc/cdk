@@ -77,12 +77,12 @@ use super::{split_proofs_for_send, SendMemo, SendOptions};
 use crate::amount::SplitTarget;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{Proofs, State, Token};
+use crate::wallet::keysets::KeysetFilter;
 use crate::wallet::saga::{
     add_compensation, execute_compensations, new_compensations, Compensations,
     RevertProofReservation,
 };
 use crate::wallet::SendKind;
-use crate::wallet::keysets::KeysetFilter;
 use crate::{Amount, Error, Wallet};
 
 pub(crate) mod resume;

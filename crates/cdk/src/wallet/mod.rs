@@ -73,8 +73,8 @@ pub use bip321::{
     parse_payment_instruction, Bip321UriBuilder, ParsedPaymentInstruction, PaymentRequestBip321Ext,
 };
 pub use builder::WalletBuilder;
-pub use keysets::KeysetFilter;
 pub use cdk_common::wallet as types;
+pub use keysets::KeysetFilter;
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{

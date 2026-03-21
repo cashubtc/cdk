@@ -18,9 +18,9 @@ use super::builder::WalletBuilder;
 use super::{Error, MintConnector};
 use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
+use crate::wallet::keysets::KeysetFilter;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
-use crate::wallet::keysets::KeysetFilter;
 use crate::Wallet;
 
 /// Data extracted from a token

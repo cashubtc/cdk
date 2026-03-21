@@ -79,7 +79,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_iter()
         .next()
         .ok_or("No wallet found for mint")?;
-    let keysets: Vec<cdk::nuts::KeySetInfo> = mint_wallet.get_mint_keysets(KeysetFilter::Active).await?;
+    let keysets: Vec<cdk::nuts::KeySetInfo> =
+        mint_wallet.get_mint_keysets(KeysetFilter::Active).await?;
     println!("Found {} keysets for mint", keysets.len());
 
     for keyset in &keysets {
