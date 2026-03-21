@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::Wallet;
+use cdk::wallet::{KeysetFilter, Wallet};
 use cdk::Amount;
 use cdk_common::nut02::KeySetInfosMethods;
 use cdk_sqlite::wallet::memory;
@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Select proofs to send
     let amount = Amount::from(64);
     let active_keyset_ids = wallet
-        .get_mint_keysets()
+        .get_mint_keysets(KeysetFilter::Active)
         .await?
         .active()
         .map(|keyset| keyset.id)
