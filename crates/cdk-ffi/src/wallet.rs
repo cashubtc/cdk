@@ -149,6 +149,15 @@ impl Wallet {
         Ok(restored.into())
     }
 
+    /// Restore wallet from seed with specific options
+    pub async fn restore_with_options(
+        &self,
+        options: crate::types::wallet::RecoveryOptions,
+    ) -> Result<Restored, FfiError> {
+        let restored = self.inner.restore_with_options(options.into()).await?;
+        Ok(restored.into())
+    }
+
     /// Verify token DLEQ proofs
     pub async fn verify_token_dleq(&self, token: std::sync::Arc<Token>) -> Result<(), FfiError> {
         let cdk_token = token.inner.clone();

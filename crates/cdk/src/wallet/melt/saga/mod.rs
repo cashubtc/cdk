@@ -97,7 +97,7 @@ async fn finalize_melt_common<'a>(
     let active_keyset_id = wallet.fetch_active_keyset().await?.id;
     let active_keys = wallet.load_keyset_keys(active_keyset_id).await?;
 
-    let change_proofs = match change {
+    let (change_proofs, counter_map) = match change {
         Some(change) => {
             let num_change_proof = change.len();
 
@@ -112,14 +112,33 @@ async fn finalize_melt_common<'a>(
                 _ => num_change_proof,
             };
 
-            Some(construct_proofs(
+            let counter_start = match wallet.localstore.get_saga(&operation_id).await {
+                Ok(Some(saga)) => match saga.data {
+                    cdk_common::wallet::OperationData::Melt(ref data) => data.counter_start,
+                    _ => None,
+                },
+                _ => None,
+            };
+
+            let proofs = construct_proofs(
                 change,
                 premint_secrets.rs()[..num_change_proof].to_vec(),
                 premint_secrets.secrets()[..num_change_proof].to_vec(),
                 &active_keys,
-            )?)
+            )?;
+
+            let mut counter_map = std::collections::HashMap::new();
+            if let Some(start) = counter_start {
+                for (i, p) in proofs.iter().enumerate() {
+                    if let Ok(y) = p.y() {
+                        counter_map.insert(y, start + i as u32);
+                    }
+                }
+            }
+
+            (Some(proofs), counter_map)
         }
-        None => None,
+        None => (None, std::collections::HashMap::new()),
     };
 
     let proofs_total = final_proofs.total_amount()?;
@@ -138,12 +157,16 @@ async fn finalize_melt_common<'a>(
         Some(change_proofs) => change_proofs
             .into_iter()
             .map(|proof| {
-                ProofInfo::new(
+                let mut info = ProofInfo::new(
                     proof,
                     wallet.mint_url.clone(),
                     State::Unspent,
                     quote_info.unit.clone(),
-                )
+                )?;
+                if let Ok(y) = info.proof.y() {
+                    info.keyset_counter = counter_map.get(&y).copied();
+                }
+                Ok::<_, crate::Error>(info)
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?,
         None => Vec::new(),
@@ -488,6 +511,7 @@ impl<'a> MeltSaga<'a, Initial> {
                     self.wallet.unit.clone(),
                     Some(operation_id),
                     None,
+                    None,
                 )
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
@@ -706,6 +730,7 @@ impl<'a> MeltSaga<'a, Prepared> {
                     State::Pending,
                     self.wallet.unit.clone(),
                     Some(operation_id),
+                    None,
                     None,
                 )
             })

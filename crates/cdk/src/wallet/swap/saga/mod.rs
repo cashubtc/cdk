@@ -96,6 +96,7 @@ impl<'a> SwapSaga<'a, Initial> {
         use_p2bk: bool,
         include_fees: bool,
         proof_reservation: ProofReservation,
+        skip_invariant: bool,
     ) -> Result<SwapSaga<'a, Prepared>, Error> {
         tracing::info!(
             "Preparing swap with operation {}",
@@ -126,6 +127,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 use_p2bk,
                 &fee_breakdown,
                 proof_reservation,
+                skip_invariant,
             )
             .await?;
 
@@ -245,6 +247,19 @@ impl<'a> SwapSaga<'a, Prepared> {
             &active_keys,
         )?;
 
+        let counter_start = match self.state_data.saga.data {
+            OperationData::Swap(ref data) => data.counter_start,
+            _ => None,
+        };
+        let mut counter_map = std::collections::HashMap::new();
+        if let Some(start) = counter_start {
+            for (i, p) in post_swap_proofs.iter().enumerate() {
+                if let Ok(y) = p.y() {
+                    counter_map.insert(y, start + i as u32);
+                }
+            }
+        }
+
         let mut added_proofs = Vec::new();
         let change_proofs;
         let send_proofs;
@@ -306,7 +321,12 @@ impl<'a> SwapSaga<'a, Prepared> {
                     .clone()
                     .into_iter()
                     .map(|proof| {
-                        ProofInfo::new(proof, mint_url.clone(), State::Reserved, unit.clone())
+                        let mut info =
+                            ProofInfo::new(proof, mint_url.clone(), State::Reserved, unit.clone())?;
+                        if let Ok(y) = info.proof.y() {
+                            info.keyset_counter = counter_map.get(&y).copied();
+                        }
+                        Ok::<_, crate::Error>(info)
                     })
                     .collect::<Result<Vec<ProofInfo>, _>>()?;
                 added_proofs = send_proofs_info;
@@ -322,7 +342,14 @@ impl<'a> SwapSaga<'a, Prepared> {
 
         let keep_proofs = change_proofs
             .into_iter()
-            .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, unit.clone()))
+            .map(|proof| {
+                let mut info =
+                    ProofInfo::new(proof, mint_url.clone(), State::Unspent, unit.clone())?;
+                if let Ok(y) = info.proof.y() {
+                    info.keyset_counter = counter_map.get(&y).copied();
+                }
+                Ok::<_, crate::Error>(info)
+            })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
         added_proofs.extend(keep_proofs);
 
@@ -406,6 +433,7 @@ mod tests {
                 false,
                 false,
                 ProofReservation::Reserve,
+                false,
             )
             .await
             .unwrap();
@@ -469,6 +497,7 @@ mod tests {
                 false,
                 false,
                 ProofReservation::Reserve,
+                false,
             )
             .await;
 
@@ -525,6 +554,7 @@ mod tests {
                 false,
                 false,
                 ProofReservation::Skip,
+                false,
             )
             .await
             .unwrap();

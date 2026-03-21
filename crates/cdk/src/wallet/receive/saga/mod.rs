@@ -270,6 +270,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                     self.wallet.unit.clone(),
                     Some(operation_id),
                     None,
+                    None,
                 )
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
@@ -320,6 +321,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 false,
                 &fee_breakdown,
                 ProofReservation::Skip,
+                false,
             )
             .await?;
 
@@ -392,18 +394,29 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             .increment_keyset_counter(&self.state_data.active_keyset_id, recv_proofs.len() as u32)
             .await?;
 
+        let mut counter_map = std::collections::HashMap::new();
+        for (i, p) in recv_proofs.iter().enumerate() {
+            if let Ok(y) = p.y() {
+                counter_map.insert(y, counter_start + i as u32);
+            }
+        }
+
         let total_amount = recv_proofs.total_amount()?;
         let fee = self.state_data.proofs_amount - total_amount;
 
         let recv_proof_infos = recv_proofs
             .into_iter()
             .map(|proof| {
-                ProofInfo::new(
+                let mut info = ProofInfo::new(
                     proof,
                     self.wallet.mint_url.clone(),
                     State::Unspent,
                     self.wallet.unit.clone(),
-                )
+                )?;
+                if let Ok(y) = info.proof.y() {
+                    info.keyset_counter = counter_map.get(&y).copied();
+                }
+                Ok::<_, crate::Error>(info)
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 

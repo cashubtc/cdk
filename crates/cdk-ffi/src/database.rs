@@ -522,6 +522,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
                         .map(|id| uuid::Uuid::parse_str(&id))
                         .transpose()
                         .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?,
+                    keyset_counter: info.keyset_counter,
                 })
             })
             .collect();
@@ -574,6 +575,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
                         .map(|id| uuid::Uuid::parse_str(&id))
                         .transpose()
                         .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?,
+                    keyset_counter: info.keyset_counter,
                 })
             })
             .collect();
@@ -927,6 +929,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
                         .map(|id| uuid::Uuid::parse_str(&id))
                         .transpose()
                         .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?,
+                    keyset_counter: info.keyset_counter,
                 })
             })
             .collect()
@@ -1299,6 +1302,7 @@ where
                         .map(|id| uuid::Uuid::parse_str(&id))
                         .transpose()
                         .map_err(|e| FfiError::internal(e.to_string()))?,
+                    keyset_counter: info.keyset_counter,
                 })
             })
             .collect();

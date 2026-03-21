@@ -1,7 +1,7 @@
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::WalletRepository;
+use cdk::wallet::{RecoveryOptions, RecoveryStrategy, WalletRepository};
 use clap::Args;
 
 use crate::utils::get_or_create_wallet;
@@ -10,6 +10,9 @@ use crate::utils::get_or_create_wallet;
 pub struct RestoreSubCommand {
     /// Mint Url
     mint_url: MintUrl,
+    /// Use legacy linear scan recovery
+    #[arg(long, default_value_t = false)]
+    legacy_scan: bool,
 }
 
 pub async fn restore(
@@ -21,7 +24,15 @@ pub async fn restore(
 
     let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
 
-    let restored = wallet.restore().await?;
+    let strategy = if sub_command_args.legacy_scan {
+        RecoveryStrategy::LinearScan
+    } else {
+        RecoveryStrategy::Fast
+    };
+
+    let restored = wallet
+        .restore_with_options(RecoveryOptions { strategy })
+        .await?;
 
     println!("Restored: {}", restored.unspent);
     println!("Spent: {}", restored.spent);

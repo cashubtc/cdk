@@ -701,13 +701,24 @@ impl<'a> MintSaga<'a, Prepared> {
                     Err(_) => return Err(Error::CouldNotVerifyDleq),
                 }
             }
-
             let proofs = construct_proofs(
                 mint_res.signatures,
                 premint_secrets.rs(),
                 premint_secrets.secrets(),
                 &keys,
             )?;
+
+            let mut counter_map = std::collections::HashMap::new();
+            if let OperationData::Mint(ref data) = saga.data {
+                if let Some(start) = data.counter_start {
+                    for (i, p) in proofs.iter().enumerate() {
+                        if let Ok(y) = p.y() {
+                            counter_map.insert(y, start + i as u32);
+                        }
+                    }
+                }
+            }
+
 
             let minted_amount = proofs.total_amount()?;
 
@@ -739,12 +750,16 @@ impl<'a> MintSaga<'a, Prepared> {
             let proof_infos = proofs
                 .iter()
                 .map(|proof| {
-                    ProofInfo::new(
+                    let mut info = ProofInfo::new(
                         proof.clone(),
                         wallet.mint_url.clone(),
                         State::Unspent,
                         wallet.unit.clone(),
-                    )
+                    )?;
+                    if let Ok(y) = info.proof.y() {
+                        info.keyset_counter = counter_map.get(&y).copied();
+                    }
+                    Ok::<_, crate::Error>(info)
                 })
                 .collect::<Result<Vec<ProofInfo>, _>>()?;
 

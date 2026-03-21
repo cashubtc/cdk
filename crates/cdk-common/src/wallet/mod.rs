@@ -67,6 +67,9 @@ pub struct ProofInfo {
     /// Operation ID that created this proof
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by_operation: Option<Uuid>,
+    /// The nonce index used to generate this proof, for Depth Invariant tracking (NUT-XX)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyset_counter: Option<u32>,
 }
 
 impl ProofInfo {
@@ -90,6 +93,7 @@ impl ProofInfo {
             unit,
             used_by_operation: None,
             created_by_operation: None,
+            keyset_counter: None,
         })
     }
 
@@ -101,6 +105,7 @@ impl ProofInfo {
         unit: CurrencyUnit,
         used_by_operation: Option<Uuid>,
         created_by_operation: Option<Uuid>,
+        keyset_counter: Option<u32>,
     ) -> Result<Self, Error> {
         let y = proof.y()?;
 
@@ -115,6 +120,7 @@ impl ProofInfo {
             unit,
             used_by_operation,
             created_by_operation,
+            keyset_counter,
         })
     }
 

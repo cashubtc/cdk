@@ -334,7 +334,11 @@ pub fn test_proof_info(
     mint_url: MintUrl,
 ) -> cdk_common::wallet::ProofInfo {
     let proof = test_proof(keyset_id, amount);
-    cdk_common::wallet::ProofInfo::new(proof, mint_url, State::Unspent, CurrencyUnit::Sat).unwrap()
+    let mut info =
+        cdk_common::wallet::ProofInfo::new(proof, mint_url, State::Unspent, CurrencyUnit::Sat)
+            .unwrap();
+    info.keyset_counter = Some(1);
+    info
 }
 
 /// Create a test melt quote
