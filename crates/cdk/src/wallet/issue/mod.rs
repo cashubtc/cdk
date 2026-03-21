@@ -11,32 +11,25 @@ pub(crate) use saga::MintSaga;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
-use crate::nuts::{
-    BatchCheckMintQuoteRequest, MintQuoteCustomRequest, Proofs, SecretKey, SpendingConditions,
-};
+use crate::nuts::{BatchCheckMintQuoteRequest, Proofs, SecretKey, SpendingConditions};
 use crate::util::unix_time;
 use crate::wallet::recovery::RecoveryAction;
 use crate::wallet::{MintQuote, MintQuoteState};
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
-    /// Mint Quote
+    /// Create a mint quote for the given payment method and amount
     #[instrument(skip(self, method))]
-    pub async fn mint_quote<T>(
+    pub async fn mint_quote(
         &self,
-        method: T,
+        method: PaymentMethod,
         amount: Option<Amount>,
         description: Option<String>,
         extra: Option<String>,
-    ) -> Result<MintQuote, Error>
-    where
-        T: Into<PaymentMethod>,
-    {
+    ) -> Result<MintQuote, Error> {
         let mint_info = self.load_mint_info().await?;
         let mint_url = self.mint_url.clone();
         let unit = self.unit.clone();
-
-        let method: PaymentMethod = method.into();
 
         // Check settings and description support
         if description.is_some() {
@@ -78,7 +71,7 @@ impl Wallet {
                 let amount = amount.ok_or(Error::AmountUndefined)?;
                 MintQuoteRequest::Custom((
                     method.clone(),
-                    MintQuoteCustomRequest {
+                    cdk_common::nuts::MintQuoteCustomRequest {
                         amount,
                         unit: unit.clone(),
                         description,
