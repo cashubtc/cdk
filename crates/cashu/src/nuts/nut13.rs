@@ -190,9 +190,84 @@ impl PreMintSecrets {
         Ok(pre_mint_secrets)
     }
 
-    /// Generate blinded messages from predetermined secrets and blindings
-    /// factor
+    /// Generate blinded messages for restore/discovery from predetermined
+    /// secrets and blinding factors.
+    ///
+    /// Per NUT-13, for keyset version `01`, this generates **two** blinded
+    /// messages per counter value (BIP32 legacy first, then HMAC-SHA256)
+    /// because old wallets may have used legacy derivation on `01` keysets.
+    /// For version `00`, a single BIP32 legacy entry is produced per counter.
     pub fn restore_batch(
+        keyset_id: Id,
+        seed: &[u8; 64],
+        start_count: u32,
+        end_count: u32,
+    ) -> Result<Self, Error> {
+        let mut pre_mint_secrets = PreMintSecrets::new(keyset_id);
+
+        for i in start_count..end_count {
+            match keyset_id.get_version() {
+                super::nut02::KeySetVersion::Version00 => {
+                    let secret = Secret::legacy_derive(seed, keyset_id, i)?;
+                    let blinding_factor = SecretKey::legacy_derive(seed, keyset_id, i)?;
+
+                    let (blinded, r) =
+                        blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+                    let blinded_message =
+                        BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
+
+                    pre_mint_secrets.secrets.push(PreMint {
+                        blinded_message,
+                        secret: secret.clone(),
+                        r,
+                        amount: Amount::ZERO,
+                    });
+                }
+                super::nut02::KeySetVersion::Version01 => {
+                    // First: BIP32 legacy derivation
+                    let legacy_secret = Secret::legacy_derive(seed, keyset_id, i)?;
+                    let legacy_blinding = SecretKey::legacy_derive(seed, keyset_id, i)?;
+
+                    let (blinded, r) =
+                        blind_message(&legacy_secret.to_bytes(), Some(legacy_blinding))?;
+                    let blinded_message =
+                        BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
+
+                    pre_mint_secrets.secrets.push(PreMint {
+                        blinded_message,
+                        secret: legacy_secret.clone(),
+                        r,
+                        amount: Amount::ZERO,
+                    });
+
+                    // Then: HMAC-SHA256 derivation
+                    let secret = Secret::derive(seed, keyset_id, i)?;
+                    let blinding_factor = SecretKey::derive(seed, keyset_id, i)?;
+
+                    let (blinded, r) =
+                        blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+                    let blinded_message =
+                        BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
+
+                    pre_mint_secrets.secrets.push(PreMint {
+                        blinded_message,
+                        secret: secret.clone(),
+                        r,
+                        amount: Amount::ZERO,
+                    });
+                }
+            }
+        }
+
+        Ok(pre_mint_secrets)
+    }
+
+    /// Re-derive blinded messages using the standard single derivation method
+    /// per keyset version. Unlike [`restore_batch`](Self::restore_batch), this
+    /// always produces exactly one entry per counter value and is intended for
+    /// replaying known operations (e.g. swap replay after crash), not for
+    /// restore discovery.
+    pub fn from_seed_batch(
         keyset_id: Id,
         seed: &[u8; 64],
         start_count: u32,
@@ -208,14 +283,12 @@ impl PreMintSecrets {
 
             let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
-            let pre_mint = PreMint {
+            pre_mint_secrets.secrets.push(PreMint {
                 blinded_message,
                 secret: secret.clone(),
                 r,
                 amount: Amount::ZERO,
-            };
-
-            pre_mint_secrets.secrets.push(pre_mint);
+            });
         }
 
         Ok(pre_mint_secrets)
@@ -505,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn test_restore_batch_with_v2_keyset() {
+    fn test_restore_batch_with_v2_keyset_dual_derivation() {
         let seed =
             "half depart obvious quality work element tank gorilla view sugar picture humble";
         let mnemonic = Mnemonic::from_str(seed).unwrap();
@@ -517,8 +590,51 @@ mod tests {
 
         let start_count = 5;
         let end_count = 10;
+        let num_counters = (end_count - start_count) as usize;
 
-        // Test batch restoration with v2 keyset
+        // Version01 restore_batch produces 2 entries per counter
+        let pre_mint_secrets =
+            PreMintSecrets::restore_batch(keyset_id, &seed, start_count, end_count).unwrap();
+
+        assert_eq!(pre_mint_secrets.secrets.len(), num_counters * 2);
+
+        // Verify each pair: even index = BIP32 legacy, odd index = HMAC-SHA256
+        for counter_offset in 0..num_counters {
+            let counter = start_count + counter_offset as u32;
+            let legacy_idx = counter_offset * 2;
+            let hmac_idx = counter_offset * 2 + 1;
+
+            // BIP32 legacy entry
+            let expected_legacy = Secret::legacy_derive(&seed, keyset_id, counter).unwrap();
+            assert_eq!(pre_mint_secrets.secrets[legacy_idx].secret, expected_legacy);
+
+            // HMAC-SHA256 entry
+            let expected_hmac = Secret::derive(&seed, keyset_id, counter).unwrap();
+            assert_eq!(pre_mint_secrets.secrets[hmac_idx].secret, expected_hmac);
+
+            // The two derivations must produce different secrets
+            assert_ne!(
+                pre_mint_secrets.secrets[legacy_idx].secret,
+                pre_mint_secrets.secrets[hmac_idx].secret,
+                "BIP32 and HMAC secrets must differ for counter {}",
+                counter
+            );
+        }
+    }
+
+    #[test]
+    fn test_restore_batch_with_v1_keyset_single_derivation() {
+        let seed =
+            "half depart obvious quality work element tank gorilla view sugar picture humble";
+        let mnemonic = Mnemonic::from_str(seed).unwrap();
+        let seed: [u8; 64] = mnemonic.to_seed("");
+
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+
+        let start_count = 0;
+        let end_count = 5;
+
+        // Version00 restore_batch produces 1 entry per counter
         let pre_mint_secrets =
             PreMintSecrets::restore_batch(keyset_id, &seed, start_count, end_count).unwrap();
 
@@ -527,11 +643,86 @@ mod tests {
             (end_count - start_count) as usize
         );
 
-        // Verify each secret in the batch
+        // Each entry matches the BIP32 legacy derivation
         for (i, pre_mint) in pre_mint_secrets.secrets.iter().enumerate() {
             let counter = start_count + i as u32;
             let expected_secret = Secret::from_seed(&seed, keyset_id, counter).unwrap();
             assert_eq!(pre_mint.secret, expected_secret);
+        }
+    }
+
+    #[test]
+    fn test_from_seed_batch_single_derivation() {
+        let seed =
+            "half depart obvious quality work element tank gorilla view sugar picture humble";
+        let mnemonic = Mnemonic::from_str(seed).unwrap();
+        let seed: [u8; 64] = mnemonic.to_seed("");
+
+        let v1_id = Id::from_str("009a1f293253e41e").unwrap();
+        let v2_id =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+
+        let start_count = 0;
+        let end_count = 5;
+        let num_counters = (end_count - start_count) as usize;
+
+        // from_seed_batch always produces 1 entry per counter for any version
+        let v1_secrets =
+            PreMintSecrets::from_seed_batch(v1_id, &seed, start_count, end_count).unwrap();
+        let v2_secrets =
+            PreMintSecrets::from_seed_batch(v2_id, &seed, start_count, end_count).unwrap();
+
+        assert_eq!(v1_secrets.secrets.len(), num_counters);
+        assert_eq!(v2_secrets.secrets.len(), num_counters);
+
+        // Each entry matches from_seed() (single derivation per version)
+        for i in 0..num_counters {
+            let counter = start_count + i as u32;
+
+            let expected_v1 = Secret::from_seed(&seed, v1_id, counter).unwrap();
+            assert_eq!(v1_secrets.secrets[i].secret, expected_v1);
+
+            let expected_v2 = Secret::from_seed(&seed, v2_id, counter).unwrap();
+            assert_eq!(v2_secrets.secrets[i].secret, expected_v2);
+        }
+    }
+
+    #[test]
+    fn test_restore_batch_v2_contains_both_derivations() {
+        let seed =
+            "half depart obvious quality work element tank gorilla view sugar picture humble";
+        let mnemonic = Mnemonic::from_str(seed).unwrap();
+        let seed: [u8; 64] = mnemonic.to_seed("");
+
+        let keyset_id =
+            Id::from_str("012e23479a0029432eaad0d2040c09be53bab592d5cbf1d55e0dd26c9495951b30")
+                .unwrap();
+
+        let batch = PreMintSecrets::restore_batch(keyset_id, &seed, 0, 3).unwrap();
+
+        // 3 counters × 2 derivations = 6 entries
+        assert_eq!(batch.secrets.len(), 6);
+
+        // Collect all secrets from restore_batch
+        let restore_secrets: Vec<_> =
+            batch.secrets.iter().map(|p| p.secret.clone()).collect();
+
+        // Verify that both legacy and HMAC secrets are present for each counter
+        for counter in 0..3u32 {
+            let legacy = Secret::legacy_derive(&seed, keyset_id, counter).unwrap();
+            let hmac = Secret::derive(&seed, keyset_id, counter).unwrap();
+
+            assert!(
+                restore_secrets.contains(&legacy),
+                "Missing BIP32 legacy secret for counter {}",
+                counter
+            );
+            assert!(
+                restore_secrets.contains(&hmac),
+                "Missing HMAC-SHA256 secret for counter {}",
+                counter
+            );
         }
     }
 }

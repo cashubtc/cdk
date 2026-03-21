@@ -193,7 +193,7 @@ impl Wallet {
                 let keyset_id = blinded_messages[0].keyset_id;
                 // Attempt to restore secrets to derive expected Ys
                 if let Ok(premint_secrets) =
-                    PreMintSecrets::restore_batch(keyset_id, &self.seed, start, end)
+                    PreMintSecrets::from_seed_batch(keyset_id, &self.seed, start, end)
                 {
                     // Derive Ys from secrets
                     let ys_result: Result<Vec<crate::nuts::PublicKey>, _> = premint_secrets
