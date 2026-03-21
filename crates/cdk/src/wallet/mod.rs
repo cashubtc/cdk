@@ -73,6 +73,7 @@ pub use bip321::{
     parse_payment_instruction, Bip321UriBuilder, ParsedPaymentInstruction, PaymentRequestBip321Ext,
 };
 pub use builder::WalletBuilder;
+pub use keysets::KeysetFilter;
 pub use cdk_common::wallet as types;
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
@@ -500,7 +501,7 @@ impl Wallet {
             self.fetch_mint_info().await?;
         }
 
-        let keysets = self.get_mint_keysets(false).await?;
+        let keysets = self.get_mint_keysets(KeysetFilter::All).await?;
 
         let mut restored_result = Restored::default();
 

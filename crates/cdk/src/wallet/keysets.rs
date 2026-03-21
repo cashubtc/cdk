@@ -7,6 +7,15 @@ use tracing::instrument;
 use crate::nuts::{Id, KeySetInfo, Keys};
 use crate::{Error, Wallet};
 
+/// Filter for keyset queries
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeysetFilter {
+    /// Only return active keysets
+    Active,
+    /// Return all keysets (active and inactive)
+    All,
+}
+
 impl Wallet {
     /// Load keys for mint keyset
     ///
@@ -29,18 +38,21 @@ impl Wallet {
     /// Alias of get_mint_keysets, kept for backwards compatibility reasons
     #[instrument(skip(self))]
     pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
-        self.get_mint_keysets(true).await
+        self.get_mint_keysets(KeysetFilter::Active).await
     }
 
     /// Get keysets for this wallet's unit from the metadata cache
     ///
     /// Checks the metadata cache for keysets. If cache is not populated,
-    /// fetches from mint and updates cache. When `only_active` is true,
-    /// returns only active keysets; when false, returns all keysets
-    /// (e.g. for restore, which needs to scan rotated keysets).
+    /// fetches from mint and updates cache. Use [`KeysetFilter::Active`] for
+    /// operations that need current keysets, or [`KeysetFilter::All`] to
+    /// include rotated keysets (e.g. for restore).
     #[instrument(skip(self))]
     #[inline(always)]
-    pub async fn get_mint_keysets(&self, only_active: bool) -> Result<Vec<KeySetInfo>, Error> {
+    pub async fn get_mint_keysets(
+        &self,
+        filter: KeysetFilter,
+    ) -> Result<Vec<KeySetInfo>, Error> {
         let keysets = self
             .metadata_cache
             .load(&self.localstore, &self.client, {
@@ -51,7 +63,12 @@ impl Wallet {
             .keysets
             .values()
             .filter_map(|keyset| {
-                if keyset.unit == self.unit && (!only_active || keyset.active) {
+                let dominated = keyset.unit == self.unit;
+                let dominated = match filter {
+                    KeysetFilter::Active => dominated && keyset.active,
+                    KeysetFilter::All => dominated,
+                };
+                if dominated {
                     Some((*keyset.clone()).clone())
                 } else {
                     None
@@ -104,7 +121,7 @@ impl Wallet {
     /// keyset information for operations.
     #[instrument(skip(self))]
     pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Error> {
-        self.get_mint_keysets(true)
+        self.get_mint_keysets(KeysetFilter::Active)
             .await?
             .active()
             .min_by_key(|k| k.input_fee_ppk)

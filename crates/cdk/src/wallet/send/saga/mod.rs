@@ -82,6 +82,7 @@ use crate::wallet::saga::{
     RevertProofReservation,
 };
 use crate::wallet::SendKind;
+use crate::wallet::keysets::KeysetFilter;
 use crate::{Amount, Error, Wallet};
 
 pub(crate) mod resume;
@@ -173,7 +174,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         let active_keyset_ids = self
             .wallet
-            .get_mint_keysets(true)
+            .get_mint_keysets(KeysetFilter::Active)
             .await?
             .active()
             .map(|k| k.id)

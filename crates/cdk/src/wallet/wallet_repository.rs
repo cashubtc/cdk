@@ -20,6 +20,7 @@ use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
+use crate::wallet::keysets::KeysetFilter;
 use crate::Wallet;
 
 /// Data extracted from a token
@@ -737,7 +738,7 @@ impl WalletRepository {
 
         // Get the keysets for this mint using the token's unit
         let wallet = self.get_wallet(&mint_url, &unit).await?;
-        let keysets = wallet.get_mint_keysets(true).await?;
+        let keysets = wallet.get_mint_keysets(KeysetFilter::Active).await?;
         // Extract proofs using the keysets
         let proofs = token.proofs(&keysets)?;
 

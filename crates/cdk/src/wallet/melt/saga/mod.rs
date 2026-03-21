@@ -51,6 +51,7 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, State};
 use crate::util::unix_time;
 use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
+use crate::wallet::keysets::KeysetFilter;
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
 pub(crate) mod compensation;
@@ -283,7 +284,7 @@ impl<'a> MeltSaga<'a, Initial> {
 
         let active_keyset_ids = self
             .wallet
-            .get_mint_keysets(true)
+            .get_mint_keysets(KeysetFilter::Active)
             .await?
             .into_iter()
             .map(|k| k.id)
