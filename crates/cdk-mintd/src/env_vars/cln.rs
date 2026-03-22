@@ -10,6 +10,7 @@ pub const ENV_CLN_RPC_PATH: &str = "CDK_MINTD_CLN_RPC_PATH";
 pub const ENV_CLN_BOLT12: &str = "CDK_MINTD_CLN_BOLT12";
 pub const ENV_CLN_FEE_PERCENT: &str = "CDK_MINTD_CLN_FEE_PERCENT";
 pub const ENV_CLN_RESERVE_FEE_MIN: &str = "CDK_MINTD_CLN_RESERVE_FEE_MIN";
+pub const ENV_CLN_EXPOSE_PRIVATE_CHANNELS: &str = "CDK_MINTD_CLN_EXPOSE_PRIVATE_CHANNELS";
 
 impl Cln {
     pub fn from_env(mut self) -> Self {
@@ -22,6 +23,13 @@ impl Cln {
         if let Ok(bolt12_str) = env::var(ENV_CLN_BOLT12) {
             if let Ok(bolt12) = bolt12_str.parse() {
                 self.bolt12 = bolt12;
+            }
+        }
+
+        // Expose private channels
+        if let Ok(expose_str) = env::var(ENV_CLN_EXPOSE_PRIVATE_CHANNELS) {
+            if let Ok(expose) = expose_str.parse() {
+                self.expose_private_channels = expose;
             }
         }
 
