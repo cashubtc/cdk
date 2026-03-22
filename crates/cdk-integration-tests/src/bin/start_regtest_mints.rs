@@ -78,6 +78,7 @@ async fn start_cln_mint(
     let cln_config = cdk_mintd::config::Cln {
         rpc_path: cln_rpc_path,
         bolt12: false,
+        expose_private_channels: false,
         fee_percent: 0.0,
         reserve_fee_min: 0.into(),
     };
