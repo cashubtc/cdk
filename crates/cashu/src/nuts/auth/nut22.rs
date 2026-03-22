@@ -2,10 +2,9 @@
 
 use std::fmt;
 
-use bitcoin::base64::alphabet;
 use bitcoin::base64::engine::general_purpose::{self, GeneralPurposeConfig};
 use bitcoin::base64::engine::GeneralPurpose;
-use bitcoin::base64::Engine;
+use bitcoin::base64::{alphabet, Engine};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
