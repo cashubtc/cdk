@@ -588,16 +588,18 @@ impl Wallet {
 
         let sagas = self.localstore.get_incomplete_sagas().await?;
 
-        // Filter to only melt sagas in states that need checking
+        // Filter to only melt sagas for this wallet in states that need checking
         let melt_sagas: Vec<_> = sagas
             .into_iter()
             .filter(|s| {
-                matches!(
-                    &s.state,
-                    WalletSagaState::Melt(
-                        MeltSagaState::MeltRequested | MeltSagaState::PaymentPending
+                s.mint_url == self.mint_url
+                    && s.unit == self.unit
+                    && matches!(
+                        &s.state,
+                        WalletSagaState::Melt(
+                            MeltSagaState::MeltRequested | MeltSagaState::PaymentPending
+                        )
                     )
-                )
             })
             .collect();
 
@@ -761,8 +763,9 @@ impl Wallet {
         Ok(quotes
             .into_iter()
             .filter(|q| {
-                q.state == MeltQuoteState::Pending
-                    || (q.state == MeltQuoteState::Unpaid && q.expiry > unix_time())
+                q.unit == self.unit
+                    && (q.state == MeltQuoteState::Pending
+                        || (q.state == MeltQuoteState::Unpaid && q.expiry > unix_time()))
             })
             .collect())
     }
@@ -772,7 +775,7 @@ impl Wallet {
         let quotes = self.localstore.get_melt_quotes().await?;
         Ok(quotes
             .into_iter()
-            .filter(|q| q.state == MeltQuoteState::Pending)
+            .filter(|q| q.unit == self.unit && q.state == MeltQuoteState::Pending)
             .collect())
     }
 
