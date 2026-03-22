@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
@@ -31,7 +32,7 @@ pub async fn get_or_create_wallet(
     wallet_repository: &WalletRepository,
     mint_url: &MintUrl,
     unit: &CurrencyUnit,
-) -> Result<cdk::wallet::Wallet> {
+) -> Result<Arc<cdk::wallet::Wallet>> {
     match wallet_repository.get_wallet(mint_url, unit).await {
         Ok(wallet) => Ok(wallet),
         Err(_) => wallet_repository
