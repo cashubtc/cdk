@@ -28,9 +28,11 @@ pub async fn update_long_description(
     sub_command_args: &UpdateLongDescriptionCommand,
 ) -> Result<()> {
     let _response = client
-        .update_long_description(Request::new(UpdateDescriptionRequest {
-            description: sub_command_args.description.clone(),
-        }))
+        .update_long_description(super::with_version_header(Request::new(
+            UpdateDescriptionRequest {
+                description: sub_command_args.description.clone(),
+            },
+        )))
         .await?;
 
     Ok(())
