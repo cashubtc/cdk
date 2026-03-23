@@ -310,6 +310,483 @@ pub(crate) async fn post_restore(
 }
 
 #[cfg(feature = "info-page")]
+const CSS: &str = r#"
+:root {
+  --bg: #000;
+  --surface: #0e0e0e;
+  --surface-2: #191919;
+  --border: rgba(255,255,255,0.08);
+  --border-section: rgba(255,255,255,0.06);
+  --text-primary: #fff;
+  --text-secondary: rgba(255,255,255,0.72);
+  --text-muted: rgba(255,255,255,0.45);
+  --text-faint: rgba(255,255,255,0.28);
+  --green: #00d632;
+  --green-soft: rgba(0, 214, 50, 0.1);
+  --green-glow: rgba(0, 214, 50, 0.06);
+  --red: #ff5555;
+  --red-soft: rgba(255, 68, 68, 0.1);
+  --yellow: #ffb800;
+  --yellow-soft: rgba(255, 184, 0, 0.1);
+  --radius: 16px;
+  --radius-sm: 12px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: 'Outfit', -apple-system, sans-serif;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 0 20px 100px;
+}
+
+/* ── Topbar ── */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0;
+  position: sticky;
+  top: 0;
+  background: rgba(0,0,0,0.88);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  z-index: 10;
+}
+
+.cashu-wordmark {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green);
+  background: var(--green-soft);
+  padding: 5px 11px;
+  border-radius: 20px;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--green);
+  border-radius: 50%;
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* ── Hero ── */
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 0 16px;
+  position: relative;
+}
+
+.hero::before {
+  content: '';
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 180px;
+  height: 180px;
+  background: radial-gradient(circle, var(--green-glow) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.avatar-ring {
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  padding: 2.5px;
+  background: linear-gradient(135deg, var(--green) 0%, rgba(0,214,50,0.15) 100%);
+  margin-bottom: 20px;
+  position: relative;
+  z-index: 1;
+}
+
+.avatar {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--surface-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  font-weight: 700;
+  color: var(--green);
+  overflow: hidden;
+}
+
+.avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+.mint-name {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  text-align: center;
+  line-height: 1.15;
+  margin-bottom: 8px;
+}
+
+.mint-desc {
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  text-align: center;
+  line-height: 1.5;
+  max-width: 380px;
+}
+
+.mint-desc-long {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+  max-width: 380px;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+.version-chip {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--surface);
+  padding: 5px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  margin-top: 14px;
+}
+
+/* ── MOTD ── */
+.motd {
+  background: var(--yellow-soft);
+  border: 1px solid rgba(255,184,0,0.12);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  margin: 24px 0 0;
+}
+
+.motd-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--yellow);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 4px;
+}
+
+.motd-text {
+  font-size: 14px;
+  color: rgba(255,255,255,0.85);
+  line-height: 1.5;
+}
+
+/* ── Disabled banners ── */
+.disabled-banner {
+  background: var(--red-soft);
+  border: 1px solid rgba(255,68,68,0.12);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  margin-top: 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--red);
+  text-align: center;
+}
+
+/* ── URL section ── */
+.url-section { margin-top: 28px; }
+
+.url-bar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.url-text {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.extra-urls { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+
+.extra-url {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.extra-url .url-text { font-size: 11px; }
+
+.url-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  flex-shrink: 0;
+}
+
+/* ── Detail card ── */
+.detail-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-top: 28px;
+  overflow: hidden;
+}
+
+.card-section-header {
+  padding: 18px 20px 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.card-section-header.has-rule {
+  border-top: 1px solid var(--border-section);
+  margin-top: 16px;
+  padding-top: 18px;
+}
+
+.detail-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 7px 20px;
+  gap: 16px;
+}
+
+.detail-row:first-child,
+.card-section-header + .detail-row {
+  padding-top: 12px;
+}
+
+.detail-row:last-child,
+.detail-row + .card-divider {
+  padding-bottom: 4px;
+}
+
+.detail-row.row-last {
+  padding-bottom: 16px;
+}
+
+.detail-label {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.detail-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: right;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.detail-value-mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* Tags */
+.tag {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  padding: 4px 11px;
+  border-radius: 20px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  display: inline-block;
+  text-transform: uppercase;
+}
+
+.tag-red {
+  background: var(--red-soft);
+  color: var(--red);
+  border-color: rgba(255,68,68,0.12);
+}
+
+/* ── Features grid ── */
+.features-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  margin: 0;
+}
+
+.feature {
+  padding: 12px 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border-bottom: 1px solid var(--border-section);
+  border-right: 1px solid var(--border-section);
+}
+
+.feature:nth-child(2n) { border-right: none; }
+.feature:nth-last-child(-n+2) { border-bottom: none; }
+.feature:last-child:nth-child(odd) { border-right: none; }
+
+.feature-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--green-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.feature-dot svg { width: 10px; height: 10px; }
+
+.feature-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+
+/* ── Contact ── */
+.contact-chips { display: flex; gap: 8px; flex-wrap: wrap; padding: 4px 20px 18px; }
+
+.contact-chip {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-primary);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 4px 11px;
+  border-radius: 20px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.contact-chip svg { width: 12px; height: 12px; opacity: 0.5; }
+
+/* ── Pubkey row ── */
+.pubkey-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px 18px;
+}
+
+.pubkey-mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Info tip ── */
+.info-tip {
+  margin-top: 28px;
+  padding: 18px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.info-tip-icon {
+  width: 18px; height: 18px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.info-tip-text {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.info-tip-text a {
+  color: var(--text-primary);
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px solid var(--text-faint);
+}
+
+/* ── Footer ── */
+.footer {
+  text-align: center;
+  padding: 36px 0 20px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.footer a {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+"#;
+
+#[cfg(feature = "info-page")]
 /// Get the index page
 #[instrument(skip_all)]
 pub(crate) async fn get_index(
@@ -320,14 +797,12 @@ pub(crate) async fn get_index(
     let mint_info = state.mint.mint_info().await.map_err(into_response)?;
 
     let name = mint_info.name.clone().unwrap_or("CDK Mint".to_string());
-    let description = mint_info.description.clone().unwrap_or_default();
+    let description = mint_info.description.clone();
     let long_description = mint_info.description_long.clone();
     let motd = mint_info.motd.clone();
     let pubkey = mint_info.pubkey.map(|p| p.to_hex());
     let version = mint_info.version.as_ref().map(|v| v.to_string());
-    let time = mint_info.time;
     let contact = mint_info.contact.clone().unwrap_or_default();
-    let tos_url = mint_info.tos_url.clone();
     let icon_url = mint_info.icon_url.clone();
     let urls = mint_info.urls.clone().unwrap_or_default();
     let units: Vec<String> = mint_info
@@ -358,55 +833,93 @@ pub(crate) async fn get_index(
         .collect();
     melt_methods.sort();
 
-    let mut supported_nuts = Vec::new();
-    if !mint_info.nuts.nut04.disabled {
-        supported_nuts.push(4);
-    }
-    if !mint_info.nuts.nut05.disabled {
-        supported_nuts.push(5);
-    }
+    let minting_disabled = mint_info.nuts.nut04.disabled;
+    let melting_disabled = mint_info.nuts.nut05.disabled;
+
+    // Collect mint limits from nut04 methods (deduplicated)
+    let mint_limits: std::collections::BTreeSet<String> = mint_info
+        .nuts
+        .nut04
+        .methods
+        .iter()
+        .filter(|m| m.min_amount.is_some() || m.max_amount.is_some())
+        .map(|m| {
+            let parts: Vec<String> = [m.min_amount.as_ref(), m.max_amount.as_ref()]
+                .iter()
+                .filter_map(|a| a.map(|v| v.to_string()))
+                .collect();
+            format!("{} {}", parts.join(" – "), m.unit)
+        })
+        .collect();
+
+    // Collect melt limits from nut05 methods (deduplicated)
+    let melt_limits: std::collections::BTreeSet<String> = mint_info
+        .nuts
+        .nut05
+        .methods
+        .iter()
+        .filter(|m| m.min_amount.is_some() || m.max_amount.is_some())
+        .map(|m| {
+            let parts: Vec<String> = [m.min_amount.as_ref(), m.max_amount.as_ref()]
+                .iter()
+                .filter_map(|a| a.map(|v| v.to_string()))
+                .collect();
+            format!("{} {}", parts.join(" – "), m.unit)
+        })
+        .collect();
+
+    // Build supported features list (NUT-7+)
+    let mut supported_features: Vec<(u32, &str)> = Vec::new();
     if mint_info.nuts.nut07.supported {
-        supported_nuts.push(7);
+        supported_features.push((7, "Token state check"));
     }
     if mint_info.nuts.nut08.supported {
-        supported_nuts.push(8);
+        supported_features.push((8, "Lightning fee returns"));
     }
     if mint_info.nuts.nut09.supported {
-        supported_nuts.push(9);
+        supported_features.push((9, "Signature restore"));
     }
     if mint_info.nuts.nut10.supported {
-        supported_nuts.push(10);
+        supported_features.push((10, "Spending conditions"));
     }
     if mint_info.nuts.nut11.supported {
-        supported_nuts.push(11);
+        supported_features.push((11, "Pay-to-Pubkey"));
     }
     if mint_info.nuts.nut12.supported {
-        supported_nuts.push(12);
+        supported_features.push((12, "DLEQ proofs"));
     }
     if mint_info.nuts.nut14.supported {
-        supported_nuts.push(14);
+        supported_features.push((14, "HTLCs"));
     }
     if !mint_info.nuts.nut15.methods.is_empty() {
-        supported_nuts.push(15);
+        supported_features.push((15, "Multi-path payments"));
     }
     if !mint_info.nuts.nut17.supported.is_empty() {
-        supported_nuts.push(17);
+        supported_features.push((17, "WebSocket subscriptions"));
     }
     if !mint_info.nuts.nut19.cached_endpoints.is_empty() {
-        supported_nuts.push(19);
+        supported_features.push((19, "Cached responses"));
     }
     if mint_info.nuts.nut20.supported {
-        supported_nuts.push(20);
+        supported_features.push((20, "Signed mint quotes"));
     }
     if mint_info.nuts.nut21.is_some() {
-        supported_nuts.push(21);
+        supported_features.push((21, "Clear auth"));
     }
     if mint_info.nuts.nut22.is_some() {
-        supported_nuts.push(22);
+        supported_features.push((22, "Blind auth"));
     }
     if !mint_info.nuts.nut29.is_empty() {
-        supported_nuts.push(29);
+        supported_features.push((29, "Batched minting"));
     }
+
+    // Avatar fallback letter
+    let avatar_letter = name
+        .chars()
+        .next()
+        .unwrap_or('M')
+        .to_uppercase()
+        .to_string();
 
     let markup = html! {
         (maud::DOCTYPE)
@@ -415,558 +928,224 @@ pub(crate) async fn get_index(
                 title { (name) }
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                style {
-                    "
-                    :root {
-                        /* Light mode (default) */
-                        --background: 0 0% 100%;
-                        --foreground: 222.2 84% 4.9%;
-                        --card: 0 0% 100%;
-                        --card-foreground: 222.2 84% 4.9%;
-                        --popover: 0 0% 100%;
-                        --popover-foreground: 222.2 84% 4.9%;
-                        --primary: 222.2 47.4% 11.2%;
-                        --primary-foreground: 210 40% 98%;
-                        --secondary: 210 40% 96%;
-                        --secondary-foreground: 222.2 84% 4.9%;
-                        --muted: 210 40% 96%;
-                        --muted-foreground: 215.4 16.3% 46.9%;
-                        --accent: 210 40% 96%;
-                        --accent-foreground: 222.2 84% 4.9%;
-                        --destructive: 0 84.2% 60.2%;
-                        --destructive-foreground: 210 40% 98%;
-                        --border: 214.3 31.8% 91.4%;
-                        --input: 214.3 31.8% 91.4%;
-                        --ring: 222.2 84% 4.9%;
-                        --radius: 0;
-
-                        /* Typography scale */
-                        --fs-title: 1.25rem;
-                        --fs-label: 0.8125rem;
-                        --fs-value: 1.625rem;
-
-                        /* Line heights */
-                        --lh-tight: 1.15;
-                        --lh-normal: 1.4;
-
-                        /* Font weights */
-                        --fw-medium: 500;
-                        --fw-semibold: 600;
-                        --fw-bold: 700;
-
-                        /* Colors */
-                        --fg-primary: #0f172a;
-                        --fg-muted: #6b7280;
-
-                        /* Header text colors for light mode */
-                        --header-title: #000000;
-                        --header-subtitle: #333333;
-                    }
-
-                    @media (prefers-color-scheme: dark) {
-                        body {
-                            background: linear-gradient(rgb(23, 25, 29), rgb(18, 19, 21));
-                        }
-
-                        :root {
-                            --background: 0 0% 0%;
-                            --foreground: 0 0% 100%;
-                            --card: 0 0% 0%;
-                            --card-foreground: 0 0% 100%;
-                            --popover: 0 0% 0%;
-                            --popover-foreground: 0 0% 100%;
-                            --primary: 0 0% 100%;
-                            --primary-foreground: 0 0% 0%;
-                            --secondary: 0 0% 20%;
-                            --secondary-foreground: 0 0% 100%;
-                            --muted: 0 0% 20%;
-                            --muted-foreground: 0 0% 70%;
-                            --accent: 0 0% 20%;
-                            --accent-foreground: 0 0% 100%;
-                            --destructive: 0 62.8% 30.6%;
-                            --destructive-foreground: 0 0% 100%;
-                            --border: 0 0% 20%;
-                            --input: 0 0% 20%;
-                            --ring: 0 0% 83.9%;
-
-                            /* Dark mode text hierarchy colors */
-                            --text-primary: #ffffff;
-                            --text-secondary: #e6e6e6;
-                            --text-tertiary: #cccccc;
-                            --text-quaternary: #b3b3b3;
-                            --text-muted: #999999;
-                            --text-muted-2: #888888;
-                            --text-muted-3: #666666;
-                            --text-muted-4: #333333;
-                            --text-subtle: #1a1a1a;
-
-                            /* Header text colors for dark mode */
-                            --header-title: #ffffff;
-                            --header-subtitle: #e6e6e6;
-                        }
-
-                        .card {
-                            background-color: rgba(255, 255, 255, 0.03) !important;
-                            border: none !important;
-                        }
-
-                        .card h2 {
-                            border-bottom-color: rgba(255, 255, 255, 0.1) !important;
-                        }
-
-                        .unit-badge {
-                            background-color: rgba(255, 255, 255, 0.08) !important;
-                            color: var(--text-secondary) !important;
-                        }
-
-                        .motd {
-                            background-color: rgba(255, 255, 255, 0.05) !important;
-                            border-left-color: var(--text-primary) !important;
-                        }
-
-                        .info-item {
-                            border-bottom-color: rgba(255, 255, 255, 0.1) !important;
-                        }
-
-                        .footer {
-                            border-top-color: rgba(255, 255, 255, 0.1) !important;
-                        }
-
-                        h1, h2, h3, h4, h5, h6 {
-                            color: var(--text-primary) !important;
-                        }
-                    }
-
-                    * {
-                        box-sizing: border-box;
-                        margin: 0;
-                        padding: 0;
-                    }
-
-                    body {
-                        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-                        font-size: 14px;
-                        line-height: 1.5;
-                        color: hsl(var(--foreground));
-                        background-color: hsl(var(--background));
-                        -webkit-font-smoothing: antialiased;
-                        -moz-osx-font-smoothing: grayscale;
-                        text-rendering: geometricPrecision;
-                        min-height: 100vh;
-                    }
-
-                    .container {
-                        max-width: 1200px;
-                        margin: 0 auto;
-                        padding: 0 1rem;
-                    }
-
-                    @media (min-width: 640px) {
-                        .container {
-                            padding: 0 2rem;
-                        }
-                    }
-
-                    header {
-                        position: relative;
-                        background-color: hsl(var(--background));
-                        background-image:
-                            linear-gradient(hsl(var(--border)) 1px, transparent 1px),
-                            linear-gradient(90deg, hsl(var(--border)) 1px, transparent 1px);
-                        background-size: 40px 40px;
-                        background-position: -1px -1px;
-                        border-bottom: 1px solid hsl(var(--border));
-                        margin-bottom: 2rem;
-                        width: 100%;
-                        height: 200px;
-                        display: flex;
-                        align-items: center;
-                    }
-
-                    header::before {
-                        content: '';
-                        position: absolute;
-                        top: 0;
-                        left: 0;
-                        right: 0;
-                        bottom: 0;
-                        background:
-                            linear-gradient(90deg, hsl(var(--background)) 0%, transparent 15%, transparent 85%, hsl(var(--background)) 100%),
-                            linear-gradient(180deg, hsl(var(--background)) 0%, transparent 15%, transparent 85%, hsl(var(--background)) 100%);
-                        pointer-events: none;
-                        z-index: 1;
-                    }
-
-                    @media (prefers-color-scheme: dark) {
-                        header {
-                            background-color: rgb(18, 19, 21);
-                            background-image:
-                                linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-                                linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-                        }
-
-                        header::before {
-                            background:
-                                linear-gradient(90deg, rgb(18, 19, 21) 0%, transparent 15%, transparent 85%, rgb(18, 19, 21) 100%),
-                                linear-gradient(180deg, rgb(18, 19, 21) 0%, transparent 15%, transparent 85%, rgb(18, 19, 21) 100%);
-                        }
-                    }
-
-                    header .container {
-                        position: relative;
-                        z-index: 2;
-                        width: 100%;
-                        display: flex;
-                        align-items: center;
-                        gap: 2rem;
-                    }
-
-                    .header-avatar {
-                        flex-shrink: 0;
-                        background-color: hsl(var(--muted) / 0.3);
-                        border: 1px solid hsl(var(--border));
-                        border-radius: 0;
-                        padding: 0.75rem;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        width: 80px;
-                        height: 80px;
-                    }
-
-                    .header-avatar-image {
-                        width: 48px;
-                        height: 48px;
-                        object-fit: cover;
-                        display: block;
-                    }
-
-                    .node-info {
-                        display: flex;
-                        flex-direction: column;
-                        gap: 0.25rem;
-                    }
-
-                    .node-title {
-                        font-size: 1.875rem;
-                        font-weight: 600;
-                        color: var(--header-title);
-                        margin: 0;
-                        line-height: 1.1;
-                    }
-
-                    .node-subtitle {
-                        font-size: 0.75rem;
-                        color: var(--fg-muted);
-                        font-weight: 500;
-                        letter-spacing: 0.05em;
-                        text-transform: uppercase;
-                    }
-
-                    .card {
-                        position: relative;
-                        background-color: hsl(var(--card));
-                        border: 1px solid hsl(var(--border));
-                        border-radius: 0;
-                        padding: 1.5rem;
-                        margin-bottom: 1.5rem;
-                    }
-
-                    .card::before,
-                    .card::after {
-                        content: '';
-                        position: absolute;
-                        width: 16px;
-                        height: 16px;
-                        border: 1px solid hsl(var(--border));
-                    }
-
-                    .card::before {
-                        top: -1px;
-                        left: -1px;
-                        border-right: none;
-                        border-bottom: none;
-                    }
-
-                    .card::after {
-                        bottom: -1px;
-                        right: -1px;
-                        border-left: none;
-                        border-top: none;
-                    }
-
-                    @media (prefers-color-scheme: dark) {
-                        .card::before,
-                        .card::after {
-                            border-color: rgba(255, 255, 255, 0.2);
-                        }
-                    }
-
-                    .card h2 {
-                        font-size: 0.875rem;
-                        font-weight: 600;
-                        text-transform: uppercase;
-                        letter-spacing: 0.05em;
-                        margin-bottom: 1.5rem;
-                        padding-bottom: 1rem;
-                        border-bottom: 1px solid hsl(var(--border));
-                        opacity: 0.5;
-                    }
-
-                    .info-grid {
-                        display: grid;
-                        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-                        gap: 1.5rem;
-                    }
-
-                    .info-item {
-                        display: flex;
-                        flex-direction: column;
-                        gap: 0.5rem;
-                        padding: 1rem 0;
-                        border-bottom: 1px solid hsl(var(--border));
-                    }
-
-                    .info-item:last-child {
-                        border-bottom: none;
-                    }
-
-                    .label {
-                        font-size: var(--fs-label);
-                        font-weight: var(--fw-medium);
-                        color: var(--fg-muted);
-                        text-transform: uppercase;
-                        letter-spacing: 0.02em;
-                    }
-
-                    .value {
-                        font-size: 0.875rem;
-                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
-                        word-break: break-all;
-                    }
-
-                    .unit-badge {
-                        display: inline-block;
-                        background: hsl(var(--muted));
-                        padding: 0.25rem 0.75rem;
-                        font-size: 0.75rem;
-                        font-weight: 600;
-                        margin-right: 0.5rem;
-                        margin-bottom: 0.5rem;
-                        color: hsl(var(--foreground));
-                        text-decoration: none;
-                    }
-
-                    .motd {
-                        background: hsl(var(--muted) / 0.5);
-                        border-left: 4px solid hsl(var(--primary));
-                        padding: 1.25rem;
-                        margin-bottom: 2rem;
-                        font-style: italic;
-                    }
-
-                    .footer {
-                        margin-top: 4rem;
-                        padding: 2rem 0;
-                        border-top: 1px solid hsl(var(--border));
-                        text-align: center;
-                        font-size: 0.875rem;
-                        color: var(--fg-muted);
-                    }
-
-                    a {
-                        color: inherit;
-                        text-decoration: underline;
-                        text-underline-offset: 2px;
-                    }
-
-                    a:hover {
-                        opacity: 0.8;
-                    }
-
-                    ul {
-                        list-style: none;
-                    }
-
-                    @media (max-width: 768px) {
-                        header .container {
-                            flex-direction: column;
-                            text-align: center;
-                            justify-content: center;
-                            gap: 1rem;
-                        }
-                        .header-avatar {
-                            width: 64px;
-                            height: 64px;
-                        }
-                    }
-                    "
-                }
+                link rel="preconnect" href="https://fonts.googleapis.com";
+                link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet";
+                style { (maud::PreEscaped(CSS)) }
             }
             body {
-                header {
-                    div class="container" {
-                        @if let Some(url) = icon_url {
-                            div class="header-avatar" {
-                                img class="header-avatar-image" src=(url) alt=(name);
-                            }
-                        }
-                        div class="node-info" {
-                            p class="node-subtitle" { "Cashu Mint" }
-                            h1 class="node-title" { (name) }
-                            @if !description.is_empty() {
-                                p style="margin-top: 0.5rem; opacity: 0.7;" { (description) }
-                            }
+                div class="page" {
+
+                    // Topbar
+                    div class="topbar" {
+                        span class="cashu-wordmark" { "Cashu Mint" }
+                        span class="status-badge" {
+                            span class="status-dot" {}
+                            " Online"
                         }
                     }
-                }
 
-                main class="container" {
-                    @if let Some(m) = motd {
+                    // Hero
+                    div class="hero" {
+                        div class="avatar-ring" {
+                            div class="avatar" {
+                                @if let Some(ref url) = icon_url {
+                                    img src=(url) alt=(name);
+                                } @else {
+                                    (avatar_letter)
+                                }
+                            }
+                        }
+                        div class="mint-name" { (name) }
+                        @if let Some(ref desc) = description {
+                            div class="mint-desc" { (desc) }
+                        }
+                        @if let Some(ref long) = long_description {
+                            div class="mint-desc-long" { (long) }
+                        }
+                        @if let Some(ref v) = version {
+                            div class="version-chip" { (v) }
+                        }
+                    }
+
+                    // MOTD
+                    @if let Some(ref m) = motd {
                         div class="motd" {
-                            span style="font-weight: bold; margin-right: 0.5rem; font-style: normal;" { "📢" }
-                            (m)
+                            div class="motd-label" { "Mint notice" }
+                            div class="motd-text" { (m) }
                         }
                     }
 
-                    @if let Some(long) = long_description {
-                        div class="card" {
-                            h2 { "About" }
-                            p { (long) }
-                        }
+                    // Disabled banners
+                    @if minting_disabled {
+                        div class="disabled-banner" { "Minting is currently disabled" }
+                    }
+                    @if melting_disabled {
+                        div class="disabled-banner" { "Melting is currently disabled" }
                     }
 
-                    div class="card" {
-                        h2 { "Connect" }
-                        p {
-                            "To use this mint, copy one of the Mint URLs listed below and add it to a Cashu-compatible wallet such as "
-                            a href="https://cashu.me" target="_blank" { "Cashu.me" }
-                            ", "
-                            a href="https://macadamia.cash/" target="_blank" { "Macadamia" }
-                            ", or "
-                            a href="https://minibits.cash/" target="_blank" { "Minibits" }
-                            "."
-                        }
-                    }
-
-                    div class="card" {
-                        h2 { "Mint Details" }
-                        div class="info-grid" {
-                            @if let Some(pk) = pubkey {
-                                div class="info-item" {
-                                    span class="label" { "Public Key" }
-                                    span class="value" { (pk) }
-                                }
+                    // URL section
+                    @if !urls.is_empty() {
+                        div class="url-section" {
+                            div class="url-bar" {
+                                span class="url-text" { (urls[0]) }
                             }
-                            @if !urls.is_empty() {
-                                div class="info-item" {
-                                    span class="label" { "Mint URLs" }
-                                    div class="value" {
-                                        @for url in urls {
-                                            div { (url) }
-                                        }
-                                    }
-                                }
-                            }
-                            @if let Some(v) = version {
-                                div class="info-item" {
-                                    span class="label" { "Version" }
-                                    span class="value" { (v) }
-                                }
-                            }
-                            @if let Some(t) = time {
-                                div class="info-item" {
-                                    span class="label" { "Server Time" }
-                                    span class="value" { (t) }
-                                }
-                            }
-                            @if !units.is_empty() {
-                                div class="info-item" {
-                                    span class="label" { "Supported Units" }
-                                    div {
-                                        @for unit in units {
-                                            span class="unit-badge" { (unit) }
-                                        }
-                                    }
-                                }
-                            }
-                            @if !mint_methods.is_empty() {
-                                div class="info-item" {
-                                    span class="label" { "Minting Methods" }
-                                    div {
-                                        @for method in mint_methods {
-                                            span class="unit-badge" { (method) }
-                                        }
-                                    }
-                                }
-                            }
-                            @if !melt_methods.is_empty() {
-                                div class="info-item" {
-                                    span class="label" { "Melting Methods" }
-                                    div {
-                                        @for method in melt_methods {
-                                            span class="unit-badge" { (method) }
-                                        }
-                                    }
-                                }
-                            }
-                            @if !supported_nuts.is_empty() {
-                                div class="info-item" {
-                                    span class="label" { "Supported NUTs" }
-                                    div {
-                                        @for nut in supported_nuts {
-                                            a class="unit-badge" href=(format!("https://github.com/cashubtc/nuts/blob/main/{:02}.md", nut)) target="_blank" { "NUT-" (nut) }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    @if !contact.is_empty() || tos_url.is_some() {
-                        div class="card" {
-                            h2 { "Contact & Support" }
-                            div class="info-grid" {
-                                @if !contact.is_empty() {
-                                    div class="info-item" {
-                                        span class="label" { "Contact" }
-                                        ul {
-                                            @for c in contact {
-                                                li {
-                                                    span style="font-weight: 600;" { (c.method) ": " }
-                                                    @if c.method.to_lowercase() == "nostr" {
-                                                        a href=(format!("nostr:{}", c.info)) { (c.info) }
-                                                    } @else if c.method.to_lowercase() == "email" {
-                                                        a href=(format!("mailto:{}", c.info)) { (c.info) }
-                                                    } @else {
-                                                        (c.info)
-                                                    }
+                            @if urls.len() > 1 {
+                                div class="extra-urls" {
+                                    @for url in &urls[1..] {
+                                        div class="extra-url" {
+                                            span class="url-label" {
+                                                @if url.as_str().contains(".onion") {
+                                                    "TOR"
+                                                } @else {
+                                                    "ALT"
                                                 }
+                                            }
+                                            span class="url-text" { (url) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Unified detail card
+                    div class="detail-card" {
+
+                        // Mint details section
+                        div class="card-section-header" { "Mint details" }
+
+                        @if !units.is_empty() {
+                            div class="detail-row" style="padding-top:14px" {
+                                span class="detail-label" { "Units" }
+                                div class="detail-value" {
+                                    @for unit in &units {
+                                        span class="tag" { (unit) }
+                                    }
+                                }
+                            }
+                        }
+
+                        div class="detail-row" {
+                            span class="detail-label" { "Minting" }
+                            div class="detail-value" {
+                                @if minting_disabled {
+                                    span class="tag tag-red" { "disabled" }
+                                } @else {
+                                    @for method in &mint_methods {
+                                        span class="tag" { (method) }
+                                    }
+                                }
+                            }
+                        }
+
+                        div class="detail-row" {
+                            span class="detail-label" { "Melting" }
+                            div class="detail-value" {
+                                @if melting_disabled {
+                                    span class="tag tag-red" { "disabled" }
+                                } @else {
+                                    @for method in &melt_methods {
+                                        span class="tag" { (method) }
+                                    }
+                                }
+                            }
+                        }
+
+                        @if !mint_limits.is_empty() {
+                            div class="detail-row" {
+                                span class="detail-label" { "Mint limits" }
+                                span class="detail-value detail-value-mono" {
+                                    (mint_limits.iter().cloned().collect::<Vec<_>>().join(" · "))
+                                }
+                            }
+                        }
+
+                        @if !melt_limits.is_empty() {
+                            div class="detail-row row-last" {
+                                span class="detail-label" { "Melt limits" }
+                                span class="detail-value detail-value-mono" {
+                                    (melt_limits.iter().cloned().collect::<Vec<_>>().join(" · "))
+                                }
+                            }
+                        }
+
+                        // Supported features section
+                        @if !supported_features.is_empty() {
+                            div class="card-section-header has-rule" { "Supported features" }
+                            div style="padding-top:12px" {
+                                div class="features-grid" {
+                                    @for (_nut_num, feature_name) in &supported_features {
+                                        div class="feature" {
+                                            div class="feature-dot" {
+                                                (maud::PreEscaped(r#"<svg viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>"#))
+                                            }
+                                            span class="feature-name" { (feature_name) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Contact section
+                        @if !contact.is_empty() {
+                            div class="card-section-header has-rule" { "Contact" }
+                            div style="padding-top:12px" {
+                                div class="contact-chips" {
+                                    @for c in &contact {
+                                        @if c.method.to_lowercase() == "email" {
+                                            a class="contact-chip" href=(format!("mailto:{}", c.info)) target="_blank" {
+                                                (maud::PreEscaped(r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="22,4 12,13 2,4"/></svg>"#))
+                                                (c.info)
+                                            }
+                                        } @else if c.method.to_lowercase() == "twitter" {
+                                            a class="contact-chip" href=(format!("https://x.com/{}", c.info.trim_start_matches('@'))) target="_blank" {
+                                                (maud::PreEscaped(r#"<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>"#))
+                                                (c.info)
+                                            }
+                                        } @else if c.method.to_lowercase() == "nostr" {
+                                            a class="contact-chip" href=(format!("https://njump.me/{}", c.info)) target="_blank" {
+                                                (maud::PreEscaped(r#"<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>"#))
+                                                (c.info)
+                                            }
+                                        } @else {
+                                            span class="contact-chip" {
+                                                (c.method) ": " (c.info)
                                             }
                                         }
                                     }
                                 }
-                                @if let Some(url) = tos_url {
-                                    div class="info-item" {
-                                        span class="label" { "Legal" }
-                                        a href=(url) { "Terms of Service" }
-                                    }
-                                }
+                            }
+                        }
+
+                        // Public key section
+                        @if let Some(ref pk) = pubkey {
+                            div class="card-section-header has-rule" { "Public key" }
+                            div class="pubkey-row" {
+                                span class="pubkey-mono" { (pk) }
                             }
                         }
                     }
-                }
 
-                footer class="container" {
+                    // Info tip
+                    div class="info-tip" {
+                        div class="info-tip-icon" {
+                            (maud::PreEscaped(r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>"#))
+                        }
+                        div class="info-tip-text" {
+                            "To use this mint, copy the mint URL above and add it to a Cashu-compatible wallet such as "
+                            a href="https://wallet.cashu.me" target="_blank" { "Cashu.me" }
+                            ", "
+                            a href="https://macadamia.cash" target="_blank" { "Macadamia" }
+                            ", or "
+                            a href="https://www.minibits.cash" target="_blank" { "Minibits" }
+                            "."
+                        }
+                    }
+
+                    // Footer
                     div class="footer" {
-                        p {
-                            "Powered by "
-                            a href="https://cashudevkit.org/" { "Cashu Development Kit (CDK)" }
-                        }
-                        p style="margin-top: 0.5rem;" {
-                            "Source code: "
-                            a href="https://github.com/cashubtc/cdk" { "GitHub" }
-                        }
+                        "Powered by "
+                        a href="https://github.com/cashubtc/cdk" target="_blank" { "Cashu Development Kit (CDK)" }
                     }
                 }
             }
