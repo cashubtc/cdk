@@ -372,21 +372,21 @@ async fn test_mint_with_auth() {
 async fn test_swap_with_auth() {
     let db = Arc::new(memory::empty().await.unwrap());
 
-    let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
-        .build()
-        .expect("Wallet");
+    let wallet = Arc::new(
+        WalletBuilder::new()
+            .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+            .unit(CurrencyUnit::Sat)
+            .localstore(db.clone())
+            .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+            .build()
+            .expect("Wallet"),
+    );
     let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
     let (access_token, _) = get_tokens(&mint_info, false)
         .await
         .expect("could not get access token");
 
     wallet.set_cat(access_token).await.unwrap();
-
-    let wallet = Arc::new(wallet);
 
     wallet.mint_blind_auth(10.into()).await.unwrap();
 
@@ -428,13 +428,15 @@ async fn test_swap_with_auth() {
 async fn test_melt_with_auth() {
     let db = Arc::new(memory::empty().await.unwrap());
 
-    let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
-        .build()
-        .expect("Wallet");
+    let wallet = Arc::new(
+        WalletBuilder::new()
+            .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+            .unit(CurrencyUnit::Sat)
+            .localstore(db.clone())
+            .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+            .build()
+            .expect("Wallet"),
+    );
 
     let mint_info = wallet
         .fetch_mint_info()
@@ -447,8 +449,6 @@ async fn test_melt_with_auth() {
         .expect("could not get access token");
 
     wallet.set_cat(access_token).await.unwrap();
-
-    let wallet = Arc::new(wallet);
 
     wallet.mint_blind_auth(10.into()).await.unwrap();
 
@@ -574,13 +574,15 @@ async fn test_reuse_auth_proof() {
 async fn test_melt_with_invalid_auth() {
     let db = Arc::new(memory::empty().await.unwrap());
 
-    let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
-        .build()
-        .expect("Wallet");
+    let wallet = Arc::new(
+        WalletBuilder::new()
+            .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+            .unit(CurrencyUnit::Sat)
+            .localstore(db.clone())
+            .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+            .build()
+            .expect("Wallet"),
+    );
     let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
 
     let (access_token, _) = get_tokens(&mint_info, false)
@@ -591,7 +593,7 @@ async fn test_melt_with_invalid_auth() {
 
     wallet.mint_blind_auth(10.into()).await.unwrap();
 
-    fund_wallet(Arc::new(wallet.clone()), 1.into()).await;
+    fund_wallet(wallet.clone(), 1.into()).await;
 
     let proofs = wallet
         .get_unspent_proofs()
