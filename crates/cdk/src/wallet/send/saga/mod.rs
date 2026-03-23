@@ -77,6 +77,7 @@ use super::{split_proofs_for_send, SendMemo, SendOptions};
 use crate::amount::SplitTarget;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{Proofs, State, Token};
+use crate::wallet::keysets::KeysetFilter;
 use crate::wallet::saga::{
     add_compensation, execute_compensations, new_compensations, Compensations,
     RevertProofReservation,
@@ -173,7 +174,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         let active_keyset_ids = self
             .wallet
-            .get_mint_keysets()
+            .get_mint_keysets(KeysetFilter::Active)
             .await?
             .active()
             .map(|k| k.id)

@@ -5,7 +5,7 @@ use bip39::Mnemonic;
 use cashu::{Bolt11Invoice, PaymentMethod, ProofsMethods};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{ReceiveOptions, SendKind, SendOptions, Wallet};
+use cdk::wallet::{KeysetFilter, ReceiveOptions, SendKind, SendOptions, Wallet};
 use cdk_integration_tests::init_regtest::get_temp_dir;
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
@@ -48,7 +48,10 @@ async fn test_swap() {
 
     println!("{:?}", proofs);
 
-    println!("{:?}", wallet.get_mint_keysets().await.unwrap());
+    println!(
+        "{:?}",
+        wallet.get_mint_keysets(KeysetFilter::Active).await.unwrap()
+    );
 
     let send = wallet
         .prepare_send(

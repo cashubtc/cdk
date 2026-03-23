@@ -16,6 +16,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bip39::Mnemonic;
 use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
 use cashu::mint_url::MintUrl;
@@ -27,7 +28,7 @@ use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::subscription::Params;
 use cdk::wallet::types::{TransactionDirection, TransactionId};
-use cdk::wallet::{ReceiveOptions, SendMemo, SendOptions};
+use cdk::wallet::{KeysetFilter, ReceiveOptions, SendMemo, SendOptions};
 use cdk::{Amount, StreamExt};
 use cdk_common::mint::OperationKind;
 use cdk_fake_wallet::create_fake_invoice;
@@ -81,7 +82,10 @@ async fn test_swap_to_send() {
         .confirm(Some(SendMemo::for_token("test_swapt_to_send")))
         .await
         .expect("Failed to send token");
-    let keysets_info = wallet_alice.get_mint_keysets().await.unwrap();
+    let keysets_info = wallet_alice
+        .get_mint_keysets(KeysetFilter::Active)
+        .await
+        .unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         Amount::from(40),
@@ -1395,7 +1399,7 @@ async fn test_p2pk_send_force_swap_with_fees() {
         .expect("confirm should succeed — swap should produce enough output");
 
     // Verify token contains exactly the requested amount
-    let keysets_info = wallet.get_mint_keysets().await.unwrap();
+    let keysets_info = wallet.get_mint_keysets(KeysetFilter::Active).await.unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         send_amount,
@@ -1474,7 +1478,10 @@ async fn test_p2pk_send_force_swap_with_fees_include_fee() {
         .expect("confirm should succeed");
 
     // Token should include amount + send_fee (so recipient can pay the redemption fee)
-    let keysets_info = wallet_sender.get_mint_keysets().await.unwrap();
+    let keysets_info = wallet_sender
+        .get_mint_keysets(KeysetFilter::Active)
+        .await
+        .unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         send_amount + send_fee,
@@ -1876,7 +1883,7 @@ async fn test_batch_mint_then_spend() {
         "Balance should decrease after send"
     );
 
-    let keysets_info = wallet.get_mint_keysets().await.unwrap();
+    let keysets_info = wallet.get_mint_keysets(KeysetFilter::Active).await.unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     let token_amount = token_proofs
         .total_amount()
@@ -2011,13 +2018,19 @@ async fn test_p2bk_send_and_receive() {
         .expect("Failed to confirm send");
 
     // Check if the proofs have p2pk_e
-    let keysets_info = wallet_sender.get_mint_keysets().await.unwrap();
+    let keysets_info = wallet_sender
+        .get_mint_keysets(KeysetFilter::Active)
+        .await
+        .unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     for proof in &token_proofs {
         assert!(proof.p2pk_e.is_some(), "Proof should have p2pk_e set");
     }
     // Check if the proofs have p2pk_e
-    let keysets_info = wallet_sender.get_mint_keysets().await.unwrap();
+    let keysets_info = wallet_sender
+        .get_mint_keysets(KeysetFilter::Active)
+        .await
+        .unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     for proof in &token_proofs {
         assert!(proof.p2pk_e.is_some(), "Proof should have p2pk_e set");
@@ -2111,4 +2124,69 @@ async fn test_p2bk_multi_key_receive() {
         .expect("Receiver should be able to redeem P2PK token with second key");
 
     assert_eq!(send_amount, received_amount);
+}
+
+/// Tests that wallet restore recovers proofs from both active and inactive (rotated) keysets
+///
+/// This test verifies the fix for #1752:
+/// 1. Creates a wallet and mints tokens under the initial keyset
+/// 2. Rotates the mint's keyset (making the original keyset inactive)
+/// 3. Mints more tokens under the new active keyset
+/// 4. Creates a new wallet with the same seed but empty storage
+/// 5. Restores and verifies that proofs from BOTH keysets are recovered
+#[tokio::test]
+async fn test_restore_after_keyset_rotation() {
+    setup_tracing();
+
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+
+    let wallet = create_test_wallet_for_mint_with_seed(mint.clone(), seed)
+        .await
+        .expect("Failed to create test wallet");
+
+    // Mint 100 sats under the initial keyset
+    let amount_before_rotation = 100;
+    fund_wallet(wallet.clone(), amount_before_rotation, None)
+        .await
+        .expect("Failed to fund wallet before rotation");
+
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(amount_before_rotation)
+    );
+
+    // Rotate the keyset — the original keyset becomes inactive
+    let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+    mint.rotate_keyset(CurrencyUnit::Sat, amounts, 0, true, None)
+        .await
+        .expect("Failed to rotate keyset");
+
+    // Mint 50 sats under the new active keyset
+    let amount_after_rotation = 50;
+    fund_wallet(wallet.clone(), amount_after_rotation, None)
+        .await
+        .expect("Failed to fund wallet after rotation");
+
+    let total = amount_before_rotation + amount_after_rotation;
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(total));
+
+    // Create a fresh wallet with the same seed — simulates restore from backup
+    let wallet_restored = create_test_wallet_for_mint_with_seed(mint.clone(), seed)
+        .await
+        .expect("Failed to create restore wallet");
+
+    assert_eq!(wallet_restored.total_balance().await.unwrap(), Amount::ZERO);
+
+    let restored = wallet_restored.restore().await.expect("Restore failed");
+
+    // All proofs (from both keysets) should be recovered
+    assert_eq!(
+        restored.unspent,
+        Amount::from(total),
+        "Restore should recover proofs from both active and inactive keysets"
+    );
 }

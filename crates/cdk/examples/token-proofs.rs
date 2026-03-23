@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::Token;
-use cdk::wallet::WalletRepositoryBuilder;
+use cdk::wallet::{KeysetFilter, WalletRepositoryBuilder};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -79,7 +79,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_iter()
         .next()
         .ok_or("No wallet found for mint")?;
-    let keysets: Vec<cdk::nuts::KeySetInfo> = mint_wallet.get_mint_keysets().await?;
+    let keysets: Vec<cdk::nuts::KeySetInfo> =
+        mint_wallet.get_mint_keysets(KeysetFilter::Active).await?;
     println!("Found {} keysets for mint", keysets.len());
 
     for keyset in &keysets {
