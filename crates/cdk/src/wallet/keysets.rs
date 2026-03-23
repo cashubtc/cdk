@@ -60,16 +60,15 @@ impl Wallet {
             .keysets
             .values()
             .filter_map(|keyset| {
-                let dominated = keyset.unit == self.unit;
-                let dominated = match filter {
-                    KeysetFilter::Active => dominated && keyset.active,
-                    KeysetFilter::All => dominated,
-                };
-                if dominated {
-                    Some((*keyset.clone()).clone())
-                } else {
-                    None
+                if keyset.unit != self.unit {
+                    return None;
                 }
+
+                if matches!(filter, KeysetFilter::Active) && !keyset.active {
+                    return None;
+                }
+
+                Some((*keyset.clone()).clone())
             })
             .collect::<Vec<_>>();
 
