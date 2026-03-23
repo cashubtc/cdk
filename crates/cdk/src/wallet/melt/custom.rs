@@ -45,6 +45,7 @@ impl Wallet {
 
         let quote = MeltQuote {
             id: quote_res.quote,
+            mint_url: Some(self.mint_url.clone()),
             amount: quote_res.amount,
             request: quote_request_str,
             unit: self.unit.clone(),
