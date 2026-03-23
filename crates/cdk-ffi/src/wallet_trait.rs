@@ -28,8 +28,8 @@ impl WalletTraitDef for Wallet {
     type PaymentMethod = PaymentMethod;
     type MeltOptions = MeltOptions;
     type OperationId = String;
-    type PreparedSend = Arc<PreparedSend>;
-    type PreparedMelt = PreparedMelt;
+    type PreparedSend<'a> = Arc<PreparedSend>;
+    type PreparedMelt<'a> = PreparedMelt;
     type Subscription = Arc<crate::types::ActiveSubscription>;
 
     fn mint_url(&self) -> Self::MintUrl {
@@ -201,12 +201,8 @@ impl WalletTraitDef for Wallet {
         amount: Self::Amount,
         options: cdk_common::wallet::SendOptions,
     ) -> Result<Arc<PreparedSend>, Self::Error> {
-        let data =
-            CdkWalletTrait::prepare_send(self.inner().as_ref(), amount.into(), options).await?;
-        Ok(Arc::new(PreparedSend::from_data(
-            self.inner().clone(),
-            data,
-        )))
+        let prepared = self.inner().prepare_send(amount.into(), options).await?;
+        Ok(Arc::new(PreparedSend::new(self.inner().clone(), &prepared)))
     }
 
     async fn get_pending_sends(&self) -> Result<Vec<String>, Self::Error> {
@@ -269,8 +265,8 @@ impl WalletTraitDef for Wallet {
         quote_id: &str,
         metadata: HashMap<String, String>,
     ) -> Result<PreparedMelt, Self::Error> {
-        let data = CdkWalletTrait::prepare_melt(self.inner().as_ref(), quote_id, metadata).await?;
-        Ok(PreparedMelt::from_data(self.inner().clone(), data))
+        let prepared = self.inner().prepare_melt(quote_id, metadata).await?;
+        Ok(PreparedMelt::new(self.inner().clone(), &prepared))
     }
 
     async fn prepare_melt_proofs(
@@ -279,10 +275,11 @@ impl WalletTraitDef for Wallet {
         proofs: cdk_common::Proofs,
         metadata: HashMap<String, String>,
     ) -> Result<PreparedMelt, Self::Error> {
-        let data =
-            CdkWalletTrait::prepare_melt_proofs(self.inner().as_ref(), quote_id, proofs, metadata)
-                .await?;
-        Ok(PreparedMelt::from_data(self.inner().clone(), data))
+        let prepared = self
+            .inner()
+            .prepare_melt_proofs(quote_id, proofs, metadata)
+            .await?;
+        Ok(PreparedMelt::new(self.inner().clone(), &prepared))
     }
 
     async fn swap(

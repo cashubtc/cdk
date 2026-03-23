@@ -356,46 +356,6 @@ pub struct ReceiveOptions {
     pub metadata: HashMap<String, String>,
 }
 
-/// Data for a prepared send operation (owned, no lifetime)
-#[derive(Debug, Clone)]
-pub struct PreparedSendData {
-    /// Operation ID
-    pub operation_id: Uuid,
-    /// Amount to send
-    pub amount: Amount,
-    /// Send options
-    pub options: SendOptions,
-    /// Proofs that need swapping
-    pub proofs_to_swap: Proofs,
-    /// Proofs to send directly
-    pub proofs_to_send: Proofs,
-    /// Fee for swap
-    pub swap_fee: Amount,
-    /// Fee the recipient will pay to redeem the token
-    pub send_fee: Amount,
-}
-
-/// Data for a prepared melt operation (owned, no lifetime)
-#[derive(Debug, Clone)]
-pub struct PreparedMeltData {
-    /// Operation ID
-    pub operation_id: Uuid,
-    /// Melt quote
-    pub quote: MeltQuote,
-    /// Proofs to melt
-    pub proofs: Proofs,
-    /// Proofs that need swapping
-    pub proofs_to_swap: Proofs,
-    /// Swap fee
-    pub swap_fee: Amount,
-    /// Input fee
-    pub input_fee: Amount,
-    /// Input fee without swap
-    pub input_fee_without_swap: Amount,
-    /// Metadata
-    pub metadata: HashMap<String, String>,
-}
-
 /// Send Kind
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SendKind {
@@ -707,9 +667,13 @@ pub trait Wallet: Send + Sync {
     /// Operation ID type (CDK uses `Uuid`, FFI uses `String`)
     type OperationId: Clone + Send + Sync;
     /// Prepared send type
-    type PreparedSend: Send + Sync;
+    type PreparedSend<'a>: Send + Sync
+    where
+        Self: 'a;
     /// Prepared melt type
-    type PreparedMelt: Send + Sync;
+    type PreparedMelt<'a>: Send + Sync
+    where
+        Self: 'a;
     /// Active subscription handle for receiving notifications
     type Subscription: Send + Sync;
 
@@ -810,7 +774,7 @@ pub trait Wallet: Send + Sync {
         &self,
         amount: Self::Amount,
         options: SendOptions,
-    ) -> Result<Self::PreparedSend, Self::Error>;
+    ) -> Result<Self::PreparedSend<'_>, Self::Error>;
 
     /// Get pending send operation IDs
     async fn get_pending_sends(&self) -> Result<Vec<Self::OperationId>, Self::Error>;
@@ -849,7 +813,7 @@ pub trait Wallet: Send + Sync {
         &self,
         quote_id: &str,
         metadata: HashMap<String, String>,
-    ) -> Result<Self::PreparedMelt, Self::Error>;
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 
     /// Prepare a melt operation with specific proofs
     async fn prepare_melt_proofs(
@@ -857,7 +821,7 @@ pub trait Wallet: Send + Sync {
         quote_id: &str,
         proofs: Proofs,
         metadata: HashMap<String, String>,
-    ) -> Result<Self::PreparedMelt, Self::Error>;
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 
     /// Swap proofs
     async fn swap(

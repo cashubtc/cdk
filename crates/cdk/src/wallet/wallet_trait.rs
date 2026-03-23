@@ -13,8 +13,8 @@ use cdk_common::nuts::{
     SpendingConditions,
 };
 use cdk_common::wallet::{
-    MeltQuote, MintQuote, PreparedMeltData, PreparedSendData, ReceiveOptions, Restored,
-    SendOptions, Transaction, TransactionDirection, TransactionId, Wallet as WalletTrait,
+    MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions, Transaction, TransactionDirection,
+    TransactionId, Wallet as WalletTrait,
 };
 use cdk_common::Amount;
 use tracing::instrument;
@@ -37,8 +37,8 @@ impl WalletTrait for super::Wallet {
     type PaymentMethod = PaymentMethod;
     type MeltOptions = MeltOptions;
     type OperationId = Uuid;
-    type PreparedSend = PreparedSendData;
-    type PreparedMelt = PreparedMeltData;
+    type PreparedSend<'a> = super::send::PreparedSend<'a>;
+    type PreparedMelt<'a> = super::melt::PreparedMelt<'a>;
     type Subscription = ActiveSubscription;
 
     fn mint_url(&self) -> MintUrl {
@@ -174,17 +174,8 @@ impl WalletTrait for super::Wallet {
         &self,
         amount: Amount,
         options: SendOptions,
-    ) -> Result<PreparedSendData, Self::Error> {
-        let prepared = self.prepare_send(amount, options).await?;
-        Ok(PreparedSendData {
-            operation_id: prepared.operation_id(),
-            amount: prepared.amount(),
-            options: prepared.options().clone(),
-            proofs_to_swap: prepared.proofs_to_swap().clone(),
-            proofs_to_send: prepared.proofs_to_send().clone(),
-            swap_fee: prepared.swap_fee(),
-            send_fee: prepared.send_fee(),
-        })
+    ) -> Result<super::send::PreparedSend<'_>, Self::Error> {
+        self.prepare_send(amount, options).await
     }
 
     #[instrument(skip(self))]
@@ -231,18 +222,8 @@ impl WalletTrait for super::Wallet {
         &self,
         quote_id: &str,
         metadata: HashMap<String, String>,
-    ) -> Result<PreparedMeltData, Self::Error> {
-        let prepared = self.prepare_melt(quote_id, metadata.clone()).await?;
-        Ok(PreparedMeltData {
-            operation_id: prepared.operation_id(),
-            quote: prepared.quote().clone(),
-            proofs: prepared.proofs().clone(),
-            proofs_to_swap: prepared.proofs_to_swap().clone(),
-            swap_fee: prepared.swap_fee(),
-            input_fee: prepared.input_fee(),
-            input_fee_without_swap: prepared.input_fee_without_swap(),
-            metadata,
-        })
+    ) -> Result<super::melt::PreparedMelt<'_>, Self::Error> {
+        self.prepare_melt(quote_id, metadata).await
     }
 
     #[instrument(skip(self, proofs, metadata))]
@@ -251,20 +232,8 @@ impl WalletTrait for super::Wallet {
         quote_id: &str,
         proofs: Proofs,
         metadata: HashMap<String, String>,
-    ) -> Result<PreparedMeltData, Self::Error> {
-        let prepared = self
-            .prepare_melt_proofs(quote_id, proofs, metadata.clone())
-            .await?;
-        Ok(PreparedMeltData {
-            operation_id: prepared.operation_id(),
-            quote: prepared.quote().clone(),
-            proofs: prepared.proofs().clone(),
-            proofs_to_swap: prepared.proofs_to_swap().clone(),
-            swap_fee: prepared.swap_fee(),
-            input_fee: prepared.input_fee(),
-            input_fee_without_swap: prepared.input_fee_without_swap(),
-            metadata,
-        })
+    ) -> Result<super::melt::PreparedMelt<'_>, Self::Error> {
+        self.prepare_melt_proofs(quote_id, proofs, metadata).await
     }
 
     #[instrument(skip(self, input_proofs, spending_conditions))]

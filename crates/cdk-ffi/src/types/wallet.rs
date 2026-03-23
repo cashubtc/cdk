@@ -344,23 +344,6 @@ impl PreparedSend {
             send_fee: prepared.send_fee().into(),
         }
     }
-
-    /// Create from PreparedSendData (returned by trait impl)
-    pub fn from_data(
-        wallet: std::sync::Arc<cdk::Wallet>,
-        data: cdk_common::wallet::PreparedSendData,
-    ) -> Self {
-        Self {
-            wallet,
-            operation_id: data.operation_id,
-            amount: data.amount.into(),
-            options: data.options,
-            proofs_to_swap: data.proofs_to_swap,
-            proofs_to_send: data.proofs_to_send,
-            swap_fee: data.swap_fee.into(),
-            send_fee: data.send_fee.into(),
-        }
-    }
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -498,24 +481,6 @@ impl PreparedMelt {
             input_fee: prepared.input_fee().into(),
             input_fee_without_swap: prepared.input_fee_without_swap().into(),
             metadata: HashMap::new(),
-        }
-    }
-
-    /// Create from PreparedMeltData (returned by trait impl)
-    pub fn from_data(
-        wallet: std::sync::Arc<cdk::Wallet>,
-        data: cdk_common::wallet::PreparedMeltData,
-    ) -> Self {
-        Self {
-            wallet,
-            operation_id: data.operation_id,
-            quote: data.quote,
-            proofs: data.proofs,
-            proofs_to_swap: data.proofs_to_swap,
-            swap_fee: data.swap_fee.into(),
-            input_fee: data.input_fee.into(),
-            input_fee_without_swap: data.input_fee_without_swap.into(),
-            metadata: data.metadata,
         }
     }
 }
