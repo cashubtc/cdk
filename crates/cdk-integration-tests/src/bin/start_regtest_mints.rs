@@ -296,6 +296,7 @@ fn create_ldk_settings(
             use_keyset_v2: None,
             http_cache: cdk_axum::cache::Config::default(),
             enable_swagger_ui: None,
+            enable_info_page: None,
             logging: LoggingConfig::default(),
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
