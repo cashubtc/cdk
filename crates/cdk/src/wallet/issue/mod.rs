@@ -330,6 +330,7 @@ impl Wallet {
         let unix_time = unix_time();
         mint_quotes.retain(|quote| {
             quote.mint_url == self.mint_url
+                && quote.unit == self.unit
                 && quote.state != MintQuoteState::Issued
                 && quote.expiry > unix_time
         });
@@ -339,12 +340,12 @@ impl Wallet {
     /// Get unissued mint quotes
     /// Returns bolt11 quotes where nothing has been issued yet (amount_issued = 0) and all bolt12 quotes.
     /// Includes unpaid bolt11 quotes to allow checking with the mint if they've been paid (wallet state may be outdated).
-    /// Filters out quotes from other mints. Does not filter by expiry time to allow
+    /// Filters out quotes from other mints and units. Does not filter by expiry time to allow
     /// checking with the mint if expired quotes can still be minted.
     #[instrument(skip(self))]
     pub async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         let mut pending_quotes = self.localstore.get_unissued_mint_quotes().await?;
-        pending_quotes.retain(|quote| quote.mint_url == self.mint_url);
+        pending_quotes.retain(|quote| quote.mint_url == self.mint_url && quote.unit == self.unit);
         Ok(pending_quotes)
     }
 

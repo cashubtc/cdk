@@ -284,6 +284,12 @@ impl Wallet {
 
         let sagas = self.localstore.get_incomplete_sagas().await?;
 
+        // Filter to only include sagas for this wallet (mint and unit)
+        let sagas: Vec<_> = sagas
+            .into_iter()
+            .filter(|s| s.mint_url == self.mint_url && s.unit == self.unit)
+            .collect();
+
         if sagas.is_empty() {
             tracing::debug!("No incomplete sagas to recover");
             return Ok(RecoveryReport::default());
@@ -530,6 +536,11 @@ impl Wallet {
         // Check melt quotes for orphaned reservations
         let melt_quotes = self.localstore.get_melt_quotes().await?;
         for quote in melt_quotes {
+            // Filter by unit
+            if quote.unit != self.unit {
+                continue;
+            }
+
             if let Some(ref operation_id_str) = quote.used_by_operation {
                 if let Ok(operation_id) = uuid::Uuid::parse_str(operation_id_str) {
                     // Check if saga exists
@@ -568,6 +579,11 @@ impl Wallet {
         // Check mint quotes for orphaned reservations
         let mint_quotes = self.localstore.get_mint_quotes().await?;
         for quote in mint_quotes {
+            // Filter by mint and unit
+            if quote.mint_url != self.mint_url || quote.unit != self.unit {
+                continue;
+            }
+
             if let Some(ref operation_id_str) = quote.used_by_operation {
                 if let Ok(operation_id) = uuid::Uuid::parse_str(operation_id_str) {
                     // Check if saga exists
@@ -609,8 +625,10 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
     use std::sync::Arc;
 
+    use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::{MeltQuoteBolt11Response, MeltQuoteState, State};
     use cdk_common::wallet::{
         IssueSagaState, MeltOperationData, MeltSagaState, MintOperationData, OperationData,
@@ -1169,5 +1187,173 @@ mod tests {
 
         // Saga should be deleted
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_incomplete_sagas_filters_by_mint_and_unit() {
+        // Test that recovery only processes sagas for its own mint and unit
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let other_mint_url = MintUrl::from_str("https://other-mint.example.com").unwrap();
+        let saga_id_1 = uuid::Uuid::new_v4();
+        let saga_id_2 = uuid::Uuid::new_v4();
+        let saga_id_3 = uuid::Uuid::new_v4();
+
+        // 1. Saga for our mint and unit (should be recovered/compensated)
+        let saga_1 = WalletSaga::new(
+            saga_id_1,
+            WalletSagaState::Receive(ReceiveSagaState::ProofsPending),
+            Amount::from(100),
+            mint_url.clone(),
+            cdk_common::nuts::CurrencyUnit::Sat,
+            OperationData::Receive(ReceiveOperationData {
+                token: Some("cashu...".to_string()),
+                counter_start: None,
+                counter_end: None,
+                amount: Some(Amount::from(100)),
+                blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga_1).await.unwrap();
+
+        // 2. Saga for OTHER mint (should be skipped)
+        let saga_2 = WalletSaga::new(
+            saga_id_2,
+            WalletSagaState::Receive(ReceiveSagaState::ProofsPending),
+            Amount::from(100),
+            other_mint_url.clone(),
+            cdk_common::nuts::CurrencyUnit::Sat,
+            OperationData::Receive(ReceiveOperationData {
+                token: Some("cashu...".to_string()),
+                counter_start: None,
+                counter_end: None,
+                amount: Some(Amount::from(100)),
+                blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga_2).await.unwrap();
+
+        // 3. Saga for our mint but OTHER unit (should be skipped)
+        let saga_3 = WalletSaga::new(
+            saga_id_3,
+            WalletSagaState::Receive(ReceiveSagaState::ProofsPending),
+            Amount::from(100),
+            mint_url.clone(),
+            cdk_common::nuts::CurrencyUnit::Usd,
+            OperationData::Receive(ReceiveOperationData {
+                token: Some("cashu...".to_string()),
+                counter_start: None,
+                counter_end: None,
+                amount: Some(Amount::from(100)),
+                blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga_3).await.unwrap();
+
+        // Run recovery
+        let wallet = create_test_wallet(db.clone()).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        // Only saga_1 should be processed (it gets compensated because no proofs were reserved)
+        assert_eq!(report.compensated, 1);
+        assert_eq!(report.recovered, 0);
+        assert_eq!(report.skipped, 0);
+
+        // Verify saga_1 is deleted
+        assert!(db.get_saga(&saga_id_1).await.unwrap().is_none());
+
+        // Verify saga_2 and saga_3 STILL EXIST in the DB (they were filtered out)
+        assert!(db.get_saga(&saga_id_2).await.unwrap().is_some());
+        assert!(db.get_saga(&saga_id_3).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_orphaned_quote_reservations_filters_by_mint_and_unit() {
+        // Test that orphaned reservation cleanup only processes quotes for its own mint/unit
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let other_mint_url = MintUrl::from_str("https://other-mint.example.com").unwrap();
+
+        // 1. Melt quote for our unit (should be cleaned up)
+        // Note: MeltQuote currently lacks mint_url, so we only filter by unit
+        let mut melt_quote_1 = test_melt_quote();
+        melt_quote_1.unit = cdk_common::nuts::CurrencyUnit::Sat;
+        melt_quote_1.used_by_operation = Some(uuid::Uuid::new_v4().to_string());
+        let melt_quote_id_1 = melt_quote_1.id.clone();
+        db.add_melt_quote(melt_quote_1).await.unwrap();
+
+        // 2. Melt quote for OTHER unit (should be skipped)
+        let mut melt_quote_2 = test_melt_quote();
+        melt_quote_2.unit = cdk_common::nuts::CurrencyUnit::Usd;
+        melt_quote_2.used_by_operation = Some(uuid::Uuid::new_v4().to_string());
+        let melt_quote_id_2 = melt_quote_2.id.clone();
+        db.add_melt_quote(melt_quote_2).await.unwrap();
+
+        // 3. Mint quote for our mint and unit (should be cleaned up)
+        let mut mint_quote_1 = test_mint_quote(mint_url.clone());
+        mint_quote_1.unit = cdk_common::nuts::CurrencyUnit::Sat;
+        mint_quote_1.used_by_operation = Some(uuid::Uuid::new_v4().to_string());
+        let mint_quote_id_1 = mint_quote_1.id.clone();
+        db.add_mint_quote(mint_quote_1).await.unwrap();
+
+        // 4. Mint quote for OTHER mint (should be skipped)
+        let mut mint_quote_2 = test_mint_quote(other_mint_url.clone());
+        mint_quote_2.unit = cdk_common::nuts::CurrencyUnit::Sat;
+        mint_quote_2.used_by_operation = Some(uuid::Uuid::new_v4().to_string());
+        let mint_quote_id_2 = mint_quote_2.id.clone();
+        db.add_mint_quote(mint_quote_2).await.unwrap();
+
+        // 5. Mint quote for our mint but OTHER unit (should be skipped)
+        let mut mint_quote_3 = test_mint_quote(mint_url.clone());
+        mint_quote_3.unit = cdk_common::nuts::CurrencyUnit::Usd;
+        mint_quote_3.used_by_operation = Some(uuid::Uuid::new_v4().to_string());
+        let mint_quote_id_3 = mint_quote_3.id.clone();
+        db.add_mint_quote(mint_quote_3).await.unwrap();
+
+        // Run recovery (which calls cleanup_orphaned_quote_reservations)
+        let wallet = create_test_wallet(db.clone()).await;
+        // Call it directly to avoid side effects from recover_incomplete_sagas if any
+        wallet.cleanup_orphaned_quote_reservations().await.unwrap();
+
+        // Verify quote 1 and 3 are released (orphaned and match our wallet)
+        assert!(db
+            .get_melt_quote(&melt_quote_id_1)
+            .await
+            .unwrap()
+            .unwrap()
+            .used_by_operation
+            .is_none());
+        assert!(db
+            .get_mint_quote(&mint_quote_id_1)
+            .await
+            .unwrap()
+            .unwrap()
+            .used_by_operation
+            .is_none());
+
+        // Verify quote 2, 4, 5 are STILL RESERVED (orphaned but different mint/unit)
+        // Note: For melt_quote_2, we verify it is still reserved because its unit (Usd)
+        // does not match the wallet unit (Sat).
+        assert!(db
+            .get_melt_quote(&melt_quote_id_2)
+            .await
+            .unwrap()
+            .unwrap()
+            .used_by_operation
+            .is_some());
+        assert!(db
+            .get_mint_quote(&mint_quote_id_2)
+            .await
+            .unwrap()
+            .unwrap()
+            .used_by_operation
+            .is_some());
+        assert!(db
+            .get_mint_quote(&mint_quote_id_3)
+            .await
+            .unwrap()
+            .unwrap()
+            .used_by_operation
+            .is_some());
     }
 }
