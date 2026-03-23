@@ -315,6 +315,10 @@ impl<'a> SendSaga<'a, Initial> {
         let is_exact_or_offline =
             exact_proofs || opts.send_kind.is_offline() || opts.send_kind.has_tolerance();
 
+        // When p2pk_signing_keys are provided, all proofs must go through a swap so
+        // they are signed and the token contains fresh unconditioned proofs.
+        let force_swap = force_swap || !opts.p2pk_signing_keys.is_empty();
+
         let keyset_fees_and_amounts = self.wallet.get_keyset_fees_and_amounts().await?;
         let keyset_fees: HashMap<Id, u64> = keyset_fees_and_amounts
             .iter()
@@ -427,7 +431,7 @@ impl<'a> SendSaga<'a, Prepared> {
         let operation_id = self.state_data.operation_id;
         let amount = self.state_data.amount;
         let options = self.state_data.options.clone();
-        let proofs_to_swap = self.state_data.proofs_to_swap.clone();
+        let mut proofs_to_swap = self.state_data.proofs_to_swap.clone();
         let proofs_to_send = self.state_data.proofs_to_send.clone();
         let swap_fee = self.state_data.swap_fee;
         let send_fee = self.state_data.send_fee;
@@ -449,6 +453,13 @@ impl<'a> SendSaga<'a, Prepared> {
                     .unwrap_or(Amount::ZERO);
 
                 tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
+
+                if !options.p2pk_signing_keys.is_empty() {
+                    crate::wallet::util::sign_proofs(
+                        &mut proofs_to_swap,
+                        &options.p2pk_signing_keys,
+                    )?;
+                }
 
                 let keyset_id = self.wallet.fetch_active_keyset().await?.id;
 

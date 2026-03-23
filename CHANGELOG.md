@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- cdk: Add `p2pk_signing_keys` to `SendOptions` so P2PK-locked proofs can be signed in `PreparedSend::confirm` ([vnprc])
+
 ## [0.15.1](https://github.com/cashubtc/cdk/releases/tag/v0.15.1)
 
 ## Fixed
