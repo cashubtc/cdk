@@ -407,10 +407,7 @@ pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
 /// Create a test wallet connected directly to a mint with a specific seed
 ///
 /// Useful for restore tests where two wallets must share the same seed.
-pub async fn create_test_wallet_for_mint_with_seed(
-    mint: Mint,
-    seed: [u8; 64],
-) -> Result<Wallet> {
+pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -> Result<Wallet> {
     let connector = DirectMintConnection::new(mint.clone());
 
     let mint_info = mint.mint_info().await?;
