@@ -109,6 +109,7 @@ impl Wallet {
                 use_p2bk,
                 include_fees,
                 proof_reservation,
+                false,
             )
             .await?;
         let saga = saga.execute().await?;
@@ -132,6 +133,7 @@ impl Wallet {
         use_p2bk: bool,
         proofs_fee_breakdown: &ProofsFeeBreakdown,
         proof_reservation: ProofReservation,
+        skip_invariant: bool,
     ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
 
@@ -318,6 +320,11 @@ impl Wallet {
         desired_messages.sort_secrets();
 
         let swap_request = SwapRequest::new(proofs, desired_messages.blinded_messages());
+
+        if !skip_invariant {
+            self.ensure_depth_invariant(active_keyset_id, total_secrets_needed)
+                .await?;
+        }
 
         Ok(PreSwap {
             pre_mint_secrets: desired_messages,

@@ -2112,3 +2112,100 @@ async fn test_p2bk_multi_key_receive() {
 
     assert_eq!(send_amount, received_amount);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_concurrent_depth_invariant_swaps() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create wallet");
+
+    // First, let's reach the depth invariant threshold (d=100)
+    // We will do 120 concurrent mints of 1 sat each
+    // To avoid connection pool timeouts, we batch them into chunks of 20
+    for _ in 0..6 {
+        let mut handles = vec![];
+        for _ in 0..20 {
+            let w = wallet.clone();
+            handles.push(tokio::spawn(async move {
+                fund_wallet(w, 1, None).await.unwrap();
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+    }
+
+    let balance = wallet.total_balance().await.unwrap();
+    assert_eq!(balance, Amount::from(120));
+
+    // Now let's do concurrent swaps (send + receive) to really stress it
+    for _ in 0..2 {
+        let mut handles = vec![];
+        for i in 0..5 {
+            let w = wallet.clone();
+            handles.push(tokio::spawn(async move {
+                // Send 1 sat
+                let mut send_result = w
+                    .prepare_send(Amount::from(1), SendOptions::default())
+                    .await;
+                let mut retries = 0;
+                while send_result.is_err() && retries < 10 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    send_result = w
+                        .prepare_send(Amount::from(1), SendOptions::default())
+                        .await;
+                    retries += 1;
+                }
+                if let Ok(prepared) = send_result {
+                    let token = prepared.confirm(None).await.unwrap();
+                    let _ = w
+                        .receive(&token.to_string(), ReceiveOptions::default())
+                        .await
+                        .unwrap();
+                } else {
+                    panic!("Send failed at iteration {}: {:?}", i, send_result.err());
+                }
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+    }
+
+    // Verify balance is intact
+    let balance = wallet.total_balance().await.unwrap();
+    assert_eq!(balance, Amount::from(120));
+
+    // Verify the invariant holds. The max counter should be around 140
+    let unspent = wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Unspent]), None)
+        .await
+        .unwrap();
+    let min_counter = unspent
+        .iter()
+        .filter_map(|p| p.keyset_counter)
+        .min()
+        .unwrap_or(0);
+    let max_counter = unspent
+        .iter()
+        .filter_map(|p| p.keyset_counter)
+        .max()
+        .unwrap_or(0);
+
+    // Depth invariant requires min_counter > max_counter - d. Since d=100:
+    let threshold = max_counter.saturating_sub(100);
+    assert!(
+        min_counter > threshold,
+        "Invariant broken: min_counter {}, max_counter {} (threshold {})",
+        min_counter,
+        max_counter,
+        threshold
+    );
+}
