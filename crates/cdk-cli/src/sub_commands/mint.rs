@@ -234,7 +234,7 @@ pub async fn mint(
 /// created (e.g. for unsupported payment methods); in that case the main flow
 /// continues silently as before.
 async fn spawn_progress_task(
-    wallet: Wallet,
+    wallet: Arc<Wallet>,
     quote_id: String,
     payment_method: PaymentMethod,
     stop: Arc<Notify>,

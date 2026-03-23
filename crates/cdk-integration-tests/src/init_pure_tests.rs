@@ -573,7 +573,7 @@ pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<M
     Ok(mint)
 }
 
-pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
+pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Arc<Wallet>> {
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     create_test_wallet_for_mint_with_seed(mint, seed).await
 }
@@ -581,7 +581,10 @@ pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
 /// Create a test wallet connected directly to a mint with a specific seed
 ///
 /// Useful for restore tests where two wallets must share the same seed.
-pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -> Result<Wallet> {
+pub async fn create_test_wallet_for_mint_with_seed(
+    mint: Mint,
+    seed: [u8; 64],
+) -> Result<Arc<Wallet>> {
     let connector = DirectMintConnection::new(mint.clone());
 
     let mint_info = mint.mint_info().await?;
@@ -625,13 +628,15 @@ pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -
             }
         };
 
-    let wallet = WalletBuilder::new()
-        .mint_url(mint_url.parse().unwrap())
-        .unit(unit)
-        .localstore(localstore)
-        .seed(seed)
-        .client(connector)
-        .build()?;
+    let wallet = Arc::new(
+        WalletBuilder::new()
+            .mint_url(mint_url.parse().unwrap())
+            .unit(unit)
+            .localstore(localstore)
+            .seed(seed)
+            .client(connector)
+            .build()?,
+    );
 
     Ok(wallet)
 }
@@ -647,7 +652,7 @@ fn create_temp_dir(prefix: &str) -> Result<PathBuf> {
 }
 
 pub async fn fund_wallet(
-    wallet: Wallet,
+    wallet: &Arc<Wallet>,
     amount: u64,
     split_target: Option<SplitTarget>,
 ) -> Result<Amount> {
