@@ -48,6 +48,8 @@ impl CompensatingAction for ReleaseMeltQuote {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::{CurrencyUnit, MeltQuoteState, State};
     use cdk_common::wallet::{
@@ -81,6 +83,9 @@ mod tests {
     fn test_melt_quote() -> MeltQuote {
         MeltQuote {
             id: format!("test_melt_quote_{}", uuid::Uuid::new_v4()),
+            mint_url: Some(
+                cdk_common::mint_url::MintUrl::from_str("https://test-mint.example.com").unwrap(),
+            ),
             unit: CurrencyUnit::Sat,
             amount: Amount::from(1000),
             request: "lnbc1000...".to_string(),

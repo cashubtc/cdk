@@ -123,6 +123,7 @@ fn test_mint_quote(mint_url: MintUrl) -> MintQuote {
 fn test_melt_quote() -> MeltQuote {
     MeltQuote {
         id: unique_id(),
+        mint_url: Some(test_mint_url()),
         unit: CurrencyUnit::Sat,
         amount: Amount::from(1000),
         request: "lnbc1000...".to_string(),

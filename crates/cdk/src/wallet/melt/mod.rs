@@ -522,7 +522,7 @@ impl<'a> PreparedMelt<'a> {
                 finalized.into_change(),
             ))),
             MeltSagaResult::Pending(pending_saga) => Ok(MeltOutcome::Pending(PendingMelt {
-                saga: Box::new(pending_saga),
+                saga: pending_saga,
                 metadata: self.metadata,
             })),
         }
@@ -708,7 +708,7 @@ impl Wallet {
             )),
             MeltSagaResult::Pending(pending_saga) => {
                 let pending = PendingMelt {
-                    saga: Box::new(pending_saga),
+                    saga: pending_saga,
                     metadata,
                 };
                 pending.wait().await

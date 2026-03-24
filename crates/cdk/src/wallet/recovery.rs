@@ -541,6 +541,13 @@ impl Wallet {
                 continue;
             }
 
+            // Filter by mint url if present
+            if let Some(ref mint_url) = quote.mint_url {
+                if mint_url != &self.mint_url {
+                    continue;
+                }
+            }
+
             if let Some(ref operation_id_str) = quote.used_by_operation {
                 if let Ok(operation_id) = uuid::Uuid::parse_str(operation_id_str) {
                     // Check if saga exists
@@ -1282,9 +1289,10 @@ mod tests {
         let melt_quote_id_1 = melt_quote_1.id.clone();
         db.add_melt_quote(melt_quote_1).await.unwrap();
 
-        // 2. Melt quote for OTHER unit (should be skipped)
+        // 2. Melt quote for OTHER mint (should be skipped)
         let mut melt_quote_2 = test_melt_quote();
-        melt_quote_2.unit = cdk_common::nuts::CurrencyUnit::Usd;
+        melt_quote_2.mint_url = Some(other_mint_url.clone());
+        melt_quote_2.unit = cdk_common::nuts::CurrencyUnit::Sat;
         melt_quote_2.used_by_operation = Some(uuid::Uuid::new_v4().to_string());
         let melt_quote_id_2 = melt_quote_2.id.clone();
         db.add_melt_quote(melt_quote_2).await.unwrap();
@@ -1300,7 +1308,7 @@ mod tests {
         let mut mint_quote_2 = test_mint_quote(other_mint_url.clone());
         mint_quote_2.unit = cdk_common::nuts::CurrencyUnit::Sat;
         mint_quote_2.used_by_operation = Some(uuid::Uuid::new_v4().to_string());
-        let mint_quote_id_2 = mint_quote_2.id.clone();
+        let mint_quote_id_2_mint = mint_quote_2.id.clone();
         db.add_mint_quote(mint_quote_2).await.unwrap();
 
         // 5. Mint quote for our mint but OTHER unit (should be skipped)
@@ -1332,8 +1340,6 @@ mod tests {
             .is_none());
 
         // Verify quote 2, 4, 5 are STILL RESERVED (orphaned but different mint/unit)
-        // Note: For melt_quote_2, we verify it is still reserved because its unit (Usd)
-        // does not match the wallet unit (Sat).
         assert!(db
             .get_melt_quote(&melt_quote_id_2)
             .await
@@ -1342,7 +1348,7 @@ mod tests {
             .used_by_operation
             .is_some());
         assert!(db
-            .get_mint_quote(&mint_quote_id_2)
+            .get_mint_quote(&mint_quote_id_2_mint)
             .await
             .unwrap()
             .unwrap()

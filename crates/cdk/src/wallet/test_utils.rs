@@ -341,6 +341,7 @@ pub fn test_proof_info(
 pub fn test_melt_quote() -> MeltQuote {
     MeltQuote {
         id: format!("test_melt_quote_{}", uuid::Uuid::new_v4()),
+        mint_url: Some(test_mint_url()),
         unit: CurrencyUnit::Sat,
         amount: Amount::from(1000),
         request: "lnbc1000...".to_string(),
