@@ -916,6 +916,31 @@ pub trait Wallet: Send + Sync {
         amount_msat: Self::Amount,
         network: bitcoin::Network,
     ) -> Result<Self::MeltQuote, Self::Error>;
+
+    /// Check a mint quote status (alias for `check_mint_quote_status`)
+    async fn check_mint_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Self::MintQuote, Self::Error> {
+        self.check_mint_quote_status(quote_id).await
+    }
+
+    /// Mint tokens for a quote (alias for `mint`)
+    async fn mint_unified(
+        &self,
+        quote_id: &str,
+        split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> Result<Proofs, Self::Error> {
+        self.mint(quote_id, split_target, spending_conditions).await
+    }
+
+    /// Get proofs filtered by states
+    ///
+    /// Returns all proofs whose state matches any of the given states.
+    /// The `Spent` state is typically excluded since spent proofs are removed
+    /// from the database.
+    async fn get_proofs_by_states(&self, states: Vec<State>) -> Result<Proofs, Self::Error>;
 }
 
 #[cfg(test)]

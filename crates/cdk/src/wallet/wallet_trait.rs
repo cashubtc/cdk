@@ -360,4 +360,12 @@ impl WalletTrait for super::Wallet {
         self.melt_human_readable_quote(address, amount_msat, network)
             .await
     }
+
+    #[instrument(skip(self))]
+    async fn get_proofs_by_states(
+        &self,
+        states: Vec<cdk_common::nuts::State>,
+    ) -> Result<Proofs, Self::Error> {
+        self.get_proofs_with(Some(states), None).await
+    }
 }

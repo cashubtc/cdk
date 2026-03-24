@@ -439,4 +439,12 @@ impl WalletTraitDef for Wallet {
             .await?;
         Ok(quote.into())
     }
+
+    async fn get_proofs_by_states(
+        &self,
+        states: Vec<cdk_common::nuts::State>,
+    ) -> Result<cdk_common::Proofs, Self::Error> {
+        let proofs = CdkWalletTrait::get_proofs_by_states(self.inner().as_ref(), states).await?;
+        Ok(proofs)
+    }
 }
