@@ -1681,7 +1681,8 @@ mod tests {
     #[cfg(feature = "wallet")]
     fn test_with_p2bk_rejects_mismatched_ephemeral_keys_when_not_sig_all() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
-        use crate::nuts::nut11::{Conditions, SigFlag};
+        use crate::nuts::nut11::SigFlag;
+        use crate::Conditions;
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
         let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
@@ -1708,7 +1709,8 @@ mod tests {
     #[cfg(feature = "wallet")]
     fn test_with_p2bk_allows_single_ephemeral_key_for_sig_all() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
-        use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+        use crate::nuts::nut11::SigFlag;
+        use crate::{Conditions, SpendingConditions};
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
         let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
@@ -1746,7 +1748,8 @@ mod tests {
     #[cfg(feature = "wallet")]
     fn test_with_p2bk_allows_one_ephemeral_key_per_output_when_not_sig_all() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
-        use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+        use crate::nuts::nut11::SigFlag;
+        use crate::{Conditions, SpendingConditions};
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
         let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
@@ -1787,8 +1790,9 @@ mod tests {
     #[cfg(feature = "wallet")]
     fn test_with_p2bk_uses_canonical_slots_for_pubkeys_and_refund_keys() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
-        use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+        use crate::nuts::nut11::SigFlag;
         use crate::nuts::nut28::{blind_public_key, ecdh_kdf};
+        use crate::{Conditions, SpendingConditions};
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
         let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();

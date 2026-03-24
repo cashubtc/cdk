@@ -4,6 +4,7 @@
 
 use std::str::FromStr;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Serialize};
@@ -17,8 +18,6 @@ use crate::nut10::get_pubkeys_and_required_sigs;
 use crate::nut11::extract_signatures_from_witness;
 use crate::util::{hex, unix_time};
 use crate::SpendingConditions;
-
-use bitcoin::hashes::sha256::Hash as Sha256Hash;
 
 pub mod serde_htlc_witness;
 

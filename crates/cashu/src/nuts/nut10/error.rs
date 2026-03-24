@@ -1,8 +1,9 @@
 //! Error types for NUT-10: Spending Conditions
 
+use thiserror::Error;
+
 use crate::nuts::{nut01, nut11, nut14};
 use crate::util::hex;
-use thiserror::Error;
 
 /// NUT10 Error
 #[derive(Debug, Error)]

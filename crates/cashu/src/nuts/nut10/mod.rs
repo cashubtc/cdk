@@ -6,14 +6,11 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::nut11;
-use crate::nut14;
-
 use super::nut01::PublicKey;
+use crate::{nut11, nut14};
 
 pub mod spending_conditions;
-pub use spending_conditions::Conditions;
-pub use spending_conditions::SpendingConditions;
+pub use spending_conditions::{Conditions, SpendingConditions};
 
 pub mod secret;
 pub use secret::Secret;
@@ -22,8 +19,7 @@ pub mod error;
 pub use error::Error;
 
 pub mod tag;
-pub use tag::Tag;
-pub use tag::TagKind;
+pub use tag::{Tag, TagKind};
 
 /// Refund path requirements (available after locktime for HTLC)
 #[derive(Debug, Clone, PartialEq, Eq)]

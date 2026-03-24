@@ -2,23 +2,16 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/10.md>
 
-use std::{
-    collections::{HashMap, HashSet},
-    str::FromStr,
-};
+use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
-use crate::{
-    ensure_cdk,
-    nut10::{Error, Tag, TagKind},
-    nut14,
-    secret::Secret,
-    util::unix_time,
-    Kind, Nut10Secret, SigFlag,
-};
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use serde::{Deserialize, Serialize};
 
-use crate::PublicKey;
+use crate::nut10::{Error, Tag, TagKind};
+use crate::secret::Secret;
+use crate::util::unix_time;
+use crate::{ensure_cdk, nut14, Kind, Nut10Secret, PublicKey, SigFlag};
 
 /// Spending Conditions
 ///

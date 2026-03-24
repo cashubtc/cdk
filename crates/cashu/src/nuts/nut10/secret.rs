@@ -1,14 +1,14 @@
 //! NUT-10 Secret Module
 
-use crate::nut10::Error;
-use crate::{Kind, SecretData};
+use std::fmt;
+use std::str::FromStr;
 
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use serde::ser::SerializeTuple;
 use serde::{Deserialize, Serialize, Serializer};
 
-use std::fmt;
-use std::str::FromStr;
+use crate::nut10::Error;
+use crate::{Kind, SecretData};
 
 /// NUT10 Secret
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
