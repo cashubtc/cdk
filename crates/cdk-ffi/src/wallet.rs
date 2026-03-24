@@ -258,10 +258,7 @@ impl Wallet {
     /// **Note:** The mint quote must be known to the wallet (stored locally) for this
     /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
     /// instead.
-    pub async fn check_mint_quote_status(
-        &self,
-        quote_id: String,
-    ) -> Result<MintQuote, FfiError> {
+    pub async fn check_mint_quote_status(&self, quote_id: String) -> Result<MintQuote, FfiError> {
         let quote = self.inner.check_mint_quote_status(&quote_id).await?;
         Ok(quote.into())
     }

@@ -917,11 +917,20 @@ pub trait Wallet: Send + Sync {
         network: bitcoin::Network,
     ) -> Result<Self::MeltQuote, Self::Error>;
 
-    /// Check a mint quote status (alias for `check_mint_quote_status`)
-    async fn check_mint_quote(
+    /// Get a melt quote for a human-readable address (alias for `melt_human_readable_quote`)
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    async fn melt_human_readable(
         &self,
-        quote_id: &str,
-    ) -> Result<Self::MintQuote, Self::Error> {
+        address: &str,
+        amount_msat: Self::Amount,
+        network: bitcoin::Network,
+    ) -> Result<Self::MeltQuote, Self::Error> {
+        self.melt_human_readable_quote(address, amount_msat, network)
+            .await
+    }
+
+    /// Check a mint quote status (alias for `check_mint_quote_status`)
+    async fn check_mint_quote(&self, quote_id: &str) -> Result<Self::MintQuote, Self::Error> {
         self.check_mint_quote_status(quote_id).await
     }
 

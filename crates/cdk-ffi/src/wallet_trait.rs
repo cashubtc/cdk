@@ -7,15 +7,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk::wallet::WalletTrait as CdkWalletTrait;
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+use cdk_common::bitcoin;
 use cdk_common::wallet::Wallet as WalletTraitDef;
 
 use crate::error::FfiError;
 use crate::types::*;
 use crate::wallet::Wallet;
-
-#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-use cdk_common::bitcoin;
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -45,37 +43,37 @@ impl WalletTraitDef for Wallet {
     }
 
     async fn total_balance(&self) -> Result<Self::Amount, Self::Error> {
-        let balance = CdkWalletTrait::total_balance(self.inner().as_ref()).await?;
+        let balance = WalletTraitDef::total_balance(self.inner().as_ref()).await?;
         Ok(balance.into())
     }
 
     async fn total_pending_balance(&self) -> Result<Self::Amount, Self::Error> {
-        let balance = CdkWalletTrait::total_pending_balance(self.inner().as_ref()).await?;
+        let balance = WalletTraitDef::total_pending_balance(self.inner().as_ref()).await?;
         Ok(balance.into())
     }
 
     async fn total_reserved_balance(&self) -> Result<Self::Amount, Self::Error> {
-        let balance = CdkWalletTrait::total_reserved_balance(self.inner().as_ref()).await?;
+        let balance = WalletTraitDef::total_reserved_balance(self.inner().as_ref()).await?;
         Ok(balance.into())
     }
 
     async fn fetch_mint_info(&self) -> Result<Option<Self::MintInfo>, Self::Error> {
-        let info = CdkWalletTrait::fetch_mint_info(self.inner().as_ref()).await?;
+        let info = WalletTraitDef::fetch_mint_info(self.inner().as_ref()).await?;
         Ok(info.map(Into::into))
     }
 
     async fn load_mint_info(&self) -> Result<Self::MintInfo, Self::Error> {
-        let info = CdkWalletTrait::load_mint_info(self.inner().as_ref()).await?;
+        let info = WalletTraitDef::load_mint_info(self.inner().as_ref()).await?;
         Ok(info.into())
     }
 
     async fn refresh_keysets(&self) -> Result<Vec<Self::KeySetInfo>, Self::Error> {
-        let keysets = CdkWalletTrait::refresh_keysets(self.inner().as_ref()).await?;
+        let keysets = WalletTraitDef::refresh_keysets(self.inner().as_ref()).await?;
         Ok(keysets.into_iter().map(Into::into).collect())
     }
 
     async fn get_active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error> {
-        let keyset = CdkWalletTrait::get_active_keyset(self.inner().as_ref()).await?;
+        let keyset = WalletTraitDef::get_active_keyset(self.inner().as_ref()).await?;
         Ok(keyset.into())
     }
 
@@ -86,7 +84,7 @@ impl WalletTraitDef for Wallet {
         description: Option<String>,
         extra: Option<String>,
     ) -> Result<Self::MintQuote, Self::Error> {
-        let quote = CdkWalletTrait::mint_quote(
+        let quote = WalletTraitDef::mint_quote(
             self.inner().as_ref(),
             method.into(),
             amount.map(Into::into),
@@ -104,7 +102,7 @@ impl WalletTraitDef for Wallet {
         options: Option<Self::MeltOptions>,
         extra: Option<String>,
     ) -> Result<Self::MeltQuote, Self::Error> {
-        let quote = CdkWalletTrait::melt_quote(
+        let quote = WalletTraitDef::melt_quote(
             self.inner().as_ref(),
             method.into(),
             request,
@@ -119,7 +117,7 @@ impl WalletTraitDef for Wallet {
         &self,
         direction: Option<cdk_common::wallet::TransactionDirection>,
     ) -> Result<Vec<cdk_common::wallet::Transaction>, Self::Error> {
-        let txs = CdkWalletTrait::list_transactions(self.inner().as_ref(), direction).await?;
+        let txs = WalletTraitDef::list_transactions(self.inner().as_ref(), direction).await?;
         Ok(txs)
     }
 
@@ -127,7 +125,7 @@ impl WalletTraitDef for Wallet {
         &self,
         id: cdk_common::wallet::TransactionId,
     ) -> Result<Option<cdk_common::wallet::Transaction>, Self::Error> {
-        let tx = CdkWalletTrait::get_transaction(self.inner().as_ref(), id).await?;
+        let tx = WalletTraitDef::get_transaction(self.inner().as_ref(), id).await?;
         Ok(tx)
     }
 
@@ -135,7 +133,7 @@ impl WalletTraitDef for Wallet {
         &self,
         id: cdk_common::wallet::TransactionId,
     ) -> Result<cdk_common::Proofs, Self::Error> {
-        let proofs = CdkWalletTrait::get_proofs_for_transaction(self.inner().as_ref(), id).await?;
+        let proofs = WalletTraitDef::get_proofs_for_transaction(self.inner().as_ref(), id).await?;
         Ok(proofs)
     }
 
@@ -143,12 +141,12 @@ impl WalletTraitDef for Wallet {
         &self,
         id: cdk_common::wallet::TransactionId,
     ) -> Result<(), Self::Error> {
-        CdkWalletTrait::revert_transaction(self.inner().as_ref(), id).await?;
+        WalletTraitDef::revert_transaction(self.inner().as_ref(), id).await?;
         Ok(())
     }
 
     async fn check_all_pending_proofs(&self) -> Result<Self::Amount, Self::Error> {
-        let amount = CdkWalletTrait::check_all_pending_proofs(self.inner().as_ref()).await?;
+        let amount = WalletTraitDef::check_all_pending_proofs(self.inner().as_ref()).await?;
         Ok(amount.into())
     }
 
@@ -156,7 +154,7 @@ impl WalletTraitDef for Wallet {
         &self,
         proofs: cdk_common::Proofs,
     ) -> Result<Vec<cdk_common::nuts::nut07::ProofState>, Self::Error> {
-        let states = CdkWalletTrait::check_proofs_spent(self.inner().as_ref(), proofs).await?;
+        let states = WalletTraitDef::check_proofs_spent(self.inner().as_ref(), proofs).await?;
         Ok(states)
     }
 
@@ -164,7 +162,7 @@ impl WalletTraitDef for Wallet {
         &self,
         keyset_id: cdk_common::nuts::Id,
     ) -> Result<u64, Self::Error> {
-        let fee = CdkWalletTrait::get_keyset_fees_by_id(self.inner().as_ref(), keyset_id).await?;
+        let fee = WalletTraitDef::get_keyset_fees_by_id(self.inner().as_ref(), keyset_id).await?;
         Ok(fee)
     }
 
@@ -174,7 +172,7 @@ impl WalletTraitDef for Wallet {
         keyset_id: cdk_common::nuts::Id,
     ) -> Result<Self::Amount, Self::Error> {
         let fee =
-            CdkWalletTrait::calculate_fee(self.inner().as_ref(), proof_count, keyset_id).await?;
+            WalletTraitDef::calculate_fee(self.inner().as_ref(), proof_count, keyset_id).await?;
         Ok(fee.into())
     }
 
@@ -183,7 +181,7 @@ impl WalletTraitDef for Wallet {
         encoded_token: &str,
         options: cdk_common::wallet::ReceiveOptions,
     ) -> Result<Self::Amount, Self::Error> {
-        let amount = CdkWalletTrait::receive(self.inner().as_ref(), encoded_token, options).await?;
+        let amount = WalletTraitDef::receive(self.inner().as_ref(), encoded_token, options).await?;
         Ok(amount.into())
     }
 
@@ -195,7 +193,7 @@ impl WalletTraitDef for Wallet {
         token: Option<String>,
     ) -> Result<Self::Amount, Self::Error> {
         let amount =
-            CdkWalletTrait::receive_proofs(self.inner().as_ref(), proofs, options, memo, token)
+            WalletTraitDef::receive_proofs(self.inner().as_ref(), proofs, options, memo, token)
                 .await?;
         Ok(amount.into())
     }
@@ -210,21 +208,21 @@ impl WalletTraitDef for Wallet {
     }
 
     async fn get_pending_sends(&self) -> Result<Vec<String>, Self::Error> {
-        let ids = CdkWalletTrait::get_pending_sends(self.inner().as_ref()).await?;
+        let ids = WalletTraitDef::get_pending_sends(self.inner().as_ref()).await?;
         Ok(ids.into_iter().map(|id| id.to_string()).collect())
     }
 
     async fn revoke_send(&self, operation_id: String) -> Result<Self::Amount, Self::Error> {
         let uuid = uuid::Uuid::parse_str(&operation_id)
             .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
-        let amount = CdkWalletTrait::revoke_send(self.inner().as_ref(), uuid).await?;
+        let amount = WalletTraitDef::revoke_send(self.inner().as_ref(), uuid).await?;
         Ok(amount.into())
     }
 
     async fn check_send_status(&self, operation_id: String) -> Result<bool, Self::Error> {
         let uuid = uuid::Uuid::parse_str(&operation_id)
             .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
-        let claimed = CdkWalletTrait::check_send_status(self.inner().as_ref(), uuid).await?;
+        let claimed = WalletTraitDef::check_send_status(self.inner().as_ref(), uuid).await?;
         Ok(claimed)
     }
 
@@ -234,7 +232,7 @@ impl WalletTraitDef for Wallet {
         split_target: cdk_common::amount::SplitTarget,
         spending_conditions: Option<cdk_common::nuts::SpendingConditions>,
     ) -> Result<cdk_common::Proofs, Self::Error> {
-        let proofs = CdkWalletTrait::mint(
+        let proofs = WalletTraitDef::mint(
             self.inner().as_ref(),
             quote_id,
             split_target,
@@ -249,7 +247,7 @@ impl WalletTraitDef for Wallet {
         quote_id: &str,
     ) -> Result<Self::MintQuote, Self::Error> {
         let quote =
-            CdkWalletTrait::check_mint_quote_status(self.inner().as_ref(), quote_id).await?;
+            WalletTraitDef::check_mint_quote_status(self.inner().as_ref(), quote_id).await?;
         Ok(quote.into())
     }
 
@@ -260,7 +258,7 @@ impl WalletTraitDef for Wallet {
     ) -> Result<Self::MintQuote, Self::Error> {
         let method = payment_method.map(Into::into);
         let quote =
-            CdkWalletTrait::fetch_mint_quote(self.inner().as_ref(), quote_id, method).await?;
+            WalletTraitDef::fetch_mint_quote(self.inner().as_ref(), quote_id, method).await?;
         Ok(quote.into())
     }
 
@@ -295,7 +293,7 @@ impl WalletTraitDef for Wallet {
         include_fees: bool,
         use_p2bk: bool,
     ) -> Result<Option<cdk_common::Proofs>, Self::Error> {
-        let result = CdkWalletTrait::swap(
+        let result = WalletTraitDef::swap(
             self.inner().as_ref(),
             amount.map(Into::into),
             split_target,
@@ -309,17 +307,17 @@ impl WalletTraitDef for Wallet {
     }
 
     async fn set_cat(&self, cat: String) -> Result<(), Self::Error> {
-        CdkWalletTrait::set_cat(self.inner().as_ref(), cat).await?;
+        WalletTraitDef::set_cat(self.inner().as_ref(), cat).await?;
         Ok(())
     }
 
     async fn set_refresh_token(&self, refresh_token: String) -> Result<(), Self::Error> {
-        CdkWalletTrait::set_refresh_token(self.inner().as_ref(), refresh_token).await?;
+        WalletTraitDef::set_refresh_token(self.inner().as_ref(), refresh_token).await?;
         Ok(())
     }
 
     async fn refresh_access_token(&self) -> Result<(), Self::Error> {
-        CdkWalletTrait::refresh_access_token(self.inner().as_ref()).await?;
+        WalletTraitDef::refresh_access_token(self.inner().as_ref()).await?;
         Ok(())
     }
 
@@ -327,24 +325,24 @@ impl WalletTraitDef for Wallet {
         &self,
         amount: Self::Amount,
     ) -> Result<cdk_common::Proofs, Self::Error> {
-        let proofs = CdkWalletTrait::mint_blind_auth(self.inner().as_ref(), amount.into()).await?;
+        let proofs = WalletTraitDef::mint_blind_auth(self.inner().as_ref(), amount.into()).await?;
         Ok(proofs)
     }
 
     async fn get_unspent_auth_proofs(
         &self,
     ) -> Result<Vec<cdk_common::nuts::AuthProof>, Self::Error> {
-        let proofs = CdkWalletTrait::get_unspent_auth_proofs(self.inner().as_ref()).await?;
+        let proofs = WalletTraitDef::get_unspent_auth_proofs(self.inner().as_ref()).await?;
         Ok(proofs)
     }
 
     async fn restore(&self) -> Result<cdk_common::wallet::Restored, Self::Error> {
-        let restored = CdkWalletTrait::restore(self.inner().as_ref()).await?;
+        let restored = WalletTraitDef::restore(self.inner().as_ref()).await?;
         Ok(restored)
     }
 
     async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error> {
-        CdkWalletTrait::verify_token_dleq(self.inner().as_ref(), token_str).await?;
+        WalletTraitDef::verify_token_dleq(self.inner().as_ref(), token_str).await?;
         Ok(())
     }
 
@@ -353,7 +351,7 @@ impl WalletTraitDef for Wallet {
         request: cdk_common::nuts::nut18::PaymentRequest,
         custom_amount: Option<Self::Amount>,
     ) -> Result<(), Self::Error> {
-        CdkWalletTrait::pay_request(
+        WalletTraitDef::pay_request(
             self.inner().as_ref(),
             request,
             custom_amount.map(Into::into),
@@ -367,7 +365,7 @@ impl WalletTraitDef for Wallet {
         quote_ids: Vec<String>,
         method: Self::PaymentMethod,
     ) -> Result<Arc<crate::types::ActiveSubscription>, Self::Error> {
-        let cdk_sub = CdkWalletTrait::subscribe_mint_quote_state(
+        let cdk_sub = WalletTraitDef::subscribe_mint_quote_state(
             self.inner().as_ref(),
             quote_ids,
             method.into(),
@@ -390,7 +388,7 @@ impl WalletTraitDef for Wallet {
     ) -> Result<Arc<crate::types::ActiveSubscription>, Self::Error> {
         let cdk_params: cdk_common::subscription::WalletParams = params.into();
         let sub_id = cdk_params.id.to_string();
-        let active_sub = CdkWalletTrait::subscribe(self.inner().as_ref(), cdk_params).await?;
+        let active_sub = WalletTraitDef::subscribe(self.inner().as_ref(), cdk_params).await?;
         Ok(Arc::new(crate::types::ActiveSubscription::new(
             active_sub, sub_id,
         )))
@@ -444,7 +442,7 @@ impl WalletTraitDef for Wallet {
         &self,
         states: Vec<cdk_common::nuts::State>,
     ) -> Result<cdk_common::Proofs, Self::Error> {
-        let proofs = CdkWalletTrait::get_proofs_by_states(self.inner().as_ref(), states).await?;
+        let proofs = WalletTraitDef::get_proofs_by_states(self.inner().as_ref(), states).await?;
         Ok(proofs)
     }
 }

@@ -12,11 +12,11 @@ use cdk_common::nuts::{
     AuthProof, CurrencyUnit, Id, KeySetInfo, MeltOptions, MintInfo, PaymentMethod, Proofs,
     SpendingConditions,
 };
+use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::{
     MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions, Transaction, TransactionDirection,
     TransactionId, Wallet as WalletTrait,
 };
-use cdk_common::subscription::WalletParams;
 use cdk_common::Amount;
 use tracing::instrument;
 use uuid::Uuid;
@@ -319,10 +319,7 @@ impl WalletTrait for super::Wallet {
     }
 
     #[instrument(skip(self, params))]
-    async fn subscribe(
-        &self,
-        params: WalletParams,
-    ) -> Result<ActiveSubscription, Self::Error> {
+    async fn subscribe(&self, params: WalletParams) -> Result<ActiveSubscription, Self::Error> {
         self.subscribe(params).await
     }
 
