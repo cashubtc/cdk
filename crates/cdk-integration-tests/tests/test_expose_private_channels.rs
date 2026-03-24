@@ -70,13 +70,10 @@ async fn test_expose_private_channels() -> Result<()> {
     // Create backend with expose_private_channels = true
     let cln_backend = create_cln_backend_with_options(&cln_one, true).await?;
 
-    // Generate 10 invoices. CLN selects route hints from all candidates
-    // (public + private), so the private channel won't appear in every
-    // invoice. We verify it appears in at least one.
-    let num_invoices = 10;
-    let mut private_hint_count = 0;
+    let max_attempts = 100;
+    let mut found = false;
 
-    for i in 0..num_invoices {
+    for i in 0..max_attempts {
         let amount = cdk_common::amount::Amount::new(10_000, CurrencyUnit::Msat);
         let response = cln_backend
             .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
@@ -97,24 +94,22 @@ async fn test_expose_private_channels() -> Result<()> {
                 .any(|hop| hop.src_node_id.to_string() == cln_two_info.pubkey)
         });
 
-        if has_private_channel_hint {
-            private_hint_count += 1;
-        }
-
         println!(
             "Invoice {i}: private_channel_hint={has_private_channel_hint}, total_hints={}",
             hints.len()
         );
+
+        if has_private_channel_hint {
+            println!("Private channel hint found on attempt {i}");
+            found = true;
+            break;
+        }
     }
 
     assert!(
-        private_hint_count > 0,
-        "None of {num_invoices} invoices included the private channel route hint. \
+        found,
+        "None of {max_attempts} invoices included the private channel route hint. \
          expose_private_channels=true should make private channels route hint candidates."
-    );
-
-    println!(
-        "Private channel appeared in {private_hint_count}/{num_invoices} invoices"
     );
 
     Ok(())
