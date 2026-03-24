@@ -28,9 +28,11 @@ pub async fn update_motd(
     sub_command_args: &UpdateMotdCommand,
 ) -> Result<()> {
     let _response = client
-        .update_motd(Request::new(UpdateMotdRequest {
-            motd: sub_command_args.motd.clone(),
-        }))
+        .update_motd(super::with_version_header(Request::new(
+            UpdateMotdRequest {
+                motd: sub_command_args.motd.clone(),
+            },
+        )))
         .await?;
 
     Ok(())

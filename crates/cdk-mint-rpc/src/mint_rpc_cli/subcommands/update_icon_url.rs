@@ -28,9 +28,11 @@ pub async fn update_icon_url(
     sub_command_args: &UpdateIconUrlCommand,
 ) -> Result<()> {
     let _response = client
-        .update_icon_url(Request::new(UpdateIconUrlRequest {
-            icon_url: sub_command_args.name.clone(),
-        }))
+        .update_icon_url(super::with_version_header(Request::new(
+            UpdateIconUrlRequest {
+                icon_url: sub_command_args.name.clone(),
+            },
+        )))
         .await?;
 
     Ok(())
