@@ -232,6 +232,12 @@ impl Wallet {
         Ok(mint_quote)
     }
 
+    /// Check a mint quote status (alias for `check_mint_quote_status`)
+    #[instrument(skip(self, quote_id))]
+    pub async fn check_mint_quote(&self, quote_id: &str) -> Result<MintQuote, Error> {
+        self.check_mint_quote_status(quote_id).await
+    }
+
     /// Check all unissued mint quote states from the mint.
     ///
     /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04 for each quote.
@@ -359,6 +365,18 @@ impl Wallet {
         let saga = saga.execute().await?;
 
         Ok(saga.into_proofs())
+    }
+
+    /// Mint tokens for a quote (alias for `mint`)
+    #[instrument(skip(self))]
+    pub async fn mint_unified(
+        &self,
+        quote_id: &str,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> Result<Proofs, Error> {
+        self.mint(quote_id, amount_split_target, spending_conditions)
+            .await
     }
 
     /// Fetch a mint quote from the mint and store it locally

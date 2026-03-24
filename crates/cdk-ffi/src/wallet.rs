@@ -245,6 +245,23 @@ impl Wallet {
     /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
     /// instead.
     pub async fn check_mint_quote(&self, quote_id: String) -> Result<MintQuote, FfiError> {
+        self.check_mint_quote_status(quote_id).await
+    }
+
+    /// Check a mint quote status from the mint.
+    ///
+    /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04.
+    /// Updates local store with current state from mint.
+    /// If there was a crashed mid-mint (pending saga), attempts to complete it.
+    /// Does NOT mint tokens directly - use mint() for that.
+    ///
+    /// **Note:** The mint quote must be known to the wallet (stored locally) for this
+    /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
+    /// instead.
+    pub async fn check_mint_quote_status(
+        &self,
+        quote_id: String,
+    ) -> Result<MintQuote, FfiError> {
         let quote = self.inner.check_mint_quote_status(&quote_id).await?;
         Ok(quote.into())
     }
@@ -641,6 +658,21 @@ impl Wallet {
     /// The `network` parameter is forwarded to the BIP353 resolver for on-chain address
     /// validation in the resolved URI.
     pub async fn melt_human_readable(
+        &self,
+        address: String,
+        amount_msat: Amount,
+        network: BitcoinNetwork,
+    ) -> Result<MeltQuote, FfiError> {
+        self.melt_human_readable_quote(address, amount_msat, network)
+            .await
+    }
+
+    /// Get a quote for a human-readable address melt
+    ///
+    /// Accepts a human-readable address that could be either a BIP353 address
+    /// or a Lightning address. Tries BIP353 first if mint supports Bolt12,
+    /// falls back to Lightning address.
+    pub async fn melt_human_readable_quote(
         &self,
         address: String,
         amount_msat: Amount,

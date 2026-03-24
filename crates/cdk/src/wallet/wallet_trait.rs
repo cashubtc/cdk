@@ -366,6 +366,6 @@ impl WalletTrait for super::Wallet {
         &self,
         states: Vec<cdk_common::nuts::State>,
     ) -> Result<Proofs, Self::Error> {
-        self.get_proofs_with(Some(states), None).await
+        self.get_proofs_by_states(states).await
     }
 }
