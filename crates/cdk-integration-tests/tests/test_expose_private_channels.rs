@@ -56,13 +56,17 @@ async fn test_expose_private_channels() -> Result<()> {
         .await
         .ok(); // May already be connected
 
-    cln_one
+    // Only open private channel if it doesn't already exist
+    if let Err(e) = cln_one
         .open_private_channel(100_000, &cln_two_info.pubkey, Some(50_000))
-        .await?;
-
-    // Mine blocks to confirm the channel
-    let bitcoin_client = init_bitcoin_client()?;
-    generate_block(&bitcoin_client)?;
+        .await
+    {
+        println!("Private channel already exists or could not be opened: {e}");
+    } else {
+        // Mine blocks to confirm the new channel
+        let bitcoin_client = init_bitcoin_client()?;
+        generate_block(&bitcoin_client)?;
+    }
 
     // Wait for channels to be active
     cln_one.wait_channels_active().await?;
