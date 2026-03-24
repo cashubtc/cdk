@@ -14,6 +14,9 @@ use crate::error::FfiError;
 use crate::types::*;
 use crate::wallet::Wallet;
 
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+use cdk_common::bitcoin;
+
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl WalletTraitDef for Wallet {
@@ -31,6 +34,7 @@ impl WalletTraitDef for Wallet {
     type PreparedSend<'a> = Arc<PreparedSend>;
     type PreparedMelt<'a> = PreparedMelt;
     type Subscription = Arc<crate::types::ActiveSubscription>;
+    type SubscribeParams = crate::types::SubscribeParams;
 
     fn mint_url(&self) -> Self::MintUrl {
         self.inner().mint_url.clone().into()
@@ -373,5 +377,66 @@ impl WalletTraitDef for Wallet {
         Ok(Arc::new(crate::types::ActiveSubscription::new(
             cdk_sub, sub_id,
         )))
+    }
+
+    fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>) {
+        let ttl = ttl_secs.map(std::time::Duration::from_secs);
+        self.inner().set_metadata_cache_ttl(ttl);
+    }
+
+    async fn subscribe(
+        &self,
+        params: crate::types::SubscribeParams,
+    ) -> Result<Arc<crate::types::ActiveSubscription>, Self::Error> {
+        let cdk_params: cdk_common::subscription::WalletParams = params.into();
+        let sub_id = cdk_params.id.to_string();
+        let active_sub = CdkWalletTrait::subscribe(self.inner().as_ref(), cdk_params).await?;
+        Ok(Arc::new(crate::types::ActiveSubscription::new(
+            active_sub, sub_id,
+        )))
+    }
+
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    async fn melt_bip353_quote(
+        &self,
+        bip353_address: &str,
+        amount_msat: Self::Amount,
+        network: bitcoin::Network,
+    ) -> Result<Self::MeltQuote, Self::Error> {
+        let cdk_amount: cdk_common::Amount = amount_msat.into();
+        let quote = self
+            .inner()
+            .melt_bip353_quote(bip353_address, cdk_amount, network)
+            .await?;
+        Ok(quote.into())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn melt_lightning_address_quote(
+        &self,
+        lightning_address: &str,
+        amount_msat: Self::Amount,
+    ) -> Result<Self::MeltQuote, Self::Error> {
+        let cdk_amount: cdk_common::Amount = amount_msat.into();
+        let quote = self
+            .inner()
+            .melt_lightning_address_quote(lightning_address, cdk_amount)
+            .await?;
+        Ok(quote.into())
+    }
+
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    async fn melt_human_readable_quote(
+        &self,
+        address: &str,
+        amount_msat: Self::Amount,
+        network: bitcoin::Network,
+    ) -> Result<Self::MeltQuote, Self::Error> {
+        let cdk_amount: cdk_common::Amount = amount_msat.into();
+        let quote = self
+            .inner()
+            .melt_human_readable_quote(address, cdk_amount, network)
+            .await?;
+        Ok(quote.into())
     }
 }

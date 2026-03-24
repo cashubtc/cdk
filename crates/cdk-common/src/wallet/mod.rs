@@ -676,6 +676,8 @@ pub trait Wallet: Send + Sync {
         Self: 'a;
     /// Active subscription handle for receiving notifications
     type Subscription: Send + Sync;
+    /// Subscribe params type
+    type SubscribeParams: Clone + Send + Sync;
 
     /// Get the mint URL this wallet is connected to
     fn mint_url(&self) -> Self::MintUrl;
@@ -871,6 +873,49 @@ pub trait Wallet: Send + Sync {
         quote_ids: Vec<String>,
         method: Self::PaymentMethod,
     ) -> Result<Self::Subscription, Self::Error>;
+
+    /// Set metadata cache TTL (time-to-live) in seconds
+    ///
+    /// Controls how long cached mint metadata (keysets, keys, mint info) is considered fresh
+    /// before requiring a refresh from the mint server.
+    /// If `None`, cache never expires and is always used.
+    fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>);
+
+    /// Subscribe to wallet events
+    async fn subscribe(
+        &self,
+        params: Self::SubscribeParams,
+    ) -> Result<Self::Subscription, Self::Error>;
+
+    /// Get a melt quote for a BIP353 address
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    async fn melt_bip353_quote(
+        &self,
+        bip353_address: &str,
+        amount_msat: Self::Amount,
+        network: bitcoin::Network,
+    ) -> Result<Self::MeltQuote, Self::Error>;
+
+    /// Get a melt quote for a Lightning address
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn melt_lightning_address_quote(
+        &self,
+        lightning_address: &str,
+        amount_msat: Self::Amount,
+    ) -> Result<Self::MeltQuote, Self::Error>;
+
+    /// Get a melt quote for a human-readable address
+    ///
+    /// Accepts a human-readable address that could be either a BIP353 address
+    /// or a Lightning address. Tries BIP353 first if mint supports Bolt12,
+    /// falls back to Lightning address.
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    async fn melt_human_readable_quote(
+        &self,
+        address: &str,
+        amount_msat: Self::Amount,
+        network: bitcoin::Network,
+    ) -> Result<Self::MeltQuote, Self::Error>;
 }
 
 #[cfg(test)]

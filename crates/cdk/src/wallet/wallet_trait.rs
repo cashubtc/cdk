@@ -16,6 +16,7 @@ use cdk_common::wallet::{
     MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions, Transaction, TransactionDirection,
     TransactionId, Wallet as WalletTrait,
 };
+use cdk_common::subscription::WalletParams;
 use cdk_common::Amount;
 use tracing::instrument;
 use uuid::Uuid;
@@ -40,6 +41,7 @@ impl WalletTrait for super::Wallet {
     type PreparedSend<'a> = super::send::PreparedSend<'a>;
     type PreparedMelt<'a> = super::melt::PreparedMelt<'a>;
     type Subscription = ActiveSubscription;
+    type SubscribeParams = WalletParams;
 
     fn mint_url(&self) -> MintUrl {
         self.mint_url.clone()
@@ -309,5 +311,53 @@ impl WalletTrait for super::Wallet {
         method: PaymentMethod,
     ) -> Result<ActiveSubscription, Self::Error> {
         self.subscribe_mint_quote_state(quote_ids, method).await
+    }
+
+    fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>) {
+        let ttl = ttl_secs.map(std::time::Duration::from_secs);
+        self.set_metadata_cache_ttl(ttl);
+    }
+
+    #[instrument(skip(self, params))]
+    async fn subscribe(
+        &self,
+        params: WalletParams,
+    ) -> Result<ActiveSubscription, Self::Error> {
+        self.subscribe(params).await
+    }
+
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    #[instrument(skip(self, amount_msat), fields(address = %bip353_address))]
+    async fn melt_bip353_quote(
+        &self,
+        bip353_address: &str,
+        amount_msat: Amount,
+        network: bitcoin::Network,
+    ) -> Result<MeltQuote, Self::Error> {
+        self.melt_bip353_quote(bip353_address, amount_msat, network)
+            .await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[instrument(skip(self, amount_msat), fields(address = %lightning_address))]
+    async fn melt_lightning_address_quote(
+        &self,
+        lightning_address: &str,
+        amount_msat: Amount,
+    ) -> Result<MeltQuote, Self::Error> {
+        self.melt_lightning_address_quote(lightning_address, amount_msat)
+            .await
+    }
+
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    #[instrument(skip(self, amount_msat), fields(address = %address))]
+    async fn melt_human_readable_quote(
+        &self,
+        address: &str,
+        amount_msat: Amount,
+        network: bitcoin::Network,
+    ) -> Result<MeltQuote, Self::Error> {
+        self.melt_human_readable_quote(address, amount_msat, network)
+            .await
     }
 }
