@@ -337,7 +337,7 @@ const CSS: &str = r#"
 body {
   background: var(--bg);
   color: var(--text-primary);
-  font-family: 'Outfit', -apple-system, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
 }
@@ -474,7 +474,7 @@ body {
 
 .version-chip {
   font-size: 11px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: ui-monospace, 'SFMono-Regular', 'SF Mono', 'Cascadia Code', 'Segoe UI Mono', monospace;
   font-weight: 500;
   color: var(--text-muted);
   background: var(--surface);
@@ -535,7 +535,7 @@ body {
 }
 
 .url-text {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: ui-monospace, 'SFMono-Regular', 'SF Mono', 'Cascadia Code', 'Segoe UI Mono', monospace;
   font-size: 13px;
   color: var(--text-secondary);
   overflow: hidden;
@@ -633,7 +633,7 @@ body {
 }
 
 .detail-value-mono {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: ui-monospace, 'SFMono-Regular', 'SF Mono', 'Cascadia Code', 'Segoe UI Mono', monospace;
   font-size: 13px;
   font-weight: 500;
   color: var(--text-secondary);
@@ -643,7 +643,7 @@ body {
 .tag {
   font-size: 12px;
   font-weight: 600;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: ui-monospace, 'SFMono-Regular', 'SF Mono', 'Cascadia Code', 'Segoe UI Mono', monospace;
   padding: 4px 11px;
   border-radius: 20px;
   background: var(--surface-2);
@@ -707,7 +707,7 @@ body {
 .contact-chip {
   font-size: 12px;
   font-weight: 600;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: ui-monospace, 'SFMono-Regular', 'SF Mono', 'Cascadia Code', 'Segoe UI Mono', monospace;
   color: var(--text-primary);
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -730,7 +730,7 @@ body {
 }
 
 .pubkey-mono {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: ui-monospace, 'SFMono-Regular', 'SF Mono', 'Cascadia Code', 'Segoe UI Mono', monospace;
   font-size: 11px;
   color: var(--text-muted);
   overflow: hidden;
@@ -928,8 +928,6 @@ pub(crate) async fn get_index(
                 title { (name) }
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                link rel="preconnect" href="https://fonts.googleapis.com";
-                link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet";
                 style { (maud::PreEscaped(CSS)) }
             }
             body {
