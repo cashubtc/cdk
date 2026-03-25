@@ -655,8 +655,8 @@ pub struct Restored {
     pub pending: Amount,
 }
 
-impl From<cdk::wallet::Restored> for Restored {
-    fn from(restored: cdk::wallet::Restored) -> Self {
+impl From<cdk_common::wallet::Restored> for Restored {
+    fn from(restored: cdk_common::wallet::Restored) -> Self {
         Self {
             spent: restored.spent.into(),
             unspent: restored.unspent.into(),

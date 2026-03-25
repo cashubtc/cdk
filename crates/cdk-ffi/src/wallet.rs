@@ -25,8 +25,9 @@ impl Wallet {
         Self { inner }
     }
 
-    pub(crate) fn inner(&self) -> Arc<CdkWallet> {
-        self.inner.clone()
+    /// Access the inner CDK wallet
+    pub(crate) fn inner(&self) -> &Arc<CdkWallet> {
+        &self.inner
     }
 }
 
@@ -223,7 +224,12 @@ impl Wallet {
     ) -> Result<MintQuote, FfiError> {
         let quote = self
             .inner
-            .mint_quote(payment_method, amount.map(Into::into), description, extra)
+            .mint_quote(
+                payment_method.into(),
+                amount.map(Into::into),
+                description,
+                extra,
+            )
             .await?;
         Ok(quote.into())
     }
@@ -239,6 +245,20 @@ impl Wallet {
     /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
     /// instead.
     pub async fn check_mint_quote(&self, quote_id: String) -> Result<MintQuote, FfiError> {
+        self.check_mint_quote_status(quote_id).await
+    }
+
+    /// Check a mint quote status from the mint.
+    ///
+    /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04.
+    /// Updates local store with current state from mint.
+    /// If there was a crashed mid-mint (pending saga), attempts to complete it.
+    /// Does NOT mint tokens directly - use mint() for that.
+    ///
+    /// **Note:** The mint quote must be known to the wallet (stored locally) for this
+    /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
+    /// instead.
+    pub async fn check_mint_quote_status(&self, quote_id: String) -> Result<MintQuote, FfiError> {
         let quote = self.inner.check_mint_quote_status(&quote_id).await?;
         Ok(quote.into())
     }
@@ -507,23 +527,15 @@ impl Wallet {
         quote_ids: Vec<String>,
         payment_method: PaymentMethod,
     ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
-        let kind = match payment_method {
-            PaymentMethod::Bolt11 => SubscriptionKind::Bolt11MintQuote,
-            PaymentMethod::Bolt12 => SubscriptionKind::Bolt12MintQuote,
-            PaymentMethod::Custom { .. } => {
-                return Err(FfiError::internal(
-                    "Custom payment method subscriptions are not yet supported",
-                ));
-            }
-        };
-
-        let params = SubscribeParams {
-            kind,
-            filters: quote_ids,
-            id: None,
-        };
-
-        self.subscribe(params).await
+        let cdk_method: cdk_common::PaymentMethod = payment_method.into();
+        let active_sub = self
+            .inner
+            .subscribe_mint_quote_state(quote_ids, cdk_method)
+            .await?;
+        let sub_id = uuid::Uuid::new_v4().to_string();
+        Ok(std::sync::Arc::new(ActiveSubscription::new(
+            active_sub, sub_id,
+        )))
     }
 
     /// Refresh keysets from the mint
@@ -541,11 +553,7 @@ impl Wallet {
     /// Get fees for a specific keyset ID
     pub async fn get_keyset_fees_by_id(&self, keyset_id: String) -> Result<u64, FfiError> {
         let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
-        Ok(self
-            .inner
-            .get_keyset_fees_and_amounts_by_id(id)
-            .await?
-            .fee())
+        Ok(self.inner.get_keyset_fees_by_id(id).await?)
     }
 
     /// Check all pending proofs and return the total amount still pending
@@ -564,10 +572,7 @@ impl Wallet {
         keyset_id: String,
     ) -> Result<Amount, FfiError> {
         let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
-        let fee = self
-            .inner
-            .get_keyset_count_fee(&id, proof_count as u64)
-            .await?;
+        let fee = self.inner.calculate_fee(proof_count as u64, id).await?;
         Ok(fee.into())
     }
 
@@ -650,6 +655,21 @@ impl Wallet {
     /// The `network` parameter is forwarded to the BIP353 resolver for on-chain address
     /// validation in the resolved URI.
     pub async fn melt_human_readable(
+        &self,
+        address: String,
+        amount_msat: Amount,
+        network: BitcoinNetwork,
+    ) -> Result<MeltQuote, FfiError> {
+        self.melt_human_readable_quote(address, amount_msat, network)
+            .await
+    }
+
+    /// Get a quote for a human-readable address melt
+    ///
+    /// Accepts a human-readable address that could be either a BIP353 address
+    /// or a Lightning address. Tries BIP353 first if mint supports Bolt12,
+    /// falls back to Lightning address.
+    pub async fn melt_human_readable_quote(
         &self,
         address: String,
         amount_msat: Amount,

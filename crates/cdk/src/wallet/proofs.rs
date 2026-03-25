@@ -39,6 +39,12 @@ impl Wallet {
             .await
     }
 
+    /// Get proofs filtered by states
+    #[instrument(skip(self))]
+    pub async fn get_proofs_by_states(&self, states: Vec<State>) -> Result<Proofs, Error> {
+        self.get_proofs_with(Some(states), None).await
+    }
+
     /// Get this wallet's [Proofs] that match the args
     pub async fn get_proofs_with(
         &self,

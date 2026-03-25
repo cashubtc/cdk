@@ -31,9 +31,8 @@ use crate::nuts::{
     nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
 };
-use crate::util::unix_time;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
-use crate::{Amount, OidcClient};
+use crate::Amount;
 
 mod auth;
 pub mod bip321;
@@ -65,6 +64,7 @@ pub mod test_utils;
 mod transactions;
 pub mod util;
 pub mod wallet_repository;
+mod wallet_trait;
 
 pub use auth::{AuthMintConnector, AuthWallet};
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -74,6 +74,7 @@ pub use bip321::{
 };
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
+pub use cdk_common::wallet::{ReceiveOptions, SendMemo, SendOptions};
 pub use keysets::KeysetFilter;
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
@@ -85,9 +86,8 @@ pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResul
 pub use payment_request::CreateRequestParams;
 #[cfg(feature = "nostr")]
 pub use payment_request::NostrWaitInfo;
-pub use receive::ReceiveOptions;
 pub use recovery::RecoveryReport;
-pub use send::{PreparedSend, SendMemo, SendOptions};
+pub use send::PreparedSend;
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
 pub use streams::npubcash::NpubCashProofStream;
 pub use types::{MeltQuote, MintQuote, SendKind};
@@ -200,16 +200,7 @@ impl From<WalletSubscription> for WalletParams {
     }
 }
 
-/// Amount that are recovered during restore operation
-#[derive(Debug, Hash, PartialEq, Eq, Default)]
-pub struct Restored {
-    /// Amount in the restore that has already been spent
-    pub spent: Amount,
-    /// Amount restored that is unspent
-    pub unspent: Amount,
-    /// Amount restored that is pending
-    pub pending: Amount,
-}
+pub use cdk_common::wallet::Restored;
 
 impl Wallet {
     /// Create new [`Wallet`] using the builder pattern
@@ -264,6 +255,29 @@ impl Wallet {
         self.subscription
             .subscribe(self.mint_url.clone(), query.into())
             .map_err(|e| Error::SubscriptionError(e.to_string()))
+    }
+
+    /// Subscribe to mint quote state changes for the given quote IDs and payment method
+    #[instrument(skip(self, method))]
+    pub async fn subscribe_mint_quote_state(
+        &self,
+        quote_ids: Vec<String>,
+        method: cdk_common::PaymentMethod,
+    ) -> Result<ActiveSubscription, Error> {
+        use cdk_common::nut00::KnownMethod;
+
+        let sub = match method {
+            cdk_common::PaymentMethod::Known(KnownMethod::Bolt11) => {
+                WalletSubscription::Bolt11MintQuoteState(quote_ids)
+            }
+            cdk_common::PaymentMethod::Known(KnownMethod::Bolt12) => {
+                WalletSubscription::Bolt12MintQuoteState(quote_ids)
+            }
+            cdk_common::PaymentMethod::Custom(_) => {
+                return Err(Error::InvalidPaymentMethod);
+            }
+        };
+        self.subscribe(sub).await
     }
 
     /// Fee required to redeem proof set
@@ -323,6 +337,12 @@ impl Wallet {
         Ok(Amount::from(fee))
     }
 
+    /// Calculate fee for a given number of proofs with the specified keyset
+    #[instrument(skip(self))]
+    pub async fn calculate_fee(&self, proof_count: u64, keyset_id: Id) -> Result<Amount, Error> {
+        self.get_keyset_count_fee(&keyset_id, proof_count).await
+    }
+
     /// Update Mint information and related entries in the event a mint changes
     /// its URL
     #[instrument(skip(self))]
@@ -348,7 +368,7 @@ impl Wallet {
 
         // If mint provides time make sure it is accurate
         if let Some(mint_unix_time) = mint_info.time {
-            let current_unix_time = unix_time();
+            let current_unix_time = crate::util::unix_time();
             if current_unix_time.abs_diff(mint_unix_time) > 30 {
                 tracing::warn!(
                     "Mint time does match wallet time. Mint: {}, Wallet: {}",
@@ -369,7 +389,7 @@ impl Wallet {
 
                     if let Some(oidc_client) = mint_info
                         .openid_discovery()
-                        .map(|url| OidcClient::new(url, None))
+                        .map(|url| crate::OidcClient::new(url, None))
                     {
                         auth_wallet.set_oidc_client(Some(oidc_client)).await;
                     }
@@ -379,7 +399,7 @@ impl Wallet {
 
                     let oidc_client = mint_info
                         .openid_discovery()
-                        .map(|url| OidcClient::new(url, None));
+                        .map(|url| crate::OidcClient::new(url, None));
                     let new_auth_wallet = AuthWallet::new(
                         self.mint_url.clone(),
                         None,
