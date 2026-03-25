@@ -71,6 +71,7 @@ impl LnBackendSetup for config::Cln {
         let cln = cdk_cln::Cln::new(
             cln_socket,
             fee_reserve,
+            self.expose_private_channels,
             kv_store.expect("Cln needs kv store"),
         )
         .await?;

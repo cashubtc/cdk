@@ -29,8 +29,8 @@ use cln_rpc::model::requests::{
     OfferRequest, PayRequest, WaitanyinvoiceRequest,
 };
 use cln_rpc::model::responses::{
-    DecodeResponse, ListinvoicesInvoices, ListinvoicesInvoicesStatus, ListpaysPaysStatus,
-    PayStatus, WaitanyinvoiceResponse, WaitanyinvoiceStatus,
+    DecodeResponse, InvoiceResponse, ListinvoicesInvoices, ListinvoicesInvoicesStatus,
+    ListpaysPaysStatus, PayStatus, WaitanyinvoiceResponse, WaitanyinvoiceStatus,
 };
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny, Sha256};
 use cln_rpc::ClnRpc;
@@ -52,6 +52,7 @@ const LAST_PAY_INDEX_KV_KEY: &str = "last_pay_index";
 pub struct Cln {
     rpc_socket: PathBuf,
     fee_reserve: FeeReserve,
+    expose_private_channels: bool,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
     kv_store: DynKVStore,
@@ -71,11 +72,13 @@ impl Cln {
     pub async fn new(
         rpc_socket: PathBuf,
         fee_reserve: FeeReserve,
+        expose_private_channels: bool,
         kv_store: DynKVStore,
     ) -> Result<Self, Error> {
         Ok(Self {
             rpc_socket,
             fee_reserve,
+            expose_private_channels,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             kv_store,
@@ -582,20 +585,31 @@ impl MintPayment for Cln {
                 let amount_msat =
                     AmountOrAny::Amount(CLN_Amount::from_msat(amount_converted.value()));
 
-                let invoice_response = cln_client
-                    .call_typed(&InvoiceRequest {
-                        amount_msat,
-                        description: description.unwrap_or_default(),
-                        label: label.clone(),
-                        expiry: unix_expiry.map(|t| t - time_now),
-                        fallbacks: None,
-                        preimage: None,
-                        cltv: None,
-                        deschashonly: None,
-                        exposeprivatechannels: None,
-                    })
-                    .await
-                    .map_err(Error::from)?;
+                let request = InvoiceRequest {
+                    amount_msat,
+                    description: description.unwrap_or_default(),
+                    label: label.clone(),
+                    expiry: unix_expiry.map(|t| t - time_now),
+                    fallbacks: None,
+                    preimage: None,
+                    cltv: None,
+                    deschashonly: None,
+                    exposeprivatechannels: None,
+                };
+
+                // cln-rpc types exposeprivatechannels as Option<Vec<ShortChannelId>>
+                // which cannot represent boolean true. Use call_raw to bypass this
+                // limitation when expose_private_channels is enabled.
+                let invoice_response: InvoiceResponse = if self.expose_private_channels {
+                    let mut params = serde_json::to_value(&request).map_err(Error::from)?;
+                    params["exposeprivatechannels"] = serde_json::Value::Bool(true);
+                    cln_client
+                        .call_raw("invoice", &params)
+                        .await
+                        .map_err(Error::from)?
+                } else {
+                    cln_client.call_typed(&request).await.map_err(Error::from)?
+                };
 
                 let request = Bolt11Invoice::from_str(&invoice_response.bolt11)?;
                 let expiry = request.expires_at().map(|t| t.as_secs());

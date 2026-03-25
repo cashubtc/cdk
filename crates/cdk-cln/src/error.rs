@@ -35,6 +35,9 @@ pub enum Error {
     /// Database Error
     #[error("Database error: {0}")]
     Database(String),
+    /// Serde JSON Error
+    #[error(transparent)]
+    SerdeJson(#[from] serde_json::Error),
 }
 
 impl From<Error> for cdk_common::payment::Error {

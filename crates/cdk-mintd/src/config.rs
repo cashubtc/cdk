@@ -233,6 +233,8 @@ pub struct Cln {
     pub rpc_path: PathBuf,
     #[serde(default = "default_cln_bolt12")]
     pub bolt12: bool,
+    #[serde(default)]
+    pub expose_private_channels: bool,
     #[serde(default = "default_fee_percent")]
     pub fee_percent: f32,
     #[serde(default = "default_reserve_fee_min")]
@@ -245,6 +247,7 @@ impl Default for Cln {
         Self {
             rpc_path: PathBuf::new(),
             bolt12: true,
+            expose_private_channels: false,
             fee_percent: 0.02,
             reserve_fee_min: 2.into(),
         }
