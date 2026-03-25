@@ -26,10 +26,13 @@ impl VersionInterceptor {
     ///
     /// # Panics
     /// Panics if `version` is not a valid gRPC metadata ASCII value.
-    pub fn new(header: &'static str, version: &'static str) -> Self {
+    pub fn new(header: &'static str, version: impl AsRef<str>) -> Self {
         Self {
             header,
-            value: version.parse().expect("Invalid protocol version"),
+            value: version
+                .as_ref()
+                .parse()
+                .expect("Invalid protocol version"),
         }
     }
 }

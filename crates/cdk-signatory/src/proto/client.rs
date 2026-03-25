@@ -71,8 +71,7 @@ impl SignatoryRpcClient {
                 .await?
         };
 
-        let version_str = (proto::Constants::SchemaVersion as u8).to_string();
-        let version: &'static str = Box::leak(version_str.into_boxed_str());
+        let version = (proto::Constants::SchemaVersion as u8).to_string();
         let interceptor = VersionInterceptor::new(VERSION_SIGNATORY_HEADER, version);
 
         Ok(Self {
