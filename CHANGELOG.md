@@ -7,6 +7,73 @@
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/cashubtc/cdk/releases/tag/v0.16.0)
+
+### Summary
+
+Version 0.16.0 introduces **NUT-28 (Pay-to-Blinded-Key)** and **NUT-29 (Batch Minting)** as significant protocol enhancements. This release also brings **BIP-321 (Bitcoin Payment Requests)** support and **BIP-353** resolution in the CLI. A major architectural refinement introduces the `WalletTrait`, unifying core and FFI wallet implementations.
+
+Key highlights include:
+- **NUT-28 (Pay-to-Blinded-Key)**: Privacy-enhancing P2PK variant that blinds keys before spending.
+- **NUT-29 (Batch Minting)**: Support for batching mint quotes for improved efficiency.
+- **BIP-321 Support**: Complete parsing and creation of Bitcoin payment requests (BIP-321).
+- **WalletTrait**: Unified abstraction for all wallet types, simplifying integrations and FFI bindings.
+- **Improved WASM Support**: Refactored WebSocket client and time handling for better browser compatibility.
+- **CLI Enhancements**: BIP-353 resolution, NUT-26 PR support, and improved mint management commands.
+
+### Added
+- cdk: NUT-29 Batch Minting support (#1698) ([thesimplekid]).
+- cdk: NUT-28 Pay-to-Blinded-Key (P2BK) support (#1253, #1729) ([lollerfirst]).
+- cdk: BIP-321 (Bitcoin Payment Requests) parsing and creation (#1716) ([thesimplekid]).
+- cdk: `WalletTrait` shared between core and FFI wallets for improved architectural consistency (#1581) ([crodas]).
+- cdk: WASM-compatible WebSocket client abstraction (#1615) ([crodas]).
+- cdk: Added `inactive/expired` keysets to `MintBuilder` ([crodas]).
+- cdk: Added `config_unit` to `MintBuilder` (#1659) ([thesimplekid]).
+- cdk: Added `get_mint_quotes` to the mint database trait (#1689) ([thesimplekid]).
+- cdk: Added MacOS builds to the automated release process (#1702) ([thesimplekid]).
+- cdk: Subscribe to mint quote state changes in FFI bindings (#1725) ([Forte11Cuba]).
+- cdk: Add `to_bech32_string` to FFI (#1712) ([thesimplekid]).
+- cdk: Store Nostr payment request information (#1732) ([thesimplekid]).
+- cdk: Add keys and mint info to mock connector for testing (#1727) ([thesimplekid]).
+- cdk-cli: BIP-353 human-readable address resolution (#1739) ([thesimplekid]).
+- cdk-cli: NUT-26 Payment Request CLI subcommands (#1731) ([thesimplekid]).
+- cdk-cli: Recover from incomplete saga command (#1674) ([thesimplekid]).
+- cdk-mintd: Home page and footer with custodial information (#1760, #1771) ([thesimplekid]).
+- cdk-mintd: Add `expose_private_channels` configuration for CLN backend (#1758) ([4xvgal]).
+
+### Changed
+- cdk: **BREAKING** - Unified `melt` and `melt_async` logic in the mint implementation (#1715) ([0xEgao]).
+- cdk: **BREAKING** - NUT-18 payment requests now use `Vec<T>` instead of `Option<Vec<T>>` for better consistency (#1664) ([Forte11Cuba]).
+- cdk: Upgraded `redb` to version 3.0.0 (#1672) ([thesimplekid]).
+- cdk: Align signatory keyset derivation with the remote signer specification (#1257) ([lescuer97]).
+- cdk: For mint quotes, use enum for mint connector selection (#1708) ([thesimplekid]).
+- cdk: Replaced `TryFrom<MeltQuote>` with a direct `OutgoingPaymentOptions` function for cleaner API (#1724) ([TheMhv]).
+- cdk: Use amount with unit in gRPC communication (#1616) ([thesimplekid]).
+- cdk: Remove default features of `hyper-rustls` to reduce binary size and dependencies (#1768) ([thesimplekid]).
+- cdk: Static release builds for all platforms (#1683) ([thesimplekid]).
+- cdk: Tor service default configuration (#1449) ([gandlafbtc]).
+- cdk: Inject version header at client level instead of per request (#1766) ([Forte11Cuba]).
+- cdk: Moved spending conditions implementation to `nut10` module for better organization (#1714) ([TheMhv]).
+
+### Fixed
+- cdk: Auth token (NUT-22) no longer requires base64 padding for better compatibility (#1755) ([crodas]).
+- cdk: Wallet restore now scans all keysets, including inactive ones, to prevent missed funds (#1753) ([crodas]).
+- cdk: Correctly filter sagas and quotes by wallet unit and mint URL (#1759) ([thesimplekid]).
+- cdk: Ensure `extra_json` is persisted on `mint_quotes` in SQL backends (#1742) ([vnprc]).
+- cdk: Publish pubsub notifications only after successful transaction commit ([thesimplekid]).
+- cdk: Allow denomination reuse in amount split for restricted keysets (#1676) ([thesimplekid]).
+- cdk: Compensate for failed sagas in the mint to ensure consistency (#1675) ([thesimplekid]).
+- cdk: Fixed saga proof reservation in the wallet to prevent accidental spending during pending operations (#1728) ([thesimplekid]).
+- cdk: Pass currency unit through protobuf instead of hardcoding Msat in `MakePayment` (#1673) ([crodas]).
+- cdk: Fixed wallet validation for impossible multisig and refund configurations (#1711) ([ritoban23]).
+- cdk: Handle WASM compatibility in WebSocket client and time handling (#1615, #1662) ([crodas]).
+- cdk-mint-rpc: Added missing version header to all mint RPC CLI subcommands (#1764) ([thesimplekid]).
+
+### Removed
+- cdk: Remove `output_already_signed` (#1690) ([thesimplekid]).
+- cdk: Remove redundant unit field from `get_payment_quote` (#1704) ([thesimplekid]).
+- cdk: Remove deprecated `promises` field from `RestoreResponse` (#1663) ([Forte11Cuba]).
+
 ## [0.15.1](https://github.com/cashubtc/cdk/releases/tag/v0.15.1)
 
 ## Fixed
@@ -733,3 +800,11 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [erik]: https://github.com/swedishfrenchpress
 [SatsAndSports]: https://github.com/SatsAndSports
 [stefanbitcr]: https://github.com/stefanbitcr
+[0xEgao]: https://github.com/0xEgao
+[a1denvalu3]: https://github.com/a1denvalu3
+[gandlafbtc]: https://github.com/gandlafbtc
+[4xvgal]: https://github.com/4xvgal
+[Forte11Cuba]: https://github.com/Forte11Cuba
+[TheMhv]: https://github.com/TheMhv
+[ritoban23]: https://github.com/ritoban23
+[lescuer97]: https://github.com/lescuer97
