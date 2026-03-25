@@ -49,6 +49,7 @@ mod mint_connector;
 mod mint_metadata_cache;
 #[cfg(feature = "npubcash")]
 mod npubcash;
+mod p2pk_storage;
 pub mod payment_request;
 mod proofs;
 mod receive;

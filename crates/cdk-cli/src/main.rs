@@ -114,6 +114,8 @@ enum Commands {
     Resolve(sub_commands::resolve::ResolveSubCommand),
     /// Create Payment request
     CreateRequest(sub_commands::create_request::CreateRequestSubCommand),
+    /// Manage P2PK signing keys (generate, store, list, remove)
+    P2pk(sub_commands::p2pk::P2pkSubCommand),
     /// Mint blind auth proofs
     MintBlindAuth(sub_commands::mint_blind_auth::MintBlindAuthSubCommand),
     /// Cat login with username/password
@@ -326,6 +328,9 @@ async fn main() -> Result<()> {
                 &currency_unit,
             )
             .await
+        }
+        Commands::P2pk(sub_command_args) => {
+            sub_commands::p2pk::p2pk(&wallet_repository, sub_command_args, &currency_unit).await
         }
         Commands::MintBlindAuth(sub_command_args) => {
             sub_commands::mint_blind_auth::mint_blind_auth(

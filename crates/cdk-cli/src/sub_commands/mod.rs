@@ -15,6 +15,7 @@ pub mod mint_blind_auth;
 pub mod mint_info;
 #[cfg(feature = "npubcash")]
 pub mod npubcash;
+pub mod p2pk;
 pub mod pay_request;
 pub mod pending_mints;
 pub mod receive;

@@ -35,7 +35,6 @@ use std::collections::HashMap;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
-use bitcoin::XOnlyPublicKey;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
     OperationData, ProofInfo, ReceiveOperationData, ReceiveSagaState, Transaction,
@@ -49,7 +48,7 @@ use super::ReceiveOptions;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
-use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State};
+use crate::nuts::{Conditions, Proofs, PublicKey, SigFlag, State};
 use crate::util::hex;
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
@@ -124,11 +123,15 @@ impl<'a> ReceiveSaga<'a, Initial> {
             })
             .collect::<Result<HashMap<String, &String>, _>>()?;
 
-        let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = opts
-            .p2pk_signing_keys
-            .iter()
-            .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
-            .collect();
+        // Load stored P2PK signing keys, then merge with manually provided keys
+        // (manual keys take priority over stored keys)
+        let mut p2pk_signing_keys = self.wallet.get_p2pk_signing_keys().await?;
+        for manual_key in &opts.p2pk_signing_keys {
+            p2pk_signing_keys.insert(
+                manual_key.x_only_public_key(&SECP256K1).0,
+                manual_key.clone(),
+            );
+        }
 
         // Process each proof: verify DLEQ, handle P2PK/HTLC
         for proof in &mut proofs {
@@ -203,7 +206,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                         } else if let Some(signing) =
                             p2pk_signing_keys.get(&pubkey.x_only_public_key())
                         {
-                            proof.sign_p2pk(signing.to_owned().clone())?;
+                            proof.sign_p2pk(signing.clone())?;
                         }
                     }
 
@@ -326,19 +329,20 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         // Determine if SigAll signing is needed
         let sig_flag = self.determine_sig_flag()?;
         if sig_flag == SigFlag::SigAll {
-            let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = self
-                .state_data
-                .options
-                .p2pk_signing_keys
-                .iter()
-                .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
-                .collect();
+            // Load stored P2PK signing keys and merge with manually provided keys
+            let mut p2pk_signing_keys = self.wallet.get_p2pk_signing_keys().await?;
+            for manual_key in &self.state_data.options.p2pk_signing_keys {
+                p2pk_signing_keys.insert(
+                    manual_key.x_only_public_key(&SECP256K1).0,
+                    manual_key.clone(),
+                );
+            }
 
             for blinded_message in pre_swap.swap_request.outputs_mut() {
                 for signing_key in p2pk_signing_keys.values() {
                     // Sign the outputs of the swap using standard P2PK since output
                     // P2BK requires ephemeral keys which is handled at creation.
-                    blinded_message.sign_p2pk((**signing_key).clone())?
+                    blinded_message.sign_p2pk(signing_key.clone())?
                 }
             }
         }
