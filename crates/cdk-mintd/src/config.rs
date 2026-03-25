@@ -72,6 +72,12 @@ pub struct Info {
     /// This requires `mintd` was built with the `swagger` feature flag.
     pub enable_swagger_ui: Option<bool>,
 
+    /// When this is set to true, the mint exposes a very simple info page at `/`
+    /// showing the mint name and description.
+    ///
+    /// This requires `mintd` was built with the `info-page` feature flag.
+    pub enable_info_page: Option<bool>,
+
     /// Optional persisted quote TTL values (seconds) to initialize the database with
     /// when RPC is disabled or on first-run when RPC is enabled.
     /// If not provided, defaults are used.
@@ -93,6 +99,7 @@ impl Default for Info {
             use_keyset_v2: None,
             http_cache: cache::Config::default(),
             enable_swagger_ui: None,
+            enable_info_page: Some(true),
             logging: LoggingConfig::default(),
             quote_ttl: None,
         }
@@ -121,6 +128,7 @@ impl std::fmt::Debug for Info {
             .field("http_cache", &self.http_cache)
             .field("logging", &self.logging)
             .field("enable_swagger_ui", &self.enable_swagger_ui)
+            .field("enable_info_page", &self.enable_info_page)
             .finish()
     }
 }

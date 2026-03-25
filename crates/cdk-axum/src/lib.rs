@@ -160,7 +160,7 @@ define_api_doc! {
 /// The `custom_methods` parameter should include all custom payment methods supported
 /// by the payment processor, including "bolt11" and "bolt12" if they are supported.
 pub async fn create_mint_router(mint: Arc<Mint>, custom_methods: Vec<String>) -> Result<Router> {
-    create_mint_router_with_custom_cache(mint, Default::default(), custom_methods).await
+    create_mint_router_with_custom_cache(mint, Default::default(), custom_methods, false).await
 }
 
 async fn cors_middleware(
@@ -211,10 +211,12 @@ async fn cors_middleware(
 ///
 /// The `custom_methods` parameter should include all custom payment methods supported
 /// by the payment processor, including "bolt11" and "bolt12" if they are supported.
+#[allow(unused_mut, unused_variables)]
 pub async fn create_mint_router_with_custom_cache(
     mint: Arc<Mint>,
     cache: HttpCache,
     custom_methods: Vec<String>,
+    enable_info_page: bool,
 ) -> Result<Router> {
     let state = MintState {
         mint,
@@ -231,7 +233,12 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
 
-    let mint_router = Router::new().nest("/v1", v1_router);
+    let mut mint_router = Router::new().nest("/v1", v1_router);
+
+    #[cfg(feature = "info-page")]
+    if enable_info_page {
+        mint_router = mint_router.route("/", get(get_index));
+    }
 
     let mint_router = {
         let auth_router = create_auth_router(state.clone());
