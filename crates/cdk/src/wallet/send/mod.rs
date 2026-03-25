@@ -9,11 +9,9 @@ use cdk_common::Id;
 use tracing::instrument;
 use uuid::Uuid;
 
-use super::SendKind;
-use crate::amount::SplitTarget;
 use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::{Proofs, SpendingConditions, Token};
+use crate::nuts::{Proofs, Token};
 use crate::{Amount, Error, Wallet};
 
 pub(crate) mod saga;
@@ -356,50 +354,7 @@ impl Wallet {
     }
 }
 
-/// Send options
-#[derive(Debug, Clone, Default)]
-pub struct SendOptions {
-    /// Memo
-    pub memo: Option<SendMemo>,
-    /// Spending conditions
-    pub conditions: Option<SpendingConditions>,
-    /// Amount split target
-    pub amount_split_target: SplitTarget,
-    /// Send kind
-    pub send_kind: SendKind,
-    /// Include fee
-    ///
-    /// When this is true the token created will include the amount of fees needed to redeem the token (amount + fee_to_redeem)
-    pub include_fee: bool,
-    /// Maximum number of proofs to include in the token
-    /// Default is `None`, which means all selected proofs will be included.
-    pub max_proofs: Option<usize>,
-    /// Metadata
-    pub metadata: HashMap<String, String>,
-    /// Use P2BK (NUT-28)
-    ///
-    /// When true, P2PK conditions will be converted to P2BK by blinding the public key
-    pub use_p2bk: bool,
-}
-
-/// Send memo
-#[derive(Debug, Clone)]
-pub struct SendMemo {
-    /// Memo
-    pub memo: String,
-    /// Include memo in token
-    pub include_memo: bool,
-}
-
-impl SendMemo {
-    /// Create a new send memo
-    pub fn for_token(memo: &str) -> Self {
-        Self {
-            memo: memo.to_string(),
-            include_memo: true,
-        }
-    }
-}
+pub use cdk_common::wallet::{SendMemo, SendOptions};
 
 /// Result of splitting proofs for a send operation
 #[derive(Debug, Clone)]

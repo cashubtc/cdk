@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts};
-use cdk_common::nut02::{KeySetInfos, KeySetInfosMethods};
+use cdk_common::nut02::KeySetInfosMethods;
 use tracing::instrument;
 
 use crate::nuts::{Id, KeySetInfo, Keys};
@@ -85,7 +85,7 @@ impl Wallet {
     /// updating the metadata cache and database. Use this when you need
     /// the most up-to-date keyset information.
     #[instrument(skip(self))]
-    pub async fn refresh_keysets(&self) -> Result<KeySetInfos, Error> {
+    pub async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         tracing::debug!("Refreshing keysets from mint");
 
         let keysets = self
@@ -173,6 +173,14 @@ impl Wallet {
         }
 
         Ok(fees)
+    }
+
+    /// Get the input fee rate for a specific keyset ID
+    pub async fn get_keyset_fees_by_id(&self, keyset_id: Id) -> Result<u64, Error> {
+        Ok(self
+            .get_keyset_fees_and_amounts_by_id(keyset_id)
+            .await?
+            .fee())
     }
 
     /// Get keyset fees and amounts for a specific keyset ID

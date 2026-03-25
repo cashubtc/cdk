@@ -4,7 +4,12 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
+use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
+use cashu::amount::SplitTarget;
+use cashu::nuts::nut07::ProofState;
+use cashu::nuts::nut18::PaymentRequest;
+use cashu::nuts::AuthProof;
 use cashu::util::hex;
 use cashu::{nut00, PaymentMethod, Proof, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
@@ -12,7 +17,7 @@ use uuid::Uuid;
 
 use crate::mint_url::MintUrl;
 use crate::nuts::{
-    CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
+    CurrencyUnit, Id, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
 };
 use crate::{Amount, Error};
 
@@ -285,6 +290,70 @@ impl MintQuote {
                 .unwrap_or(Amount::ZERO)
         }
     }
+}
+
+/// Amounts recovered during a restore operation
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
+pub struct Restored {
+    /// Amount in the restore that has already been spent
+    pub spent: Amount,
+    /// Amount restored that is unspent
+    pub unspent: Amount,
+    /// Amount restored that is pending
+    pub pending: Amount,
+}
+
+/// Send options
+#[derive(Debug, Clone, Default)]
+pub struct SendOptions {
+    /// Memo
+    pub memo: Option<SendMemo>,
+    /// Spending conditions
+    pub conditions: Option<SpendingConditions>,
+    /// Amount split target
+    pub amount_split_target: SplitTarget,
+    /// Send kind
+    pub send_kind: SendKind,
+    /// Include fee
+    pub include_fee: bool,
+    /// Maximum number of proofs to include in the token
+    pub max_proofs: Option<usize>,
+    /// Metadata
+    pub metadata: HashMap<String, String>,
+    /// Use P2BK (NUT-28)
+    pub use_p2bk: bool,
+}
+
+/// Send memo
+#[derive(Debug, Clone)]
+pub struct SendMemo {
+    /// Memo
+    pub memo: String,
+    /// Include memo in token
+    pub include_memo: bool,
+}
+
+impl SendMemo {
+    /// Create a new send memo
+    pub fn for_token(memo: &str) -> Self {
+        Self {
+            memo: memo.to_string(),
+            include_memo: true,
+        }
+    }
+}
+
+/// Receive options
+#[derive(Debug, Clone, Default)]
+pub struct ReceiveOptions {
+    /// Amount split target
+    pub amount_split_target: SplitTarget,
+    /// P2PK signing keys
+    pub p2pk_signing_keys: Vec<SecretKey>,
+    /// Preimages
+    pub preimages: Vec<String>,
+    /// Metadata
+    pub metadata: HashMap<String, String>,
 }
 
 /// Send Kind
@@ -562,6 +631,325 @@ impl FromStr for OperationKind {
             _ => Err(Error::InvalidOperationKind),
         }
     }
+}
+
+/// Unified wallet trait providing a common interface for wallet operations.
+///
+/// This trait abstracts over different wallet implementations (CDK wallet, FFI
+/// wrappers, etc.) and provides a consistent interface for balance queries,
+/// minting, melting, keyset management, and other core wallet operations.
+///
+/// All domain types are associated types so each implementation can use its own
+/// type system (e.g. FFI-friendly records vs native Rust types).
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait Wallet: Send + Sync {
+    /// Error type
+    type Error: std::error::Error + Send + Sync + 'static;
+    /// Amount type (e.g. `cdk_common::Amount` or FFI `Amount`)
+    type Amount: Clone + Send + Sync;
+    /// Mint URL type
+    type MintUrl: Clone + Send + Sync;
+    /// Currency unit type
+    type CurrencyUnit: Clone + Send + Sync;
+    /// Mint info type
+    type MintInfo: Clone + Send + Sync;
+    /// Keyset info type
+    type KeySetInfo: Clone + Send + Sync;
+    /// Mint quote type
+    type MintQuote: Clone + Send + Sync;
+    /// Melt quote type
+    type MeltQuote: Clone + Send + Sync;
+    /// Payment method type
+    type PaymentMethod: Clone + Send + Sync;
+    /// Melt options type
+    type MeltOptions: Clone + Send + Sync;
+    /// Operation ID type (CDK uses `Uuid`, FFI uses `String`)
+    type OperationId: Clone + Send + Sync;
+    /// Prepared send type
+    type PreparedSend<'a>: Send + Sync
+    where
+        Self: 'a;
+    /// Prepared melt type
+    type PreparedMelt<'a>: Send + Sync
+    where
+        Self: 'a;
+    /// Active subscription handle for receiving notifications
+    type Subscription: Send + Sync;
+    /// Subscribe params type
+    type SubscribeParams: Clone + Send + Sync;
+
+    /// Get the mint URL this wallet is connected to
+    fn mint_url(&self) -> Self::MintUrl;
+
+    /// Get the currency unit of this wallet
+    fn unit(&self) -> Self::CurrencyUnit;
+
+    /// Total unspent balance of the wallet
+    async fn total_balance(&self) -> Result<Self::Amount, Self::Error>;
+
+    /// Total pending balance of the wallet
+    async fn total_pending_balance(&self) -> Result<Self::Amount, Self::Error>;
+
+    /// Total reserved balance of the wallet
+    async fn total_reserved_balance(&self) -> Result<Self::Amount, Self::Error>;
+
+    /// Fetch mint info from the mint (always makes a network call)
+    async fn fetch_mint_info(&self) -> Result<Option<Self::MintInfo>, Self::Error>;
+
+    /// Load mint info (from cache if fresh, otherwise fetches)
+    async fn load_mint_info(&self) -> Result<Self::MintInfo, Self::Error>;
+
+    /// Refresh keysets from the mint (always fetches fresh data)
+    async fn refresh_keysets(&self) -> Result<Vec<Self::KeySetInfo>, Self::Error>;
+
+    /// Get the active keyset with lowest fees
+    async fn get_active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error>;
+
+    /// Create a mint quote for the given payment method
+    async fn mint_quote(
+        &self,
+        method: Self::PaymentMethod,
+        amount: Option<Self::Amount>,
+        description: Option<String>,
+        extra: Option<String>,
+    ) -> Result<Self::MintQuote, Self::Error>;
+
+    /// Create a melt quote for the given payment method
+    async fn melt_quote(
+        &self,
+        method: Self::PaymentMethod,
+        request: String,
+        options: Option<Self::MeltOptions>,
+        extra: Option<String>,
+    ) -> Result<Self::MeltQuote, Self::Error>;
+
+    /// List transactions, optionally filtered by direction
+    async fn list_transactions(
+        &self,
+        direction: Option<TransactionDirection>,
+    ) -> Result<Vec<Transaction>, Self::Error>;
+
+    /// Get a transaction by ID
+    async fn get_transaction(&self, id: TransactionId) -> Result<Option<Transaction>, Self::Error>;
+
+    /// Get proofs for a transaction by transaction ID
+    async fn get_proofs_for_transaction(&self, id: TransactionId) -> Result<Proofs, Self::Error>;
+
+    /// Revert a transaction by reclaiming unspent proofs
+    async fn revert_transaction(&self, id: TransactionId) -> Result<(), Self::Error>;
+
+    /// Check all pending proofs and return total amount still pending
+    async fn check_all_pending_proofs(&self) -> Result<Self::Amount, Self::Error>;
+
+    /// Check if proofs are spent
+    async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Self::Error>;
+
+    /// Get fees for a specific keyset ID
+    async fn get_keyset_fees_by_id(&self, keyset_id: Id) -> Result<u64, Self::Error>;
+
+    /// Calculate fee for a given number of proofs with the specified keyset
+    async fn calculate_fee(
+        &self,
+        proof_count: u64,
+        keyset_id: Id,
+    ) -> Result<Self::Amount, Self::Error>;
+
+    /// Receive an encoded token
+    async fn receive(
+        &self,
+        encoded_token: &str,
+        options: ReceiveOptions,
+    ) -> Result<Self::Amount, Self::Error>;
+
+    /// Receive proofs directly
+    async fn receive_proofs(
+        &self,
+        proofs: Proofs,
+        options: ReceiveOptions,
+        memo: Option<String>,
+        token: Option<String>,
+    ) -> Result<Self::Amount, Self::Error>;
+
+    /// Prepare a send transaction
+    async fn prepare_send(
+        &self,
+        amount: Self::Amount,
+        options: SendOptions,
+    ) -> Result<Self::PreparedSend<'_>, Self::Error>;
+
+    /// Get pending send operation IDs
+    async fn get_pending_sends(&self) -> Result<Vec<Self::OperationId>, Self::Error>;
+
+    /// Revoke a pending send operation
+    async fn revoke_send(
+        &self,
+        operation_id: Self::OperationId,
+    ) -> Result<Self::Amount, Self::Error>;
+
+    /// Check if a pending send has been claimed
+    async fn check_send_status(&self, operation_id: Self::OperationId)
+        -> Result<bool, Self::Error>;
+
+    /// Mint tokens for a quote
+    async fn mint(
+        &self,
+        quote_id: &str,
+        split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> Result<Proofs, Self::Error>;
+
+    /// Check mint quote status
+    async fn check_mint_quote_status(&self, quote_id: &str)
+        -> Result<Self::MintQuote, Self::Error>;
+
+    /// Fetch a mint quote from the mint and store it locally
+    async fn fetch_mint_quote(
+        &self,
+        quote_id: &str,
+        payment_method: Option<Self::PaymentMethod>,
+    ) -> Result<Self::MintQuote, Self::Error>;
+
+    /// Prepare a melt operation
+    async fn prepare_melt(
+        &self,
+        quote_id: &str,
+        metadata: HashMap<String, String>,
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
+
+    /// Prepare a melt operation with specific proofs
+    async fn prepare_melt_proofs(
+        &self,
+        quote_id: &str,
+        proofs: Proofs,
+        metadata: HashMap<String, String>,
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
+
+    /// Swap proofs
+    async fn swap(
+        &self,
+        amount: Option<Self::Amount>,
+        split_target: SplitTarget,
+        input_proofs: Proofs,
+        spending_conditions: Option<SpendingConditions>,
+        include_fees: bool,
+        use_p2bk: bool,
+    ) -> Result<Option<Proofs>, Self::Error>;
+
+    /// Set Clear Auth Token (CAT)
+    async fn set_cat(&self, cat: String) -> Result<(), Self::Error>;
+
+    /// Set refresh token
+    async fn set_refresh_token(&self, refresh_token: String) -> Result<(), Self::Error>;
+
+    /// Refresh access token using stored refresh token
+    async fn refresh_access_token(&self) -> Result<(), Self::Error>;
+
+    /// Mint blind auth tokens
+    async fn mint_blind_auth(&self, amount: Self::Amount) -> Result<Proofs, Self::Error>;
+
+    /// Get unspent auth proofs
+    async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, Self::Error>;
+
+    /// Restore wallet from seed
+    async fn restore(&self) -> Result<Restored, Self::Error>;
+
+    /// Verify DLEQ proofs in a token
+    async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error>;
+
+    /// Pay a NUT-18 payment request
+    async fn pay_request(
+        &self,
+        request: PaymentRequest,
+        custom_amount: Option<Self::Amount>,
+    ) -> Result<(), Self::Error>;
+
+    /// Subscribe to mint quote state updates
+    ///
+    /// Returns a subscription handle that receives notifications when
+    /// any of the given mint quotes change state (e.g., Unpaid → Paid → Issued).
+    async fn subscribe_mint_quote_state(
+        &self,
+        quote_ids: Vec<String>,
+        method: Self::PaymentMethod,
+    ) -> Result<Self::Subscription, Self::Error>;
+
+    /// Set metadata cache TTL (time-to-live) in seconds
+    ///
+    /// Controls how long cached mint metadata (keysets, keys, mint info) is considered fresh
+    /// before requiring a refresh from the mint server.
+    /// If `None`, cache never expires and is always used.
+    fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>);
+
+    /// Subscribe to wallet events
+    async fn subscribe(
+        &self,
+        params: Self::SubscribeParams,
+    ) -> Result<Self::Subscription, Self::Error>;
+
+    /// Get a melt quote for a BIP353 address
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    async fn melt_bip353_quote(
+        &self,
+        bip353_address: &str,
+        amount_msat: Self::Amount,
+        network: bitcoin::Network,
+    ) -> Result<Self::MeltQuote, Self::Error>;
+
+    /// Get a melt quote for a Lightning address
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn melt_lightning_address_quote(
+        &self,
+        lightning_address: &str,
+        amount_msat: Self::Amount,
+    ) -> Result<Self::MeltQuote, Self::Error>;
+
+    /// Get a melt quote for a human-readable address
+    ///
+    /// Accepts a human-readable address that could be either a BIP353 address
+    /// or a Lightning address. Tries BIP353 first if mint supports Bolt12,
+    /// falls back to Lightning address.
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    async fn melt_human_readable_quote(
+        &self,
+        address: &str,
+        amount_msat: Self::Amount,
+        network: bitcoin::Network,
+    ) -> Result<Self::MeltQuote, Self::Error>;
+
+    /// Get a melt quote for a human-readable address (alias for `melt_human_readable_quote`)
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    async fn melt_human_readable(
+        &self,
+        address: &str,
+        amount_msat: Self::Amount,
+        network: bitcoin::Network,
+    ) -> Result<Self::MeltQuote, Self::Error> {
+        self.melt_human_readable_quote(address, amount_msat, network)
+            .await
+    }
+
+    /// Check a mint quote status (alias for `check_mint_quote_status`)
+    async fn check_mint_quote(&self, quote_id: &str) -> Result<Self::MintQuote, Self::Error> {
+        self.check_mint_quote_status(quote_id).await
+    }
+
+    /// Mint tokens for a quote (alias for `mint`)
+    async fn mint_unified(
+        &self,
+        quote_id: &str,
+        split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> Result<Proofs, Self::Error> {
+        self.mint(quote_id, split_target, spending_conditions).await
+    }
+
+    /// Get proofs filtered by states
+    ///
+    /// Returns all proofs whose state matches any of the given states.
+    /// The `Spent` state is typically excluded since spent proofs are removed
+    /// from the database.
+    async fn get_proofs_by_states(&self, states: Vec<State>) -> Result<Proofs, Self::Error>;
 }
 
 #[cfg(test)]

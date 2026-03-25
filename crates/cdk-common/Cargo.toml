@@ -21,6 +21,7 @@ nostr = ["wallet", "cashu/nostr"]
 prometheus = ["cdk-prometheus/default"]
 http = ["dep:cdk-http-client"]
 grpc = ["dep:tonic"]
+bip353 = []
 
 [dependencies]
 cdk-http-client = { workspace = true, optional = true }

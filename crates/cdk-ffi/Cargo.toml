@@ -15,7 +15,7 @@ name = "cdk_ffi"
 [dependencies]
 async-trait = { workspace = true }
 bip39 = { workspace = true }
-cdk = { workspace = true, default-features = false, features = ["wallet", "bip353", "nostr"] }
+cdk = { workspace = true, default-features = false, features = ["wallet", "nostr"] }
 cdk-sqlite = { workspace = true }
 cdk-postgres = { workspace = true, optional = true }
 cdk-npubcash = { workspace = true, optional = true }
@@ -41,7 +41,8 @@ log = "0.4"
 
 
 [features]
-default = ["postgres", "npubcash"]
+default = ["postgres", "npubcash", "bip353"]
+bip353 = ["cdk/bip353"]
 # Enable Postgres-backed wallet database support in FFI
 postgres = ["cdk-postgres"]
 # Enable NpubCash client bindings
