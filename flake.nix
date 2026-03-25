@@ -994,6 +994,7 @@
                   cargo update cookie_store --precise 0.22.0
                   cargo update serde_with --precise 3.17.0
                   cargo update time --precise 0.3.44
+                  cargo update unicode-segmentation --precise 1.12.0
                ";
                 buildInputs = baseBuildInputs ++ [ msrv_toolchain ];
                 inherit nativeBuildInputs;
