@@ -1188,9 +1188,13 @@ async fn start_services_with_shutdown(
         }
     }
 
-    let v1_service =
-        cdk_axum::create_mint_router_with_custom_cache(Arc::clone(&mint), cache, custom_methods)
-            .await?;
+    let v1_service = cdk_axum::create_mint_router_with_custom_cache(
+        Arc::clone(&mint),
+        cache,
+        custom_methods,
+        settings.info.enable_info_page.unwrap_or(true),
+    )
+    .await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)
