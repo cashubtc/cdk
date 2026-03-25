@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
-use bitcoin::bip32::DerivationPath;
 use async_trait::async_trait;
+use bitcoin::bip32::DerivationPath;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::amount::SplitTarget;
 use cashu::nuts::nut07::ProofState;
