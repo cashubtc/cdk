@@ -2209,3 +2209,77 @@ async fn test_concurrent_depth_invariant_swaps() {
         threshold
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_concurrent_depth_invariant_melts() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create wallet");
+
+    // Fund wallet with 1 large token
+    fund_wallet(wallet.clone(), 1000, None).await.unwrap();
+
+    let balance = wallet.total_balance().await.unwrap();
+    assert_eq!(balance, Amount::from(1000));
+
+    // Do concurrent melts that result in change.
+    // We'll generate 120 fake invoices of 1 sat each, and pay them concurrently.
+    // The change generation should properly increment the depth invariant counter.
+    for _ in 0..6 {
+        let mut handles = vec![];
+        for _ in 0..20 {
+            let w = wallet.clone();
+            handles.push(tokio::spawn(async move {
+                let invoice = cdk_fake_wallet::create_fake_invoice(1000, "".to_string());
+                let quote = w.melt_quote(
+                    cdk::nuts::PaymentMethod::BOLT11,
+                    invoice.to_string(),
+                    None,
+                    None,
+                ).await.unwrap();
+                let mut prepared = w.prepare_melt(&quote.id, std::collections::HashMap::new()).await;
+                let mut retries = 0;
+                while prepared.is_err() && retries < 10 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    prepared = w.prepare_melt(&quote.id, std::collections::HashMap::new()).await;
+                    retries += 1;
+                }
+                prepared.unwrap().confirm().await.unwrap();
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+    }
+
+    // Verify the invariant holds
+    let unspent = wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Unspent]), None)
+        .await
+        .unwrap();
+    let min_counter = unspent
+        .iter()
+        .filter_map(|p| p.keyset_counter)
+        .min()
+        .unwrap_or(0);
+    let max_counter = unspent
+        .iter()
+        .filter_map(|p| p.keyset_counter)
+        .max()
+        .unwrap_or(0);
+
+    let threshold = max_counter.saturating_sub(100);
+    assert!(
+        min_counter >= threshold,
+        "Invariant broken: min_counter {}, max_counter {} (threshold {})",
+        min_counter,
+        max_counter,
+        threshold
+    );
+}
