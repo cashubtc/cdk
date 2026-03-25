@@ -802,6 +802,7 @@ impl MeltQuote {
     /// Create new [`MeltQuote`]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        id: Option<QuoteId>,
         request: MeltPaymentRequest,
         unit: CurrencyUnit,
         amount: Amount<CurrencyUnit>,
@@ -811,10 +812,10 @@ impl MeltQuote {
         options: Option<MeltOptions>,
         payment_method: PaymentMethod,
     ) -> Self {
-        let id = Uuid::new_v4();
+        let id = id.unwrap_or_else(QuoteId::new_uuid);
 
         Self {
-            id: QuoteId::UUID(id),
+            id,
             unit: unit.clone(),
             request,
             amount,

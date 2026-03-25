@@ -240,6 +240,7 @@ impl Mint {
         let melt_ttl = self.quote_ttl().await?.melt_ttl;
 
         let quote = MeltQuote::new(
+            None,
             MeltPaymentRequest::Bolt11 {
                 bolt11: request.clone(),
             },
@@ -339,6 +340,7 @@ impl Mint {
         };
 
         let quote = MeltQuote::new(
+            None,
             payment_request,
             unit.clone(),
             quote_amount.clone(),
@@ -467,6 +469,7 @@ impl Mint {
         let quote_fee = payment_quote.fee;
 
         let quote = MeltQuote::new(
+            None,
             MeltPaymentRequest::Custom {
                 method: method.to_string(),
                 request: request.clone(),
