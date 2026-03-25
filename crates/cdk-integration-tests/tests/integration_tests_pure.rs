@@ -16,6 +16,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bip39::Mnemonic;
 use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
 use cashu::mint_url::MintUrl;
@@ -27,8 +28,9 @@ use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::subscription::Params;
 use cdk::wallet::types::{TransactionDirection, TransactionId};
-use cdk::wallet::{ReceiveOptions, SendMemo, SendOptions};
-use cdk::Amount;
+use cdk::wallet::{KeysetFilter, ReceiveOptions, SendMemo, SendOptions};
+use cdk::{Amount, StreamExt};
+use cdk_common::mint::OperationKind;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
 use tokio::time::sleep;
@@ -80,7 +82,10 @@ async fn test_swap_to_send() {
         .confirm(Some(SendMemo::for_token("test_swapt_to_send")))
         .await
         .expect("Failed to send token");
-    let keysets_info = wallet_alice.get_mint_keysets().await.unwrap();
+    let keysets_info = wallet_alice
+        .get_mint_keysets(KeysetFilter::Active)
+        .await
+        .unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         Amount::from(40),
@@ -1258,11 +1263,20 @@ async fn test_concurrent_double_spend_melt() {
     let melt_request3 = melt_request.clone();
 
     // Spawn 3 concurrent tasks to process the melt requests
-    let task1 = tokio::spawn(async move { mint_clone1.melt(&melt_request).await });
+    let task1 = tokio::spawn(async move {
+        let pending = mint_clone1.melt(&melt_request).await?;
+        pending.await
+    });
 
-    let task2 = tokio::spawn(async move { mint_clone2.melt(&melt_request2).await });
+    let task2 = tokio::spawn(async move {
+        let pending = mint_clone2.melt(&melt_request2).await?;
+        pending.await
+    });
 
-    let task3 = tokio::spawn(async move { mint_clone3.melt(&melt_request3).await });
+    let task3 = tokio::spawn(async move {
+        let pending = mint_clone3.melt(&melt_request3).await?;
+        pending.await
+    });
 
     // Wait for all tasks to complete
     let results = tokio::try_join!(task1, task2, task3).expect("Tasks failed to complete");
@@ -1385,7 +1399,7 @@ async fn test_p2pk_send_force_swap_with_fees() {
         .expect("confirm should succeed — swap should produce enough output");
 
     // Verify token contains exactly the requested amount
-    let keysets_info = wallet.get_mint_keysets().await.unwrap();
+    let keysets_info = wallet.get_mint_keysets(KeysetFilter::Active).await.unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         send_amount,
@@ -1464,7 +1478,10 @@ async fn test_p2pk_send_force_swap_with_fees_include_fee() {
         .expect("confirm should succeed");
 
     // Token should include amount + send_fee (so recipient can pay the redemption fee)
-    let keysets_info = wallet_sender.get_mint_keysets().await.unwrap();
+    let keysets_info = wallet_sender
+        .get_mint_keysets(KeysetFilter::Active)
+        .await
+        .unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         send_amount + send_fee,
@@ -1497,6 +1514,456 @@ async fn test_p2pk_send_force_swap_with_fees_include_fee() {
         wallet_sender.total_balance().await.unwrap(),
         "Sender balance should be reduced by amount + swap_fee + send_fee"
     );
+}
+
+#[tokio::test]
+async fn test_batch_mint_two_quotes() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    let quote1 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
+        .await
+        .expect("Failed to create quote1");
+    let quote2 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
+        .await
+        .expect("Failed to create quote2");
+
+    wallet
+        .payment_stream(&quote1)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+    wallet
+        .payment_stream(&quote2)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let proofs = wallet
+        .batch_mint(
+            &[&quote1.id, &quote2.id],
+            SplitTarget::default(),
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to batch mint");
+
+    let issued_quote1 = wallet
+        .check_mint_quote_status(&quote1.id)
+        .await
+        .expect("Failed to check quote1");
+    let issued_quote2 = wallet
+        .check_mint_quote_status(&quote2.id)
+        .await
+        .expect("Failed to check quote2");
+    assert_eq!(issued_quote1.amount_issued, Amount::from(32));
+    assert_eq!(issued_quote2.amount_issued, Amount::from(32));
+
+    let total = proofs.total_amount().expect("Failed to get total amount");
+    assert_eq!(total, Amount::from(64), "Total minted should be 64 sats");
+
+    let balance = wallet.total_balance().await.expect("Failed to get balance");
+    assert_eq!(
+        balance,
+        Amount::from(64),
+        "Wallet balance should be 64 sats"
+    );
+}
+
+#[tokio::test]
+async fn test_batch_mint_single_quote() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(64)), None, None)
+        .await
+        .expect("Failed to create quote");
+
+    wallet
+        .payment_stream(&quote)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let proofs = wallet
+        .batch_mint(&[&quote.id], SplitTarget::default(), None, None)
+        .await
+        .expect("Failed to batch mint with single quote");
+
+    let total = proofs.total_amount().expect("Failed to get total amount");
+    assert_eq!(total, Amount::from(64), "Total minted should be 64 sats");
+
+    let balance = wallet.total_balance().await.expect("Failed to get balance");
+    assert_eq!(
+        balance,
+        Amount::from(64),
+        "Wallet balance should be 64 sats"
+    );
+}
+
+#[tokio::test]
+async fn test_batch_mint_three_quotes_different_amounts() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    let quote1 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(10)), None, None)
+        .await
+        .expect("Failed to create quote1");
+    let quote2 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(20)), None, None)
+        .await
+        .expect("Failed to create quote2");
+    let quote3 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(34)), None, None)
+        .await
+        .expect("Failed to create quote3");
+
+    wallet
+        .payment_stream(&quote1)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+    wallet
+        .payment_stream(&quote2)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+    wallet
+        .payment_stream(&quote3)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let proofs = wallet
+        .batch_mint(
+            &[&quote1.id, &quote2.id, &quote3.id],
+            SplitTarget::default(),
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to batch mint");
+
+    let total = proofs.total_amount().expect("Failed to get total amount");
+    assert_eq!(total, Amount::from(64), "Total minted should be 64 sats");
+
+    let balance = wallet.total_balance().await.expect("Failed to get balance");
+    assert_eq!(
+        balance,
+        Amount::from(64),
+        "Wallet balance should be 64 sats"
+    );
+}
+
+#[tokio::test]
+async fn test_batch_mint_duplicate_quote_ids() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
+        .await
+        .expect("Failed to create quote");
+
+    wallet
+        .payment_stream(&quote)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let result = wallet
+        .batch_mint(&[&quote.id, &quote.id], SplitTarget::default(), None, None)
+        .await;
+
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), cdk::Error::DuplicateInputs));
+}
+
+#[tokio::test]
+async fn test_batch_mint_empty_quotes() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    let result = wallet
+        .batch_mint(&[], SplitTarget::default(), None, None)
+        .await;
+
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), cdk::Error::UnknownQuote));
+}
+
+#[tokio::test]
+async fn test_batch_mint_unknown_quote() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
+        .await
+        .expect("Failed to create quote");
+
+    wallet
+        .payment_stream(&quote)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let result = wallet
+        .batch_mint(
+            &[&quote.id, "non-existent-quote-id"],
+            SplitTarget::default(),
+            None,
+            None,
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), cdk::Error::UnknownQuote));
+}
+
+#[tokio::test]
+async fn test_batch_mint_already_issued_quote() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // First, mint normally
+    let quote1 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
+        .await
+        .expect("Failed to create quote1");
+
+    wallet
+        .payment_stream(&quote1)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    // Normal mint
+    let mut stream = wallet.proof_stream(quote1.clone(), SplitTarget::default(), None);
+    stream.next().await.expect("proofs").expect("mint error");
+
+    // Now create a second quote and try to batch with the already-issued one
+    let quote2 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
+        .await
+        .expect("Failed to create quote2");
+
+    wallet
+        .payment_stream(&quote2)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let result = wallet
+        .batch_mint(
+            &[&quote1.id, &quote2.id],
+            SplitTarget::default(),
+            None,
+            None,
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), cdk::Error::IssuedQuote));
+}
+
+#[tokio::test]
+async fn test_batch_mint_then_spend() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    let quote1 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
+        .await
+        .expect("Failed to create quote1");
+    let quote2 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
+        .await
+        .expect("Failed to create quote2");
+
+    wallet
+        .payment_stream(&quote1)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+    wallet
+        .payment_stream(&quote2)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let proofs = wallet
+        .batch_mint(
+            &[&quote1.id, &quote2.id],
+            SplitTarget::default(),
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to batch mint");
+
+    let total = proofs.total_amount().expect("Failed to get total amount");
+    assert_eq!(total, Amount::from(64));
+
+    let balance_before = wallet.total_balance().await.expect("Failed to get balance");
+    assert_eq!(balance_before, Amount::from(64));
+
+    let prepared_send = wallet
+        .prepare_send(Amount::from(40), SendOptions::default())
+        .await
+        .expect("Failed to prepare send");
+
+    let token = prepared_send
+        .confirm(Some(SendMemo::for_token("test_batch_mint_then_spend")))
+        .await
+        .expect("Failed to send token");
+
+    let balance_after = wallet.total_balance().await.expect("Failed to get balance");
+
+    // Original 64 - 40 sent = 24 remaining (minus fees)
+    assert!(
+        balance_after < Amount::from(64),
+        "Balance should decrease after send"
+    );
+
+    let keysets_info = wallet.get_mint_keysets(KeysetFilter::Active).await.unwrap();
+    let token_proofs = token.proofs(&keysets_info).unwrap();
+    let token_amount = token_proofs
+        .total_amount()
+        .expect("Failed to get total amount");
+    assert_eq!(
+        token_amount,
+        Amount::from(40),
+        "Token should contain 40 sats"
+    );
+}
+
+#[tokio::test]
+async fn test_batch_mint_completed_operation_integrity() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    let quote1 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
+        .await
+        .expect("Failed to create quote1");
+    let quote2 = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
+        .await
+        .expect("Failed to create quote2");
+
+    wallet
+        .payment_stream(&quote1)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+    wallet
+        .payment_stream(&quote2)
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let _proofs = wallet
+        .batch_mint(
+            &[&quote1.id, &quote2.id],
+            SplitTarget::default(),
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to batch mint");
+
+    let db = mint.localstore();
+
+    let operations = db
+        .get_completed_operations_by_kind(OperationKind::BatchMint)
+        .await
+        .expect("Failed to get completed operations");
+
+    assert_eq!(
+        operations.len(),
+        1,
+        "Expected 1 completed mint operation (batch), found {}. Operations: {:?}",
+        operations.len(),
+        operations
+            .iter()
+            .map(|op| (op.id(), op.total_issued()))
+            .collect::<Vec<_>>()
+    );
+
+    if let Some(op) = operations.first() {
+        assert_eq!(
+            op.total_issued(),
+            Amount::from(64),
+            "Batch operation should have total_issued = 64 sats"
+        );
+    } else {
+        panic!("No operations found");
+    }
 }
 
 async fn get_keyset_id(mint: &Mint) -> Id {
@@ -1551,13 +2018,19 @@ async fn test_p2bk_send_and_receive() {
         .expect("Failed to confirm send");
 
     // Check if the proofs have p2pk_e
-    let keysets_info = wallet_sender.get_mint_keysets().await.unwrap();
+    let keysets_info = wallet_sender
+        .get_mint_keysets(KeysetFilter::Active)
+        .await
+        .unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     for proof in &token_proofs {
         assert!(proof.p2pk_e.is_some(), "Proof should have p2pk_e set");
     }
     // Check if the proofs have p2pk_e
-    let keysets_info = wallet_sender.get_mint_keysets().await.unwrap();
+    let keysets_info = wallet_sender
+        .get_mint_keysets(KeysetFilter::Active)
+        .await
+        .unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     for proof in &token_proofs {
         assert!(proof.p2pk_e.is_some(), "Proof should have p2pk_e set");
@@ -1651,4 +2124,69 @@ async fn test_p2bk_multi_key_receive() {
         .expect("Receiver should be able to redeem P2PK token with second key");
 
     assert_eq!(send_amount, received_amount);
+}
+
+/// Tests that wallet restore recovers proofs from both active and inactive (rotated) keysets
+///
+/// This test verifies the fix for #1752:
+/// 1. Creates a wallet and mints tokens under the initial keyset
+/// 2. Rotates the mint's keyset (making the original keyset inactive)
+/// 3. Mints more tokens under the new active keyset
+/// 4. Creates a new wallet with the same seed but empty storage
+/// 5. Restores and verifies that proofs from BOTH keysets are recovered
+#[tokio::test]
+async fn test_restore_after_keyset_rotation() {
+    setup_tracing();
+
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+
+    let wallet = create_test_wallet_for_mint_with_seed(mint.clone(), seed)
+        .await
+        .expect("Failed to create test wallet");
+
+    // Mint 100 sats under the initial keyset
+    let amount_before_rotation = 100;
+    fund_wallet(wallet.clone(), amount_before_rotation, None)
+        .await
+        .expect("Failed to fund wallet before rotation");
+
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(amount_before_rotation)
+    );
+
+    // Rotate the keyset — the original keyset becomes inactive
+    let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+    mint.rotate_keyset(CurrencyUnit::Sat, amounts, 0, true, None)
+        .await
+        .expect("Failed to rotate keyset");
+
+    // Mint 50 sats under the new active keyset
+    let amount_after_rotation = 50;
+    fund_wallet(wallet.clone(), amount_after_rotation, None)
+        .await
+        .expect("Failed to fund wallet after rotation");
+
+    let total = amount_before_rotation + amount_after_rotation;
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(total));
+
+    // Create a fresh wallet with the same seed — simulates restore from backup
+    let wallet_restored = create_test_wallet_for_mint_with_seed(mint.clone(), seed)
+        .await
+        .expect("Failed to create restore wallet");
+
+    assert_eq!(wallet_restored.total_balance().await.unwrap(), Amount::ZERO);
+
+    let restored = wallet_restored.restore().await.expect("Restore failed");
+
+    // All proofs (from both keysets) should be recovered
+    assert_eq!(
+        restored.unspent,
+        Amount::from(total),
+        "Restore should recover proofs from both active and inactive keysets"
+    );
 }

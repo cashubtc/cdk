@@ -203,6 +203,8 @@ pub struct MintQuote {
 pub struct MeltQuote {
     /// Quote id
     pub id: String,
+    /// Mint Url
+    pub mint_url: Option<MintUrl>,
     /// Quote unit
     pub unit: CurrencyUnit,
     /// Quote amount

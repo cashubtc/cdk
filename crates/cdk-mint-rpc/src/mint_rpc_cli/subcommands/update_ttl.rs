@@ -32,10 +32,12 @@ pub async fn update_quote_ttl(
     sub_command_args: &UpdateQuoteTtlCommand,
 ) -> Result<()> {
     let _response = client
-        .update_quote_ttl(Request::new(UpdateQuoteTtlRequest {
-            mint_ttl: sub_command_args.mint_ttl,
-            melt_ttl: sub_command_args.melt_ttl,
-        }))
+        .update_quote_ttl(super::with_version_header(Request::new(
+            UpdateQuoteTtlRequest {
+                mint_ttl: sub_command_args.mint_ttl,
+                melt_ttl: sub_command_args.melt_ttl,
+            },
+        )))
         .await?;
 
     Ok(())
@@ -55,7 +57,9 @@ pub struct GetQuoteTtlCommand {}
 /// * `client` - The RPC client used to communicate with the mint
 pub async fn get_quote_ttl(client: &mut CdkMintClient<Channel>) -> Result<()> {
     let response = client
-        .get_quote_ttl(Request::new(GetQuoteTtlRequest {}))
+        .get_quote_ttl(super::with_version_header(Request::new(
+            GetQuoteTtlRequest {},
+        )))
         .await?
         .into_inner();
 

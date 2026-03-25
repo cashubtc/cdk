@@ -210,7 +210,7 @@ impl WalletSaga {
             .as_secs();
 
         let quote_id = match &data {
-            OperationData::Mint(d) => Some(d.quote_id.clone()),
+            OperationData::Mint(d) => Some(d.primary_quote_id().to_string()),
             OperationData::Melt(d) => Some(d.quote_id.clone()),
             _ => None,
         };

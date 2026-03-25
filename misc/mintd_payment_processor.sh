@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+source "$(dirname "$0")/itest_helpers.sh"
+
 # Function to perform cleanup
 cleanup() {
     echo "Cleaning up..."
@@ -74,13 +76,16 @@ fi
 echo "Temp directory created: $CDK_ITESTS_DIR"
 export MINT_DATABASE="$1";
 
-cargo build -p cdk-integration-tests 
+# Build integration test binaries only if not available as pre-built
+if ! command -v start_regtest &>/dev/null; then
+    cargo build -p cdk-integration-tests
+fi
 
 
 export CDK_TEST_REGTEST=0
 if [ "$LN_BACKEND" != "FAKEWALLET" ]; then
     export CDK_TEST_REGTEST=1
-    cargo run --bin start_regtest "$CDK_ITESTS_DIR" &
+    run_bin_bg start_regtest "$CDK_ITESTS_DIR"
     CDK_REGTEST_PID=$!
     mkfifo "$CDK_ITESTS_DIR/progress_pipe"
     rm -f "$CDK_ITESTS_DIR/signal_received"  # Ensure clean state
@@ -154,9 +159,11 @@ if [ "$LN_BACKEND" = "LND" ]; then
     echo "LND certificate and macaroon files found"
 fi
 
-cargo b --bin cdk-payment-processor
+if ! command -v cdk-payment-processor &>/dev/null; then
+    cargo b --bin cdk-payment-processor
+fi
 
-cargo run --bin cdk-payment-processor &
+run_bin_bg cdk-payment-processor
 
 CDK_PAYMENT_PROCESSOR_PID=$!
 
@@ -171,9 +178,11 @@ export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_PORT="8090";
 export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS="sat";
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
  
-cargo build --bin cdk-mintd --no-default-features --features grpc-processor
+if ! command -v cdk-mintd &>/dev/null; then
+    cargo build --bin cdk-mintd --no-default-features --features grpc-processor
+fi
 
-cargo run --bin cdk-mintd --no-default-features --features grpc-processor &
+run_mintd_bg
 CDK_MINTD_PID=$!
 
 echo $CDK_ITESTS_DIR
@@ -208,14 +217,14 @@ while true; do
 done
 
 
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+run_test happy_path_mint_wallet
 
 # Capture the exit status of cargo test
 test_status=$?
 
 if [ "$LN_BACKEND" = "CLN" ]; then
     echo "Running bolt12 tests for CLN backend"
-    cargo test -p cdk-integration-tests --test bolt12
+    run_test bolt12
     bolt12_test_status=$?
     
     # Exit with non-zero status if either test failed

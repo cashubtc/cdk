@@ -28,9 +28,11 @@ pub async fn update_name(
     sub_command_args: &UpdateNameCommand,
 ) -> Result<()> {
     let _response = client
-        .update_name(Request::new(UpdateNameRequest {
-            name: sub_command_args.name.clone(),
-        }))
+        .update_name(super::with_version_header(Request::new(
+            UpdateNameRequest {
+                name: sub_command_args.name.clone(),
+            },
+        )))
         .await?;
 
     Ok(())

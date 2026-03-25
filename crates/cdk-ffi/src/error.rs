@@ -32,14 +32,14 @@ pub enum FfiError {
 impl FfiError {
     /// Create an internal error from any type that implements ToString
     pub fn internal(msg: impl ToString) -> Self {
-        FfiError::Internal {
+        Self::Internal {
             error_message: msg.to_string(),
         }
     }
 
     /// Create a database error (uses Unknown code 50000)
     pub fn database(msg: impl ToString) -> Self {
-        FfiError::Cdk {
+        Self::Cdk {
             code: 50000,
             error_message: msg.to_string(),
         }
@@ -49,7 +49,7 @@ impl FfiError {
 impl From<CdkError> for FfiError {
     fn from(err: CdkError) -> Self {
         let response = ErrorResponse::from(err);
-        FfiError::Cdk {
+        Self::Cdk {
             code: response.code.to_code() as u32,
             error_message: response.detail,
         }

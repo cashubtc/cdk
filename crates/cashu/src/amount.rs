@@ -560,6 +560,22 @@ impl Amount<CurrencyUnit> {
     pub fn display_with_unit(&self) -> String {
         format!("{} {}", self.value, self.unit)
     }
+
+    /// Convert to millisatoshis and return the raw u64 value
+    ///
+    /// Returns an error if the unit cannot be converted to Msat
+    /// (i.e., the unit is not Sat or Msat).
+    pub fn to_msat(&self) -> Result<u64, Error> {
+        self.convert_to(&CurrencyUnit::Msat).map(|a| a.value())
+    }
+
+    /// Convert to satoshis and return the raw u64 value
+    ///
+    /// Returns an error if the unit cannot be converted to Sat
+    /// (i.e., the unit is not Sat or Msat).
+    pub fn to_sat(&self) -> Result<u64, Error> {
+        self.convert_to(&CurrencyUnit::Sat).map(|a| a.value())
+    }
 }
 
 impl<U> fmt::Display for Amount<U> {
@@ -1036,6 +1052,30 @@ mod tests {
         let converted = amount.convert_to(&CurrencyUnit::Msat).unwrap();
         assert_eq!(converted.value(), 5000);
         assert_eq!(converted.unit(), &CurrencyUnit::Msat);
+    }
+
+    #[test]
+    fn test_amount_to_msat() {
+        let sat_amount = Amount::new(2, CurrencyUnit::Sat);
+        assert_eq!(sat_amount.to_msat().unwrap(), 2000);
+
+        let msat_amount = Amount::new(2500, CurrencyUnit::Msat);
+        assert_eq!(msat_amount.to_msat().unwrap(), 2500);
+
+        let usd_amount = Amount::new(1, CurrencyUnit::Usd);
+        assert!(usd_amount.to_msat().is_err());
+    }
+
+    #[test]
+    fn test_amount_to_sat() {
+        let msat_amount = Amount::new(2000, CurrencyUnit::Msat);
+        assert_eq!(msat_amount.to_sat().unwrap(), 2);
+
+        let sat_amount = Amount::new(5, CurrencyUnit::Sat);
+        assert_eq!(sat_amount.to_sat().unwrap(), 5);
+
+        let usd_amount = Amount::new(1, CurrencyUnit::Usd);
+        assert!(usd_amount.to_sat().is_err());
     }
 
     #[test]

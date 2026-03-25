@@ -163,7 +163,8 @@ where
                   payment_preimage,
                   payment_method,
                   used_by_operation,
-                  version
+                  version,
+                  mint_url
               FROM
                   melt_quote
               "#,
@@ -416,7 +417,8 @@ where
                 payment_preimage,
                 payment_method,
                 used_by_operation,
-                version
+                version,
+                mint_url
             FROM
                 melt_quote
             WHERE
@@ -1082,9 +1084,9 @@ where
         let rows_affected = query(
                 r#"
     INSERT INTO mint_quote
-    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, version)
+    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, version, used_by_operation)
     VALUES
-    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :version)
+    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :version, :used_by_operation)
     ON CONFLICT(id) DO UPDATE SET
         mint_url = excluded.mint_url,
         amount = excluded.amount,
@@ -1096,7 +1098,8 @@ where
         payment_method = excluded.payment_method,
         amount_issued = excluded.amount_issued,
         amount_paid = excluded.amount_paid,
-        version = :new_version
+        version = :new_version,
+        used_by_operation = excluded.used_by_operation
     WHERE mint_quote.version = :expected_version
     ;
             "#,
@@ -1115,6 +1118,7 @@ where
             .bind("version", quote.version as i64)
             .bind("new_version", new_version as i64)
             .bind("expected_version", expected_version as i64)
+            .bind("used_by_operation", quote.used_by_operation)
             .execute(&*conn).await?;
 
         if rows_affected == 0 {
@@ -1146,9 +1150,9 @@ where
         let rows_affected = query(
             r#"
  INSERT INTO melt_quote
- (id, unit, amount, request, fee_reserve, state, expiry, payment_method, version)
+ (id, unit, amount, request, fee_reserve, state, expiry, payment_method, version, mint_url, used_by_operation)
  VALUES
- (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method, :version)
+ (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method, :version, :mint_url, :used_by_operation)
  ON CONFLICT(id) DO UPDATE SET
      unit = excluded.unit,
      amount = excluded.amount,
@@ -1157,7 +1161,9 @@ where
      state = excluded.state,
      expiry = excluded.expiry,
      payment_method = excluded.payment_method,
-     version = :new_version
+     version = :new_version,
+     mint_url = excluded.mint_url,
+     used_by_operation = excluded.used_by_operation
  WHERE melt_quote.version = :expected_version
  ;
          "#,
@@ -1173,6 +1179,8 @@ where
         .bind("version", quote.version as i64)
         .bind("new_version", new_version as i64)
         .bind("expected_version", expected_version as i64)
+        .bind("mint_url", quote.mint_url.map(|m| m.to_string()))
+        .bind("used_by_operation", quote.used_by_operation)
         .execute(&*conn)
         .await?;
 
@@ -1759,7 +1767,8 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
             payment_preimage,
             row_method,
             used_by_operation,
-            version
+            version,
+            mint_url
         ) = row
     );
 
@@ -1773,6 +1782,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
 
     Ok(wallet::MeltQuote {
         id: column_as_string!(id),
+        mint_url: column_as_nullable_string!(mint_url, |s| MintUrl::from_str(&s).ok()),
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         amount: Amount::from(amount_val),
         request: column_as_string!(request),

@@ -694,7 +694,8 @@ impl CdkMint for MintRPCServer {
                         "Quote not found in transaction".to_string(),
                     ))?;
 
-                self.mint
+                let should_notify = self
+                    .mint
                     .pay_mint_quote(&mut tx, &mut mint_quote, response)
                     .await
                     .map_err(|_| Status::internal("Could not process payment".to_string()))?;
@@ -702,6 +703,13 @@ impl CdkMint for MintRPCServer {
                 tx.commit()
                     .await
                     .map_err(|_| Status::internal("Could not commit db transaction".to_string()))?;
+
+                // Publish notification AFTER transaction commits
+                if should_notify {
+                    self.mint
+                        .pubsub_manager()
+                        .mint_quote_payment(&mint_quote, mint_quote.amount_paid());
+                }
             }
             _ => {
                 // Create a new quote with the same values

@@ -417,10 +417,19 @@ impl<'a> PreparedMelt<'a> {
         self,
         options: MeltConfirmOptions,
     ) -> Result<FinalizedMelt, Error> {
-        match self.confirm_prefer_async_with_options(options).await? {
-            MeltOutcome::Paid(finalized) => Ok(finalized),
-            MeltOutcome::Pending(pending) => pending.await,
-        }
+        self.saga
+            .wallet
+            .confirm_prepared_melt_with_options(
+                self.saga.operation_id(),
+                self.saga.quote().clone(),
+                self.saga.proofs().clone(),
+                self.saga.proofs_to_swap().clone(),
+                self.saga.input_fee(),
+                self.saga.input_fee_without_swap(),
+                self.metadata,
+                options,
+            )
+            .await
     }
 
     /// Confirm the prepared melt using async support (NUT-05).
@@ -513,7 +522,7 @@ impl<'a> PreparedMelt<'a> {
                 finalized.into_change(),
             ))),
             MeltSagaResult::Pending(pending_saga) => Ok(MeltOutcome::Pending(PendingMelt {
-                saga: Box::new(pending_saga),
+                saga: pending_saga,
                 metadata: self.metadata,
             })),
         }
@@ -579,16 +588,18 @@ impl Wallet {
 
         let sagas = self.localstore.get_incomplete_sagas().await?;
 
-        // Filter to only melt sagas in states that need checking
+        // Filter to only melt sagas for this wallet in states that need checking
         let melt_sagas: Vec<_> = sagas
             .into_iter()
             .filter(|s| {
-                matches!(
-                    &s.state,
-                    WalletSagaState::Melt(
-                        MeltSagaState::MeltRequested | MeltSagaState::PaymentPending
+                s.mint_url == self.mint_url
+                    && s.unit == self.unit
+                    && matches!(
+                        &s.state,
+                        WalletSagaState::Melt(
+                            MeltSagaState::MeltRequested | MeltSagaState::PaymentPending
+                        )
                     )
-                )
             })
             .collect();
 
@@ -697,7 +708,7 @@ impl Wallet {
             )),
             MeltSagaResult::Pending(pending_saga) => {
                 let pending = PendingMelt {
-                    saga: Box::new(pending_saga),
+                    saga: pending_saga,
                     metadata,
                 };
                 pending.wait().await
@@ -752,8 +763,9 @@ impl Wallet {
         Ok(quotes
             .into_iter()
             .filter(|q| {
-                q.state == MeltQuoteState::Pending
-                    || (q.state == MeltQuoteState::Unpaid && q.expiry > unix_time())
+                q.unit == self.unit
+                    && (q.state == MeltQuoteState::Pending
+                        || (q.state == MeltQuoteState::Unpaid && q.expiry > unix_time()))
             })
             .collect())
     }
@@ -763,7 +775,7 @@ impl Wallet {
         let quotes = self.localstore.get_melt_quotes().await?;
         Ok(quotes
             .into_iter()
-            .filter(|q| q.state == MeltQuoteState::Pending)
+            .filter(|q| q.unit == self.unit && q.state == MeltQuoteState::Pending)
             .collect())
     }
 
@@ -824,14 +836,18 @@ impl Wallet {
     /// or a Lightning address. It intelligently determines which to try based on mint support:
     ///
     /// 1. If the mint supports Bolt12, it tries BIP353 first
-    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
-    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 2. Falls back to Lightning address only if BIP353 resolution fails
+    /// 3. If BIP353 resolves but does not contain a usable BOLT12 offer, it does NOT fall back
     /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
+    ///
+    /// The `network` parameter is forwarded to the BIP353 resolver for on-chain address
+    /// validation in the resolved URI.
     #[cfg(all(feature = "bip353", feature = "wallet", not(target_arch = "wasm32")))]
     pub async fn melt_human_readable_quote(
         &self,
         address: &str,
         amount_msat: impl Into<crate::Amount>,
+        network: bitcoin::Network,
     ) -> Result<MeltQuote, Error> {
         use cdk_common::nuts::PaymentMethod;
 
@@ -857,7 +873,7 @@ impl Wallet {
 
         if supports_bolt12 {
             // Mint supports bolt12, try BIP353 first
-            match self.melt_bip353_quote(address, amount).await {
+            match self.melt_bip353_quote(address, amount, network).await {
                 Ok(quote) => Ok(quote),
                 Err(Error::Bip353Resolve(_)) => {
                     // DNS resolution failed, fall back to Lightning address
@@ -1030,7 +1046,14 @@ impl Wallet {
 
         match &quote.payment_method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
-                let response = self.client.get_melt_quote_status(quote_id).await?;
+                let response = self
+                    .client
+                    .get_melt_quote_status(quote.payment_method.clone(), quote_id)
+                    .await?;
+                let response = match response {
+                    cdk_common::MeltQuoteResponse::Bolt11(response) => response,
+                    _ => return Err(Error::InvalidPaymentMethod),
+                };
                 self.update_melt_quote_state(
                     &mut quote,
                     response.state,
@@ -1041,7 +1064,14 @@ impl Wallet {
                 .await?;
             }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
-                let response = self.client.get_melt_bolt12_quote_status(quote_id).await?;
+                let response = self
+                    .client
+                    .get_melt_quote_status(quote.payment_method.clone(), quote_id)
+                    .await?;
+                let response = match response {
+                    cdk_common::MeltQuoteResponse::Bolt12(response) => response,
+                    _ => return Err(Error::InvalidPaymentMethod),
+                };
                 self.update_melt_quote_state(
                     &mut quote,
                     response.state,
@@ -1051,11 +1081,15 @@ impl Wallet {
                 )
                 .await?;
             }
-            PaymentMethod::Custom(method) => {
+            PaymentMethod::Custom(_) => {
                 let response = self
                     .client
-                    .get_melt_quote_custom_status(method, quote_id)
+                    .get_melt_quote_status(quote.payment_method.clone(), quote_id)
                     .await?;
+                let response = match response {
+                    cdk_common::MeltQuoteResponse::Custom((_, response)) => response,
+                    _ => return Err(Error::InvalidPaymentMethod),
+                };
                 let change_amount = response
                     .change
                     .as_ref()
@@ -1091,22 +1125,15 @@ impl Wallet {
             .ok_or(Error::UnknownQuote)?;
 
         // Route to correct endpoint based on payment method
-        let response = match &quote.payment_method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => {
-                let r = self.client.get_melt_quote_status(quote_id).await?;
-                MeltQuoteStatusResponse::Standard(r)
-            }
-            PaymentMethod::Known(KnownMethod::Bolt12) => {
-                let r = self.client.get_melt_bolt12_quote_status(quote_id).await?;
-                MeltQuoteStatusResponse::Bolt12(r)
-            }
-            PaymentMethod::Custom(method) => {
-                let r = self
-                    .client
-                    .get_melt_quote_custom_status(method, quote_id)
-                    .await?;
-                MeltQuoteStatusResponse::Custom(r)
-            }
+        let response = self
+            .client
+            .get_melt_quote_status(quote.payment_method.clone(), quote_id)
+            .await?;
+
+        let response = match response {
+            cdk_common::MeltQuoteResponse::Bolt11(r) => MeltQuoteStatusResponse::Standard(r),
+            cdk_common::MeltQuoteResponse::Bolt12(r) => MeltQuoteStatusResponse::Bolt12(r),
+            cdk_common::MeltQuoteResponse::Custom((_, r)) => MeltQuoteStatusResponse::Custom(r),
         };
 
         Ok(response)

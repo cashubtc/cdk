@@ -1,5 +1,9 @@
 //! HTTP Transport trait with a default implementation
 use std::fmt::Debug;
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+use std::str::FromStr;
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
 use cdk_common::HttpClientBuilder;
@@ -58,6 +62,8 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
 #[derive(Debug, Clone)]
 pub struct Async {
     inner: HttpClient,
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    resolver: Arc<Resolver<TokioConnectionProvider>>,
 }
 
 impl Default for Async {
@@ -69,6 +75,14 @@ impl Default for Async {
 
         Self {
             inner: HttpClient::new(),
+            #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+            resolver: Arc::new(
+                Resolver::builder_with_config(
+                    ResolverConfig::default(),
+                    TokioConnectionProvider::default(),
+                )
+                .build(),
+            ),
         }
     }
 }
@@ -116,14 +130,12 @@ impl Transport for Async {
     /// DNS resolver to get a TXT record from a domain name
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {
-        let resolver = Resolver::builder_with_config(
-            ResolverConfig::default(),
-            TokioConnectionProvider::default(),
-        )
-        .build();
+        let name = hickory_resolver::Name::from_str(domain)
+            .map_err(|e| Error::Custom(format!("Invalid domain name: {}", e)))?;
 
-        Ok(resolver
-            .txt_lookup(domain)
+        Ok(self
+            .resolver
+            .txt_lookup(name)
             .await
             .map_err(|e| Error::Custom(e.to_string()))?
             .into_iter()

@@ -29,9 +29,9 @@ pub async fn add_url(
     sub_command_args: &AddUrlCommand,
 ) -> Result<()> {
     let _response = client
-        .add_url(Request::new(UpdateUrlRequest {
+        .add_url(super::with_version_header(Request::new(UpdateUrlRequest {
             url: sub_command_args.url.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())
@@ -59,9 +59,9 @@ pub async fn remove_url(
     sub_command_args: &RemoveUrlCommand,
 ) -> Result<()> {
     let _response = client
-        .remove_url(Request::new(UpdateUrlRequest {
+        .remove_url(super::with_version_header(Request::new(UpdateUrlRequest {
             url: sub_command_args.url.clone(),
-        }))
+        })))
         .await?;
 
     Ok(())

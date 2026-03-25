@@ -920,11 +920,17 @@ async fn test_fake_melt_change_in_quote() {
 
     assert!(melt_response.change.is_some());
 
-    let check = client.get_melt_quote_status(&melt_quote.id).await.unwrap();
+    let check = client
+        .get_melt_quote_status(PaymentMethod::BOLT11, &melt_quote.id)
+        .await
+        .unwrap();
     let mut melt_change = melt_response.change.unwrap();
     melt_change.sort_by_key(|a| a.amount);
 
-    let mut check = check.change.unwrap();
+    let mut check = match check {
+        cdk_common::MeltQuoteResponse::Bolt11(r) => r.change.unwrap(),
+        _ => panic!("Expected Bolt11 melt quote response"),
+    };
     check.sort_by_key(|a| a.amount);
 
     assert_eq!(melt_change, check);
@@ -1020,10 +1026,7 @@ async fn test_pay_invoice_twice() {
                 && !err_str.contains("already paid")
                 && !err_str.contains("request already paid")
             {
-                panic!(
-                    "Expected duplicate/already paid error, got: {}",
-                    err.to_string()
-                );
+                panic!("Expected duplicate/already paid error, got: {}", err);
             }
         }
         Ok(_) => {

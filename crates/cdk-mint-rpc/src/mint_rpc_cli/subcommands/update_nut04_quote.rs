@@ -32,10 +32,12 @@ pub async fn update_nut04_quote_state(
     sub_command_args: &UpdateNut04QuoteCommand,
 ) -> Result<()> {
     let response = client
-        .update_nut04_quote(Request::new(UpdateNut04QuoteRequest {
-            quote_id: sub_command_args.quote_id.clone(),
-            state: sub_command_args.state.clone(),
-        }))
+        .update_nut04_quote(super::with_version_header(Request::new(
+            UpdateNut04QuoteRequest {
+                quote_id: sub_command_args.quote_id.clone(),
+                state: sub_command_args.state.clone(),
+            },
+        )))
         .await?;
 
     let response = response.into_inner();

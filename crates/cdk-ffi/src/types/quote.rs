@@ -340,6 +340,8 @@ impl From<PaymentMethod> for cdk::nuts::PaymentMethod {
 pub struct MeltQuote {
     /// Quote ID
     pub id: String,
+    /// Mint URL
+    pub mint_url: Option<MintUrl>,
     /// Quote amount
     pub amount: Amount,
     /// Currency unit
@@ -367,6 +369,7 @@ impl From<cdk::wallet::MeltQuote> for MeltQuote {
     fn from(quote: cdk::wallet::MeltQuote) -> Self {
         Self {
             id: quote.id.clone(),
+            mint_url: quote.mint_url.map(Into::into),
             amount: quote.amount.into(),
             unit: quote.unit.clone().into(),
             request: quote.request.clone(),
@@ -387,6 +390,7 @@ impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
     fn try_from(quote: MeltQuote) -> Result<Self, Self::Error> {
         Ok(Self {
             id: quote.id,
+            mint_url: quote.mint_url.map(|m| m.try_into()).transpose()?,
             amount: quote.amount.into(),
             unit: quote.unit.into(),
             request: quote.request,

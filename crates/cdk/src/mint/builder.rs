@@ -43,6 +43,22 @@ impl Default for UnitConfig {
     }
 }
 
+/// Describes an extra keyset rotation to perform during mint build.
+/// Used to create inactive/expired keysets for testing.
+#[derive(Debug, Clone)]
+pub struct KeysetRotation {
+    /// Currency unit for this rotation
+    pub unit: CurrencyUnit,
+    /// Amounts for the keyset
+    pub amounts: Vec<u64>,
+    /// Input fee
+    pub input_fee_ppk: u64,
+    /// Whether to use keyset V2 (Version01) or V1 (Version00)
+    pub use_keyset_v2: bool,
+    /// Optional expiry timestamp (unix seconds)
+    pub final_expiry: Option<u64>,
+}
+
 /// Cashu Mint Builder
 pub struct MintBuilder {
     mint_info: MintInfo,
@@ -52,8 +68,10 @@ pub struct MintBuilder {
     supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     use_keyset_v2: Option<bool>,
+    keyset_rotations: Vec<KeysetRotation>,
     max_inputs: usize,
     max_outputs: usize,
+    max_batch_size: Option<u64>,
 }
 
 impl std::fmt::Debug for MintBuilder {
@@ -77,7 +95,8 @@ impl MintBuilder {
                 .nut11(true)
                 .nut12(true)
                 .nut14(true)
-                .nut20(true),
+                .nut20(true)
+                .nut29(cdk_common::nut29::Settings::default()),
             ..Default::default()
         };
 
@@ -89,14 +108,23 @@ impl MintBuilder {
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
             use_keyset_v2: None,
+            keyset_rotations: Vec::new(),
             max_inputs: 1000,
             max_outputs: 1000,
+            max_batch_size: None,
         }
     }
 
     /// Set use keyset v2
     pub fn with_keyset_v2(mut self, use_keyset_v2: Option<bool>) -> Self {
         self.use_keyset_v2 = use_keyset_v2;
+        self
+    }
+
+    /// Add a keyset rotation to execute during build.
+    /// Used to create inactive/expired keysets for testing.
+    pub fn with_keyset_rotation(mut self, rotation: KeysetRotation) -> Self {
+        self.keyset_rotations.push(rotation);
         self
     }
 
@@ -272,6 +300,24 @@ impl MintBuilder {
     pub fn with_limits(mut self, max_inputs: usize, max_outputs: usize) -> Self {
         self.max_inputs = max_inputs;
         self.max_outputs = max_outputs;
+        self
+    }
+
+    /// Set batch minting settings (NUT-29)
+    ///
+    /// Configures the maximum number of quotes allowed in a single batch request
+    /// and optionally specifies which payment methods support batch minting.
+    ///
+    /// # Arguments
+    /// * `max_batch_size` - Maximum number of quotes in a batch request
+    /// * `methods` - Optional list of payment methods that support batch minting
+    pub fn with_batch_minting(
+        mut self,
+        max_batch_size: Option<u64>,
+        methods: Option<Vec<String>>,
+    ) -> Self {
+        self.max_batch_size = max_batch_size;
+        self.mint_info.nuts.nut29 = cdk_common::nut29::Settings::new(max_batch_size, methods);
         self
     }
 
@@ -546,6 +592,23 @@ impl MintBuilder {
             }
         }
 
+        // Execute configured keyset rotations (e.g. for test keysets)
+        for rotation in &self.keyset_rotations {
+            signatory
+                .rotate_keyset(RotateKeyArguments {
+                    unit: rotation.unit.clone(),
+                    amounts: rotation.amounts.clone(),
+                    input_fee_ppk: rotation.input_fee_ppk,
+                    keyset_id_type: if rotation.use_keyset_v2 {
+                        cdk_common::nut02::KeySetVersion::Version01
+                    } else {
+                        cdk_common::nut02::KeySetVersion::Version00
+                    },
+                    final_expiry: rotation.final_expiry,
+                })
+                .await?;
+        }
+
         if let Some(auth_localstore) = self.auth_localstore {
             return Mint::new_with_auth(
                 self.mint_info,
@@ -649,7 +712,6 @@ mod tests {
 
         async fn create_incoming_payment_request(
             &self,
-            _unit: &CurrencyUnit,
             _options: IncomingPaymentOptions,
         ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
             unimplemented!()
@@ -735,6 +797,31 @@ mod tests {
         assert!(
             mint_info.nuts.nut20.supported,
             "NUT-20 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut29.is_empty(),
+            "NUT-29 should have empty settings by default"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mint_builder_batch_minting_settings() {
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore).with_batch_minting(
+            Some(100),
+            Some(vec!["bolt11".to_string(), "bolt12".to_string()]),
+        );
+        let mint_info = builder.current_mint_info();
+
+        assert_eq!(
+            mint_info.nuts.nut29.max_batch_size,
+            Some(100),
+            "NUT-29 max_batch_size should be set"
+        );
+        assert_eq!(
+            mint_info.nuts.nut29.methods,
+            Some(vec!["bolt11".to_string(), "bolt12".to_string()]),
+            "NUT-29 methods should be set"
         );
     }
 

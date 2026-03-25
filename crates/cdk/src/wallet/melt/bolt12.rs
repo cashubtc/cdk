@@ -7,7 +7,7 @@ use std::str::FromStr;
 use cdk_common::amount::amount_for_offer;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::MeltQuote;
-use cdk_common::PaymentMethod;
+use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, PaymentMethod};
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
@@ -28,7 +28,15 @@ impl Wallet {
             options,
         };
 
-        let quote_res = self.client.post_melt_bolt12_quote(quote_request).await?;
+        let quote_res = self
+            .client
+            .post_melt_quote(MeltQuoteRequest::Bolt12(quote_request))
+            .await?;
+
+        let quote_res = match quote_res {
+            MeltQuoteResponse::Bolt12(response) => response,
+            _ => return Err(Error::InvalidPaymentMethod),
+        };
 
         if self.unit == CurrencyUnit::Sat || self.unit == CurrencyUnit::Msat {
             let offer = Offer::from_str(&request).map_err(|_| Error::Bolt12parse)?;
@@ -53,6 +61,7 @@ impl Wallet {
 
         let quote = MeltQuote {
             id: quote_res.quote,
+            mint_url: Some(self.mint_url.clone()),
             amount: quote_res.amount,
             request,
             unit: self.unit.clone(),

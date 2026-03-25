@@ -1,5 +1,5 @@
 use cdk_common::wallet::MeltQuote;
-use cdk_common::PaymentMethod;
+use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, PaymentMethod};
 use tracing::instrument;
 
 use crate::nuts::{MeltOptions, MeltQuoteCustomRequest};
@@ -29,7 +29,15 @@ impl Wallet {
             unit: self.unit.clone(),
             extra: extra.unwrap_or(serde_json::Value::Null),
         };
-        let quote_res = self.client.post_melt_custom_quote(quote_request).await?;
+        let quote_res = self
+            .client
+            .post_melt_quote(MeltQuoteRequest::Custom(quote_request))
+            .await?;
+
+        let quote_res = match quote_res {
+            MeltQuoteResponse::Custom((_, response)) => response,
+            _ => return Err(Error::InvalidPaymentMethod),
+        };
 
         // Construct MeltQuote from custom response
         // Use response's request if present, otherwise fallback to input request
@@ -37,6 +45,7 @@ impl Wallet {
 
         let quote = MeltQuote {
             id: quote_res.quote,
+            mint_url: Some(self.mint_url.clone()),
             amount: quote_res.amount,
             request: quote_request_str,
             unit: self.unit.clone(),

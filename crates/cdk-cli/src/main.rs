@@ -90,10 +90,14 @@ enum Commands {
     Transfer(sub_commands::transfer::TransferSubCommand),
     /// Reclaim pending proofs that are no longer pending
     CheckPending,
+    /// Check incoming payments for stored payment requests.
+    CheckRequests,
     /// View mint info
     MintInfo(sub_commands::mint_info::MintInfoSubcommand),
     /// Mint proofs via bolt11
     Mint(sub_commands::mint::MintSubCommand),
+    /// Mint proofs for multiple existing quotes in one request
+    MintBatch(sub_commands::mint_batch::MintBatchSubCommand),
     /// Burn Spent tokens
     Burn(sub_commands::burn::BurnSubCommand),
     /// Restore proofs from seed
@@ -106,6 +110,8 @@ enum Commands {
     DecodeRequest(sub_commands::decode_request::DecodePaymentRequestSubCommand),
     /// Pay a payment request
     PayRequest(sub_commands::pay_request::PayRequestSubCommand),
+    /// Resolve a BIP353 address and inspect available payment methods
+    Resolve(sub_commands::resolve::ResolveSubCommand),
     /// Create Payment request
     CreateRequest(sub_commands::create_request::CreateRequestSubCommand),
     /// Mint blind auth proofs
@@ -265,11 +271,22 @@ async fn main() -> Result<()> {
         Commands::CheckPending => {
             sub_commands::check_pending::check_pending(&wallet_repository).await
         }
+        Commands::CheckRequests => {
+            sub_commands::check_requests::check_requests(&wallet_repository).await
+        }
         Commands::MintInfo(sub_command_args) => {
             sub_commands::mint_info::mint_info(args.proxy, sub_command_args).await
         }
         Commands::Mint(sub_command_args) => {
             sub_commands::mint::mint(&wallet_repository, sub_command_args, &currency_unit).await
+        }
+        Commands::MintBatch(sub_command_args) => {
+            sub_commands::mint_batch::mint_batch(
+                &wallet_repository,
+                sub_command_args,
+                &currency_unit,
+            )
+            .await
         }
         Commands::MintPending => {
             sub_commands::pending_mints::mint_pending(&wallet_repository).await
@@ -297,6 +314,10 @@ async fn main() -> Result<()> {
         }
         Commands::PayRequest(sub_command_args) => {
             sub_commands::pay_request::pay_request(&wallet_repository, sub_command_args).await
+        }
+        Commands::Resolve(sub_command_args) => {
+            sub_commands::resolve::resolve(&wallet_repository, sub_command_args, &currency_unit)
+                .await
         }
         Commands::CreateRequest(sub_command_args) => {
             sub_commands::create_request::create_request(
