@@ -60,6 +60,9 @@ pub struct MintBackup {
     pub mints: Vec<MintUrl>,
     /// Unix timestamp of when the backup was created
     pub timestamp: u64,
+    /// Flag indicating whether the wallet correctly maintained the depth invariant (NUT-342)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut_342: Option<bool>,
 }
 
 impl MintBackup {
@@ -70,12 +73,20 @@ impl MintBackup {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        Self { mints, timestamp }
+        Self {
+            mints,
+            timestamp,
+            nut_342: Some(true),
+        }
     }
 
     /// Create a new mint backup with a specific timestamp
     pub fn with_timestamp(mints: Vec<MintUrl>, timestamp: u64) -> Self {
-        Self { mints, timestamp }
+        Self {
+            mints,
+            timestamp,
+            nut_342: Some(true),
+        }
     }
 }
 
@@ -313,6 +324,12 @@ mod tests {
         let parsed: MintBackup = serde_json::from_str(&json).unwrap();
 
         assert_eq!(backup, parsed);
+        assert_eq!(parsed.nut_342, Some(true));
+
+        // Test parsing old format without nut_342 flag
+        let old_json = r#"{"mints":["https://mint.example.com","https://another-mint.org"],"timestamp":1703721600}"#;
+        let old_parsed: MintBackup = serde_json::from_str(old_json).unwrap();
+        assert_eq!(old_parsed.nut_342, None);
     }
 
     #[test]
