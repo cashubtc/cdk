@@ -188,6 +188,11 @@ impl<'a> MintSaga<'a, Initial> {
             s => s,
         };
 
+        let num_secrets = amount.split_targeted(&split_target, fee_and_amounts)?.len() as u32;
+        self.wallet
+            .ensure_depth_invariant(active_keyset_id, num_secrets)
+            .await?;
+
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
@@ -197,9 +202,6 @@ impl<'a> MintSaga<'a, Initial> {
                 fee_and_amounts,
             )?,
             None => {
-                let amount_split = amount.split_targeted(&split_target, fee_and_amounts)?;
-                let num_secrets = amount_split.len() as u32;
-
                 tracing::debug!(
                     "Incrementing keyset {} counter by {}",
                     active_keyset_id,
@@ -469,6 +471,13 @@ impl<'a> MintSaga<'a, Initial> {
             s => s,
         };
 
+        let num_secrets = total_amount
+            .split_targeted(&split_target, &fee_and_amounts)?
+            .len() as u32;
+        self.wallet
+            .ensure_depth_invariant(active_keyset_id, num_secrets)
+            .await?;
+
         let premint_secrets = match &spending_conditions {
             Some(sc) => PreMintSecrets::with_conditions(
                 active_keyset_id,
@@ -478,9 +487,6 @@ impl<'a> MintSaga<'a, Initial> {
                 &fee_and_amounts,
             )?,
             None => {
-                let amount_split = total_amount.split_targeted(&split_target, &fee_and_amounts)?;
-                let num_secrets = amount_split.len() as u32;
-
                 tracing::debug!(
                     "Incrementing keyset {} counter by {}",
                     active_keyset_id,

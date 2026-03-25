@@ -761,6 +761,10 @@ impl<'a> MeltSaga<'a, Prepared> {
             let num_secrets =
                 ((u64::from(change_amount) as f64).log2().ceil() as u64).max(1) as u32;
 
+            self.wallet
+                .ensure_depth_invariant(active_keyset_id, num_secrets)
+                .await?;
+
             let new_counter = self
                 .wallet
                 .localstore
