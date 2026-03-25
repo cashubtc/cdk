@@ -256,8 +256,8 @@ pub struct Conditions {
     pub num_sigs_refund: Option<u64>,
 }
 
-impl From<cdk::nuts::nut11::Conditions> for Conditions {
-    fn from(conditions: cdk::nuts::nut11::Conditions) -> Self {
+impl From<cdk::nuts::nut10::Conditions> for Conditions {
+    fn from(conditions: cdk::nuts::nut10::Conditions) -> Self {
         Self {
             locktime: conditions.locktime,
             pubkeys: conditions
@@ -282,7 +282,7 @@ impl From<cdk::nuts::nut11::Conditions> for Conditions {
     }
 }
 
-impl TryFrom<Conditions> for cdk::nuts::nut11::Conditions {
+impl TryFrom<Conditions> for cdk::nuts::nut10::Conditions {
     type Error = FfiError;
 
     fn try_from(conditions: Conditions) -> Result<Self, Self::Error> {

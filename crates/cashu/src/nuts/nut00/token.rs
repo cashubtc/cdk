@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::{Error, Proof, ProofV3, ProofV4, Proofs};
 use crate::mint_url::MintUrl;
 use crate::nut02::ShortKeysetId;
-use crate::nuts::nut11::SpendingConditions;
+use crate::nuts::nut10::SpendingConditions;
 use crate::nuts::{CurrencyUnit, Id, Kind, PublicKey};
 use crate::{ensure_cdk, Amount, KeySetInfo};
 
@@ -627,7 +627,8 @@ mod tests {
     use super::*;
     use crate::dhke::hash_to_curve;
     use crate::mint_url::MintUrl;
-    use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+    use crate::nuts::nut10::{Conditions, SpendingConditions};
+    use crate::nuts::nut11::SigFlag;
     use crate::secret::Secret;
     use crate::util::hex;
 
@@ -941,8 +942,7 @@ mod tests {
 
         let nut10_p2pk = crate::nuts::Nut10Secret::new(
             crate::nuts::Kind::P2PK,
-            pk1.to_string(),
-            Some(cond_p2pk.clone()),
+            crate::nuts::SecretData::new(pk1.to_string(), Some(cond_p2pk.clone())),
         );
         let secret_p2pk: Secret = nut10_p2pk.try_into().unwrap();
 
@@ -955,8 +955,7 @@ mod tests {
         };
         let nut10_htlc = crate::nuts::Nut10Secret::new(
             crate::nuts::Kind::HTLC,
-            htlc_hash.to_string(),
-            Some(cond_htlc.clone()),
+            crate::nuts::SecretData::new(htlc_hash.to_string(), Some(cond_htlc.clone())),
         );
         let secret_htlc: Secret = nut10_htlc.try_into().unwrap();
 
@@ -1027,8 +1026,7 @@ mod tests {
 
         let nut10 = crate::nuts::Nut10Secret::new(
             crate::nuts::Kind::P2PK,
-            pk.to_string(),
-            Some(cond.clone()),
+            crate::nuts::SecretData::new(pk.to_string(), Some(cond.clone())),
         );
         let secret: Secret = nut10.try_into().unwrap();
 

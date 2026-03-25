@@ -2,27 +2,23 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/11.md>
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::{fmt, vec};
 
-use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
-use serde::de::{DeserializeOwned, Error as DeserializerError};
-use serde::ser::SerializeSeq;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut00::Witness;
 use super::nut01::PublicKey;
 use super::nut05::MeltRequest;
-use super::nut10::SpendingConditionVerification;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
+use crate::nut10::{get_pubkeys_and_required_sigs, Conditions, SpendingConditionVerification};
 use crate::nuts::nut00::BlindedMessage;
-use crate::secret::Secret;
-use crate::util::{hex, unix_time};
-use crate::{ensure_cdk, SwapRequest};
+use crate::util::unix_time;
+use crate::{SpendingConditions, SwapRequest};
 
 pub mod serde_p2pk_witness;
 
@@ -53,18 +49,6 @@ pub enum Error {
     /// Pubkey must be in data field of P2PK
     #[error("P2PK required in secret data")]
     P2PKPubkeyRequired,
-    /// Unknown Kind
-    #[error("Kind not found")]
-    KindNotFound,
-    /// Tag value not found
-    #[error("Tag value not found")]
-    TagValueNotFound,
-    /// HTLC hash invalid
-    #[error("Invalid hash")]
-    InvalidHash,
-    /// HTLC preimage too large
-    #[error("Preimage exceeds maximum size of 32 bytes (64 hex characters)")]
-    PreimageTooLarge,
     /// Witness Signatures not provided
     #[error("Witness signatures not provided")]
     SignaturesNotProvided,
@@ -95,15 +79,6 @@ pub enum Error {
     /// SIG_ALL not supported in this context
     #[error("SIG_ALL proofs must be verified using a different method")]
     SigAllNotSupportedHere,
-    /// Parse Url Error
-    #[error(transparent)]
-    UrlParseError(#[from] url::ParseError),
-    /// Parse int error
-    #[error(transparent)]
-    ParseInt(#[from] std::num::ParseIntError),
-    /// From hex error
-    #[error(transparent)]
-    HexError(#[from] hex::Error),
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
@@ -113,9 +88,6 @@ pub enum Error {
     /// NUT01 Error
     #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),
-    /// Secret error
-    #[error(transparent)]
-    Secret(#[from] crate::secret::Error),
 }
 
 /// P2Pk Witness
@@ -170,7 +142,8 @@ impl Proof {
             .tags()
             .cloned()
             .unwrap_or_default()
-            .try_into()?;
+            .try_into()
+            .map_err(|_| Error::SpendConditionsNotMet)?;
 
         if spending_conditions.sig_flag == SigFlag::SigAll {
             return Err(Error::SigAllNotSupportedHere);
@@ -182,7 +155,11 @@ impl Proof {
 
         // Get spending requirements (includes both primary and refund paths)
         let now = unix_time();
-        let requirements = super::nut10::get_pubkeys_and_required_sigs(&secret, now)?;
+        let requirements =
+            super::nut10::get_pubkeys_and_required_sigs(&secret, now).map_err(|err| match err {
+                super::nut10::Error::NUT11(nut11_err) => nut11_err,
+                _ => Error::SpendConditionsNotMet,
+            })?;
 
         if requirements.preimage_needed {
             return Err(Error::PreimageNotSupportedInP2PK);
@@ -250,9 +227,110 @@ impl Proof {
     }
 }
 
+impl SpendingConditions {
+    /// New P2PK [SpendingConditions]
+    pub fn new_p2pk(pubkey: PublicKey, conditions: Option<Conditions>) -> Self {
+        Self::P2PKConditions {
+            data: pubkey,
+            conditions,
+        }
+    }
+}
+
+/// Extract and parse Schnorr signatures from a witness
+///
+/// This helper function extracts signature strings from a witness and parses them
+/// into bitcoin secp256k1 Schnorr signatures.
+pub(crate) fn extract_signatures_from_witness(
+    witness: &super::Witness,
+) -> Result<Vec<bitcoin::secp256k1::schnorr::Signature>, Error> {
+    use std::str::FromStr;
+
+    let witness_sigs = witness.signatures().ok_or(Error::SignaturesNotProvided)?;
+
+    witness_sigs
+        .iter()
+        .map(|s| bitcoin::secp256k1::schnorr::Signature::from_str(s))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| Error::InvalidSignature)
+}
+
+/// Verify P2PK SIG_ALL signatures
+///
+/// Do NOT call this directly. This is called only from 'verify_full_sig_all_check',
+/// which has already done many important SIG_ALL checks. This performs the final
+/// signature verification for SIG_ALL+P2PK transactions.
+///
+/// Per NUT-11, there are two spending pathways after locktime:
+/// 1. Primary path (data + pubkeys): ALWAYS available
+/// 2. Refund path (refund keys): available AFTER locktime
+pub(crate) fn verify_sig_all_p2pk(first_input: &Proof, msg_to_sign: String) -> Result<(), Error> {
+    // Get the first input, as it's the one with the signatures
+    let first_secret =
+        Nut10Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
+
+    // Record current time for locktime evaluation
+    let current_time = crate::util::unix_time();
+
+    // Get spending requirements (includes both primary and refund paths)
+    let requirements = get_pubkeys_and_required_sigs(&first_secret, current_time)
+        .map_err(|_| Error::SpendConditionsNotMet)?;
+
+    debug_assert!(
+        !requirements.preimage_needed,
+        "P2PK should never require preimage"
+    );
+
+    // Check for "anyone can spend" case first (locktime passed, no refund keys)
+    // This doesn't require any signatures
+    if let Some(refund_path) = &requirements.refund_path {
+        if refund_path.required_sigs == 0 {
+            return Ok(());
+        }
+    }
+
+    // Get the witness (needed for signature extraction)
+    let first_witness = first_input
+        .witness
+        .as_ref()
+        .ok_or(Error::SignaturesNotProvided)?;
+
+    // Try primary path first (data + pubkeys)
+    // Per NUT-11: "Locktime Multisig conditions continue to apply"
+    {
+        let primary_valid = extract_signatures_from_witness(first_witness)
+            .ok()
+            .and_then(|sigs| {
+                valid_signatures(msg_to_sign.as_bytes(), &requirements.pubkeys, &sigs).ok()
+            })
+            .is_some_and(|count| count >= requirements.required_sigs);
+
+        if primary_valid {
+            return Ok(());
+        }
+    }
+
+    // Primary path failed - try refund path if available
+    {
+        if let Some(refund_path) = &requirements.refund_path {
+            let signatures = extract_signatures_from_witness(first_witness)?;
+            let valid_sig_count =
+                valid_signatures(msg_to_sign.as_bytes(), &refund_path.pubkeys, &signatures)
+                    .map_err(|_| Error::InvalidSignature)?;
+
+            if valid_sig_count >= refund_path.required_sigs {
+                return Ok(());
+            }
+        }
+    }
+
+    // Neither path succeeded
+    Err(Error::SpendConditionsNotMet)
+}
+
 /// Returns count of valid signatures (each public key is only counted once)
 /// Returns error if the same pubkey has multiple valid signatures
-pub fn valid_signatures(
+pub(crate) fn valid_signatures(
     msg: &[u8],
     pubkeys: &[PublicKey],
     signatures: &[Signature],
@@ -329,398 +407,6 @@ impl BlindedMessage {
             Ok(())
         } else {
             Err(Error::SpendConditionsNotMet)
-        }
-    }
-}
-
-/// Spending Conditions
-///
-/// Defined in [NUT10](https://github.com/cashubtc/nuts/blob/main/10.md)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum SpendingConditions {
-    /// NUT11 Spending conditions
-    ///
-    /// Defined in [NUT11](https://github.com/cashubtc/nuts/blob/main/11.md)
-    P2PKConditions {
-        /// The public key of the recipient of the locked ecash
-        data: PublicKey,
-        /// Additional Optional Spending [`Conditions`]
-        conditions: Option<Conditions>,
-    },
-    /// NUT14 Spending conditions
-    ///
-    /// Dedined in [NUT14](https://github.com/cashubtc/nuts/blob/main/14.md)
-    HTLCConditions {
-        /// Hash Lock of ecash
-        data: Sha256Hash,
-        /// Additional Optional Spending [`Conditions`]
-        conditions: Option<Conditions>,
-    },
-}
-
-impl SpendingConditions {
-    /// New HTLC [SpendingConditions]
-    pub fn new_htlc(preimage: String, conditions: Option<Conditions>) -> Result<Self, Error> {
-        const MAX_PREIMAGE_BYTES: usize = 32;
-
-        let preimage_bytes = hex::decode(preimage)?;
-
-        if preimage_bytes.len() != MAX_PREIMAGE_BYTES {
-            return Err(Error::PreimageTooLarge);
-        }
-
-        let htlc = Sha256Hash::hash(&preimage_bytes);
-
-        Ok(Self::HTLCConditions {
-            data: htlc,
-            conditions,
-        })
-    }
-
-    /// New HTLC [SpendingConditions] from a hash directly instead of preimage
-    pub fn new_htlc_hash(hash: &str, conditions: Option<Conditions>) -> Result<Self, Error> {
-        let hash = Sha256Hash::from_str(hash).map_err(|_| Error::InvalidHash)?;
-
-        Ok(Self::HTLCConditions {
-            data: hash,
-            conditions,
-        })
-    }
-
-    /// New P2PK [SpendingConditions]
-    pub fn new_p2pk(pubkey: PublicKey, conditions: Option<Conditions>) -> Self {
-        Self::P2PKConditions {
-            data: pubkey,
-            conditions,
-        }
-    }
-
-    /// Kind of [SpendingConditions]
-    pub fn kind(&self) -> Kind {
-        match self {
-            Self::P2PKConditions { .. } => Kind::P2PK,
-            Self::HTLCConditions { .. } => Kind::HTLC,
-        }
-    }
-
-    /// Number if signatures required to unlock
-    pub fn num_sigs(&self) -> Option<u64> {
-        match self {
-            Self::P2PKConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.num_sigs),
-            Self::HTLCConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.num_sigs),
-        }
-    }
-
-    /// Public keys of locked [`Proof`]
-    pub fn pubkeys(&self) -> Option<Vec<PublicKey>> {
-        match self {
-            Self::P2PKConditions { data, conditions } => {
-                let mut pubkeys = vec![*data];
-                if let Some(conditions) = conditions {
-                    pubkeys.extend(conditions.pubkeys.clone().unwrap_or_default());
-                }
-                // Remove duplicates
-                let unique_pubkeys: HashSet<_> = pubkeys.into_iter().collect();
-                Some(unique_pubkeys.into_iter().collect())
-            }
-            Self::HTLCConditions { conditions, .. } => conditions.clone().and_then(|c| c.pubkeys),
-        }
-    }
-
-    /// Locktime of Spending Conditions
-    pub fn locktime(&self) -> Option<u64> {
-        match self {
-            Self::P2PKConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.locktime),
-            Self::HTLCConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.locktime),
-        }
-    }
-
-    /// Refund keys
-    pub fn refund_keys(&self) -> Option<Vec<PublicKey>> {
-        match self {
-            Self::P2PKConditions { conditions, .. } => {
-                conditions.clone().and_then(|c| c.refund_keys)
-            }
-            Self::HTLCConditions { conditions, .. } => {
-                conditions.clone().and_then(|c| c.refund_keys)
-            }
-        }
-    }
-}
-
-impl TryFrom<&Secret> for SpendingConditions {
-    type Error = Error;
-    fn try_from(secret: &Secret) -> Result<SpendingConditions, Error> {
-        let nut10_secret: Nut10Secret = secret.try_into()?;
-
-        nut10_secret.try_into()
-    }
-}
-
-impl TryFrom<Nut10Secret> for SpendingConditions {
-    type Error = Error;
-    fn try_from(secret: Nut10Secret) -> Result<SpendingConditions, Error> {
-        match secret.kind() {
-            Kind::P2PK => Ok(SpendingConditions::P2PKConditions {
-                data: PublicKey::from_str(secret.secret_data().data())?,
-                conditions: secret
-                    .secret_data()
-                    .tags()
-                    .and_then(|t| t.clone().try_into().ok()),
-            }),
-            Kind::HTLC => Ok(Self::HTLCConditions {
-                data: Sha256Hash::from_str(secret.secret_data().data())
-                    .map_err(|_| Error::InvalidHash)?,
-                conditions: secret
-                    .secret_data()
-                    .tags()
-                    .and_then(|t| t.clone().try_into().ok()),
-            }),
-        }
-    }
-}
-
-impl From<SpendingConditions> for super::nut10::Secret {
-    fn from(conditions: SpendingConditions) -> super::nut10::Secret {
-        match conditions {
-            SpendingConditions::P2PKConditions { data, conditions } => {
-                super::nut10::Secret::new(Kind::P2PK, data.to_hex(), conditions)
-            }
-            SpendingConditions::HTLCConditions { data, conditions } => {
-                super::nut10::Secret::new(Kind::HTLC, data.to_string(), conditions)
-            }
-        }
-    }
-}
-
-/// P2PK and HTLC spending conditions
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub struct Conditions {
-    /// Unix locktime after which refund keys can be used
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub locktime: Option<u64>,
-    /// Additional Public keys
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pubkeys: Option<Vec<PublicKey>>,
-    /// Refund keys
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refund_keys: Option<Vec<PublicKey>>,
-    /// Number of signatures required
-    ///
-    /// Default is 1
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub num_sigs: Option<u64>,
-    /// Signature flag
-    ///
-    /// Default [`SigFlag::SigInputs`]
-    pub sig_flag: SigFlag,
-    /// Number of refund signatures required
-    ///
-    /// Default is 1
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub num_sigs_refund: Option<u64>,
-}
-
-impl Conditions {
-    /// Create new Spending [`Conditions`]
-    pub fn new(
-        locktime: Option<u64>,
-        pubkeys: Option<Vec<PublicKey>>,
-        refund_keys: Option<Vec<PublicKey>>,
-        num_sigs: Option<u64>,
-        sig_flag: Option<SigFlag>,
-        num_sigs_refund: Option<u64>,
-    ) -> Result<Self, Error> {
-        if let Some(locktime) = locktime {
-            ensure_cdk!(locktime.ge(&unix_time()), Error::LocktimeInPast);
-        }
-
-        if let Some(n) = num_sigs {
-            let available_keys = 1 + pubkeys.as_ref().map(Vec::len).unwrap_or(0);
-            if n > available_keys as u64 {
-                return Err(Error::ImpossibleMultisigConfiguration {
-                    required: n,
-                    available: available_keys as u64,
-                });
-            }
-        }
-
-        if let Some(n) = num_sigs_refund {
-            let refund_key_count = refund_keys.as_ref().map(Vec::len).unwrap_or(0);
-            if n > refund_key_count as u64 {
-                return Err(Error::ImpossibleRefundMultisigConfiguration {
-                    required: n,
-                    available: refund_key_count as u64,
-                });
-            }
-        }
-
-        Ok(Self {
-            locktime,
-            pubkeys,
-            refund_keys,
-            num_sigs,
-            sig_flag: sig_flag.unwrap_or_default(),
-            num_sigs_refund,
-        })
-    }
-}
-impl From<Conditions> for Vec<Vec<String>> {
-    fn from(conditions: Conditions) -> Vec<Vec<String>> {
-        let Conditions {
-            locktime,
-            pubkeys,
-            refund_keys,
-            num_sigs,
-            sig_flag,
-            num_sigs_refund,
-        } = conditions;
-
-        let mut tags = Vec::new();
-
-        if let Some(pubkeys) = pubkeys {
-            tags.push(Tag::PubKeys(pubkeys.into_iter().collect()).as_vec());
-        }
-
-        if let Some(locktime) = locktime {
-            tags.push(Tag::LockTime(locktime).as_vec());
-        }
-
-        if let Some(num_sigs) = num_sigs {
-            tags.push(Tag::NSigs(num_sigs).as_vec());
-        }
-
-        if let Some(refund_keys) = refund_keys {
-            tags.push(Tag::Refund(refund_keys).as_vec())
-        }
-
-        if let Some(num_sigs_refund) = num_sigs_refund {
-            tags.push(Tag::NSigsRefund(num_sigs_refund).as_vec())
-        }
-
-        tags.push(Tag::SigFlag(sig_flag).as_vec());
-        tags
-    }
-}
-
-impl TryFrom<Vec<Vec<String>>> for Conditions {
-    type Error = Error;
-    fn try_from(tags: Vec<Vec<String>>) -> Result<Conditions, Self::Error> {
-        let tags: HashMap<TagKind, Tag> = tags
-            .into_iter()
-            .map(|t| Tag::try_from(t).map(|tag| (tag.kind(), tag)))
-            .collect::<Result<_, _>>()?;
-
-        let pubkeys = match tags.get(&TagKind::Pubkeys) {
-            Some(Tag::PubKeys(pubkeys)) => Some(pubkeys.clone()),
-            _ => None,
-        };
-
-        let locktime = if let Some(tag) = tags.get(&TagKind::Locktime) {
-            match tag {
-                Tag::LockTime(locktime) => Some(*locktime),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        let refund_keys = if let Some(tag) = tags.get(&TagKind::Refund) {
-            match tag {
-                Tag::Refund(keys) => Some(keys.clone()),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        let sig_flag = if let Some(tag) = tags.get(&TagKind::SigFlag) {
-            match tag {
-                Tag::SigFlag(sigflag) => *sigflag,
-                _ => SigFlag::SigInputs,
-            }
-        } else {
-            SigFlag::SigInputs
-        };
-
-        let num_sigs = if let Some(tag) = tags.get(&TagKind::NSigs) {
-            match tag {
-                Tag::NSigs(num_sigs) => Some(*num_sigs),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        let num_sigs_refund = if let Some(tag) = tags.get(&TagKind::NSigsRefund) {
-            match tag {
-                Tag::NSigsRefund(num_sigs) => Some(*num_sigs),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        Ok(Conditions {
-            locktime,
-            pubkeys,
-            refund_keys,
-            num_sigs,
-            sig_flag,
-            num_sigs_refund,
-        })
-    }
-}
-
-/// P2PK and HTLC Spending condition tags
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
-#[serde(rename_all = "lowercase")]
-pub enum TagKind {
-    /// Signature flag
-    SigFlag,
-    /// Number signatures required
-    #[serde(rename = "n_sigs")]
-    NSigs,
-    /// Locktime
-    Locktime,
-    /// Refund
-    Refund,
-    /// Pubkey
-    Pubkeys,
-    /// Number signatures required
-    #[serde(rename = "n_sigs_refund")]
-    NSigsRefund,
-    /// Custom tag kind
-    Custom(String),
-}
-
-impl fmt::Display for TagKind {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::SigFlag => write!(f, "sigflag"),
-            Self::NSigs => write!(f, "n_sigs"),
-            Self::Locktime => write!(f, "locktime"),
-            Self::Refund => write!(f, "refund"),
-            Self::Pubkeys => write!(f, "pubkeys"),
-            Self::NSigsRefund => write!(f, "n_sigs_refund"),
-            Self::Custom(c) => write!(f, "{c}"),
-        }
-    }
-}
-
-impl<S> From<S> for TagKind
-where
-    S: AsRef<str>,
-{
-    fn from(tag: S) -> Self {
-        match tag.as_ref() {
-            "sigflag" => Self::SigFlag,
-            "n_sigs" => Self::NSigs,
-            "locktime" => Self::Locktime,
-            "refund" => Self::Refund,
-            "pubkeys" => Self::Pubkeys,
-            "n_sigs_refund" => Self::NSigsRefund,
-            t => Self::Custom(t.to_owned()),
         }
     }
 }
@@ -813,144 +499,6 @@ pub struct EnforceSigFlag {
     pub sigs_required: u64,
 }
 
-/// Tag
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum Tag {
-    /// Sigflag [`Tag`]
-    SigFlag(SigFlag),
-    /// Number of Sigs [`Tag`]
-    NSigs(u64),
-    /// Locktime [`Tag`]
-    LockTime(u64),
-    /// Refund [`Tag`]
-    Refund(Vec<PublicKey>),
-    /// Pubkeys [`Tag`]
-    PubKeys(Vec<PublicKey>),
-    /// Number of Sigs refund [`Tag`]
-    NSigsRefund(u64),
-    /// Custom tag
-    Custom(String, Vec<String>),
-}
-
-impl Tag {
-    /// Get [`Tag`] Kind
-    pub fn kind(&self) -> TagKind {
-        match self {
-            Self::SigFlag(_) => TagKind::SigFlag,
-            Self::NSigs(_) => TagKind::NSigs,
-            Self::LockTime(_) => TagKind::Locktime,
-            Self::Refund(_) => TagKind::Refund,
-            Self::PubKeys(_) => TagKind::Pubkeys,
-            Self::NSigsRefund(_) => TagKind::NSigsRefund,
-            Self::Custom(tag, _) => TagKind::Custom(tag.to_string()),
-        }
-    }
-
-    /// Get [`Tag`] as string vector
-    pub fn as_vec(&self) -> Vec<String> {
-        self.clone().into()
-    }
-}
-
-impl<S> TryFrom<Vec<S>> for Tag
-where
-    S: AsRef<str>,
-{
-    type Error = Error;
-
-    fn try_from(tag: Vec<S>) -> Result<Self, Self::Error> {
-        let tag_kind = tag.first().map(TagKind::from).ok_or(Error::KindNotFound)?;
-
-        match tag_kind {
-            TagKind::SigFlag => Ok(Tag::SigFlag(SigFlag::from_str(
-                tag.get(1).ok_or(Error::TagValueNotFound)?.as_ref(),
-            )?)),
-            TagKind::NSigs => Ok(Tag::NSigs(
-                tag.get(1)
-                    .ok_or(Error::TagValueNotFound)?
-                    .as_ref()
-                    .parse()?,
-            )),
-            TagKind::Locktime => Ok(Tag::LockTime(
-                tag.get(1)
-                    .ok_or(Error::TagValueNotFound)?
-                    .as_ref()
-                    .parse()?,
-            )),
-            TagKind::Refund => {
-                let pubkeys = tag
-                    .iter()
-                    .skip(1)
-                    .map(|p| PublicKey::from_str(p.as_ref()))
-                    .collect::<Result<Vec<PublicKey>, _>>()?;
-
-                Ok(Self::Refund(pubkeys))
-            }
-            TagKind::Pubkeys => {
-                let pubkeys = tag
-                    .iter()
-                    .skip(1)
-                    .map(|p| PublicKey::from_str(p.as_ref()))
-                    .collect::<Result<Vec<PublicKey>, _>>()?;
-
-                Ok(Self::PubKeys(pubkeys))
-            }
-            TagKind::NSigsRefund => Ok(Tag::NSigsRefund(
-                tag.get(1)
-                    .ok_or(Error::TagValueNotFound)?
-                    .as_ref()
-                    .parse()?,
-            )),
-            TagKind::Custom(name) => {
-                let tags = tag
-                    .iter()
-                    .skip(1)
-                    .map(|p| p.as_ref().to_string())
-                    .collect::<Vec<String>>();
-
-                Ok(Self::Custom(name, tags))
-            }
-        }
-    }
-}
-
-impl From<Tag> for Vec<String> {
-    fn from(data: Tag) -> Self {
-        match data {
-            Tag::SigFlag(sigflag) => vec![TagKind::SigFlag.to_string(), sigflag.to_string()],
-            Tag::NSigs(num_sig) => vec![TagKind::NSigs.to_string(), num_sig.to_string()],
-            Tag::LockTime(locktime) => vec![TagKind::Locktime.to_string(), locktime.to_string()],
-            Tag::PubKeys(pubkeys) => {
-                let mut tag = vec![TagKind::Pubkeys.to_string()];
-                for pubkey in pubkeys.into_iter() {
-                    tag.push(pubkey.to_string())
-                }
-                tag
-            }
-            Tag::Refund(pubkeys) => {
-                let mut tag = vec![TagKind::Refund.to_string()];
-
-                for pubkey in pubkeys {
-                    tag.push(pubkey.to_string())
-                }
-                tag
-            }
-            Tag::NSigsRefund(num_sigs) => {
-                vec![TagKind::NSigsRefund.to_string(), num_sigs.to_string()]
-            }
-            Tag::Custom(name, c) => {
-                let mut tag = vec![name];
-
-                for t in c {
-                    tag.push(t);
-                }
-
-                tag
-            }
-        }
-    }
-}
-
 impl SwapRequest {
     /// Sign swap request with SIG_ALL
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
@@ -1010,31 +558,6 @@ where
     }
 }
 
-impl Serialize for Tag {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let data: Vec<String> = self.as_vec();
-        let mut seq = serializer.serialize_seq(Some(data.len()))?;
-        for element in data.into_iter() {
-            seq.serialize_element(&element)?;
-        }
-        seq.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for Tag {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        type Data = Vec<String>;
-        let vec: Vec<String> = Data::deserialize(deserializer)?;
-        Self::try_from(vec).map_err(DeserializerError::custom)
-    }
-}
-
 #[cfg(feature = "mint")]
 #[cfg(test)]
 mod tests {
@@ -1076,7 +599,7 @@ mod tests {
             num_sigs_refund: None,
         };
 
-        let secret: Nut10Secret = Nut10Secret::new(Kind::P2PK, data.to_string(), Some(conditions));
+        let secret: Nut10Secret = SpendingConditions::new_p2pk(data, Some(conditions)).into();
 
         let secret_str = serde_json::to_string(&secret).unwrap();
 
@@ -1111,7 +634,7 @@ mod tests {
             num_sigs_refund: None,
         };
 
-        let secret: Secret = Nut10Secret::new(Kind::P2PK, v_key.to_string(), Some(conditions))
+        let secret: Secret = SpendingConditions::new_p2pk(v_key, Some(conditions))
             .try_into()
             .unwrap();
 
@@ -1215,7 +738,7 @@ mod tests {
             num_sigs_refund: Some(2),
         };
 
-        let secret: Secret = Nut10Secret::new(Kind::P2PK, v_key.to_string(), Some(conditions))
+        let secret: Secret = SpendingConditions::new_p2pk(v_key, Some(conditions))
             .try_into()
             .unwrap();
 
@@ -1267,7 +790,7 @@ mod tests {
     }
 
     fn create_test_secret(pubkey: PublicKey, conditions: Conditions) -> Secret {
-        Nut10Secret::new(Kind::P2PK, pubkey.to_string(), Some(conditions))
+        SpendingConditions::new_p2pk(pubkey, Some(conditions))
             .try_into()
             .unwrap()
     }
@@ -1434,9 +957,11 @@ mod tests {
 
         // Create second secret with different data
         let conditions2 = conditions1.clone();
-        let secret2 = Nut10Secret::new(
-            Kind::P2PK,
-            "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+        let secret2: Secret = SpendingConditions::new_p2pk(
+            PublicKey::from_str(
+                "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+            )
+            .unwrap(),
             Some(conditions2),
         )
         .try_into()
@@ -2276,9 +1801,11 @@ mod tests {
         let secret1 = create_test_secret(pubkey, conditions.clone());
 
         // Create second proof with different secret data
-        let different_secret = Nut10Secret::new(
-            Kind::P2PK,
-            "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+        let different_secret: Secret = SpendingConditions::new_p2pk(
+            PublicKey::from_str(
+                "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+            )
+            .unwrap(),
             Some(conditions),
         )
         .try_into()
@@ -2418,10 +1945,10 @@ mod tests {
         assert!(
             matches!(
                 err,
-                Error::ImpossibleMultisigConfiguration {
+                crate::nut10::Error::NUT11(Error::ImpossibleMultisigConfiguration {
                     required: 5,
                     available: 3,
-                }
+                })
             ),
             "Expected ImpossibleMultisigConfiguration, got: {err:?}"
         );
@@ -2443,10 +1970,10 @@ mod tests {
         assert!(
             matches!(
                 err,
-                Error::ImpossibleMultisigConfiguration {
+                crate::nut10::Error::NUT11(Error::ImpossibleMultisigConfiguration {
                     required: 2,
                     available: 1,
-                }
+                })
             ),
             "Expected ImpossibleMultisigConfiguration, got: {err:?}"
         );
@@ -2469,10 +1996,10 @@ mod tests {
         assert!(
             matches!(
                 err,
-                Error::ImpossibleRefundMultisigConfiguration {
+                crate::nut10::Error::NUT11(Error::ImpossibleMultisigConfiguration {
                     required: 3,
                     available: 1,
-                }
+                })
             ),
             "Expected ImpossibleRefundMultisigConfiguration, got: {err:?}"
         );
@@ -2513,10 +2040,10 @@ mod tests {
         assert!(
             matches!(
                 err,
-                Error::ImpossibleRefundMultisigConfiguration {
+                crate::nut10::Error::NUT11(Error::ImpossibleMultisigConfiguration {
                     required: 1,
                     available: 0,
-                }
+                })
             ),
             "Expected ImpossibleRefundMultisigConfiguration, got: {err:?}"
         );
