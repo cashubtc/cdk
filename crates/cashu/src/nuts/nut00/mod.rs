@@ -19,8 +19,6 @@ use super::nut02::ShortKeysetId;
 #[cfg(feature = "wallet")]
 use super::nut10;
 #[cfg(feature = "wallet")]
-use super::nut11::SpendingConditions;
-#[cfg(feature = "wallet")]
 use crate::amount::FeeAndAmounts;
 #[cfg(feature = "wallet")]
 use crate::amount::SplitTarget;
@@ -1037,7 +1035,7 @@ impl PreMintSecrets {
         amount: Amount,
         amount_split_target: &SplitTarget,
         receiver_pubkey: PublicKey,
-        conditions: Option<crate::nuts::nut11::Conditions>,
+        conditions: Option<crate::nuts::nut10::Conditions>,
         ephemeral_keys: &[crate::nuts::nut01::SecretKey],
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
@@ -1120,7 +1118,7 @@ impl PreMintSecrets {
         keyset_id: Id,
         amount: Amount,
         amount_split_target: &SplitTarget,
-        conditions: &SpendingConditions,
+        conditions: &nut10::SpendingConditions,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
         let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
@@ -1683,7 +1681,8 @@ mod tests {
     #[cfg(feature = "wallet")]
     fn test_with_p2bk_rejects_mismatched_ephemeral_keys_when_not_sig_all() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
-        use crate::nuts::nut11::{Conditions, SigFlag};
+        use crate::nuts::nut11::SigFlag;
+        use crate::Conditions;
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
         let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
@@ -1710,7 +1709,8 @@ mod tests {
     #[cfg(feature = "wallet")]
     fn test_with_p2bk_allows_single_ephemeral_key_for_sig_all() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
-        use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+        use crate::nuts::nut11::SigFlag;
+        use crate::{Conditions, SpendingConditions};
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
         let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
@@ -1748,7 +1748,8 @@ mod tests {
     #[cfg(feature = "wallet")]
     fn test_with_p2bk_allows_one_ephemeral_key_per_output_when_not_sig_all() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
-        use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+        use crate::nuts::nut11::SigFlag;
+        use crate::{Conditions, SpendingConditions};
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
         let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
@@ -1789,8 +1790,9 @@ mod tests {
     #[cfg(feature = "wallet")]
     fn test_with_p2bk_uses_canonical_slots_for_pubkeys_and_refund_keys() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
-        use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+        use crate::nuts::nut11::SigFlag;
         use crate::nuts::nut28::{blind_public_key, ecdh_kdf};
+        use crate::{Conditions, SpendingConditions};
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
         let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();

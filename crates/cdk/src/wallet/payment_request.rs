@@ -19,7 +19,8 @@ use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32}
 
 use crate::error::Error;
 use crate::mint_url::MintUrl;
-use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+use crate::nuts::nut10::{Conditions, SpendingConditions};
+use crate::nuts::nut11::SigFlag;
 use crate::nuts::nut18::Nut10SecretRequest;
 use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
 #[cfg(feature = "nostr")]
