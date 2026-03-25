@@ -29,10 +29,7 @@ impl VersionInterceptor {
     pub fn new(header: &'static str, version: impl AsRef<str>) -> Self {
         Self {
             header,
-            value: version
-                .as_ref()
-                .parse()
-                .expect("Invalid protocol version"),
+            value: version.as_ref().parse().expect("Invalid protocol version"),
         }
     }
 }
