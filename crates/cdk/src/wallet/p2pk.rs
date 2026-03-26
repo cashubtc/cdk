@@ -9,8 +9,8 @@ use cdk_common::{PublicKey, SECP256K1};
 
 use crate::error::Error;
 
-const CASHU_PURPOSE: u32 = 129373;
-const P2PK_PURPOSE: u32 = 10;
+const P2PK_PURPOSE: u32 = 129373;
+const P2PK_ACCOUNT: u32 = 10;
 
 /// Generates and stores public key in database
 pub async fn generate_public_key(
@@ -28,8 +28,8 @@ pub async fn generate_public_key(
     }
 
     let derivation_path = DerivationPath::from(vec![
-        ChildNumber::from_hardened_idx(CASHU_PURPOSE)?,
         ChildNumber::from_hardened_idx(P2PK_PURPOSE)?,
+        ChildNumber::from_hardened_idx(P2PK_ACCOUNT)?,
         ChildNumber::from_hardened_idx(0)?,
         ChildNumber::from_hardened_idx(0)?,
         ChildNumber::from_normal_idx(last_derivation_index)?,

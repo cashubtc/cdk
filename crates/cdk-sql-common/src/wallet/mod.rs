@@ -2086,30 +2086,3 @@ fn sql_row_to_p2pk_signing_key(row: Vec<Column>) -> Result<wallet::P2PKSigningKe
         created_time: column_as_number!(created_time),
     })
 }
-
-// KVStore implementations for wallet
-
-#[async_trait]
-impl<RM> database::KVStoreDatabase for SQLWalletDatabase<RM>
-where
-    RM: DatabasePool + 'static,
-{
-    type Err = Error;
-
-    async fn kv_read(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-        key: &str,
-    ) -> Result<Option<Vec<u8>>, Error> {
-        crate::keyvalue::kv_read(&self.pool, primary_namespace, secondary_namespace, key).await
-    }
-
-    async fn kv_list(
-        &self,
-        primary_namespace: &str,
-        secondary_namespace: &str,
-    ) -> Result<Vec<String>, Error> {
-        crate::keyvalue::kv_list(&self.pool, primary_namespace, secondary_namespace).await
-    }
-}
