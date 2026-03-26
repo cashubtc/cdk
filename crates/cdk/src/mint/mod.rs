@@ -52,7 +52,6 @@ const CDK_MINT_CONFIG_KV_KEY: &str = "mint_info";
 const CDK_MINT_QUOTE_TTL_KV_KEY: &str = "quote_ttl";
 
 /// Cashu Mint
-#[derive(Clone)]
 pub struct Mint {
     /// Signatory backend.
     ///
