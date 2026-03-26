@@ -90,7 +90,7 @@ fn calculate_usage_metrics(payments: &[ldk_node::payment::PaymentDetails]) -> Us
 pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let node = &state.node.inner;
 
-    let _node_id = node.node_id().to_string();
+    let node_id = node.node_id().to_string();
     let alias = node
         .node_alias()
         .map(|a| a.to_string())
@@ -171,6 +171,9 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
                     }
                     div class="node-details" {
                         h2 class="node-name" { (alias.clone()) }
+                        p class="node-address" {
+                            "Node ID: " (node_id)
+                        }
                         p class="node-address" {
                             "Listening Address: "
                             (listening_addresses.first().unwrap_or(&"127.0.0.1:8090".to_string()))
