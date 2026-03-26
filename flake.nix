@@ -238,8 +238,8 @@
         };
 
         # Vendor cargo dependencies for MSRV builds (Cargo.lock.msrv has different versions)
-        cargoVendorDirMsrv = craneLibMsrv.vendorMultipleCargoDeps {
-          inherit (craneLibMsrv.findCargoFiles srcMsrv) cargoConfigs;
+        cargoVendorDirMsrv = craneLib.vendorMultipleCargoDeps {
+          inherit (craneLib.findCargoFiles srcMsrv) cargoConfigs;
           cargoLockList = [
             ./Cargo.lock.msrv
           ];
@@ -351,7 +351,7 @@
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests";
+            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift";
           }
         );
 
