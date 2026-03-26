@@ -379,26 +379,19 @@ lint:
   typos
   echo "All checks passed!"
 
-# Goose AI Recipe Commands
-
-# Update changelog from staged changes using Goose AI
-goose-git-msg:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  goose run --recipe ./misc/recipes/git-commit-message.yaml --interactive
-
-# Create git message from staged changes using Goose AI
-goose-changelog-staged:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  goose run --recipe ./misc/recipes/changelog-update.yaml --interactive
-
-# Update changelog from recent commits using Goose AI
-# Usage: just goose-changelog-commits [number_of_commits]
-goose-changelog-commits *COMMITS="5":
-  #!/usr/bin/env bash
-  set -euo pipefail
-  COMMITS={{COMMITS}} goose run --recipe ./misc/recipes/changelog-from-commits.yaml --interactive
+update-msrv-lock:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    
+    nix develop --ignore-environment .#msrv --command bash -c '
+        cp Cargo.lock Cargo.lock.msrv
+        echo "Copied Cargo.lock to Cargo.lock.msrv (MSRV 1.85.0)"
+    '
+    
+    nix develop --ignore-environment .#stable --command bash -c '
+        cargo update
+        echo "Updated Cargo.lock (stable 1.94.0)"
+    '
 
 itest db:
   #!/usr/bin/env bash
