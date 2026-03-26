@@ -79,7 +79,7 @@ mod tests {
             ChildNumber::from_hardened_idx(P2PK_ACCOUNT).unwrap(),
             ChildNumber::from_hardened_idx(0).unwrap(),
             ChildNumber::from_hardened_idx(0).unwrap(),
-            ChildNumber::from_normal_idx(2).unwrap(),
+            ChildNumber::from_normal_idx(3).unwrap(),
         ]);
         let pubkey_3 = generate_public_key(&derivation_path_3, &seed)
             .await
@@ -89,7 +89,7 @@ mod tests {
             ChildNumber::from_hardened_idx(P2PK_ACCOUNT).unwrap(),
             ChildNumber::from_hardened_idx(0).unwrap(),
             ChildNumber::from_hardened_idx(0).unwrap(),
-            ChildNumber::from_normal_idx(2).unwrap(),
+            ChildNumber::from_normal_idx(4).unwrap(),
         ]);
         let pubkey_4 = generate_public_key(&derivation_path_4, &seed)
             .await
@@ -116,7 +116,7 @@ mod tests {
             "03c964bdf42fc82b6c574615746eeca37527a24f1fdfc1b34a732c53843b5744a5".to_string()
         );
 
-        assert_eq!(derivation_path_1.to_string(), "129373'/10'/0'/0'/4");
+        assert_eq!(derivation_path_4.to_string(), "129373'/10'/0'/0'/4");
         assert_eq!(derivation_path_3.to_string(), "129373'/10'/0'/0'/3");
         assert_eq!(derivation_path_2.to_string(), "129373'/10'/0'/0'/2");
         assert_eq!(derivation_path_1.to_string(), "129373'/10'/0'/0'/1");
