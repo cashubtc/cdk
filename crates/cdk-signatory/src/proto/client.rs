@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use cdk_common::error::Error;
-use cdk_common::grpc::VERSION_SIGNATORY_HEADER;
+use cdk_common::grpc::{VersionInterceptor, VERSION_SIGNATORY_HEADER};
 use cdk_common::{BlindSignature, BlindedMessage, Proof};
-use tonic::metadata::MetadataValue;
+use tonic::codegen::InterceptedService;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 use crate::proto;
@@ -13,7 +13,7 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, Signatory
 /// A client for the Signatory service.
 #[allow(missing_debug_implementations)]
 pub struct SignatoryRpcClient {
-    client: SignatoryClient<tonic::transport::Channel>,
+    client: SignatoryClient<InterceptedService<Channel, VersionInterceptor>>,
     url: String,
 }
 
@@ -37,20 +37,12 @@ pub enum ClientError {
     InvalidUrl,
 }
 
-/// Helper function to add version header to a request
-fn with_version_header<T>(mut request: tonic::Request<T>) -> tonic::Request<T> {
-    let version_str = (proto::Constants::SchemaVersion as u8).to_string();
-    let version: &'static str = Box::leak(version_str.into_boxed_str());
-    request.metadata_mut().insert(
-        VERSION_SIGNATORY_HEADER,
-        MetadataValue::from_static(version),
-    );
-    request
-}
-
 impl SignatoryRpcClient {
     /// Create a new RemoteSigner from a tonic transport channel.
-    pub async fn new<A: AsRef<Path>>(url: String, tls_dir: Option<A>) -> Result<Self, ClientError> {
+    pub async fn new<A>(url: String, tls_dir: Option<A>) -> Result<Self, ClientError>
+    where
+        A: AsRef<Path>,
+    {
         #[cfg(not(target_arch = "wasm32"))]
         if rustls::crypto::CryptoProvider::get_default().is_none() {
             let _ = rustls::crypto::ring::default_provider().install_default();
@@ -79,8 +71,11 @@ impl SignatoryRpcClient {
                 .await?
         };
 
+        let version = (proto::Constants::SchemaVersion as u8).to_string();
+        let interceptor = VersionInterceptor::new(VERSION_SIGNATORY_HEADER, version);
+
         Ok(Self {
-            client: SignatoryClient::new(channel),
+            client: SignatoryClient::with_interceptor(channel, interceptor),
             url,
         })
     }
@@ -124,7 +119,7 @@ impl Signatory for SignatoryRpcClient {
 
         self.client
             .clone()
-            .blind_sign(with_version_header(tonic::Request::new(req)))
+            .blind_sign(tonic::Request::new(req))
             .await
             .map(|response| {
                 handle_error!(response, sigs)
@@ -141,7 +136,7 @@ impl Signatory for SignatoryRpcClient {
         let req: super::Proofs = proofs.into();
         self.client
             .clone()
-            .verify_proofs(with_version_header(tonic::Request::new(req)))
+            .verify_proofs(tonic::Request::new(req))
             .await
             .map(|response| {
                 if handle_error!(response, success, scalar) {
@@ -157,9 +152,7 @@ impl Signatory for SignatoryRpcClient {
     async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
         self.client
             .clone()
-            .keysets(with_version_header(tonic::Request::new(
-                super::EmptyRequest {},
-            )))
+            .keysets(tonic::Request::new(super::EmptyRequest {}))
             .await
             .map(|response| handle_error!(response, keysets).try_into())
             .map_err(|e| Error::Custom(e.to_string()))?
@@ -170,7 +163,7 @@ impl Signatory for SignatoryRpcClient {
         let req: super::RotationRequest = args.into();
         self.client
             .clone()
-            .rotate_keyset(with_version_header(tonic::Request::new(req)))
+            .rotate_keyset(tonic::Request::new(req))
             .await
             .map(|response| handle_error!(response, keyset).try_into())
             .map_err(|e| Error::Custom(e.to_string()))?

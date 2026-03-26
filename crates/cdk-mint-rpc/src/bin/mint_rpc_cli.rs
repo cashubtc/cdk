@@ -3,23 +3,13 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use cdk_common::grpc::VERSION_HEADER;
+use cdk_common::grpc::{VersionInterceptor, VERSION_HEADER};
 use cdk_mint_rpc::cdk_mint_client::CdkMintClient;
 use cdk_mint_rpc::mint_rpc_cli::subcommands;
 use cdk_mint_rpc::GetInfoRequest;
 use clap::{Parser, Subcommand};
-use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tonic::Request;
-
-/// Helper function to add version header to a request
-fn with_version_header<T>(mut request: Request<T>) -> Request<T> {
-    request.metadata_mut().insert(
-        VERSION_HEADER,
-        MetadataValue::from_static(cdk_common::MINT_RPC_PROTOCOL_VERSION),
-    );
-    request
-}
 use tracing_subscriber::EnvFilter;
 
 /// Common CLI arguments for CDK binaries
@@ -161,14 +151,14 @@ async fn main() -> Result<()> {
             .await?
     };
 
-    // Create client
-    let mut client = CdkMintClient::new(channel);
+    // Create client with version header interceptor
+    let interceptor =
+        VersionInterceptor::new(VERSION_HEADER, cdk_common::MINT_RPC_PROTOCOL_VERSION);
+    let mut client = CdkMintClient::with_interceptor(channel, interceptor);
 
     match cli.command {
         Commands::GetInfo => {
-            let response = client
-                .get_info(with_version_header(Request::new(GetInfoRequest {})))
-                .await?;
+            let response = client.get_info(Request::new(GetInfoRequest {})).await?;
             let info = response.into_inner();
             println!(
                 "name:             {}",
