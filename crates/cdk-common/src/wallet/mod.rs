@@ -954,19 +954,22 @@ pub trait Wallet: Send + Sync {
 
     // P2PK proofs
     /// generates and stores public key in database
-    async fn generate_public_key(&self) -> Result<PublicKey, Error>;
+    async fn generate_public_key(&self) -> Result<PublicKey, Self::Error>;
 
     /// gets public key by it's hex value
-    async fn get_public_key(&self, pubkey: &PublicKey) -> Result<Option<P2PKSigningKey>, Error>;
+    async fn get_public_key(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Option<P2PKSigningKey>, Self::Error>;
 
     /// gets list of stored public keys in database
-    async fn get_public_keys(&self) -> Result<Vec<P2PKSigningKey>, Error>;
+    async fn get_public_keys(&self) -> Result<Vec<P2PKSigningKey>, Self::Error>;
 
     /// Gets the latest generated P2PK signing key (most recently created)
-    async fn get_latest_public_key(&self) -> Result<Option<P2PKSigningKey>, Error>;
+    async fn get_latest_public_key(&self) -> Result<Option<P2PKSigningKey>, Self::Error>;
 
     /// try to get secret key from p2pk signing key in localstore
-    async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Error>;
+    async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Self::Error>;
 }
 
 /// Public key generated for proof signing
