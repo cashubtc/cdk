@@ -1142,8 +1142,13 @@ pub(crate) async fn get_index(
 
                     // Footer
                     div class="footer" {
-                        "Powered by "
-                        a href="https://github.com/cashubtc/cdk" target="_blank" { "Cashu Development Kit (CDK)" }
+                        div {
+                            "Powered by "
+                            a href="https://cashudevkit.org" target="_blank" { "Cashu Development Kit (CDK)" }
+                        }
+                        div style="margin-top: 8px" {
+                            a href="https://iscashucustodial.com/" target="_blank" { "isCashuCustodial.com" }
+                        }
                     }
                 }
             }
