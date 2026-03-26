@@ -6,7 +6,9 @@ use cdk_common::{PublicKey, SECP256K1};
 
 use crate::error::Error;
 
-/// purpose used for key derivation
+/// This purpose are being used because in base of this PR: https://github.com/cashubtc/nuts/pull/331
+/// It's not the same purpose as the cashu purpose because of production code already being used in
+/// the coco wallet
 pub const P2PK_PURPOSE: u32 = 129373;
 
 /// account used for P2PK derivation
