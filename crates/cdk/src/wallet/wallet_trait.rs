@@ -21,7 +21,6 @@ use cdk_common::{Amount, PublicKey, SecretKey};
 use tracing::instrument;
 use uuid::Uuid;
 
-use crate::wallet::p2pk;
 use crate::wallet::subscription::ActiveSubscription;
 use crate::Error;
 
@@ -368,7 +367,7 @@ impl WalletTrait for super::Wallet {
     }
     /// generates and stores public key in database
     async fn generate_public_key(&self) -> Result<PublicKey, Self::Error> {
-        return p2pk::generate_public_key(&self.localstore, &self.seed).await;
+        return self.generate_public_key().await;
     }
 
     /// gets public key by it's hex value

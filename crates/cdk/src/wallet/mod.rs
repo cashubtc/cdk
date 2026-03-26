@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bitcoin::bip32::Xpriv;
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
@@ -35,6 +35,7 @@ use crate::nuts::{
     RestoreRequest, SpendingConditions, State,
 };
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
+use crate::wallet::p2pk::{P2PK_ACCOUNT, P2PK_PURPOSE};
 use crate::Amount;
 
 mod auth;
@@ -877,7 +878,31 @@ impl Wallet {
 
     /// generates and stores public key in database
     pub async fn generate_public_key(&self) -> Result<PublicKey, Error> {
-        p2pk::generate_public_key(&self.localstore, &self.seed).await
+        let public_keys = self.localstore.list_p2pk_keys().await?;
+
+        let mut last_derivation_index = 0;
+
+        for public_key in public_keys {
+            if public_key.derivation_index >= last_derivation_index {
+                last_derivation_index = public_key.derivation_index + 1;
+            }
+        }
+
+        let derivation_path = DerivationPath::from(vec![
+            ChildNumber::from_hardened_idx(P2PK_PURPOSE)?,
+            ChildNumber::from_hardened_idx(P2PK_ACCOUNT)?,
+            ChildNumber::from_hardened_idx(0)?,
+            ChildNumber::from_hardened_idx(0)?,
+            ChildNumber::from_normal_idx(last_derivation_index)?,
+        ]);
+
+        let pubkey = p2pk::generate_public_key(&derivation_path, &self.seed).await?;
+
+        self.localstore
+            .add_p2pk_key(&pubkey, derivation_path, last_derivation_index)
+            .await?;
+
+        Ok(pubkey)
     }
 
     /// gets public key by it's hex value
@@ -885,21 +910,21 @@ impl Wallet {
         &self,
         pubkey: &PublicKey,
     ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, database::Error> {
-        p2pk::get_public_key(&self.localstore, pubkey).await
+        self.localstore.get_p2pk_key(pubkey).await
     }
 
     /// gets list of stored public keys in database
     pub async fn get_public_keys(
         &self,
     ) -> Result<Vec<cdk_common::wallet::P2PKSigningKey>, database::Error> {
-        p2pk::get_public_keys(&self.localstore).await
+        self.localstore.list_p2pk_keys().await
     }
 
     /// Gets the latest generated P2PK signing key (most recently created)
     pub async fn get_latest_public_key(
         &self,
     ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, database::Error> {
-        p2pk::get_latest_public_key(&self.localstore).await
+        self.localstore.latest_p2pk().await
     }
 
     /// try to get secret key from p2pk signing key in localstore
