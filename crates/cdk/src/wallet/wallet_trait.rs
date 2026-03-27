@@ -17,7 +17,7 @@ use cdk_common::wallet::{
     MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions, Transaction, TransactionDirection,
     TransactionId, Wallet as WalletTrait,
 };
-use cdk_common::Amount;
+use cdk_common::{Amount, PublicKey, SecretKey};
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -364,5 +364,40 @@ impl WalletTrait for super::Wallet {
         states: Vec<cdk_common::nuts::State>,
     ) -> Result<Proofs, Self::Error> {
         self.get_proofs_by_states(states).await
+    }
+    /// generates and stores public key in database
+    async fn generate_public_key(&self) -> Result<PublicKey, Self::Error> {
+        return self.generate_public_key().await;
+    }
+
+    /// gets public key by it's hex value
+    async fn get_public_key(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, Self::Error> {
+        let pubkey = self.get_public_key(pubkey).await?;
+        Ok(pubkey)
+    }
+
+    /// gets list of stored public keys in database
+    async fn get_public_keys(
+        &self,
+    ) -> Result<Vec<cdk_common::wallet::P2PKSigningKey>, Self::Error> {
+        let pubkeys = self.get_public_keys().await?;
+        Ok(pubkeys)
+    }
+
+    /// Gets the latest generated P2PK signing key (most recently created)
+    async fn get_latest_public_key(
+        &self,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, Self::Error> {
+        let pubkey = self.get_latest_public_key().await?;
+        Ok(pubkey)
+    }
+
+    /// try to get secret key from p2pk signing key in localstore
+    async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Self::Error> {
+        let signing_key = self.get_signing_key(pubkey).await?;
+        Ok(signing_key)
     }
 }
