@@ -30,12 +30,12 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 pub struct DirectMintConnection {
-    pub mint: Mint,
+    pub mint: Arc<Mint>,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
 }
 
 impl DirectMintConnection {
-    pub fn new(mint: Mint) -> Self {
+    pub fn new(mint: Arc<Mint>) -> Self {
         Self {
             mint,
             auth_wallet: Arc::new(RwLock::new(None)),
@@ -398,11 +398,11 @@ pub fn setup_tracing() {
         .try_init();
 }
 
-pub async fn create_and_start_test_mint() -> Result<Mint> {
+pub async fn create_and_start_test_mint() -> Result<Arc<Mint>> {
     create_mint_with_limits(None).await
 }
 
-pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
+pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Arc<Mint>> {
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
@@ -475,9 +475,11 @@ pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
-    let mint = mint_builder
-        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
-        .await?;
+    let mint = Arc::new(
+        mint_builder
+            .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+            .await?,
+    );
 
     mint.set_quote_ttl(quote_ttl).await?;
 
@@ -486,7 +488,7 @@ pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
     Ok(mint)
 }
 
-pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<Mint> {
+pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<Arc<Mint>> {
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
@@ -562,9 +564,11 @@ pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<M
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
-    let mint = mint_builder
-        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
-        .await?;
+    let mint = Arc::new(
+        mint_builder
+            .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+            .await?,
+    );
 
     mint.set_quote_ttl(quote_ttl).await?;
 
@@ -573,15 +577,18 @@ pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<M
     Ok(mint)
 }
 
-pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
+pub async fn create_test_wallet_for_mint(mint: Arc<Mint>) -> Result<Wallet> {
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
-    create_test_wallet_for_mint_with_seed(mint, seed).await
+    create_test_wallet_for_mint_with_seed(&mint, seed).await
 }
 
 /// Create a test wallet connected directly to a mint with a specific seed
 ///
 /// Useful for restore tests where two wallets must share the same seed.
-pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -> Result<Wallet> {
+pub async fn create_test_wallet_for_mint_with_seed(
+    mint: &Arc<Mint>,
+    seed: [u8; 64],
+) -> Result<Wallet> {
     let connector = DirectMintConnection::new(mint.clone());
 
     let mint_info = mint.mint_info().await?;

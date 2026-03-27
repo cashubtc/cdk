@@ -2266,7 +2266,7 @@ async fn test_restore_after_keyset_rotation() {
 
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
 
-    let wallet = create_test_wallet_for_mint_with_seed(mint.clone(), seed)
+    let wallet = create_test_wallet_for_mint_with_seed(&mint, seed)
         .await
         .expect("Failed to create test wallet");
 
@@ -2297,7 +2297,7 @@ async fn test_restore_after_keyset_rotation() {
     assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(total));
 
     // Create a fresh wallet with the same seed — simulates restore from backup
-    let wallet_restored = create_test_wallet_for_mint_with_seed(mint.clone(), seed)
+    let wallet_restored = create_test_wallet_for_mint_with_seed(&mint, seed)
         .await
         .expect("Failed to create restore wallet");
 
