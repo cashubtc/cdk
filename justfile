@@ -106,6 +106,28 @@ test-units:
   cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
 
   # run doc tests
+  cargo test --doc
+
+coverage:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  # Clean up previous coverage data
+  cargo llvm-cov clean --workspace
+  
+  # Run unit tests with coverage
+  echo "Running unit tests coverage..."
+  cargo llvm-cov --no-report --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
+  
+  # Run integration tests coverage
+  echo "Running integration tests coverage..."
+  cargo llvm-cov --no-report -p cdk-integration-tests --test mint
+  
+  # Generate report
+  echo "Generating coverage report..."
+  cargo llvm-cov report --lcov --output-path lcov.info
 test-pure db="memory":
   #!/usr/bin/env bash
   set -euo pipefail

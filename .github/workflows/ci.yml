@@ -454,3 +454,26 @@ jobs:
         continue-on-error: true
       - name: Run FFI tests
         run: nix build -L .#checks.x86_64-linux.ffi-tests
+
+  coverage:
+    name: "Code Coverage"
+    runs-on: self-hosted
+    timeout-minutes: 45
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Generate Coverage
+        run: nix develop -i -L .#integration --command just coverage
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          fail_ci_if_error: true
