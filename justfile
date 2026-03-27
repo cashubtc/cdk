@@ -119,11 +119,17 @@ coverage:
   
   # Run unit tests with coverage
   echo "Running unit tests coverage..."
-  cargo llvm-cov --no-report --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
+  cargo llvm-cov --no-report --lib --workspace --exclude cdk-integration-tests
+  
+  # Start PostgreSQL and run cdk-postgres tests with coverage
+  echo "Starting PostgreSQL for coverage..."
+  start-postgres
+  cargo llvm-cov --no-report -p cdk-postgres
   
   # Generate report
   echo "Generating coverage report..."
   cargo llvm-cov report --lcov --output-path lcov.info
+
 test-pure db="memory":
   #!/usr/bin/env bash
   set -euo pipefail
