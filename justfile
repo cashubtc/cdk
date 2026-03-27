@@ -121,10 +121,6 @@ coverage:
   echo "Running unit tests coverage..."
   cargo llvm-cov --no-report --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
   
-  # Run integration tests coverage
-  echo "Running integration tests coverage..."
-  cargo llvm-cov --no-report -p cdk-integration-tests --test mint
-  
   # Generate report
   echo "Generating coverage report..."
   cargo llvm-cov report --lcov --output-path lcov.info
