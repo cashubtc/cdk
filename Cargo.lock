@@ -708,9 +708,9 @@ dependencies = [
 
 [[package]]
 name = "bdk_chain"
-version = "0.23.2"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b5d691fd092aacec7e05046b7d04897d58d6d65ed3152cb6cf65dababcfabed"
+checksum = "c290eff038799a8ac0c5a82b6160a9ca456baa299a6f22b262c771342d2846c0"
 dependencies = [
  "bdk_core",
  "bitcoin 0.32.8",
@@ -720,9 +720,9 @@ dependencies = [
 
 [[package]]
 name = "bdk_core"
-version = "0.6.2"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0dbbe4aad0c898bfeb5253c222be3ea3dccfb380a07e72c87e3e4ed6664a6753"
+checksum = "cb3028782f6bf14a6df987244333d34e6b272b5a40a53e4879ec2dfd82275a3a"
 dependencies = [
  "bitcoin 0.32.8",
  "hashbrown 0.14.5",
@@ -741,9 +741,9 @@ dependencies = [
 
 [[package]]
 name = "bdk_esplora"
-version = "0.22.1"
+version = "0.22.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9f5961444b5f51b9c3937e729a212363d0e4cde6390ded6e01e16292078df4"
+checksum = "83986307ea92997c3d051e8c306af8115a05add601e22acb7c1903008e6b614e"
 dependencies = [
  "async-trait",
  "bdk_core",
@@ -1098,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "cashu"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "bip39",
  "bitcoin 0.32.8",
@@ -1159,9 +1159,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.57"
+version = "1.2.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a0dd1ca384932ff3641c8718a02769f1698e7563dc6974ffd03346116310423"
+checksum = "e1e928d4b69e3077709075a938a05ffbedfa53a84c8f766efbf8220bb1ff60e1"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1171,7 +1171,7 @@ dependencies = [
 
 [[package]]
 name = "cdk"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-axum"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cli"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "bip39",
@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cln"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1289,7 +1289,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-common"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-fake-wallet"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1347,7 +1347,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "android_logger",
  "async-trait",
@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-http-client"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "futures",
  "futures-channel",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-integration-tests"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ldk-node"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
@@ -1470,7 +1470,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnbits"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnd"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1513,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mint-rpc"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "cdk",
@@ -1535,7 +1535,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mintd"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-npubcash"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1599,7 +1599,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-payment-processor"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1636,7 +1636,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-postgres"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1659,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-prometheus"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -1677,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-redb"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "async-trait",
  "cdk-common",
@@ -1695,7 +1695,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-signatory"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1720,7 +1720,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sql-common"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1738,7 +1738,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sqlite"
-version = "0.16.0-rc.0"
+version = "0.16.0-rc.1"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -4472,9 +4472,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.1.1"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a69bcab0ad47271a0234d9422b131806bf3968021e5dc9328caf2d4cd58557fc"
+checksum = "50b7e5b27aa02a74bac8c3f23f448f8d87ff11f92d3aac1a6ed369ee08cc56c1"
 dependencies = [
  "libc",
  "wasi 0.11.1+wasi-snapshot-preview1",
@@ -6734,9 +6734,9 @@ dependencies = [
 
 [[package]]
 name = "simd-adler32"
-version = "0.3.8"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
+checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
 name = "similar"
@@ -8656,9 +8656,9 @@ checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
 
 [[package]]
 name = "unicode-segmentation"
-version = "1.13.1"
+version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da36089a805484bcccfffe0739803392c8298778a2d2f09febf76fac5ad9025b"
+checksum = "9629274872b2bfaf8d66f5f15725007f635594914870f65218920345aa11aa8c"
 
 [[package]]
 name = "unicode-xid"
@@ -8940,9 +8940,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.22.0"
+version = "1.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a68d3c8f01c0cfa54a75291d83601161799e4a89a39e0929f4b0354d88757a37"
+checksum = "5ac8b6f42ead25368cf5b098aeb3dc8a1a2c05a3eee8a9a1a68c640edbfc79d9"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
