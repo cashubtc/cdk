@@ -126,6 +126,10 @@ coverage:
   start-postgres
   cargo llvm-cov --no-report -p cdk-postgres
   
+  # Run pure integration tests with coverage (in-memory, no external deps)
+  echo "Running pure integration tests coverage..."
+  cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
+  
   # Generate report
   echo "Generating coverage report..."
   cargo llvm-cov report --lcov --output-path lcov.info
