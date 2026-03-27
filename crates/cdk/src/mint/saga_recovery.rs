@@ -147,11 +147,7 @@ mod tests {
         let melt_request = create_test_melt_request(&proofs, &quote);
 
         let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-        let saga = MeltSaga::new(
-            std::sync::Arc::new(mint.clone()),
-            mint.localstore(),
-            mint.pubsub_manager(),
-        );
+        let saga = MeltSaga::new(mint.clone(), mint.localstore(), mint.pubsub_manager());
         let setup_saga = saga
             .setup_melt(
                 &melt_request,
@@ -223,11 +219,7 @@ mod tests {
         let melt_request = create_test_melt_request(&proofs, &quote);
 
         let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-        let saga = MeltSaga::new(
-            std::sync::Arc::new(mint.clone()),
-            mint.localstore(),
-            mint.pubsub_manager(),
-        );
+        let saga = MeltSaga::new(mint.clone(), mint.localstore(), mint.pubsub_manager());
         let setup_saga = saga
             .setup_melt(
                 &melt_request,
@@ -286,11 +278,7 @@ mod tests {
         let melt_request = create_test_melt_request(&proofs, &quote);
 
         let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-        let saga = MeltSaga::new(
-            std::sync::Arc::new(mint.clone()),
-            mint.localstore(),
-            mint.pubsub_manager(),
-        );
+        let saga = MeltSaga::new(mint.clone(), mint.localstore(), mint.pubsub_manager());
         let setup_saga = saga
             .setup_melt(
                 &melt_request,
@@ -370,11 +358,7 @@ mod tests {
         let melt_request = create_test_melt_request(&proofs, &quote);
 
         let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-        let saga = MeltSaga::new(
-            std::sync::Arc::new(mint.clone()),
-            mint.localstore(),
-            mint.pubsub_manager(),
-        );
+        let saga = MeltSaga::new(mint.clone(), mint.localstore(), mint.pubsub_manager());
         let _setup_saga = saga
             .setup_melt(
                 &melt_request,
@@ -431,11 +415,7 @@ mod tests {
         let melt_request = create_test_melt_request(&proofs, &quote);
 
         let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-        let saga = MeltSaga::new(
-            std::sync::Arc::new(mint.clone()),
-            mint.localstore(),
-            mint.pubsub_manager(),
-        );
+        let saga = MeltSaga::new(mint.clone(), mint.localstore(), mint.pubsub_manager());
         let _setup_saga = saga
             .setup_melt(
                 &melt_request,
@@ -492,11 +472,7 @@ mod tests {
         let melt_request = create_test_melt_request(&proofs, &quote);
 
         let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-        let saga = MeltSaga::new(
-            std::sync::Arc::new(mint.clone()),
-            mint.localstore(),
-            mint.pubsub_manager(),
-        );
+        let saga = MeltSaga::new(mint.clone(), mint.localstore(), mint.pubsub_manager());
         let _setup_saga = saga
             .setup_melt(
                 &melt_request,

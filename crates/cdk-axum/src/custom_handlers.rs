@@ -800,17 +800,19 @@ mod tests {
             .unwrap();
 
         let mnemonic = Mnemonic::generate(12).unwrap();
-        let mint = builder
-            .build_with_seed(db, &mnemonic.to_seed_normalized(""))
-            .await
-            .unwrap();
+        let mint = Arc::new(
+            builder
+                .build_with_seed(db, &mnemonic.to_seed_normalized(""))
+                .await
+                .unwrap(),
+        );
         mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000))
             .await
             .unwrap();
         mint.start().await.unwrap();
 
         MintState {
-            mint: Arc::new(mint),
+            mint,
             cache: Arc::new(HttpCache::default()),
         }
     }

@@ -152,7 +152,7 @@ impl MintPayment for NoEventPendingBackend {
 
 async fn create_pending_test_mint(
     backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync>,
-) -> Result<Mint, Error> {
+) -> Result<Arc<Mint>, Error> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
     let mut mint_builder = MintBuilder::new(db.clone());
 
@@ -166,12 +166,14 @@ async fn create_pending_test_mint(
         .await?;
 
     let mnemonic = bip39::Mnemonic::generate(12).map_err(|e| Error::Custom(e.to_string()))?;
-    let mint = mint_builder
-        .with_name("test mint".to_string())
-        .with_description("test mint for async melt tests".to_string())
-        .with_urls(vec!["https://test-mint".to_string()])
-        .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
-        .await?;
+    let mint = Arc::new(
+        mint_builder
+            .with_name("test mint".to_string())
+            .with_description("test mint for async melt tests".to_string())
+            .with_urls(vec!["https://test-mint".to_string()])
+            .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
+            .await?,
+    );
 
     mint.set_quote_ttl(QuoteTTL::new(10000, 10000)).await?;
     mint.start().await?;

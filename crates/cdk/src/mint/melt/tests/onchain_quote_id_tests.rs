@@ -170,7 +170,7 @@ impl MintPayment for OnchainQuoteMock {
     }
 }
 
-async fn create_onchain_test_mint(echo: EchoBehavior) -> Result<Mint, Error> {
+async fn create_onchain_test_mint(echo: EchoBehavior) -> Result<Arc<Mint>, Error> {
     create_onchain_test_mint_with_fee_options(
         echo,
         FeeOptionsBehavior::Explicit(vec![MeltQuoteOnchainFeeOption {
@@ -185,7 +185,7 @@ async fn create_onchain_test_mint(echo: EchoBehavior) -> Result<Mint, Error> {
 async fn create_onchain_test_mint_with_fee_options(
     echo: EchoBehavior,
     fee_options: FeeOptionsBehavior,
-) -> Result<Mint, Error> {
+) -> Result<Arc<Mint>, Error> {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
         Arc::new(OnchainQuoteMock::with_fee_options(echo, fee_options));
 
@@ -202,12 +202,14 @@ async fn create_onchain_test_mint_with_fee_options(
         .await?;
 
     let mnemonic = bip39::Mnemonic::generate(12).map_err(|e| Error::Custom(e.to_string()))?;
-    let mint = mint_builder
-        .with_name("test mint".to_string())
-        .with_description("onchain quote-id echo contract tests".to_string())
-        .with_urls(vec!["https://test-mint".to_string()])
-        .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
-        .await?;
+    let mint = Arc::new(
+        mint_builder
+            .with_name("test mint".to_string())
+            .with_description("onchain quote-id echo contract tests".to_string())
+            .with_urls(vec!["https://test-mint".to_string()])
+            .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
+            .await?,
+    );
 
     mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
     mint.start().await?;
