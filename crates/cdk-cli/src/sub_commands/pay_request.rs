@@ -1,10 +1,10 @@
-use std::io::{self, Write};
-
 use anyhow::{anyhow, Result};
 use cdk::nuts::PaymentRequest;
 use cdk::wallet::WalletRepository;
 use cdk::Amount;
 use clap::Args;
+
+use crate::utils::get_number_input;
 
 #[derive(Args)]
 pub struct PayRequestSubCommand {
@@ -27,15 +27,7 @@ pub async fn pay_request(
         None => match sub_command_args.amount {
             Some(amt) => amt.into(),
             None => {
-                println!("Enter the amount you would like to pay");
-
-                let mut user_input = String::new();
-                let stdin = io::stdin();
-                io::stdout().flush()?;
-                stdin.read_line(&mut user_input)?;
-
-                let amount: u64 = user_input.trim().parse()?;
-
+                let amount: u64 = get_number_input("Enter the amount you would like to pay")?;
                 amount.into()
             }
         },
