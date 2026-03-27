@@ -117,14 +117,13 @@ coverage:
   # Clean up previous coverage data
   cargo llvm-cov clean --workspace
   
-  # Run unit tests with coverage
-  echo "Running unit tests coverage..."
-  cargo llvm-cov --no-report --lib --workspace --exclude cdk-integration-tests
-  
-  # Start PostgreSQL and run cdk-postgres tests with coverage
+  # Start PostgreSQL for cdk-postgres tests
   echo "Starting PostgreSQL for coverage..."
   start-postgres
-  cargo llvm-cov --no-report -p cdk-postgres
+
+  # Run unit tests with coverage (all workspace crates including cdk-postgres)
+  echo "Running unit tests coverage..."
+  cargo llvm-cov --no-report --lib --workspace --exclude cdk-integration-tests
   
   # Run pure integration tests with coverage (in-memory, no external deps)
   echo "Running pure integration tests coverage..."
