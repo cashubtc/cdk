@@ -102,6 +102,7 @@
             "rustfmt"
             "clippy"
             "rust-analyzer"
+            "llvm-tools-preview"
           ];
         };
 
@@ -112,6 +113,7 @@
             "rustfmt"
             "clippy"
             "rust-analyzer"
+            "llvm-tools-preview"
           ];
         };
 
@@ -124,6 +126,7 @@
               "clippy"
               "rust-analyzer"
               "rust-src"
+              "llvm-tools-preview"
             ];
             targets = [ "wasm32-unknown-unknown" ]; # wasm
           }
@@ -610,6 +613,7 @@
             cargo-mutants
             cargo-fuzz
             cargo-nextest
+            cargo-llvm-cov
 
             # Database
             postgresql_16
