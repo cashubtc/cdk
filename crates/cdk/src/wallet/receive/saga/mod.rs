@@ -124,10 +124,10 @@ impl<'a> ReceiveSaga<'a, Initial> {
             })
             .collect::<Result<HashMap<String, &String>, _>>()?;
 
-        let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = opts
+        let mut p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey> = opts
             .p2pk_signing_keys
             .iter()
-            .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
+            .map(|s| (s.x_only_public_key(&SECP256K1).0, s.clone()))
             .collect();
 
         // Process each proof: verify DLEQ, handle P2PK/HTLC
@@ -170,7 +170,6 @@ impl<'a> ReceiveSaga<'a, Initial> {
                             // For HTLC, there is no slot 0 pubkey. But slot index for the tags still starts at 1!
                         }
                     }
-
                     if let Some(mut cond_pubkeys) = conditions.pubkeys {
                         pubkeys.append(&mut cond_pubkeys);
                     }
@@ -183,6 +182,16 @@ impl<'a> ReceiveSaga<'a, Initial> {
                             Kind::P2PK => i as u8,
                             _ => (i + 1) as u8, // HTLC skips slot 0 since it's a hash, not a pubkey
                         };
+                        let x_only_pubkey = pubkey.x_only_public_key();
+
+                        if let std::collections::hash_map::Entry::Vacant(entry) =
+                            p2pk_signing_keys.entry(x_only_pubkey)
+                        {
+                            if let Some(secret_key) = self.wallet.get_signing_key(pubkey).await? {
+                                entry.insert(secret_key.clone());
+                            }
+                        }
+
                         if let Some(ephemeral_key) = proof.p2pk_e {
                             for signing_key in p2pk_signing_keys.values() {
                                 if let Ok(r) =
@@ -200,11 +209,14 @@ impl<'a> ReceiveSaga<'a, Initial> {
                                     }
                                 }
                             }
-                        } else if let Some(signing) =
-                            p2pk_signing_keys.get(&pubkey.x_only_public_key())
-                        {
+                        } else if let Some(signing) = p2pk_signing_keys.get(&x_only_pubkey) {
                             proof.sign_p2pk(signing.to_owned().clone())?;
                         }
+                    }
+
+                    match secret.kind() {
+                        Kind::P2PK => proof.verify_p2pk()?,
+                        Kind::HTLC => proof.verify_htlc()?,
                     }
 
                     if conditions.sig_flag.eq(&SigFlag::SigAll) {
@@ -225,6 +237,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                 proofs,
                 proofs_amount,
                 active_keyset_id,
+                p2pk_signing_keys,
             },
         })
     }
@@ -326,19 +339,11 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         // Determine if SigAll signing is needed
         let sig_flag = self.determine_sig_flag()?;
         if sig_flag == SigFlag::SigAll {
-            let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = self
-                .state_data
-                .options
-                .p2pk_signing_keys
-                .iter()
-                .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
-                .collect();
-
             for blinded_message in pre_swap.swap_request.outputs_mut() {
-                for signing_key in p2pk_signing_keys.values() {
+                for signing_key in self.state_data.p2pk_signing_keys.values() {
                     // Sign the outputs of the swap using standard P2PK since output
                     // P2BK requires ephemeral keys which is handled at creation.
-                    blinded_message.sign_p2pk((**signing_key).clone())?
+                    blinded_message.sign_p2pk(signing_key.to_owned().clone())?
                 }
             }
         }

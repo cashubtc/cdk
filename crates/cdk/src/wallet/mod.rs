@@ -6,11 +6,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
+use bitcoin::Network;
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::ProofInfo;
+use cdk_common::{PublicKey, SecretKey, SECP256K1};
 use getrandom::getrandom;
 pub use mint_connector::http_client::{
     AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
@@ -32,6 +35,7 @@ use crate::nuts::{
     RestoreRequest, SpendingConditions, State,
 };
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
+use crate::wallet::p2pk::{P2PK_ACCOUNT, P2PK_PURPOSE};
 use crate::Amount;
 
 mod auth;
@@ -49,6 +53,7 @@ mod mint_connector;
 mod mint_metadata_cache;
 #[cfg(feature = "npubcash")]
 mod npubcash;
+mod p2pk;
 pub mod payment_request;
 mod proofs;
 mod receive;
@@ -869,6 +874,72 @@ impl Wallet {
     /// This controls how many proofs of each denomination the wallet tries to maintain.
     pub fn set_target_proof_count(&mut self, count: usize) {
         self.target_proof_count = count;
+    }
+
+    /// generates and stores public key in database
+    pub async fn generate_public_key(&self) -> Result<PublicKey, Error> {
+        let public_keys = self.localstore.list_p2pk_keys().await?;
+
+        let mut last_derivation_index = 0;
+
+        for public_key in public_keys {
+            if public_key.derivation_index >= last_derivation_index {
+                last_derivation_index = public_key.derivation_index + 1;
+            }
+        }
+
+        let derivation_path = DerivationPath::from(vec![
+            ChildNumber::from_hardened_idx(P2PK_PURPOSE)?,
+            ChildNumber::from_hardened_idx(P2PK_ACCOUNT)?,
+            ChildNumber::from_hardened_idx(0)?,
+            ChildNumber::from_hardened_idx(0)?,
+            ChildNumber::from_normal_idx(last_derivation_index)?,
+        ]);
+
+        let pubkey = p2pk::generate_public_key(&derivation_path, &self.seed).await?;
+
+        self.localstore
+            .add_p2pk_key(&pubkey, derivation_path, last_derivation_index)
+            .await?;
+
+        Ok(pubkey)
+    }
+
+    /// gets public key by it's hex value
+    pub async fn get_public_key(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, database::Error> {
+        self.localstore.get_p2pk_key(pubkey).await
+    }
+
+    /// gets list of stored public keys in database
+    pub async fn get_public_keys(
+        &self,
+    ) -> Result<Vec<cdk_common::wallet::P2PKSigningKey>, database::Error> {
+        self.localstore.list_p2pk_keys().await
+    }
+
+    /// Gets the latest generated P2PK signing key (most recently created)
+    pub async fn get_latest_public_key(
+        &self,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, database::Error> {
+        self.localstore.latest_p2pk().await
+    }
+
+    /// try to get secret key from p2pk signing key in localstore
+    async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Error> {
+        let signing = self.localstore.get_p2pk_key(pubkey).await?;
+        if let Some(signing) = signing {
+            let xpriv = Xpriv::new_master(Network::Bitcoin, &self.seed)?;
+            return Ok(Some(SecretKey::from(
+                xpriv
+                    .derive_priv(&SECP256K1, &signing.derivation_path)?
+                    .private_key,
+            )));
+        }
+
+        Ok(None)
     }
 }
 

@@ -445,4 +445,44 @@ impl WalletTraitDef for Wallet {
         let proofs = WalletTraitDef::get_proofs_by_states(self.inner().as_ref(), states).await?;
         Ok(proofs)
     }
+
+    /// generates and stores public key in database
+    async fn generate_public_key(&self) -> Result<cdk::nuts::PublicKey, Self::Error> {
+        let quote = WalletTraitDef::generate_public_key(self.inner().as_ref()).await?;
+        Ok(quote)
+    }
+
+    /// gets public key by it's hex value
+    async fn get_public_key(
+        &self,
+        pubkey: &cdk::nuts::PublicKey,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, Self::Error> {
+        let pubkey = WalletTraitDef::get_public_key(self.inner().as_ref(), pubkey).await?;
+        Ok(pubkey)
+    }
+
+    /// gets list of stored public keys in database
+    async fn get_public_keys(
+        &self,
+    ) -> Result<Vec<cdk_common::wallet::P2PKSigningKey>, Self::Error> {
+        let pubkeys = WalletTraitDef::get_public_keys(self.inner().as_ref()).await?;
+        Ok(pubkeys)
+    }
+
+    /// Gets the latest generated P2PK signing key (most recently created)
+    async fn get_latest_public_key(
+        &self,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, Self::Error> {
+        let pubkey = WalletTraitDef::get_latest_public_key(self.inner().as_ref()).await?;
+        Ok(pubkey)
+    }
+
+    /// try to get secret key from p2pk signing key in localstore
+    async fn get_signing_key(
+        &self,
+        pubkey: &cdk::nuts::PublicKey,
+    ) -> Result<Option<cdk::nuts::SecretKey>, Self::Error> {
+        let signing_key = WalletTraitDef::get_signing_key(self.inner().as_ref(), pubkey).await?;
+        Ok(signing_key)
+    }
 }

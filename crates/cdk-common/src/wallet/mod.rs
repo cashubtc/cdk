@@ -5,6 +5,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use async_trait::async_trait;
+use bitcoin::bip32::DerivationPath;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::amount::SplitTarget;
 use cashu::nuts::nut07::ProofState;
@@ -950,6 +951,38 @@ pub trait Wallet: Send + Sync {
     /// The `Spent` state is typically excluded since spent proofs are removed
     /// from the database.
     async fn get_proofs_by_states(&self, states: Vec<State>) -> Result<Proofs, Self::Error>;
+
+    // P2PK proofs
+    /// generates and stores public key in database
+    async fn generate_public_key(&self) -> Result<PublicKey, Self::Error>;
+
+    /// gets public key by it's hex value
+    async fn get_public_key(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Option<P2PKSigningKey>, Self::Error>;
+
+    /// gets list of stored public keys in database
+    async fn get_public_keys(&self) -> Result<Vec<P2PKSigningKey>, Self::Error>;
+
+    /// Gets the latest generated P2PK signing key (most recently created)
+    async fn get_latest_public_key(&self) -> Result<Option<P2PKSigningKey>, Self::Error>;
+
+    /// try to get secret key from p2pk signing key in localstore
+    async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Self::Error>;
+}
+
+/// Public key generated for proof signing
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct P2PKSigningKey {
+    /// Public key
+    pub pubkey: PublicKey,
+    /// Derivation path
+    pub derivation_path: DerivationPath,
+    /// Derivation index
+    pub derivation_index: u32,
+    /// Created time
+    pub created_time: u64,
 }
 
 #[cfg(test)]
