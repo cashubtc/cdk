@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::InterceptedCdkMintClient;
-use crate::{GetQuoteTtlRequest, UpdateQuoteTtlRequest};
+use crate::{GetQuoteTtlRequest, InterceptedCdkMintClient, UpdateQuoteTtlRequest};
 
 /// Command to update the time-to-live (TTL) settings for quotes
 ///

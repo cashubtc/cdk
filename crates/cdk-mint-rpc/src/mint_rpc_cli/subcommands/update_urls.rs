@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::InterceptedCdkMintClient;
-use crate::UpdateUrlRequest;
+use crate::{InterceptedCdkMintClient, UpdateUrlRequest};
 
 /// Command to add a URL to the mint's list of endpoints
 ///

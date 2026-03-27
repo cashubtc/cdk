@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::InterceptedCdkMintClient;
-use crate::{MeltMethodOptions, UpdateNut05Request};
+use crate::{InterceptedCdkMintClient, MeltMethodOptions, UpdateNut05Request};
 
 /// Command to update NUT-05 (melt process) settings for the mint
 ///

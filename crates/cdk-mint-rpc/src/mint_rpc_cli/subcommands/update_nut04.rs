@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::InterceptedCdkMintClient;
-use crate::{MintMethodOptions, UpdateNut04Request};
+use crate::{InterceptedCdkMintClient, MintMethodOptions, UpdateNut04Request};
 
 /// Command to update NUT-04 (mint process) settings for the mint
 ///
