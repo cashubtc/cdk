@@ -1275,6 +1275,107 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wallet")]
+    fn test_premint_secrets_accessors_and_total_amount() {
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let amounts = vec![
+            Amount::from(1_u64),
+            Amount::from(2_u64),
+            Amount::from(4_u64),
+        ];
+        let secrets = vec![Secret::generate(), Secret::generate(), Secret::generate()];
+
+        let premint_secrets =
+            PreMintSecrets::from_secrets(keyset_id, amounts.clone(), secrets.clone()).unwrap();
+
+        assert_eq!(premint_secrets.total_amount().unwrap(), Amount::from(7_u64));
+        assert_eq!(premint_secrets.amounts(), amounts);
+        assert_eq!(premint_secrets.secrets(), secrets);
+
+        let blinded_messages = premint_secrets.blinded_messages();
+        assert_eq!(blinded_messages.len(), 3);
+        assert_eq!(blinded_messages[0].amount, Amount::from(1_u64));
+        assert_eq!(blinded_messages[1].amount, Amount::from(2_u64));
+        assert_eq!(blinded_messages[2].amount, Amount::from(4_u64));
+        assert!(blinded_messages
+            .iter()
+            .all(|message| message.keyset_id == keyset_id));
+
+        let rs = premint_secrets.rs();
+        assert_eq!(rs.len(), 3);
+        assert_eq!(rs[0], premint_secrets.secrets[0].r);
+        assert_eq!(rs[1], premint_secrets.secrets[1].r);
+        assert_eq!(rs[2], premint_secrets.secrets[2].r);
+    }
+
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn test_premint_secrets_combine_and_sort() {
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let mut combined = PreMintSecrets::from_secrets(
+            keyset_id,
+            vec![Amount::from(8_u64), Amount::from(2_u64)],
+            vec![Secret::generate(), Secret::generate()],
+        )
+        .unwrap();
+        let other = PreMintSecrets::from_secrets(
+            keyset_id,
+            vec![Amount::from(4_u64), Amount::from(1_u64)],
+            vec![Secret::generate(), Secret::generate()],
+        )
+        .unwrap();
+
+        combined.combine(other);
+
+        assert_eq!(combined.len(), 4);
+        assert_eq!(
+            combined.amounts(),
+            vec![
+                Amount::from(8_u64),
+                Amount::from(2_u64),
+                Amount::from(4_u64),
+                Amount::from(1_u64)
+            ]
+        );
+
+        combined.sort_secrets();
+
+        assert_eq!(
+            combined.amounts(),
+            vec![
+                Amount::from(1_u64),
+                Amount::from(2_u64),
+                Amount::from(4_u64),
+                Amount::from(8_u64)
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn test_premint_secrets_iterator_next_yields_all_items() {
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let premint_secrets = PreMintSecrets::from_secrets(
+            keyset_id,
+            vec![
+                Amount::from(1_u64),
+                Amount::from(2_u64),
+                Amount::from(4_u64),
+            ],
+            vec![Secret::generate(), Secret::generate(), Secret::generate()],
+        )
+        .unwrap();
+        let expected = premint_secrets.secrets.clone();
+        let mut iterated = premint_secrets.clone();
+
+        assert_eq!(iterated.next(), Some(expected[0].clone()));
+        assert_eq!(iterated.next(), Some(expected[1].clone()));
+        assert_eq!(iterated.next(), Some(expected[2].clone()));
+        assert_eq!(iterated.next(), None);
+        assert!(iterated.is_empty());
+    }
+
+    #[test]
     fn custom_unit_ser_der() {
         let unit = CurrencyUnit::Custom(String::from("test"));
         let serialized = serde_json::to_string(&unit).unwrap();
