@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::InterceptedCdkMintClient;
-use crate::RotateNextKeysetRequest;
+use crate::{InterceptedCdkMintClient, RotateNextKeysetRequest};
 
 /// Command to rotate to the next keyset for the mint
 ///

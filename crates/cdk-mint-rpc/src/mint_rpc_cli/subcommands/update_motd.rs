@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::InterceptedCdkMintClient;
-use crate::UpdateMotdRequest;
+use crate::{InterceptedCdkMintClient, UpdateMotdRequest};
 
 /// Command to update the mint's message of the day
 ///
