@@ -125,9 +125,13 @@ coverage:
   echo "Running unit tests coverage..."
   cargo llvm-cov --no-report --lib --workspace --exclude cdk-integration-tests
   
-  # Run pure integration tests with coverage (in-memory, no external deps)
-  echo "Running pure integration tests coverage..."
-  cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
+  # Run pure integration tests with coverage (memory backend)
+  echo "Running pure integration tests coverage (memory)..."
+  CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
+
+  # Run pure integration tests with coverage (sqlite backend)
+  echo "Running pure integration tests coverage (sqlite)..."
+  CDK_TEST_DB_TYPE=sqlite cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
   
   # Generate report
   echo "Generating coverage report..."
