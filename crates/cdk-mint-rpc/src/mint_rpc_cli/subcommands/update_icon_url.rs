@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::InterceptedCdkMintClient;
-use crate::UpdateIconUrlRequest;
+use crate::{InterceptedCdkMintClient, UpdateIconUrlRequest};
 
 /// Command to update the mint's icon URL
 ///

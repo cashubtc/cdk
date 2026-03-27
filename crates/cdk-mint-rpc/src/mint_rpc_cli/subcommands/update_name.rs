@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::InterceptedCdkMintClient;
-use crate::UpdateNameRequest;
+use crate::{InterceptedCdkMintClient, UpdateNameRequest};
 
 /// Command to update the mint's name
 ///

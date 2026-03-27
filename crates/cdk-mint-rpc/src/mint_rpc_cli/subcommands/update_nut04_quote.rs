@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::InterceptedCdkMintClient;
-use crate::UpdateNut04QuoteRequest;
+use crate::{InterceptedCdkMintClient, UpdateNut04QuoteRequest};
 
 /// Command to update the state of a NUT-04 quote
 ///

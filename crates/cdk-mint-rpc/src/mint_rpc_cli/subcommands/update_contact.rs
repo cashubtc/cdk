@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::InterceptedCdkMintClient;
-use crate::UpdateContactRequest;
+use crate::{InterceptedCdkMintClient, UpdateContactRequest};
 
 /// Command to add a contact method to the mint
 ///

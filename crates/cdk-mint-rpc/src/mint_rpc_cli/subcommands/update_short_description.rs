@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::InterceptedCdkMintClient;
-use crate::UpdateDescriptionRequest;
+use crate::{InterceptedCdkMintClient, UpdateDescriptionRequest};
 
 /// Command to update the mint's short description
 ///
