@@ -1567,7 +1567,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             .map_err(Error::from)?
             .flatten()
             .filter_map(|(_k, v)| serde_json::from_str::<wallet::P2PKSigningKey>(v.value()).ok())
-            .max_by_key(|key| key.created_time);
+            .max_by_key(|key| key.derivation_index);
 
         Ok(latest_key)
     }

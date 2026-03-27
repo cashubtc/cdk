@@ -59,7 +59,8 @@ pub async fn get_public_keys(
 
     let list_public_keys = wallet.get_public_keys().await?;
     if list_public_keys.is_empty() {
-        println!("\npublic not found!\n");
+        println!("\n public not found! \n");
+        return Ok(());
     }
     println!("\npublic keys found:\n");
     for public_key in list_public_keys {

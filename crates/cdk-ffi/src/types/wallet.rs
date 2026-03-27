@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use cdk_common::bitcoin;
 use serde::{Deserialize, Serialize};
 
 use super::amount::{Amount, SplitTarget};
@@ -100,13 +101,15 @@ pub struct P2PKSigningKey {
 impl TryFrom<P2PKSigningKey> for cdk_common::wallet::P2PKSigningKey {
     type Error = crate::error::FfiError;
 
-    fn try_from(key: P2PKSigningKey) -> Result<Self, Self::Error> {
+    fn try_from(key: P2PKSigningKey) -> Result<Self, FfiError> {
         Ok(Self {
             pubkey: key.pubkey.try_into()?,
             derivation_path: key
                 .derivation_path
                 .parse()
-                .expect("Invalid derivation path"),
+                .map_err(|e: bitcoin::bip32::Error| FfiError::Internal {
+                    error_message: e.to_string(),
+                })?,
             derivation_index: key.derivation_index,
             created_time: key.created_time,
         })
