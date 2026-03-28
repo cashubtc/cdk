@@ -137,7 +137,7 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
     println!("✓ Melting with ONLY preimage failed verification as expected");
 
     // Also verify the actual melt fails
-    let melt_result = mint.melt(&melt_request_preimage_only).await;
+    let melt_result = mint.clone().melt(&melt_request_preimage_only).await;
     assert!(
         melt_result.is_err(),
         "Actual melt should also fail with only preimage"
@@ -166,7 +166,7 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
     println!("✓ Melting with ONLY signature failed verification as expected");
 
     // Also verify the actual melt fails
-    let melt_result = mint.melt(&melt_request_signature_only).await;
+    let melt_result = mint.clone().melt(&melt_request_signature_only).await;
     assert!(
         melt_result.is_err(),
         "Actual melt should also fail with only signature"
@@ -190,7 +190,13 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
     println!("✓ HTLC spending conditions verified successfully");
 
     // Perform the actual melt - this also verifies spending conditions internally
-    let melt_response = mint.melt(&melt_request).await.unwrap().await.unwrap();
+    let melt_response = mint
+        .clone()
+        .melt(&melt_request)
+        .await
+        .unwrap()
+        .await
+        .unwrap();
     println!("✓ Melt operation completed successfully!");
     println!("  Quote state: {}", melt_response.state());
     assert_eq!(melt_response.quote(), melt_quote.quote().unwrap());

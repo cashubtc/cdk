@@ -3,8 +3,6 @@
 //! These tests verify the swap saga pattern using in-memory mints and databases,
 //! without requiring external dependencies like Lightning nodes.
 
-use std::sync::Arc;
-
 use cdk_common::nuts::{Proofs, ProofsMethods};
 use cdk_common::{Amount, State};
 
@@ -82,8 +80,9 @@ async fn test_swap_saga_full_flow_success() {
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
 
-    let (output_blinded_messages, _pre_mint) =
-        create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _pre_mint) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -153,7 +152,9 @@ async fn test_swap_saga_setup_transition() {
     let amount = Amount::from(64);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
 
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -222,7 +223,9 @@ async fn test_swap_saga_sign_outputs_transition() {
     let amount = Amount::from(128);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
 
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -271,7 +274,9 @@ async fn test_swap_saga_duplicate_inputs() {
 
     input_proofs.push(input_proofs[0].clone());
 
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -311,8 +316,9 @@ async fn test_swap_saga_duplicate_outputs() {
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
 
-    let (mut output_blinded_messages, _) =
-        create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (mut output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     output_blinded_messages.push(output_blinded_messages[0].clone());
 
@@ -355,7 +361,7 @@ async fn test_swap_saga_unbalanced_transaction_more_outputs() {
     let (input_proofs, input_verification) = create_swap_inputs(&mint, input_amount).await;
 
     let output_amount = Amount::from(150);
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, output_amount)
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), output_amount)
         .await
         .unwrap();
 
@@ -404,7 +410,9 @@ async fn test_swap_saga_compensation_clears_on_success() {
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
 
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -465,7 +473,9 @@ async fn test_swap_saga_empty_inputs() {
     let amount = Amount::from(100);
 
     let empty_proofs = Proofs::new();
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
     // Verification must match the actual input amount (zero for empty proofs)
     let verification = create_verification(Amount::from(0));
 
@@ -565,7 +575,9 @@ async fn test_swap_saga_drop_without_finalize() {
     let mint = create_test_mint().await.unwrap();
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let ys = input_proofs.ys().unwrap();
@@ -621,7 +633,9 @@ async fn test_swap_saga_drop_after_signing() {
     let mint = create_test_mint().await.unwrap();
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let ys = input_proofs.ys().unwrap();
@@ -690,7 +704,9 @@ async fn test_swap_saga_compensation_on_signing_failure() {
     let mint = create_test_mint().await.unwrap();
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -772,8 +788,12 @@ async fn test_swap_saga_double_spend_detection() {
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
 
-    let (output_blinded_messages_1, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
-    let (output_blinded_messages_2, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages_1, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
+    let (output_blinded_messages_2, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -846,8 +866,12 @@ async fn test_swap_saga_pending_proof_detection() {
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
 
-    let (output_blinded_messages_1, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
-    let (output_blinded_messages_2, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages_1, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
+    let (output_blinded_messages_2, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -909,18 +933,24 @@ async fn test_swap_saga_pending_proof_detection() {
 /// - All proofs end up in Spent state
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn test_swap_saga_concurrent_swaps() {
-    let mint = Arc::new(create_test_mint().await.unwrap());
+    let mint = create_test_mint().await.unwrap();
 
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
 
-    let (output_blinded_messages_1, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
-    let (output_blinded_messages_2, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
-    let (output_blinded_messages_3, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages_1, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
+    let (output_blinded_messages_2, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
+    let (output_blinded_messages_3, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
-    let mint1 = Arc::clone(&mint);
-    let mint2 = Arc::clone(&mint);
-    let mint3 = Arc::clone(&mint);
+    let mint1 = mint.clone();
+    let mint2 = mint.clone();
+    let mint3 = mint.clone();
 
     let proofs1 = input_proofs.clone();
     let proofs2 = input_proofs.clone();
@@ -1020,7 +1050,9 @@ async fn test_swap_saga_compensation_on_finalize_add_signatures_failure() {
     let mint = create_test_mint().await.unwrap();
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -1099,7 +1131,9 @@ async fn test_swap_saga_compensation_on_finalize_update_proofs_failure() {
     let mint = create_test_mint().await.unwrap();
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -1176,7 +1210,9 @@ async fn test_saga_state_persistence_after_setup() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let pubsub = mint.pubsub_manager();
     let saga = SwapSaga::new(&mint, db.clone(), pubsub);
@@ -1256,7 +1292,9 @@ async fn test_saga_deletion_on_success() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let pubsub = mint.pubsub_manager();
     let saga = SwapSaga::new(&mint, db.clone(), pubsub);
@@ -1341,10 +1379,14 @@ async fn test_get_incomplete_sagas_basic() {
 
     let amount = Amount::from(100);
     let (input_proofs_1, verification_1) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages_1, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages_1, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let (input_proofs_2, verification_2) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages_2, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages_2, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     use cdk_common::mint::OperationKind;
 
@@ -1442,7 +1484,9 @@ async fn test_saga_content_validation() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let expected_ys: Vec<_> = input_proofs.ys().unwrap();
     let expected_blinded_secrets: Vec<_> = output_blinded_messages
@@ -1541,7 +1585,9 @@ async fn test_saga_state_updates_persisted() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let pubsub = mint.pubsub_manager();
     let saga = SwapSaga::new(&mint, db.clone(), pubsub);
@@ -1657,7 +1703,9 @@ async fn test_startup_recovery_saga_dropped_before_signing() {
     let mint = create_test_mint().await.unwrap();
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let ys = input_proofs.ys().unwrap();
@@ -1702,8 +1750,9 @@ async fn test_startup_recovery_saga_dropped_before_signing() {
     );
 
     // Verify we can now use the same proofs in a new swap
-    let (new_output_blinded_messages, _) =
-        create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (new_output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let pubsub = mint.pubsub_manager();
     let new_saga = SwapSaga::new(&mint, db, pubsub);
@@ -1763,7 +1812,9 @@ async fn test_startup_recovery_saga_dropped_after_signing() {
     let mint = create_test_mint().await.unwrap();
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let ys = input_proofs.ys().unwrap();
@@ -1812,8 +1863,9 @@ async fn test_startup_recovery_saga_dropped_after_signing() {
     );
 
     // Verify we can use the same proofs in a new swap
-    let (new_output_blinded_messages, _) =
-        create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (new_output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let pubsub = mint.pubsub_manager();
     let new_saga = SwapSaga::new(&mint, db, pubsub);
@@ -1863,9 +1915,15 @@ async fn test_startup_recovery_multiple_operations() {
     let (proofs_b, verification_b) = create_swap_inputs(&mint, amount).await;
     let (proofs_c, verification_c) = create_swap_inputs(&mint, amount).await;
 
-    let (outputs_a, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
-    let (outputs_b, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
-    let (outputs_c, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (outputs_a, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
+    let (outputs_b, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
+    let (outputs_c, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -1969,7 +2027,7 @@ async fn test_startup_recovery_multiple_operations() {
 /// - All proofs removed after recovery
 #[tokio::test]
 async fn test_operation_id_uniqueness_and_tracking() {
-    let mint = Arc::new(create_test_mint().await.unwrap());
+    let mint = create_test_mint().await.unwrap();
     let amount = Amount::from(100);
 
     // Create three separate sets of proofs
@@ -1977,9 +2035,15 @@ async fn test_operation_id_uniqueness_and_tracking() {
     let (proofs_2, verification_2) = create_swap_inputs(&mint, amount).await;
     let (proofs_3, verification_3) = create_swap_inputs(&mint, amount).await;
 
-    let (outputs_1, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
-    let (outputs_2, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
-    let (outputs_3, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (outputs_1, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
+    let (outputs_2, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
+    let (outputs_3, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let db = mint.localstore();
 
@@ -2044,7 +2108,9 @@ async fn test_operation_id_uniqueness_and_tracking() {
     );
 
     // Verify each set of proofs can now be used in new swaps
-    let (new_outputs_1, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (new_outputs_1, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
     let verification = create_verification(amount);
 
     let pubsub = mint.pubsub_manager();
@@ -2090,7 +2156,9 @@ async fn test_crash_recovery_without_compensation() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let operation_id;
     let ys = input_proofs.ys().unwrap();
@@ -2183,7 +2251,9 @@ async fn test_crash_recovery_after_setup_only() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let operation_id;
     let ys = input_proofs.ys().unwrap();
@@ -2270,7 +2340,9 @@ async fn test_crash_recovery_after_signing() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let operation_id;
     let ys = input_proofs.ys().unwrap();
@@ -2369,9 +2441,15 @@ async fn test_recovery_multiple_incomplete_sagas() {
     let (proofs_b, verification_b) = create_swap_inputs(&mint, amount).await;
     let (proofs_c, verification_c) = create_swap_inputs(&mint, amount).await;
 
-    let (outputs_a, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
-    let (outputs_b, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
-    let (outputs_c, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (outputs_a, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
+    let (outputs_b, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
+    let (outputs_c, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let ys_a = proofs_a.ys().unwrap();
     let ys_b = proofs_b.ys().unwrap();
@@ -2503,7 +2581,9 @@ async fn test_recovery_idempotence() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let operation_id;
     let ys = input_proofs.ys().unwrap();
@@ -2602,7 +2682,9 @@ async fn test_orphaned_saga_cleanup() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let pubsub = mint.pubsub_manager();
     let saga = SwapSaga::new(&mint, db.clone(), pubsub);
@@ -2677,7 +2759,9 @@ async fn test_recovery_with_orphaned_proofs() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let ys = input_proofs.ys().unwrap();
 
@@ -2781,7 +2865,9 @@ async fn test_recovery_with_partial_state() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let ys = input_proofs.ys().unwrap();
     let blinded_secrets: Vec<_> = output_blinded_messages
@@ -2873,7 +2959,9 @@ async fn test_recovery_with_missing_blinded_messages() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let ys = input_proofs.ys().unwrap();
     let blinded_secrets: Vec<_> = output_blinded_messages
@@ -2958,7 +3046,9 @@ async fn test_saga_deletion_failure_handling() {
 
     let amount = Amount::from(100);
     let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
-    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (output_blinded_messages, _) = create_test_blinded_messages(mint.clone(), amount)
+        .await
+        .unwrap();
 
     let pubsub = mint.pubsub_manager();
     let saga = SwapSaga::new(&mint, db.clone(), pubsub);

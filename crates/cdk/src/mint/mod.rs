@@ -265,7 +265,7 @@ impl Mint {
     /// Currently manages:
     /// - Payment processor initialization and startup
     /// - Invoice payment monitoring across all configured payment processors
-    pub async fn start(&self) -> Result<(), Error> {
+    pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
         // Recover from incomplete swap sagas
         // This cleans up incomplete swap operations using persisted saga state
         if let Err(e) = self.recover_from_incomplete_sagas().await {
@@ -320,7 +320,7 @@ impl Mint {
         let shutdown_notify = Arc::new(Notify::new());
 
         // Clone required components for the background task
-        let mint_clone = Arc::new(self.clone());
+        let mint_clone = self.clone();
         let payment_processors = self.payment_processors.clone();
         let localstore = Arc::clone(&self.localstore);
         let pubsub_manager = Arc::clone(&self.pubsub_manager);
