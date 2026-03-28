@@ -515,4 +515,12 @@ jobs:
       - name: Build XCFramework and generate bindings
         run: nix develop -L .#bindings --command just binding-swift
       - name: Run Swift tests
-        run: just test-swift
+        run: |
+          # Run swift test outside the Nix environment. The Nix shell injects
+          # SDK paths and compiler flags that conflict with the Xcode Swift compiler.
+          env -i \
+            HOME="$HOME" \
+            PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+            SDKROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)" \
+            DEVELOPER_DIR="$(/usr/bin/xcode-select -p)" \
+            /usr/bin/swift test
