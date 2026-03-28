@@ -786,8 +786,11 @@
           else
             null;
 
-        # Helper to build a macOS release binary package (dynamically linked, as is standard on macOS)
+        # Helper to build a macOS release binary package
         # Uses the same release-static Cargo profile for consistent optimization settings
+        # Non-system libraries (openssl, sqlite, zlib, libiconv) are statically linked
+        # to avoid embedding Nix store dylib paths in the distributed binary.
+        # A postFixup safety net rewrites any remaining Nix store refs to system paths.
         # bin: the cargo binary name (e.g. "cdk-mintd")
         # name: the output binary name prefix (e.g. "cdk-mintd-ldk")
         # cargoExtraArgs: additional cargo args (e.g. "--bin cdk-mintd --features ldk-node")
@@ -804,9 +807,40 @@
               cargoArtifacts = workspaceDeps;
               inherit cargoExtraArgs;
               CARGO_PROFILE = "release-static";
+
+              # Static-link non-system libraries so the binary doesn't reference
+              # Nix store paths for openssl, sqlite, zlib, libiconv, etc.
+              OPENSSL_STATIC = "1";
+              PKG_CONFIG_ALL_STATIC = "1";
+
               installPhaseCommand = ''
                 mkdir -p $out/bin
                 cp target/release-static/${bin} $out/bin/${name}-${version}-${archSuffix}
+              '';
+
+              # Safety net: rewrite any remaining Nix store dylib references to
+              # their macOS system equivalents so the binary is fully portable.
+              # We unconditionally rewrite to /usr/lib/ without checking file existence
+              # because macOS 11+ stores system dylibs in a shared cache (dyld resolves
+              # them at runtime even though the individual .dylib files may not be on disk).
+              postFixup = ''
+                for f in $out/bin/*; do
+                  otool -L "$f" | grep '/nix/store' | awk '{print $1}' | while read -r lib; do
+                    base=$(basename "$lib")
+                    echo "Rewriting Nix store dylib ref: $lib -> /usr/lib/$base"
+                    install_name_tool -change "$lib" "/usr/lib/$base" "$f"
+                  done
+
+                  # Fail the build if any Nix store references remain in the binary.
+                  # This prevents silently shipping broken binaries to users without Nix.
+                  remaining=$(otool -L "$f" | grep '/nix/store' || true)
+                  if [ -n "$remaining" ]; then
+                    echo "ERROR: Binary still references Nix store paths after fixup:"
+                    echo "$remaining"
+                    echo "The binary would fail on systems without Nix installed."
+                    exit 1
+                  fi
+                done
               '';
             }
           );
