@@ -1,0 +1,5 @@
+module cdkFFI [system] {
+    header "cdkFFI.h"
+    link "cdk_ffi_swift"
+    export *
+}

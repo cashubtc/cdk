@@ -18,6 +18,7 @@ mkdir -p "$BUILD_DIR/macos"
 rm -rf "$SWIFT_DIR/cdkFFI"
 mkdir -p "$SWIFT_DIR/cdkFFI"
 mkdir -p "$SWIFT_DIR/Sources/Cdk"
+cp "$SWIFT_DIR/module.modulemap" "$SWIFT_DIR/cdkFFI/module.modulemap"
 
 cd "$RUST_DIR"
 
@@ -63,6 +64,7 @@ lipo -create \
 echo "🦀 Generating Swift bindings..."
 echo "📝 Generating Swift source files..."
 SOURCES_DIR="$SWIFT_DIR/Sources/Cdk"
+rm -f "$SOURCES_DIR"/*.swift
 cargo run --bin uniffi-bindgen-swift -- \
     "$TARGET_DIR/aarch64-apple-darwin/release/libcdk_ffi_swift.dylib" \
     "$SOURCES_DIR" \

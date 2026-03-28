@@ -16,6 +16,7 @@ let package = Package(
             name: "Cdk",
             dependencies: ["cdkFFI"],
             path: "Sources/Cdk",
+            sources: ["cdk.swift"],
             linkerSettings: [
                 .unsafeFlags([
                     "-L", ".build/macos",
