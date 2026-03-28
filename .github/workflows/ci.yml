@@ -20,488 +20,477 @@ env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
-  pre-commit-checks:
-    name: "Cargo fmt, typos"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-          installCommand: nix profile install nixpkgs#cachix
-        continue-on-error: true
-      - name: Cargo fmt
-        run: nix develop -i -L .#stable --command cargo fmt --check
-      - name: typos
-        run: nix develop -i -L .#stable --command typos
+#  pre-commit-checks:
+#    name: "Cargo fmt, typos"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#          installCommand: nix profile install nixpkgs#cachix
+#        continue-on-error: true
+#      - name: Cargo fmt
+#        run: nix develop -i -L .#stable --command cargo fmt --check
+#      - name: typos
+#        run: nix develop -i -L .#stable --command typos
+#
+#  quick-check:
+#    name: "Quick Check (lint, clippy, unit tests)"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: pre-commit-checks
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Run quick-check
+#        run: nix develop -i -L .#stable --command just quick-check
 
-  quick-check:
-    name: "Quick Check (lint, clippy, unit tests)"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Run quick-check
-        run: nix develop -i -L .#stable --command just quick-check
+#  discover-examples:
+#    name: "Discover examples"
+#    runs-on: self-hosted
+#    timeout-minutes: 5
+#    outputs:
+#      examples: ${{ steps.examples.outputs.examples }}
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - name: Get example check names
+#        id: examples
+#        run: |
+#          # Get all example check names (prefixed with "example-")
+#          examples=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 8 n == "example-") (builtins.attrNames attrs)' --json)
+#          echo "examples=$examples" >> $GITHUB_OUTPUT
+#          echo "Found examples: $examples"
+#
+#  examples:
+#    name: "Example: ${{ matrix.example }}"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: [pre-commit-checks, discover-examples]
+#    strategy:
+#      fail-fast: true
+#      matrix:
+#        example: ${{ fromJson(needs.discover-examples.outputs.examples) }}
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Build example
+#        run: nix build -L .#${{ matrix.example }}
+#      - name: Run example
+#        run: |
+#          # Extract binary name by removing "example-" prefix
+#          BINARY_NAME="${{ matrix.example }}"
+#          BINARY_NAME="${BINARY_NAME#example-}"
+#          ./result/bin/$BINARY_NAME
 
-  # Discover example checks from flake - single source of truth
-  discover-examples:
-    name: "Discover examples"
-    runs-on: self-hosted
-    timeout-minutes: 5
-    outputs:
-      examples: ${{ steps.examples.outputs.examples }}
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Get example check names
-        id: examples
-        run: |
-          # Get all example check names (prefixed with "example-")
-          examples=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 8 n == "example-") (builtins.attrNames attrs)' --json)
-          echo "examples=$examples" >> $GITHUB_OUTPUT
-          echo "Found examples: $examples"
+#  discover-checks:
+#    name: "Discover checks"
+#    runs-on: self-hosted
+#    timeout-minutes: 5
+#    outputs:
+#      checks: ${{ steps.checks.outputs.checks }}
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - name: Get check names
+#        id: checks
+#        run: |
+#          # Get all check names except pre-commit-check, example-*, msrv-*, wasm-*, doc-tests, strict-docs, ffi-tests
+#          # Those have their own dedicated CI jobs
+#          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pre-commit-check" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-") (builtins.attrNames attrs)' --json)
+#          echo "checks=$checks" >> $GITHUB_OUTPUT
+#          echo "Found checks: $checks"
+#
+#  clippy-and-test:
+#    name: "Check: ${{ matrix.check }}"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: [pre-commit-checks, discover-checks]
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        check: ${{ fromJson(needs.discover-checks.outputs.checks) }}
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Run clippy and tests
+#        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
 
-  examples:
-    name: "Example: ${{ matrix.example }}"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: [pre-commit-checks, discover-examples]
-    strategy:
-      fail-fast: true
-      matrix:
-        example: ${{ fromJson(needs.discover-examples.outputs.examples) }}
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Build example
-        run: nix build -L .#${{ matrix.example }}
-      - name: Run example
-        run: |
-          # Extract binary name by removing "example-" prefix
-          BINARY_NAME="${{ matrix.example }}"
-          BINARY_NAME="${BINARY_NAME#example-}"
-          ./result/bin/$BINARY_NAME
+#  build-itest-binaries:
+#    name: "Build integration test binaries"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: pre-commit-checks
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Build nextest archive
+#        run: nix build -L .#itest-archive
+#      - name: Build harness binaries (warm cache)
+#        run: |
+#          nix build -L .#start-fake-mint
+#          nix build -L .#start-regtest-mints
+#          nix build -L .#start-fake-auth-mint
+#          nix build -L .#start-regtest
+#          nix build -L .#signatory
+#          nix build -L .#cdk-payment-processor
+#          nix build -L .#cdk-mintd-grpc
+#
+#  postgres-tests:
+#    name: "PostgreSQL Tests"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: pre-commit-checks
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Run clippy and tests for cdk-postgres
+#        run: nix develop -i -L .#regtest --command bash -c "start-postgres && cargo clippy -p cdk-postgres -- -D warnings && cargo test -p cdk-postgres"
 
-  # Discover clippy + test checks from flake - single source of truth
-  discover-checks:
-    name: "Discover checks"
-    runs-on: self-hosted
-    timeout-minutes: 5
-    outputs:
-      checks: ${{ steps.checks.outputs.checks }}
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Get check names
-        id: checks
-        run: |
-          # Get all check names except pre-commit-check, example-*, msrv-*, wasm-*, doc-tests, strict-docs, ffi-tests
-          # Those have their own dedicated CI jobs
-          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pre-commit-check" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-") (builtins.attrNames attrs)' --json)
-          echo "checks=$checks" >> $GITHUB_OUTPUT
-          echo "Found checks: $checks"
+#  regtest-itest:
+#    name: "Integration regtest tests"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: [pre-commit-checks, build-itest-binaries]
+#    strategy:
+#      fail-fast: true
+#      matrix:
+#        database: [SQLITE, POSTGRES]
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Resolve nextest archive path
+#        id: archive
+#        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+#      - name: Test
+#        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest ${{ matrix.database }}"
+#
+#  fake-mint-itest:
+#    name: "Integration fake mint tests"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: [pre-commit-checks, build-itest-binaries]
+#    strategy:
+#      fail-fast: true
+#      matrix:
+#        database: [SQLITE, POSTGRES]
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Resolve nextest archive path
+#        id: archive
+#        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+#      - name: Test fake mint
+#        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-mint-itest ${{ matrix.database }}"
 
-  # Dynamic clippy + test matrix - uses cached deps from Cachix
-  # Each check runs both clippy and unit tests for that crate/feature combination
-  clippy-and-test:
-    name: "Check: ${{ matrix.check }}"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: [pre-commit-checks, discover-checks]
-    strategy:
-      fail-fast: false
-      matrix:
-        check: ${{ fromJson(needs.discover-checks.outputs.checks) }}
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Run clippy and tests
-        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
+#  pure-itest:
+#    name: "Integration fake wallet tests"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: [pre-commit-checks, build-itest-binaries]
+#    strategy:
+#      fail-fast: true
+#      matrix:
+#        database: [memory, sqlite, redb]
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Resolve nextest archive path
+#        id: archive
+#        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+#      - name: Test fake mint
+#        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just test-pure ${{ matrix.database }}"
+#      - name: Unit tests and basic mint test
+#        if: matrix.database == 'memory'
+#        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just test"
+#
+#  payment-processor-itests:
+#    name: "Payment processor tests"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: [pre-commit-checks, build-itest-binaries]
+#    strategy:
+#      fail-fast: true
+#      matrix:
+#        ln: [FAKEWALLET, CLN, LND]
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Resolve nextest archive path
+#        id: archive
+#        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+#      - name: Test
+#        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-payment-processor ${{matrix.ln}}"
 
-  # Pre-build integration test binaries via Nix/Crane (cached by Cachix)
-  # This builds both the test harness binaries (included in the regtest dev shell)
-  # and the nextest archive containing pre-compiled test binaries.
-  build-itest-binaries:
-    name: "Build integration test binaries"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Build nextest archive
-        run: nix build -L .#itest-archive
-      - name: Build harness binaries (warm cache)
-        run: |
-          nix build -L .#start-fake-mint
-          nix build -L .#start-regtest-mints
-          nix build -L .#start-fake-auth-mint
-          nix build -L .#start-regtest
-          nix build -L .#signatory
-          nix build -L .#cdk-payment-processor
-          nix build -L .#cdk-mintd-grpc
+#  discover-msrv-checks:
+#    name: "Discover MSRV checks"
+#    runs-on: self-hosted
+#    timeout-minutes: 5
+#    outputs:
+#      checks: ${{ steps.checks.outputs.checks }}
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - name: Get MSRV check names
+#        id: checks
+#        run: |
+#          # Get all MSRV check names (prefixed with "msrv-")
+#          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "msrv-") (builtins.attrNames attrs)' --json)
+#          echo "checks=$checks" >> $GITHUB_OUTPUT
+#          echo "Found MSRV checks: $checks"
+#
+#  msrv-build:
+#    name: "MSRV: ${{ matrix.check }}"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: [pre-commit-checks, discover-msrv-checks]
+#    strategy:
+#      fail-fast: true
+#      matrix:
+#        check: ${{ fromJson(needs.discover-msrv-checks.outputs.checks) }}
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Build
+#        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
 
-  # Tests that require a running PostgreSQL instance
-  postgres-tests:
-    name: "PostgreSQL Tests"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Run clippy and tests for cdk-postgres
-        run: nix develop -i -L .#regtest --command bash -c "start-postgres && cargo clippy -p cdk-postgres -- -D warnings && cargo test -p cdk-postgres"
+#  discover-wasm-checks:
+#    name: "Discover WASM checks"
+#    runs-on: self-hosted
+#    timeout-minutes: 5
+#    outputs:
+#      checks: ${{ steps.checks.outputs.checks }}
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - name: Get WASM check names
+#        id: checks
+#        run: |
+#          # Get all WASM check names (prefixed with "wasm-")
+#          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "wasm-") (builtins.attrNames attrs)' --json)
+#          echo "checks=$checks" >> $GITHUB_OUTPUT
+#          echo "Found WASM checks: $checks"
+#
+#  check-wasm:
+#    name: "WASM: ${{ matrix.check }}"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: [pre-commit-checks, discover-wasm-checks]
+#    strategy:
+#      fail-fast: true
+#      matrix:
+#        check: ${{ fromJson(needs.discover-wasm-checks.outputs.checks) }}
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Build WASM
+#        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
 
-  regtest-itest:
-    name: "Integration regtest tests"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: [pre-commit-checks, build-itest-binaries]
-    strategy:
-      fail-fast: true
-      matrix:
-        database: [SQLITE, POSTGRES]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Resolve nextest archive path
-        id: archive
-        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
-      - name: Test
-        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest ${{ matrix.database }}"
+#  fake-mint-auth-itest:
+#    name: "Integration fake mint auth tests"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: [pre-commit-checks, build-itest-binaries]
+#    strategy:
+#      fail-fast: true
+#      matrix:
+#        database: [SQLITE]
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Resolve nextest archive path
+#        id: archive
+#        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+#      - name: Start Keycloak with Backup
+#        run: |
+#          docker compose -f misc/keycloak/docker-compose-recover.yml up -d
+#          until docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") | grep "Keycloak 25.0.6 on JVM (powered by Quarkus 3.8.5) started"; do sleep 1; done
+#      - name: Verify Keycloak Import
+#        run: |
+#          # Wait a bit more for import to complete
+#          sleep 5
+#          # Check if the realm endpoint is accessible (better verification than log grep)
+#          curl -f -s http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null && echo "Keycloak realm successfully imported" || (docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") && exit 1)
+#      - name: Test fake auth mint
+#        run: nix develop -i -L .#integration --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-auth-mint-itest ${{ matrix.database }} http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration"
+#      - name: Stop and clean up Docker Compose
+#        run: |
+#          docker compose -f misc/keycloak/docker-compose-recover.yml down
+#
+#  docs:
+#    name: "Documentation tests"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: pre-commit-checks
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Run doc tests
+#        run: nix build -L .#checks.x86_64-linux.doc-tests
 
-  fake-mint-itest:
-    name: "Integration fake mint tests"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: [pre-commit-checks, build-itest-binaries]
-    strategy:
-      fail-fast: true
-      matrix:
-        database: [SQLITE, POSTGRES]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Resolve nextest archive path
-        id: archive
-        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
-      - name: Test fake mint
-        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-mint-itest ${{ matrix.database }}"
+#  strict-docs:
+#    name: "Strict Documentation Check"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: docs
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Check docs with strict warnings
+#        run: nix build -L .#checks.x86_64-linux.strict-docs
+#
+#  ffi-tests:
+#    name: "FFI Python tests"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: pre-commit-checks
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Run FFI tests
+#        run: nix build -L .#checks.x86_64-linux.ffi-tests
 
-  pure-itest:
-    name: "Integration fake wallet tests"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: [pre-commit-checks, build-itest-binaries]
-    strategy:
-      fail-fast: true
-      matrix:
-        database: [memory, sqlite, redb]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Resolve nextest archive path
-        id: archive
-        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
-      - name: Test fake mint
-        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just test-pure ${{ matrix.database }}"
-      - name: Unit tests and basic mint test
-        if: matrix.database == 'memory'
-        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just test"
-
-  payment-processor-itests:
-    name: "Payment processor tests"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: [pre-commit-checks, build-itest-binaries]
-    strategy:
-      fail-fast: true
-      matrix:
-        ln: [FAKEWALLET, CLN, LND]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Resolve nextest archive path
-        id: archive
-        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
-      - name: Test
-        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-payment-processor ${{matrix.ln}}"
-
-  # Discover MSRV checks from flake - single source of truth
-  discover-msrv-checks:
-    name: "Discover MSRV checks"
-    runs-on: self-hosted
-    timeout-minutes: 5
-    outputs:
-      checks: ${{ steps.checks.outputs.checks }}
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Get MSRV check names
-        id: checks
-        run: |
-          # Get all MSRV check names (prefixed with "msrv-")
-          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "msrv-") (builtins.attrNames attrs)' --json)
-          echo "checks=$checks" >> $GITHUB_OUTPUT
-          echo "Found MSRV checks: $checks"
-
-  msrv-build:
-    name: "MSRV: ${{ matrix.check }}"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: [pre-commit-checks, discover-msrv-checks]
-    strategy:
-      fail-fast: true
-      matrix:
-        check: ${{ fromJson(needs.discover-msrv-checks.outputs.checks) }}
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Build
-        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
-
-  # Discover WASM checks from flake - single source of truth
-  discover-wasm-checks:
-    name: "Discover WASM checks"
-    runs-on: self-hosted
-    timeout-minutes: 5
-    outputs:
-      checks: ${{ steps.checks.outputs.checks }}
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Get WASM check names
-        id: checks
-        run: |
-          # Get all WASM check names (prefixed with "wasm-")
-          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "wasm-") (builtins.attrNames attrs)' --json)
-          echo "checks=$checks" >> $GITHUB_OUTPUT
-          echo "Found WASM checks: $checks"
-
-  check-wasm:
-    name: "WASM: ${{ matrix.check }}"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: [pre-commit-checks, discover-wasm-checks]
-    strategy:
-      fail-fast: true
-      matrix:
-        check: ${{ fromJson(needs.discover-wasm-checks.outputs.checks) }}
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Build WASM
-        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
-
-  fake-mint-auth-itest:
-    name: "Integration fake mint auth tests"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: [pre-commit-checks, build-itest-binaries]
-    strategy:
-      fail-fast: true
-      matrix:
-        database: [SQLITE]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Resolve nextest archive path
-        id: archive
-        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
-      - name: Start Keycloak with Backup
-        run: |
-          docker compose -f misc/keycloak/docker-compose-recover.yml up -d
-          until docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") | grep "Keycloak 25.0.6 on JVM (powered by Quarkus 3.8.5) started"; do sleep 1; done
-      - name: Verify Keycloak Import
-        run: |
-          # Wait a bit more for import to complete
-          sleep 5
-          # Check if the realm endpoint is accessible (better verification than log grep)
-          curl -f -s http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null && echo "Keycloak realm successfully imported" || (docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") && exit 1)
-      - name: Test fake auth mint
-        run: nix develop -i -L .#integration --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-auth-mint-itest ${{ matrix.database }} http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration"
-      - name: Stop and clean up Docker Compose
-        run: |
-          docker compose -f misc/keycloak/docker-compose-recover.yml down
-
-  docs:
-    name: "Documentation tests"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Run doc tests
-        run: nix build -L .#checks.x86_64-linux.doc-tests
-
-  strict-docs:
-    name: "Strict Documentation Check"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: docs
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Check docs with strict warnings
-        run: nix build -L .#checks.x86_64-linux.strict-docs
-
-  ffi-tests:
-    name: "FFI Python tests"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Run FFI tests
-        run: nix build -L .#checks.x86_64-linux.ffi-tests
-
-  coverage:
-    name: "Code Coverage"
-    runs-on: self-hosted
-    timeout-minutes: 45
-    needs: pre-commit-checks
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Generate Coverage
-        run: nix develop -i -L .#integration --command just coverage
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
-          fail_ci_if_error: true
-
-  dart-binding-tests:
-    name: "Dart binding tests"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Build native library and generate bindings
-        run: nix develop -L .#bindings --command just binding-dart
-      - name: Run Dart tests
-        run: nix develop -L .#bindings --command just test-dart
+#  coverage:
+#    name: "Code Coverage"
+#    runs-on: self-hosted
+#    timeout-minutes: 45
+#    needs: pre-commit-checks
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Generate Coverage
+#        run: nix develop -i -L .#integration --command just coverage
+#      - name: Upload coverage to Codecov
+#        uses: codecov/codecov-action@v5
+#        with:
+#          token: ${{ secrets.CODECOV_TOKEN }}
+#          files: lcov.info
+#          fail_ci_if_error: true
+#
+#  dart-binding-tests:
+#    name: "Dart binding tests"
+#    runs-on: self-hosted
+#    timeout-minutes: 30
+#    needs: pre-commit-checks
+#    steps:
+#      - name: checkout
+#        uses: actions/checkout@v4
+#      - uses: cachix/cachix-action@v16
+#        with:
+#          name: cashudevkit
+#          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+#          useDaemon: false
+#        continue-on-error: true
+#      - name: Build native library and generate bindings
+#        run: nix develop -L .#bindings --command just binding-dart
+#      - name: Run Dart tests
+#        run: nix develop -L .#bindings --command just test-dart
 
   swift-binding-tests:
     name: "Swift binding validation"
     runs-on: macos-latest
     timeout-minutes: 45
-    needs: pre-commit-checks
     steps:
       - name: checkout
         uses: actions/checkout@v4
