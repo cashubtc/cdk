@@ -512,7 +512,7 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
         continue-on-error: true
-      - name: Build XCFramework and generate bindings
+      - name: Build Swift library and generate bindings
         run: nix develop -L .#bindings --command just binding-swift
       - name: Run Swift tests
         run: |

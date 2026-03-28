@@ -864,16 +864,17 @@ binding-swift:
 test-swift:
   #!/usr/bin/env bash
   set -euo pipefail
-  cd "{{justfile_directory()}}"
+  cd "{{justfile_directory()}}/bindings/swift"
   if [[ "$(uname)" == "Darwin" ]]; then
     # Use env -i to fully escape the Nix environment. The Nix shell injects
     # SDK paths and compiler flags that conflict with the Xcode Swift compiler.
     env -i \
       HOME="$HOME" \
       PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+      DYLD_LIBRARY_PATH="$(pwd)/.build${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
       SDKROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)" \
       DEVELOPER_DIR="$(/usr/bin/xcode-select -p)" \
       /usr/bin/swift test
   else
-    swift test
+    LD_LIBRARY_PATH="$(pwd)/.build${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" swift test
   fi

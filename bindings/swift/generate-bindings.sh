@@ -1,15 +1,12 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# Build script for creating Swift bindings and XCFramework
-# This script builds the Rust library for iOS and macOS, generates Swift bindings,
-# and packages everything into an XCFramework suitable for distribution.
+# Build script for generating Swift bindings used by local SwiftPM tests.
 
 SWIFT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUST_DIR="$SWIFT_DIR/rust"
-BUILD_DIR="$SWIFT_DIR/build"
+BUILD_DIR="$SWIFT_DIR/.build"
 TARGET_DIR="$SWIFT_DIR/../../target"
-XCFRAMEWORK_DIR="$BUILD_DIR/xcframework"
 
 echo "🔨 Building CDK Swift bindings..."
 echo "Rust dir: $RUST_DIR"
@@ -17,12 +14,16 @@ echo "Build dir: $BUILD_DIR"
 
 # Clean previous build
 rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
-mkdir -p "$XCFRAMEWORK_DIR"
+mkdir -p "$BUILD_DIR/macos"
+rm -rf "$SWIFT_DIR/cdkFFI"
+mkdir -p "$SWIFT_DIR/cdkFFI"
+mkdir -p "$SWIFT_DIR/Sources/Cdk"
 
 cd "$RUST_DIR"
 
-# Install targets if needed
+# Install targets if needed. iOS targets stay here so the existing nix/rustup
+# setup continues to provision them for contributors, even though Swift tests
+# now only require the macOS build path.
 echo "📦 Ensuring Rust targets are installed..."
 rustup target add aarch64-apple-ios
 rustup target add x86_64-apple-ios
@@ -82,202 +83,46 @@ if [[ "$(uname)" == "Darwin" ]]; then
     export CARGO_TARGET_X86_64_APPLE_IOS_LINKER=/usr/bin/clang
 fi
 
-# Build for iOS device (arm64)
-echo "🍎 Building for iOS device (arm64)..."
-if [[ "$(uname)" == "Linux" ]]; then
-    env -u MACOSX_DEPLOYMENT_TARGET SDKROOT="$IOS_SDK" cargo build --release --target aarch64-apple-ios
-else
-    env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT cargo build --release --target aarch64-apple-ios
-fi
-
-# Build for iOS simulator (arm64 + x86_64)
-echo "📱 Building for iOS simulator (arm64)..."
-if [[ "$(uname)" == "Linux" ]]; then
-    env -u MACOSX_DEPLOYMENT_TARGET SDKROOT="$IOS_SIM_SDK" cargo build --release --target aarch64-apple-ios-sim
-else
-    env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT cargo build --release --target aarch64-apple-ios-sim
-fi
-
-echo "📱 Building for iOS simulator (x86_64)..."
-if [[ "$(uname)" == "Linux" ]]; then
-    env -u MACOSX_DEPLOYMENT_TARGET SDKROOT="$IOS_SIM_SDK" cargo build --release --target x86_64-apple-ios
-else
-    env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT cargo build --release --target x86_64-apple-ios
-fi
-
-# Build for macOS (arm64 + x86_64)
 echo "💻 Building for macOS (arm64)..."
 cargo build --release --target aarch64-apple-darwin
 
 echo "💻 Building for macOS (x86_64)..."
 cargo build --release --target x86_64-apple-darwin
 
-# Create universal binaries
-echo "🔗 Creating universal binaries..."
-
-# iOS simulator universal binary
-mkdir -p "$BUILD_DIR/ios-simulator"
-lipo -create \
-    "$TARGET_DIR/aarch64-apple-ios-sim/release/libcdk_ffi_swift.a" \
-    "$TARGET_DIR/x86_64-apple-ios/release/libcdk_ffi_swift.a" \
-    -output "$BUILD_DIR/ios-simulator/libcdk_ffi_swift.a"
-
-# macOS universal binary
-mkdir -p "$BUILD_DIR/macos"
+echo "🔗 Creating universal macOS binary..."
 lipo -create \
     "$TARGET_DIR/aarch64-apple-darwin/release/libcdk_ffi_swift.dylib" \
     "$TARGET_DIR/x86_64-apple-darwin/release/libcdk_ffi_swift.dylib" \
     -output "$BUILD_DIR/macos/libcdk_ffi_swift.dylib"
 
-# Create framework structure for each platform
-echo "📦 Creating framework structures..."
-
-# iOS device framework
-IOS_DEVICE_FRAMEWORK="$BUILD_DIR/ios-device/CashuDevKitFFI.framework"
-mkdir -p "$IOS_DEVICE_FRAMEWORK"
-cp "$TARGET_DIR/aarch64-apple-ios/release/libcdk_ffi_swift.a" "$IOS_DEVICE_FRAMEWORK/CashuDevKitFFI"
-cp "$SWIFT_DIR/resources/Info-iOS.plist" "$IOS_DEVICE_FRAMEWORK/Info.plist"
-
-# iOS simulator framework
-IOS_SIM_FRAMEWORK="$BUILD_DIR/ios-simulator-framework/CashuDevKitFFI.framework"
-mkdir -p "$IOS_SIM_FRAMEWORK"
-cp "$BUILD_DIR/ios-simulator/libcdk_ffi_swift.a" "$IOS_SIM_FRAMEWORK/CashuDevKitFFI"
-cp "$SWIFT_DIR/resources/Info-iOSSimulator.plist" "$IOS_SIM_FRAMEWORK/Info.plist"
-
-# macOS framework (versioned bundle layout)
-MACOS_FRAMEWORK="$BUILD_DIR/macos-framework/CashuDevKitFFI.framework"
-mkdir -p "$MACOS_FRAMEWORK/Versions/A/Resources"
-cp "$BUILD_DIR/macos/libcdk_ffi_swift.dylib" "$MACOS_FRAMEWORK/Versions/A/CashuDevKitFFI"
-cp "$SWIFT_DIR/resources/Info-macOS.plist" "$MACOS_FRAMEWORK/Versions/A/Resources/Info.plist"
-
-# Create symlinks for versioned framework structure
-ln -s A "$MACOS_FRAMEWORK/Versions/Current"
-ln -s Versions/Current/CashuDevKitFFI "$MACOS_FRAMEWORK/CashuDevKitFFI"
-ln -s Versions/Current/Headers "$MACOS_FRAMEWORK/Headers"
-ln -s Versions/Current/Modules "$MACOS_FRAMEWORK/Modules"
-ln -s Versions/Current/Resources "$MACOS_FRAMEWORK/Resources"
-
-# Generate Swift bindings using uniffi-bindgen-swift
 echo "🦀 Generating Swift bindings..."
-
-# Generate headers and modulemaps for iOS device
-echo "📱 Generating iOS device bindings..."
-cargo run --bin uniffi-bindgen-swift -- \
-    "$TARGET_DIR/aarch64-apple-ios/release/libcdk_ffi_swift.a" \
-    "$IOS_DEVICE_FRAMEWORK/Headers" \
-    --headers
-
-cargo run --bin uniffi-bindgen-swift -- \
-    "$TARGET_DIR/aarch64-apple-ios/release/libcdk_ffi_swift.a" \
-    "$IOS_DEVICE_FRAMEWORK/Modules" \
-    --xcframework \
-    --modulemap \
-    --module-name CashuDevKitFFI \
-    --modulemap-filename module.modulemap
-
-# Generate headers and modulemaps for iOS simulator
-echo "📱 Generating iOS simulator bindings..."
-cargo run --bin uniffi-bindgen-swift -- \
-    "$TARGET_DIR/aarch64-apple-ios-sim/release/libcdk_ffi_swift.a" \
-    "$IOS_SIM_FRAMEWORK/Headers" \
-    --headers
-
-cargo run --bin uniffi-bindgen-swift -- \
-    "$TARGET_DIR/aarch64-apple-ios-sim/release/libcdk_ffi_swift.a" \
-    "$IOS_SIM_FRAMEWORK/Modules" \
-    --xcframework \
-    --modulemap \
-    --module-name CashuDevKitFFI \
-    --modulemap-filename module.modulemap
-
-# Generate headers and modulemaps for macOS
-echo "💻 Generating macOS bindings..."
-cargo run --bin uniffi-bindgen-swift -- \
-    "$TARGET_DIR/aarch64-apple-darwin/release/libcdk_ffi_swift.dylib" \
-    "$MACOS_FRAMEWORK/Versions/A/Headers" \
-    --headers
-
-cargo run --bin uniffi-bindgen-swift -- \
-    "$TARGET_DIR/aarch64-apple-darwin/release/libcdk_ffi_swift.dylib" \
-    "$MACOS_FRAMEWORK/Versions/A/Modules" \
-    --xcframework \
-    --modulemap \
-    --module-name CashuDevKitFFI \
-    --modulemap-filename module.modulemap
-
-# Generate Swift source files (only need once)
 echo "📝 Generating Swift source files..."
 SOURCES_DIR="$SWIFT_DIR/Sources/Cdk"
-mkdir -p "$SOURCES_DIR"
 cargo run --bin uniffi-bindgen-swift -- \
     "$TARGET_DIR/aarch64-apple-darwin/release/libcdk_ffi_swift.dylib" \
     "$SOURCES_DIR" \
     --swift-sources
 
-# Re-sign the macOS framework. lipo invalidates the per-arch linker signatures,
-# and macOS will SIGKILL the process if the signature is invalid.
-# Sign the entire framework bundle so CodeResources is properly generated.
-if [[ "$(uname)" == "Linux" ]]; then
-    rcodesign sign "$MACOS_FRAMEWORK"
-else
-    codesign --force --sign - "$MACOS_FRAMEWORK"
+echo "📚 Generating Swift C header..."
+cargo run --bin uniffi-bindgen-swift -- \
+    "$TARGET_DIR/aarch64-apple-darwin/release/libcdk_ffi_swift.dylib" \
+    "$SWIFT_DIR/cdkFFI" \
+    --headers
+
+cp "$BUILD_DIR/macos/libcdk_ffi_swift.dylib" "$SWIFT_DIR/.build/libcdk_ffi_swift.dylib"
+
+HEADER_PATHS=("$SWIFT_DIR"/cdkFFI/*.h)
+if [[ ${#HEADER_PATHS[@]} -ne 1 || ! -f "${HEADER_PATHS[0]}" ]]; then
+    echo "❌ Expected exactly one generated Swift header in $SWIFT_DIR/cdkFFI" >&2
+    exit 1
 fi
 
-# Create XCFramework
-echo "📦 Creating XCFramework..."
-echo "xcodebuild resolved to: $(command -v xcodebuild)"
-xcodebuild -version || true
-xcodebuild -create-xcframework \
-    -framework "$IOS_DEVICE_FRAMEWORK" \
-    -framework "$IOS_SIM_FRAMEWORK" \
-    -framework "$MACOS_FRAMEWORK" \
-    -output "$XCFRAMEWORK_DIR/CashuDevKitFFI.xcframework"
-
-# Generate Package.swift at repository root for SPM
-REPO_ROOT="$SWIFT_DIR/../.."
-cat > "$REPO_ROOT/Package.swift" << 'PKGSWIFT'
-// swift-tools-version: 5.9
-import PackageDescription
-
-let package = Package(
-    name: "cdk-swift",
-    platforms: [.macOS(.v13)],
-    products: [
-        .library(name: "Cdk", targets: ["Cdk"]),
-    ],
-    targets: [
-        .binaryTarget(
-            name: "CashuDevKitFFI",
-            path: "bindings/swift/build/xcframework/CashuDevKitFFI.xcframework"
-        ),
-        .target(
-            name: "Cdk",
-            dependencies: ["CashuDevKitFFI"],
-            path: "bindings/swift/Sources/Cdk"
-        ),
-        .testTarget(
-            name: "CdkTests",
-            dependencies: ["Cdk"],
-            path: "bindings/swift/Tests"
-        ),
-    ]
-)
-PKGSWIFT
-echo "📦 Generated Package.swift at repository root"
-
-# Create zip for distribution
-echo "📦 Creating distribution zip..."
-cd "$XCFRAMEWORK_DIR"
-zip -r CashuDevKitFFI.xcframework.zip CashuDevKitFFI.xcframework
-CHECKSUM=$(sha256sum CashuDevKitFFI.xcframework.zip | cut -d' ' -f1)
+mv "${HEADER_PATHS[0]}" "$SWIFT_DIR/cdkFFI/cdkFFI.h"
 
 echo ""
 echo "✅ Build complete!"
 echo ""
-echo "📦 XCFramework: $XCFRAMEWORK_DIR/CashuDevKitFFI.xcframework.zip"
+echo "📦 Swift package: $SWIFT_DIR/Package.swift"
+echo "📚 Swift C module: $SWIFT_DIR/cdkFFI"
 echo "📝 Swift sources: $SOURCES_DIR"
-echo ""
-echo "📊 Checksum for Package.swift:"
-echo "   $CHECKSUM"
-echo ""
-echo "Update Package.swift with this checksum!"
+echo "🔗 macOS library: $SWIFT_DIR/.build/libcdk_ffi_swift.dylib"
