@@ -10,7 +10,7 @@ void main() {
     final tempDir = Directory.systemTemp;
     dbPath = '${tempDir.path}/${DateTime.now().microsecondsSinceEpoch}.sqlite';
     wallet = Wallet(
-      mintUrl: 'https://testnut.cashu.space',
+      mintUrl: 'https://testnut.cashudevkit.org',
       unit: SatCurrencyUnit(),
       mnemonic: generateMnemonic(),
       store: SqliteWalletStore(dbPath),

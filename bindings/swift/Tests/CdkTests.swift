@@ -10,7 +10,7 @@ final class CdkTests: XCTestCase {
         let tempDir = FileManager.default.temporaryDirectory
         dbPath = tempDir.appendingPathComponent(UUID().uuidString + ".sqlite").path
         wallet = try Wallet(
-            mintUrl: "https://testnut.cashu.space",
+            mintUrl: "https://testnut.cashudevkit.org",
             unit: .sat,
             mnemonic: try generateMnemonic(),
             store: .sqlite(path: dbPath),
