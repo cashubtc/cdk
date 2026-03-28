@@ -42,7 +42,9 @@ final class CdkTests: XCTestCase {
         XCTAssertFalse(quote.id.isEmpty, "Quote should have a non-empty id")
         XCTAssertFalse(quote.request.isEmpty, "Quote should have a non-empty payment request")
 
-        // testnut pays quotes automatically, so we can mint right away
+        // testnut pays quotes automatically, wait briefly for payment to settle
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+
         let proofs = try await wallet.mint(
             quoteId: quote.id,
             amountSplitTarget: .none,

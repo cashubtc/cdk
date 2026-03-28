@@ -41,7 +41,9 @@ void main() {
     expect(quote.id, isNotEmpty);
     expect(quote.request, isNotEmpty);
 
-    // testnut pays quotes automatically, so we can mint right away
+    // testnut pays quotes automatically, wait briefly for payment to settle
+    await Future.delayed(Duration(seconds: 3));
+
     final proofs = await wallet.mint(
       quoteId: quote.id,
       amountSplitTarget: NoneSplitTarget(),
