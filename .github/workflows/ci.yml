@@ -514,35 +514,5 @@ jobs:
         continue-on-error: true
       - name: Build XCFramework and generate bindings
         run: nix develop -L .#bindings --command just binding-swift
-      - name: Generate Package.swift for tests
-        run: |
-          cat > Package.swift << 'EOF'
-          // swift-tools-version: 5.9
-          import PackageDescription
-
-          let package = Package(
-              name: "cdk-swift",
-              platforms: [.macOS(.v13)],
-              products: [
-                  .library(name: "Cdk", targets: ["Cdk"]),
-              ],
-              targets: [
-                  .binaryTarget(
-                      name: "CashuDevKitFFI",
-                      path: "bindings/swift/build/xcframework/CashuDevKitFFI.xcframework"
-                  ),
-                  .target(
-                      name: "Cdk",
-                      dependencies: ["CashuDevKitFFI"],
-                      path: "bindings/swift/Sources/Cdk"
-                  ),
-                  .testTarget(
-                      name: "CdkTests",
-                      dependencies: ["Cdk"],
-                      path: "bindings/swift/Tests"
-                  ),
-              ]
-          )
-          EOF
       - name: Run Swift tests
-        run: nix develop -L .#bindings --command just test-swift
+        run: just test-swift

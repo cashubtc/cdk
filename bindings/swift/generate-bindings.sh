@@ -233,8 +233,37 @@ xcodebuild -create-xcframework \
     -framework "$MACOS_FRAMEWORK" \
     -output "$XCFRAMEWORK_DIR/CashuDevKitFFI.xcframework"
 
-# Note: Package.swift must be at repository root for SPM to work
-echo "ℹ️  Note: Ensure Package.swift is at repository root (not in bindings/swift/)"
+# Generate Package.swift at repository root for SPM
+REPO_ROOT="$SWIFT_DIR/../.."
+cat > "$REPO_ROOT/Package.swift" << 'PKGSWIFT'
+// swift-tools-version: 5.9
+import PackageDescription
+
+let package = Package(
+    name: "cdk-swift",
+    platforms: [.macOS(.v13)],
+    products: [
+        .library(name: "Cdk", targets: ["Cdk"]),
+    ],
+    targets: [
+        .binaryTarget(
+            name: "CashuDevKitFFI",
+            path: "bindings/swift/build/xcframework/CashuDevKitFFI.xcframework"
+        ),
+        .target(
+            name: "Cdk",
+            dependencies: ["CashuDevKitFFI"],
+            path: "bindings/swift/Sources/Cdk"
+        ),
+        .testTarget(
+            name: "CdkTests",
+            dependencies: ["Cdk"],
+            path: "bindings/swift/Tests"
+        ),
+    ]
+)
+PKGSWIFT
+echo "📦 Generated Package.swift at repository root"
 
 # Create zip for distribution
 echo "📦 Creating distribution zip..."

@@ -866,11 +866,14 @@ test-swift:
   set -euo pipefail
   cd "{{justfile_directory()}}"
   if [[ "$(uname)" == "Darwin" ]]; then
-    # Inside a Nix shell, SDKROOT points to the Nix SDK (Swift 5.10 modules)
-    # which is incompatible with the Xcode Swift compiler. Override it with
-    # the Xcode SDK, and use the system swift to avoid Nix wrappers.
-    export SDKROOT=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
-    /usr/bin/swift test
+    # Use env -i to fully escape the Nix environment. The Nix shell injects
+    # SDK paths and compiler flags that conflict with the Xcode Swift compiler.
+    env -i \
+      HOME="$HOME" \
+      PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+      SDKROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)" \
+      DEVELOPER_DIR="$(/usr/bin/xcode-select -p)" \
+      /usr/bin/swift test
   else
     swift test
   fi
