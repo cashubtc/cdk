@@ -22,14 +22,6 @@ mkdir -p "$XCFRAMEWORK_DIR"
 
 cd "$RUST_DIR"
 
-# Install targets if needed
-echo "📦 Ensuring Rust targets are installed..."
-rustup target add aarch64-apple-ios
-rustup target add x86_64-apple-ios
-rustup target add aarch64-apple-ios-sim
-rustup target add aarch64-apple-darwin
-rustup target add x86_64-apple-darwin
-
 # Set cross-compilation toolchain for Apple targets when building on Linux.
 # cc-rs (used by build scripts like secp256k1-sys) picks CC_<target> to find the C compiler.
 # Without these it falls back to the host "cc" (Linux GCC) which doesn't understand
