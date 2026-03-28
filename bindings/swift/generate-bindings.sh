@@ -21,17 +21,12 @@ mkdir -p "$SWIFT_DIR/Sources/Cdk"
 
 cd "$RUST_DIR"
 
-# Install targets if needed. iOS targets stay here so the existing nix/rustup
-# setup continues to provision them for contributors, even though Swift tests
-# now only require the macOS build path.
+# Install the macOS targets needed for local SwiftPM validation.
 echo "📦 Ensuring Rust targets are installed..."
-rustup target add aarch64-apple-ios
-rustup target add x86_64-apple-ios
-rustup target add aarch64-apple-ios-sim
 rustup target add aarch64-apple-darwin
 rustup target add x86_64-apple-darwin
 
-# Set cross-compilation toolchain for Apple targets when building on Linux.
+# Set cross-compilation toolchain for macOS targets when building on Linux.
 # cc-rs (used by build scripts like secp256k1-sys) picks CC_<target> to find the C compiler.
 # Without these it falls back to the host "cc" (Linux GCC) which doesn't understand
 # -arch or -mmacosx-version-min flags.
@@ -39,48 +34,18 @@ if [[ "$(uname)" == "Linux" ]]; then
     OSXCROSS_BIN=/usr/local/osxcross/bin
     DARWIN_TRIPLE=aarch64-apple-darwin24.4
     DARWIN_X86_TRIPLE=x86_64-apple-darwin24.4
-    IOS_SDK=/usr/local/ios-sdk/iPhoneOS18.4.sdk
-    IOS_SIM_SDK=/usr/local/ios-sdk/iPhoneSimulator18.4.sdk
 
     export CC_aarch64_apple_darwin=$OSXCROSS_BIN/$DARWIN_TRIPLE-clang
     export AR_aarch64_apple_darwin=$OSXCROSS_BIN/$DARWIN_TRIPLE-ar
     export CC_x86_64_apple_darwin=$OSXCROSS_BIN/$DARWIN_X86_TRIPLE-clang
     export AR_x86_64_apple_darwin=$OSXCROSS_BIN/$DARWIN_X86_TRIPLE-ar
-
-    # iOS: use system clang, NOT the osxcross darwin wrapper.
-    # The osxcross darwin wrapper unconditionally adds -mmacosx-version-min, which
-    # conflicts with -miphoneos-version-min that cc-rs adds for iOS targets.
-    export CC_aarch64_apple_ios=/usr/bin/clang
-    export AR_aarch64_apple_ios=$OSXCROSS_BIN/$DARWIN_TRIPLE-ar
-    export CFLAGS_aarch64_apple_ios="-isysroot $IOS_SDK -target arm64-apple-ios14.0"
-
-    export CC_aarch64_apple_ios_sim=/usr/bin/clang
-    export AR_aarch64_apple_ios_sim=$OSXCROSS_BIN/$DARWIN_TRIPLE-ar
-    export CFLAGS_aarch64_apple_ios_sim="-isysroot $IOS_SIM_SDK -target arm64-apple-ios14.0-simulator"
-
-    export CC_x86_64_apple_ios=/usr/bin/clang
-    export AR_x86_64_apple_ios=$OSXCROSS_BIN/$DARWIN_X86_TRIPLE-ar
-    export CFLAGS_x86_64_apple_ios="-isysroot $IOS_SIM_SDK -target x86_64-apple-ios14.0-simulator"
 fi
 
-# On macOS, point DEVELOPER_DIR at the real Xcode installation so that
-# xcrun (including Nix's xcbuild wrapper) can find the iOS SDKs.
+# On macOS, point DEVELOPER_DIR at the real Xcode installation so xcrun can
+# resolve the active developer toolchain consistently.
 if [[ "$(uname)" == "Darwin" ]]; then
     XCODE_DEV_DIR=$(/usr/bin/xcrun xcode-select -p 2>/dev/null || echo "/Applications/Xcode.app/Contents/Developer")
     export DEVELOPER_DIR="$XCODE_DEV_DIR"
-
-    # Use the system clang for iOS targets to avoid the nix-wrapped clang
-    # injecting -mmacos-version-min, which conflicts with -miphoneos-version-min.
-    export CC_aarch64_apple_ios=/usr/bin/clang
-    export CC_aarch64_apple_ios_sim=/usr/bin/clang
-    export CC_x86_64_apple_ios=/usr/bin/clang
-
-    # Also override the linker for iOS targets. rustc uses the default `cc`
-    # (Nix-wrapped) as linker, which hardcodes the macOS sysroot and causes
-    # "building for iOS Simulator, but linking in .tbd built for macOS" errors.
-    export CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=/usr/bin/clang
-    export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER=/usr/bin/clang
-    export CARGO_TARGET_X86_64_APPLE_IOS_LINKER=/usr/bin/clang
 fi
 
 echo "💻 Building for macOS (arm64)..."

@@ -498,7 +498,7 @@ jobs:
         run: nix develop -L .#bindings --command just test-dart
 
   swift-binding-tests:
-    name: "Swift binding tests"
+    name: "Swift binding validation"
     runs-on: macos-latest
     timeout-minutes: 45
     needs: pre-commit-checks
@@ -512,15 +512,16 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
         continue-on-error: true
-      - name: Build Swift library and generate bindings
+      - name: Generate Swift test bindings
         run: nix develop -L .#bindings --command just binding-swift
-      - name: Run Swift tests
+      - name: Run Swift binding tests
         run: |
           # Run swift test outside the Nix environment. The Nix shell injects
           # SDK paths and compiler flags that conflict with the Xcode Swift compiler.
           env -i \
             HOME="$HOME" \
             PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+            DYLD_LIBRARY_PATH="$GITHUB_WORKSPACE/bindings/swift/.build" \
             SDKROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)" \
             DEVELOPER_DIR="$(/usr/bin/xcode-select -p)" \
-            /usr/bin/swift test
+            /usr/bin/swift test --package-path bindings/swift

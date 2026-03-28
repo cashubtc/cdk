@@ -853,14 +853,14 @@ test-dart:
   cd "{{justfile_directory()}}/bindings/dart"
   dart test
 
-# Generate Swift FFI bindings and XCFramework
+# Generate Swift bindings for local SwiftPM tests
 binding-swift:
   #!/usr/bin/env bash
   set -euo pipefail
   cd "{{justfile_directory()}}/bindings/swift"
   ./generate-bindings.sh
 
-# Run Swift binding tests
+# Run local SwiftPM binding tests
 test-swift:
   #!/usr/bin/env bash
   set -euo pipefail
