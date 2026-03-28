@@ -114,7 +114,13 @@ class _RustOwnedWalletDatabase implements WalletDatabase {
         "  static WalletDatabase lift(Pointer<Void> handle) {\n    try {\n      return _handleMap.get(handle.address);\n    } catch (_) {\n      // Rust-created object — wrap the pointer in a proxy\n      return _RustOwnedWalletDatabase(handle);\n    }\n  }",
     );
 
-    // 5. Patch lower() to handle _RustOwnedWalletDatabase
+    // 5. Fix P2PKSigningKey casing inconsistency.
+    // uniffi-dart generates the class as P2pkSigningKey (camelCase) but references
+    // it as P2PKSigningKey in callback interface methods and converters.
+    // Normalize all occurrences to P2pkSigningKey.
+    content = content.replace("P2PKSigningKey", "P2pkSigningKey");
+
+    // 6. Patch lower() to handle _RustOwnedWalletDatabase
     content = content.replace(
         "  static Pointer<Void> lower(WalletDatabase value) {\n    _ensureVTableInitialized();\n    final handle = _handleMap.insert(value);\n    return Pointer<Void>.fromAddress(handle);\n  }",
         "  static Pointer<Void> lower(WalletDatabase value) {\n    if (value is _RustOwnedWalletDatabase) {\n      return value.clonePointer();\n    }\n    _ensureVTableInitialized();\n    final handle = _handleMap.insert(value);\n    return Pointer<Void>.fromAddress(handle);\n  }",
