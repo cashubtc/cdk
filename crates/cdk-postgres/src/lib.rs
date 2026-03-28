@@ -342,7 +342,10 @@ mod test {
     async fn provide_mint_db(test_id: String) -> MintPgDatabase {
         let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
             .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility
-            .unwrap_or("host=localhost user=test password=test dbname=testdb port=5433".to_owned());
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
 
         let db_url = format!("{db_url} schema={test_id}");
 
@@ -356,7 +359,10 @@ mod test {
     async fn provide_wallet_db(test_id: String) -> WalletPgDatabase {
         let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
             .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility
-            .unwrap_or("host=localhost user=test password=test dbname=testdb port=5433".to_owned());
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
 
         let db_url = format!("{db_url} schema={test_id}");
 

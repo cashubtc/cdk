@@ -117,17 +117,26 @@ coverage:
   # Clean up previous coverage data
   cargo llvm-cov clean --workspace
   
-  # Run unit tests with coverage
+  # Start PostgreSQL for cdk-postgres tests
+  echo "Starting PostgreSQL for coverage..."
+  start-postgres
+
+  # Run unit tests with coverage (all workspace crates including cdk-postgres)
   echo "Running unit tests coverage..."
-  cargo llvm-cov --no-report --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
+  cargo llvm-cov --no-report --lib --workspace --exclude cdk-integration-tests
   
-  # Run integration tests coverage
-  echo "Running integration tests coverage..."
-  cargo llvm-cov --no-report -p cdk-integration-tests --test mint
+  # Run pure integration tests with coverage (memory backend)
+  echo "Running pure integration tests coverage (memory)..."
+  CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
+
+  # Run pure integration tests with coverage (sqlite backend)
+  echo "Running pure integration tests coverage (sqlite)..."
+  CDK_TEST_DB_TYPE=sqlite cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
   
   # Generate report
   echo "Generating coverage report..."
   cargo llvm-cov report --lcov --output-path lcov.info
+
 test-pure db="memory":
   #!/usr/bin/env bash
   set -euo pipefail
