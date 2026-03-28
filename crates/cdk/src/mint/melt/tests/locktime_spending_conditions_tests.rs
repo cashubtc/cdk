@@ -246,7 +246,7 @@ async fn test_p2pk_before_locktime_requires_correct_key() {
     println!("✓ Melting with Bob's key before locktime failed verification as expected");
 
     // Also verify the actual melt fails
-    let melt_result = mint.melt(&melt_request_bob).await;
+    let melt_result = mint.clone().melt(&melt_request_bob).await;
     assert!(
         melt_result.is_err(),
         "Actual melt should also fail with wrong key"
@@ -272,7 +272,13 @@ async fn test_p2pk_before_locktime_requires_correct_key() {
     println!("✓ Pre-locktime spending conditions verified successfully with Alice's key");
 
     // Perform the actual melt
-    let melt_response = mint.melt(&melt_request_alice).await.unwrap().await.unwrap();
+    let melt_response = mint
+        .clone()
+        .melt(&melt_request_alice)
+        .await
+        .unwrap()
+        .await
+        .unwrap();
     println!("✓ Melt operation completed successfully with Alice's key before locktime!");
     println!("  Quote state: {}", melt_response.state());
     assert_eq!(melt_response.quote(), melt_quote.quote().unwrap());
