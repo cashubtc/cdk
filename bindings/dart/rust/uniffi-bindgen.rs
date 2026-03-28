@@ -49,7 +49,31 @@ fn main() {
     patch_generated(&generated_path);
 }
 
-/// Patches the generated cdk_ffi.dart to fix uniffi-dart codegen issues.
+/// Patches the generated `cdk_ffi.dart` to work around uniffi-dart v0.1.0+v0.30.0 codegen bugs.
+///
+/// uniffi-dart is still early-stage and produces Dart code that doesn't compile in several cases.
+/// Rather than forking the generator, we apply targeted string replacements after generation.
+///
+/// Current patches:
+///
+/// 1. **State variable collision** – The generated foreign-future callback uses a local `state`
+/// that shadows other identifiers. Renamed to `_futureState`.
+///
+/// 2. **WalletDatabase implements clause** – Concrete database classes (WalletSqliteDatabase,
+/// WalletPostgresDatabase) are generated with `implements WalletDatabase`, but the callback
+/// interface uses positional params while Object interfaces use named params, causing Dart override
+/// errors. The extra implements clause is removed.
+///
+/// 3. **_RustOwnedWalletDatabase proxy** – uniffi-dart doesn't handle Rust-created callback
+/// interface objects. We inject a proxy class that holds the raw pointer and delegates lowering
+/// back to Rust without trying to call trait methods from Dart.
+///
+/// 4. **lift()/lower() for WalletDatabase** – Patched to handle `_RustOwnedWalletDatabase` pointers
+/// that come from Rust (not from the Dart handle map).
+///
+/// 5. **P2PKSigningKey casing** – uniffi-dart generates the Record class as `P2pkSigningKey`
+/// (camelCase) but references it as `P2PKSigningKey` in callback interface method signatures and
+/// sequence/optional converters. All occurrences are normalized to `P2pkSigningKey`.
 fn patch_generated(path: &camino::Utf8Path) {
     let content =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("Failed to read {}: {}", path, e));
