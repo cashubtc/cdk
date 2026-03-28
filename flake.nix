@@ -113,7 +113,6 @@
             "rustfmt"
             "clippy"
             "rust-analyzer"
-            "llvm-tools-preview"
           ];
         };
 
@@ -126,7 +125,6 @@
               "clippy"
               "rust-analyzer"
               "rust-src"
-              "llvm-tools-preview"
             ];
             targets = [ "wasm32-unknown-unknown" ]; # wasm
           }
@@ -613,7 +611,6 @@
             cargo-mutants
             cargo-fuzz
             cargo-nextest
-            cargo-llvm-cov
 
             # Database
             postgresql_16
@@ -1080,6 +1077,7 @@
                     stable_toolchain
                     pkgs.docker-client
                     pkgs.python311
+                    pkgsUnstable.cargo-llvm-cov
                   ]
                   ++ builtins.attrValues itestBinaries;
                 inherit nativeBuildInputs;
