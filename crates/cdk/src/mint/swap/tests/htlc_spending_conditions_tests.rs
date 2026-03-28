@@ -7,6 +7,8 @@
 //! - Refund keys
 //! - Signature validation
 
+use std::sync::Arc;
+
 use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
 use cdk_common::Amount;
 
@@ -98,7 +100,7 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
 
     // Step 6: Try to spend with only preimage (should fail - signature required)
     use crate::test_helpers::mint::create_test_blinded_messages;
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_preimage_only =
@@ -109,7 +111,9 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
         proof.add_preimage(preimage.clone());
     }
 
-    let result = mint.process_swap_request(swap_request_preimage_only).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_preimage_only)
+        .await;
     assert!(
         result.is_err(),
         "Should fail with only preimage (no signature)"
@@ -201,7 +205,7 @@ async fn test_htlc_wrong_preimage() {
 
     // Try to spend with WRONG preimage (but correct signature)
     use crate::test_helpers::mint::create_test_blinded_messages;
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request =
@@ -213,7 +217,7 @@ async fn test_htlc_wrong_preimage() {
         proof.sign_p2pk(alice_secret.clone()).unwrap();
     }
 
-    let result = mint.process_swap_request(swap_request).await;
+    let result = Arc::clone(&mint).process_swap_request(swap_request).await;
     assert!(result.is_err(), "Should fail with wrong preimage");
     println!("✓ HTLC with wrong preimage failed as expected");
 }
@@ -272,7 +276,7 @@ async fn test_htlc_locktime_after_expiry() {
 
     // After locktime, Bob (refund key) can spend WITHOUT preimage
     use crate::test_helpers::mint::create_test_blinded_messages;
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request =
@@ -286,7 +290,7 @@ async fn test_htlc_locktime_after_expiry() {
         proof.sign_p2pk(bob_secret.clone()).unwrap();
     }
 
-    let result = mint.process_swap_request(swap_request).await;
+    let result = Arc::clone(&mint).process_swap_request(swap_request).await;
     assert!(
         result.is_ok(),
         "Bob should be able to spend after locktime without preimage"
@@ -347,7 +351,7 @@ async fn test_htlc_multisig_2of3() {
 
     // Try with preimage + only 1 signature (should fail - need 2)
     use crate::test_helpers::mint::create_test_blinded_messages;
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_one_sig =
@@ -358,7 +362,9 @@ async fn test_htlc_multisig_2of3() {
         proof.sign_p2pk(alice_secret.clone()).unwrap(); // Only Alice signs
     }
 
-    let result = mint.process_swap_request(swap_request_one_sig).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_one_sig)
+        .await;
     assert!(
         result.is_err(),
         "Should fail with only 1 signature (need 2)"
@@ -443,7 +449,7 @@ async fn test_htlc_receiver_path_after_locktime() {
     // Even though locktime has passed, Alice (receiver) should STILL be able to spend
     // using the preimage + her signature (receiver path is ALWAYS available per NUT-14)
     use crate::test_helpers::mint::create_test_blinded_messages;
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request =
@@ -455,7 +461,7 @@ async fn test_htlc_receiver_path_after_locktime() {
         proof.sign_p2pk(alice_secret.clone()).unwrap();
     }
 
-    let result = mint.process_swap_request(swap_request).await;
+    let result = Arc::clone(&mint).process_swap_request(swap_request).await;
     assert!(
         result.is_ok(),
         "Receiver should be able to spend with preimage even after locktime"

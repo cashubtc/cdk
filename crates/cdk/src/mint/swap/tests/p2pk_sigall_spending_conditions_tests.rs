@@ -2,6 +2,8 @@
 //!
 //! These tests verify that the mint correctly enforces SIG_ALL flag behavior
 
+use std::sync::Arc;
+
 use cdk_common::dhke::construct_proofs;
 use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
 use cdk_common::Amount;
@@ -90,13 +92,15 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
     );
 
     // Step 5: Try to spend P2PK proof WITHOUT signature (should fail)
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let swap_request_no_sig =
         cdk_common::nuts::SwapRequest::new(p2pk_proofs.clone(), new_outputs.clone());
 
-    let result = mint.process_swap_request(swap_request_no_sig).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_no_sig)
+        .await;
     assert!(result.is_err(), "Should fail without signature");
     println!("✓ Spending WITHOUT signature failed as expected");
 
@@ -109,7 +113,9 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
         proof.sign_p2pk(alice_secret.clone()).unwrap();
     }
 
-    let result = mint.process_swap_request(swap_request_sig_inputs).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_sig_inputs)
+        .await;
     assert!(
         result.is_err(),
         "Should fail - SIG_INPUTS signatures not valid for SIG_ALL"
@@ -125,7 +131,9 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
         .sign_sig_all(alice_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_with_sig).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_with_sig)
+        .await;
     assert!(result.is_ok(), "Should succeed with valid signature");
     println!("✓ Spending WITH ALL signatures (SIG_ALL) succeeded");
 }
@@ -190,7 +198,10 @@ async fn test_p2pk_sig_all_multisig_2of3() {
     // Step 4: Swap for P2PK multisig proofs
     let swap_request =
         cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
-    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let swap_response = Arc::clone(&mint)
+        .process_swap_request(swap_request)
+        .await
+        .unwrap();
     println!("Created P2PK multisig proofs (2-of-3) with SIG_ALL");
 
     // Step 5: Construct the P2PK proofs
@@ -203,7 +214,7 @@ async fn test_p2pk_sig_all_multisig_2of3() {
     .unwrap();
 
     // Step 6: Try to spend with only 1 signature (Alice only - should fail)
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_one_sig =
@@ -214,7 +225,9 @@ async fn test_p2pk_sig_all_multisig_2of3() {
         .sign_sig_all(alice_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_one_sig).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_one_sig)
+        .await;
     assert!(
         result.is_err(),
         "Should fail with only 1 signature (need 2)"
@@ -233,7 +246,9 @@ async fn test_p2pk_sig_all_multisig_2of3() {
         .sign_sig_all(eve_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_invalid_sigs).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_invalid_sigs)
+        .await;
     assert!(result.is_err(), "Should fail with 2 invalid signatures");
     println!("✓ Spending with 2 INVALID signatures (Dave + Eve) failed as expected");
 
@@ -256,7 +271,9 @@ async fn test_p2pk_sig_all_multisig_2of3() {
         serde_json::to_string_pretty(&swap_request_valid_sigs.clone()).unwrap()
     );
 
-    let result = mint.process_swap_request(swap_request_valid_sigs).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_valid_sigs)
+        .await;
     assert!(result.is_ok(), "Should succeed with 2 valid signatures");
     println!("✓ Spending with 2 VALID signatures (Alice + Bob) succeeded");
 }
@@ -306,7 +323,10 @@ async fn test_p2pk_sig_all_signed_by_wrong_person() {
     // Step 3: Swap for P2PK proofs locked to Alice
     let swap_request =
         cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
-    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let swap_response = Arc::clone(&mint)
+        .process_swap_request(swap_request)
+        .await
+        .unwrap();
     println!("Created P2PK proofs locked to Alice with SIG_ALL");
 
     // Step 4: Construct the P2PK proofs
@@ -319,7 +339,7 @@ async fn test_p2pk_sig_all_signed_by_wrong_person() {
     .unwrap();
 
     // Step 5: Try to spend Alice's proofs by signing with Bob's key (wrong key!)
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_wrong_sig =
@@ -330,7 +350,9 @@ async fn test_p2pk_sig_all_signed_by_wrong_person() {
         .sign_sig_all(bob_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_wrong_sig).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_wrong_sig)
+        .await;
     assert!(result.is_err(), "Should fail when signed with wrong key");
     println!("✓ Spending signed by wrong person failed as expected");
 }
@@ -383,7 +405,10 @@ async fn test_p2pk_sig_all_duplicate_signatures() {
     // Step 4: Swap for P2PK proofs
     let swap_request =
         cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
-    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let swap_response = Arc::clone(&mint)
+        .process_swap_request(swap_request)
+        .await
+        .unwrap();
 
     // Step 5: Construct the P2PK proofs
     let p2pk_proofs = construct_proofs(
@@ -395,7 +420,7 @@ async fn test_p2pk_sig_all_duplicate_signatures() {
     .unwrap();
 
     // Step 6: Try to spend with Alice's signature TWICE (should fail - need Alice + Bob, not Alice + Alice)
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_duplicate =
@@ -409,7 +434,9 @@ async fn test_p2pk_sig_all_duplicate_signatures() {
         .sign_sig_all(alice_secret.clone())
         .unwrap(); // Duplicate!
 
-    let result = mint.process_swap_request(swap_request_duplicate).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_duplicate)
+        .await;
     assert!(
         result.is_err(),
         "Should fail - duplicate signatures not allowed"
@@ -471,7 +498,10 @@ async fn test_p2pk_sig_all_locktime_before_expiry() {
     // Step 4: Swap for P2PK proofs
     let swap_request =
         cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
-    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let swap_response = Arc::clone(&mint)
+        .process_swap_request(swap_request)
+        .await
+        .unwrap();
 
     // Step 5: Construct the P2PK proofs
     let p2pk_proofs = construct_proofs(
@@ -483,7 +513,7 @@ async fn test_p2pk_sig_all_locktime_before_expiry() {
     .unwrap();
 
     // Step 6: Try to spend with refund key (Bob) BEFORE locktime expires (should fail)
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_refund =
@@ -494,7 +524,9 @@ async fn test_p2pk_sig_all_locktime_before_expiry() {
         .sign_sig_all(bob_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_refund).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_refund)
+        .await;
     assert!(
         result.is_err(),
         "Should fail - refund key cannot spend before locktime"
@@ -510,7 +542,9 @@ async fn test_p2pk_sig_all_locktime_before_expiry() {
         .sign_sig_all(alice_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_primary).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_primary)
+        .await;
     assert!(
         result.is_ok(),
         "Should succeed - primary key can spend before locktime"
@@ -569,7 +603,10 @@ async fn test_p2pk_sig_all_locktime_after_expiry() {
     // Step 4: Swap for P2PK proofs
     let swap_request =
         cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
-    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let swap_response = Arc::clone(&mint)
+        .process_swap_request(swap_request)
+        .await
+        .unwrap();
 
     // Step 5: Construct the P2PK proofs
     let p2pk_proofs = construct_proofs(
@@ -582,7 +619,7 @@ async fn test_p2pk_sig_all_locktime_after_expiry() {
 
     // Step 6: Try to spend with primary key (Alice) AFTER locktime expires
     // Per NUT-11: "Locktime Multisig conditions continue to apply" - primary keys STILL work
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_primary =
@@ -593,7 +630,9 @@ async fn test_p2pk_sig_all_locktime_after_expiry() {
         .sign_sig_all(alice_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_primary).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_primary)
+        .await;
     assert!(
         result.is_ok(),
         "Should succeed - primary key can STILL spend after locktime (NUT-11 compliant): {:?}",
@@ -651,7 +690,10 @@ async fn test_p2pk_sig_all_locktime_after_expiry_no_refund_anyone_can_spend() {
     // Step 4: Swap for P2PK proofs
     let swap_request =
         cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
-    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let swap_response = Arc::clone(&mint)
+        .process_swap_request(swap_request)
+        .await
+        .unwrap();
 
     // Step 5: Construct the P2PK proofs
     let p2pk_proofs = construct_proofs(
@@ -663,7 +705,7 @@ async fn test_p2pk_sig_all_locktime_after_expiry_no_refund_anyone_can_spend() {
     .unwrap();
 
     // Step 6: Spend WITHOUT any signatures (should succeed - anyone can spend!)
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let swap_request_no_sig =
@@ -671,7 +713,9 @@ async fn test_p2pk_sig_all_locktime_after_expiry_no_refund_anyone_can_spend() {
 
     // No signatures added at all!
 
-    let result = mint.process_swap_request(swap_request_no_sig).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_no_sig)
+        .await;
     assert!(
         result.is_ok(),
         "Should succeed - anyone can spend after locktime with no refund keys: {:?}",
@@ -738,7 +782,10 @@ async fn test_p2pk_sig_all_multisig_locktime() {
     // Step 4: Swap for P2PK proofs
     let swap_request =
         cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
-    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let swap_response = Arc::clone(&mint)
+        .process_swap_request(swap_request)
+        .await
+        .unwrap();
 
     // Step 5: Construct the P2PK proofs
     let p2pk_proofs = construct_proofs(
@@ -751,7 +798,7 @@ async fn test_p2pk_sig_all_multisig_locktime() {
 
     // Step 6: Try to spend with primary keys (Alice + Bob) AFTER locktime
     // Per NUT-11: "Locktime Multisig conditions continue to apply" - primary keys STILL work
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_primary =
@@ -765,7 +812,9 @@ async fn test_p2pk_sig_all_multisig_locktime() {
         .sign_sig_all(bob_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_primary).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_primary)
+        .await;
     assert!(
         result.is_ok(),
         "Should succeed - primary keys (2-of-3) can STILL spend after locktime (NUT-11): {:?}",
@@ -821,7 +870,10 @@ async fn test_p2pk_sig_all_mixed_proofs_different_data() {
 
     let swap_request_alice =
         cdk_common::nuts::SwapRequest::new(alice_input_proofs, alice_outputs.clone());
-    let swap_response_alice = mint.process_swap_request(swap_request_alice).await.unwrap();
+    let swap_response_alice = Arc::clone(&mint)
+        .process_swap_request(swap_request_alice)
+        .await
+        .unwrap();
 
     let alice_proofs = construct_proofs(
         swap_response_alice.signatures.clone(),
@@ -864,7 +916,10 @@ async fn test_p2pk_sig_all_mixed_proofs_different_data() {
 
     let swap_request_bob =
         cdk_common::nuts::SwapRequest::new(bob_input_proofs, bob_outputs.clone());
-    let swap_response_bob = mint.process_swap_request(swap_request_bob).await.unwrap();
+    let swap_response_bob = Arc::clone(&mint)
+        .process_swap_request(swap_request_bob)
+        .await
+        .unwrap();
 
     let bob_proofs = construct_proofs(
         swap_response_bob.signatures.clone(),
@@ -882,7 +937,7 @@ async fn test_p2pk_sig_all_mixed_proofs_different_data() {
     // Step 7: Try to spend Alice's and Bob's proofs together in one transaction (should FAIL!)
     // This violates NUT-11 requirement that all SIG_ALL proofs must have same data
     let total_amount = alice_input_amount + bob_input_amount;
-    let (new_outputs, _) = create_test_blinded_messages(mint, total_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), total_amount)
         .await
         .unwrap();
 
@@ -899,7 +954,9 @@ async fn test_p2pk_sig_all_mixed_proofs_different_data() {
     swap_request_mixed.sign_sig_all(bob_secret.clone()).unwrap();
 
     // But the mint should reject it due to mismatched data, even though both signed
-    let result = mint.process_swap_request(swap_request_mixed).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_mixed)
+        .await;
     assert!(result.is_err(), "Should fail - cannot mix proofs with different data in SIG_ALL transaction, even with both signatures");
 
     let error_msg = format!("{:?}", result.err().unwrap());
@@ -909,16 +966,19 @@ async fn test_p2pk_sig_all_mixed_proofs_different_data() {
     );
 
     // Step 8: Alice should be able to spend her proofs alone (should succeed)
-    let (alice_new_outputs, _) = create_test_blinded_messages(mint, alice_input_amount)
-        .await
-        .unwrap();
+    let (alice_new_outputs, _) =
+        create_test_blinded_messages(Arc::clone(&mint), alice_input_amount)
+            .await
+            .unwrap();
     let mut swap_request_alice_only =
         cdk_common::nuts::SwapRequest::new(alice_proofs.clone(), alice_new_outputs.clone());
     swap_request_alice_only
         .sign_sig_all(alice_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_alice_only).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_alice_only)
+        .await;
     assert!(
         result.is_ok(),
         "Should succeed - Alice spending her own proofs: {:?}",
@@ -927,7 +987,7 @@ async fn test_p2pk_sig_all_mixed_proofs_different_data() {
     println!("✓ Alice successfully spent her own proofs separately");
 
     // Step 9: Bob should be able to spend his proofs alone (should succeed)
-    let (bob_new_outputs, _) = create_test_blinded_messages(mint, bob_input_amount)
+    let (bob_new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), bob_input_amount)
         .await
         .unwrap();
     let mut swap_request_bob_only =
@@ -936,7 +996,9 @@ async fn test_p2pk_sig_all_mixed_proofs_different_data() {
         .sign_sig_all(bob_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_bob_only).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_bob_only)
+        .await;
     assert!(
         result.is_ok(),
         "Should succeed - Bob spending his own proofs: {:?}",
@@ -1002,7 +1064,10 @@ async fn test_p2pk_sig_all_multisig_before_locktime() {
     // Step 4: Swap for P2PK proofs
     let swap_request =
         cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
-    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let swap_response = Arc::clone(&mint)
+        .process_swap_request(swap_request)
+        .await
+        .unwrap();
 
     // Step 5: Construct the P2PK proofs
     let p2pk_proofs = construct_proofs(
@@ -1014,7 +1079,7 @@ async fn test_p2pk_sig_all_multisig_before_locktime() {
     .unwrap();
 
     // Step 6: Try to spend with only 1 signature (Alice) BEFORE locktime (should fail - need 2-of-3)
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_one_sig =
@@ -1025,7 +1090,9 @@ async fn test_p2pk_sig_all_multisig_before_locktime() {
         .sign_sig_all(alice_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_one_sig).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_one_sig)
+        .await;
     assert!(
         result.is_err(),
         "Should fail - need 2-of-3 signatures before locktime"
@@ -1044,7 +1111,9 @@ async fn test_p2pk_sig_all_multisig_before_locktime() {
         .sign_sig_all(bob_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_two_sigs).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_two_sigs)
+        .await;
     assert!(
         result.is_ok(),
         "Should succeed - 2-of-3 signatures before locktime"
@@ -1098,7 +1167,10 @@ async fn test_p2pk_sig_all_more_signatures_than_required() {
     // Step 4: Swap for P2PK proofs
     let swap_request =
         cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
-    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let swap_response = Arc::clone(&mint)
+        .process_swap_request(swap_request)
+        .await
+        .unwrap();
 
     // Step 5: Construct the P2PK proofs
     let p2pk_proofs = construct_proofs(
@@ -1110,7 +1182,7 @@ async fn test_p2pk_sig_all_more_signatures_than_required() {
     .unwrap();
 
     // Step 6: Spend with ALL 3 signatures (Alice + Bob + Carol) even though only 2 required
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_all_sigs =
@@ -1127,7 +1199,9 @@ async fn test_p2pk_sig_all_more_signatures_than_required() {
         .sign_sig_all(carol_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_all_sigs).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_all_sigs)
+        .await;
     assert!(
         result.is_ok(),
         "Should succeed - 3 valid signatures when only 2-of-3 required"
@@ -1188,7 +1262,10 @@ async fn test_p2pk_sig_all_refund_multisig_2of2() {
     // Step 4: Swap for P2PK proofs
     let swap_request =
         cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
-    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let swap_response = Arc::clone(&mint)
+        .process_swap_request(swap_request)
+        .await
+        .unwrap();
 
     // Step 5: Construct the P2PK proofs
     let p2pk_proofs = construct_proofs(
@@ -1200,7 +1277,7 @@ async fn test_p2pk_sig_all_refund_multisig_2of2() {
     .unwrap();
 
     // Step 6: Try to spend with only Dave's signature (1-of-2, should fail - need 2-of-2)
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_one_refund =
@@ -1211,7 +1288,9 @@ async fn test_p2pk_sig_all_refund_multisig_2of2() {
         .sign_sig_all(dave_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_one_refund).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_one_refund)
+        .await;
     assert!(
         result.is_err(),
         "Should fail - need 2-of-2 refund signatures"
@@ -1230,7 +1309,9 @@ async fn test_p2pk_sig_all_refund_multisig_2of2() {
         .sign_sig_all(eve_secret.clone())
         .unwrap();
 
-    let result = mint.process_swap_request(swap_request_both_refunds).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_both_refunds)
+        .await;
     assert!(
         result.is_ok(),
         "Should succeed - 2-of-2 refund signatures after locktime"
@@ -1282,7 +1363,10 @@ async fn test_sig_all_should_reject_if_the_output_amounts_are_swapped() {
     );
 
     let swap_request = cdk_common::nuts::SwapRequest::new(input_proofs, p2pk_outputs);
-    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let swap_response = Arc::clone(&mint)
+        .process_swap_request(swap_request)
+        .await
+        .unwrap();
 
     // Step 4: Construct the P2PK proofs
     let p2pk_proofs = construct_proofs(
@@ -1297,7 +1381,7 @@ async fn test_sig_all_should_reject_if_the_output_amounts_are_swapped() {
     assert_eq!(p2pk_proofs.len(), 2, "Should have 2 proofs (8+2)");
 
     // Step 5: Create new swap request and sign with SIG_ALL
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request = cdk_common::nuts::SwapRequest::new(p2pk_proofs, new_outputs);
@@ -1334,7 +1418,9 @@ async fn test_sig_all_should_reject_if_the_output_amounts_are_swapped() {
     }
 
     // Step 6: Try to execute the swap - should now FAIL because the signature is invalid
-    let result = mint.process_swap_request(swap_request.clone()).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request.clone())
+        .await;
     assert!(
         result.is_err(),
         "Swap should fail - amounts were tampered with after signing"
@@ -1358,7 +1444,7 @@ async fn test_sig_all_should_reject_if_the_output_amounts_are_swapped() {
         );
     }
 
-    let result = mint.process_swap_request(swap_request).await;
+    let result = Arc::clone(&mint).process_swap_request(swap_request).await;
     assert!(
         result.is_ok(),
         "Swap should succeed with original amounts: {:?}",
