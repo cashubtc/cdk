@@ -3,6 +3,8 @@
 //! These tests verify that the mint correctly enforces SIG_ALL flag behavior
 //! during melt operations.
 
+use std::sync::Arc;
+
 use cdk_common::dhke::construct_proofs;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
@@ -118,7 +120,7 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
     println!("✓ Melting WITHOUT signature failed verification as expected");
 
     // Also verify the actual melt fails
-    let melt_result = mint.melt(&melt_request_no_sig).await;
+    let melt_result = Arc::clone(&mint).melt(&melt_request_no_sig).await;
     assert!(
         melt_result.is_err(),
         "Actual melt should also fail without signature"
@@ -142,7 +144,7 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
     println!("✓ Melting with SIG_INPUTS signatures failed verification as expected");
 
     // Also verify the actual melt fails
-    let melt_result = mint.melt(&melt_request_sig_inputs).await;
+    let melt_result = Arc::clone(&mint).melt(&melt_request_sig_inputs).await;
     assert!(
         melt_result.is_err(),
         "Actual melt should also fail with SIG_INPUTS signatures"
@@ -161,7 +163,12 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
     println!("✓ P2PK SIG_ALL spending conditions verified successfully");
 
     // Perform the actual melt - this also verifies spending conditions internally
-    let melt_response = mint.melt(&melt_request).await.unwrap().await.unwrap();
+    let melt_response = Arc::clone(&mint)
+        .melt(&melt_request)
+        .await
+        .unwrap()
+        .await
+        .unwrap();
     println!("✓ Melt operation completed successfully!");
     println!("  Quote state: {}", melt_response.state);
     assert_eq!(melt_response.quote, melt_quote.quote);
