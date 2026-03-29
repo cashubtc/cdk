@@ -952,6 +952,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitreq"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08221cf31c5f00fb6fc8fa697cea54176b06801a518bd9d3482aa27099827a3a"
+dependencies = [
+ "base64 0.22.1",
+ "rustls 0.21.12",
+ "rustls-webpki 0.101.7",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls 0.24.1",
+ "webpki-roots 0.25.4",
+]
+
+[[package]]
 name = "bitvec"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1189,8 +1205,6 @@ version = "0.16.0-rc.1"
 dependencies = [
  "anyhow",
  "arc-swap",
- "arti-client",
- "arti-hyper",
  "async-trait",
  "bip39",
  "bitcoin 0.32.8",
@@ -1198,6 +1212,7 @@ dependencies = [
  "cbor-diag",
  "cdk-common",
  "cdk-fake-wallet",
+ "cdk-http-client",
  "cdk-npubcash",
  "cdk-prometheus",
  "cdk-signatory",
@@ -1208,8 +1223,6 @@ dependencies = [
  "getrandom 0.2.17",
  "gloo-timers",
  "hickory-resolver",
- "http 0.2.12",
- "hyper 0.14.32",
  "jsonwebtoken",
  "lightning",
  "lightning-invoice",
@@ -1222,11 +1235,8 @@ dependencies = [
  "serde_json",
  "serde_with",
  "thiserror 2.0.18",
- "tls-api",
- "tls-api-native-tls",
  "tokio",
  "tokio-util",
- "tor-rtcompat",
  "tracing",
  "tracing-subscriber",
  "ureq",
@@ -1269,6 +1279,7 @@ dependencies = [
  "bitcoin 0.32.8",
  "cdk",
  "cdk-common",
+ "cdk-http-client",
  "cdk-redb",
  "cdk-sqlite",
  "clap",
@@ -1410,17 +1421,29 @@ dependencies = [
 name = "cdk-http-client"
 version = "0.16.0-rc.1"
 dependencies = [
+ "arti-client",
+ "arti-hyper",
+ "async-trait",
+ "bitreq",
+ "cashu",
  "futures",
  "futures-channel",
+ "getrandom 0.2.17",
+ "http 0.2.12",
+ "hyper 0.14.32",
  "js-sys",
  "mockito",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "thiserror 2.0.18",
+ "tls-api",
+ "tls-api-native-tls",
  "tokio",
  "tokio-tungstenite 0.26.2",
+ "tor-rtcompat",
  "tracing",
  "url",
  "wasm-bindgen",
@@ -1697,7 +1720,6 @@ dependencies = [
  "futures",
  "once_cell",
  "prometheus",
- "reqwest",
  "serde",
  "serde_json",
  "sysinfo",
@@ -3894,9 +3916,9 @@ dependencies = [
 
 [[package]]
 name = "inventory"
-version = "0.3.22"
+version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "009ae045c87e7082cb72dab0ccd01ae075dd00141ddc108f43a0ea150a9e7227"
+checksum = "8062b737e5389949f477d4760a2ebbff0c366f97798f2419b8d8f366363d3342"
 dependencies = [
  "rustversion",
 ]
@@ -6197,9 +6219,9 @@ checksum = "b50b8869d9fc858ce7266cce0194bd74df58b9d0e3f6df3a9fc8eb470d95c09d"
 
 [[package]]
 name = "rustc-hash"
-version = "2.1.1"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
+checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
 
 [[package]]
 name = "rustc_version"

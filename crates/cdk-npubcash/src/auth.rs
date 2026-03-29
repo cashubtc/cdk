@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
+use cdk_http_client::RequestBuilderExt;
 use nostr_sdk::{EventBuilder, Keys, Kind, Tag};
 use tokio::sync::RwLock;
 use web_time::SystemTime;
