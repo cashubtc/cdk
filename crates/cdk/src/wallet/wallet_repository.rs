@@ -227,7 +227,7 @@ pub struct WalletRepository {
     localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     seed: [u8; 64],
     /// Wallets indexed by (mint URL, currency unit)
-    wallets: Arc<RwLock<BTreeMap<WalletKey, Wallet>>>,
+    wallets: Arc<RwLock<BTreeMap<WalletKey, Arc<Wallet>>>>,
     /// Proxy configuration for HTTP clients (optional)
     proxy_config: Option<url::Url>,
     /// Shared Tor transport to be cloned into each TorHttpClient (if enabled)
@@ -255,7 +255,7 @@ impl WalletRepository {
         &self,
         mint_url: &MintUrl,
         unit: &CurrencyUnit,
-    ) -> Result<Wallet, Error> {
+    ) -> Result<Arc<Wallet>, Error> {
         let key = WalletKey::new(mint_url.clone(), unit.clone());
         self.wallets
             .read()
@@ -267,7 +267,7 @@ impl WalletRepository {
 
     /// Get all wallets for a specific mint URL (any currency unit)
     #[instrument(skip(self))]
-    pub async fn get_wallets_for_mint(&self, mint_url: &MintUrl) -> Vec<Wallet> {
+    pub async fn get_wallets_for_mint(&self, mint_url: &MintUrl) -> Vec<Arc<Wallet>> {
         self.wallets
             .read()
             .await
@@ -289,7 +289,7 @@ impl WalletRepository {
     /// Fetches the mint info to discover all supported currency units and creates
     /// a wallet for each unit. Returns all created wallets.
     #[instrument(skip(self))]
-    pub async fn add_wallet(&self, mint_url: MintUrl) -> Result<Vec<Wallet>, Error> {
+    pub async fn add_wallet(&self, mint_url: MintUrl) -> Result<Vec<Arc<Wallet>>, Error> {
         self.add_wallet_with_config(mint_url, None).await
     }
 
@@ -302,7 +302,7 @@ impl WalletRepository {
         &self,
         mint_url: MintUrl,
         config: Option<WalletConfig>,
-    ) -> Result<Vec<Wallet>, Error> {
+    ) -> Result<Vec<Arc<Wallet>>, Error> {
         // Fetch mint info to get supported units
         let mint_info = self.fetch_mint_info(&mint_url).await?;
         let supported_units = mint_info.supported_units();
@@ -341,7 +341,7 @@ impl WalletRepository {
         mint_url: MintUrl,
         unit: CurrencyUnit,
         config: WalletConfig,
-    ) -> Result<Wallet, Error> {
+    ) -> Result<Arc<Wallet>, Error> {
         // Re-create wallet with new config
         self.create_wallet(mint_url, unit, Some(config)).await
     }
@@ -354,10 +354,11 @@ impl WalletRepository {
         mint_url: MintUrl,
         unit: CurrencyUnit,
         config: Option<WalletConfig>,
-    ) -> Result<Wallet, Error> {
-        let wallet = self
-            .create_wallet_internal(mint_url.clone(), unit.clone(), config.as_ref())
-            .await?;
+    ) -> Result<Arc<Wallet>, Error> {
+        let wallet = Arc::new(
+            self.create_wallet_internal(mint_url.clone(), unit.clone(), config.as_ref())
+                .await?,
+        );
 
         // Insert into wallets map using WalletKey
         let key = WalletKey::new(mint_url, unit);
@@ -391,7 +392,7 @@ impl WalletRepository {
 
     /// Get all wallets
     #[instrument(skip(self))]
-    pub async fn get_wallets(&self) -> Vec<Wallet> {
+    pub async fn get_wallets(&self) -> Vec<Arc<Wallet>> {
         self.wallets.read().await.values().cloned().collect()
     }
 
@@ -625,9 +626,10 @@ impl WalletRepository {
                     continue;
                 }
 
-                let wallet = self
-                    .create_wallet_internal(mint_url.clone(), unit, None)
-                    .await?;
+                let wallet = Arc::new(
+                    self.create_wallet_internal(mint_url.clone(), unit, None)
+                        .await?,
+                );
 
                 let mut wallets = self.wallets.write().await;
                 wallets.insert(key, wallet);
