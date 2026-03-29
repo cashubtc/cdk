@@ -560,6 +560,66 @@ impl Wallet {
         Ok(self.inner.get_keyset_fees_by_id(id).await?)
     }
 
+    /// Load keys for a specific keyset
+    pub async fn load_keyset_keys(&self, keyset_id: String) -> Result<Keys, FfiError> {
+        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
+        let keys = self.inner.load_keyset_keys(id).await?;
+        Ok(keys.into())
+    }
+
+    /// Get keysets for this wallet's unit with filter
+    pub async fn get_mint_keysets(
+        &self,
+        filter: KeysetFilter,
+    ) -> Result<Vec<KeySetInfo>, FfiError> {
+        let keysets = self.inner.get_mint_keysets(filter.into()).await?;
+        Ok(keysets.into_iter().map(Into::into).collect())
+    }
+
+    /// Load active keysets
+    pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
+        let keysets = self.inner.load_mint_keysets().await?;
+        Ok(keysets.into_iter().map(Into::into).collect())
+    }
+
+    /// Fetch active keyset with lowest fees
+    pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, FfiError> {
+        let keyset = self.inner.fetch_active_keyset().await?;
+        Ok(keyset.into())
+    }
+
+    /// Get fees and amounts for all keysets
+    pub async fn get_keyset_fees_and_amounts(
+        &self,
+    ) -> Result<std::collections::HashMap<String, FeeAndAmounts>, FfiError> {
+        let fees = self.inner.get_keyset_fees_and_amounts().await?;
+        Ok(fees
+            .into_iter()
+            .map(|(id, fa)| (id.to_string(), fa.into()))
+            .collect())
+    }
+
+    /// Get fees and amounts for a specific keyset
+    pub async fn get_keyset_fees_and_amounts_by_id(
+        &self,
+        keyset_id: String,
+    ) -> Result<FeeAndAmounts, FfiError> {
+        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
+        let fa = self.inner.get_keyset_fees_and_amounts_by_id(id).await?;
+        Ok(fa.into())
+    }
+
+    /// Get fee for count of proofs in a keyset
+    pub async fn get_keyset_count_fee(
+        &self,
+        keyset_id: String,
+        count: u64,
+    ) -> Result<Amount, FfiError> {
+        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
+        let fee = self.inner.get_keyset_count_fee(&id, count).await?;
+        Ok(fee.into())
+    }
+
     /// Check all pending proofs and return the total amount still pending
     ///
     /// This function checks orphaned pending proofs (not managed by active sagas)
