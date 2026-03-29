@@ -58,6 +58,7 @@ cdk-lnd = { path = "./crates/cdk-lnd", version = "=0.16.0-rc.1" }
 cdk-ldk-node = { path = "./crates/cdk-ldk-node", version = "=0.16.0-rc.1" }
 cdk-fake-wallet = { path = "./crates/cdk-fake-wallet", version = "=0.16.0-rc.1" }
 cdk-ffi = { path = "./crates/cdk-ffi", version = "=0.16.0-rc.1" }
+cdk-http-client = { path = "./crates/cdk-http-client", version = "=0.16.0-rc.1" }
 cdk-payment-processor = { path = "./crates/cdk-payment-processor", default-features = true, version = "=0.16.0-rc.1" }
 cdk-mint-rpc = { path = "./crates/cdk-mint-rpc", version = "=0.16.0-rc.1" }
 cdk-redb = { path = "./crates/cdk-redb", default-features = true, version = "=0.16.0-rc.1" }
@@ -67,8 +68,8 @@ cdk-postgres = { path = "./crates/cdk-postgres", default-features = true, versio
 cdk-signatory = { path = "./crates/cdk-signatory", version = "=0.16.0-rc.1", default-features = false }
 cdk-mintd = { path = "./crates/cdk-mintd", version = "=0.16.0-rc.1", default-features = false }
 cdk-prometheus = { path = "./crates/cdk-prometheus", version = "=0.16.0-rc.1", default-features = false }
+cdk-supabase = { path = "./crates/cdk-supabase", version = "=0.16.0-rc.1", default-features = false }
 cdk-npubcash = { path = "./crates/cdk-npubcash", version = "=0.16.0-rc.1" }
-cdk-http-client = { path = "./crates/cdk-http-client", version = "=0.16.0-rc.1" }
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"
