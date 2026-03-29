@@ -15,8 +15,8 @@ default = ["mint", "wallet"]
 swagger = ["dep:utoipa", "cashu/swagger"]
 test = []
 bench = []
-wallet = ["cashu/wallet", "dep:uuid"]
-mint = ["cashu/mint", "dep:uuid"]
+wallet = ["cashu/wallet", "dep:uuid", "http"]
+mint = ["cashu/mint", "dep:uuid", "http"]
 nostr = ["wallet", "cashu/nostr"]
 prometheus = ["cdk-prometheus/default"]
 http = ["dep:cdk-http-client"]
@@ -46,6 +46,7 @@ serde_with.workspace = true
 web-time.workspace = true
 parking_lot = "0.12.5"
 paste = "1.0.15"
+jsonwebtoken.workspace = true
 tonic = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -133,7 +133,7 @@ impl Wallet {
                             .await
                             .map_err(|e| Error::Custom(format!("Publish Nostr event: {e}")))?;
 
-                        println!(
+                        tracing::info!(
                             "Published event {} successfully to {}",
                             gift_wrap.val,
                             gift_wrap
@@ -145,7 +145,7 @@ impl Wallet {
                         );
 
                         if !gift_wrap.failed.is_empty() {
-                            println!(
+                            tracing::warn!(
                                 "Could not publish to {}",
                                 gift_wrap
                                     .failed
@@ -174,11 +174,11 @@ impl Wallet {
                         .await
                         .map_err(|e| Error::HttpError(None, e.to_string()))?;
 
-                    let status = res.status();
                     if res.is_success() {
-                        println!("Successfully posted payment");
+                        tracing::info!("Successfully posted payment");
                         Ok(())
                     } else {
+                        let status = res.status();
                         let body = res.text().await.unwrap_or_default();
                         Err(Error::HttpError(Some(status), body))
                     }
