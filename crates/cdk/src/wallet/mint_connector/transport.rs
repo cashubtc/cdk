@@ -215,5 +215,6 @@ impl Transport for Async {
     }
 }
 
+pub mod rate_limit;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub mod tor_transport;
