@@ -1,0 +1,8 @@
+[package]
+name = "cdk_ffi"
+namespace = "cdk_ffi"
+
+[bindings.swift]
+cdylib_name = "cdk_ffi_swift"
+module_name = "cdk"
+ffi_module_name = "cdkFFI"
