@@ -1,0 +1,29 @@
+[package]
+name = "cdk-ffi-swift"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+version.workspace = true
+readme.workspace = true
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+name = "cdk_ffi_swift"
+
+
+[[bin]]
+name = "uniffi-bindgen-swift"
+path = "uniffi-bindgen-swift.rs"
+
+[dependencies]
+cdk-ffi.workspace = true
+uniffi = { workspace = true, features = ["cli"] }
+
+
+[build-dependencies]
+uniffi = { workspace = true, features = ["build"] }
+
+[lints]
+workspace = true

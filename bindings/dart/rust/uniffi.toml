@@ -1,0 +1,7 @@
+[package]
+name = "cdk"
+namespace = "cdk"
+
+[bindings.dart]
+cdylib_name = "cdk"
+package_name = "cdk"

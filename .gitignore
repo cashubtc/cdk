@@ -1,6 +1,8 @@
 **/target
 .DS_Store
 .direnv
+build
+.build
 .jj
 .vscode/
 .idea/

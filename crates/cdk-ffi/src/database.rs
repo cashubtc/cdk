@@ -2068,6 +2068,61 @@ pub enum WalletDbBackend {
     },
 }
 
+/// Unified wallet storage: either a built-in Rust backend or a custom
+/// foreign-language implementation of the `WalletDatabase` callback interface.
+///
+/// This is an enum rather than accepting `WalletDatabase` directly because UniFFI
+/// does not support trait objects as constructor parameters — only callback interfaces
+/// wrapped in `Arc<dyn Trait>` inside an enum variant work across the FFI boundary.
+#[derive(uniffi::Enum)]
+pub enum WalletStore {
+    Sqlite {
+        path: String,
+    },
+    #[cfg(feature = "postgres")]
+    Postgres {
+        url: String,
+    },
+    Custom {
+        db: Arc<dyn WalletDatabase>,
+    },
+}
+
+/// Create a SQLite-backed wallet store.
+#[uniffi::export]
+pub fn sqlite_wallet_store(path: String) -> WalletStore {
+    WalletStore::Sqlite { path }
+}
+
+/// Create a PostgreSQL-backed wallet store.
+#[cfg(feature = "postgres")]
+#[uniffi::export]
+pub fn postgres_wallet_store(url: String) -> WalletStore {
+    WalletStore::Postgres { url }
+}
+
+/// Create a wallet store backed by a custom foreign-language database implementation.
+#[uniffi::export]
+pub fn custom_wallet_store(db: Arc<dyn WalletDatabase>) -> WalletStore {
+    WalletStore::Custom { db }
+}
+
+/// Resolve a `WalletStore` into an `Arc<dyn WalletDatabase>`.
+pub fn resolve_wallet_store(store: WalletStore) -> Result<Arc<dyn WalletDatabase>, FfiError> {
+    match store {
+        WalletStore::Sqlite { path } => {
+            let sqlite = WalletSqliteDatabase::new(path)?;
+            Ok(sqlite as Arc<dyn WalletDatabase>)
+        }
+        #[cfg(feature = "postgres")]
+        WalletStore::Postgres { url } => {
+            let pg = WalletPostgresDatabase::new(url)?;
+            Ok(pg as Arc<dyn WalletDatabase>)
+        }
+        WalletStore::Custom { db } => Ok(db),
+    }
+}
+
 /// Factory helpers returning a CDK wallet database behind the FFI trait
 #[uniffi::export]
 pub fn create_wallet_db(backend: WalletDbBackend) -> Result<Arc<dyn WalletDatabase>, FfiError> {
