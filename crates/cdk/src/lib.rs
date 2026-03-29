@@ -34,8 +34,7 @@ mod bip353;
 mod lightning_address;
 
 #[cfg(any(feature = "wallet", feature = "mint"))]
-mod oidc_client;
-
+pub use cdk_common::auth::oidc::OidcClient;
 #[cfg(feature = "mint")]
 #[doc(hidden)]
 pub use cdk_common::payment as cdk_payment;
@@ -49,8 +48,6 @@ pub use cdk_common::{
     error::{self, Error},
     lightning_invoice, mint_url, nuts, secret, util, ws, Amount, Bolt11Invoice,
 };
-#[cfg(any(feature = "wallet", feature = "mint"))]
-pub use oidc_client::OidcClient;
 
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub mod event;

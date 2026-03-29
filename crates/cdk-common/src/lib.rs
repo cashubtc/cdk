@@ -8,6 +8,10 @@
 
 pub mod task;
 
+/// Authentication related types and utilities
+#[cfg(feature = "http")]
+pub mod auth;
+
 /// Protocol version for gRPC Mint RPC communication
 pub const MINT_RPC_PROTOCOL_VERSION: &str = "1.0.0";
 
