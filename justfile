@@ -569,6 +569,7 @@ release m="":
     "-p cdk-signatory"
     "-p cdk-fake-wallet"
     "-p cdk"
+    "-p cdk-supabase"
     "-p cdk-ffi"
     "-p cdk-axum"
     "-p cdk-mint-rpc"
