@@ -882,18 +882,42 @@
               # them at runtime even though the individual .dylib files may not be on disk).
               postFixup = ''
                 for f in $out/bin/*; do
-                  otool -L "$f" | grep '/nix/store' | awk '{print $1}' | while read -r lib; do
+                  otool -L "$f" | tail -n +2 | grep '/nix/store' | awk '{print $1}' | while read -r lib; do
                     base=$(basename "$lib")
                     echo "Rewriting Nix store dylib ref: $lib -> /usr/lib/$base"
                     install_name_tool -change "$lib" "/usr/lib/$base" "$f"
                   done
 
-                  # Fail the build if any Nix store references remain in the binary.
-                  # This prevents silently shipping broken binaries to users without Nix.
-                  remaining=$(otool -L "$f" | grep '/nix/store' || true)
-                  if [ -n "$remaining" ]; then
+                  otool -l "$f" | awk '
+                    $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+                    in_rpath && $1 == "path" {
+                      print $2
+                      in_rpath = 0
+                    }
+                  ' | grep '^/nix/store' | while read -r rpath; do
+                    echo "Removing Nix store rpath: $rpath"
+                    install_name_tool -delete_rpath "$rpath" "$f"
+                  done
+
+                  # Fail the build if any runtime Mach-O references still point into the Nix store.
+                  # This prevents silently shipping binaries that depend on Nix-specific loader paths.
+                  remaining_libs=$(otool -L "$f" | tail -n +2 | grep '/nix/store' || true)
+                  remaining_rpaths=$(otool -l "$f" | awk '
+                    $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+                    in_rpath && $1 == "path" {
+                      print $2
+                      in_rpath = 0
+                    }
+                  ' | grep '^/nix/store' || true)
+
+                  if [ -n "$remaining_libs$remaining_rpaths" ]; then
                     echo "ERROR: Binary still references Nix store paths after fixup:"
-                    echo "$remaining"
+                    if [ -n "$remaining_libs" ]; then
+                      echo "$remaining_libs"
+                    fi
+                    if [ -n "$remaining_rpaths" ]; then
+                      echo "$remaining_rpaths"
+                    fi
                     echo "The binary would fail on systems without Nix installed."
                     exit 1
                   fi
