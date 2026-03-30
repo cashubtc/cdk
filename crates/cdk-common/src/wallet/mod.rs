@@ -7,10 +7,10 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
-use cashu::amount::SplitTarget;
+use cashu::amount::{FeeAndAmounts, KeysetFeeAndAmounts, SplitTarget};
 use cashu::nuts::nut07::ProofState;
 use cashu::nuts::nut18::PaymentRequest;
-use cashu::nuts::AuthProof;
+use cashu::nuts::{AuthProof, Keys};
 use cashu::util::hex;
 use cashu::{nut00, PaymentMethod, Proof, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
@@ -634,6 +634,15 @@ impl FromStr for OperationKind {
     }
 }
 
+/// Filter for keyset queries
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeysetFilter {
+    /// Only return active keysets
+    Active,
+    /// Return all keysets (active and inactive)
+    All,
+}
+
 /// Unified wallet trait providing a common interface for wallet operations.
 ///
 /// This trait abstracts over different wallet implementations (CDK wallet, FFI
@@ -706,6 +715,39 @@ pub trait Wallet: Send + Sync {
 
     /// Get the active keyset with lowest fees
     async fn get_active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error>;
+
+    /// Load keys for a specific keyset from cache or mint
+    async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Self::Error>;
+
+    /// Get keysets for this wallet's unit, filtered by active/all
+    async fn get_mint_keysets(
+        &self,
+        filter: KeysetFilter,
+    ) -> Result<Vec<Self::KeySetInfo>, Self::Error>;
+
+    /// Load active keysets (alias for get_mint_keysets with Active filter)
+    async fn load_mint_keysets(&self) -> Result<Vec<Self::KeySetInfo>, Self::Error> {
+        self.get_mint_keysets(KeysetFilter::Active).await
+    }
+
+    /// Fetch the active keyset with lowest fees
+    async fn fetch_active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error>;
+
+    /// Get fees and available amounts for all keysets
+    async fn get_keyset_fees_and_amounts(&self) -> Result<KeysetFeeAndAmounts, Self::Error>;
+
+    /// Get fee for count of proofs in a keyset
+    async fn get_keyset_count_fee(
+        &self,
+        keyset_id: &Id,
+        count: u64,
+    ) -> Result<Self::Amount, Self::Error>;
+
+    /// Get fees and amounts for a specific keyset ID
+    async fn get_keyset_fees_and_amounts_by_id(
+        &self,
+        keyset_id: Id,
+    ) -> Result<FeeAndAmounts, Self::Error>;
 
     /// Create a mint quote for the given payment method
     async fn mint_quote(

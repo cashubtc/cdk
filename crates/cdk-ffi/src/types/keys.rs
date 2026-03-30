@@ -60,6 +60,24 @@ pub fn encode_key_set_info(info: KeySetInfo) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&info)?)
 }
 
+/// FFI-compatible KeysetFilter
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum KeysetFilter {
+    /// Only return active keysets
+    Active,
+    /// Return all keysets (active and inactive)
+    All,
+}
+
+impl From<KeysetFilter> for cdk_common::wallet::KeysetFilter {
+    fn from(filter: KeysetFilter) -> Self {
+        match filter {
+            KeysetFilter::Active => cdk_common::wallet::KeysetFilter::Active,
+            KeysetFilter::All => cdk_common::wallet::KeysetFilter::All,
+        }
+    }
+}
+
 /// FFI-compatible PublicKey
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(transparent)]

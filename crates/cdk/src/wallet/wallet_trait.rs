@@ -4,18 +4,18 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::amount::SplitTarget;
+use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts, SplitTarget};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut07::ProofState;
 use cdk_common::nuts::nut18::PaymentRequest;
 use cdk_common::nuts::{
-    AuthProof, CurrencyUnit, Id, KeySetInfo, MeltOptions, MintInfo, PaymentMethod, Proofs,
+    AuthProof, CurrencyUnit, Id, KeySetInfo, Keys, MeltOptions, MintInfo, PaymentMethod, Proofs,
     SpendingConditions,
 };
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::{
-    MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions, Transaction, TransactionDirection,
-    TransactionId, Wallet as WalletTrait,
+    KeysetFilter, MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions, Transaction,
+    TransactionDirection, TransactionId, Wallet as WalletTrait,
 };
 use cdk_common::{Amount, PublicKey, SecretKey};
 use tracing::instrument;
@@ -84,6 +84,43 @@ impl WalletTrait for super::Wallet {
     #[instrument(skip(self))]
     async fn get_active_keyset(&self) -> Result<KeySetInfo, Self::Error> {
         self.get_active_keyset().await
+    }
+
+    #[instrument(skip(self))]
+    async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Self::Error> {
+        self.load_keyset_keys(keyset_id).await
+    }
+
+    #[instrument(skip(self))]
+    async fn get_mint_keysets(&self, filter: KeysetFilter) -> Result<Vec<KeySetInfo>, Self::Error> {
+        self.get_mint_keysets(filter).await
+    }
+
+    #[instrument(skip(self))]
+    async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Self::Error> {
+        self.fetch_active_keyset().await
+    }
+
+    #[instrument(skip(self))]
+    async fn get_keyset_fees_and_amounts(&self) -> Result<KeysetFeeAndAmounts, Self::Error> {
+        self.get_keyset_fees_and_amounts().await
+    }
+
+    #[instrument(skip(self))]
+    async fn get_keyset_count_fee(
+        &self,
+        keyset_id: &Id,
+        count: u64,
+    ) -> Result<Amount, Self::Error> {
+        self.get_keyset_count_fee(keyset_id, count).await
+    }
+
+    #[instrument(skip(self))]
+    async fn get_keyset_fees_and_amounts_by_id(
+        &self,
+        keyset_id: Id,
+    ) -> Result<FeeAndAmounts, Self::Error> {
+        self.get_keyset_fees_and_amounts_by_id(keyset_id).await
     }
 
     #[instrument(skip(self, method))]

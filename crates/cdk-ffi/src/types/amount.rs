@@ -90,6 +90,24 @@ impl From<Amount> for CdkAmount {
     }
 }
 
+/// FFI-compatible FeeAndAmounts
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct FeeAndAmounts {
+    /// Input fee per thousand (ppk)
+    pub fee: u64,
+    /// Available amounts for this keyset
+    pub amounts: Vec<u64>,
+}
+
+impl From<cdk_common::amount::FeeAndAmounts> for FeeAndAmounts {
+    fn from(fa: cdk_common::amount::FeeAndAmounts) -> Self {
+        Self {
+            fee: fa.fee(),
+            amounts: fa.amounts().to_vec(),
+        }
+    }
+}
+
 /// FFI-compatible Currency Unit
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum CurrencyUnit {
