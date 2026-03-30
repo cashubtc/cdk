@@ -1135,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "cashu"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "bip39",
  "bitcoin 0.32.8",
@@ -1208,7 +1208,7 @@ dependencies = [
 
 [[package]]
 name = "cdk"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1262,7 +1262,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-axum"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1285,7 +1285,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cli"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "anyhow",
  "bip39",
@@ -1309,7 +1309,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cln"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-common"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1364,7 +1364,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-fake-wallet"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "android_logger",
  "async-trait",
@@ -1415,7 +1415,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-dart"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "camino",
  "cdk-ffi",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-swift"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "cdk-ffi",
  "uniffi",
@@ -1433,7 +1433,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-http-client"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "futures",
  "futures-channel",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-integration-tests"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1501,7 +1501,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ldk-node"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
@@ -1527,7 +1527,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnbits"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1545,7 +1545,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnd"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mint-rpc"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "anyhow",
  "cdk",
@@ -1592,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mintd"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1632,7 +1632,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-npubcash"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1656,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-payment-processor"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1693,7 +1693,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-postgres"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1716,7 +1716,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-prometheus"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "anyhow",
  "futures",
@@ -1734,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-redb"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "async-trait",
  "cdk-common",
@@ -1752,7 +1752,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-signatory"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1777,7 +1777,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sql-common"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1795,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sqlite"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-supabase"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2095,7 +2095,7 @@ dependencies = [
  "serde_core",
  "serde_json",
  "toml 1.1.0+spec-1.1.0",
- "winnow 1.0.0",
+ "winnow 1.0.1",
  "yaml-rust2",
 ]
 
@@ -3713,9 +3713,9 @@ dependencies = [
 
 [[package]]
 name = "hybrid-array"
-version = "0.4.8"
+version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8655f91cd07f2b9d0c24137bd650fe69617773435ee5ec83022377777ce65ef1"
+checksum = "1a79f2aff40c18ab8615ddc5caa9eb5b96314aef18fe5823090f204ad988e813"
 dependencies = [
  "typenum",
 ]
@@ -7727,7 +7727,7 @@ dependencies = [
  "serde_spanned 1.1.0",
  "toml_datetime 1.1.0+spec-1.1.0",
  "toml_parser",
- "winnow 1.0.0",
+ "winnow 1.0.1",
 ]
 
 [[package]]
@@ -7791,7 +7791,7 @@ dependencies = [
  "indexmap 2.13.0",
  "toml_datetime 1.1.0+spec-1.1.0",
  "toml_parser",
- "winnow 1.0.0",
+ "winnow 1.0.1",
 ]
 
 [[package]]
@@ -7800,7 +7800,7 @@ version = "1.1.0+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2334f11ee363607eb04df9b8fc8a13ca1715a72ba8662a26ac285c98aabb4011"
 dependencies = [
- "winnow 1.0.0",
+ "winnow 1.0.1",
 ]
 
 [[package]]
@@ -9984,9 +9984,9 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a90e88e4667264a994d34e6d1ab2d26d398dcdca8b7f52bec8668957517fc7d8"
+checksum = "09dac053f1cd375980747450bfc7250c264eaae0583872e845c0c7cd578872b5"
 dependencies = [
  "memchr",
 ]
