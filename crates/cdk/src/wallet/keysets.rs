@@ -2,19 +2,11 @@ use std::collections::HashMap;
 
 use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts};
 use cdk_common::nut02::KeySetInfosMethods;
+pub use cdk_common::wallet::KeysetFilter;
 use tracing::instrument;
 
 use crate::nuts::{Id, KeySetInfo, Keys};
 use crate::{Error, Wallet};
-
-/// Filter for keyset queries
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeysetFilter {
-    /// Only return active keysets
-    Active,
-    /// Return all keysets (active and inactive)
-    All,
-}
 
 impl Wallet {
     /// Load keys for mint keyset

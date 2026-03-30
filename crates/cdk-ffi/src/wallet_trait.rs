@@ -77,6 +77,54 @@ impl WalletTraitDef for Wallet {
         Ok(keyset.into())
     }
 
+    async fn load_keyset_keys(
+        &self,
+        keyset_id: cdk_common::nuts::Id,
+    ) -> Result<cdk_common::nuts::Keys, Self::Error> {
+        let keys = WalletTraitDef::load_keyset_keys(self.inner().as_ref(), keyset_id).await?;
+        Ok(keys)
+    }
+
+    async fn get_mint_keysets(
+        &self,
+        filter: cdk_common::wallet::KeysetFilter,
+    ) -> Result<Vec<Self::KeySetInfo>, Self::Error> {
+        let keysets = WalletTraitDef::get_mint_keysets(self.inner().as_ref(), filter).await?;
+        Ok(keysets.into_iter().map(Into::into).collect())
+    }
+
+    async fn fetch_active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error> {
+        let keyset = WalletTraitDef::fetch_active_keyset(self.inner().as_ref()).await?;
+        Ok(keyset.into())
+    }
+
+    async fn get_keyset_fees_and_amounts(
+        &self,
+    ) -> Result<cdk_common::amount::KeysetFeeAndAmounts, Self::Error> {
+        let fees = WalletTraitDef::get_keyset_fees_and_amounts(self.inner().as_ref()).await?;
+        Ok(fees)
+    }
+
+    async fn get_keyset_count_fee(
+        &self,
+        keyset_id: &cdk_common::nuts::Id,
+        count: u64,
+    ) -> Result<Self::Amount, Self::Error> {
+        let fee =
+            WalletTraitDef::get_keyset_count_fee(self.inner().as_ref(), keyset_id, count).await?;
+        Ok(fee.into())
+    }
+
+    async fn get_keyset_fees_and_amounts_by_id(
+        &self,
+        keyset_id: cdk_common::nuts::Id,
+    ) -> Result<cdk_common::amount::FeeAndAmounts, Self::Error> {
+        let fee =
+            WalletTraitDef::get_keyset_fees_and_amounts_by_id(self.inner().as_ref(), keyset_id)
+                .await?;
+        Ok(fee)
+    }
+
     async fn mint_quote(
         &self,
         method: Self::PaymentMethod,
