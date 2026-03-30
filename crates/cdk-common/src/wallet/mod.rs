@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::amount::{FeeAndAmounts, KeysetFeeAndAmounts, SplitTarget};
+use cashu::nut00::ProofsMethods;
 use cashu::nuts::nut07::ProofState;
 use cashu::nuts::nut18::PaymentRequest;
 use cashu::nuts::{AuthProof, Keys};
@@ -22,6 +23,7 @@ use crate::nuts::{
 };
 use crate::{Amount, Error};
 
+pub use crate::fees;
 pub mod saga;
 
 pub use saga::{
@@ -798,6 +800,28 @@ pub trait Wallet: Send + Sync {
         keyset_id: Id,
     ) -> Result<Self::Amount, Self::Error>;
 
+    /// Fee required to redeem proof set by count per keyset
+    async fn get_proofs_fee_by_count(
+        &self,
+        proofs_per_keyset: HashMap<Id, u64>,
+    ) -> Result<fees::ProofsFeeBreakdown, Self::Error>;
+
+    /// Fee required to redeem a proof set
+    async fn get_proofs_fee(
+        &self,
+        proofs: &Proofs,
+    ) -> Result<fees::ProofsFeeBreakdown, Self::Error> {
+        let proofs_per_keyset = proofs.count_by_keyset();
+        self.get_proofs_fee_by_count(proofs_per_keyset).await
+    }
+
+    /// Get proofs filtered by state and/or spending conditions
+    async fn get_proofs_with(
+        &self,
+        state: Option<Vec<State>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
+    ) -> Result<Proofs, Self::Error>;
+
     /// Receive an encoded token
     async fn receive(
         &self,
@@ -992,7 +1016,9 @@ pub trait Wallet: Send + Sync {
     /// Returns all proofs whose state matches any of the given states.
     /// The `Spent` state is typically excluded since spent proofs are removed
     /// from the database.
-    async fn get_proofs_by_states(&self, states: Vec<State>) -> Result<Proofs, Self::Error>;
+    async fn get_proofs_by_states(&self, states: Vec<State>) -> Result<Proofs, Self::Error> {
+        self.get_proofs_with(Some(states), None).await
+    }
 
     // P2PK proofs
     /// generates and stores public key in database
