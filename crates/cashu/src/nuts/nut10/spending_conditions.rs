@@ -2,13 +2,13 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/10.md>
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use serde::{Deserialize, Serialize};
 
-use crate::nut10::{Error, Tag, TagKind};
+use crate::nut10::{Error, Tag};
 use crate::secret::Secret;
 use crate::util::unix_time;
 use crate::{ensure_cdk, nut14, Kind, Nut10Secret, PublicKey, SigFlag};
@@ -267,68 +267,99 @@ impl From<Conditions> for Vec<Vec<String>> {
 impl TryFrom<Vec<Vec<String>>> for Conditions {
     type Error = Error;
     fn try_from(tags: Vec<Vec<String>>) -> Result<Conditions, Self::Error> {
-        let tags: HashMap<TagKind, Tag> = tags
-            .into_iter()
-            .map(|t| Tag::try_from(t).map(|tag| (tag.kind(), tag)))
-            .collect::<Result<_, _>>()?;
+        let mut locktime = None;
+        let mut pubkeys = None;
+        let mut refund_keys = None;
+        let mut sig_flag = None;
+        let mut num_sigs = None;
+        let mut num_sigs_refund = None;
 
-        let pubkeys = match tags.get(&TagKind::Pubkeys) {
-            Some(Tag::PubKeys(pubkeys)) => Some(pubkeys.clone()),
-            _ => None,
-        };
-
-        let locktime = if let Some(tag) = tags.get(&TagKind::Locktime) {
+        for tag_vec in tags {
+            let tag = Tag::try_from(tag_vec)?;
             match tag {
-                Tag::LockTime(locktime) => Some(*locktime),
-                _ => None,
+                Tag::LockTime(lt) => {
+                    if locktime.is_none() {
+                        locktime = Some(lt);
+                    }
+                }
+                Tag::PubKeys(pks) => {
+                    if pubkeys.is_none() {
+                        pubkeys = Some(pks);
+                    }
+                }
+                Tag::Refund(keys) => {
+                    if refund_keys.is_none() {
+                        refund_keys = Some(keys);
+                    }
+                }
+                Tag::SigFlag(sf) => {
+                    if sig_flag.is_none() {
+                        sig_flag = Some(sf);
+                    }
+                }
+                Tag::NSigs(sigs) => {
+                    if num_sigs.is_none() {
+                        num_sigs = Some(sigs);
+                    }
+                }
+                Tag::NSigsRefund(sigs) => {
+                    if num_sigs_refund.is_none() {
+                        num_sigs_refund = Some(sigs);
+                    }
+                }
+                Tag::Custom(_, _) => {}
             }
-        } else {
-            None
-        };
-
-        let refund_keys = if let Some(tag) = tags.get(&TagKind::Refund) {
-            match tag {
-                Tag::Refund(keys) => Some(keys.clone()),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        let sig_flag = if let Some(tag) = tags.get(&TagKind::SigFlag) {
-            match tag {
-                Tag::SigFlag(sigflag) => *sigflag,
-                _ => SigFlag::SigInputs,
-            }
-        } else {
-            SigFlag::SigInputs
-        };
-
-        let num_sigs = if let Some(tag) = tags.get(&TagKind::NSigs) {
-            match tag {
-                Tag::NSigs(num_sigs) => Some(*num_sigs),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        let num_sigs_refund = if let Some(tag) = tags.get(&TagKind::NSigsRefund) {
-            match tag {
-                Tag::NSigsRefund(num_sigs) => Some(*num_sigs),
-                _ => None,
-            }
-        } else {
-            None
-        };
+        }
 
         Ok(Conditions {
             locktime,
             pubkeys,
             refund_keys,
             num_sigs,
-            sig_flag,
+            sig_flag: sig_flag.unwrap_or_default(),
             num_sigs_refund,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use crate::nut01::PublicKey;
+
+    #[test]
+    fn test_duplicate_tags_first_match() {
+        let pk1 = "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198";
+        let pk2 = "02a4ed09e9b22c0563f2043593902973d040054ff03be93c990264177d65123982";
+
+        let tags = vec![
+            vec!["locktime".to_string(), "100".to_string()],
+            vec!["locktime".to_string(), "1".to_string()],
+            vec!["n_sigs".to_string(), "2".to_string()],
+            vec!["n_sigs".to_string(), "1".to_string()],
+            vec!["sigflag".to_string(), "SIG_ALL".to_string()],
+            vec!["sigflag".to_string(), "SIG_INPUTS".to_string()],
+            vec!["pubkeys".to_string(), pk1.to_string()],
+            vec!["pubkeys".to_string(), pk2.to_string()],
+            vec!["refund".to_string(), pk1.to_string()],
+            vec!["refund".to_string(), pk2.to_string()],
+        ];
+
+        let conditions = Conditions::try_from(tags).unwrap();
+
+        // Verify first-match semantics
+        assert_eq!(conditions.locktime, Some(100));
+        assert_eq!(conditions.num_sigs, Some(2));
+        assert_eq!(conditions.sig_flag, crate::SigFlag::SigAll);
+        assert_eq!(
+            conditions.pubkeys,
+            Some(vec![PublicKey::from_str(pk1).unwrap()])
+        );
+        assert_eq!(
+            conditions.refund_keys,
+            Some(vec![PublicKey::from_str(pk1).unwrap()])
+        );
     }
 }
