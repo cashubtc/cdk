@@ -870,22 +870,35 @@
               OPENSSL_STATIC = "1";
               PKG_CONFIG_ALL_STATIC = "1";
 
+              # Cargo already strips debuginfo (strip = "debuginfo" in the profile).
+              # Skip Nix's strip phase to avoid invalidating the ad-hoc code
+              # signature that Crane applies on Apple Silicon, which would cause
+              # install_name_tool to fail in the postFixup below.
+              dontStrip = true;
+
               installPhaseCommand = ''
                 mkdir -p $out/bin
                 cp target/release-static/${bin} $out/bin/${name}-${version}-${archSuffix}
               '';
 
-              # Safety net: rewrite any remaining Nix store dylib references to
-              # their macOS system equivalents so the binary is fully portable.
-              # We unconditionally rewrite to /usr/lib/ without checking file existence
-              # because macOS 11+ stores system dylibs in a shared cache (dyld resolves
-              # them at runtime even though the individual .dylib files may not be on disk).
+              # Safety net: rewrite known Apple system dylibs that still point into
+              # the Nix store and remove Nix rpaths. We intentionally do not rewrite
+              # arbitrary dylibs by basename because many are not provided by macOS.
+              # If any non-system dependencies remain after fixup, fail the build and
+              # print detailed diagnostics so CI makes the offending path visible.
               postFixup = ''
                 for f in $out/bin/*; do
-                  otool -L "$f" | tail -n +2 | grep '/nix/store' | awk '{print $1}' | while read -r lib; do
+                  otool -L "$f" | awk 'NR > 1 { print $1 }' | grep '^/nix/store' | while read -r lib; do
                     base=$(basename "$lib")
-                    echo "Rewriting Nix store dylib ref: $lib -> /usr/lib/$base"
-                    install_name_tool -change "$lib" "/usr/lib/$base" "$f"
+                    case "$base" in
+                      libiconv.2.dylib|libz.1.dylib|libc++.1.dylib|libc++abi.dylib)
+                        echo "Rewriting Nix store dylib ref: $lib -> /usr/lib/$base"
+                        install_name_tool -change "$lib" "/usr/lib/$base" "$f"
+                        ;;
+                      *)
+                        echo "Leaving non-system dylib unchanged: $lib"
+                        ;;
+                    esac
                   done
 
                   otool -l "$f" | awk '
@@ -899,9 +912,13 @@
                     install_name_tool -delete_rpath "$rpath" "$f"
                   done
 
+                  # Re-sign after modifications (required on Apple Silicon)
+                  echo "Re-signing: $f"
+                  /usr/bin/codesign --force --sign - "$f"
+
                   # Fail the build if any runtime Mach-O references still point into the Nix store.
                   # This prevents silently shipping binaries that depend on Nix-specific loader paths.
-                  remaining_libs=$(otool -L "$f" | tail -n +2 | grep '/nix/store' || true)
+                  remaining_libs=$(otool -L "$f" | awk 'NR > 1 { print $1 }' | grep '^/nix/store' || true)
                   remaining_rpaths=$(otool -l "$f" | awk '
                     $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
                     in_rpath && $1 == "path" {
@@ -911,11 +928,15 @@
                   ' | grep '^/nix/store' || true)
 
                   if [ -n "$remaining_libs$remaining_rpaths" ]; then
-                    echo "ERROR: Binary still references Nix store paths after fixup:"
+                    echo "ERROR: Binary still references Nix store paths after fixup: $f"
                     if [ -n "$remaining_libs" ]; then
+                      echo "Remaining dylibs:"
                       echo "$remaining_libs"
+                      echo "Full otool -L output:"
+                      otool -L "$f"
                     fi
                     if [ -n "$remaining_rpaths" ]; then
+                      echo "Remaining rpaths:"
                       echo "$remaining_rpaths"
                     fi
                     echo "The binary would fail on systems without Nix installed."
