@@ -854,6 +854,20 @@ test-dart:
   cd "{{justfile_directory()}}/bindings/dart"
   dart test
 
+# Generate Kotlin JVM bindings
+binding-kotlin:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/kotlin"
+  ./generate-bindings.sh
+
+# Run Kotlin binding tests
+test-kotlin:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/kotlin"
+  ./gradlew :cdk-jvm:test
+
 # Generate Swift FFI bindings and XCFramework
 binding-swift:
   #!/usr/bin/env bash

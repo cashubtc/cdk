@@ -353,7 +353,7 @@
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift";
+            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin";
           }
         );
 
@@ -1223,7 +1223,7 @@
               // envVars
             );
 
-            # Shell for bindings development (Dart + Swift FFI)
+            # Shell for bindings development (Dart + Swift + Kotlin FFI)
             bindings = pkgs.mkShell (
               {
                 shellHook = commonShellHook;
@@ -1232,6 +1232,7 @@
                   rustupShim
                   dartpkgs.default
                   pkgs.openssl
+                  pkgs.jdk17
                 ];
                 nativeBuildInputs = [
                   pkgs.pkg-config

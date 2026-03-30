@@ -1,0 +1,28 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+local.properties
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+
+# Generated files
+bin/
+gen/
+out/
+
+# Generated Kotlin bindings and native libraries (from generate-bindings.sh)
+cdk-jvm/src/main/kotlin/uniffi/
+cdk-jvm/src/main/resources/*.so
+cdk-jvm/src/main/resources/*.dylib
+
+# Rust build artifacts
+rust/target/
+
+# Ignore Gradle build output
+build
