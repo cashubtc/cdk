@@ -1135,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "cashu"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "bip39",
  "bitcoin 0.32.8",
@@ -1208,7 +1208,7 @@ dependencies = [
 
 [[package]]
 name = "cdk"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1262,7 +1262,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-axum"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1285,7 +1285,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cli"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "bip39",
@@ -1309,7 +1309,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cln"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-common"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1364,7 +1364,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-fake-wallet"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "android_logger",
  "async-trait",
@@ -1415,7 +1415,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-dart"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "camino",
  "cdk-ffi",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-swift"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "cdk-ffi",
  "uniffi",
@@ -1433,7 +1433,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-http-client"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "futures",
  "futures-channel",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-integration-tests"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1501,7 +1501,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ldk-node"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
@@ -1527,7 +1527,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnbits"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1545,7 +1545,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnd"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mint-rpc"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "cdk",
@@ -1592,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mintd"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1632,7 +1632,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-npubcash"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1656,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-payment-processor"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1693,7 +1693,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-postgres"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1716,7 +1716,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-prometheus"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -1734,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-redb"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "async-trait",
  "cdk-common",
@@ -1752,7 +1752,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-signatory"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1777,7 +1777,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sql-common"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1795,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sqlite"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.8",
@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-supabase"
-version = "0.16.0-rc.4"
+version = "0.16.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -4032,9 +4032,9 @@ dependencies = [
 
 [[package]]
 name = "inventory"
-version = "0.3.23"
+version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8062b737e5389949f477d4760a2ebbff0c366f97798f2419b8d8f366363d3342"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
 dependencies = [
  "rustversion",
 ]
@@ -4137,9 +4137,9 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.92"
+version = "0.3.93"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc4c90f45aa2e6eacbe8645f77fdea542ac97a494bcd117a67df9ff4d611f995"
+checksum = "797146bb2677299a1eb6b7b50a890f4c361b29ef967addf5b2fa45dae1bb6d7d"
 dependencies = [
  "cfg-if",
  "futures-util",
@@ -6264,9 +6264,9 @@ dependencies = [
 
 [[package]]
 name = "ron"
-version = "0.12.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd490c5b18261893f14449cbd28cb9c0b637aebf161cd77900bfdedaff21ec32"
+checksum = "4147b952f3f819eca0e99527022f7d6a8d05f111aeb0a62960c74eb283bec8fc"
 dependencies = [
  "bitflags 2.11.0",
  "once_cell",
@@ -9388,9 +9388,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.115"
+version = "0.2.116"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6523d69017b7633e396a89c5efab138161ed5aafcbc8d3e5c5a42ae38f50495a"
+checksum = "7dc0882f7b5bb01ae8c5215a1230832694481c1a4be062fd410e12ea3da5b631"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -9401,9 +9401,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-futures"
-version = "0.4.65"
+version = "0.4.66"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d1faf851e778dfa54db7cd438b70758eba9755cb47403f3496edd7c8fc212f0"
+checksum = "19280959e2844181895ef62f065c63e0ca07ece4771b53d89bfdb967d97cbf05"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -9411,9 +9411,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.115"
+version = "0.2.116"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e3a6c758eb2f701ed3d052ff5737f5bfe6614326ea7f3bbac7156192dc32e67"
+checksum = "75973d3066e01d035dbedaad2864c398df42f8dd7b1ea057c35b8407c015b537"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -9421,9 +9421,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.115"
+version = "0.2.116"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "921de2737904886b52bcbb237301552d05969a6f9c40d261eb0533c8b055fedf"
+checksum = "91af5e4be765819e0bcfee7322c14374dc821e35e72fa663a830bbc7dc199eac"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -9434,18 +9434,18 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.115"
+version = "0.2.116"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a93e946af942b58934c604527337bad9ae33ba1d5c6900bbb41c2c07c2364a93"
+checksum = "c9bf0406a78f02f336bf1e451799cca198e8acde4ffa278f0fb20487b150a633"
 dependencies = [
  "unicode-ident",
 ]
 
 [[package]]
 name = "wasm-bindgen-test"
-version = "0.3.65"
+version = "0.3.66"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1138411301a026d6662dc44e7076a74dbaa76a369312275eea5dee4d7dc68c7c"
+checksum = "ea88331fc76766356287e79bb0bc032157feea8eff8f2c3f1d9ea4b94255ae1c"
 dependencies = [
  "async-trait",
  "cast",
@@ -9465,9 +9465,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-test-macro"
-version = "0.3.65"
+version = "0.3.66"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "186ddfe8383ba7ae7927bae3bb7343fd1f03ba2dbaf1474410f0d831131c269b"
+checksum = "92437fa87f58743befb3003c4f4e3e9010dd50c6935561be7645981c0de05dfd"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -9476,9 +9476,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-test-shared"
-version = "0.2.115"
+version = "0.2.116"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f032e076ceb8d36d5921c6cef5bf447f2ca2bbd5439ce1683d68d1c99cc2be16"
+checksum = "10091e48e3231b0f567b098ddb9a107310eb2629ae0eaa7c98dd746d5e80ee78"
 
 [[package]]
 name = "wasm-encoder"
@@ -9522,9 +9522,9 @@ checksum = "323f4da9523e9a669e1eaf9c6e763892769b1d38c623913647bfdc1532fe4549"
 
 [[package]]
 name = "web-sys"
-version = "0.3.92"
+version = "0.3.93"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84cde8507f4d7cfcb1185b8cb5890c494ffea65edbe1ba82cfd63661c805ed94"
+checksum = "749466a37ee189057f54748b200186b59a03417a117267baf3fd89cecc9fb837"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

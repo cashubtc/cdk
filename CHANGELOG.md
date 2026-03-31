@@ -35,6 +35,8 @@ Key highlights include:
 - cdk: Add `to_bech32_string` to FFI (#1712) ([thesimplekid]).
 - cdk: Store Nostr payment request information (#1732) ([thesimplekid]).
 - cdk: Add keys and mint info to mock connector for testing (#1727) ([thesimplekid]).
+- cdk: Add keyset methods to `WalletTrait` and FFI (#1789) ([crodas]).
+- cdk: Add Supabase wallet database backend (#1540) ([asmogo]).
 - cdk-cli: BIP-353 human-readable address resolution (#1739) ([thesimplekid]).
 - cdk-cli: NUT-26 Payment Request CLI subcommands (#1731) ([thesimplekid]).
 - cdk-cli: Recover from incomplete saga command (#1674) ([thesimplekid]).
@@ -67,6 +69,8 @@ Key highlights include:
 - cdk: Pass currency unit through protobuf instead of hardcoding Msat in `MakePayment` (#1673) ([crodas]).
 - cdk: Fixed wallet validation for impossible multisig and refund configurations (#1711) ([ritoban23]).
 - cdk: Handle WASM compatibility in WebSocket client and time handling (#1615, #1662) ([crodas]).
+- cashu: Accept first tag in spending condition if multiple are provided (#1805) ([thesimplekid]).
+- cdk-axum: CORS preflight now allows all headers instead of hardcoded list (#1798) ([robwoodgate]).
 - cdk-mint-rpc: Added missing version header to all mint RPC CLI subcommands (#1764) ([thesimplekid]).
 
 ### Removed
@@ -808,3 +812,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [TheMhv]: https://github.com/TheMhv
 [ritoban23]: https://github.com/ritoban23
 [lescuer97]: https://github.com/lescuer97
+[robwoodgate]: https://github.com/robwoodgate
