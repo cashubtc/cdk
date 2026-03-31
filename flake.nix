@@ -569,10 +569,10 @@
                   "../../../$CDK_FFI_LIB" --out-dir ../../../target/dart-bindings)
             '';
             installPhaseCommand = ''
-              mkdir -p $out/lib
               LIB_EXT="${if isDarwin then "dylib" else "so"}"
-              cp target/dart-bindings/*.dart $out/lib/
-              cp target/release/libcdk_ffi_dart.$LIB_EXT $out/lib/
+              mkdir -p $out/lib/src/generated
+              cp target/dart-bindings/*.dart $out/lib/src/generated/
+              cp target/release/libcdk_ffi_dart.$LIB_EXT $out/lib/src/generated/
             '';
           }
         );
@@ -599,17 +599,18 @@
             installPhaseCommand = ''
               LIB_EXT="${if isDarwin then "dylib" else "so"}"
 
-              mkdir -p $out/kotlin $out/resources
+              mkdir -p $out/cdk-jvm/src/main/kotlin
+              mkdir -p $out/cdk-jvm/src/main/resources
 
               # Copy generated Kotlin sources
-              cp -r target/kotlin-bindings/org $out/kotlin/
+              cp -r target/kotlin-bindings/org $out/cdk-jvm/src/main/kotlin/
 
               # Copy native library (renamed to libcdk_ffi for JNA convention)
               cp "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
-                "$out/resources/libcdk_ffi.$LIB_EXT"
+                "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT"
 
               # Strip debug symbols
-              strip -x "$out/resources/libcdk_ffi.$LIB_EXT" 2>/dev/null || true
+              strip -x "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT" 2>/dev/null || true
             '';
           }
         );
