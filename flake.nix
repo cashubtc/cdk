@@ -58,6 +58,15 @@
             "aarch64-darwin" = "aarch64-apple-darwin";
           }.${system} or null;
 
+        # Rust host target triple (used by binding derivations)
+        hostTarget =
+          {
+            "x86_64-linux" = "x86_64-unknown-linux-gnu";
+            "aarch64-linux" = "aarch64-unknown-linux-gnu";
+            "x86_64-darwin" = "x86_64-apple-darwin";
+            "aarch64-darwin" = "aarch64-apple-darwin";
+          }.${system};
+
         cargoTargetEnvName =
           {
             "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER";
@@ -527,6 +536,85 @@
         );
 
         # ========================================
+        # Language binding derivations (cached by Cachix)
+        # ========================================
+
+        # Dart FFI bindings: builds cdk-ffi-dart cdylib + generates Dart source
+        dartBindings = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-dart-bindings";
+            cargoArtifacts = workspaceDeps;
+            buildPhaseCargoCommand = ''
+              # Build the Dart FFI cdylib
+              cargo build --release -p cdk-ffi-dart
+
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+
+              # Find the cdk-ffi-dart shared library in deps (contains UniFFI metadata)
+              CDK_FFI_LIB="target/release/deps/libcdk_ffi_dart.$LIB_EXT"
+
+              if [ ! -f "$CDK_FFI_LIB" ]; then
+                echo "ERROR: Could not find $CDK_FFI_LIB"
+                ls -la target/release/deps/libcdk_ffi* || true
+                exit 1
+              fi
+
+              echo "Using library: $CDK_FFI_LIB"
+
+              # Generate Dart bindings via the custom uniffi-bindgen binary
+              # Must run from bindings/dart/rust/ so it finds uniffi.toml
+              (cd bindings/dart/rust && \
+                cargo run --release -p cdk-ffi-dart --bin uniffi-bindgen -- \
+                  "../../../$CDK_FFI_LIB" --out-dir ../../../target/dart-bindings)
+            '';
+            installPhaseCommand = ''
+              mkdir -p $out/lib
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+              cp target/dart-bindings/*.dart $out/lib/
+              cp target/release/libcdk_ffi_dart.$LIB_EXT $out/lib/
+            '';
+          }
+        );
+
+        # Kotlin JVM bindings: builds cdk-ffi-kotlin cdylib + generates Kotlin sources
+        kotlinBindings = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-kotlin-bindings";
+            cargoArtifacts = workspaceDeps;
+            buildPhaseCargoCommand = ''
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+
+              # Build for host target
+              cargo build --release -p cdk-ffi-kotlin --target "${hostTarget}"
+
+              # Generate Kotlin bindings
+              cargo run --release -p cdk-ffi-kotlin --bin uniffi-bindgen -- generate \
+                --library "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+                --language kotlin \
+                --out-dir target/kotlin-bindings \
+                --no-format
+            '';
+            installPhaseCommand = ''
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+
+              mkdir -p $out/kotlin $out/resources
+
+              # Copy generated Kotlin sources
+              cp -r target/kotlin-bindings/org $out/kotlin/
+
+              # Copy native library (renamed to libcdk_ffi for JNA convention)
+              cp "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+                "$out/resources/libcdk_ffi.$LIB_EXT"
+
+              # Strip debug symbols
+              strip -x "$out/resources/libcdk_ffi.$LIB_EXT" 2>/dev/null || true
+            '';
+          }
+        );
+
+        # ========================================
         # Example definitions - single source of truth
         # ========================================
         exampleChecks = [
@@ -977,6 +1065,9 @@
         packages = {
           deps = workspaceDeps;
           deps-msrv = workspaceDepsMsrv;
+          # Language bindings (cached cdylib + uniffi codegen)
+          dart-bindings = dartBindings;
+          kotlin-bindings = kotlinBindings;
         }
         # Static build deps (Linux only)
         // lib.optionalAttrs (muslTarget != null) {

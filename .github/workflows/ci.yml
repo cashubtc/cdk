@@ -493,7 +493,12 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build native library and generate bindings
-        run: nix develop -L .#bindings --command just binding-dart
+        run: |
+          nix build -L .#dart-bindings
+          mkdir -p bindings/dart/lib/src/generated
+          cp result/lib/cdk_ffi.dart bindings/dart/lib/src/generated/
+          cp result/lib/libcdk_ffi_dart.* bindings/dart/lib/src/generated/ || true
+          chmod -R u+w bindings/dart/lib/src/generated/
       - name: Run Dart tests
         run: nix develop -L .#bindings --command just test-dart
 
@@ -512,7 +517,13 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build native library and generate bindings
-        run: nix develop -L .#bindings --command just binding-kotlin
+        run: |
+          nix build -L .#kotlin-bindings
+          mkdir -p bindings/kotlin/cdk-jvm/src/main/kotlin
+          cp -r result/kotlin/org bindings/kotlin/cdk-jvm/src/main/kotlin/
+          mkdir -p bindings/kotlin/cdk-jvm/src/main/resources
+          cp result/resources/libcdk_ffi.* bindings/kotlin/cdk-jvm/src/main/resources/
+          chmod -R u+w bindings/kotlin/cdk-jvm/src/main/kotlin bindings/kotlin/cdk-jvm/src/main/resources
       - name: Run Kotlin tests
         run: nix develop -L .#bindings --command just test-kotlin
 
