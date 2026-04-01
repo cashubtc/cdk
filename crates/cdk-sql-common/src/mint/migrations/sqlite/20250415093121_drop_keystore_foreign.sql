@@ -10,7 +10,7 @@ CREATE TABLE proof_new (
     created_time INTEGER NOT NULL DEFAULT 0
 );
 
-INSERT INTO proof_new SELECT * FROM proof;
+INSERT INTO proof_new (y, amount, keyset_id, secret, c, witness, state, quote_id, created_time) SELECT y, amount, keyset_id, secret, c, witness, state, quote_id, created_time FROM proof;
 DROP TABLE proof;
 ALTER TABLE proof_new RENAME TO proof;
 
@@ -26,6 +26,6 @@ CREATE TABLE blind_signature_new (
     created_time INTEGER NOT NULL DEFAULT 0
 );
 
-INSERT INTO blind_signature_new SELECT * FROM blind_signature;
+INSERT INTO blind_signature_new (y, amount, keyset_id, c, dleq_e, dleq_s, quote_id, created_time) SELECT y, amount, keyset_id, c, dleq_e, dleq_s, quote_id, created_time FROM blind_signature;
 DROP TABLE blind_signature;
 ALTER TABLE blind_signature_new RENAME TO blind_signature;
