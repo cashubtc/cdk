@@ -430,7 +430,11 @@ where
             return Ok(vec![]);
         }
 
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         let mut proofs = query(
             r#"
             SELECT
@@ -469,7 +473,11 @@ where
         &self,
         quote_id: &QuoteId,
     ) -> Result<Vec<PublicKey>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -494,7 +502,11 @@ where
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         let mut current_states = get_current_states(&*conn, ys, false).await?;
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
@@ -504,7 +516,11 @@ where
         &self,
         keyset_id: &Id,
     ) -> Result<(Proofs, Vec<Option<State>>), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
 
         let (proofs, states): (Vec<Proof>, Vec<State>) = query(
             r#"
@@ -535,7 +551,11 @@ where
 
     /// Get total proofs redeemed by keyset id
     async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         query(
             r#"
             SELECT
@@ -556,7 +576,11 @@ where
         &self,
         operation_id: &uuid::Uuid,
     ) -> Result<Vec<PublicKey>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         query(
             r#"
             SELECT

@@ -105,7 +105,10 @@ where
     {
         Ok(Box::new(SQLTransaction {
             inner: ConnectionWithTransaction::new(
-                self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
+                self.pool
+                    .get()
+                    .await
+                    .map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
         }))
