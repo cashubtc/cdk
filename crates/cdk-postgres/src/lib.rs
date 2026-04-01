@@ -62,19 +62,108 @@ pub struct PgConfig {
     url: String,
     schema: Option<String>,
     tls: SslMode,
+    max_connections: usize,
+    connection_timeout: Duration,
 }
 
 impl DatabaseConfig for PgConfig {
     fn default_timeout(&self) -> Duration {
-        Duration::from_secs(10)
+        self.connection_timeout
     }
 
     fn max_size(&self) -> usize {
-        20
+        self.max_connections
+    }
+}
+
+/// Default maximum number of connections in the pool
+const DEFAULT_MAX_CONNECTIONS: usize = 20;
+
+/// Default connection timeout in seconds
+const DEFAULT_CONNECTION_TIMEOUT_SECS: u64 = 10;
+
+/// Build a TLS connector with the given certificate/hostname validation settings.
+fn build_tls(accept_invalid_certs: bool, accept_invalid_hostnames: bool) -> SslMode {
+    let mut builder = TlsConnector::builder();
+    if accept_invalid_certs {
+        builder.danger_accept_invalid_certs(true);
+    }
+    if accept_invalid_hostnames {
+        builder.danger_accept_invalid_hostnames(true);
+    }
+
+    match builder.build() {
+        Ok(connector) => {
+            let make_tls_connector = MakeTlsConnector::new(connector);
+            SslMode::NativeTls(make_tls_connector)
+        }
+        Err(_) => SslMode::NoTls(NoTls {}),
+    }
+}
+
+/// Determine TLS mode from the `sslmode=` parameter in a connection URL.
+fn ssl_mode_from_url(url: &str) -> SslMode {
+    if url.contains(SSLMODE_VERIFY_FULL) {
+        // Strict TLS: valid certs and hostnames required
+        build_tls(false, false)
+    } else if url.contains(SSLMODE_VERIFY_CA) {
+        // Verify CA, but allow invalid hostnames
+        build_tls(false, true)
+    } else if url.contains(SSLMODE_PREFER)
+        || url.contains(SSLMODE_ALLOW)
+        || url.contains(SSLMODE_REQUIRE)
+    {
+        // Lenient TLS for preferred/allow/require: accept invalid certs and hostnames
+        build_tls(true, true)
+    } else {
+        SslMode::NoTls(NoTls {})
+    }
+}
+
+/// Resolve TLS mode from an explicit `tls_mode` string (from config/env), such
+/// as `"disable"`, `"prefer"`, `"require"`, `"verify-ca"`, or `"verify-full"`.
+///
+/// If the value is `None`, falls back to parsing `sslmode=` from the URL.
+fn ssl_mode_from_config(tls_mode: Option<&str>, url: &str) -> SslMode {
+    match tls_mode {
+        Some(mode) => match mode.to_lowercase().as_str() {
+            "verify-full" => build_tls(false, false),
+            "verify-ca" => build_tls(false, true),
+            "require" | "prefer" | "allow" => build_tls(true, true),
+            // "disable" or any unrecognised value → no TLS
+            _ => SslMode::NoTls(NoTls {}),
+        },
+        // No explicit tls_mode: fall back to URL-based detection
+        None => ssl_mode_from_url(url),
     }
 }
 
 impl PgConfig {
+    /// Create a new `PgConfig` with explicit TLS mode, pool size, and timeout.
+    ///
+    /// `tls_mode` accepts the same strings as the configuration file:
+    /// `"disable"`, `"prefer"`, `"allow"`, `"require"`, `"verify-ca"`,
+    /// `"verify-full"`.  When `None`, the TLS mode is inferred from
+    /// `sslmode=` in the connection URL (matching the old behaviour).
+    pub fn new(
+        conn_str: &str,
+        tls_mode: Option<&str>,
+        max_connections: Option<usize>,
+        connection_timeout_secs: Option<u64>,
+    ) -> Self {
+        let (schema, conn_str) = Self::strip_schema(conn_str);
+        let tls = ssl_mode_from_config(tls_mode, &conn_str);
+        PgConfig {
+            url: conn_str,
+            schema,
+            tls,
+            max_connections: max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
+            connection_timeout: Duration::from_secs(
+                connection_timeout_secs.unwrap_or(DEFAULT_CONNECTION_TIMEOUT_SECS),
+            ),
+        }
+    }
+
     /// strip schema from the connection string
     fn strip_schema(input: &str) -> (Option<String>, String) {
         let mut schema: Option<String> = None;
@@ -97,44 +186,14 @@ impl PgConfig {
 impl From<&str> for PgConfig {
     fn from(conn_str: &str) -> Self {
         let (schema, conn_str) = Self::strip_schema(conn_str);
-        fn build_tls(accept_invalid_certs: bool, accept_invalid_hostnames: bool) -> SslMode {
-            let mut builder = TlsConnector::builder();
-            if accept_invalid_certs {
-                builder.danger_accept_invalid_certs(true);
-            }
-            if accept_invalid_hostnames {
-                builder.danger_accept_invalid_hostnames(true);
-            }
-
-            match builder.build() {
-                Ok(connector) => {
-                    let make_tls_connector = MakeTlsConnector::new(connector);
-                    SslMode::NativeTls(make_tls_connector)
-                }
-                Err(_) => SslMode::NoTls(NoTls {}),
-            }
-        }
-
-        let tls = if conn_str.contains(SSLMODE_VERIFY_FULL) {
-            // Strict TLS: valid certs and hostnames required
-            build_tls(false, false)
-        } else if conn_str.contains(SSLMODE_VERIFY_CA) {
-            // Verify CA, but allow invalid hostnames
-            build_tls(false, true)
-        } else if conn_str.contains(SSLMODE_PREFER)
-            || conn_str.contains(SSLMODE_ALLOW)
-            || conn_str.contains(SSLMODE_REQUIRE)
-        {
-            // Lenient TLS for preferred/allow/require: accept invalid certs and hostnames
-            build_tls(true, true)
-        } else {
-            SslMode::NoTls(NoTls {})
-        };
+        let tls = ssl_mode_from_url(&conn_str);
 
         PgConfig {
-            url: conn_str.to_owned(),
+            url: conn_str,
             schema,
             tls,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            connection_timeout: Duration::from_secs(DEFAULT_CONNECTION_TIMEOUT_SECS),
         }
     }
 }
