@@ -475,11 +475,19 @@ impl Mint {
     }
 
     /// Localstore
+    #[inline]
     pub fn localstore(&self) -> DynMintDatabase {
         Arc::clone(&self.localstore)
     }
 
+    /// Get the maximum number of inputs allowed per transaction
+    #[inline]
+    pub fn max_inputs(&self) -> usize {
+        self.max_inputs
+    }
+
     /// Pub Sub manager
+    #[inline]
     pub fn pubsub_manager(&self) -> Arc<PubSubManager> {
         Arc::clone(&self.pubsub_manager)
     }
