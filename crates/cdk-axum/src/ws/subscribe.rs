@@ -15,6 +15,16 @@ pub(crate) async fn handle(
         return Err(WsError::InvalidParams);
     }
 
+    let max_filters = context.state.mint.max_inputs();
+    if params.filters.len() > max_filters {
+        tracing::warn!(
+            "WebSocket subscription request exceeds max filters limit: {} > {}",
+            params.filters.len(),
+            max_filters
+        );
+        return Err(WsError::InvalidParams);
+    }
+
     let mut subscription = context
         .state
         .mint
