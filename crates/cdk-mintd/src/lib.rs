@@ -45,9 +45,7 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
 #[cfg(feature = "postgres")]
-use cdk_postgres::MintPgAuthDatabase;
-#[cfg(feature = "postgres")]
-use cdk_postgres::MintPgDatabase;
+use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase, PgConfig};
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
@@ -305,7 +303,14 @@ async fn setup_database(
             }
 
             #[cfg(feature = "postgres")]
-            let pg_db = Arc::new(MintPgDatabase::new(pg_config.url.as_str()).await?);
+            let db_config = PgConfig::new(
+                pg_config.url.as_str(),
+                pg_config.tls_mode.as_deref(),
+                pg_config.max_connections,
+                pg_config.connection_timeout_seconds,
+            );
+            #[cfg(feature = "postgres")]
+            let pg_db = Arc::new(MintPgDatabase::new(db_config).await?);
             tracing::info!("PostgreSQL database connection established");
             #[cfg(feature = "postgres")]
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
@@ -779,7 +784,13 @@ async fn setup_authentication(
                         bail!("Auth database PostgreSQL URL is required and cannot be empty. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable");
                     }
 
-                    Arc::new(MintPgAuthDatabase::new(auth_pg_config.url.as_str()).await?)
+                    let auth_db_config = PgConfig::new(
+                        auth_pg_config.url.as_str(),
+                        auth_pg_config.tls_mode.as_deref(),
+                        auth_pg_config.max_connections,
+                        auth_pg_config.connection_timeout_seconds,
+                    );
+                    Arc::new(MintPgAuthDatabase::new(auth_db_config).await?)
                 }
                 #[cfg(not(feature = "postgres"))]
                 {
