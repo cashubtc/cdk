@@ -280,7 +280,9 @@ impl Id {
             KeySetVersion::Version01 => {
                 // We return the first match or error
                 for keyset_info in keysets_info.iter() {
-                    if keyset_info.id.id.to_vec()[..short_id.prefix.len()] == short_id.prefix {
+                    if keyset_info.id.version == KeySetVersion::Version01
+                        && keyset_info.id.id.to_vec().starts_with(&short_id.prefix)
+                    {
                         return Ok(keyset_info.id);
                     }
                 }
@@ -451,12 +453,9 @@ impl TryFrom<String> for ShortKeysetId {
             })
         );
 
-        ensure_cdk!(s.len() == 16, Error::Length);
+        let bytes = hex::decode(s)?;
 
-        let version: KeySetVersion = KeySetVersion::from_byte(&hex::decode(&s[..2])?[0])?;
-        let prefix = hex::decode(&s[2..])?;
-
-        Ok(Self { version, prefix })
+        Self::from_bytes(&bytes)
     }
 }
 
@@ -1045,5 +1044,39 @@ mod test {
         // Also test ShortKeysetId
         let short_id_with_non_ascii = ShortKeysetId::from_str("0ǝfa73302d12ff");
         assert!(matches!(short_id_with_non_ascii, Err(Error::HexError(_))));
+    }
+
+    #[test]
+    fn test_from_short_keyset_id_panic_regression() {
+        // v1 id - 7 bytes + 1 byte version prefix = 16 hex chars
+        let v1_id = Id::from_str("00009a1f293253e4").unwrap();
+        let v1_info = KeySetInfo {
+            id: v1_id,
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+
+        // v2 id - 32 bytes
+        let v2_id =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+        let v2_info = KeySetInfo {
+            id: v2_id,
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+
+        let keysets = vec![v1_info, v2_info];
+
+        // This is a v2 short id with 8 bytes prefix
+        // Before the fix, this would panic when checking against v1_info
+        let short_id = ShortKeysetId::from_str("01000000003b00000e").unwrap();
+
+        let res = Id::from_short_keyset_id(&short_id, &keysets);
+        assert!(res.is_err());
     }
 }
