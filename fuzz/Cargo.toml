@@ -148,3 +148,10 @@ path = "fuzz_targets/fuzz_payment_request_bech32_bytes.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_short_keyset_id"
+path = "fuzz_targets/fuzz_short_keyset_id.rs"
+test = false
+doc = false
+bench = false
