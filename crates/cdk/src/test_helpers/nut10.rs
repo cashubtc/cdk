@@ -52,7 +52,7 @@ impl TestMintHelper {
         available_amounts_sorted.sort_by(|a, b| b.cmp(a)); // Sort descending (largest first)
 
         Ok(TestMintHelper {
-            mint,
+            mint: Arc::new(mint),
             active_sat_keyset_id,
             public_keys_of_the_active_sat_keyset,
             available_amounts_sorted,

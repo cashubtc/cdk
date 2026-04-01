@@ -73,7 +73,7 @@ pub(crate) fn should_fail_for(operation: &str) -> bool {
 ///     // Use the mint for testing
 /// }
 /// ```
-pub async fn create_test_mint() -> Result<Arc<Mint>, Error> {
+pub async fn create_test_mint() -> Result<Mint, Error> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
 
     let mut mint_builder = MintBuilder::new(db.clone());
@@ -117,7 +117,7 @@ pub async fn create_test_mint() -> Result<Arc<Mint>, Error> {
 
     mint.start().await?;
 
-    Ok(Arc::new(mint))
+    Ok(mint)
 }
 
 /// Creates test proofs by performing a mock mint operation.

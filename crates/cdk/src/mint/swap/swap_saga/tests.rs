@@ -45,7 +45,7 @@ async fn create_swap_inputs(mint: &Mint, amount: Amount) -> (Proofs, Verificatio
 /// - Saga is in Initial state (enforced by type system)
 #[tokio::test]
 async fn test_swap_saga_initial_state_creation() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
 
@@ -77,7 +77,7 @@ async fn test_swap_saga_initial_state_creation() {
 /// - No errors occur during the entire flow
 #[tokio::test]
 async fn test_swap_saga_full_flow_success() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
@@ -150,7 +150,7 @@ async fn test_swap_saga_full_flow_success() {
 /// - All input proofs have state = Pending in database
 #[tokio::test]
 async fn test_swap_saga_setup_transition() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     let amount = Amount::from(64);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
@@ -221,7 +221,7 @@ async fn test_swap_saga_setup_transition() {
 /// - Compensations are still registered (cleared only on finalize)
 #[tokio::test]
 async fn test_swap_saga_sign_outputs_transition() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     let amount = Amount::from(128);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
@@ -270,7 +270,7 @@ async fn test_swap_saga_sign_outputs_transition() {
 /// - Database remains unchanged (transaction rollback)
 #[tokio::test]
 async fn test_swap_saga_duplicate_inputs() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     let amount = Amount::from(100);
     let (mut input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
@@ -314,7 +314,7 @@ async fn test_swap_saga_duplicate_inputs() {
 /// - Database remains unchanged (transaction rollback)
 #[tokio::test]
 async fn test_swap_saga_duplicate_outputs() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
@@ -358,7 +358,7 @@ async fn test_swap_saga_duplicate_outputs() {
 /// - Database remains unchanged (no proofs or blinded messages added)
 #[tokio::test]
 async fn test_swap_saga_unbalanced_transaction_more_outputs() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     let input_amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, input_amount).await;
@@ -409,7 +409,7 @@ async fn test_swap_saga_unbalanced_transaction_more_outputs() {
 /// - Compensations cleared after successful finalize
 #[tokio::test]
 async fn test_swap_saga_compensation_clears_on_success() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
@@ -473,7 +473,7 @@ async fn test_swap_saga_compensation_clears_on_success() {
 /// the balance verification step.
 #[tokio::test]
 async fn test_swap_saga_empty_inputs() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let amount = Amount::from(100);
 
     let empty_proofs = Proofs::new();
@@ -509,7 +509,7 @@ async fn test_swap_saga_empty_inputs() {
 /// - Database remains unchanged
 #[tokio::test]
 async fn test_swap_saga_empty_outputs() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
 
@@ -542,7 +542,7 @@ async fn test_swap_saga_empty_outputs() {
 /// - Database remains unchanged
 #[tokio::test]
 async fn test_swap_saga_both_empty() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     let empty_proofs = Proofs::new();
     let empty_blinded_messages = vec![];
@@ -576,7 +576,7 @@ async fn test_swap_saga_both_empty() {
 /// - Blinded messages still exist in database
 #[tokio::test]
 async fn test_swap_saga_drop_without_finalize() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
     let (output_blinded_messages, _) = create_test_blinded_messages(Arc::clone(&mint), amount)
@@ -634,7 +634,7 @@ async fn test_swap_saga_drop_without_finalize() {
 /// - No signatures in database (they were only in memory)
 #[tokio::test]
 async fn test_swap_saga_drop_after_signing() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
     let (output_blinded_messages, _) = create_test_blinded_messages(Arc::clone(&mint), amount)
@@ -705,7 +705,7 @@ async fn test_swap_saga_drop_after_signing() {
 /// - Blinded messages are removed after failure
 #[tokio::test]
 async fn test_swap_saga_compensation_on_signing_failure() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
     let (output_blinded_messages, _) = create_test_blinded_messages(Arc::clone(&mint), amount)
@@ -787,7 +787,7 @@ async fn test_swap_saga_compensation_on_signing_failure() {
 /// - Proofs remain in Spent state
 #[tokio::test]
 async fn test_swap_saga_double_spend_detection() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
@@ -865,7 +865,7 @@ async fn test_swap_saga_double_spend_detection() {
 /// - Proofs remain in Pending state
 #[tokio::test]
 async fn test_swap_saga_pending_proof_detection() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
@@ -1051,7 +1051,7 @@ async fn test_swap_saga_concurrent_swaps() {
 /// - No signatures persisted to database
 #[tokio::test]
 async fn test_swap_saga_compensation_on_finalize_add_signatures_failure() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
     let (output_blinded_messages, _) = create_test_blinded_messages(Arc::clone(&mint), amount)
@@ -1132,7 +1132,7 @@ async fn test_swap_saga_compensation_on_finalize_add_signatures_failure() {
 /// - No signatures persisted to database
 #[tokio::test]
 async fn test_swap_saga_compensation_on_finalize_update_proofs_failure() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
     let (output_blinded_messages, _) = create_test_blinded_messages(Arc::clone(&mint), amount)
@@ -1209,7 +1209,7 @@ async fn test_swap_saga_compensation_on_finalize_update_proofs_failure() {
 /// - All expected data is present and correct
 #[tokio::test]
 async fn test_saga_state_persistence_after_setup() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -1291,7 +1291,7 @@ async fn test_saga_state_persistence_after_setup() {
 /// - No incomplete sagas remain
 #[tokio::test]
 async fn test_saga_deletion_on_success() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -1378,7 +1378,7 @@ async fn test_saga_deletion_on_success() {
 /// - Completed saga does not appear in query results
 #[tokio::test]
 async fn test_get_incomplete_sagas_basic() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -1483,7 +1483,7 @@ async fn test_get_incomplete_sagas_basic() {
 /// - Timestamps are within reasonable range
 #[tokio::test]
 async fn test_saga_content_validation() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -1584,7 +1584,7 @@ async fn test_saga_content_validation() {
 /// - Other fields remain consistent
 #[tokio::test]
 async fn test_saga_state_updates_persisted() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -1704,7 +1704,7 @@ async fn test_saga_state_updates_persisted() {
 /// - Second swap with same proofs succeeds
 #[tokio::test]
 async fn test_startup_recovery_saga_dropped_before_signing() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
     let (output_blinded_messages, _) = create_test_blinded_messages(Arc::clone(&mint), amount)
@@ -1813,7 +1813,7 @@ async fn test_startup_recovery_saga_dropped_before_signing() {
 /// - Second swap with same proofs succeeds
 #[tokio::test]
 async fn test_startup_recovery_saga_dropped_after_signing() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let amount = Amount::from(100);
     let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
     let (output_blinded_messages, _) = create_test_blinded_messages(Arc::clone(&mint), amount)
@@ -1911,7 +1911,7 @@ async fn test_startup_recovery_saga_dropped_after_signing() {
 /// - All operations processed in single recovery call
 #[tokio::test]
 async fn test_startup_recovery_multiple_operations() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let amount = Amount::from(100);
 
     // Create three separate sets of proofs for three operations
@@ -2155,7 +2155,7 @@ async fn test_operation_id_uniqueness_and_tracking() {
 /// - Recovery deletes saga
 #[tokio::test]
 async fn test_crash_recovery_without_compensation() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -2250,7 +2250,7 @@ async fn test_crash_recovery_without_compensation() {
 /// - Everything cleaned up after recovery
 #[tokio::test]
 async fn test_crash_recovery_after_setup_only() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -2339,7 +2339,7 @@ async fn test_crash_recovery_after_setup_only() {
 /// - Everything cleaned up after recovery
 #[tokio::test]
 async fn test_crash_recovery_after_signing() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -2435,7 +2435,7 @@ async fn test_crash_recovery_after_signing() {
 /// - Saga C unaffected
 #[tokio::test]
 async fn test_recovery_multiple_incomplete_sagas() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -2580,7 +2580,7 @@ async fn test_recovery_multiple_incomplete_sagas() {
 /// - State is consistent after both runs
 #[tokio::test]
 async fn test_recovery_idempotence() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -2681,7 +2681,7 @@ async fn test_recovery_idempotence() {
 /// - Recovery cleans up orphaned saga
 #[tokio::test]
 async fn test_orphaned_saga_cleanup() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -2758,7 +2758,7 @@ async fn test_orphaned_saga_cleanup() {
 /// - No crashes or panics
 #[tokio::test]
 async fn test_recovery_with_orphaned_proofs() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -2864,7 +2864,7 @@ async fn test_recovery_with_orphaned_proofs() {
 /// - No crashes due to missing blinded messages
 #[tokio::test]
 async fn test_recovery_with_partial_state() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -2958,7 +2958,7 @@ async fn test_recovery_with_partial_state() {
 /// - All saga cleaned up
 #[tokio::test]
 async fn test_recovery_with_missing_blinded_messages() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);
@@ -3045,7 +3045,7 @@ async fn test_recovery_with_missing_blinded_messages() {
 /// - If deletion fails (not testable yet), swap still succeeds
 #[tokio::test]
 async fn test_saga_deletion_failure_handling() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
 
     let amount = Amount::from(100);

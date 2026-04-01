@@ -9,6 +9,7 @@
 //! - Failure handling
 
 use std::str::FromStr;
+use std::sync::Arc;
 
 use cdk_common::mint::{MeltSagaState, OperationKind, Saga};
 use cdk_common::nut00::KnownMethod;
@@ -25,11 +26,11 @@ use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 /// Test: Saga can be created in Initial state
 #[tokio::test]
 async fn test_melt_saga_initial_state_creation() {
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
 
-    let _saga = MeltSaga::new(std::sync::Arc::clone(&mint), db, pubsub);
+    let _saga = MeltSaga::new(Arc::clone(&mint), db, pubsub);
     // Type system enforces Initial state - if this compiles, test passes
 }
 
@@ -41,18 +42,14 @@ async fn test_melt_saga_initial_state_creation() {
 #[tokio::test]
 async fn test_saga_state_persistence_after_setup() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     // STEP 2: Setup melt saga
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -152,7 +149,7 @@ async fn test_saga_state_persistence_after_setup() {
 #[tokio::test]
 async fn test_saga_deletion_on_success() {
     // STEP 1: Setup test environment (FakeWallet handles payments automatically)
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create proofs and quote
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
@@ -161,11 +158,7 @@ async fn test_saga_deletion_on_success() {
 
     // STEP 3: Complete full melt flow
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
 
     // Setup
     let setup_saga = saga
@@ -229,7 +222,7 @@ async fn test_saga_persists_on_finalize_failure() {
 #[tokio::test]
 async fn test_crash_recovery_setup_complete() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create test proofs (10,000 millisats = 10 sats)
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
@@ -243,11 +236,7 @@ async fn test_crash_recovery_setup_complete() {
 
     // STEP 5: Setup melt saga (this persists saga to DB)
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -301,7 +290,7 @@ async fn test_crash_recovery_setup_complete() {
 #[tokio::test]
 async fn test_crash_recovery_multiple_sagas() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create multiple incomplete melt sagas (5 sagas)
     let mut operation_ids = Vec::new();
@@ -318,11 +307,7 @@ async fn test_crash_recovery_multiple_sagas() {
         let melt_request = create_test_melt_request(&proofs, &quote);
 
         let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-        let saga = MeltSaga::new(
-            std::sync::Arc::clone(&mint),
-            mint.localstore(),
-            mint.pubsub_manager(),
-        );
+        let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
         let setup_saga = saga
             .setup_melt(
                 &melt_request,
@@ -421,18 +406,14 @@ async fn test_crash_recovery_multiple_sagas() {
 #[tokio::test]
 async fn test_crash_recovery_orphaned_saga() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     // STEP 2: Create incomplete saga
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -500,7 +481,7 @@ async fn test_crash_recovery_internal_settlement() {
     use cdk_common::MintQuoteBolt11Request;
 
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
 
@@ -555,11 +536,7 @@ async fn test_crash_recovery_internal_settlement() {
     let melt_request = create_test_melt_request(&proofs, &melt_quote);
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
 
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
 
     let setup_saga = saga
         .setup_melt(
@@ -673,7 +650,7 @@ async fn test_crash_recovery_internal_settlement() {
 #[tokio::test]
 async fn test_startup_recovery_integration() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create incomplete saga
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
@@ -681,11 +658,7 @@ async fn test_startup_recovery_integration() {
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -724,11 +697,7 @@ async fn test_startup_recovery_integration() {
     let new_request = create_test_melt_request(&new_proofs, &new_quote);
 
     let new_verification = mint.verify_inputs(new_request.inputs()).await.unwrap();
-    let new_saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let new_saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let _new_setup = new_saga
         .setup_melt(
             &new_request,
@@ -762,7 +731,7 @@ async fn test_startup_resilient_to_recovery_errors() {
 #[tokio::test]
 async fn test_compensation_removes_proofs() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
     let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
@@ -770,11 +739,7 @@ async fn test_compensation_removes_proofs() {
 
     // STEP 2: Setup melt saga (this marks proofs as PENDING)
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -808,11 +773,7 @@ async fn test_compensation_removes_proofs() {
     let new_request = create_test_melt_request(&proofs, &new_quote);
 
     let new_verification = mint.verify_inputs(new_request.inputs()).await.unwrap();
-    let new_saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let new_saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let new_setup = new_saga
         .setup_melt(
             &new_request,
@@ -839,7 +800,7 @@ async fn test_compensation_removes_change_outputs() {
     use crate::test_helpers::mint::create_test_blinded_messages;
 
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // Create input proofs (more than needed so we have change)
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
@@ -848,7 +809,7 @@ async fn test_compensation_removes_change_outputs() {
     // STEP 2: Create change outputs (blinded messages)
     // Change = 10,000 - 7,000 - fee = ~3,000 sats
     let (blinded_messages, _premint) =
-        create_test_blinded_messages(std::sync::Arc::clone(&mint), Amount::from(3_000))
+        create_test_blinded_messages(Arc::clone(&mint), Amount::from(3_000))
             .await
             .unwrap();
 
@@ -862,11 +823,7 @@ async fn test_compensation_removes_change_outputs() {
 
     // STEP 4: Setup melt saga (this stores blinded messages)
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -932,7 +889,7 @@ async fn test_compensation_removes_change_outputs() {
 #[tokio::test]
 async fn test_compensation_resets_quote_state() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
 
@@ -947,11 +904,7 @@ async fn test_compensation_resets_quote_state() {
 
     // STEP 2: Setup melt saga (this changes quote state to PENDING)
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -1006,11 +959,7 @@ async fn test_compensation_resets_quote_state() {
     let new_request = create_test_melt_request(&new_proofs, &recovered_quote);
 
     let new_verification = mint.verify_inputs(new_request.inputs()).await.unwrap();
-    let new_saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let new_saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let _new_setup = new_saga
         .setup_melt(
             &new_request,
@@ -1031,7 +980,7 @@ async fn test_compensation_resets_quote_state() {
 #[tokio::test]
 async fn test_compensation_idempotent() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
     let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
@@ -1039,11 +988,7 @@ async fn test_compensation_idempotent() {
 
     // STEP 2: Setup melt saga
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -1124,7 +1069,7 @@ async fn test_saga_deleted_after_payment_failure() {
     use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
 
@@ -1161,11 +1106,7 @@ async fn test_saga_deleted_after_payment_failure() {
 
     // STEP 3: Setup melt saga
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -1229,7 +1170,7 @@ async fn test_saga_deleted_after_payment_failure() {
 #[tokio::test]
 async fn test_saga_content_validation() {
     // STEP 1: Setup test environment with known data
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // Create proofs with specific amount
     let proof_amount = Amount::from(10_000);
@@ -1245,11 +1186,7 @@ async fn test_saga_content_validation() {
 
     // STEP 2: Setup melt saga
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -1365,18 +1302,14 @@ async fn test_saga_content_validation() {
 #[tokio::test]
 async fn test_saga_state_updates_timestamp() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     // STEP 2: Setup melt saga and note timestamps
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -1434,7 +1367,7 @@ async fn test_get_incomplete_sagas_filters_by_kind() {
     use crate::test_helpers::mint::create_test_blinded_messages;
 
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create a melt saga
     let melt_proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
@@ -1442,11 +1375,7 @@ async fn test_get_incomplete_sagas_filters_by_kind() {
     let melt_request = create_test_melt_request(&melt_proofs, &melt_quote);
 
     let melt_verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let melt_saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let melt_saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let melt_setup = melt_saga
         .setup_melt(
             &melt_request,
@@ -1464,10 +1393,9 @@ async fn test_get_incomplete_sagas_filters_by_kind() {
         amount: Amount::from(5_000).with_unit(cdk_common::nuts::CurrencyUnit::Sat),
     };
 
-    let (swap_outputs, _) =
-        create_test_blinded_messages(std::sync::Arc::clone(&mint), Amount::from(5_000))
-            .await
-            .unwrap();
+    let (swap_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), Amount::from(5_000))
+        .await
+        .unwrap();
 
     let swap_saga = SwapSaga::new(&mint, mint.localstore(), mint.pubsub_manager());
     let _swap_setup = swap_saga
@@ -1537,7 +1465,7 @@ async fn test_get_incomplete_sagas_empty() {
 #[tokio::test]
 async fn test_concurrent_melt_operations() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create 5 sets of proofs and quotes concurrently
     // Using same amount for each to avoid FakeWallet limit issues
@@ -1565,7 +1493,7 @@ async fn test_concurrent_melt_operations() {
     let mut setup_tasks = Vec::new();
 
     for (proofs, quote) in proof_quote_pairs {
-        let mint_clone = std::sync::Arc::clone(&mint);
+        let mint_clone = Arc::clone(&mint);
         let task = tokio::spawn(async move {
             let melt_request = create_test_melt_request(&proofs, &quote);
             let verification = mint_clone
@@ -1573,7 +1501,7 @@ async fn test_concurrent_melt_operations() {
                 .await
                 .unwrap();
             let saga = MeltSaga::new(
-                std::sync::Arc::clone(&mint_clone),
+                Arc::clone(&mint_clone),
                 mint_clone.localstore(),
                 mint_clone.pubsub_manager(),
             );
@@ -1630,7 +1558,7 @@ async fn test_concurrent_melt_operations() {
 #[tokio::test]
 async fn test_concurrent_recovery_and_operations() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create incomplete saga
     let proofs1 = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
@@ -1638,11 +1566,7 @@ async fn test_concurrent_recovery_and_operations() {
     let melt_request1 = create_test_melt_request(&proofs1, &quote1);
 
     let verification1 = mint.verify_inputs(melt_request1.inputs()).await.unwrap();
-    let saga1 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga1 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga1 = saga1
         .setup_melt(
             &melt_request1,
@@ -1668,7 +1592,7 @@ async fn test_concurrent_recovery_and_operations() {
             .expect("Recovery should succeed")
     });
 
-    let mint_for_new_op = std::sync::Arc::clone(&mint);
+    let mint_for_new_op = Arc::clone(&mint);
     let new_operation_task = tokio::spawn(async move {
         let proofs2 = mint_test_proofs(&mint_for_new_op, Amount::from(10_000))
             .await
@@ -1681,7 +1605,7 @@ async fn test_concurrent_recovery_and_operations() {
             .await
             .unwrap();
         let saga2 = MeltSaga::new(
-            std::sync::Arc::clone(&mint_for_new_op),
+            Arc::clone(&mint_for_new_op),
             mint_for_new_op.localstore(),
             mint_for_new_op.pubsub_manager(),
         );
@@ -1719,7 +1643,7 @@ async fn test_concurrent_recovery_and_operations() {
 #[tokio::test]
 async fn test_double_spend_detection() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
 
     // STEP 2: Setup first melt saga with proofs
@@ -1727,11 +1651,7 @@ async fn test_double_spend_detection() {
     let melt_request1 = create_test_melt_request(&proofs, &quote1);
 
     let verification1 = mint.verify_inputs(melt_request1.inputs()).await.unwrap();
-    let saga1 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga1 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let _setup_saga1 = saga1
         .setup_melt(
             &melt_request1,
@@ -1752,11 +1672,7 @@ async fn test_double_spend_detection() {
     // STEP 4: verify_inputs succeeds (only checks signatures)
     // but setup_melt should fail (checks proof states)
     let verification2 = mint.verify_inputs(melt_request2.inputs()).await.unwrap();
-    let saga2 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga2 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_result2 = saga2
         .setup_melt(
             &melt_request2,
@@ -1796,7 +1712,7 @@ async fn test_double_spend_detection() {
 #[tokio::test]
 async fn test_insufficient_funds() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create proofs
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
@@ -1808,11 +1724,7 @@ async fn test_insufficient_funds() {
     // STEP 4: Setup a normal melt (this should succeed with sufficient funds)
     let melt_request = create_test_melt_request(&proofs, &quote);
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_result = saga
         .setup_melt(
             &melt_request,
@@ -1842,7 +1754,7 @@ async fn test_insufficient_funds() {
 #[tokio::test]
 async fn test_invalid_quote_id() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
 
     // STEP 2: Create a melt request with non-existent quote ID
@@ -1857,11 +1769,7 @@ async fn test_invalid_quote_id() {
 
     // Verification might succeed (just checks signatures) or fail (if database issues)
     if let Ok(verification) = verification_result {
-        let saga = MeltSaga::new(
-            std::sync::Arc::clone(&mint),
-            mint.localstore(),
-            mint.pubsub_manager(),
-        );
+        let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
         let setup_result = saga
             .setup_melt(
                 &melt_request,
@@ -1902,7 +1810,7 @@ async fn test_invalid_quote_id() {
 #[tokio::test]
 async fn test_quote_already_paid() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create and complete a full melt operation
     let proofs1 = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
@@ -1911,11 +1819,7 @@ async fn test_quote_already_paid() {
 
     // Complete the full melt flow
     let verification1 = mint.verify_inputs(melt_request1.inputs()).await.unwrap();
-    let saga1 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga1 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga1 = saga1
         .setup_melt(
             &melt_request1,
@@ -1951,11 +1855,7 @@ async fn test_quote_already_paid() {
     let melt_request2 = create_test_melt_request(&proofs2, &paid_quote);
 
     let verification2 = mint.verify_inputs(melt_request2.inputs()).await.unwrap();
-    let saga2 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga2 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_result2 = saga2
         .setup_melt(
             &melt_request2,
@@ -1988,7 +1888,7 @@ async fn test_quote_already_paid() {
 #[tokio::test]
 async fn test_quote_already_pending() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Setup first melt saga (this puts quote in PENDING state)
     let proofs1 = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
@@ -1996,11 +1896,7 @@ async fn test_quote_already_pending() {
     let melt_request1 = create_test_melt_request(&proofs1, &quote);
 
     let verification1 = mint.verify_inputs(melt_request1.inputs()).await.unwrap();
-    let saga1 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga1 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let _setup_saga1 = saga1
         .setup_melt(
             &melt_request1,
@@ -2028,11 +1924,7 @@ async fn test_quote_already_pending() {
     let melt_request2 = create_test_melt_request(&proofs2, &pending_quote);
 
     let verification2 = mint.verify_inputs(melt_request2.inputs()).await.unwrap();
-    let saga2 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga2 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_result2 = saga2
         .setup_melt(
             &melt_request2,
@@ -2069,7 +1961,7 @@ async fn test_quote_already_pending() {
 #[tokio::test]
 async fn test_empty_inputs() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create a melt request with empty proofs
     use cdk_common::nuts::{MeltRequest, Proofs};
@@ -2124,7 +2016,7 @@ async fn test_recovery_empty_input_ys() {
 #[tokio::test]
 async fn test_recovery_no_melt_request() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // Create proofs that exactly match the quote amount (no change needed)
     let amount = Amount::from(10_000);
@@ -2140,11 +2032,7 @@ async fn test_recovery_no_melt_request() {
 
     // STEP 2: Create incomplete saga
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -2188,7 +2076,7 @@ async fn test_recovery_no_melt_request() {
 #[tokio::test]
 async fn test_recovery_order_on_startup() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create incomplete saga with a pending quote
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
@@ -2196,11 +2084,7 @@ async fn test_recovery_order_on_startup() {
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -2263,11 +2147,7 @@ async fn test_recovery_order_on_startup() {
     let new_request = create_test_melt_request(&new_proofs, &recovered_quote);
 
     let new_verification = mint.verify_inputs(new_request.inputs()).await.unwrap();
-    let new_saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let new_saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let _new_setup = new_saga
         .setup_melt(
             &new_request,
@@ -2287,7 +2167,7 @@ async fn test_recovery_order_on_startup() {
 #[tokio::test]
 async fn test_no_duplicate_recovery() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create incomplete saga with pending quote
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
@@ -2295,11 +2175,7 @@ async fn test_no_duplicate_recovery() {
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -2365,7 +2241,7 @@ async fn test_no_duplicate_recovery() {
 #[tokio::test]
 async fn test_operation_id_uniqueness_and_tracking() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create 10 sagas and collect their operation IDs
     // Using same amount for each to avoid FakeWallet limit issues
@@ -2377,11 +2253,7 @@ async fn test_operation_id_uniqueness_and_tracking() {
         let melt_request = create_test_melt_request(&proofs, &quote);
 
         let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-        let saga = MeltSaga::new(
-            std::sync::Arc::clone(&mint),
-            mint.localstore(),
-            mint.pubsub_manager(),
-        );
+        let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
         let setup_saga = saga
             .setup_melt(
                 &melt_request,
@@ -2429,18 +2301,14 @@ async fn test_operation_id_uniqueness_and_tracking() {
 #[tokio::test]
 async fn test_saga_drop_without_finalize() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     // STEP 2: Setup saga
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -2470,7 +2338,7 @@ async fn test_saga_drop_without_finalize() {
 #[tokio::test]
 async fn test_saga_drop_after_payment() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
     let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
@@ -2478,11 +2346,7 @@ async fn test_saga_drop_after_payment() {
 
     // STEP 2: Setup saga and make payment
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -2558,7 +2422,7 @@ async fn test_saga_drop_after_payment() {
 #[tokio::test]
 async fn test_payment_attempted_state_triggers_ln_check() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
     let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
@@ -2566,11 +2430,7 @@ async fn test_payment_attempted_state_triggers_ln_check() {
 
     // STEP 2: Setup saga and make payment
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -2652,7 +2512,7 @@ async fn test_payment_attempted_state_triggers_ln_check() {
 #[tokio::test]
 async fn test_setup_complete_state_compensates() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
     let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
@@ -2660,11 +2520,7 @@ async fn test_setup_complete_state_compensates() {
 
     // STEP 2: Setup saga but don't make payment
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,
@@ -2864,7 +2720,7 @@ async fn test_duplicate_lookup_id_prevents_second_pending() {
     use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // Create a fake invoice description
     let fake_description = FakeInvoiceDescription {
@@ -2928,11 +2784,7 @@ async fn test_duplicate_lookup_id_prevents_second_pending() {
     let melt_request1 = create_test_melt_request(&proofs1, &quote1);
 
     let verification1 = mint.verify_inputs(melt_request1.inputs()).await.unwrap();
-    let saga1 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga1 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga1 = saga1
         .setup_melt(
             &melt_request1,
@@ -2974,11 +2826,7 @@ async fn test_duplicate_lookup_id_prevents_second_pending() {
     let melt_request2 = create_test_melt_request(&proofs2, &quote2);
 
     let verification2 = mint.verify_inputs(melt_request2.inputs()).await.unwrap();
-    let saga2 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga2 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_result2 = saga2
         .setup_melt(
             &melt_request2,
@@ -3033,7 +2881,7 @@ async fn test_paid_lookup_id_prevents_pending() {
     use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // Create a fake invoice description
     let fake_description = FakeInvoiceDescription {
@@ -3090,11 +2938,7 @@ async fn test_paid_lookup_id_prevents_pending() {
     let melt_request1 = create_test_melt_request(&proofs1, &quote1);
 
     let verification1 = mint.verify_inputs(melt_request1.inputs()).await.unwrap();
-    let saga1 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga1 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga1 = saga1
         .setup_melt(
             &melt_request1,
@@ -3130,11 +2974,7 @@ async fn test_paid_lookup_id_prevents_pending() {
     let melt_request2 = create_test_melt_request(&proofs2, &quote2);
 
     let verification2 = mint.verify_inputs(melt_request2.inputs()).await.unwrap();
-    let saga2 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga2 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let setup_result2 = saga2
         .setup_melt(
             &melt_request2,
@@ -3170,7 +3010,7 @@ async fn test_paid_lookup_id_prevents_pending() {
 #[tokio::test]
 async fn test_different_lookup_ids_allow_concurrent_pending() {
     // STEP 1: Setup test environment
-    let mint = create_test_mint().await.unwrap();
+    let mint = Arc::new(create_test_mint().await.unwrap());
 
     // STEP 2: Create two quotes with different lookup_ids (different invoices)
     let quote1 = create_test_melt_quote(&mint, Amount::from(9_000)).await;
@@ -3187,11 +3027,7 @@ async fn test_different_lookup_ids_allow_concurrent_pending() {
     let melt_request1 = create_test_melt_request(&proofs1, &quote1);
 
     let verification1 = mint.verify_inputs(melt_request1.inputs()).await.unwrap();
-    let saga1 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga1 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let _setup_saga1 = saga1
         .setup_melt(
             &melt_request1,
@@ -3206,11 +3042,7 @@ async fn test_different_lookup_ids_allow_concurrent_pending() {
     let melt_request2 = create_test_melt_request(&proofs2, &quote2);
 
     let verification2 = mint.verify_inputs(melt_request2.inputs()).await.unwrap();
-    let saga2 = MeltSaga::new(
-        std::sync::Arc::clone(&mint),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga2 = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
     let _setup_saga2 = saga2
         .setup_melt(
             &melt_request2,
