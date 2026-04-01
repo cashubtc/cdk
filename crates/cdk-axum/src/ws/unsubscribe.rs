@@ -6,7 +6,8 @@ pub(crate) async fn handle(
     context: &mut WsContext,
     req: WsUnsubscribeRequest,
 ) -> Result<WsResponseResult, WsError> {
-    if context.subscriptions.remove(&req.sub_id).is_some() {
+    if let Some(handle) = context.subscriptions.remove(&req.sub_id) {
+        handle.abort();
         Ok(WsUnsubscribeResponse {
             status: "OK".to_string(),
             sub_id: req.sub_id,
