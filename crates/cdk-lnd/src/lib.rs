@@ -467,12 +467,13 @@ impl MintPayment for Lnd {
                                     .map_err(Error::LndError)?
                                     .into_inner();
 
-                                // update its MPP record,
+                                // Get first route and update its MPP record
+                                let route =
+                                    routes_response.routes.first_mut().ok_or(Error::NoRoute)?;
+
                                 // attempt it and check the result
-                                let last_hop: &mut Hop = routes_response.routes[0]
-                                    .hops
-                                    .last_mut()
-                                    .ok_or(Error::MissingLastHop)?;
+                                let last_hop: &mut Hop =
+                                    route.hops.last_mut().ok_or(Error::MissingLastHop)?;
                                 let mpp_record = MppRecord {
                                     payment_addr: payer_addr.clone(),
                                     total_amt_msat: amount_msat as i64,
@@ -483,7 +484,7 @@ impl MintPayment for Lnd {
                                     .router()
                                     .send_to_route_v2(routerrpc::SendToRouteRequest {
                                         payment_hash: payment_hash.to_byte_array().to_vec(),
-                                        route: Some(routes_response.routes[0].clone()),
+                                        route: Some(route.clone()),
                                         ..Default::default()
                                     })
                                     .await
