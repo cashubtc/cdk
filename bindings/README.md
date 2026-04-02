@@ -50,6 +50,7 @@ own `uniffi.toml` controlling language-specific code generation.
 |----------|-----------|--------|-------|------|
 | **Dart** | `bindings/dart/` | Active | `just binding-dart` | `just test-dart` |
 | **Swift** | `bindings/swift/` | Active | `just binding-swift` | `just test-swift` |
+| **React Native** | `bindings/react-native/` | Active | `just binding-react-native` | `just test-react-native` |
 
 ### Dart
 
@@ -69,13 +70,21 @@ own `uniffi.toml` controlling language-specific code generation.
 - `Package.swift` is generated at the repo root by `generate-bindings.sh`
 - Swift sources are generated into `bindings/swift/Sources/Cdk/`
 
+### React Native
+
+- **Package name:** `@cashudevkit/cdk-react-native`
+- **Rust crate:** `cdk-ffi-react-native`
+- **Binding generator:** [uniffi-bindgen-react-native][uniffi-rn] v0.30.0-1
+- Uses `ubrn` CLI to build iOS/Android native libraries and generate TypeScript bindings
+- Generated TypeScript sources go into `bindings/react-native/src/generated/`
+- React Native Turbo Module architecture (New Architecture)
+
 ## Planned targets
 
 | Language | Status | Notes |
 |----------|--------|-------|
 | **Kotlin** | Configured | UniFFI config exists in `crates/cdk-ffi/uniffi.toml` (package: `org.cashudevkit`) |
 | **Python** | Configured | UniFFI config exists in `crates/cdk-ffi/uniffi.toml` |
-| **React Native** | Planned | — |
 
 Kotlin and Python already have UniFFI configuration in the core FFI crate. Adding
 a new language binding involves creating a `bindings/<lang>/` directory with a
@@ -93,6 +102,10 @@ just test-dart       # Run tests
 # Swift (macOS only)
 just binding-swift   # Build XCFramework + generate bindings
 just test-swift      # Run tests
+
+# React Native
+just binding-react-native  # Build native libs + generate TS bindings
+just test-react-native     # Run Jest tests
 ```
 
 ## Credits
@@ -107,3 +120,4 @@ just test-swift      # Run tests
 [bark]: https://gitlab.com/ark-bitcoin/bark-ffi-bindings
 [uniffi]: https://github.com/mozilla/uniffi-rs
 [uniffi-dart]: https://github.com/Uniffi-Dart/uniffi-dart
+[uniffi-rn]: https://github.com/jhugman/uniffi-bindgen-react-native

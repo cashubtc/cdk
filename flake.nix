@@ -89,6 +89,10 @@
         # Dependencies
         pkgs = import nixpkgs {
           inherit system overlays;
+          config = {
+            android_sdk.accept_license = true;
+            allowUnfree = true;
+          };
         };
 
         pkgsUnstable = import nixpkgs-unstable {
@@ -97,6 +101,14 @@
 
         # Dart SDK from dart-overlay
         dartpkgs = dart-overlay.packages.${system};
+
+        # Android SDK/NDK for React Native builds
+        androidSdk = pkgs.androidenv.composeAndroidPackages {
+          includeNDK = true;
+          ndkVersions = [ "27.0.12077973" ];
+          platformVersions = [ "34" ];
+          buildToolsVersions = [ "34.0.0" ];
+        };
 
         # Static/musl packages for fully static binary builds (Linux only)
         pkgsMusl =
@@ -122,6 +134,11 @@
             "aarch64-apple-ios-sim"
             "aarch64-apple-darwin"
             "x86_64-apple-darwin"
+            # Android (React Native)
+            "aarch64-linux-android"
+            "armv7-linux-androideabi"
+            "x86_64-linux-android"
+            "i686-linux-android"
           ];
           extensions = [
             "rustfmt"
@@ -235,7 +252,11 @@
               ./.cargo
               ./crates
               ./fuzz
-              ./bindings
+              (lib.fileset.maybeMissing ./bindings/dart)
+              (lib.fileset.maybeMissing ./bindings/swift)
+              (lib.fileset.maybeMissing ./bindings/kotlin)
+              (lib.fileset.maybeMissing ./bindings/wasm)
+              (lib.fileset.maybeMissing ./bindings/react-native/rust)
             ]
           );
         };
@@ -286,6 +307,11 @@
           src = srcMsrv;
           cargoLock = ./Cargo.lock.msrv;
           cargoVendorDir = cargoVendorDirMsrv;
+          # Remove node-addon from workspace members - it depends on napi which
+          # is not available in the MSRV vendored deps
+          postPatch = ''
+            sed -i '/bindings\/react-native\/node-addon/d' Cargo.toml
+          '';
         };
 
         # Musl-targeting C compiler for crates that compile bundled C code
@@ -362,7 +388,7 @@
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin";
+            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-ffi-react-native --exclude cdk-node-test-addon";
           }
         );
 
@@ -539,6 +565,20 @@
         # Language binding derivations (cached by Cachix)
         # ========================================
 
+        # uniffi-bindgen-react-native tool (built from GitHub source)
+        ubrnTool = pkgs.rustPlatform.buildRustPackage {
+          pname = "uniffi-bindgen-react-native";
+          version = "0.30.0-1";
+          src = pkgs.fetchFromGitHub {
+            owner = "jhugman";
+            repo = "uniffi-bindgen-react-native";
+            rev = "21702c20a277a622776505744b67d83fc0f48c8a";
+            hash = "sha256-Y1R5NDfo9yh+GYNHk9oynqVVTDIZ6AWf/GTBNdSnm1E=";
+          };
+          cargoHash = "sha256-Q1/Y3YDmuGBYGJdvsYqU7ntEz0R3FwL00EKbKM8eem8=";
+          doCheck = false;
+        };
+
         # Dart FFI bindings: builds cdk-ffi-dart cdylib + generates Dart source
         dartBindings = craneLib.mkCargoDerivation (
           commonCraneArgs
@@ -611,6 +651,50 @@
 
               # Strip debug symbols
               strip -x "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT" 2>/dev/null || true
+            '';
+          }
+        );
+
+        # React Native bindings: builds cdk-ffi-react-native cdylib + generates C++/TypeScript
+        reactNativeBindings = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-react-native-bindings";
+            cargoArtifacts = workspaceDeps;
+            nativeBuildInputs = (commonCraneArgs.nativeBuildInputs or [ ]) ++ [
+              ubrnTool
+            ];
+            buildPhaseCargoCommand = ''
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+
+              # Build the React Native FFI cdylib for host target
+              cargo build --release -p cdk-ffi-react-native --target "${hostTarget}"
+
+              # Generate C++ and TypeScript bindings via uniffi-bindgen-react-native
+              uniffi-bindgen-react-native generate jsi bindings \
+                --library \
+                --ts-dir target/rn-bindings/ts \
+                --cpp-dir target/rn-bindings/cpp \
+                --no-format \
+                "target/${hostTarget}/release/libcdk_ffi_react_native.$LIB_EXT"
+            '';
+            installPhaseCommand = ''
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+
+              mkdir -p $out/lib $out/ts $out/cpp
+
+              # Copy native library
+              cp "target/${hostTarget}/release/libcdk_ffi_react_native.$LIB_EXT" \
+                "$out/lib/"
+
+              # Copy generated TypeScript bindings
+              cp -r target/rn-bindings/ts/* $out/ts/ 2>/dev/null || true
+
+              # Copy generated C++ bindings
+              cp -r target/rn-bindings/cpp/* $out/cpp/ 2>/dev/null || true
+
+              # Strip debug symbols
+              strip -x "$out/lib/libcdk_ffi_react_native.$LIB_EXT" 2>/dev/null || true
             '';
           }
         );
@@ -1069,6 +1153,7 @@
           # Language bindings (cached cdylib + uniffi codegen)
           dart-bindings = dartBindings;
           kotlin-bindings = kotlinBindings;
+          react-native-bindings = reactNativeBindings;
         }
         # Static build deps (Linux only)
         // lib.optionalAttrs (muslTarget != null) {
@@ -1315,7 +1400,7 @@
               // envVars
             );
 
-            # Shell for bindings development (Dart + Swift + Kotlin FFI)
+            # Shell for bindings development (Dart + Swift + Kotlin + React Native FFI)
             bindings = pkgs.mkShell (
               {
                 shellHook = commonShellHook;
@@ -1325,6 +1410,10 @@
                   dartpkgs.default
                   pkgs.openssl
                   pkgs.jdk17
+                  # React Native
+                  pkgs.nodejs
+                  pkgs.cargo-ndk
+                  androidSdk.androidsdk
                 ];
                 nativeBuildInputs = [
                   pkgs.pkg-config
@@ -1332,6 +1421,7 @@
                 OPENSSL_DIR = "${pkgs.openssl.dev}";
                 OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
                 OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
+                ANDROID_NDK_HOME = "${androidSdk.androidsdk}/libexec/android-sdk/ndk/27.0.12077973";
               }
               // envVars
             );

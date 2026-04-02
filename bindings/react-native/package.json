@@ -1,0 +1,136 @@
+{
+  "name": "@cashudevkit/cdk-react-native",
+  "version": "0.16.0",
+  "description": "CDK FFI bindings for React Native",
+  "source": "./src/index.tsx",
+  "main": "./lib/commonjs/index.js",
+  "module": "./lib/module/index.js",
+  "types": "./lib/typescript/module/src/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./lib/typescript/module/src/index.d.ts",
+        "default": "./lib/module/index.js"
+      },
+      "require": {
+        "types": "./lib/typescript/commonjs/src/index.d.ts",
+        "default": "./lib/commonjs/index.js"
+      }
+    }
+  },
+  "files": [
+    "src",
+    "lib",
+    "android",
+    "ios",
+    "cpp",
+    "*.podspec",
+    "react-native.config.js",
+    "!ios/build",
+    "!android/build",
+    "!android/gradle",
+    "!android/gradlew",
+    "!android/gradlew.bat",
+    "!android/local.properties",
+    "!**/__tests__",
+    "!**/__fixtures__",
+    "!**/__mocks__",
+    "!**/.*",
+    "LICENSE"
+  ],
+  "scripts": {
+    "ubrn:ios": "ubrn build ios --release --config ubrn.config.yaml --and-generate",
+    "ubrn:android": "ubrn build android --release --config ubrn.config.yaml --and-generate",
+    "ubrn:checkout": "ubrn checkout",
+    "ubrn:clean": "rm -rfv cpp/ android/CMakeLists.txt android/src/main/java 'android/*.cpp' ios/ 'src/Native*' 'src/index.*ts*' src/generated/",
+    "typecheck": "tsc",
+    "prepare": "bob build",
+    "build:test-addon": "cd node-addon && npx @napi-rs/cli build --release",
+    "test": "npx jest"
+  },
+  "keywords": [
+    "cashu",
+    "cdk",
+    "react-native",
+    "ios",
+    "android"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cashubtc/cdk.git"
+  },
+  "author": {
+    "name": "CDK Contributors",
+    "url": "https://github.com/cashubtc/cdk"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/cashubtc/cdk/issues"
+  },
+  "homepage": "https://github.com/cashubtc/cdk#readme",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "dependencies": {
+    "uniffi-bindgen-react-native": "0.30.0-1"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.0",
+    "@types/jest": "^29.5.0",
+    "@types/react": "^18.2.44",
+    "jest": "^29.7.0",
+    "react": "^18.2.0",
+    "react-native": "0.76.9",
+    "react-native-builder-bob": "^0.40.17",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.2.2"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*"
+  },
+  "react-native-builder-bob": {
+    "source": "src",
+    "output": "lib",
+    "exclude": "rust_modules/**",
+    "targets": [
+      [
+        "commonjs",
+        {
+          "esm": true
+        }
+      ],
+      [
+        "module",
+        {
+          "esm": true
+        }
+      ],
+      [
+        "typescript",
+        {
+          "project": "tsconfig.build.json"
+        }
+      ]
+    ]
+  },
+  "codegenConfig": {
+    "name": "RNCdkReactNativeSpec",
+    "type": "all",
+    "jsSrcsDir": "src",
+    "outputDir": {
+      "ios": "ios/generated",
+      "android": "android/generated"
+    },
+    "android": {
+      "javaPackageName": "com.cdkreactnative"
+    },
+    "includesGeneratedCode": false
+  },
+  "create-react-native-library": {
+    "type": "turbo-module",
+    "languages": "cpp",
+    "version": "0.49.0"
+  }
+}
