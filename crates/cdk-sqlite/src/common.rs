@@ -69,7 +69,7 @@ impl DatabasePool for SqliteConnectionManager {
             r#"
             pragma busy_timeout = 10000;
             pragma journal_mode = WAL;
-            pragma synchronous = normal;
+            pragma synchronous = FULL;
             pragma temp_store = memory;
             pragma mmap_size = 5242880;
             pragma cache = shared;
