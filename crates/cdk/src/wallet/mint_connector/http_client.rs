@@ -279,7 +279,7 @@ where
                     self.transport.http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Bolt12(response))
             }
-            MintQuoteRequest::Custom(req) => {
+            MintQuoteRequest::Custom((_method, req)) => {
                 let response: cdk_common::nut04::MintQuoteCustomResponse<String> =
                     self.transport.http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Custom((request.method(), response)))
@@ -683,5 +683,157 @@ where
         self.transport
             .http_post(url, Some(self.cat.read().await.clone()), &request)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt;
+    use std::str::FromStr;
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use serde::de::DeserializeOwned;
+
+    use super::*;
+    use crate::nuts::nut04::MintQuoteCustomRequest;
+
+    /// A mock transport that captures the serialized POST payload and returns
+    /// a canned JSON response. Follows the same canned-response pattern as
+    /// `MockMintConnector` in `wallet/test_utils.rs`.
+    #[derive(Clone, Default)]
+    struct MockTransport {
+        /// The last payload serialized by `http_post`, captured as JSON.
+        captured_payload: Arc<Mutex<Option<serde_json::Value>>>,
+        /// Canned JSON string returned by `http_post`.
+        post_response: Arc<Mutex<Option<String>>>,
+    }
+
+    impl fmt::Debug for MockTransport {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("MockTransport").finish()
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    impl Transport for MockTransport {
+        #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+        async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
+            unimplemented!()
+        }
+
+        fn with_proxy(
+            &mut self,
+            _proxy: Url,
+            _host_matcher: Option<&str>,
+            _accept_invalid_certs: bool,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn http_get<R>(&self, _url: Url, _auth: Option<AuthToken>) -> Result<R, Error>
+        where
+            R: DeserializeOwned,
+        {
+            unimplemented!()
+        }
+
+        async fn http_post<P, R>(
+            &self,
+            _url: Url,
+            _auth_token: Option<AuthToken>,
+            payload: &P,
+        ) -> Result<R, Error>
+        where
+            P: serde::Serialize + ?Sized + Send + Sync,
+            R: DeserializeOwned,
+        {
+            // Capture the serialized payload for test assertions
+            let value = serde_json::to_value(payload).map_err(|e| Error::Custom(e.to_string()))?;
+            *self.captured_payload.lock().expect("lock") = Some(value);
+
+            // Return the canned response
+            let json = self
+                .post_response
+                .lock()
+                .expect("lock")
+                .clone()
+                .expect("no mock response set");
+            serde_json::from_str(&json).map_err(|e| Error::Custom(e.to_string()))
+        }
+    }
+
+    /// Regression test: `post_mint_quote` must send only the
+    /// `MintQuoteCustomRequest` as the JSON body for custom payment methods,
+    /// not the `(PaymentMethod, MintQuoteCustomRequest)` tuple which
+    /// serializes as a JSON array.
+    #[tokio::test]
+    async fn test_post_mint_quote_custom_sends_request_object() {
+        use cdk_common::nuts::nut23::QuoteState;
+
+        // Build a canned MintQuoteCustomResponse<String> for the mock
+        let canned_response = MintQuoteCustomResponse::<String> {
+            quote: "test-quote-id".to_string(),
+            request: "paypal://pay?id=123".to_string(),
+            amount: Some(cdk_common::Amount::from(1000)),
+            unit: Some(cdk_common::CurrencyUnit::Sat),
+            state: QuoteState::Unpaid,
+            expiry: Some(9999999),
+            pubkey: None,
+            extra: serde_json::Value::Null,
+        };
+        let canned_json = serde_json::to_string(&canned_response).expect("serialize response");
+
+        let transport = MockTransport {
+            captured_payload: Arc::new(Mutex::new(None)),
+            post_response: Arc::new(Mutex::new(Some(canned_json))),
+        };
+        let captured = transport.captured_payload.clone();
+
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+
+        let request = MintQuoteRequest::Custom((
+            PaymentMethod::Custom("paypal".to_string()),
+            MintQuoteCustomRequest {
+                amount: cdk_common::Amount::from(1000),
+                unit: cdk_common::CurrencyUnit::Sat,
+                description: None,
+                pubkey: None,
+                extra: serde_json::Value::Null,
+            },
+        ));
+
+        let result = client.post_mint_quote(request).await;
+        assert!(
+            result.is_ok(),
+            "post_mint_quote should succeed: {:?}",
+            result.err()
+        );
+
+        // Verify the payload sent to the transport was a JSON object (not an array)
+        let payload = captured
+            .lock()
+            .expect("lock")
+            .clone()
+            .expect("payload was captured");
+        assert!(
+            payload.is_object(),
+            "Custom mint quote body sent to transport must be a JSON object, got: {payload}"
+        );
+
+        // Verify the payload deserializes as MintQuoteCustomRequest
+        let parsed: Result<MintQuoteCustomRequest, _> = serde_json::from_value(payload.clone());
+        assert!(
+            parsed.is_ok(),
+            "Transport payload must deserialize as MintQuoteCustomRequest: {:?}",
+            parsed.err()
+        );
+
+        // Verify the actual field values round-tripped correctly
+        let parsed = parsed.expect("already checked");
+        assert_eq!(parsed.amount, cdk_common::Amount::from(1000));
+        assert_eq!(parsed.unit, cdk_common::CurrencyUnit::Sat);
     }
 }
