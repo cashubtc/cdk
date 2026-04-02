@@ -30,6 +30,9 @@ pub enum Error {
     /// Missing last hop in route
     #[error("LND missing last hop in route")]
     MissingLastHop,
+    /// No route found
+    #[error("No route found")]
+    NoRoute,
     /// Amount overflow
     #[error("Amount overflow")]
     AmountOverflow,
