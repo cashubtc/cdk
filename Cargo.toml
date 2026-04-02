@@ -3,6 +3,7 @@ members = [
     "crates/*",
     "bindings/dart/rust",
     "bindings/swift/rust",
+    "bindings/kotlin/rust",
 ]
 exclude = [
     "fuzz",

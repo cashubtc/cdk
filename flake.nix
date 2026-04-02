@@ -58,6 +58,15 @@
             "aarch64-darwin" = "aarch64-apple-darwin";
           }.${system} or null;
 
+        # Rust host target triple (used by binding derivations)
+        hostTarget =
+          {
+            "x86_64-linux" = "x86_64-unknown-linux-gnu";
+            "aarch64-linux" = "aarch64-unknown-linux-gnu";
+            "x86_64-darwin" = "x86_64-apple-darwin";
+            "aarch64-darwin" = "aarch64-apple-darwin";
+          }.${system};
+
         cargoTargetEnvName =
           {
             "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER";
@@ -353,7 +362,7 @@
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift";
+            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin";
           }
         );
 
@@ -523,6 +532,86 @@
               python3 crates/cdk-ffi/tests/test_kvstore.py
             '';
             installPhaseCommand = "mkdir -p $out";
+          }
+        );
+
+        # ========================================
+        # Language binding derivations (cached by Cachix)
+        # ========================================
+
+        # Dart FFI bindings: builds cdk-ffi-dart cdylib + generates Dart source
+        dartBindings = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-dart-bindings";
+            cargoArtifacts = workspaceDeps;
+            buildPhaseCargoCommand = ''
+              # Build the Dart FFI cdylib
+              cargo build --release -p cdk-ffi-dart
+
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+
+              # Find the cdk-ffi-dart shared library in deps (contains UniFFI metadata)
+              CDK_FFI_LIB="target/release/deps/libcdk_ffi_dart.$LIB_EXT"
+
+              if [ ! -f "$CDK_FFI_LIB" ]; then
+                echo "ERROR: Could not find $CDK_FFI_LIB"
+                ls -la target/release/deps/libcdk_ffi* || true
+                exit 1
+              fi
+
+              echo "Using library: $CDK_FFI_LIB"
+
+              # Generate Dart bindings via the custom uniffi-bindgen binary
+              # Must run from bindings/dart/rust/ so it finds uniffi.toml
+              (cd bindings/dart/rust && \
+                cargo run --release -p cdk-ffi-dart --bin uniffi-bindgen -- \
+                  "../../../$CDK_FFI_LIB" --out-dir ../../../target/dart-bindings)
+            '';
+            installPhaseCommand = ''
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+              mkdir -p $out/lib/src/generated
+              cp target/dart-bindings/*.dart $out/lib/src/generated/
+              cp target/release/libcdk_ffi_dart.$LIB_EXT $out/lib/src/generated/
+            '';
+          }
+        );
+
+        # Kotlin JVM bindings: builds cdk-ffi-kotlin cdylib + generates Kotlin sources
+        kotlinBindings = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-kotlin-bindings";
+            cargoArtifacts = workspaceDeps;
+            buildPhaseCargoCommand = ''
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+
+              # Build for host target
+              cargo build --release -p cdk-ffi-kotlin --target "${hostTarget}"
+
+              # Generate Kotlin bindings
+              cargo run --release -p cdk-ffi-kotlin --bin uniffi-bindgen -- generate \
+                --library "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+                --language kotlin \
+                --out-dir target/kotlin-bindings \
+                --no-format
+            '';
+            installPhaseCommand = ''
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+
+              mkdir -p $out/cdk-jvm/src/main/kotlin
+              mkdir -p $out/cdk-jvm/src/main/resources
+
+              # Copy generated Kotlin sources
+              cp -r target/kotlin-bindings/org $out/cdk-jvm/src/main/kotlin/
+
+              # Copy native library (renamed to libcdk_ffi for JNA convention)
+              cp "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+                "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT"
+
+              # Strip debug symbols
+              strip -x "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT" 2>/dev/null || true
+            '';
           }
         );
 
@@ -977,6 +1066,9 @@
         packages = {
           deps = workspaceDeps;
           deps-msrv = workspaceDepsMsrv;
+          # Language bindings (cached cdylib + uniffi codegen)
+          dart-bindings = dartBindings;
+          kotlin-bindings = kotlinBindings;
         }
         # Static build deps (Linux only)
         // lib.optionalAttrs (muslTarget != null) {
@@ -1223,7 +1315,7 @@
               // envVars
             );
 
-            # Shell for bindings development (Dart + Swift FFI)
+            # Shell for bindings development (Dart + Swift + Kotlin FFI)
             bindings = pkgs.mkShell (
               {
                 shellHook = commonShellHook;
@@ -1232,6 +1324,7 @@
                   rustupShim
                   dartpkgs.default
                   pkgs.openssl
+                  pkgs.jdk17
                 ];
                 nativeBuildInputs = [
                   pkgs.pkg-config

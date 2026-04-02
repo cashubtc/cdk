@@ -1424,6 +1424,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdk-ffi-kotlin"
+version = "0.16.0"
+dependencies = [
+ "cdk-ffi",
+ "uniffi",
+]
+
+[[package]]
 name = "cdk-ffi-swift"
 version = "0.16.0"
 dependencies = [
