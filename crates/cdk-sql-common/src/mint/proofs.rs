@@ -135,6 +135,10 @@ where
         quote_id: Option<QuoteId>,
         operation: &Operation,
     ) -> Result<Acquired<ProofsWithState>, Self::Err> {
+        if proofs.is_empty() {
+            return Ok(ProofsWithState::new(proofs, State::Unspent).into());
+        }
+
         let current_time = unix_time();
 
         // Check any previous proof, this query should return None in order to proceed storing
@@ -207,6 +211,11 @@ where
         new_state: State,
     ) -> Result<(), Self::Err> {
         let ys = proofs.ys()?;
+
+        if ys.is_empty() {
+            proofs.state = new_state;
+            return Ok(());
+        }
 
         query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)?
             .bind("new_state", new_state.to_string())
@@ -417,6 +426,10 @@ where
     type Err = Error;
 
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
+        if ys.is_empty() {
+            return Ok(vec![]);
+        }
+
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut proofs = query(
             r#"
