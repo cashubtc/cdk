@@ -155,3 +155,10 @@ path = "fuzz_targets/fuzz_short_keyset_id.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_id_from_bytes"
+path = "fuzz_targets/fuzz_id_from_bytes.rs"
+test = false
+doc = false
+bench = false
