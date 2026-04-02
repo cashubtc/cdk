@@ -50,9 +50,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set SHORT_PR_TITLE env
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           SHORT_PR_TITLE=$(
-            echo '${{ github.event.pull_request.title }}' \
+            echo "$PR_TITLE" \
             | awk '{print (length($0) > 40) ? substr($0, 1, 40) "..." : $0}'
           )
           echo "SHORT_PR_TITLE=$SHORT_PR_TITLE" >> "$GITHUB_ENV"
