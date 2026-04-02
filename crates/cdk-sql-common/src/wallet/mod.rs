@@ -789,6 +789,10 @@ where
         ys: Vec<PublicKey>,
         state: State,
     ) -> Result<(), database::Error> {
+        if ys.is_empty() {
+            return Ok(());
+        }
+
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         query("UPDATE proof SET state = :state WHERE y IN (:ys)")?
