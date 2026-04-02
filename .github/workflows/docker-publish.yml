@@ -81,11 +81,15 @@ jobs:
 
       - name: Determine tag
         id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            RAW_VERSION="${{ github.event.release.tag_name }}"
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            RAW_VERSION="$RELEASE_TAG"
           else
-            RAW_VERSION="${{ github.event.inputs.tag }}"
+            RAW_VERSION="$INPUT_TAG"
           fi
           echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
@@ -124,12 +128,17 @@ jobs:
 
       - name: Determine tag
         id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          IS_STABLE: ${{ !github.event.release.prerelease && !contains(github.event.release.tag_name, 'rc') }}
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            RAW_VERSION="${{ github.event.release.tag_name }}"
-            echo "is_stable=${{ !github.event.release.prerelease && !contains(github.event.release.tag_name, 'rc') }}" >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            RAW_VERSION="$RELEASE_TAG"
+            echo "is_stable=$IS_STABLE" >> "$GITHUB_OUTPUT"
           else
-            RAW_VERSION="${{ github.event.inputs.tag }}"
+            RAW_VERSION="$INPUT_TAG"
             echo "is_stable=false" >> "$GITHUB_OUTPUT"
           fi
           echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
@@ -137,8 +146,10 @@ jobs:
 
       - name: Extract semver components
         id: semver
+        env:
+          VERSION_INPUT: ${{ steps.tag.outputs.version }}
         run: |
-          VERSION="${{ steps.tag.outputs.version }}"
+          VERSION="$VERSION_INPUT"
           # Strip leading 'v' if present
           VERSION="${VERSION#v}"
           MAJOR="${VERSION%%.*}"
@@ -147,24 +158,31 @@ jobs:
           echo "major_minor=${MAJOR}.${MINOR}" >> "$GITHUB_OUTPUT"
 
       - name: Create versioned manifest
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
         run: |
           docker buildx imagetools create \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }} \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-amd64 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-arm64
+            -t "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-amd64" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-arm64"
 
       - name: Create major.minor manifest
         if: ${{ steps.tag.outputs.is_stable == 'true' }}
+        env:
+          MAJOR_MINOR: ${{ steps.semver.outputs.major_minor }}
+          VERSION: ${{ steps.tag.outputs.version }}
         run: |
           docker buildx imagetools create \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.semver.outputs.major_minor }}${{ matrix.variant.tag_suffix }} \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-amd64 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-arm64
+            -t "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${MAJOR_MINOR}${{ matrix.variant.tag_suffix }}" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-amd64" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-arm64"
 
       - name: Create latest manifest
         if: ${{ steps.tag.outputs.is_stable == 'true' }}
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
         run: |
           docker buildx imagetools create \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest${{ matrix.variant.tag_suffix }} \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-amd64 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-arm64
+            -t "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest${{ matrix.variant.tag_suffix }}" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-amd64" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-arm64"
