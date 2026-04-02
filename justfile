@@ -840,19 +840,40 @@ ffi-release-kotlin VERSION:
 
   echo "✅ Kotlin workflow triggered successfully!"
 
-# Generate Dart FFI bindings
+# Generate Dart FFI bindings via nix
 binding-dart:
   #!/usr/bin/env bash
   set -euo pipefail
-  cd "{{justfile_directory()}}/bindings/dart"
-  ./generate-bindings.sh
+  cd "{{justfile_directory()}}"
+  result=$(nix build .#dart-bindings --print-out-paths --no-link)
+  cp -r "$result"/* bindings/dart/
+  chmod -R u+w bindings/dart/lib/src/generated/
 
 # Run Dart binding tests
 test-dart:
   #!/usr/bin/env bash
   set -euo pipefail
-  cd "{{justfile_directory()}}/bindings/dart"
+  cd "{{justfile_directory()}}"
+  cp rust-toolchain.toml bindings/dart/rust/rust-toolchain.toml
+  trap 'rm -f bindings/dart/rust/rust-toolchain.toml' EXIT
+  cd bindings/dart
   dart test
+
+# Generate Kotlin JVM bindings via nix
+binding-kotlin:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  result=$(nix build .#kotlin-bindings --print-out-paths --no-link)
+  cp -r "$result"/* bindings/kotlin/
+  chmod -R u+w bindings/kotlin/cdk-jvm/src/main/kotlin bindings/kotlin/cdk-jvm/src/main/resources
+
+# Run Kotlin binding tests
+test-kotlin:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/kotlin"
+  ./gradlew :cdk-jvm:test
 
 # Generate Swift FFI bindings and XCFramework
 binding-swift:

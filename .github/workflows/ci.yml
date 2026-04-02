@@ -497,6 +497,25 @@ jobs:
       - name: Run Dart tests
         run: nix develop -L .#bindings --command just test-dart
 
+  kotlin-binding-tests:
+    name: "Kotlin binding tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build native library and generate bindings
+        run: nix develop -L .#bindings --command just binding-kotlin
+      - name: Run Kotlin tests
+        run: nix develop -L .#bindings --command just test-kotlin
+
   swift-binding-tests:
     name: "Swift binding tests"
     runs-on: macos-latest

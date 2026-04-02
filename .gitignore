@@ -34,3 +34,17 @@ __pycache__
 libcdk_ffi*
 cdk_ffi.py
 
+# Kotlin bindings
+.gradle/
+!gradle/wrapper/gradle-wrapper.jar
+local.properties
+*.iml
+*.ipr
+*.iws
+bin/
+gen/
+out/
+bindings/kotlin/cdk-jvm/src/main/kotlin/uniffi/
+bindings/kotlin/cdk-jvm/src/main/resources/*.so
+bindings/kotlin/cdk-jvm/src/main/resources/*.dylib
+
