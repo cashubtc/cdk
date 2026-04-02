@@ -153,6 +153,10 @@ impl Id {
 
     /// [`Id`] from bytes
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.is_empty() {
+            return Err(Error::Length);
+        }
+
         let version = KeySetVersion::from_byte(&bytes[0])?;
         let id = match version {
             KeySetVersion::Version00 => IdBytes::V1(bytes[1..].try_into()?),
@@ -921,6 +925,16 @@ mod test {
         let three_bytes = [0x01, 0x02, 0x03];
         let result = Id::from_bytes(&three_bytes);
         assert!(result.is_err(), "Expected an invalid byte length error");
+    }
+
+    #[test]
+    fn test_id_from_empty_bytes() {
+        let result = Id::from_bytes(&[]);
+        assert!(
+            matches!(result, Err(Error::Length)),
+            "Expected an Error::Length error but got {:?}",
+            result
+        );
     }
 
     #[test]
