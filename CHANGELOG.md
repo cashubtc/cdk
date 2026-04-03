@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+### Added
+- cdk: `p2pk_signing_keys` field on `SendOptions` so wallets holding P2PK-locked proofs can spend them through the standard `prepare_send` / `confirm` flow ([vnprc]).
+- cdk: `allow_locked_proofs` field on `SendOptions` to explicitly opt in to including signed-but-still-locked proofs in the outgoing token without a swap ([vnprc]).
+- cdk: `sign_proofs()` utility in `wallet/util.rs` for signing P2PK-locked proofs from a key slice ([vnprc]).
+
+### Fixed
+- cdk: force swap when `p2pk_signing_keys` is non-empty so exact-denomination proof selection cannot short-circuit signing and emit locked proofs in the token ([vnprc]).
+
 ## [0.16.0](https://github.com/cashubtc/cdk/releases/tag/v0.16.0)
 
 ### Summary

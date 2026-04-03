@@ -76,6 +76,7 @@ use self::state::{Initial, Prepared, TokenCreated};
 use super::{split_proofs_for_send, SendMemo, SendOptions};
 use crate::amount::SplitTarget;
 use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::nut11::{enforce_sig_flag, SigFlag};
 use crate::nuts::{Proofs, State, Token};
 use crate::wallet::keysets::KeysetFilter;
 use crate::wallet::saga::{
@@ -316,6 +317,11 @@ impl<'a> SendSaga<'a, Initial> {
         let is_exact_or_offline =
             exact_proofs || opts.send_kind.is_offline() || opts.send_kind.has_tolerance();
 
+        // When p2pk_signing_keys are provided and passthrough is not opted in, all proofs must go
+        // through a swap so the token contains fresh, unconditioned proofs.
+        let force_swap =
+            force_swap || (!opts.p2pk_signing_keys.is_empty() && !opts.allow_locked_proofs);
+
         let keyset_fees_and_amounts = self.wallet.get_keyset_fees_and_amounts().await?;
         let keyset_fees: HashMap<Id, u64> = keyset_fees_and_amounts
             .iter()
@@ -428,7 +434,7 @@ impl<'a> SendSaga<'a, Prepared> {
         let operation_id = self.state_data.operation_id;
         let amount = self.state_data.amount;
         let options = self.state_data.options.clone();
-        let proofs_to_swap = self.state_data.proofs_to_swap.clone();
+        let mut proofs_to_swap = self.state_data.proofs_to_swap.clone();
         let proofs_to_send = self.state_data.proofs_to_send.clone();
         let swap_fee = self.state_data.swap_fee;
         let send_fee = self.state_data.send_fee;
@@ -444,12 +450,41 @@ impl<'a> SendSaga<'a, Prepared> {
             let mut counter_start = None;
             let mut counter_end = None;
 
+            // When locked-proof passthrough is opted in, sign proofs that bypass the swap
+            // before including them in the token. Signing is not optional: an unsigned
+            // P2PK-locked proof in a token is unspendable by the recipient because they
+            // do not hold the private key. Once signed, the proof becomes bearer — the
+            // mint will accept it from anyone who presents it.
+            //
+            // SIG_ALL is incompatible with passthrough: the signature would need to commit
+            // to the swap outputs, which do not exist at signing time. The recipient cannot
+            // create valid outputs for a proof signed with SIG_ALL, so any attempt to redeem
+            // it at the mint would fail. Reject early with a clear error rather than silently
+            // producing an unspendable token.
+            if options.allow_locked_proofs && !options.p2pk_signing_keys.is_empty() {
+                let sig_flag = enforce_sig_flag(final_proofs_to_send.clone()).sig_flag;
+                if sig_flag == SigFlag::SigAll {
+                    return Err(crate::nuts::nut11::Error::SigAllNotSupportedHere.into());
+                }
+                crate::wallet::util::sign_proofs(
+                    &mut final_proofs_to_send,
+                    &options.p2pk_signing_keys,
+                )?;
+            }
+
             if !proofs_to_swap.is_empty() {
                 let swap_amount = total_send_amount
                     .checked_sub(final_proofs_to_send.total_amount()?)
                     .unwrap_or(Amount::ZERO);
 
                 tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
+
+                if !options.p2pk_signing_keys.is_empty() {
+                    crate::wallet::util::sign_proofs(
+                        &mut proofs_to_swap,
+                        &options.p2pk_signing_keys,
+                    )?;
+                }
 
                 let keyset_id = self.wallet.fetch_active_keyset().await?.id;
 

@@ -323,6 +323,42 @@ pub struct SendOptions {
     pub metadata: HashMap<String, String>,
     /// Use P2BK (NUT-28)
     pub use_p2bk: bool,
+    /// Signing keys for P2PK-locked input proofs.
+    ///
+    /// When the wallet holds proofs locked with [`SpendingConditions::new_p2pk`], provide the
+    /// corresponding secret keys here so they are signed before the swap in `confirm`.
+    ///
+    /// When non-empty and [`SendOptions::allow_locked_proofs`] is `false` (the default), all
+    /// selected proofs are routed through a swap so the resulting token contains fresh,
+    /// unconditioned proofs.
+    pub p2pk_signing_keys: Vec<SecretKey>,
+    /// Allow P2PK-locked proofs to be included directly in the outgoing token without a swap.
+    ///
+    /// By default (`false`), providing [`SendOptions::p2pk_signing_keys`] forces a swap so the
+    /// token always contains fresh, unlocked proofs. Setting this to `true` opts in to the
+    /// less-private passthrough behaviour: proofs are signed but retain their spending conditions
+    /// in the token.
+    ///
+    /// This is useful for multi-hop or offline payment flows where the intermediate holder
+    /// intentionally passes signed-but-still-locked proofs on to the next party.
+    ///
+    /// # Why signing is required for passthrough
+    ///
+    /// An unsigned P2PK-locked proof in a token is unspendable by the recipient — they do not
+    /// hold the private key. Signing converts the proof to bearer: the mint will accept it from
+    /// whoever presents it, even without the original key. The privacy cost (the lock condition
+    /// and the signer's public key are visible in the token) is the explicit trade-off of using
+    /// this flag.
+    ///
+    /// # SIG_ALL incompatibility
+    ///
+    /// Proofs whose spending condition carries `SigFlag::SigAll` cannot be passed through.
+    /// A `SIG_ALL` signature must commit to the swap outputs, which are unknown at signing time.
+    /// The recipient cannot construct valid outputs for such a proof, so any redemption attempt
+    /// would be rejected by the mint. `confirm` will return
+    /// [`cashu::nuts::nut11::Error::SigAllNotSupportedHere`] if any passthrough proof uses
+    /// `SIG_ALL`.
+    pub allow_locked_proofs: bool,
 }
 
 /// Send memo
