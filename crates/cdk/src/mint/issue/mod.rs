@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bitcoin::secp256k1::schnorr::Signature;
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::payment::{
@@ -201,7 +202,7 @@ impl MintQuoteRequest {
 }
 
 /// Response for a mint quote request
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum MintQuoteResponse {
     /// Lightning Network BOLT11 invoice response
     Bolt11(MintQuoteBolt11Response<QuoteId>),
