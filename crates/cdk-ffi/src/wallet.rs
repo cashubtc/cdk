@@ -143,7 +143,7 @@ impl Wallet {
     ) -> Result<Amount, FfiError> {
         let amount = self
             .inner
-            .receive(&token.to_string(), options.into())
+            .receive(&token.to_string(), options.try_into()?)
             .await?;
         Ok(amount.into())
     }
@@ -175,7 +175,7 @@ impl Wallet {
 
         let amount = self
             .inner
-            .receive_proofs(cdk_proofs, options.into(), memo, token)
+            .receive_proofs(cdk_proofs, options.try_into()?, memo, token)
             .await?;
         Ok(amount.into())
     }
