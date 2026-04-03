@@ -17,7 +17,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use bip39::Mnemonic;
-use cdk_ffi::sqlite::WalletSqliteDatabase;
+use cdk_ffi::database::WalletStore;
 use cdk_ffi::types::{encode_mint_quote, Amount, CurrencyUnit, QuoteState, SplitTarget};
 use cdk_ffi::wallet::Wallet as FfiWallet;
 use cdk_ffi::{PaymentMethod, WalletConfig};
@@ -33,9 +33,17 @@ fn get_test_temp_dir() -> PathBuf {
     }
 }
 
-/// Create a test FFI wallet with in-memory database
+/// Create a temporary SQLite-backed WalletStore
+fn temp_wallet_store() -> WalletStore {
+    let path = get_test_temp_dir()
+        .join(format!("ffi_test_{}.sqlite", uuid::Uuid::new_v4()))
+        .to_string_lossy()
+        .to_string();
+    WalletStore::Sqlite { path }
+}
+
+/// Create a test FFI wallet with a temp SQLite database
 async fn create_test_ffi_wallet() -> FfiWallet {
-    let db = WalletSqliteDatabase::new_in_memory().expect("Failed to create in-memory database");
     let mnemonic = Mnemonic::generate(12).unwrap().to_string();
     let config = WalletConfig {
         target_proof_count: Some(3),
@@ -45,7 +53,7 @@ async fn create_test_ffi_wallet() -> FfiWallet {
         get_mint_url_from_env(),
         CurrencyUnit::Sat,
         mnemonic,
-        db,
+        temp_wallet_store(),
         config,
     )
     .expect("Failed to create FFI wallet")
@@ -289,7 +297,6 @@ async fn test_ffi_mint_quote_creation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_ffi_minting_error_handling() {
     // Test invalid mint URL
-    let db = WalletSqliteDatabase::new_in_memory().expect("Failed to create database");
     let mnemonic = Mnemonic::generate(12).unwrap().to_string();
     let config = WalletConfig {
         target_proof_count: Some(3),
@@ -299,7 +306,7 @@ async fn test_ffi_minting_error_handling() {
         "invalid-url".to_string(),
         CurrencyUnit::Sat,
         mnemonic.clone(),
-        db,
+        temp_wallet_store(),
         config.clone(),
     );
     assert!(
@@ -346,7 +353,6 @@ async fn test_ffi_wallet_configuration() {
     let proof_counts = vec![1, 3, 5, 10];
 
     for target_count in proof_counts {
-        let db = WalletSqliteDatabase::new_in_memory().expect("Failed to create database");
         let config = WalletConfig {
             target_proof_count: Some(target_count),
         };
@@ -355,7 +361,7 @@ async fn test_ffi_wallet_configuration() {
             mint_url.clone(),
             CurrencyUnit::Sat,
             mnemonic.clone(),
-            db,
+            temp_wallet_store(),
             config,
         )
         .expect("Failed to create wallet");
@@ -371,9 +377,6 @@ async fn test_ffi_wallet_configuration() {
     }
 
     // Test wallet restoration with same mnemonic
-    let db1 = WalletSqliteDatabase::new_in_memory().expect("Failed to create database");
-    let db2 = WalletSqliteDatabase::new_in_memory().expect("Failed to create database");
-
     let config = WalletConfig {
         target_proof_count: Some(3),
     };
@@ -382,13 +385,19 @@ async fn test_ffi_wallet_configuration() {
         mint_url.clone(),
         CurrencyUnit::Sat,
         mnemonic.clone(),
-        db1,
+        temp_wallet_store(),
         config.clone(),
     )
     .expect("Failed to create first wallet");
 
-    let wallet2 = FfiWallet::new(mint_url, CurrencyUnit::Sat, mnemonic, db2, config)
-        .expect("Failed to create second wallet");
+    let wallet2 = FfiWallet::new(
+        mint_url,
+        CurrencyUnit::Sat,
+        mnemonic,
+        temp_wallet_store(),
+        config,
+    )
+    .expect("Failed to create second wallet");
 
     // Both wallets should have the same mint URL and unit
     assert_eq!(wallet1.mint_url().url, wallet2.mint_url().url);

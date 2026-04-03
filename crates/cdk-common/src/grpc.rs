@@ -1,5 +1,7 @@
 //! gRPC version checking utilities
 
+use tonic::metadata::AsciiMetadataValue;
+use tonic::service::Interceptor;
 use tonic::{Request, Status};
 
 /// Header name for protocol version
@@ -7,18 +9,36 @@ pub const VERSION_HEADER: &str = "x-cdk-protocol-version";
 /// Header for version of the signatory protofile
 pub const VERSION_SIGNATORY_HEADER: &str = "x-signatory-schema-version";
 
-/// Creates a client-side interceptor that injects a specific protocol version into outgoing requests
+/// A client-side interceptor that injects a protocol version header into every
+/// outgoing gRPC request.
 ///
 /// # Panics
-/// Panics if the version string is not a valid gRPC metadata ASCII value
-pub fn create_version_inject_interceptor(
+/// [`VersionInterceptor::new`] panics if the version string is not a valid gRPC
+/// metadata ASCII value.
+#[derive(Debug, Clone)]
+pub struct VersionInterceptor {
     header: &'static str,
-    version: &'static str,
-) -> impl Fn(Request<()>) -> Result<Request<()>, Status> + Clone {
-    move |mut request: Request<()>| {
+    value: AsciiMetadataValue,
+}
+
+impl VersionInterceptor {
+    /// Create a new `VersionInterceptor`.
+    ///
+    /// # Panics
+    /// Panics if `version` is not a valid gRPC metadata ASCII value.
+    pub fn new(header: &'static str, version: impl AsRef<str>) -> Self {
+        Self {
+            header,
+            value: version.as_ref().parse().expect("Invalid protocol version"),
+        }
+    }
+}
+
+impl Interceptor for VersionInterceptor {
+    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
         request
             .metadata_mut()
-            .insert(header, version.parse().expect("Invalid protocol version"));
+            .insert(self.header, self.value.clone());
         Ok(request)
     }
 }

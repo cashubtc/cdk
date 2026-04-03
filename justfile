@@ -106,6 +106,37 @@ test-units:
   cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
 
   # run doc tests
+  cargo test --doc
+
+coverage:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  # Clean up previous coverage data
+  cargo llvm-cov clean --workspace
+  
+  # Start PostgreSQL for cdk-postgres tests
+  echo "Starting PostgreSQL for coverage..."
+  start-postgres
+
+  # Run unit tests with coverage (all workspace crates including cdk-postgres)
+  echo "Running unit tests coverage..."
+  cargo llvm-cov --no-report --lib --workspace --exclude cdk-integration-tests
+  
+  # Run pure integration tests with coverage (memory backend)
+  echo "Running pure integration tests coverage (memory)..."
+  CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
+
+  # Run pure integration tests with coverage (sqlite backend)
+  echo "Running pure integration tests coverage (sqlite)..."
+  CDK_TEST_DB_TYPE=sqlite cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
+  
+  # Generate report
+  echo "Generating coverage report..."
+  cargo llvm-cov report --lcov --output-path lcov.info
+
 test-pure db="memory":
   #!/usr/bin/env bash
   set -euo pipefail
@@ -379,26 +410,19 @@ lint:
   typos
   echo "All checks passed!"
 
-# Goose AI Recipe Commands
-
-# Update changelog from staged changes using Goose AI
-goose-git-msg:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  goose run --recipe ./misc/recipes/git-commit-message.yaml --interactive
-
-# Create git message from staged changes using Goose AI
-goose-changelog-staged:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  goose run --recipe ./misc/recipes/changelog-update.yaml --interactive
-
-# Update changelog from recent commits using Goose AI
-# Usage: just goose-changelog-commits [number_of_commits]
-goose-changelog-commits *COMMITS="5":
-  #!/usr/bin/env bash
-  set -euo pipefail
-  COMMITS={{COMMITS}} goose run --recipe ./misc/recipes/changelog-from-commits.yaml --interactive
+update-msrv-lock:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    
+    nix develop --ignore-environment .#msrv --command bash -c '
+        cp Cargo.lock Cargo.lock.msrv
+        echo "Copied Cargo.lock to Cargo.lock.msrv (MSRV 1.85.0)"
+    '
+    
+    nix develop --ignore-environment .#stable --command bash -c '
+        cargo update
+        echo "Updated Cargo.lock (stable 1.94.0)"
+    '
 
 itest db:
   #!/usr/bin/env bash
@@ -545,6 +569,7 @@ release m="":
     "-p cdk-signatory"
     "-p cdk-fake-wallet"
     "-p cdk"
+    "-p cdk-supabase"
     "-p cdk-ffi"
     "-p cdk-axum"
     "-p cdk-mint-rpc"
@@ -698,7 +723,7 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
   echo "$EMOJI Generating $LANG bindings..."
   mkdir -p target/bindings/$LANG
 
-  cargo run --bin uniffi-bindgen generate \
+  cargo run -p cdk-ffi --bin uniffi-bindgen generate \
     --library target/$BUILD_TYPE/libcdk_ffi.$LIB_EXT \
     --language $LANG \
     --out-dir target/bindings/$LANG
@@ -814,3 +839,63 @@ ffi-release-kotlin VERSION:
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Kotlin workflow triggered successfully!"
+
+# Generate Dart FFI bindings via nix
+binding-dart:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  result=$(nix build .#dart-bindings --print-out-paths --no-link)
+  cp -r "$result"/* bindings/dart/
+  chmod -R u+w bindings/dart/lib/src/generated/
+
+# Run Dart binding tests
+test-dart:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  cp rust-toolchain.toml bindings/dart/rust/rust-toolchain.toml
+  trap 'rm -f bindings/dart/rust/rust-toolchain.toml' EXIT
+  cd bindings/dart
+  dart test
+
+# Generate Kotlin JVM bindings via nix
+binding-kotlin:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  result=$(nix build .#kotlin-bindings --print-out-paths --no-link)
+  cp -r "$result"/* bindings/kotlin/
+  chmod -R u+w bindings/kotlin/cdk-jvm/src/main/kotlin bindings/kotlin/cdk-jvm/src/main/resources
+
+# Run Kotlin binding tests
+test-kotlin:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/kotlin"
+  ./gradlew :cdk-jvm:test
+
+# Generate Swift FFI bindings and XCFramework
+binding-swift:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/swift"
+  ./generate-bindings.sh
+
+# Run Swift binding tests
+test-swift:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    # Use env -i to fully escape the Nix environment. The Nix shell injects
+    # SDK paths and compiler flags that conflict with the Xcode Swift compiler.
+    env -i \
+      HOME="$HOME" \
+      PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+      SDKROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)" \
+      DEVELOPER_DIR="$(/usr/bin/xcode-select -p)" \
+      /usr/bin/swift test
+  else
+    swift test
+  fi

@@ -3,10 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use cdk_common::bitcoin::bip32::DerivationPath;
 use cdk_common::database::WalletDatabase as CdkWalletDatabase;
 use cdk_common::wallet::WalletSaga;
-use cdk_sql_common::pool::DatabasePool;
-use cdk_sql_common::SQLWalletDatabase;
 
 use crate::error::FfiError;
 #[cfg(feature = "postgres")]
@@ -103,6 +102,23 @@ pub trait WalletDatabase: Send + Sync {
         primary_namespace: String,
         secondary_namespace: String,
     ) -> Result<Vec<String>, FfiError>;
+
+    /// Add P2PK signing key to storage
+    async fn add_p2pk_key(
+        &self,
+        pubkey: PublicKey,
+        derivation_path: String,
+        derivation_index: u32,
+    ) -> Result<(), FfiError>;
+
+    /// Get P2PK signing key from storage
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<P2PKSigningKey>, FfiError>;
+
+    /// List all P2PK signing keys from storage
+    async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError>;
+
+    /// Get the latest P2PK signing key (most recently created)
+    async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, FfiError>;
 
     /// Write a value to the KV store
     async fn kv_write(
@@ -638,6 +654,76 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
+    // P2PK methods
+
+    async fn add_p2pk_key(
+        &self,
+        pubkey: &cdk::nuts::PublicKey,
+        derivation_path: DerivationPath,
+        derivation_index: u32,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_pubkey: PublicKey = (*pubkey).into();
+        let ffi_derivation_path = derivation_path.to_string();
+        self.ffi_db
+            .add_p2pk_key(ffi_pubkey, ffi_derivation_path, derivation_index)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn list_p2pk_keys(
+        &self,
+    ) -> Result<Vec<cdk_common::wallet::P2PKSigningKey>, cdk::cdk_database::Error> {
+        let result = self
+            .ffi_db
+            .list_p2pk_keys()
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        Ok(result
+            .into_iter()
+            .map(|k| {
+                k.try_into().map_err(|e: crate::error::FfiError| {
+                    cdk::cdk_database::Error::Database(e.to_string().into())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn latest_p2pk(
+        &self,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, cdk::cdk_database::Error> {
+        let result = self
+            .ffi_db
+            .latest_p2pk()
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        Ok(result
+            .map(|k| {
+                k.try_into().map_err(|e: crate::error::FfiError| {
+                    cdk::cdk_database::Error::Database(e.to_string().into())
+                })
+            })
+            .transpose()?)
+    }
+
+    async fn get_p2pk_key(
+        &self,
+        pubkey: &cdk::nuts::PublicKey,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, cdk::cdk_database::Error> {
+        let ffi_pubkey: PublicKey = (*pubkey).into();
+        let result = self
+            .ffi_db
+            .get_p2pk_key(ffi_pubkey)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        Ok(result
+            .map(|k| {
+                k.try_into().map_err(|e: crate::error::FfiError| {
+                    cdk::cdk_database::Error::Database(e.to_string().into())
+                })
+            })
+            .transpose()?)
+    }
+
     // Write methods (non-transactional)
 
     async fn update_proofs(
@@ -1009,28 +1095,80 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     }
 }
 
-pub(crate) struct FfiWalletSQLDatabase<RM>
+/// Generic FFI wrapper for any database implementing CDK's wallet database traits.
+///
+/// This wrapper converts between CDK types and FFI types, allowing any database
+/// backend (SQLite, Postgres, Supabase, etc.) to be exposed through the FFI layer.
+pub(crate) struct FfiWalletDatabaseWrapper<T, E>
 where
-    RM: DatabasePool + 'static,
+    T: CdkWalletDatabase<E> + Send + Sync + 'static,
+    E: std::error::Error
+        + Send
+        + Sync
+        + Into<cdk_common::database::Error>
+        + From<cdk_common::database::Error>
+        + 'static,
 {
-    inner: SQLWalletDatabase<RM>,
+    inner: T,
+    _phantom: std::marker::PhantomData<E>,
 }
 
-impl<RM> FfiWalletSQLDatabase<RM>
+impl<T, E> std::fmt::Debug for FfiWalletDatabaseWrapper<T, E>
 where
-    RM: DatabasePool + 'static,
+    T: CdkWalletDatabase<E> + std::fmt::Debug + Send + Sync + 'static,
+    E: std::error::Error
+        + Send
+        + Sync
+        + Into<cdk_common::database::Error>
+        + From<cdk_common::database::Error>
+        + 'static,
 {
-    /// Creates a new instance
-    pub fn new(inner: SQLWalletDatabase<RM>) -> Arc<Self> {
-        Arc::new(Self { inner })
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FfiWalletDatabaseWrapper")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<T, E> FfiWalletDatabaseWrapper<T, E>
+where
+    T: CdkWalletDatabase<E> + Send + Sync + 'static,
+    E: std::error::Error
+        + Send
+        + Sync
+        + Into<cdk_common::database::Error>
+        + From<cdk_common::database::Error>
+        + 'static,
+{
+    /// Creates a new instance wrapping the given database
+    pub fn new(inner: T) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            _phantom: std::marker::PhantomData,
+        })
+    }
+
+    /// Returns a reference to the inner database
+    ///
+    /// This is useful for accessing database-specific methods that are not part
+    /// of the standard WalletDatabase trait (e.g., Supabase JWT token management).
+    #[cfg(feature = "supabase")]
+    pub fn inner(&self) -> &T {
+        &self.inner
     }
 }
 
 // Implement WalletDatabase trait - all read and write methods
 #[async_trait::async_trait]
-impl<RM> WalletDatabase for FfiWalletSQLDatabase<RM>
+impl<T, E> WalletDatabase for FfiWalletDatabaseWrapper<T, E>
 where
-    RM: DatabasePool + 'static,
+    T: CdkWalletDatabase<E> + Send + Sync + 'static,
+    E: std::error::Error
+        + Send
+        + Sync
+        + Into<cdk_common::database::Error>
+        + From<cdk_common::database::Error>
+        + 'static,
 {
     // ========== Read methods ==========
 
@@ -1242,6 +1380,50 @@ where
             .kv_list(&primary_namespace, &secondary_namespace)
             .await
             .map_err(FfiError::internal)
+    }
+
+    async fn add_p2pk_key(
+        &self,
+        pubkey: PublicKey,
+        derivation_path: String,
+        derivation_index: u32,
+    ) -> Result<(), FfiError> {
+        use std::str::FromStr;
+
+        use cdk_common::bitcoin::bip32::DerivationPath;
+
+        let cdk_pubkey: cdk::nuts::PublicKey = pubkey.try_into()?;
+        let cdk_derivation_path =
+            DerivationPath::from_str(&derivation_path).map_err(FfiError::internal)?;
+
+        self.inner
+            .add_p2pk_key(&cdk_pubkey, cdk_derivation_path, derivation_index)
+            .await
+            .map_err(FfiError::database)
+    }
+
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<P2PKSigningKey>, FfiError> {
+        let cdk_pubkey: cdk::nuts::PublicKey = pubkey.try_into()?;
+        let result = self
+            .inner
+            .get_p2pk_key(&cdk_pubkey)
+            .await
+            .map_err(FfiError::database)?;
+        Ok(result.map(Into::into))
+    }
+
+    async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError> {
+        let result = self
+            .inner
+            .list_p2pk_keys()
+            .await
+            .map_err(FfiError::database)?;
+        Ok(result.into_iter().map(Into::into).collect())
+    }
+
+    async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, FfiError> {
+        let result = self.inner.latest_p2pk().await.map_err(FfiError::database)?;
+        Ok(result.map(Into::into))
     }
 
     async fn kv_write(
@@ -1575,8 +1757,8 @@ where
     }
 }
 
-/// Macro to implement WalletDatabase for wrapper types that delegate to an inner FfiWalletSQLDatabase.
-/// This eliminates duplication between SQLite and Postgres FFI implementations.
+/// Macro to implement WalletDatabase for wrapper types that delegate to an inner FfiWalletDatabaseWrapper.
+/// This eliminates duplication between SQLite, Postgres, Supabase, and other FFI implementations.
 ///
 /// Requirements: The following types must be in scope where this macro is invoked:
 /// - WalletDatabase, FfiError, PublicKey, ProofInfo, MintUrl, MintInfo, KeySetInfo, Id,
@@ -1824,6 +2006,34 @@ macro_rules! impl_ffi_wallet_database {
                 self.inner.remove_keys(id).await
             }
 
+            // P2PK methods
+
+            async fn add_p2pk_key(
+                &self,
+                pubkey: PublicKey,
+                derivation_path: String,
+                derivation_index: u32,
+            ) -> Result<(), FfiError> {
+                self.inner
+                    .add_p2pk_key(pubkey, derivation_path, derivation_index)
+                    .await
+            }
+
+            async fn get_p2pk_key(
+                &self,
+                pubkey: PublicKey,
+            ) -> Result<Option<P2PKSigningKey>, FfiError> {
+                self.inner.get_p2pk_key(pubkey).await
+            }
+
+            async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError> {
+                self.inner.list_p2pk_keys().await
+            }
+
+            async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, FfiError> {
+                self.inner.latest_p2pk().await
+            }
+
             // ========== Saga management methods ==========
 
             async fn add_saga(&self, saga_json: String) -> Result<(), FfiError> {
@@ -1906,6 +2116,61 @@ pub enum WalletDbBackend {
     Postgres {
         url: String,
     },
+}
+
+/// Unified wallet storage: either a built-in Rust backend or a custom
+/// foreign-language implementation of the `WalletDatabase` callback interface.
+///
+/// This is an enum rather than accepting `WalletDatabase` directly because UniFFI
+/// does not support trait objects as constructor parameters — only callback interfaces
+/// wrapped in `Arc<dyn Trait>` inside an enum variant work across the FFI boundary.
+#[derive(uniffi::Enum)]
+pub enum WalletStore {
+    Sqlite {
+        path: String,
+    },
+    #[cfg(feature = "postgres")]
+    Postgres {
+        url: String,
+    },
+    Custom {
+        db: Arc<dyn WalletDatabase>,
+    },
+}
+
+/// Create a SQLite-backed wallet store.
+#[uniffi::export]
+pub fn sqlite_wallet_store(path: String) -> WalletStore {
+    WalletStore::Sqlite { path }
+}
+
+/// Create a PostgreSQL-backed wallet store.
+#[cfg(feature = "postgres")]
+#[uniffi::export]
+pub fn postgres_wallet_store(url: String) -> WalletStore {
+    WalletStore::Postgres { url }
+}
+
+/// Create a wallet store backed by a custom foreign-language database implementation.
+#[uniffi::export]
+pub fn custom_wallet_store(db: Arc<dyn WalletDatabase>) -> WalletStore {
+    WalletStore::Custom { db }
+}
+
+/// Resolve a `WalletStore` into an `Arc<dyn WalletDatabase>`.
+pub fn resolve_wallet_store(store: WalletStore) -> Result<Arc<dyn WalletDatabase>, FfiError> {
+    match store {
+        WalletStore::Sqlite { path } => {
+            let sqlite = WalletSqliteDatabase::new(path)?;
+            Ok(sqlite as Arc<dyn WalletDatabase>)
+        }
+        #[cfg(feature = "postgres")]
+        WalletStore::Postgres { url } => {
+            let pg = WalletPostgresDatabase::new(url)?;
+            Ok(pg as Arc<dyn WalletDatabase>)
+        }
+        WalletStore::Custom { db } => Ok(db),
+    }
 }
 
 /// Factory helpers returning a CDK wallet database behind the FFI trait

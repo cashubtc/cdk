@@ -15,9 +15,10 @@ name = "cdk_ffi"
 [dependencies]
 async-trait = { workspace = true }
 bip39 = { workspace = true }
-cdk = { workspace = true, default-features = false, features = ["wallet", "bip353", "nostr"] }
+cdk = { workspace = true, default-features = false, features = ["wallet", "nostr"] }
 cdk-sqlite = { workspace = true }
 cdk-postgres = { workspace = true, optional = true }
+cdk-supabase = { workspace = true, optional = true, features = ["wallet"] }
 cdk-npubcash = { workspace = true, optional = true }
 nostr-sdk = { workspace = true, optional = true }
 futures = { workspace = true }
@@ -28,7 +29,7 @@ serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
-uniffi = { version = "0.29", features = ["cli", "tokio"] }
+uniffi = { workspace = true, features = ["cli", "tokio"] }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 cdk-common.workspace = true
@@ -41,9 +42,12 @@ log = "0.4"
 
 
 [features]
-default = ["postgres", "npubcash"]
+default = ["postgres", "npubcash", "bip353"]
+bip353 = ["cdk/bip353"]
 # Enable Postgres-backed wallet database support in FFI
 postgres = ["cdk-postgres"]
+# Enable Supabase-backed wallet database support in FFI
+supabase = ["cdk-supabase"]
 # Enable NpubCash client bindings
 npubcash = ["cdk-npubcash", "nostr-sdk"]
 

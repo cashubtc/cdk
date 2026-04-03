@@ -6,11 +6,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
+use bitcoin::Network;
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::ProofInfo;
+use cdk_common::{PublicKey, SecretKey, SECP256K1};
 use getrandom::getrandom;
 pub use mint_connector::http_client::{
     AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
@@ -31,9 +34,9 @@ use crate::nuts::{
     nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
 };
-use crate::util::unix_time;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
-use crate::{Amount, OidcClient};
+use crate::wallet::p2pk::{P2PK_ACCOUNT, P2PK_PURPOSE};
+use crate::Amount;
 
 mod auth;
 pub mod bip321;
@@ -50,6 +53,7 @@ mod mint_connector;
 mod mint_metadata_cache;
 #[cfg(feature = "npubcash")]
 mod npubcash;
+mod p2pk;
 pub mod payment_request;
 mod proofs;
 mod receive;
@@ -65,6 +69,7 @@ pub mod test_utils;
 mod transactions;
 pub mod util;
 pub mod wallet_repository;
+mod wallet_trait;
 
 pub use auth::{AuthMintConnector, AuthWallet};
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -74,6 +79,7 @@ pub use bip321::{
 };
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
+pub use cdk_common::wallet::{ReceiveOptions, SendMemo, SendOptions};
 pub use keysets::KeysetFilter;
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
@@ -85,9 +91,8 @@ pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResul
 pub use payment_request::CreateRequestParams;
 #[cfg(feature = "nostr")]
 pub use payment_request::NostrWaitInfo;
-pub use receive::ReceiveOptions;
 pub use recovery::RecoveryReport;
-pub use send::{PreparedSend, SendMemo, SendOptions};
+pub use send::PreparedSend;
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
 pub use streams::npubcash::NpubCashProofStream;
 pub use types::{MeltQuote, MintQuote, SendKind};
@@ -200,16 +205,7 @@ impl From<WalletSubscription> for WalletParams {
     }
 }
 
-/// Amount that are recovered during restore operation
-#[derive(Debug, Hash, PartialEq, Eq, Default)]
-pub struct Restored {
-    /// Amount in the restore that has already been spent
-    pub spent: Amount,
-    /// Amount restored that is unspent
-    pub unspent: Amount,
-    /// Amount restored that is pending
-    pub pending: Amount,
-}
+pub use cdk_common::wallet::Restored;
 
 impl Wallet {
     /// Create new [`Wallet`] using the builder pattern
@@ -264,6 +260,29 @@ impl Wallet {
         self.subscription
             .subscribe(self.mint_url.clone(), query.into())
             .map_err(|e| Error::SubscriptionError(e.to_string()))
+    }
+
+    /// Subscribe to mint quote state changes for the given quote IDs and payment method
+    #[instrument(skip(self, method))]
+    pub async fn subscribe_mint_quote_state(
+        &self,
+        quote_ids: Vec<String>,
+        method: cdk_common::PaymentMethod,
+    ) -> Result<ActiveSubscription, Error> {
+        use cdk_common::nut00::KnownMethod;
+
+        let sub = match method {
+            cdk_common::PaymentMethod::Known(KnownMethod::Bolt11) => {
+                WalletSubscription::Bolt11MintQuoteState(quote_ids)
+            }
+            cdk_common::PaymentMethod::Known(KnownMethod::Bolt12) => {
+                WalletSubscription::Bolt12MintQuoteState(quote_ids)
+            }
+            cdk_common::PaymentMethod::Custom(_) => {
+                return Err(Error::InvalidPaymentMethod);
+            }
+        };
+        self.subscribe(sub).await
     }
 
     /// Fee required to redeem proof set
@@ -323,6 +342,12 @@ impl Wallet {
         Ok(Amount::from(fee))
     }
 
+    /// Calculate fee for a given number of proofs with the specified keyset
+    #[instrument(skip(self))]
+    pub async fn calculate_fee(&self, proof_count: u64, keyset_id: Id) -> Result<Amount, Error> {
+        self.get_keyset_count_fee(&keyset_id, proof_count).await
+    }
+
     /// Update Mint information and related entries in the event a mint changes
     /// its URL
     #[instrument(skip(self))]
@@ -348,7 +373,7 @@ impl Wallet {
 
         // If mint provides time make sure it is accurate
         if let Some(mint_unix_time) = mint_info.time {
-            let current_unix_time = unix_time();
+            let current_unix_time = crate::util::unix_time();
             if current_unix_time.abs_diff(mint_unix_time) > 30 {
                 tracing::warn!(
                     "Mint time does match wallet time. Mint: {}, Wallet: {}",
@@ -369,7 +394,7 @@ impl Wallet {
 
                     if let Some(oidc_client) = mint_info
                         .openid_discovery()
-                        .map(|url| OidcClient::new(url, None))
+                        .map(|url| crate::OidcClient::new(url, None))
                     {
                         auth_wallet.set_oidc_client(Some(oidc_client)).await;
                     }
@@ -379,7 +404,7 @@ impl Wallet {
 
                     let oidc_client = mint_info
                         .openid_discovery()
-                        .map(|url| OidcClient::new(url, None));
+                        .map(|url| crate::OidcClient::new(url, None));
                     let new_auth_wallet = AuthWallet::new(
                         self.mint_url.clone(),
                         None,
@@ -849,6 +874,72 @@ impl Wallet {
     /// This controls how many proofs of each denomination the wallet tries to maintain.
     pub fn set_target_proof_count(&mut self, count: usize) {
         self.target_proof_count = count;
+    }
+
+    /// generates and stores public key in database
+    pub async fn generate_public_key(&self) -> Result<PublicKey, Error> {
+        let public_keys = self.localstore.list_p2pk_keys().await?;
+
+        let mut last_derivation_index = 0;
+
+        for public_key in public_keys {
+            if public_key.derivation_index >= last_derivation_index {
+                last_derivation_index = public_key.derivation_index + 1;
+            }
+        }
+
+        let derivation_path = DerivationPath::from(vec![
+            ChildNumber::from_hardened_idx(P2PK_PURPOSE)?,
+            ChildNumber::from_hardened_idx(P2PK_ACCOUNT)?,
+            ChildNumber::from_hardened_idx(0)?,
+            ChildNumber::from_hardened_idx(0)?,
+            ChildNumber::from_normal_idx(last_derivation_index)?,
+        ]);
+
+        let pubkey = p2pk::generate_public_key(&derivation_path, &self.seed).await?;
+
+        self.localstore
+            .add_p2pk_key(&pubkey, derivation_path, last_derivation_index)
+            .await?;
+
+        Ok(pubkey)
+    }
+
+    /// gets public key by it's hex value
+    pub async fn get_public_key(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, database::Error> {
+        self.localstore.get_p2pk_key(pubkey).await
+    }
+
+    /// gets list of stored public keys in database
+    pub async fn get_public_keys(
+        &self,
+    ) -> Result<Vec<cdk_common::wallet::P2PKSigningKey>, database::Error> {
+        self.localstore.list_p2pk_keys().await
+    }
+
+    /// Gets the latest generated P2PK signing key (most recently created)
+    pub async fn get_latest_public_key(
+        &self,
+    ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, database::Error> {
+        self.localstore.latest_p2pk().await
+    }
+
+    /// try to get secret key from p2pk signing key in localstore
+    async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Error> {
+        let signing = self.localstore.get_p2pk_key(pubkey).await?;
+        if let Some(signing) = signing {
+            let xpriv = Xpriv::new_master(Network::Bitcoin, &self.seed)?;
+            return Ok(Some(SecretKey::from(
+                xpriv
+                    .derive_priv(&SECP256K1, &signing.derivation_path)?
+                    .private_key,
+            )));
+        }
+
+        Ok(None)
     }
 }
 

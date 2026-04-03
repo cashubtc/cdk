@@ -224,6 +224,10 @@ where
         &mut self,
         protected_endpoints: Vec<ProtectedEndpoint>,
     ) -> Result<(), database::Error> {
+        if protected_endpoints.is_empty() {
+            return Ok(());
+        }
+
         query(r#"DELETE FROM protected_endpoints WHERE endpoint IN (:endpoints)"#)?
             .bind_vec(
                 "endpoints",
@@ -349,6 +353,10 @@ where
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
+        if blinded_messages.is_empty() {
+            return Ok(vec![]);
+        }
+
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut blinded_signatures = query(
             r#"SELECT

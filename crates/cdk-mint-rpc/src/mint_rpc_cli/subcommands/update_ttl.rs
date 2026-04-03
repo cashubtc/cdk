@@ -1,10 +1,8 @@
 use anyhow::Result;
 use clap::Args;
-use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cdk_mint_client::CdkMintClient;
-use crate::{GetQuoteTtlRequest, UpdateQuoteTtlRequest};
+use crate::{GetQuoteTtlRequest, InterceptedCdkMintClient, UpdateQuoteTtlRequest};
 
 /// Command to update the time-to-live (TTL) settings for quotes
 ///
@@ -28,16 +26,14 @@ pub struct UpdateQuoteTtlCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new TTL values to set for quotes
 pub async fn update_quote_ttl(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut InterceptedCdkMintClient,
     sub_command_args: &UpdateQuoteTtlCommand,
 ) -> Result<()> {
     let _response = client
-        .update_quote_ttl(super::with_version_header(Request::new(
-            UpdateQuoteTtlRequest {
-                mint_ttl: sub_command_args.mint_ttl,
-                melt_ttl: sub_command_args.melt_ttl,
-            },
-        )))
+        .update_quote_ttl(Request::new(UpdateQuoteTtlRequest {
+            mint_ttl: sub_command_args.mint_ttl,
+            melt_ttl: sub_command_args.melt_ttl,
+        }))
         .await?;
 
     Ok(())
@@ -55,11 +51,9 @@ pub struct GetQuoteTtlCommand {}
 ///
 /// # Arguments
 /// * `client` - The RPC client used to communicate with the mint
-pub async fn get_quote_ttl(client: &mut CdkMintClient<Channel>) -> Result<()> {
+pub async fn get_quote_ttl(client: &mut InterceptedCdkMintClient) -> Result<()> {
     let response = client
-        .get_quote_ttl(super::with_version_header(Request::new(
-            GetQuoteTtlRequest {},
-        )))
+        .get_quote_ttl(Request::new(GetQuoteTtlRequest {}))
         .await?
         .into_inner();
 

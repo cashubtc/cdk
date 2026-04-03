@@ -6,6 +6,7 @@ listen_port = 8085
 mnemonic = ""
 # input_fee_ppk = 0
 # enable_swagger_ui = false
+# enable_info_page = true
 
 # Set keyset version preference.
 # true = Force upgrade to V2 (Version01).
@@ -103,6 +104,7 @@ ln_backend = "fakewallet"
 # [cln]
 # rpc_path = "/path/to/.lightning/bitcoin/lightning-rpc"
 # bolt12 = true              # Optional, defaults to true
+# expose_private_channels = false  # Optional, defaults to false. Include private channel route hints in bolt11 invoices.
 # fee_percent = 0.02         # Optional, defaults to 2%
 # reserve_fee_min = 2        # Optional, defaults to 2 sats
 

@@ -161,6 +161,13 @@ pub fn generate_block(bitcoin_client: &BitcoinClient) -> Result<()> {
 }
 
 pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
+    create_cln_backend_with_options(cln_client, false).await
+}
+
+pub async fn create_cln_backend_with_options(
+    cln_client: &ClnClient,
+    expose_private_channels: bool,
+) -> Result<CdkCln> {
     let rpc_path = cln_client.rpc_path.clone();
 
     let fee_reserve = FeeReserve {
@@ -169,7 +176,7 @@ pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
     };
 
     let kv_store: DynKVStore = Arc::new(memory::empty().await?);
-    Ok(CdkCln::new(rpc_path, fee_reserve, kv_store).await?)
+    Ok(CdkCln::new(rpc_path, fee_reserve, expose_private_channels, kv_store).await?)
 }
 
 pub async fn create_lnd_backend(lnd_client: &LndClient) -> Result<CdkLnd> {

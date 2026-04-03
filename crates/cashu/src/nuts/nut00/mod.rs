@@ -19,8 +19,6 @@ use super::nut02::ShortKeysetId;
 #[cfg(feature = "wallet")]
 use super::nut10;
 #[cfg(feature = "wallet")]
-use super::nut11::SpendingConditions;
-#[cfg(feature = "wallet")]
 use crate::amount::FeeAndAmounts;
 #[cfg(feature = "wallet")]
 use crate::amount::SplitTarget;
@@ -1037,7 +1035,7 @@ impl PreMintSecrets {
         amount: Amount,
         amount_split_target: &SplitTarget,
         receiver_pubkey: PublicKey,
-        conditions: Option<crate::nuts::nut11::Conditions>,
+        conditions: Option<crate::nuts::nut10::Conditions>,
         ephemeral_keys: &[crate::nuts::nut01::SecretKey],
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
@@ -1120,7 +1118,7 @@ impl PreMintSecrets {
         keyset_id: Id,
         amount: Amount,
         amount_split_target: &SplitTarget,
-        conditions: &SpendingConditions,
+        conditions: &nut10::SpendingConditions,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
         let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
@@ -1274,6 +1272,107 @@ mod tests {
         let b = PreMintSecrets::blank(Id::from_str("009a1f293253e41e").unwrap(), Amount::from(1))
             .unwrap();
         assert_eq!(b.len(), 1);
+    }
+
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn test_premint_secrets_accessors_and_total_amount() {
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let amounts = vec![
+            Amount::from(1_u64),
+            Amount::from(2_u64),
+            Amount::from(4_u64),
+        ];
+        let secrets = vec![Secret::generate(), Secret::generate(), Secret::generate()];
+
+        let premint_secrets =
+            PreMintSecrets::from_secrets(keyset_id, amounts.clone(), secrets.clone()).unwrap();
+
+        assert_eq!(premint_secrets.total_amount().unwrap(), Amount::from(7_u64));
+        assert_eq!(premint_secrets.amounts(), amounts);
+        assert_eq!(premint_secrets.secrets(), secrets);
+
+        let blinded_messages = premint_secrets.blinded_messages();
+        assert_eq!(blinded_messages.len(), 3);
+        assert_eq!(blinded_messages[0].amount, Amount::from(1_u64));
+        assert_eq!(blinded_messages[1].amount, Amount::from(2_u64));
+        assert_eq!(blinded_messages[2].amount, Amount::from(4_u64));
+        assert!(blinded_messages
+            .iter()
+            .all(|message| message.keyset_id == keyset_id));
+
+        let rs = premint_secrets.rs();
+        assert_eq!(rs.len(), 3);
+        assert_eq!(rs[0], premint_secrets.secrets[0].r);
+        assert_eq!(rs[1], premint_secrets.secrets[1].r);
+        assert_eq!(rs[2], premint_secrets.secrets[2].r);
+    }
+
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn test_premint_secrets_combine_and_sort() {
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let mut combined = PreMintSecrets::from_secrets(
+            keyset_id,
+            vec![Amount::from(8_u64), Amount::from(2_u64)],
+            vec![Secret::generate(), Secret::generate()],
+        )
+        .unwrap();
+        let other = PreMintSecrets::from_secrets(
+            keyset_id,
+            vec![Amount::from(4_u64), Amount::from(1_u64)],
+            vec![Secret::generate(), Secret::generate()],
+        )
+        .unwrap();
+
+        combined.combine(other);
+
+        assert_eq!(combined.len(), 4);
+        assert_eq!(
+            combined.amounts(),
+            vec![
+                Amount::from(8_u64),
+                Amount::from(2_u64),
+                Amount::from(4_u64),
+                Amount::from(1_u64)
+            ]
+        );
+
+        combined.sort_secrets();
+
+        assert_eq!(
+            combined.amounts(),
+            vec![
+                Amount::from(1_u64),
+                Amount::from(2_u64),
+                Amount::from(4_u64),
+                Amount::from(8_u64)
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn test_premint_secrets_iterator_next_yields_all_items() {
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let premint_secrets = PreMintSecrets::from_secrets(
+            keyset_id,
+            vec![
+                Amount::from(1_u64),
+                Amount::from(2_u64),
+                Amount::from(4_u64),
+            ],
+            vec![Secret::generate(), Secret::generate(), Secret::generate()],
+        )
+        .unwrap();
+        let expected = premint_secrets.secrets.clone();
+        let mut iterated = premint_secrets.clone();
+
+        assert_eq!(iterated.next(), Some(expected[0].clone()));
+        assert_eq!(iterated.next(), Some(expected[1].clone()));
+        assert_eq!(iterated.next(), Some(expected[2].clone()));
+        assert_eq!(iterated.next(), None);
+        assert!(iterated.is_empty());
     }
 
     #[test]
@@ -1683,7 +1782,8 @@ mod tests {
     #[cfg(feature = "wallet")]
     fn test_with_p2bk_rejects_mismatched_ephemeral_keys_when_not_sig_all() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
-        use crate::nuts::nut11::{Conditions, SigFlag};
+        use crate::nuts::nut11::SigFlag;
+        use crate::Conditions;
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
         let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
@@ -1710,7 +1810,8 @@ mod tests {
     #[cfg(feature = "wallet")]
     fn test_with_p2bk_allows_single_ephemeral_key_for_sig_all() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
-        use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+        use crate::nuts::nut11::SigFlag;
+        use crate::{Conditions, SpendingConditions};
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
         let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
@@ -1748,7 +1849,8 @@ mod tests {
     #[cfg(feature = "wallet")]
     fn test_with_p2bk_allows_one_ephemeral_key_per_output_when_not_sig_all() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
-        use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+        use crate::nuts::nut11::SigFlag;
+        use crate::{Conditions, SpendingConditions};
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
         let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
@@ -1789,8 +1891,9 @@ mod tests {
     #[cfg(feature = "wallet")]
     fn test_with_p2bk_uses_canonical_slots_for_pubkeys_and_refund_keys() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
-        use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+        use crate::nuts::nut11::SigFlag;
         use crate::nuts::nut28::{blind_public_key, ecdh_kdf};
+        use crate::{Conditions, SpendingConditions};
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
         let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();

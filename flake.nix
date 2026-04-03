@@ -20,6 +20,11 @@
 
     flake-utils.url = "github:numtide/flake-utils";
 
+    dart-overlay = {
+      url = "github:roman-vanesyan/dart-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     crane = {
       url = "github:ipetkov/crane";
     };
@@ -31,6 +36,7 @@
     , nixpkgs-unstable
     , rust-overlay
     , flake-utils
+    , dart-overlay
     , crane
     , ...
     }@inputs:
@@ -51,6 +57,15 @@
             "x86_64-darwin" = "x86_64-apple-darwin";
             "aarch64-darwin" = "aarch64-apple-darwin";
           }.${system} or null;
+
+        # Rust host target triple (used by binding derivations)
+        hostTarget =
+          {
+            "x86_64-linux" = "x86_64-unknown-linux-gnu";
+            "aarch64-linux" = "aarch64-unknown-linux-gnu";
+            "x86_64-darwin" = "x86_64-apple-darwin";
+            "aarch64-darwin" = "aarch64-apple-darwin";
+          }.${system};
 
         cargoTargetEnvName =
           {
@@ -80,6 +95,9 @@
           inherit system;
         };
 
+        # Dart SDK from dart-overlay
+        dartpkgs = dart-overlay.packages.${system};
+
         # Static/musl packages for fully static binary builds (Linux only)
         pkgsMusl =
           if muslTarget != null then
@@ -97,11 +115,19 @@
         # Toolchains
         # latest stable
         stable_toolchain = pkgs.rust-bin.stable."1.94.0".default.override {
-          targets = [ "wasm32-unknown-unknown" ]; # wasm
+          targets = [
+            "wasm32-unknown-unknown"
+            "aarch64-apple-ios"
+            "x86_64-apple-ios"
+            "aarch64-apple-ios-sim"
+            "aarch64-apple-darwin"
+            "x86_64-apple-darwin"
+          ];
           extensions = [
             "rustfmt"
             "clippy"
             "rust-analyzer"
+            "llvm-tools-preview"
           ];
         };
 
@@ -112,6 +138,7 @@
             "rustfmt"
             "clippy"
             "rust-analyzer"
+            "llvm-tools-preview"
           ];
         };
 
@@ -124,6 +151,7 @@
               "clippy"
               "rust-analyzer"
               "rust-src"
+              "llvm-tools-preview"
             ];
             targets = [ "wasm32-unknown-unknown" ]; # wasm
           }
@@ -138,6 +166,29 @@
               }
           else
             null;
+
+        # Shim for native_toolchain_rust (Dart package) which requires rustup.
+        # Nix provides Rust directly, so this fakes the rustup commands.
+        rustupShim = pkgs.writeShellScriptBin "rustup" ''
+          case "''${1:-}" in
+            show)
+              version=$(rustc --version | sed 's/rustc //')
+              echo "''${version} (nix)"
+              ;;
+            run)
+              shift  # drop "run"
+              shift  # drop channel
+              exec "$@"
+              ;;
+            target)
+              # no-op: Nix provides targets via stable_toolchain
+              ;;
+            *)
+              echo "rustup shim: unsupported command '$*'" >&2
+              exit 1
+              ;;
+          esac
+        '';
 
         # ========================================
         # Crane setup for cached builds
@@ -164,6 +215,7 @@
               ./.cargo
               ./crates
               ./fuzz
+              ./bindings
             ]
           );
         };
@@ -183,13 +235,30 @@
               ./.cargo
               ./crates
               ./fuzz
+              ./bindings
             ]
           );
         };
 
+        # Vendor cargo dependencies
+        cargoVendorDir = craneLib.vendorMultipleCargoDeps {
+          inherit (craneLib.findCargoFiles src) cargoConfigs;
+          cargoLockList = [
+            ./Cargo.lock
+          ];
+        };
+
+        # Vendor cargo dependencies for MSRV builds (Cargo.lock.msrv has different versions)
+        cargoVendorDirMsrv = craneLib.vendorMultipleCargoDeps {
+          inherit (craneLib.findCargoFiles srcMsrv) cargoConfigs;
+          cargoLockList = [
+            ./Cargo.lock.msrv
+          ];
+        };
+
         # Common args for all Crane builds
         commonCraneArgs = {
-          inherit src version;
+          inherit src version cargoVendorDir;
           pname = "cdk";
 
           nativeBuildInputs = with pkgs; [
@@ -212,10 +281,11 @@
         };
 
         # Common args for MSRV builds - uses srcMsrv with pinned deps
-        # Override cargoLock to use Cargo.lock.msrv instead of Cargo.lock
+        # Override cargoLock and cargoVendorDir to use Cargo.lock.msrv instead of Cargo.lock
         commonCraneArgsMsrv = commonCraneArgs // {
           src = srcMsrv;
           cargoLock = ./Cargo.lock.msrv;
+          cargoVendorDir = cargoVendorDirMsrv;
         };
 
         # Musl-targeting C compiler for crates that compile bundled C code
@@ -228,7 +298,7 @@
           if muslTarget != null then
             (
               {
-                inherit src version;
+                inherit src version cargoVendorDir;
                 pname = "cdk-static";
 
                 # Cross-compile to musl for fully static linking
@@ -292,7 +362,7 @@
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests";
+            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin";
           }
         );
 
@@ -383,7 +453,7 @@
         mkWasmBuild =
           name: cargoArgs:
           craneLib.cargoBuild ({
-            inherit src version;
+            inherit src version cargoVendorDir;
             pname = "cdk-wasm-${name}";
             cargoArtifacts = workspaceDeps;
             cargoExtraArgs = "${cargoArgs} --target wasm32-unknown-unknown";
@@ -449,7 +519,7 @@
               cargo build --release --package cdk-ffi --features postgres
 
               # Generate Python bindings
-              cargo run --bin uniffi-bindgen generate \
+              cargo run -p cdk-ffi --bin uniffi-bindgen generate \
                 --library target/release/libcdk_ffi.so \
                 --language python \
                 --out-dir target/bindings/python
@@ -462,6 +532,86 @@
               python3 crates/cdk-ffi/tests/test_kvstore.py
             '';
             installPhaseCommand = "mkdir -p $out";
+          }
+        );
+
+        # ========================================
+        # Language binding derivations (cached by Cachix)
+        # ========================================
+
+        # Dart FFI bindings: builds cdk-ffi-dart cdylib + generates Dart source
+        dartBindings = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-dart-bindings";
+            cargoArtifacts = workspaceDeps;
+            buildPhaseCargoCommand = ''
+              # Build the Dart FFI cdylib
+              cargo build --release -p cdk-ffi-dart
+
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+
+              # Find the cdk-ffi-dart shared library in deps (contains UniFFI metadata)
+              CDK_FFI_LIB="target/release/deps/libcdk_ffi_dart.$LIB_EXT"
+
+              if [ ! -f "$CDK_FFI_LIB" ]; then
+                echo "ERROR: Could not find $CDK_FFI_LIB"
+                ls -la target/release/deps/libcdk_ffi* || true
+                exit 1
+              fi
+
+              echo "Using library: $CDK_FFI_LIB"
+
+              # Generate Dart bindings via the custom uniffi-bindgen binary
+              # Must run from bindings/dart/rust/ so it finds uniffi.toml
+              (cd bindings/dart/rust && \
+                cargo run --release -p cdk-ffi-dart --bin uniffi-bindgen -- \
+                  "../../../$CDK_FFI_LIB" --out-dir ../../../target/dart-bindings)
+            '';
+            installPhaseCommand = ''
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+              mkdir -p $out/lib/src/generated
+              cp target/dart-bindings/*.dart $out/lib/src/generated/
+              cp target/release/libcdk_ffi_dart.$LIB_EXT $out/lib/src/generated/
+            '';
+          }
+        );
+
+        # Kotlin JVM bindings: builds cdk-ffi-kotlin cdylib + generates Kotlin sources
+        kotlinBindings = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-kotlin-bindings";
+            cargoArtifacts = workspaceDeps;
+            buildPhaseCargoCommand = ''
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+
+              # Build for host target
+              cargo build --release -p cdk-ffi-kotlin --target "${hostTarget}"
+
+              # Generate Kotlin bindings
+              cargo run --release -p cdk-ffi-kotlin --bin uniffi-bindgen -- generate \
+                --library "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+                --language kotlin \
+                --out-dir target/kotlin-bindings \
+                --no-format
+            '';
+            installPhaseCommand = ''
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+
+              mkdir -p $out/cdk-jvm/src/main/kotlin
+              mkdir -p $out/cdk-jvm/src/main/resources
+
+              # Copy generated Kotlin sources
+              cp -r target/kotlin-bindings/org $out/cdk-jvm/src/main/kotlin/
+
+              # Copy native library (renamed to libcdk_ffi for JNA convention)
+              cp "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+                "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT"
+
+              # Strip debug symbols
+              strip -x "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT" 2>/dev/null || true
+            '';
           }
         );
 
@@ -782,8 +932,11 @@
           else
             null;
 
-        # Helper to build a macOS release binary package (dynamically linked, as is standard on macOS)
+        # Helper to build a macOS release binary package
         # Uses the same release-static Cargo profile for consistent optimization settings
+        # Non-system libraries (openssl, sqlite, zlib, libiconv) are statically linked
+        # to avoid embedding Nix store dylib paths in the distributed binary.
+        # A postFixup safety net rewrites any remaining Nix store refs to system paths.
         # bin: the cargo binary name (e.g. "cdk-mintd")
         # name: the output binary name prefix (e.g. "cdk-mintd-ldk")
         # cargoExtraArgs: additional cargo args (e.g. "--bin cdk-mintd --features ldk-node")
@@ -800,9 +953,64 @@
               cargoArtifacts = workspaceDeps;
               inherit cargoExtraArgs;
               CARGO_PROFILE = "release-static";
+
+              # Static-link non-system libraries so the binary doesn't reference
+              # Nix store paths for openssl, sqlite, zlib, libiconv, etc.
+              OPENSSL_STATIC = "1";
+              PKG_CONFIG_ALL_STATIC = "1";
+
               installPhaseCommand = ''
                 mkdir -p $out/bin
                 cp target/release-static/${bin} $out/bin/${name}-${version}-${archSuffix}
+              '';
+
+              # Safety net: rewrite any remaining Nix store dylib references to
+              # their macOS system equivalents so the binary is fully portable.
+              # We unconditionally rewrite to /usr/lib/ without checking file existence
+              # because macOS 11+ stores system dylibs in a shared cache (dyld resolves
+              # them at runtime even though the individual .dylib files may not be on disk).
+              postFixup = ''
+                for f in $out/bin/*; do
+                  otool -L "$f" | tail -n +2 | grep '/nix/store' | awk '{print $1}' | while read -r lib; do
+                    base=$(basename "$lib")
+                    echo "Rewriting Nix store dylib ref: $lib -> /usr/lib/$base"
+                    install_name_tool -change "$lib" "/usr/lib/$base" "$f"
+                  done
+
+                  otool -l "$f" | awk '
+                    $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+                    in_rpath && $1 == "path" {
+                      print $2
+                      in_rpath = 0
+                    }
+                  ' | grep '^/nix/store' | while read -r rpath; do
+                    echo "Removing Nix store rpath: $rpath"
+                    install_name_tool -delete_rpath "$rpath" "$f"
+                  done
+
+                  # Fail the build if any runtime Mach-O references still point into the Nix store.
+                  # This prevents silently shipping binaries that depend on Nix-specific loader paths.
+                  remaining_libs=$(otool -L "$f" | tail -n +2 | grep '/nix/store' || true)
+                  remaining_rpaths=$(otool -l "$f" | awk '
+                    $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+                    in_rpath && $1 == "path" {
+                      print $2
+                      in_rpath = 0
+                    }
+                  ' | grep '^/nix/store' || true)
+
+                  if [ -n "$remaining_libs$remaining_rpaths" ]; then
+                    echo "ERROR: Binary still references Nix store paths after fixup:"
+                    if [ -n "$remaining_libs" ]; then
+                      echo "$remaining_libs"
+                    fi
+                    if [ -n "$remaining_rpaths" ]; then
+                      echo "$remaining_rpaths"
+                    fi
+                    echo "The binary would fail on systems without Nix installed."
+                    exit 1
+                  fi
+                done
               '';
             }
           );
@@ -858,6 +1066,9 @@
         packages = {
           deps = workspaceDeps;
           deps-msrv = workspaceDepsMsrv;
+          # Language bindings (cached cdylib + uniffi codegen)
+          dart-bindings = dartBindings;
+          kotlin-bindings = kotlinBindings;
         }
         # Static build deps (Linux only)
         // lib.optionalAttrs (muslTarget != null) {
@@ -994,6 +1205,7 @@
                   cargo update cookie_store --precise 0.22.0
                   cargo update serde_with --precise 3.17.0
                   cargo update time --precise 0.3.44
+                  cargo update unicode-segmentation --precise 1.12.0
                ";
                 buildInputs = baseBuildInputs ++ [ msrv_toolchain ];
                 inherit nativeBuildInputs;
@@ -1075,6 +1287,7 @@
                     stable_toolchain
                     pkgs.docker-client
                     pkgs.python311
+                    pkgsUnstable.cargo-llvm-cov
                   ]
                   ++ builtins.attrValues itestBinaries;
                 inherit nativeBuildInputs;
@@ -1102,6 +1315,27 @@
               // envVars
             );
 
+            # Shell for bindings development (Dart + Swift + Kotlin FFI)
+            bindings = pkgs.mkShell (
+              {
+                shellHook = commonShellHook;
+                buildInputs = baseBuildInputs ++ [
+                  stable_toolchain
+                  rustupShim
+                  dartpkgs.default
+                  pkgs.openssl
+                  pkgs.jdk17
+                ];
+                nativeBuildInputs = [
+                  pkgs.pkg-config
+                ];
+                OPENSSL_DIR = "${pkgs.openssl.dev}";
+                OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
+                OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
+              }
+              // envVars
+            );
+
           in
           {
             inherit
@@ -1112,6 +1346,7 @@
               nightly-regtest
               integration
               ffi
+              bindings
               ;
             default = stable;
           };

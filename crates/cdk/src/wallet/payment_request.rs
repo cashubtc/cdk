@@ -19,7 +19,8 @@ use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32}
 
 use crate::error::Error;
 use crate::mint_url::MintUrl;
-use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+use crate::nuts::nut10::{Conditions, SpendingConditions};
+use crate::nuts::nut11::SigFlag;
 use crate::nuts::nut18::Nut10SecretRequest;
 use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
 #[cfg(feature = "nostr")]
@@ -132,7 +133,7 @@ impl Wallet {
                             .await
                             .map_err(|e| Error::Custom(format!("Publish Nostr event: {e}")))?;
 
-                        println!(
+                        tracing::info!(
                             "Published event {} successfully to {}",
                             gift_wrap.val,
                             gift_wrap
@@ -144,7 +145,7 @@ impl Wallet {
                         );
 
                         if !gift_wrap.failed.is_empty() {
-                            println!(
+                            tracing::warn!(
                                 "Could not publish to {}",
                                 gift_wrap
                                     .failed
@@ -173,11 +174,11 @@ impl Wallet {
                         .await
                         .map_err(|e| Error::HttpError(None, e.to_string()))?;
 
-                    let status = res.status();
                     if res.is_success() {
-                        println!("Successfully posted payment");
+                        tracing::info!("Successfully posted payment");
                         Ok(())
                     } else {
+                        let status = res.status();
                         let body = res.text().await.unwrap_or_default();
                         Err(Error::HttpError(Some(status), body))
                     }

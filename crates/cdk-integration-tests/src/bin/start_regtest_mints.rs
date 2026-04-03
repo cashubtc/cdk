@@ -78,6 +78,7 @@ async fn start_cln_mint(
     let cln_config = cdk_mintd::config::Cln {
         rpc_path: cln_rpc_path,
         bolt12: false,
+        expose_private_channels: false,
         fee_percent: 0.0,
         reserve_fee_min: 0.into(),
     };
@@ -296,6 +297,7 @@ fn create_ldk_settings(
             use_keyset_v2: None,
             http_cache: cdk_axum::cache::Config::default(),
             enable_swagger_ui: None,
+            enable_info_page: None,
             logging: LoggingConfig::default(),
         },
         mint_info: cdk_mintd::config::MintInfo::default(),

@@ -129,6 +129,10 @@ enum Commands {
         #[command(subcommand)]
         command: sub_commands::npubcash::NpubCashSubCommand,
     },
+    /// Generate a public key
+    GeneratePublicKey(sub_commands::generate_public_key::GeneratePublicKeySubCommand),
+    /// Get public keys
+    GetPublicKeys(sub_commands::get_public_keys::GetPublicKeysSubCommand),
 }
 
 #[tokio::main]
@@ -355,6 +359,22 @@ async fn main() -> Result<()> {
                 mint_url,
                 command,
                 Some(args.npubcash_url.clone()),
+            )
+            .await
+        }
+        Commands::GeneratePublicKey(sub_command_args) => {
+            sub_commands::generate_public_key::generate_public_key(
+                &wallet_repository,
+                sub_command_args,
+                &currency_unit,
+            )
+            .await
+        }
+        Commands::GetPublicKeys(sub_command_args) => {
+            sub_commands::get_public_keys::get_public_keys(
+                &wallet_repository,
+                sub_command_args,
+                &currency_unit,
             )
             .await
         }

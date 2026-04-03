@@ -65,6 +65,12 @@ impl Info {
             }
         }
 
+        if let Ok(info_page_str) = env::var(ENV_ENABLE_INFO_PAGE) {
+            if let Ok(enable) = info_page_str.parse() {
+                self.enable_info_page = Some(enable);
+            }
+        }
+
         if let Ok(use_keyset_v2_str) = env::var(ENV_USE_KEYSET_V2) {
             if let Ok(use_keyset_v2) = use_keyset_v2_str.parse() {
                 self.use_keyset_v2 = Some(use_keyset_v2);

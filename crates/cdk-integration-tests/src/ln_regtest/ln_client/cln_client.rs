@@ -36,6 +36,44 @@ pub struct ClnClient {
 }
 
 impl ClnClient {
+    /// Open a private (unannounced) channel to a peer
+    pub async fn open_private_channel(
+        &self,
+        amount_sat: u64,
+        peer_id: &str,
+        push_amount: Option<u64>,
+    ) -> Result<()> {
+        let cln_response = self
+            .client
+            .lock()
+            .await
+            .call(cln_rpc::Request::FundChannel(FundchannelRequest {
+                amount: AmountOrAll::Amount(Amount::from_sat(amount_sat)),
+                id: PublicKey::from_str(peer_id)?,
+                push_msat: push_amount.map(Amount::from_sat),
+                announce: Some(false),
+                close_to: None,
+                compact_lease: None,
+                feerate: None,
+                minconf: None,
+                mindepth: None,
+                request_amt: None,
+                reserve: None,
+                channel_type: None,
+                utxos: None,
+            }))
+            .await?;
+
+        let channel_id = match cln_response {
+            cln_rpc::Response::FundChannel(addr_res) => addr_res.channel_id,
+            _ => bail!("CLN returned wrong response kind"),
+        };
+
+        tracing::info!("CLN opened private channel: {}", channel_id);
+
+        Ok(())
+    }
+
     /// Create rpc client
     pub async fn new(data_dir: PathBuf, rpc_path: Option<PathBuf>) -> Result<Self> {
         let rpc_path = rpc_path.unwrap_or(data_dir.join("regtest/lightning-rpc"));

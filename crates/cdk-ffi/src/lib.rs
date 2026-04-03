@@ -15,10 +15,13 @@ pub mod npubcash;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 pub mod sqlite;
+#[cfg(feature = "supabase")]
+pub mod supabase;
 pub mod token;
 pub mod types;
 pub mod wallet;
 pub mod wallet_repository;
+mod wallet_trait;
 
 pub use database::*;
 pub use error::*;

@@ -1,10 +1,8 @@
 use anyhow::Result;
 use clap::Args;
-use tonic::transport::Channel;
 use tonic::Request;
 
-use crate::cdk_mint_client::CdkMintClient;
-use crate::RotateNextKeysetRequest;
+use crate::{InterceptedCdkMintClient, RotateNextKeysetRequest};
 
 /// Command to rotate to the next keyset for the mint
 ///
@@ -39,7 +37,7 @@ pub struct RotateNextKeysetCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The arguments specifying how the new keyset should be configured
 pub async fn rotate_next_keyset(
-    client: &mut CdkMintClient<Channel>,
+    client: &mut InterceptedCdkMintClient,
     sub_command_args: &RotateNextKeysetCommand,
 ) -> Result<()> {
     let amounts = if let Some(amounts_str) = &sub_command_args.amounts {
@@ -52,15 +50,13 @@ pub async fn rotate_next_keyset(
     };
 
     let response = client
-        .rotate_next_keyset(super::with_version_header(Request::new(
-            RotateNextKeysetRequest {
-                unit: sub_command_args.unit.clone(),
-                amounts,
-                input_fee_ppk: sub_command_args.input_fee_ppk,
-                use_keyset_v2: sub_command_args.use_keyset_v2,
-                final_expiry: sub_command_args.final_expiry,
-            },
-        )))
+        .rotate_next_keyset(Request::new(RotateNextKeysetRequest {
+            unit: sub_command_args.unit.clone(),
+            amounts,
+            input_fee_ppk: sub_command_args.input_fee_ppk,
+            use_keyset_v2: sub_command_args.use_keyset_v2,
+            final_expiry: sub_command_args.final_expiry,
+        }))
         .await?;
 
     let response = response.into_inner();
