@@ -80,7 +80,10 @@ impl Token {
 
     /// Get proofs from the token
     pub fn proofs(&self, mint_keysets: Vec<KeySetInfo>) -> Result<Proofs, FfiError> {
-        let mint_keysets: Vec<_> = mint_keysets.into_iter().map(|k| k.into()).collect();
+        let mint_keysets: Vec<_> = mint_keysets
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<_, _>>()?;
         let proofs = self.inner.proofs(&mint_keysets)?;
         Ok(proofs.into_iter().map(|p| p.into()).collect())
     }

@@ -360,7 +360,17 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
             .get_mint_keysets(ffi_mint_url)
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
-        Ok(result.map(|keysets| keysets.into_iter().map(Into::into).collect()))
+        let cdk_keysets = result
+            .map(|keysets| {
+                keysets
+                    .into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()
+            .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
+        Ok(cdk_keysets)
     }
 
     async fn get_keyset_by_id(
@@ -373,7 +383,12 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
             .get_keyset_by_id(ffi_id)
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
-        Ok(result.map(Into::into))
+        let cdk_keyset = result
+            .map(TryInto::try_into)
+            .transpose()
+            .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
+        Ok(cdk_keyset)
     }
 
     // Mint Quote Management
@@ -1219,7 +1234,7 @@ where
     }
 
     async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<KeySetInfo>, FfiError> {
-        let cdk_id = keyset_id.into();
+        let cdk_id = keyset_id.try_into()?;
         let result = self
             .inner
             .get_keyset_by_id(&cdk_id)
@@ -1274,7 +1289,7 @@ where
     }
 
     async fn get_keys(&self, id: Id) -> Result<Option<Keys>, FfiError> {
-        let cdk_id = id.into();
+        let cdk_id = id.try_into()?;
         let result = self
             .inner
             .get_keys(&cdk_id)
@@ -1542,7 +1557,7 @@ where
     }
 
     async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError> {
-        let cdk_id = keyset_id.into();
+        let cdk_id = keyset_id.try_into()?;
         self.inner
             .increment_keyset_counter(&cdk_id, count)
             .await
@@ -1576,7 +1591,10 @@ where
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), FfiError> {
         let cdk_mint_url = mint_url.try_into()?;
-        let cdk_keysets: Vec<cdk::nuts::KeySetInfo> = keysets.into_iter().map(Into::into).collect();
+        let cdk_keysets: Vec<cdk::nuts::KeySetInfo> = keysets
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<_, _>>()?;
         self.inner
             .add_mint_keysets(cdk_mint_url, cdk_keysets)
             .await
@@ -1622,7 +1640,7 @@ where
     }
 
     async fn remove_keys(&self, id: Id) -> Result<(), FfiError> {
-        let cdk_id = id.into();
+        let cdk_id = id.try_into()?;
         self.inner
             .remove_keys(&cdk_id)
             .await

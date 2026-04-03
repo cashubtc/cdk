@@ -28,16 +28,20 @@ impl From<cdk::nuts::KeySetInfo> for KeySetInfo {
     }
 }
 
-impl From<KeySetInfo> for cdk::nuts::KeySetInfo {
-    fn from(keyset: KeySetInfo) -> Self {
+impl TryFrom<KeySetInfo> for cdk::nuts::KeySetInfo {
+    type Error = FfiError;
+
+    fn try_from(keyset: KeySetInfo) -> Result<Self, Self::Error> {
         use std::str::FromStr;
-        Self {
-            id: cdk::nuts::Id::from_str(&keyset.id).expect("Invalid keyset ID"),
+
+        Ok(Self {
+            id: cdk::nuts::Id::from_str(&keyset.id)
+                .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             unit: keyset.unit.into(),
             active: keyset.active,
             final_expiry: None,
             input_fee_ppk: keyset.input_fee_ppk,
-        }
+        })
     }
 }
 
@@ -274,9 +278,12 @@ impl From<cdk::nuts::Id> for Id {
     }
 }
 
-impl From<Id> for cdk::nuts::Id {
-    fn from(id: Id) -> Self {
+impl TryFrom<Id> for cdk::nuts::Id {
+    type Error = FfiError;
+
+    fn try_from(id: Id) -> Result<Self, Self::Error> {
         use std::str::FromStr;
-        Self::from_str(&id.hex).expect("Invalid ID hex")
+
+        Self::from_str(&id.hex).map_err(|e| FfiError::internal(format!("Invalid ID hex: {}", e)))
     }
 }

@@ -36,6 +36,8 @@ uniffi::setup_scaffolding!();
 
 #[cfg(test)]
 mod tests {
+    use std::convert::TryInto;
+
     use super::*;
 
     #[test]
@@ -351,5 +353,52 @@ mod tests {
         // Test with invalid mnemonic
         let invalid_result = mnemonic_to_entropy("invalid mnemonic".to_string());
         assert!(invalid_result.is_err());
+    }
+
+    #[test]
+    fn test_keyset_info_try_from_rejects_invalid_id() {
+        let err = <cdk::nuts::KeySetInfo as TryFrom<KeySetInfo>>::try_from(KeySetInfo {
+            id: "invalid".to_string(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+        })
+        .expect_err("invalid keyset ID should return an error");
+
+        assert!(err.to_string().contains("Invalid keyset ID"));
+    }
+
+    #[test]
+    fn test_keyset_info_try_from_rejects_empty_id() {
+        let err = <cdk::nuts::KeySetInfo as TryFrom<KeySetInfo>>::try_from(KeySetInfo {
+            id: String::new(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+        })
+        .expect_err("empty keyset ID should return an error");
+
+        assert!(err.to_string().contains("Invalid keyset ID"));
+    }
+
+    #[test]
+    fn test_id_try_from_rejects_invalid_hex() {
+        let err = <cdk::nuts::Id as TryFrom<Id>>::try_from(Id {
+            hex: "invalid".to_string(),
+        })
+        .expect_err("invalid ID hex should return an error");
+
+        assert!(err.to_string().contains("Invalid ID hex"));
+    }
+
+    #[test]
+    fn test_id_try_from_accepts_valid_hex() {
+        let id: cdk::nuts::Id = Id {
+            hex: "009a1f293253e41e".to_string(),
+        }
+        .try_into()
+        .expect("valid ID hex should convert successfully");
+
+        assert_eq!(id.to_string(), "009a1f293253e41e");
     }
 }
