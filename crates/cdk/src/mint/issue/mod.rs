@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use bitcoin::secp256k1::schnorr::Signature;
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
+use cdk_common::nut00::KnownMethod;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
     IncomingPaymentOptions, WaitPaymentResponse,
@@ -10,8 +12,9 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteState, MintRequest, MintResponse,
-    NotificationPayload, PublicKey,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteRequest,
+    MintQuoteResponse, MintQuoteState, MintRequest, MintResponse, NotificationPayload,
+    PaymentMethod, PublicKey,
 };
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -21,8 +24,6 @@ use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
 use crate::Mint;
 
 mod auth;
-
-use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 
 /// Input enum to handle both single and batch mint formats (internal to CDK, not spec)
 #[derive(Debug, Clone)]
