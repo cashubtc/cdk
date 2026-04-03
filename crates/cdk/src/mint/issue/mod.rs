@@ -20,8 +20,6 @@ use crate::Mint;
 
 mod auth;
 
-use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
-
 /// Input enum to handle both single and batch mint formats (internal to CDK, not spec)
 #[derive(Debug, Clone)]
 pub enum MintInput {
