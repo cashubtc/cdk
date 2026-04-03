@@ -413,6 +413,12 @@ pub struct MockMintConnector {
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Response for post_swap calls
     pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
+    /// Response for LNURL pay request calls
+    pub lnurl_pay_request_response:
+        Mutex<Option<Result<crate::lightning_address::LnurlPayResponse, Error>>>,
+    /// Response for LNURL invoice calls
+    pub lnurl_invoice_response:
+        Mutex<Option<Result<crate::lightning_address::LnurlPayInvoiceResponse, Error>>>,
     /// Response for DNS TXT resolution calls
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     pub dns_txt_response: Mutex<Option<Result<Vec<String>, Error>>>,
@@ -437,6 +443,8 @@ impl MockMintConnector {
             melt_quote_status_response: Mutex::new(None),
             post_mint_response: Mutex::new(None),
             post_swap_response: Mutex::new(None),
+            lnurl_pay_request_response: Mutex::new(None),
+            lnurl_invoice_response: Mutex::new(None),
             #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
             dns_txt_response: Mutex::new(None),
         }
@@ -529,6 +537,20 @@ impl MockMintConnector {
         *self.post_swap_response.lock().unwrap() = Some(response);
     }
 
+    pub fn set_lnurl_pay_request_response(
+        &self,
+        response: Result<crate::lightning_address::LnurlPayResponse, Error>,
+    ) {
+        *self.lnurl_pay_request_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_lnurl_invoice_response(
+        &self,
+        response: Result<crate::lightning_address::LnurlPayInvoiceResponse, Error>,
+    ) {
+        *self.lnurl_invoice_response.lock().unwrap() = Some(response);
+    }
+
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     pub fn set_dns_txt_response(&self, response: Result<Vec<String>, Error>) {
         *self.dns_txt_response.lock().unwrap() = Some(response);
@@ -551,14 +573,22 @@ impl MintConnector for MockMintConnector {
         &self,
         _url: &str,
     ) -> Result<crate::lightning_address::LnurlPayResponse, Error> {
-        unimplemented!()
+        self.lnurl_pay_request_response
+            .lock()
+            .unwrap()
+            .take()
+            .expect("MockMintConnector: fetch_lnurl_pay_request called without configured response")
     }
 
     async fn fetch_lnurl_invoice(
         &self,
         _url: &str,
     ) -> Result<crate::lightning_address::LnurlPayInvoiceResponse, Error> {
-        unimplemented!()
+        self.lnurl_invoice_response
+            .lock()
+            .unwrap()
+            .take()
+            .expect("MockMintConnector: fetch_lnurl_invoice called without configured response")
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<crate::nuts::KeySet>, Error> {

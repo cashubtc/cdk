@@ -46,6 +46,14 @@ pub enum Error {
     /// Failed to parse invoice
     #[error("Failed to parse invoice: {0}")]
     InvoiceParse(String),
+    /// Returned invoice does not contain an amount
+    #[error("Returned invoice does not contain an amount")]
+    InvoiceAmountUndefined,
+    /// Returned invoice amount does not match the requested amount
+    #[error(
+        "Returned invoice amount {actual} msat does not match requested amount {expected} msat"
+    )]
+    IncorrectInvoiceAmount { actual: u64, expected: u64 },
 }
 
 /// Lightning address - represents a user@domain.com address
@@ -130,7 +138,20 @@ impl LightningAddress {
         // Parse and return the invoice
         let pr = invoice_response.pr.ok_or(Error::NoInvoice)?;
 
-        Bolt11Invoice::from_str(&pr).map_err(|e| Error::InvoiceParse(e.to_string()))
+        let invoice =
+            Bolt11Invoice::from_str(&pr).map_err(|e| Error::InvoiceParse(e.to_string()))?;
+        let invoice_amount_msat = invoice
+            .amount_milli_satoshis()
+            .ok_or(Error::InvoiceAmountUndefined)?;
+
+        if invoice_amount_msat != amount_msat_u64 {
+            return Err(Error::IncorrectInvoiceAmount {
+                actual: invoice_amount_msat,
+                expected: amount_msat_u64,
+            });
+        }
+
+        Ok(invoice)
     }
 }
 
@@ -207,8 +228,12 @@ pub struct LnurlPayInvoiceResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Arc;
 
+    use super::*;
+    use crate::wallet::test_utils::MockMintConnector;
+
+    const INVOICE_100_SATS: &str = "lnbc1u1p53kkd9pp5ve8pd9zr60yjyvs6tn77mndavzrl5lwd2gx5hk934f6q8jwguzgsdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5482y73fxmlvg4t66nupdaph93h7dcmfsg2ud72wajf0cpk3a96rq9qxpqysgqujexd0l89u5dutn8hxnsec0c7jrt8wz0z67rut0eah0g7p6zhycn2vff0ts5vwn2h93kx8zzqy3tzu4gfhkya2zpdmqelg0ceqnjztcqma65pr";
     #[test]
     fn test_lightning_address_parsing() {
         let addr = LightningAddress::from_str("satoshi@bitcoin.org").unwrap();
@@ -234,5 +259,35 @@ mod tests {
         assert!(LightningAddress::from_str("@example.com").is_err());
         assert!(LightningAddress::from_str("user@").is_err());
         assert!(LightningAddress::from_str("user").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_request_invoice_accepts_matching_invoice_amount() {
+        let connector = Arc::new(MockMintConnector::new());
+        connector.set_lnurl_pay_request_response(Ok(LnurlPayResponse {
+            callback: "https://example.com/callback".to_string(),
+            min_sendable: 1,
+            max_sendable: 1_000_000,
+            metadata: "[]".to_string(),
+            tag: Some("payRequest".to_string()),
+            reason: None,
+        }));
+        connector.set_lnurl_invoice_response(Ok(LnurlPayInvoiceResponse {
+            pr: Some(INVOICE_100_SATS.to_string()),
+            success_action: None,
+            routes: None,
+            reason: None,
+        }));
+
+        let address = LightningAddress::from_str("alice@example.com").expect("valid address");
+        let invoice = address
+            .request_invoice(
+                &(connector as Arc<dyn crate::wallet::MintConnector + Send + Sync>),
+                Amount::from(100_000_u64),
+            )
+            .await
+            .expect("matching amount should succeed");
+
+        assert_eq!(invoice.amount_milli_satoshis(), Some(100_000));
     }
 }
