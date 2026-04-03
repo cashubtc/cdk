@@ -80,6 +80,8 @@ mod tests {
         assert!(!options.include_fee);
         assert!(options.max_proofs.is_none());
         assert!(options.metadata.is_empty());
+        assert!(options.p2pk_signing_keys.is_empty());
+        assert!(!options.allow_locked_proofs);
     }
 
     #[test]
@@ -201,6 +203,8 @@ mod tests {
             max_proofs: Some(10),
             metadata,
             use_p2bk: false,
+            p2pk_signing_keys: Vec::new(),
+            allow_locked_proofs: false,
         };
 
         assert!(options.memo.is_some());
@@ -256,6 +260,20 @@ mod tests {
         };
 
         let result: Result<cdk::wallet::ReceiveOptions, _> = options.try_into();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_send_options_invalid_secret_key_returns_error() {
+        let options = SendOptions {
+            p2pk_signing_keys: vec![SecretKey {
+                hex: "z".repeat(64),
+            }],
+            ..Default::default()
+        };
+
+        let result: Result<cdk::wallet::SendOptions, _> = options.try_into();
 
         assert!(result.is_err());
     }

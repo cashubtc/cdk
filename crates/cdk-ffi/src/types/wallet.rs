@@ -160,6 +160,10 @@ pub struct SendOptions {
     pub max_proofs: Option<u32>,
     /// Metadata
     pub metadata: HashMap<String, String>,
+    /// Signing keys for P2PK-locked input proofs
+    pub p2pk_signing_keys: Vec<SecretKey>,
+    /// Allow P2PK-locked proofs to be included directly in the token without a swap
+    pub allow_locked_proofs: bool,
 }
 
 impl Default for SendOptions {
@@ -173,13 +177,23 @@ impl Default for SendOptions {
             max_proofs: None,
             metadata: HashMap::new(),
             use_p2bk: false,
+            p2pk_signing_keys: Vec::new(),
+            allow_locked_proofs: false,
         }
     }
 }
 
-impl From<SendOptions> for cdk::wallet::SendOptions {
-    fn from(opts: SendOptions) -> Self {
-        cdk::wallet::SendOptions {
+impl TryFrom<SendOptions> for cdk::wallet::SendOptions {
+    type Error = FfiError;
+
+    fn try_from(opts: SendOptions) -> Result<Self, Self::Error> {
+        let p2pk_signing_keys = opts
+            .p2pk_signing_keys
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(cdk::wallet::SendOptions {
             memo: opts.memo.map(Into::into),
             conditions: opts.conditions.and_then(|c| c.try_into().ok()),
             amount_split_target: opts.amount_split_target.into(),
@@ -188,7 +202,9 @@ impl From<SendOptions> for cdk::wallet::SendOptions {
             max_proofs: opts.max_proofs.map(|p| p as usize),
             metadata: opts.metadata,
             use_p2bk: opts.use_p2bk,
-        }
+            p2pk_signing_keys,
+            allow_locked_proofs: opts.allow_locked_proofs,
+        })
     }
 }
 
@@ -203,6 +219,8 @@ impl From<cdk::wallet::SendOptions> for SendOptions {
             max_proofs: opts.max_proofs.map(|p| p as u32),
             metadata: opts.metadata,
             use_p2bk: opts.use_p2bk,
+            p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
+            allow_locked_proofs: opts.allow_locked_proofs,
         }
     }
 }
