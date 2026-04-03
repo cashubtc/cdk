@@ -9,7 +9,7 @@ use axum::Router;
 use crate::custom_handlers::{
     cache_post_batch_mint, cache_post_melt_custom, cache_post_mint_custom,
     get_check_melt_custom_quote, get_check_mint_custom_quote, post_batch_check_mint_quote,
-    post_melt_custom_quote, post_mint_custom_quote,
+    post_melt_custom_quote, post_mint_custom_quote, post_mint_quote_by_pubkey,
 };
 use crate::MintState;
 
@@ -44,6 +44,10 @@ pub fn create_custom_routers(state: MintState, custom_methods: Vec<String>) -> R
         .route(
             "/mint/quote/{method}/check",
             post(post_batch_check_mint_quote),
+        )
+        .route(
+            "/mint/quote/{method}/pubkey",
+            post(post_mint_quote_by_pubkey),
         )
         .route("/mint/{method}", post(cache_post_mint_custom))
         .route("/mint/{method}/batch", post(cache_post_batch_mint))
