@@ -1044,6 +1044,46 @@ where
     assert_eq!(retrieved.request_lookup_id, lookup_id);
 }
 
+/// Test getting mint quote by public key
+pub async fn get_mint_quote_by_public_key<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use crate::database::mint::test::unique_string;
+
+    let secret_key = SecretKey::generate();
+    let pubkey = secret_key.public_key();
+
+    let mint_quote = MintQuote::new(
+        None,
+        "".to_owned(),
+        cashu::CurrencyUnit::Sat,
+        None,
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        Some(pubkey),
+        Amount::new(100, cashu::CurrencyUnit::Sat),
+        Amount::new(0, cashu::CurrencyUnit::Sat),
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
+        vec![],
+        vec![],
+        None,
+    );
+
+    // Add quote
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_mint_quote(mint_quote.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let retrieved = db.get_mint_quotes_by_pubkey(&[pubkey]).await.unwrap();
+    assert!(!retrieved.is_empty());
+    let retrieved = retrieved.first().unwrap();
+    assert_eq!(retrieved.id, mint_quote.id);
+    assert!(retrieved.pubkey.is_some());
+    assert_eq!(retrieved.pubkey, Some(pubkey));
+}
+
 /// Test deleting blinded messages
 pub async fn delete_blinded_messages<DB>(db: DB)
 where
