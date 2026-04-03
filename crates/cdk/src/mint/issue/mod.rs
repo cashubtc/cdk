@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use bitcoin::secp256k1::schnorr::Signature;
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
+use cdk_common::nut00::KnownMethod;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
     IncomingPaymentOptions, OnchainIncomingPaymentOptions, WaitPaymentResponse,
@@ -10,8 +12,9 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, MintQuoteState,
-    MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
+    MintQuoteOnchainResponse, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
+    MintResponse, NotificationPayload, PaymentMethod, PublicKey,
 };
 use tracing::instrument;
 
@@ -471,6 +474,19 @@ impl Mint {
                             amount_issued: q.amount_issued().into(),
                         }))
                     }
+                    PaymentMethod::Known(KnownMethod::Onchain) => {
+                        Ok(MintQuoteResponse::Onchain(MintQuoteOnchainResponse::<
+                            QuoteId,
+                        > {
+                            quote: q.id.clone(),
+                            request: q.request.clone(),
+                            unit: q.unit.clone(),
+                            expiry: Some(q.expiry),
+                            pubkey: q.pubkey.ok_or(Error::PubkeyRequired)?,
+                            amount_paid: q.amount_paid().into(),
+                            amount_issued: q.amount_issued().into(),
+                        }))
+                    }
                     _ => Ok(MintQuoteResponse::Custom {
                         method: q.payment_method.clone(),
                         response: MintQuoteCustomResponse {
@@ -478,10 +494,11 @@ impl Mint {
                             request: q.request.clone(),
                             amount: q.amount.clone().map(|a| a.into()),
                             unit: Some(q.unit.clone()),
-                            state: q.state(),
                             expiry: Some(q.expiry),
                             pubkey: q.pubkey,
                             extra: q.extra_json.clone().unwrap_or_default(),
+                            amount_paid: q.amount_paid().into(),
+                            amount_issued: q.amount_issued().into(),
                         },
                     }),
                 })
