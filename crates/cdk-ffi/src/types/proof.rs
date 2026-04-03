@@ -93,7 +93,7 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
             keyset_id: Id::from_str(&proof.keyset_id)
                 .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             witness: proof.witness.map(|w| w.into()),
-            dleq: proof.dleq.map(|d| d.into()),
+            dleq: proof.dleq.map(TryInto::try_into).transpose()?,
             p2pk_e: proof
                 .p2pk_e
                 .map(|p| cdk::nuts::PublicKey::from_str(&p))
@@ -201,13 +201,18 @@ impl From<cdk::nuts::ProofDleq> for ProofDleq {
     }
 }
 
-impl From<ProofDleq> for cdk::nuts::ProofDleq {
-    fn from(dleq: ProofDleq) -> Self {
-        Self {
-            e: cdk::nuts::SecretKey::from_hex(&dleq.e).expect("Invalid e hex"),
-            s: cdk::nuts::SecretKey::from_hex(&dleq.s).expect("Invalid s hex"),
-            r: cdk::nuts::SecretKey::from_hex(&dleq.r).expect("Invalid r hex"),
-        }
+impl TryFrom<ProofDleq> for cdk::nuts::ProofDleq {
+    type Error = FfiError;
+
+    fn try_from(dleq: ProofDleq) -> Result<Self, Self::Error> {
+        Ok(Self {
+            e: cdk::nuts::SecretKey::from_hex(&dleq.e)
+                .map_err(|e| FfiError::internal(format!("Invalid dleq e: {}", e)))?,
+            s: cdk::nuts::SecretKey::from_hex(&dleq.s)
+                .map_err(|e| FfiError::internal(format!("Invalid dleq s: {}", e)))?,
+            r: cdk::nuts::SecretKey::from_hex(&dleq.r)
+                .map_err(|e| FfiError::internal(format!("Invalid dleq r: {}", e)))?,
+        })
     }
 }
 
@@ -220,12 +225,18 @@ impl From<cdk::nuts::BlindSignatureDleq> for BlindSignatureDleq {
     }
 }
 
-impl From<BlindSignatureDleq> for cdk::nuts::BlindSignatureDleq {
-    fn from(dleq: BlindSignatureDleq) -> Self {
-        Self {
-            e: cdk::nuts::SecretKey::from_hex(&dleq.e).expect("Invalid e hex"),
-            s: cdk::nuts::SecretKey::from_hex(&dleq.s).expect("Invalid s hex"),
-        }
+impl TryFrom<BlindSignatureDleq> for cdk::nuts::BlindSignatureDleq {
+    type Error = FfiError;
+
+    fn try_from(dleq: BlindSignatureDleq) -> Result<Self, Self::Error> {
+        Ok(Self {
+            e: cdk::nuts::SecretKey::from_hex(&dleq.e).map_err(|e| {
+                FfiError::internal(format!("Invalid blind signature dleq e: {}", e))
+            })?,
+            s: cdk::nuts::SecretKey::from_hex(&dleq.s).map_err(|e| {
+                FfiError::internal(format!("Invalid blind signature dleq s: {}", e))
+            })?,
+        })
     }
 }
 

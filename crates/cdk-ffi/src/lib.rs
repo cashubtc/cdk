@@ -242,6 +242,55 @@ mod tests {
     }
 
     #[test]
+    fn test_receive_options_invalid_secret_key_returns_error() {
+        let options = ReceiveOptions {
+            amount_split_target: SplitTarget::None,
+            p2pk_signing_keys: vec![SecretKey {
+                hex: "z".repeat(64),
+            }],
+            preimages: Vec::new(),
+            metadata: Default::default(),
+        };
+
+        let result: Result<cdk::wallet::ReceiveOptions, _> = options.try_into();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_proof_with_invalid_dleq_returns_error() {
+        let proof = Proof {
+            amount: Amount::new(1),
+            secret: "test-secret".to_string(),
+            c: "02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc".to_string(),
+            keyset_id: "009a1f293253e41e".to_string(),
+            witness: None,
+            dleq: Some(ProofDleq {
+                e: "z".repeat(64),
+                s: "a".repeat(64),
+                r: "b".repeat(64),
+            }),
+            p2pk_e: None,
+        };
+
+        let result: Result<cdk::nuts::Proof, _> = proof.try_into();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_blind_signature_dleq_invalid_hex_returns_error() {
+        let dleq = BlindSignatureDleq {
+            e: "z".repeat(64),
+            s: "a".repeat(64),
+        };
+
+        let result: Result<cdk::nuts::BlindSignatureDleq, _> = dleq.try_into();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_wallet_config() {
         let config = WalletConfig {
             target_proof_count: None,

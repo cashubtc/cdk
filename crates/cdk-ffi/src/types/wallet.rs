@@ -264,10 +264,12 @@ impl SecretKey {
     }
 }
 
-impl From<SecretKey> for cdk::nuts::SecretKey {
-    fn from(key: SecretKey) -> Self {
-        // This will panic if hex is invalid, but we validate in from_hex()
-        cdk::nuts::SecretKey::from_hex(&key.hex).expect("Invalid secret key hex")
+impl TryFrom<SecretKey> for cdk::nuts::SecretKey {
+    type Error = FfiError;
+
+    fn try_from(key: SecretKey) -> Result<Self, Self::Error> {
+        cdk::nuts::SecretKey::from_hex(&key.hex)
+            .map_err(|e| FfiError::internal(format!("Invalid secret key: {}", e)))
     }
 }
 
@@ -303,14 +305,22 @@ impl Default for ReceiveOptions {
     }
 }
 
-impl From<ReceiveOptions> for cdk::wallet::ReceiveOptions {
-    fn from(opts: ReceiveOptions) -> Self {
-        cdk::wallet::ReceiveOptions {
+impl TryFrom<ReceiveOptions> for cdk::wallet::ReceiveOptions {
+    type Error = FfiError;
+
+    fn try_from(opts: ReceiveOptions) -> Result<Self, Self::Error> {
+        let p2pk_signing_keys = opts
+            .p2pk_signing_keys
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(cdk::wallet::ReceiveOptions {
             amount_split_target: opts.amount_split_target.into(),
-            p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
+            p2pk_signing_keys,
             preimages: opts.preimages,
             metadata: opts.metadata,
-        }
+        })
     }
 }
 
