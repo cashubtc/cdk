@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 // external crates
 use anyhow::{anyhow, bail, Result};
+use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, KVStore, MintDatabase, MintKeysDatabase};
@@ -72,6 +73,7 @@ pub mod setup;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
+const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
 
 fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -1198,6 +1200,7 @@ async fn start_services_with_shutdown(
 
     let mut mint_service = Router::new()
         .merge(v1_service)
+        .layer(DefaultBodyLimit::max(REQUEST_BODY_LIMIT_BYTES))
         .layer(
             ServiceBuilder::new()
                 .layer(RequestDecompressionLayer::new())
