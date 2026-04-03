@@ -83,10 +83,12 @@ jobs:
         id: tag
         run: |
           if [[ "${{ github.event_name }}" == "release" ]]; then
-            echo "version=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            RAW_VERSION="${{ github.event.release.tag_name }}"
           else
-            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            RAW_VERSION="${{ github.event.inputs.tag }}"
           fi
+          echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -124,12 +126,14 @@ jobs:
         id: tag
         run: |
           if [[ "${{ github.event_name }}" == "release" ]]; then
-            echo "version=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            RAW_VERSION="${{ github.event.release.tag_name }}"
             echo "is_stable=${{ !github.event.release.prerelease && !contains(github.event.release.tag_name, 'rc') }}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            RAW_VERSION="${{ github.event.inputs.tag }}"
             echo "is_stable=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
 
       - name: Extract semver components
         id: semver
@@ -150,7 +154,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-arm64
 
       - name: Create major.minor manifest
-        if: ${{ github.event_name == 'release' }}
+        if: ${{ steps.tag.outputs.is_stable == 'true' }}
         run: |
           docker buildx imagetools create \
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.semver.outputs.major_minor }}${{ matrix.variant.tag_suffix }} \
