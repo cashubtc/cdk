@@ -9,7 +9,7 @@ use std::sync::Arc;
 use cdk_common::HttpClientBuilder;
 use cdk_common::{AuthToken, HttpClient};
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-use hickory_resolver::config::ResolverConfig;
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use hickory_resolver::name_server::TokioConnectionProvider;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -76,15 +76,22 @@ impl Default for Async {
         Self {
             inner: HttpClient::new(),
             #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-            resolver: Arc::new(
-                Resolver::builder_with_config(
-                    ResolverConfig::default(),
-                    TokioConnectionProvider::default(),
-                )
-                .build(),
-            ),
+            resolver: Arc::new(default_resolver()),
         }
     }
+}
+
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+fn default_resolver() -> Resolver<TokioConnectionProvider> {
+    let mut resolver_opts = ResolverOpts::default();
+    resolver_opts.validate = true;
+
+    Resolver::builder_with_config(
+        ResolverConfig::default(),
+        TokioConnectionProvider::default(),
+    )
+    .with_options(resolver_opts)
+    .build()
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
