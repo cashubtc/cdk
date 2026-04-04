@@ -600,6 +600,10 @@ release m="":
   echo "📦 Triggering Kotlin package release for version $VERSION..."
   just ffi-release-kotlin $VERSION
 
+  # Trigger Golang package release after Rust crates are published
+  echo "📦 Triggering Golang package release for version $VERSION..."
+  just ffi-release-go $VERSION
+
 check-docs:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -839,6 +843,29 @@ ffi-release-kotlin VERSION:
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Kotlin workflow triggered successfully!"
+
+# Trigger Go Bindings release workflow
+ffi-release-go VERSION:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  CDK_GO_WORKFLOW_REF="${CDK_GO_WORKFLOW_REF:-$(git -C "{{justfile_directory()}}" branch --show-current)}"
+
+  echo "🚀 Triggering Publish Go Bindings workflow..."
+  echo "   Version: {{VERSION}}"
+  echo "   CDK Ref: v{{VERSION}}"
+  echo "   cdk-go workflow ref: ${CDK_GO_WORKFLOW_REF}"
+
+  # Use the workflow file name so the trigger works before and after the
+  # display name change, and allow the cdk-go workflow branch to be overridden.
+  gh workflow run release.yml \
+    --repo cashubtc/cdk-go \
+    --ref "${CDK_GO_WORKFLOW_REF}" \
+    --field version="{{VERSION}}" \
+    --field cdk_repo="cashubtc/cdk" \
+    --field cdk_ref="v{{VERSION}}"
+
+  echo "✅ Go workflow triggered successfully!"
 
 # Generate Dart FFI bindings via nix
 binding-dart:

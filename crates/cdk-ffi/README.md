@@ -58,4 +58,5 @@ For production use, see language-specific repositories:
 
 - [cdk-swift](https://github.com/cashubtc/cdk-swift) - iOS/macOS packages
 - [cdk-kotlin](https://github.com/cashubtc/cdk-kotlin) - Android/JVM packages  
+- [cdk-go](https://github.com/cashubtc/cdk-go) - Golang packages
 - [cdk-python](https://github.com/cashubtc/cdk-python) - PyPI packages
