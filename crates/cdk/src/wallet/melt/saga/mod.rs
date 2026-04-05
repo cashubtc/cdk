@@ -129,7 +129,10 @@ async fn finalize_melt_common<'a>(
         .map(|p| p.total_amount())
         .transpose()?
         .unwrap_or(Amount::ZERO);
-    let fee = proofs_total - quote_info.amount - change_total;
+    let fee = proofs_total
+        .checked_sub(quote_info.amount)
+        .and_then(|amount| amount.checked_sub(change_total))
+        .ok_or(Error::AmountOverflow)?;
 
     let mut updated_quote = quote_info.clone();
     updated_quote.state = state;
@@ -1161,13 +1164,19 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use cdk_common::amount::{FeeAndAmounts, SplitTarget};
     use cdk_common::nuts::State;
+    use cdk_common::MeltQuoteState;
+    use uuid::Uuid;
 
-    use super::MeltSaga;
+    use super::{finalize_melt_common, MeltSaga};
+    use crate::nuts::{BlindSignature, PreMintSecrets};
+    use crate::wallet::saga::new_compensations;
     use crate::wallet::test_utils::{
         create_test_db, create_test_wallet_with_mock, test_keyset_id, test_melt_quote,
         test_mint_url, test_proof_info, MockMintConnector,
     };
+    use crate::{Amount, Error};
 
     #[tokio::test]
     async fn test_prepare_melt_reserves_exact_input_proofs_for_operation() {
@@ -1247,5 +1256,47 @@ mod tests {
             stored[0].used_by_operation,
             Some(prepared.state_data.operation_id)
         );
+    }
+
+    #[tokio::test]
+    async fn test_finalize_melt_rejects_oversized_change_from_mint() {
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let keyset_id = test_keyset_id();
+        let quote = test_melt_quote();
+        let final_proofs = vec![test_proof_info(keyset_id, 1000, test_mint_url()).proof];
+        let fee_and_amounts = FeeAndAmounts::from((0, vec![1]));
+        let premint_secrets = PreMintSecrets::random(
+            keyset_id,
+            Amount::from(1),
+            &SplitTarget::None,
+            &fee_and_amounts,
+        )
+        .unwrap();
+        let oversized_change = vec![BlindSignature {
+            amount: Amount::from(1),
+            keyset_id,
+            c: premint_secrets.blinded_messages()[0].blinded_secret,
+            dleq: None,
+        }];
+
+        let result = finalize_melt_common(
+            &wallet,
+            new_compensations(),
+            Uuid::new_v4(),
+            &quote,
+            &final_proofs,
+            &premint_secrets,
+            MeltQuoteState::Paid,
+            None,
+            Some(oversized_change),
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::AmountOverflow)));
     }
 }
