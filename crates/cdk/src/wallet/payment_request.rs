@@ -220,6 +220,8 @@ pub struct CreateRequestParams {
     pub http_url: Option<String>, // when transport == http
     /// List of Nostr relay URLs to include in the nprofile (used if `transport == nostr`)
     pub nostr_relays: Option<Vec<String>>, // when transport == nostr
+    /// Optional list of mint URLs to include in the payment request
+    pub mints: Option<Vec<String>>,
 }
 
 /// Extra information needed to wait for an incoming Nostr payment
@@ -468,13 +470,20 @@ impl WalletRepository {
         // Collect available mints for the selected unit
         // Filter by the requested unit and extract unique mint URLs
         let requested_unit = CurrencyUnit::from_str(&params.unit)?;
-        let mints: Vec<MintUrl> = self
-            .get_balances()
-            .await?
-            .keys()
-            .filter(|key| key.unit == requested_unit)
-            .map(|key| key.mint_url.clone())
-            .collect();
+        let mints: Vec<MintUrl> = if let Some(mints) = &params.mints {
+            let mut parsed_mints = Vec::with_capacity(mints.len());
+            for m in mints {
+                parsed_mints.push(MintUrl::from_str(m)?);
+            }
+            parsed_mints
+        } else {
+            self.get_balances()
+                .await?
+                .keys()
+                .filter(|key| key.unit == requested_unit)
+                .map(|key| key.mint_url.clone())
+                .collect()
+        };
 
         // Transports
         let transport_type = params.transport.to_lowercase();
@@ -573,13 +582,20 @@ impl WalletRepository {
         // Collect available mints for the selected unit
         // Filter by the requested unit and extract unique mint URLs
         let requested_unit = CurrencyUnit::from_str(&params.unit)?;
-        let mints: Vec<MintUrl> = self
-            .get_balances()
-            .await?
-            .keys()
-            .filter(|key| key.unit == requested_unit)
-            .map(|key| key.mint_url.clone())
-            .collect();
+        let mints: Vec<MintUrl> = if let Some(mints) = &params.mints {
+            let mut parsed_mints = Vec::with_capacity(mints.len());
+            for m in mints {
+                parsed_mints.push(MintUrl::from_str(m)?);
+            }
+            parsed_mints
+        } else {
+            self.get_balances()
+                .await?
+                .keys()
+                .filter(|key| key.unit == requested_unit)
+                .map(|key| key.mint_url.clone())
+                .collect()
+        };
 
         // Transports
         let transport_type = params.transport.to_lowercase();

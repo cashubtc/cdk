@@ -991,7 +991,7 @@ impl Wallet {
                 None,
                 false,
                 false,
-                true,
+                crate::wallet::swap::ProofReservation::Reserve,
             ))
             .await?;
             saga.execute().await?;

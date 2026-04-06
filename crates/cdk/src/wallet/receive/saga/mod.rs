@@ -283,6 +283,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                     self.wallet.unit.clone(),
                     Some(operation_id),
                     None,
+                    None,
                 )
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
