@@ -219,12 +219,15 @@ jobs:
           done
       - name: Apply CDK wallet schema
         run: |
-          # Use cargo run on a helper that prints the SQL, then pipe it to psql
-          nix develop -i -L .#stable --command bash -c "
-            cargo run -p cdk-supabase --example print_schema 2>/dev/null | \
-            docker compose -f misc/supabase/docker-compose.yml exec -T db \
-              psql -U supabase_admin -d postgres
-          "
+          # Generate the schema inside the Nix dev shell, then apply it via the
+          # host's Docker CLI (which is not on the Nix shell PATH).
+          schema_file="$(mktemp)"
+          trap 'rm -f "$schema_file"' EXIT
+
+          nix develop -i -L .#stable --command cargo run --quiet -p cdk-supabase --example print_schema > "$schema_file"
+
+          docker compose -f misc/supabase/docker-compose.yml exec -T db \
+            psql -U supabase_admin -d postgres < "$schema_file"
       - name: Run clippy and tests for cdk-supabase
         env:
           SUPABASE_URL: "http://localhost:54321"
