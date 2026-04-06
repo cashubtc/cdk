@@ -1832,7 +1832,6 @@ dependencies = [
  "lightning-invoice",
  "mockito",
  "once_cell",
- "paste",
  "reqwest",
  "serde",
  "serde_json",

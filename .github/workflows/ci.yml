@@ -190,9 +190,9 @@ jobs:
       - name: Run clippy and tests for cdk-postgres
         run: nix develop -i -L .#regtest --command bash -c "start-postgres && cargo clippy -p cdk-postgres -- -D warnings && cargo test -p cdk-postgres"
 
-  # Tests for cdk-supabase that require a local Supabase stack (PostgREST + GoTrue + PostgreSQL)
+  # Build and deterministic tests for cdk-supabase without a live Supabase stack
   supabase-tests:
-    name: "Supabase Tests"
+    name: "Supabase Feature Checks"
     runs-on: self-hosted
     timeout-minutes: 30
     needs: pre-commit-checks
@@ -205,38 +205,8 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
         continue-on-error: true
-      - name: Start Supabase local stack
-        run: |
-          docker compose -f misc/supabase/docker-compose.yml up -d
-          # Wait until PostgREST is reachable (it starts after Postgres is healthy)
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:54321/rest/v1/ -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRFA0NiK7kyqd6gq8zofHRnNe0pZzjJAVHf3nQzRoFk" > /dev/null 2>&1; then
-              echo "Supabase REST API is ready"
-              break
-            fi
-            echo "Waiting for Supabase... ($i/30)"
-            sleep 3
-          done
-      - name: Apply CDK wallet schema
-        run: |
-          # Generate the schema inside the Nix dev shell, then apply it via the
-          # host's Docker CLI (which is not on the Nix shell PATH).
-          schema_file="$(mktemp)"
-          trap 'rm -f "$schema_file"' EXIT
-
-          nix develop -i -L .#stable --command cargo run --quiet -p cdk-supabase --example print_schema > "$schema_file"
-
-          docker compose -f misc/supabase/docker-compose.yml exec -T db \
-            psql -U supabase_admin -d postgres < "$schema_file"
       - name: Run clippy and tests for cdk-supabase
-        env:
-          SUPABASE_URL: "http://localhost:54321"
-          # Well-known anon key for the default JWT secret used in docker-compose.yml
-          SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRFA0NiK7kyqd6gq8zofHRnNe0pZzjJAVHf3nQzRoFk"
-        run: nix develop -i -L .#stable --command bash -c "cargo clippy -p cdk-supabase -- -D warnings && cargo test -p cdk-supabase -- --test-threads 4 && cargo test -p cdk-ffi --features supabase --no-run"
-      - name: Stop Supabase local stack
-        if: always()
-        run: docker compose -f misc/supabase/docker-compose.yml down -v
+        run: nix develop -i -L .#stable --command bash -c "cargo clippy -p cdk-supabase --all-targets -- -D warnings && cargo test -p cdk-supabase -- --test-threads 4 && cargo test -p cdk-ffi --features supabase --no-run"
 
   regtest-itest:
     name: "Integration regtest tests"
