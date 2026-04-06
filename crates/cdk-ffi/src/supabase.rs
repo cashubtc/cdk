@@ -6,8 +6,8 @@ use cdk_supabase::SupabaseWalletDatabase;
 
 use crate::{
     CurrencyUnit, FfiError, FfiWalletDatabaseWrapper, Id, KeySet, KeySetInfo, Keys, MeltQuote,
-    MintInfo, MintQuote, MintUrl, ProofInfo, ProofState, PublicKey, SpendingConditions,
-    Transaction, TransactionDirection, TransactionId, WalletDatabase,
+    MintInfo, MintQuote, MintUrl, P2PKSigningKey, ProofInfo, ProofState, PublicKey,
+    SpendingConditions, Transaction, TransactionDirection, TransactionId, WalletDatabase,
 };
 
 /// FFI wrapper for Supabase wallet database
