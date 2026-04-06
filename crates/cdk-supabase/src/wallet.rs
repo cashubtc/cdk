@@ -2890,6 +2890,8 @@ impl SupabaseAuth {
 
 #[cfg(test)]
 mod tests {
+    use cdk_common::wallet_db_test;
+
     use super::*;
 
     #[test]
@@ -2901,4 +2903,84 @@ mod tests {
             "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"
         );
     }
+
+    // -------------------------------------------------------------------------
+    // Integration tests against a live (or local) Supabase instance.
+    //
+    // These tests are gated behind the environment variables:
+    //   SUPABASE_URL       – e.g. http://localhost:54321 or https://<ref>.supabase.co
+    //   SUPABASE_ANON_KEY  – the project's `anon` / publishable API key
+    //
+    // Each test signs up a fresh, unique user so that Row-Level Security
+    // guarantees complete data isolation between concurrent test runs.
+    // The test_id string passed to `provide_db` is used as a per-test
+    // password for client-side AES-256-GCM encryption of proof secrets.
+    //
+    // To run locally against the Supabase CLI:
+    //   supabase start                       # starts PostgREST + GoTrue + Postgres
+    //   export SUPABASE_URL=http://localhost:54321
+    //   export SUPABASE_ANON_KEY=$(supabase status --output json | jq -r '.ANON_KEY')
+    //   # Apply migrations once:
+    //   supabase db push   OR   run get_schema_sql() output in the SQL editor
+    //   cargo test -p cdk-supabase
+    // -------------------------------------------------------------------------
+
+    /// Build a fresh `SupabaseWalletDatabase` for one test run.
+    ///
+    /// * Signs up a brand-new Supabase Auth user whose email is derived from
+    ///   `test_id`, ensuring RLS-based data isolation from all other tests.
+    /// * Sets an AES-256-GCM encryption password equal to `test_id` so every
+    ///   test uses a distinct key.
+    /// * If the required environment variables are absent the function panics
+    ///   with a clear message – the `wallet_db_test!` expansion will then
+    ///   report the test as failed, which is intentional: the CI job that
+    ///   enables this job *must* supply the credentials.
+    pub async fn provide_db(test_id: String) -> SupabaseWalletDatabase {
+        let url_str = std::env::var("SUPABASE_URL")
+            .expect("SUPABASE_URL must be set to run Supabase integration tests");
+        let anon_key = std::env::var("SUPABASE_ANON_KEY")
+            .expect("SUPABASE_ANON_KEY must be set to run Supabase integration tests");
+
+        let url = Url::parse(&url_str).expect("SUPABASE_URL is not a valid URL");
+
+        // Use a hash of the test_id as a short, filesystem-safe identifier.
+        // Supabase email addresses must be ≤ 254 chars; UUIDs are safe here.
+        let email_id = {
+            use bitcoin::hashes::{sha256, Hash};
+            let hash = sha256::Hash::hash(test_id.as_bytes());
+            hex::encode(&hash.as_byte_array()[..8]) // 16 hex chars
+        };
+        let email = format!("cdk-test-{}@example.com", email_id);
+        // Use a fixed-length password derived from the test id.
+        let password = {
+            use bitcoin::hashes::{sha256, Hash};
+            let hash = sha256::Hash::hash(test_id.as_bytes());
+            hex::encode(hash.as_byte_array()) // 64 hex chars, always valid
+        };
+
+        let db = SupabaseWalletDatabase::with_supabase_auth(url, anon_key)
+            .await
+            .expect("failed to create SupabaseWalletDatabase");
+
+        // Sign up a fresh user. Ignore "already registered" errors that can
+        // occur if a previous test run with the same hash left the user behind.
+        let auth_result = db.signup(&email, &password).await;
+        match auth_result {
+            Ok(_) => {}
+            Err(Error::Supabase(msg)) if msg.contains("already registered") => {
+                // Re-use the existing user by signing in instead.
+                db.signin(&email, &password)
+                    .await
+                    .expect("failed to sign in with existing test user");
+            }
+            Err(e) => panic!("Supabase signup failed: {e}"),
+        }
+
+        // Each test encrypts its proof secrets with a unique key.
+        db.set_encryption_password(&test_id).await;
+
+        db
+    }
+
+    cdk_common::wallet_db_test!(provide_db);
 }
