@@ -279,10 +279,13 @@ where
                     self.transport.http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Bolt12(response))
             }
-            MintQuoteRequest::Custom((_method, req)) => {
+            MintQuoteRequest::Custom { request: req, .. } => {
                 let response: cdk_common::nut04::MintQuoteCustomResponse<String> =
                     self.transport.http_post(url, auth_token, req).await?;
-                Ok(MintQuoteResponse::Custom((request.method(), response)))
+                Ok(MintQuoteResponse::Custom {
+                    method: request.method(),
+                    response,
+                })
             }
         }
     }
@@ -342,7 +345,7 @@ where
                 let response: MintQuoteCustomResponse<String> =
                     self.transport.http_get(url, auth_token).await?;
 
-                Ok(MintQuoteResponse::Custom((method, response)))
+                Ok(MintQuoteResponse::Custom { method, response })
             }
         }
     }
@@ -794,16 +797,16 @@ mod tests {
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
         let client = HttpClient::with_transport(mint_url, transport, None);
 
-        let request = MintQuoteRequest::Custom((
-            PaymentMethod::Custom("paypal".to_string()),
-            MintQuoteCustomRequest {
+        let request = MintQuoteRequest::Custom {
+            method: PaymentMethod::Custom("paypal".to_string()),
+            request: MintQuoteCustomRequest {
                 amount: cdk_common::Amount::from(1000),
                 unit: cdk_common::CurrencyUnit::Sat,
                 description: None,
                 pubkey: None,
                 extra: serde_json::Value::Null,
             },
-        ));
+        };
 
         let result = client.post_mint_quote(request).await;
         assert!(

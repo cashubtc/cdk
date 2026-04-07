@@ -69,16 +69,16 @@ impl Wallet {
             }
             PaymentMethod::Custom(_) => {
                 let amount = amount.ok_or(Error::AmountUndefined)?;
-                MintQuoteRequest::Custom((
-                    method.clone(),
-                    cdk_common::nuts::MintQuoteCustomRequest {
+                MintQuoteRequest::Custom {
+                    method: method.clone(),
+                    request: cdk_common::nuts::MintQuoteCustomRequest {
                         amount,
                         unit: unit.clone(),
                         description,
                         pubkey: Some(secret_key.public_key()),
                         extra: serde_json::from_str(&extra.unwrap_or_default())?,
                     },
-                ))
+                }
             }
         };
 
@@ -126,7 +126,7 @@ impl Wallet {
                 mint_quote.amount_issued = response.amount_issued;
                 mint_quote.amount_paid = response.amount_paid;
             }
-            MintQuoteResponse::Custom((_, response)) => match response.state {
+            MintQuoteResponse::Custom { response, .. } => match response.state {
                 MintQuoteState::Paid => {
                     mint_quote.amount_paid = response.amount.unwrap_or_default();
                 }
@@ -431,7 +431,7 @@ impl Wallet {
                             existing.amount_paid = amount;
                         }
                     }
-                    MintQuoteResponse::Custom((_, r)) => {
+                    MintQuoteResponse::Custom { response: r, .. } => {
                         if let Some(amount) = r.amount {
                             existing.amount_paid = amount;
                             existing.amount_issued = amount;
@@ -445,12 +445,12 @@ impl Wallet {
                 let amount = match &response {
                     MintQuoteResponse::Bolt11(r) => r.amount,
                     MintQuoteResponse::Bolt12(r) => r.amount,
-                    MintQuoteResponse::Custom((_, r)) => r.amount,
+                    MintQuoteResponse::Custom { response: r, .. } => r.amount,
                 };
                 let unit = match &response {
                     MintQuoteResponse::Bolt11(r) => r.unit.clone(),
                     MintQuoteResponse::Bolt12(r) => Some(r.unit.clone()),
-                    MintQuoteResponse::Custom((_, r)) => r.unit.clone(),
+                    MintQuoteResponse::Custom { response: r, .. } => r.unit.clone(),
                 };
                 MintQuote::new(
                     quote_id.to_string(),

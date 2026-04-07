@@ -1042,7 +1042,10 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
         } else {
             let method = quote.payment_method.clone();
             let custom_response = crate::nuts::MintQuoteCustomResponse::try_from(quote)?;
-            Ok(MintQuoteResponse::Custom((method, custom_response)))
+            Ok(MintQuoteResponse::Custom {
+                method,
+                response: custom_response,
+            })
         }
     }
 }

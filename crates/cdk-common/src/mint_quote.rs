@@ -17,7 +17,12 @@ pub enum MintQuoteRequest {
     /// Bolt12 (Offers)
     Bolt12(MintQuoteBolt12Request),
     /// Custom payment method
-    Custom((PaymentMethod, MintQuoteCustomRequest)),
+    Custom {
+        /// Payment method identifier
+        method: PaymentMethod,
+        /// Payment method specific request
+        request: MintQuoteCustomRequest,
+    },
 }
 
 impl From<MintQuoteBolt11Request> for MintQuoteRequest {
@@ -38,7 +43,7 @@ impl MintQuoteRequest {
         match self {
             Self::Bolt11(_) => PaymentMethod::Known(KnownMethod::Bolt11),
             Self::Bolt12(_) => PaymentMethod::Known(KnownMethod::Bolt12),
-            Self::Custom((method, _)) => method.clone(),
+            Self::Custom { method, .. } => method.clone(),
         }
     }
 
@@ -47,7 +52,7 @@ impl MintQuoteRequest {
         match self {
             Self::Bolt11(request) => Some(request.amount),
             Self::Bolt12(request) => request.amount,
-            Self::Custom((_, request)) => Some(request.amount),
+            Self::Custom { request, .. } => Some(request.amount),
         }
     }
 
@@ -56,7 +61,7 @@ impl MintQuoteRequest {
         match self {
             Self::Bolt11(request) => request.unit.clone(),
             Self::Bolt12(request) => request.unit.clone(),
-            Self::Custom((_, request)) => request.unit.clone(),
+            Self::Custom { request, .. } => request.unit.clone(),
         }
     }
 
@@ -70,7 +75,7 @@ impl MintQuoteRequest {
         match self {
             Self::Bolt11(request) => request.pubkey,
             Self::Bolt12(request) => Some(request.pubkey),
-            Self::Custom((_, request)) => request.pubkey,
+            Self::Custom { request, .. } => request.pubkey,
         }
     }
 }
@@ -84,7 +89,12 @@ pub enum MintQuoteResponse<Q> {
     /// Bolt12 (Offers)
     Bolt12(MintQuoteBolt12Response<Q>),
     /// Custom payment method
-    Custom((PaymentMethod, MintQuoteCustomResponse<Q>)),
+    Custom {
+        /// Payment method identifier
+        method: PaymentMethod,
+        /// Payment method specific response
+        response: MintQuoteCustomResponse<Q>,
+    },
 }
 
 impl<Q> MintQuoteResponse<Q> {
@@ -93,7 +103,7 @@ impl<Q> MintQuoteResponse<Q> {
         match self {
             Self::Bolt11(_) => PaymentMethod::Known(KnownMethod::Bolt11),
             Self::Bolt12(_) => PaymentMethod::Known(KnownMethod::Bolt12),
-            Self::Custom((method, _)) => method.clone(),
+            Self::Custom { method, .. } => method.clone(),
         }
     }
 
@@ -102,7 +112,7 @@ impl<Q> MintQuoteResponse<Q> {
         match self {
             Self::Bolt11(r) => &r.quote,
             Self::Bolt12(r) => &r.quote,
-            Self::Custom((_, r)) => &r.quote,
+            Self::Custom { response: r, .. } => &r.quote,
         }
     }
 
@@ -111,7 +121,7 @@ impl<Q> MintQuoteResponse<Q> {
         match self {
             Self::Bolt11(r) => &r.request,
             Self::Bolt12(r) => &r.request,
-            Self::Custom((_, r)) => &r.request,
+            Self::Custom { response: r, .. } => &r.request,
         }
     }
 
@@ -128,7 +138,7 @@ impl<Q> MintQuoteResponse<Q> {
                     crate::nuts::nut23::QuoteState::Unpaid
                 }
             }
-            Self::Custom((_, r)) => r.state,
+            Self::Custom { response: r, .. } => r.state,
         }
     }
 
@@ -137,7 +147,7 @@ impl<Q> MintQuoteResponse<Q> {
         match self {
             Self::Bolt11(r) => r.expiry,
             Self::Bolt12(r) => r.expiry,
-            Self::Custom((_, r)) => r.expiry,
+            Self::Custom { response: r, .. } => r.expiry,
         }
     }
 }
