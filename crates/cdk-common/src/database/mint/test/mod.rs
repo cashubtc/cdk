@@ -239,6 +239,8 @@ macro_rules! mint_db_test {
             add_and_get_saga,
             add_duplicate_saga,
             update_saga_state,
+            update_saga_with_finalization_data,
+            update_saga_preserves_finalization_data,
             delete_saga,
             get_incomplete_swap_sagas,
             get_incomplete_melt_sagas,

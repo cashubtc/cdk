@@ -1,9 +1,8 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use cdk_common::database::mint::MeltRequestInfo;
 use cdk_common::database::DynMintDatabase;
-use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
+use cdk_common::mint::{MeltFinalizationData, MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
 use cdk_common::payment::OutgoingPaymentOptions;
@@ -377,9 +376,6 @@ impl MeltSaga<Initial> {
         self.pubsub
             .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
 
-        // Store blinded messages for state
-        let blinded_messages_vec = melt_request.outputs().clone().unwrap_or_default();
-
         // Register compensation (uses LIFO via push_front)
         let compensations = Arc::clone(&self.compensations);
         compensations
@@ -405,10 +401,6 @@ impl MeltSaga<Initial> {
             metrics_incremented: self.metrics_incremented,
             state_data: SetupComplete {
                 quote: quote.inner(),
-                input_ys,
-                blinded_messages: blinded_messages_vec,
-                operation,
-                fee_breakdown,
             },
         })
     }
@@ -629,11 +621,7 @@ impl MeltSaga<SetupComplete> {
             metrics_incremented: self.metrics_incremented,
             state_data: PaymentConfirmed {
                 quote: self.state_data.quote,
-                input_ys: self.state_data.input_ys,
-                blinded_messages: self.state_data.blinded_messages,
                 payment_result,
-                operation: self.state_data.operation,
-                fee_breakdown: self.state_data.fee_breakdown,
             },
         })
     }
@@ -886,36 +874,42 @@ impl MeltSaga<PaymentConfirmed> {
         let payment_preimage = self.state_data.payment_result.payment_proof.clone();
         let payment_lookup_id = &self.state_data.payment_result.payment_lookup_id;
 
-        let mut tx = self.db.begin_transaction().await?;
+        // Persist Finalizing state so crash recovery knows TX1 may have completed.
+        // This must happen before finalize_melt_quote which will commit TX1 internally.
+        {
+            let mut tx = self.db.begin_transaction().await?;
+            let finalization_data = MeltFinalizationData {
+                total_spent: total_spent.clone(),
+                payment_lookup_id: payment_lookup_id.clone(),
+                payment_proof: payment_preimage.clone(),
+            };
+            tx.update_saga_with_finalization_data(
+                &self.operation_id,
+                SagaStateEnum::Melt(MeltSagaState::Finalizing),
+                Some(&finalization_data),
+            )
+            .await?;
+            tx.commit().await?;
+        }
 
-        // Acquire lock on the quote for safe state update
-        let mut quote =
-            shared::load_melt_quotes_exclusively(&mut tx, &self.state_data.quote.id).await?;
-
-        // Get melt request info (needed for validation and change)
-        let MeltRequestInfo {
-            inputs_amount,
-            inputs_fee,
-            change_outputs,
-        } = tx
-            .get_melt_request_and_blinded_messages(&self.state_data.quote.id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
-
-        // Use shared core finalization logic
-        if let Err(err) = super::shared::finalize_melt_core(
-            &mut tx,
+        // Delegate to the single shared finalization path which handles:
+        // - Core finalization (mark proofs spent, update quote to Paid)
+        // - Change signing
+        // - Operation recording (add_completed_operation)
+        // - Saga deletion
+        // - Melt request cleanup
+        let change = shared::finalize_melt_quote(
+            &self.mint,
+            &self.db,
             &self.pubsub,
-            &mut quote,
-            &self.state_data.input_ys,
-            inputs_amount.clone(),
-            inputs_fee.clone(),
-            total_spent.clone(),
+            &self.state_data.quote,
+            total_spent,
             payment_preimage.clone(),
             payment_lookup_id,
+            Some(self.operation_id),
         )
         .await
-        {
+        .map_err(|err| {
             // Do NOT compensate here - payment was already confirmed as Paid
             // Startup check will retry finalization on next recovery cycle
             tracing::error!(
@@ -923,82 +917,8 @@ impl MeltSaga<PaymentConfirmed> {
                 self.state_data.quote.id,
                 err
             );
-
-            tx.rollback().await?;
-            return Err(err);
-        }
-
-        let needs_change = inputs_amount > total_spent;
-
-        // Handle change: either sign change outputs or just commit TX1
-        let (change, mut tx) = if !needs_change {
-            // No change required - just commit TX1
-            tracing::debug!("No change required for melt {}", self.state_data.quote.id);
-            (None, tx)
-        } else {
-            // We commit tx here as process_change can make external call to blind sign
-            // We do not want to hold db txs across external calls
-            // Persist Finalizing state so recovery knows TX1 completed
-            tx.update_saga(
-                &self.operation_id,
-                cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::Finalizing),
-            )
-            .await?;
-            tx.commit().await?;
-            super::shared::process_melt_change(
-                &self.mint,
-                &self.db,
-                &self.state_data.quote.id,
-                inputs_amount.clone(),
-                total_spent.clone(),
-                inputs_fee,
-                change_outputs,
-            )
-            .await?
-        };
-
-        tx.delete_melt_request(&self.state_data.quote.id).await?;
-
-        // Delete saga - melt completed successfully (best-effort)
-        if let Err(e) = tx.delete_saga(&self.operation_id).await {
-            tracing::warn!("Failed to delete saga in finalize: {}", e);
-            // Don't rollback - melt succeeded
-        }
-
-        let mut operation = self.state_data.operation;
-        let change_amount = change
-            .as_ref()
-            .map(|c| Amount::try_sum(c.iter().map(|a| a.amount)).expect("Change cannot overflow"))
-            .unwrap_or_default();
-
-        operation.add_change(change_amount);
-
-        // Set payment details for melt operation
-        // payment_amount = the Lightning invoice amount
-        // payment_fee = actual fee paid (total_spent - invoice_amount)
-        let payment_fee = total_spent.checked_sub(&self.state_data.quote.amount())?;
-
-        operation.set_payment_details(self.state_data.quote.amount().into(), payment_fee.into());
-
-        tx.add_completed_operation(&operation, &self.state_data.fee_breakdown.per_keyset)
-            .await?;
-
-        tx.commit().await?;
-
-        self.pubsub.melt_quote_status(
-            &quote,
-            payment_preimage.clone(),
-            change.clone(),
-            MeltQuoteState::Paid,
-        );
-
-        tracing::debug!(
-            "Melt for quote {} completed total spent {}, total inputs: {}, change given: {}",
-            self.state_data.quote.id,
-            total_spent,
-            inputs_amount,
-            change_amount
-        );
+            err
+        })?;
 
         self.compensations.lock().await.clear();
 
