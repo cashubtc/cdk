@@ -1,6 +1,15 @@
 {
   description = "CDK Flake";
 
+  nixConfig = {
+    extra-substituters = [
+      "https://cashudevkit.cachix.org"
+    ];
+    extra-trusted-public-keys = [
+      "cashudevkit.cachix.org-1:zFKdvMiTllKWxIFNTjXgisZsOFufmaZXjWJNcmc8r+4="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
