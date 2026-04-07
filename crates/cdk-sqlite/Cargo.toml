@@ -15,6 +15,7 @@ readme = "README.md"
 default = ["mint", "wallet"]
 mint = ["cdk-common/mint", "cdk-sql-common/mint"]
 wallet = ["cdk-common/wallet", "cdk-sql-common/wallet"]
+conditional-tokens = ["cdk-common/conditional-tokens", "cdk-sql-common/conditional-tokens"]
 sqlcipher = ["rusqlite/bundled-sqlcipher"]
 prometheus = ["cdk-sql-common/prometheus", "cdk-prometheus"]
 [dependencies]

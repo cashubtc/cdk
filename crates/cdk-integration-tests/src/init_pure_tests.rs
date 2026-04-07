@@ -16,8 +16,10 @@ use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
-    CurrencyUnit, Id, KeySet, KeysetResponse, MeltQuoteBolt11Response, MeltRequest, MintInfo,
-    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
+    CurrencyUnit, Id, KeySet, KeysetResponse, MeltQuoteBolt11Response, MeltQuoteBolt12Request,
+    MeltQuoteBolt12Response, MeltQuoteCustomRequest, MeltQuoteCustomResponse, MeltRequest, MintInfo,
+    MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response, MintQuoteCustomRequest,
+    MintQuoteCustomResponse, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
     RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::types::{FeeReserve, QuoteTTL};
@@ -238,6 +240,157 @@ impl MintConnector for DirectMintConnection {
         let mut auth_wallet = self.auth_wallet.write().await;
 
         *auth_wallet = wallet;
+    }
+
+    async fn post_mint_bolt12_quote(
+        &self,
+        request: MintQuoteBolt12Request,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        let res: MintQuoteBolt12Response<QuoteId> =
+            self.mint.get_mint_quote(request.into()).await?.try_into()?;
+        Ok(res.into())
+    }
+
+    async fn get_mint_quote_bolt12_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        let quote: MintQuoteBolt12Response<QuoteId> = self
+            .mint
+            .check_mint_quote(&QuoteId::from_str(quote_id)?)
+            .await?
+            .try_into()?;
+
+        Ok(quote.into())
+    }
+
+    /// Melt Quote [NUT-23]
+    async fn post_melt_bolt12_quote(
+        &self,
+        request: MeltQuoteBolt12Request,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        self.mint
+            .get_melt_quote(request.into())
+            .await
+            .map(Into::into)
+    }
+    /// Melt Quote Status [NUT-23]
+    async fn get_melt_bolt12_quote_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        self.mint
+            .check_melt_quote(&QuoteId::from_str(quote_id)?)
+            .await
+            .map(Into::into)
+    }
+
+    /// Mint Quote for Custom Payment Method
+    async fn post_mint_custom_quote(
+        &self,
+        _method: &PaymentMethod,
+        _request: MintQuoteCustomRequest,
+    ) -> Result<MintQuoteCustomResponse<String>, Error> {
+        // Custom payment methods not implemented in test mock
+        Err(Error::UnsupportedPaymentMethod)
+    }
+
+    /// Mint Quote Status for Custom Payment Method
+    async fn get_mint_quote_custom_status(
+        &self,
+        _method: &str,
+        _quote_id: &str,
+    ) -> Result<MintQuoteCustomResponse<String>, Error> {
+        // Custom payment methods not implemented in test mock
+        Err(Error::UnsupportedPaymentMethod)
+    }
+
+    /// Melt Quote for Custom Payment Method
+    async fn post_melt_custom_quote(
+        &self,
+        _request: MeltQuoteCustomRequest,
+    ) -> Result<MeltQuoteCustomResponse<String>, Error> {
+        // Custom payment methods not implemented in test mock
+        Err(Error::UnsupportedPaymentMethod)
+    }
+
+    /// Melt Quote Status for Custom Payment Method
+    async fn get_melt_quote_custom_status(
+        &self,
+        _method: &str,
+        _quote_id: &str,
+    ) -> Result<MeltQuoteCustomResponse<String>, Error> {
+        // Custom payment methods not implemented in test mock
+        Err(Error::UnsupportedPaymentMethod)
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_conditions(
+        &self,
+        _since: Option<u64>,
+        _limit: Option<u64>,
+        _status: &[String],
+    ) -> Result<cdk::nuts::nut_ctf::GetConditionsResponse, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_condition(
+        &self,
+        _condition_id: &str,
+    ) -> Result<cdk::nuts::nut_ctf::ConditionInfo, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_register_condition(
+        &self,
+        _request: cdk::nuts::nut_ctf::RegisterConditionRequest,
+    ) -> Result<cdk::nuts::nut_ctf::RegisterConditionResponse, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_register_partition(
+        &self,
+        _condition_id: &str,
+        _request: cdk::nuts::nut_ctf::RegisterPartitionRequest,
+    ) -> Result<cdk::nuts::nut_ctf::RegisterPartitionResponse, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_conditional_keysets(
+        &self,
+        _since: Option<u64>,
+        _limit: Option<u64>,
+        _active: Option<bool>,
+    ) -> Result<cdk::nuts::nut_ctf::ConditionalKeysetsResponse, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_ctf_split(
+        &self,
+        _request: cdk::nuts::nut_ctf::CtfSplitRequest,
+    ) -> Result<cdk::nuts::nut_ctf::CtfSplitResponse, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_ctf_merge(
+        &self,
+        _request: cdk::nuts::nut_ctf::CtfMergeRequest,
+    ) -> Result<cdk::nuts::nut_ctf::CtfMergeResponse, Error> {
+        unimplemented!()
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_redeem_outcome(
+        &self,
+        _request: cdk::nuts::nut_ctf::RedeemOutcomeRequest,
+    ) -> Result<cdk::nuts::nut_ctf::RedeemOutcomeResponse, Error> {
+        unimplemented!()
     }
 }
 
