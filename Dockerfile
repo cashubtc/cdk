@@ -8,6 +8,7 @@ WORKDIR /usr/src/app
 COPY flake.nix ./flake.nix
 COPY Cargo.toml ./Cargo.toml
 COPY crates ./crates
+COPY bindings ./bindings
 
 # Start the Nix daemon and develop the environment
 RUN nix develop --extra-experimental-features nix-command --extra-experimental-features flakes --command cargo build --release --bin cdk-mintd --features postgres --features prometheus --features conditional-tokens
