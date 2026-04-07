@@ -62,6 +62,12 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
                 }
             }
         }),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     })
 }
 
