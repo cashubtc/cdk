@@ -7,6 +7,7 @@ use cdk_common::database::mint::{SagaDatabase, SagaTransaction};
 use cdk_common::database::Error;
 use cdk_common::mint;
 use cdk_common::util::unix_time;
+use serde_json;
 
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
@@ -20,6 +21,7 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
             operation_kind,
             state,
             quote_id,
+            finalization_data,
             created_at,
             updated_at
         ) = row
@@ -49,6 +51,15 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
         _ => None,
     };
 
+    let finalization_data =
+        match &finalization_data {
+            Column::Text(s) => Some(serde_json::from_str(s).map_err(|e| {
+                Error::Internal(format!("Invalid melt finalization data JSON: {e}"))
+            })?),
+            Column::Null => None,
+            _ => None,
+        };
+
     let created_at: u64 = column_as_number!(created_at);
     let updated_at: u64 = column_as_number!(updated_at);
 
@@ -57,6 +68,7 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
         operation_kind,
         state,
         quote_id,
+        finalization_data,
         created_at,
         updated_at,
     })
@@ -80,6 +92,7 @@ where
                 operation_kind,
                 state,
                 quote_id,
+                finalization_data,
                 created_at,
                 updated_at
             FROM
@@ -102,15 +115,23 @@ where
         query(
             r#"
             INSERT INTO saga_state
-            (operation_id, operation_kind, state, quote_id, created_at, updated_at)
+            (operation_id, operation_kind, state, quote_id, finalization_data, created_at, updated_at)
             VALUES
-            (:operation_id, :operation_kind, :state, :quote_id, :created_at, :updated_at)
+            (:operation_id, :operation_kind, :state, :quote_id, :finalization_data, :created_at, :updated_at)
             "#,
         )?
         .bind("operation_id", saga.operation_id.to_string())
         .bind("operation_kind", saga.operation_kind.to_string())
         .bind("state", saga.state.state())
         .bind("quote_id", saga.quote_id.as_deref())
+        .bind(
+            "finalization_data",
+            saga.finalization_data
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| Error::Internal(format!("Failed to serialize melt finalization data: {e}")))?,
+        )
         .bind("created_at", saga.created_at as i64)
         .bind("updated_at", current_time as i64)
         .execute(&self.inner)
@@ -134,6 +155,39 @@ where
             "#,
         )?
         .bind("state", new_state.state())
+        .bind("updated_at", current_time as i64)
+        .bind("operation_id", operation_id.to_string())
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn update_saga_with_finalization_data(
+        &mut self,
+        operation_id: &uuid::Uuid,
+        new_state: mint::SagaStateEnum,
+        finalization_data: Option<&mint::MeltFinalizationData>,
+    ) -> Result<(), Self::Err> {
+        let current_time = unix_time();
+
+        query(
+            r#"
+            UPDATE saga_state
+            SET state = :state, finalization_data = :finalization_data, updated_at = :updated_at
+            WHERE operation_id = :operation_id
+            "#,
+        )?
+        .bind("state", new_state.state())
+        .bind(
+            "finalization_data",
+            finalization_data
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to serialize melt finalization data: {e}"))
+                })?,
+        )
         .bind("updated_at", current_time as i64)
         .bind("operation_id", operation_id.to_string())
         .execute(&self.inner)
@@ -176,6 +230,7 @@ where
                 operation_kind,
                 state,
                 quote_id,
+                finalization_data,
                 created_at,
                 updated_at
             FROM

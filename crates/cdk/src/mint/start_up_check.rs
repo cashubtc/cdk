@@ -87,17 +87,21 @@ impl Mint {
 
     /// Finalizes a paid melt quote during startup check
     ///
-    /// Uses shared finalization logic from melt::shared module
+    /// Uses shared finalization logic from melt::shared module.
+    /// The `operation_id` is passed through to record the completed operation
+    /// and delete the saga atomically.
     async fn finalize_paid_melt_quote(
         &self,
         quote: &MeltQuote,
         total_spent: cdk_common::Amount<cdk_common::CurrencyUnit>,
         payment_preimage: Option<String>,
         payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
+        operation_id: uuid::Uuid,
     ) -> Result<(), Error> {
         tracing::info!("Finalizing paid melt quote {} during startup", quote.id);
 
-        // Use shared finalization
+        // Use shared finalization — handles operation recording and saga
+        // deletion atomically
         super::melt::shared::finalize_melt_quote(
             self,
             &self.localstore,
@@ -106,6 +110,7 @@ impl Mint {
             total_spent,
             payment_preimage,
             payment_lookup_id,
+            Some(operation_id),
         )
         .await?;
 
@@ -115,6 +120,86 @@ impl Mint {
         );
 
         Ok(())
+    }
+
+    async fn is_internal_melt_settlement(&self, quote: &MeltQuote, saga: &Saga) -> bool {
+        match self
+            .localstore
+            .get_mint_quote_by_request(&quote.request.to_string())
+            .await
+        {
+            Ok(Some(mint_quote)) => {
+                let melt_quote_id_str = quote.id.to_string();
+                mint_quote.payment_ids().contains(&&melt_quote_id_str)
+            }
+            Ok(None) => false,
+            Err(e) => {
+                tracing::warn!(
+                    "Error checking for internal settlement for saga {}: {}",
+                    saga.operation_id,
+                    e
+                );
+                false
+            }
+        }
+    }
+
+    async fn recover_legacy_finalizing_saga(
+        &self,
+        saga: &Saga,
+        quote: &MeltQuote,
+    ) -> Result<Option<crate::cdk_payment::MakePaymentResponse>, Error> {
+        if self.is_internal_melt_settlement(quote, saga).await {
+            tracing::info!(
+                "Legacy Finalizing saga {} identified as internal settlement",
+                saga.operation_id
+            );
+
+            let payment_lookup_id = quote.request_lookup_id.clone().unwrap_or_else(|| {
+                cdk_common::payment::PaymentIdentifier::CustomId(quote.id.to_string())
+            });
+
+            return Ok(Some(crate::cdk_payment::MakePaymentResponse {
+                payment_lookup_id,
+                payment_proof: None,
+                status: MeltQuoteState::Paid,
+                total_spent: quote.amount(),
+            }));
+        }
+
+        if quote.request_lookup_id.is_none() {
+            tracing::error!(
+                "Legacy Finalizing saga {} has no recovery metadata or lookup_id. Manual intervention required.",
+                saga.operation_id
+            );
+            return Ok(None);
+        }
+
+        match self.check_melt_payment_status(quote).await {
+            Ok(payment_response) if payment_response.status == MeltQuoteState::Paid => {
+                tracing::info!(
+                    "Recovered legacy Finalizing saga {} from LN backend",
+                    saga.operation_id
+                );
+                Ok(Some(payment_response))
+            }
+            Ok(payment_response) => {
+                tracing::error!(
+                    "Legacy Finalizing saga {} returned {} from LN backend after TX1 may have committed. Manual intervention required.",
+                    saga.operation_id,
+                    payment_response.status
+                );
+                Ok(None)
+            }
+            Err(err) => {
+                tracing::error!(
+                    "Failed to recover legacy Finalizing saga {} from LN backend: {}",
+                    saga.operation_id,
+                    err
+                );
+                Ok(None)
+            }
+        }
     }
 
     /// Checks all persisted sagas for swap operations and compensates
@@ -369,20 +454,32 @@ impl Mint {
                                 saga.operation_id
                             );
 
-                            let total_spent = quote.amount();
-                            let payment_lookup_id =
-                                quote.request_lookup_id.clone().unwrap_or_else(|| {
-                                    cdk_common::payment::PaymentIdentifier::CustomId(
-                                        quote.id.to_string(),
-                                    )
-                                });
+                            let payment_response = match saga.finalization_data.clone() {
+                                Some(finalization_data) => {
+                                    crate::cdk_payment::MakePaymentResponse {
+                                        payment_lookup_id: finalization_data.payment_lookup_id,
+                                        payment_proof: finalization_data.payment_proof,
+                                        status: MeltQuoteState::Paid,
+                                        total_spent: finalization_data.total_spent,
+                                    }
+                                }
+                                None => {
+                                    let Some(payment_response) =
+                                        self.recover_legacy_finalizing_saga(&saga, &quote).await?
+                                    else {
+                                        continue;
+                                    };
+                                    payment_response
+                                }
+                            };
 
                             if let Err(err) = self
                                 .finalize_paid_melt_quote(
                                     &quote,
-                                    total_spent,
-                                    None,
-                                    &payment_lookup_id,
+                                    payment_response.total_spent,
+                                    payment_response.payment_proof,
+                                    &payment_response.payment_lookup_id,
+                                    saga.operation_id,
                                 )
                                 .await
                             {
@@ -394,18 +491,6 @@ impl Mint {
                                 continue;
                             }
 
-                            // Delete saga after successful finalization
-                            let mut tx = self.localstore.begin_transaction().await?;
-                            if let Err(e) = tx.delete_saga(&saga.operation_id).await {
-                                tracing::error!(
-                                    "Failed to delete saga {}: {}. Will retry on next recovery cycle.",
-                                    saga.operation_id,
-                                    e
-                                );
-                                tx.rollback().await?;
-                                continue;
-                            }
-                            tx.commit().await?;
                             tracing::info!(
                                 "Successfully recovered Finalizing saga {}",
                                 saga.operation_id
@@ -421,26 +506,8 @@ impl Mint {
 
                             // Check if this was an internal settlement by looking for a mint quote
                             // that was paid by this melt quote
-                            let is_internal_settlement = match self
-                                .localstore
-                                .get_mint_quote_by_request(&quote.request.to_string())
-                                .await
-                            {
-                                Ok(Some(mint_quote)) => {
-                                    // Check if this mint quote was paid by our melt quote
-                                    let melt_quote_id_str = quote.id.to_string();
-                                    mint_quote.payment_ids().contains(&&melt_quote_id_str)
-                                }
-                                Ok(None) => false,
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Error checking for internal settlement for saga {}: {}",
-                                        saga.operation_id,
-                                        e
-                                    );
-                                    false
-                                }
-                            };
+                            let is_internal_settlement =
+                                self.is_internal_melt_settlement(&quote, &saga).await;
 
                             if is_internal_settlement {
                                 // Internal settlement was completed - finalize directly
@@ -464,6 +531,7 @@ impl Mint {
                                         total_spent,
                                         None, // No preimage for internal settlement
                                         &payment_lookup_id,
+                                        saga.operation_id,
                                     )
                                     .await
                                 {
@@ -475,18 +543,6 @@ impl Mint {
                                     continue;
                                 }
 
-                                // Delete saga after successful finalization
-                                let mut tx = self.localstore.begin_transaction().await?;
-                                if let Err(e) = tx.delete_saga(&saga.operation_id).await {
-                                    tracing::error!(
-                                        "Failed to delete saga {}: {}. Will retry on next recovery cycle.",
-                                        saga.operation_id,
-                                        e
-                                    );
-                                    tx.rollback().await?;
-                                    continue;
-                                }
-                                tx.commit().await?;
                                 tracing::info!(
                                     "Successfully recovered and finalized internal settlement saga {}",
                                     saga.operation_id
