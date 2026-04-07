@@ -10,9 +10,8 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
-    MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteBolt12Request,
-    MintQuoteBolt12Response, MintQuoteCustomRequest, MintQuoteCustomResponse, MintQuoteState,
-    MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteRequest, MintQuoteResponse,
+    MintQuoteState, MintRequest, MintResponse, NotificationPayload, PublicKey,
 };
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -22,8 +21,6 @@ use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
 use crate::Mint;
 
 mod auth;
-
-use cdk_common::nut00::KnownMethod;
 
 /// Input enum to handle both single and batch mint formats (internal to CDK, not spec)
 #[derive(Debug, Clone)]
@@ -131,151 +128,6 @@ impl MintInput {
     }
 }
 
-/// Unified request type for creating mint quotes across different payment methods
-///
-/// Wraps the protocol-specific request types (BOLT11, BOLT12, custom) into a
-/// single enum so the mint can handle quote creation through a common interface.
-#[derive(Debug)]
-pub enum MintQuoteRequest {
-    /// Lightning Network BOLT11 invoice request
-    Bolt11(MintQuoteBolt11Request),
-    /// Lightning Network BOLT12 offer request
-    Bolt12(MintQuoteBolt12Request),
-    /// Custom payment method request
-    Custom {
-        /// Payment method name (e.g., "paypal", "venmo")
-        method: String,
-        /// Generic request data
-        request: MintQuoteCustomRequest,
-    },
-}
-
-impl From<MintQuoteBolt11Request> for MintQuoteRequest {
-    fn from(request: MintQuoteBolt11Request) -> Self {
-        MintQuoteRequest::Bolt11(request)
-    }
-}
-
-impl From<MintQuoteBolt12Request> for MintQuoteRequest {
-    fn from(request: MintQuoteBolt12Request) -> Self {
-        MintQuoteRequest::Bolt12(request)
-    }
-}
-
-impl MintQuoteRequest {
-    /// Get the amount from the mint quote request
-    pub fn amount(&self) -> Option<Amount> {
-        match self {
-            MintQuoteRequest::Bolt11(request) => Some(request.amount),
-            MintQuoteRequest::Bolt12(request) => request.amount,
-            MintQuoteRequest::Custom { request, .. } => Some(request.amount),
-        }
-    }
-
-    /// Get the currency unit from the mint quote request
-    pub fn unit(&self) -> CurrencyUnit {
-        match self {
-            MintQuoteRequest::Bolt11(request) => request.unit.clone(),
-            MintQuoteRequest::Bolt12(request) => request.unit.clone(),
-            MintQuoteRequest::Custom { request, .. } => request.unit.clone(),
-        }
-    }
-
-    /// Get the payment method for the mint quote request
-    pub fn payment_method(&self) -> PaymentMethod {
-        match self {
-            MintQuoteRequest::Bolt11(_) => PaymentMethod::Known(KnownMethod::Bolt11),
-            MintQuoteRequest::Bolt12(_) => PaymentMethod::Known(KnownMethod::Bolt12),
-            MintQuoteRequest::Custom { method, .. } => PaymentMethod::from(method.clone()),
-        }
-    }
-
-    /// Get the pubkey from the mint quote request
-    pub fn pubkey(&self) -> Option<PublicKey> {
-        match self {
-            MintQuoteRequest::Bolt11(request) => request.pubkey,
-            MintQuoteRequest::Bolt12(request) => Some(request.pubkey),
-            MintQuoteRequest::Custom { request, .. } => request.pubkey,
-        }
-    }
-}
-
-/// Response for a mint quote request
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MintQuoteResponse {
-    /// Lightning Network BOLT11 invoice response
-    Bolt11(MintQuoteBolt11Response<QuoteId>),
-    /// Lightning Network BOLT12 offer response
-    Bolt12(MintQuoteBolt12Response<QuoteId>),
-    /// Custom payment method response
-    Custom {
-        /// Payment method name
-        method: String,
-        /// Generic response data
-        response: MintQuoteCustomResponse<QuoteId>,
-    },
-}
-
-impl TryFrom<MintQuoteResponse> for MintQuoteBolt11Response<QuoteId> {
-    type Error = Error;
-
-    fn try_from(response: MintQuoteResponse) -> Result<Self, Self::Error> {
-        match response {
-            MintQuoteResponse::Bolt11(bolt11_response) => Ok(bolt11_response),
-            _ => Err(Error::InvalidPaymentMethod),
-        }
-    }
-}
-
-impl TryFrom<MintQuoteResponse> for MintQuoteBolt12Response<QuoteId> {
-    type Error = Error;
-
-    fn try_from(response: MintQuoteResponse) -> Result<Self, Self::Error> {
-        match response {
-            MintQuoteResponse::Bolt12(bolt12_response) => Ok(bolt12_response),
-            _ => Err(Error::InvalidPaymentMethod),
-        }
-    }
-}
-
-impl TryFrom<MintQuote> for MintQuoteResponse {
-    type Error = Error;
-
-    fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
-        if quote.payment_method.is_bolt11() {
-            let bolt11_response: MintQuoteBolt11Response<QuoteId> = quote.into();
-            Ok(MintQuoteResponse::Bolt11(bolt11_response))
-        } else if quote.payment_method.is_bolt12() {
-            let bolt12_response = MintQuoteBolt12Response::try_from(quote)?;
-            Ok(MintQuoteResponse::Bolt12(bolt12_response))
-        } else {
-            let method = quote.payment_method.to_string();
-            let custom_response = MintQuoteCustomResponse::try_from(quote)?;
-            Ok(MintQuoteResponse::Custom {
-                method,
-                response: custom_response,
-            })
-        }
-    }
-}
-
-impl From<MintQuoteResponse> for MintQuoteBolt11Response<String> {
-    fn from(response: MintQuoteResponse) -> Self {
-        match response {
-            MintQuoteResponse::Bolt11(bolt11_response) => MintQuoteBolt11Response {
-                quote: bolt11_response.quote.to_string(),
-                state: bolt11_response.state,
-                request: bolt11_response.request,
-                expiry: bolt11_response.expiry,
-                pubkey: bolt11_response.pubkey,
-                amount: bolt11_response.amount,
-                unit: bolt11_response.unit,
-            },
-            _ => panic!("Expected Bolt11 response"),
-        }
-    }
-}
-
 impl Mint {
     /// Validates that a mint request meets all requirements
     ///
@@ -348,7 +200,7 @@ impl Mint {
     pub async fn get_mint_quote(
         &self,
         mint_quote_request: MintQuoteRequest,
-    ) -> Result<MintQuoteResponse, Error> {
+    ) -> Result<MintQuoteResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("get_mint_quote");
 
@@ -686,10 +538,13 @@ impl Mint {
     /// * `MintQuoteResponse` - The current state of the quote
     /// * `Error` if the quote doesn't exist or checking fails
     #[instrument(skip(self))]
-    pub async fn check_mint_quote(&self, quote_id: &QuoteId) -> Result<MintQuoteResponse, Error> {
+    pub async fn check_mint_quote(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<MintQuoteResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("check_mint_quote");
-        let result: Result<MintQuoteResponse, Error> = async {
+        let result: Result<MintQuoteResponse<QuoteId>, Error> = async {
             Ok(self
                 .check_mint_quotes(std::slice::from_ref(quote_id))
                 .await?
@@ -726,7 +581,7 @@ impl Mint {
     pub async fn check_mint_quotes(
         &self,
         quote_ids: &[QuoteId],
-    ) -> Result<Vec<MintQuoteResponse>, Error> {
+    ) -> Result<Vec<MintQuoteResponse<QuoteId>>, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("check_mint_quotes");
 
@@ -1189,7 +1044,7 @@ mod batch_mint_tests {
                 .check_mint_quotes(std::slice::from_ref(quote_id))
                 .await
                 .unwrap();
-            if let crate::mint::MintQuoteResponse::Bolt11(quote) = &check[0] {
+            if let cdk_common::MintQuoteResponse::Bolt11(quote) = &check[0] {
                 if quote.state == MintQuoteState::Paid {
                     break;
                 }
@@ -1655,7 +1510,7 @@ mod batch_mint_tests {
         let quote1_status = statuses
             .iter()
             .find_map(|status| match status {
-                crate::mint::MintQuoteResponse::Bolt11(quote) if quote.quote == quote1.quote => {
+                cdk_common::MintQuoteResponse::Bolt11(quote) if quote.quote == quote1.quote => {
                     Some(quote.state)
                 }
                 _ => None,
@@ -1664,7 +1519,7 @@ mod batch_mint_tests {
         let quote2_status = statuses
             .iter()
             .find_map(|status| match status {
-                crate::mint::MintQuoteResponse::Bolt11(quote) if quote.quote == quote2.quote => {
+                cdk_common::MintQuoteResponse::Bolt11(quote) if quote.quote == quote2.quote => {
                     Some(quote.state)
                 }
                 _ => None,

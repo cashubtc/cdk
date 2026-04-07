@@ -347,13 +347,13 @@ impl Transport for SubscriptionClient {
                     ));
                 }
                 NotificationId::MintQuoteCustom(method, id) => {
-                    let (_, response) = match self
+                    let response = match self
                         .http_client
                         .get_mint_quote_status(PaymentMethod::Custom(method.clone()), &id)
                         .await
                     {
                         Ok(success) => match success {
-                            cdk_common::MintQuoteResponse::Custom(r) => r,
+                            cdk_common::MintQuoteResponse::Custom { response, .. } => response,
                             _ => {
                                 tracing::error!(
                                     "Unexpected response type for Custom Mint Quote {}",

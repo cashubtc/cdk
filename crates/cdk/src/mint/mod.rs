@@ -42,7 +42,8 @@ mod verification;
 
 pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
-pub use issue::{MintInput, MintQuoteRequest, MintQuoteResponse};
+pub use cdk_common::{MintQuoteRequest, MintQuoteResponse};
+pub use issue::MintInput;
 pub use melt::PendingMelt;
 pub use verification::Verification;
 
