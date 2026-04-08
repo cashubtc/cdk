@@ -1,31 +1,39 @@
-### Description
+<!--
+Hints for drafting (not shown in the rendered description). Delete this block
+when you submit, or trim anything you do not need.
 
-<!-- Describe the purpose of this PR, what's being adding and/or fixed -->
+Setup and workflow: [DEVELOPMENT.md](https://github.com/cashubtc/cdk/blob/main/DEVELOPMENT.md).
+-->
 
------
+<!--
+What to cover in your write-up:
 
-### Notes to the reviewers
+- **Bugs** — What broke, how to reproduce if helpful, and how the patch fixes it.
+- **Features / API** — Which crates or NUT behaviour is affected; mention new flags or breaking changes.
+- **Tests** — What you ran (`cargo test`, `cdk-integration-tests`, etc.). If behaviour changed and tests are missing, say why.
+- **Refactors** — Why the change is worth the churn; avoid mixing unrelated edits.
 
-<!-- In this section you can include notes directed to the reviewers, like explaining why some parts
-of the PR were done in a specific way -->
+Commits: follow [AGENTS.md — Commit Style](https://github.com/cashubtc/cdk/blob/main/AGENTS.md#commit-style).
+-->
 
------
+<!--
+Large or cross-cutting changes are harder to review. If the diff is big, consider
+splitting the work or opening an issue to agree on direction first.
+-->
 
-### Suggested [CHANGELOG](https://github.com/cashubtc/cdk/blob/main/CHANGELOG.md) Updates
+### What this PR does / why we need it
 
-<!-- Please do not edit the actual changelog but note what you changed here. -->
+### Related issues
 
-#### CHANGED
+<!-- Fixes #123 — or N/A -->
 
-#### ADDED
+### Notes for reviewers (optional)
 
-#### REMOVED
+### User-facing change (optional)
 
-#### FIXED
-
-----
+<!-- NONE — or briefly describe what users or API consumers should notice -->
 
 ### Checklist
 
-* [ ] I followed the [code style guidelines](https://github.com/cashubtc/cdk/blob/main/CODE_STYLE.md)
-* [ ] I ran `just final-check` before committing
+- [ ] I followed the [code style guidelines](https://github.com/cashubtc/cdk/blob/main/CODE_STYLE.md)
+- [ ] I ran `just final-check` before committing
