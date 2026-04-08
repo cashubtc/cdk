@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 // external crates
 use anyhow::{anyhow, bail, Result};
+use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, KVStore, MintDatabase, MintKeysDatabase};
@@ -44,9 +45,7 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
 #[cfg(feature = "postgres")]
-use cdk_postgres::MintPgAuthDatabase;
-#[cfg(feature = "postgres")]
-use cdk_postgres::MintPgDatabase;
+use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase, PgConfig};
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
@@ -72,6 +71,7 @@ pub mod setup;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
+const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
 
 fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -303,7 +303,14 @@ async fn setup_database(
             }
 
             #[cfg(feature = "postgres")]
-            let pg_db = Arc::new(MintPgDatabase::new(pg_config.url.as_str()).await?);
+            let db_config = PgConfig::new(
+                pg_config.url.as_str(),
+                pg_config.tls_mode.as_deref(),
+                pg_config.max_connections,
+                pg_config.connection_timeout_seconds,
+            );
+            #[cfg(feature = "postgres")]
+            let pg_db = Arc::new(MintPgDatabase::new(db_config).await?);
             tracing::info!("PostgreSQL database connection established");
             #[cfg(feature = "postgres")]
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
@@ -777,7 +784,13 @@ async fn setup_authentication(
                         bail!("Auth database PostgreSQL URL is required and cannot be empty. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable");
                     }
 
-                    Arc::new(MintPgAuthDatabase::new(auth_pg_config.url.as_str()).await?)
+                    let auth_db_config = PgConfig::new(
+                        auth_pg_config.url.as_str(),
+                        auth_pg_config.tls_mode.as_deref(),
+                        auth_pg_config.max_connections,
+                        auth_pg_config.connection_timeout_seconds,
+                    );
+                    Arc::new(MintPgAuthDatabase::new(auth_db_config).await?)
                 }
                 #[cfg(not(feature = "postgres"))]
                 {
@@ -1198,6 +1211,7 @@ async fn start_services_with_shutdown(
 
     let mut mint_service = Router::new()
         .merge(v1_service)
+        .layer(DefaultBodyLimit::max(REQUEST_BODY_LIMIT_BYTES))
         .layer(
             ServiceBuilder::new()
                 .layer(RequestDecompressionLayer::new())

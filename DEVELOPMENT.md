@@ -222,6 +222,7 @@ sha256sum ./result/bin/*
 
 - **Updating Dependencies**: If you notice dependencies are out of date or a new tool has been added to the flake, run `nix flake update` to refresh the `flake.lock` file.
 - **Command Not Found**: Ensure you have entered the shell (e.g., `nix develop`). Some tools like `mprocs` or `bitcoind` are only available in the `regtest` shell.
+- **Binary Cache**: The flake advertises the `cashudevkit` Cachix cache to speed up local builds and shell setup. If your Nix installation does not accept flake-provided cache settings automatically, the project will still work, but dependencies may build locally and take longer.
 - **Cache Issues**: If you suspect the environment is not reflecting recent flake changes, you can force a re-evaluation with `nix flake check`.
 - **Persistent Data**: The local PostgreSQL instance stores data in the `.pg_data/` directory. If you want to reset your database completely, stop the database and delete this directory.
 

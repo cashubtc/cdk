@@ -42,5 +42,9 @@ redis = { version = "0.31.0", features = [
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"] }
 
+[dev-dependencies]
+cdk-sqlite = { workspace = true, features = ["mint"] }
+cdk-signatory = { workspace = true }
+
 [lints]
 workspace = true
