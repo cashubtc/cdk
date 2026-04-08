@@ -107,7 +107,7 @@ impl Wallet {
                     #[cfg(feature = "nostr")]
                     {
                         let keys = Keys::generate();
-                        let client = NostrClient::new(keys);
+                        let client = NostrClient::new(keys.clone());
                         let nprofile = Nip19Profile::from_bech32(&transport.target)
                             .map_err(|e| Error::Custom(format!("Invalid nprofile: {e}")))?;
 
@@ -116,7 +116,7 @@ impl Wallet {
                             serde_json::to_string(&payload)
                                 .map_err(|e| Error::Custom(format!("Serialize payload: {e}")))?,
                         )
-                        .build(nprofile.public_key);
+                        .build(keys.public_key);
                         let relays = nprofile.relays;
 
                         for relay in relays.iter() {
