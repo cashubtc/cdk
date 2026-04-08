@@ -249,6 +249,27 @@ See [REGTEST_GUIDE.md](REGTEST_GUIDE.md) for complete documentation including:
 - mprocs TUI interface guide
 - Troubleshooting and advanced usage
 
+## Contribution Workflow
+
+### First-time setup
+
+Add the upstream remote if you haven't already:
+
+```bash
+git remote add upstream https://github.com/cashubtc/cdk.git
+```
+
+### Keeping your branch up to date
+
+Create feature branches from `main` and keep them current by rebasing onto upstream directly — this ensures you're syncing from the source of truth, not your potentially stale fork.
+
+Do not merge `main` into feature branches. Rebase instead so the history stays linear and pull requests remain easier to review.
+
+```bash
+git fetch upstream
+git rebase upstream/main
+```
+
 ## Common Development Tasks
 
 ### Building the Project
