@@ -11,6 +11,8 @@ use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
 use crate::wallet::auth::AuthWallet;
+use crate::wallet::mint_connector::transport;
+use crate::wallet::mint_connector::{RateLimitConfig, RateLimitedHttpClient};
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::{HttpClient, MintConnector, SubscriptionManager, Wallet};
 
@@ -24,6 +26,7 @@ pub struct WalletBuilder {
     seed: Option<[u8; 64]>,
     use_http_subscription: bool,
     client: Option<Arc<dyn MintConnector + Send + Sync>>,
+    rate_limit_config: Option<RateLimitConfig>,
     metadata_cache_ttl: Option<Duration>,
     metadata_cache: Option<Arc<MintMetadataCache>>,
     metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
@@ -49,6 +52,7 @@ impl Default for WalletBuilder {
             auth_wallet: None,
             seed: None,
             client: None,
+            rate_limit_config: None,
             metadata_cache_ttl: Some(Duration::from_secs(3600)),
             use_http_subscription: false,
             metadata_cache: None,
@@ -140,6 +144,18 @@ impl WalletBuilder {
         self
     }
 
+    /// Enable rate limiting with default config (25 capacity, 25/min refill)
+    pub fn with_rate_limiting(mut self) -> Self {
+        self.rate_limit_config = Some(RateLimitConfig::default());
+        self
+    }
+
+    /// Enable rate limiting with custom config
+    pub fn with_rate_limiting_config(mut self, config: RateLimitConfig) -> Self {
+        self.rate_limit_config = Some(config);
+        self
+    }
+
     /// Set a shared MintMetadataCache
     ///
     /// This allows multiple wallets to share the same metadata cache instance for
@@ -213,10 +229,22 @@ impl WalletBuilder {
             .seed
             .ok_or(Error::Custom("Seed required".to_string()))?;
 
-        let client = match self.client {
+        let client: Arc<dyn MintConnector + Send + Sync> = match self.client {
             Some(client) => client,
-            None => Arc::new(HttpClient::new(mint_url.clone(), self.auth_wallet.clone()))
-                as Arc<dyn MintConnector + Send + Sync>,
+            None => match self.rate_limit_config {
+                Some(config) => {
+                    let transport = transport::rate_limit::RateLimitedTransport::new(
+                        transport::Async::default(),
+                        config,
+                    );
+                    Arc::new(RateLimitedHttpClient::with_transport(
+                        mint_url.clone(),
+                        transport,
+                        self.auth_wallet.clone(),
+                    ))
+                }
+                None => Arc::new(HttpClient::new(mint_url.clone(), self.auth_wallet.clone())),
+            },
         };
 
         let metadata_cache_ttl = self.metadata_cache_ttl;
