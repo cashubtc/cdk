@@ -13,6 +13,8 @@ use crate::{
 #[derive(uniffi::Object)]
 pub struct WalletSqliteDatabase {
     inner: Arc<FfiWalletDatabaseWrapper<CdkWalletSqliteDatabase, CdkDatabaseError>>,
+    // Keep the runtime alive so async pool operations work in FFI contexts.
+    _runtime: crate::runtime::RuntimeGuard,
 }
 
 #[uniffi::export]
@@ -20,41 +22,26 @@ impl WalletSqliteDatabase {
     /// Create a new WalletSqliteDatabase with the given work directory
     #[uniffi::constructor]
     pub fn new(file_path: String) -> Result<Arc<Self>, FfiError> {
-        let db = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => tokio::task::block_in_place(|| {
-                handle
-                    .block_on(async move { CdkWalletSqliteDatabase::new(file_path.as_str()).await })
-            }),
-            Err(_) => {
-                // No current runtime, create a new one
-                tokio::runtime::Runtime::new()
-                    .map_err(|e| FfiError::internal(format!("Failed to create runtime: {}", e)))?
-                    .block_on(async move { CdkWalletSqliteDatabase::new(file_path.as_str()).await })
-            }
-        }
-        .map_err(FfiError::internal)?;
+        let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;
+        let db = rt
+            .block_on(async move { CdkWalletSqliteDatabase::new(file_path.as_str()).await })
+            .map_err(FfiError::internal)?;
         Ok(Arc::new(Self {
             inner: FfiWalletDatabaseWrapper::new(db),
+            _runtime: rt,
         }))
     }
 
     /// Create an in-memory database
     #[uniffi::constructor]
     pub fn new_in_memory() -> Result<Arc<Self>, FfiError> {
-        let db = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => tokio::task::block_in_place(|| {
-                handle.block_on(async move { cdk_sqlite::wallet::memory::empty().await })
-            }),
-            Err(_) => {
-                // No current runtime, create a new one
-                tokio::runtime::Runtime::new()
-                    .map_err(|e| FfiError::internal(format!("Failed to create runtime: {}", e)))?
-                    .block_on(async move { cdk_sqlite::wallet::memory::empty().await })
-            }
-        }
-        .map_err(FfiError::internal)?;
+        let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;
+        let db = rt
+            .block_on(async move { cdk_sqlite::wallet::memory::empty().await })
+            .map_err(FfiError::internal)?;
         Ok(Arc::new(Self {
             inner: FfiWalletDatabaseWrapper::new(db),
+            _runtime: rt,
         }))
     }
 }

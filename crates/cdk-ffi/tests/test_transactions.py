@@ -20,7 +20,7 @@ lib_file = "libcdk_ffi.dylib" if sys.platform == "darwin" else "libcdk_ffi.so"
 src_lib = lib_path / lib_file
 dst_lib = bindings_path / lib_file
 
-if src_lib.exists() and not dst_lib.exists():
+if src_lib.exists():
     shutil.copy2(src_lib, dst_lib)
 
 # Add target/bindings/python to path to load cdk_ffi module

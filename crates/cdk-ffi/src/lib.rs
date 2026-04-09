@@ -14,6 +14,7 @@ pub mod logging;
 pub mod npubcash;
 #[cfg(feature = "postgres")]
 pub mod postgres;
+mod runtime;
 pub mod sqlite;
 #[cfg(feature = "supabase")]
 pub mod supabase;

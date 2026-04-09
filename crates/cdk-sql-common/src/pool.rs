@@ -190,23 +190,25 @@ where
         self: &Arc<Self>,
         timeout: Duration,
     ) -> Result<PooledResource<RM>, Error<RM::Error>> {
-        // Acquire a semaphore permit asynchronously. This yields the task instead of
-        // blocking the OS thread, preventing Tokio worker thread starvation.
-        let permit =
-            match tokio::time::timeout(timeout, self.semaphore.clone().acquire_owned()).await {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(_closed)) => {
-                    // Semaphore was closed (pool is being dropped)
-                    return Err(Error::Poison);
-                }
-                Err(_elapsed) => {
-                    tracing::warn!(
-                        "Timeout waiting for the resource (pool size: {})",
-                        self.max_size,
-                    );
-                    return Err(Error::Timeout);
-                }
-            };
+        // Fast path: try to grab a permit without waiting.
+        let permit = match self.semaphore.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(tokio::sync::TryAcquireError::Closed) => return Err(Error::Poison),
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                // All permits are in use — wait asynchronously.  This yields
+                // the task instead of blocking the OS thread, preventing Tokio
+                // worker thread starvation.
+                tracing::debug!(
+                    "Pool exhausted (size: {}), waiting for a connection",
+                    self.max_size,
+                );
+                self.semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| Error::Poison)?
+            }
+        };
 
         #[cfg(feature = "prometheus")]
         {
