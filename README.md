@@ -21,7 +21,7 @@ nix develop
 nix develop .#regtest
 ```
 
-For more details on available environments, see the [Development Guide](DEVELOPMENT.md).
+For more details on available environments, see **[DEVELOPMENT.md](DEVELOPMENT.md)**. For how to contribute, see **[CONTRIBUTING.md](CONTRIBUTING.md#contributing-to-cdk)**.
 
 ## Project structure
 
@@ -33,7 +33,9 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-sqlite**](./crates/cdk-sqlite/): SQLite Storage backend.
     * [**cdk-postgres**](./crates/cdk-postgres/): PostgreSQL Storage backend.
     * [**cdk-redb**](./crates/cdk-redb/): Redb Storage backend.
+    * [**cdk-supabase**](./crates/cdk-supabase/): Supabase storage backend.
     * [**cdk-axum**](./crates/cdk-axum/): Axum webserver for mint.
+    * [**cdk-http-client**](./crates/cdk-http-client/): HTTP client for wallet–mint communication.
     * [**cdk-cln**](./crates/cdk-cln/): CLN Lightning backend for mint.
     * [**cdk-lnd**](./crates/cdk-lnd/): Lnd Lightning backend for mint.
     * [**cdk-lnbits**](./crates/cdk-lnbits/): [LNbits](https://lnbits.com/) Lightning backend for mint. **Note: Only LNBits v1 API is supported.**
@@ -45,6 +47,7 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-payment-processor**](./crates/cdk-payment-processor/): Payment processing functionality.
     * [**cdk-prometheus**](./crates/cdk-prometheus/): Prometheus metrics integration.
     * [**cdk-ffi**](./crates/cdk-ffi/): Foreign Function Interface bindings for other languages.
+    * [**cdk-npubcash**](./crates/cdk-npubcash/): npub.cash integration.
     * [**cdk-integration-tests**](./crates/cdk-integration-tests/): Integration test suite.
     * [**cdk-mint-rpc**](./crates/cdk-mint-rpc/): Mint management gRPC server and cli.
 * Binaries:
@@ -92,6 +95,7 @@ The project is split up into several crates in the `crates/` directory:
 | [26][26] | Payment Request Bech32m Encoding | :heavy_check_mark: |
 | [27][27] | Nostr Mint Backup | :heavy_check_mark: |
 | [28][28] | Pay to Blinded Key (P2BK) | :heavy_check_mark: |
+| [29][29] | Batch minting | :heavy_check_mark: |
 
 
 ## License
@@ -104,7 +108,10 @@ All contributions are welcome.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, shall be licensed as above, without any additional terms or conditions.
 
-Please see the [development guide](DEVELOPMENT.md).
+- **[CONTRIBUTING.md](CONTRIBUTING.md#contributing-to-cdk)** — process: first PR, commits, PRs, review expectations
+- **[DEVELOPMENT.md](DEVELOPMENT.md)** — technical setup: Nix shells, build/test, regtest, CI, architecture
+- **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)**
+- **[SECURITY.md](SECURITY.md)** — report vulnerabilities privately
 
 
 [00]: https://github.com/cashubtc/nuts/blob/main/00.md
@@ -135,3 +142,4 @@ Please see the [development guide](DEVELOPMENT.md).
 [26]: https://github.com/cashubtc/nuts/blob/main/26.md
 [27]: https://github.com/cashubtc/nuts/blob/main/27.md
 [28]: https://github.com/cashubtc/nuts/blob/main/28.md
+[29]: https://github.com/cashubtc/nuts/blob/main/29.md

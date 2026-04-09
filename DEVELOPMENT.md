@@ -1,496 +1,657 @@
-# Development Guide
+# Development guide
 
-This guide will help you set up your development environment for working with the CDK repository.
+Technical reference for **working on the CDK codebase**: architecture, environments, build/test/debug workflows, databases, CI, and releases.
 
-## Prerequisites
+**New to the project?** Start with [CONTRIBUTING.md](CONTRIBUTING.md#contributing-to-cdk). This document is the **deep** reference.
 
-Before you begin, ensure you have:
-- Git installed on your system
-- GitHub account
-- Basic familiarity with command line operations
+## 1. Project overview
 
-## Initial Setup
+### Workspace and MSRV
 
-### 1. Fork and Clone the Repository
+- **Workspace:** Rust edition **2021**, members include `crates/*` and `bindings/*/rust` (see root `Cargo.toml`).
+- **MSRV:** **`rust-version`** in **`[workspace.package]`** in the root **[Cargo.toml](Cargo.toml)** (source of truth). CI also runs **MSRV** checks via Nix flake `msrv-*` checks. Default **developer** toolchain pins are in **`rust-toolchain.toml`**.
 
-1. Navigate to the CDK repository on GitHub
-2. Click the "Fork" button in the top-right corner
-3. Clone your forked repository:
-```bash
-git clone https://github.com/YOUR-USERNAME/cdk.git
-cd cdk
+### High-level architecture
+
+```text
+                         ┌─────────────┐     ┌────────────────┐
+                         │  cdk-cli    │     │ FFI / bindings │
+                         └──────┬──────┘     └───────┬────────┘
+                                │                    │
+                                └────────┬───────────┘
+                                         ▼
+                              ┌──────────────────────┐
+                              │ cashu  ·  cdk-common │
+                              │         + cdk          │
+                              └───────────┬────────────┘
+                                          │
+        ┌─────────────────────────────────┼─────────────────────────────────┐
+        │                                 │                                 │
+        ▼                                 ▼                                 ▼
+ ┌──────────────┐              ┌─────────────────┐              ┌───────────────┐
+ │cdk-http-     │   HTTP/WS     │ cdk-axum        │              │ cdk-mintd     │
+ │client        │──────────────►│ (mint HTTP)     │              │ (daemon)      │
+ └──────────────┘              └────────┬────────┘              └───────┬───────┘
+        ▲                               │                               │
+        │                               ▼                               │
+        │                      ┌────────────────┐                       │
+        │                      │ Mint logic in  │◄──────────────────────┘
+        │                      │ cdk + DB I/O   │
+        │                      └───────┬────────┘
+        │                              │
+        │              ┌───────────────┼───────────────┐
+        │              ▼               ▼               ▼
+        │      ┌──────────────┐ ┌─────────────┐ ┌──────────────────────────┐
+        │      │ cdk-sqlite / │ │ cdk-supabase│ │ MintPayment-> CLN, LND,  │
+        │      │ cdk-postgres │ │             │ │ LNbits, LDK-node,      │
+        │      │ + cdk-sql-   │ │             │ │ cdk-fake-wallet        │
+        │      │   common     │ │             │ └──────────────────────────┘
+        │      └──────────────┘ └─────────────┘
+        │      Wallet-side Redb: cdk-redb (via cdk)
+        └────── proofs / quotes / errors (JSON, WS)
 ```
 
-### 2. Install Nix
+### Data flow (wallet ↔ HTTP ↔ mint ↔ Lightning)
 
-<!-- 
-MIT License
+```text
+  Wallet / cdk-cli
+        │
+        │  NUT requests (mint, melt, swap, …)
+        ▼
+  cdk-http-client ── HTTP / WebSocket ──► cdk-axum (mint server)
+                                                    │
+                                                    │ route to handlers / sagas
+                                                    ▼
+                                             Mint core (cdk)
+                                               │         │
+                         persist state         │         │ BOLT11 / BOLT12,
+                         (SQLite / Postgres / │         │ invoices, payments
+                         …)                    │         ▼
+                         ▼                     │    Lightning backend
+                    Database ◄────────────────┘         │
+                         ▲                              │
+                         └──────── payment outcome ────┘
 
-Copyright (c) 2021 elsirion
-https://github.com/fedimint/fedimint/blob/master/docs/dev-env.md
--->
-
-CDK uses [Nix](https://nixos.org/explore.html) for building, CI, and managing dev environment.
-Note: only `Nix` (the language & package manager) and not the NixOS (the Linux distribution) is needed.
-Nix can be installed on any Linux distribution and macOS.
-
-While Nix is preferred as it ensures a consistent and reproducible environment
-for all developers, it is not strictly required to use Nix to build CDK.
-
-### Install Nix
-
-You have 2 options to install nix:
-
-* **RECOMMENDED:** The [Determinate Nix Installer](https://github.com/DeterminateSystems/nix-installer)
-* [The official installer](https://nixos.org/download.html)
-
-Example:
-
-```
-> nix --version
-nix (Nix) 2.9.1
+  Responses: JSON / WebSocket events back through cdk-axum-> client-> wallet
+            (proofs, quotes, errors)
 ```
 
-The exact version might be different.
+### How crates depend on each other
 
-### Enable nix flakes
+- **`cashu`** - Protocol types, crypto, NUT modules. No dependency on `cdk`.
+- **`cdk-common`** - Traits (`MintDatabase`, `WalletDatabase`, `MintPayment`, …), shared errors, optional pub/sub. Depends on **`cashu`**.
+- **`cdk`** - Wallet and mint **business logic**; depends on **`cdk-common`**, **`cashu`**, **`cdk-signatory`** (signing), etc.
+- **`cdk-sql-common`** - Shared SQL migrations and query helpers; **not** a storage backend you choose by name—**`cdk-sqlite`** and **`cdk-postgres`** embed it.
+- **Lightning backends** implement `MintPayment` (and related traits) from **`cdk-common`**; **`cdk-mintd`** wires one backend at runtime.
+- **`cdk-axum`** - HTTP/WebSocket layer for the mint; uses **`cdk`** mint types and **`cdk-common`**.
+- **`cdk-http-client`** - Wallet-side HTTP/WebSocket client.
 
-If you installed Nix using the "determinate installer" you can skip this step. If you used the "official installer", edit either `~/.config/nix/nix.conf` or `/etc/nix/nix.conf` and add:
+### Storage layer architecture
 
-```
-experimental-features = nix-command flakes
-```
+- **Traits** live in **`cdk-common`** (`MintDatabase`, `WalletDatabase`, …).
+- **SQL backends:** **`cdk-sql-common`** holds SQL migrations (`src/mint/migrations/sqlite|postgres`, `src/wallet/migrations/...`, auth migrations) and shared logic. **`cdk-sqlite`** / **`cdk-postgres`** provide concrete pools and implement the traits.
+- **`cdk-redb`** - Embedded **wallet** storage (Redb), not routed through the SQL migration tree in the same way.
+- **`cdk-supabase`** - Cloud-oriented storage integration.
 
-If the Nix installation is in multi-user mode, don’t forget to restart the nix-daemon.
+On startup, SQL backends **run embedded migrations** (see [§5 Database development](#5-database-development)); there is typically **no separate `migrate` CLI** for the wallet CLI in-tree.
 
-## Alternative Setup Without Nix
+---
 
-While Nix is preferred as it ensures a consistent and reproducible environment
-for all developers, it is not strictly required to use Nix to build CDK. You can
-also set up your environment manually.
+## 2. Development environment setup
 
-### Installing Rust via rustup
+### Option 1: Nix flakes (recommended)
 
-To build CDK without Nix, you'll need to install Rust manually:
-
-1. Install rustup by following the instructions at [https://www.rust-lang.org/tools/install](https://www.rust-lang.org/tools/install)
-
-2. Once rustup is installed, you can install the required Rust version:
-```bash
-rustup install stable
-rustup default stable
-```
-
-3. Install required tools:
-```bash
-# For building cdk-mintd, you'll need protobuf compiler
-# On Ubuntu/Debian:
-sudo apt install protobuf-compiler
-
-# On macOS with Homebrew:
-brew install protobuf
-
-# On other systems, please refer to your package manager or
-# https://grpc.io/docs/protoc-installation/
-```
-
-### Building and Running CDK Components
-
-#### Building cdk-cli
-
-To build the CDK command-line interface:
-```bash
-cargo build --bin cdk-cli --release
-```
-
-To run cdk-cli directly without building:
-```bash
-cargo run --bin cdk-cli -- --help
-```
-
-#### Building cdk-mintd
-
-To build the CDK mint server:
-```bash
-cargo build --bin cdk-mintd --release
-```
-
-To run cdk-mintd directly without building:
-```bash
-cargo run --bin cdk-mintd
-```
-
-Note: For cdk-mintd, you need to have the protobuf compiler installed as it's required for some dependencies.
-
-## Nix Development Environments
-
-CDK uses Nix flakes to provide reproducible development environments. We offer a tiered shell strategy to ensure developers only download what they need for their specific tasks.
-
-### Available Shells
-
-| Shell | Command | Key Tools Included | Best For |
-| :--- | :--- | :--- | :--- |
-| **Stable (Default)** | `nix develop` | Rust Stable, **PostgreSQL**, Protobuf | Library, Wallet, and Mint development |
-| **Regtest** | `nix develop .#regtest` | Stable + **bitcoind, CLN, LND, mprocs** | Local integration testing and nodes |
-| **Nightly** | `nix develop .#nightly` | Rust Nightly, **PostgreSQL** | Formatting and experimental features |
-| **Nightly Regtest** | `nix develop .#nightly-regtest` | Nightly + **Full Regtest Stack** | Comprehensive testing on nightly |
-| **Integration** | `nix develop .#integration` | Stable + Regtest Stack + **Docker** | Binding, Auth, and Docker tests |
-| **MSRV** | `nix develop .#msrv` | Rust 1.85.0 (Minimum version) | Ensuring backward compatibility |
-| **FFI** | `nix develop .#ffi` | Stable + Python 3.11 | Working on UniFFI bindings |
-
-### PostgreSQL Helpers
-
-All CDK shells come with a built-in PostgreSQL instance and helper scripts to manage it locally within your project directory:
-
-- `start-postgres`: Initialize and start a local PostgreSQL instance (data stored in `.pg_data/`).
-- `stop-postgres`: Safely shut down the local database.
-- `pg-status`: Check if the database is running.
-- `pg-connect`: Open an interactive `psql` session to the local database.
-
-### Direct Flake Commands
-
-You can build project components directly using flake targets without manually entering a shell:
+CDK uses **Nix flakes** for reproducible toolchains and shells.
 
 ```bash
-# Build the wallet CLI
-nix build .#cdk-cli
-./result/bin/cdk-cli --help
+# Install Nix (pick one)
+# - Recommended: https://github.com/DeterminateSystems/nix-installer
+# - Official: https://nixos.org/download.html
 
-# Build the mint daemon
-nix build .#cdk-mintd
+# If needed, enable flakes in ~/.config/nix/nix.conf or /etc/nix/nix.conf:
+#   experimental-features = nix-command flakes
 
-# Run a check (clippy + tests) for a specific crate
-nix build .#checks.x86_64-linux.cashu
+nix develop              # default “stable” shell: Rust, PostgreSQL helpers, protobuf, …
+nix develop .#regtest    # + bitcoind, CLN, LND, mprocs (full local stack)
+nix develop .#integration # for Docker-heavy / auth tests (Keycloak, etc.)
+nix develop .#ffi        # Python + UniFFI for cdk-ffi
+nix develop .#bindings   # Dart/Kotlin/Swift binding builds (see CI)
 ```
 
-### Static Binaries
+**Shell overview**
 
-CDK provides fully statically-linked Linux binaries built with [musl](https://musl.libc.org/). These binaries have zero runtime dependencies and run on any x86_64 Linux system.
+| Shell            | Command                         | Notes                                        |
+| ---------------- | ------------------------------- | -------------------------------------------- |
+| Stable (default) | `nix develop`                   | Daily Rust + **Postgres helpers** + `protoc` |
+| Regtest          | `nix develop .#regtest`         | Bitcoin + Lightning + mint stacks            |
+| Nightly          | `nix develop .#nightly`         | Nightly rustfmt / experiments                |
+| nightly-regtest  | `nix develop .#nightly-regtest` | Nightly + regtest stack                      |
+| Integration      | `nix develop .#integration`     | Regtest + **Docker**                         |
+| MSRV             | `nix develop .#msrv`            | Minimum Rust toolchain                       |
+| FFI              | `nix develop .#ffi`             | UniFFI / Python                              |
+| bindings         | `nix develop .#bindings`        | Mobile bindings (see `justfile`)             |
 
-**Available static build targets:**
+### Option 2: Manual setup (no Nix)
 
-| Target | Binary | Features |
-| :--- | :--- | :--- |
-| `cdk-mintd-static` | `cdk-mintd-{version}-x86_64` | `postgres`, `prometheus`, `redis` |
-| `cdk-mintd-ldk-static` | `cdk-mintd-ldk-{version}-x86_64` | `ldk-node`, `postgres`, `prometheus`, `redis` |
-| `cdk-cli-static` | `cdk-cli-{version}-x86_64` | default |
+1. **Rust:** [rustup](https://rustup.rs/), then match toolchain from **`rust-toolchain.toml`**.
+2. **protobuf:** `protoc` for gRPC crates and `cdk-mintd` (e.g. `apt install protobuf-compiler`, `brew install protobuf`).
+3. **PostgreSQL:** For `cdk-postgres` tests - local server or Docker; set `DATABASE_URL` as required by tests.
+4. **SQLite:** Usually via the `libsqlite3-sys` / `sqlite` crate; on Ubuntu `libsqlite3-dev` if linking fails.
+5. **Docker:** Optional; used for Keycloak auth integration tests (`misc/keycloak/docker-compose*.yml`) and some `just` workflows.
 
-**Building locally (requires Nix):**
+### PostgreSQL helpers (Nix shells)
+
+Inside the default dev shell:
+
+- `start-postgres` - init and start local Postgres (data in `.pg_data/`)
+- `stop-postgres` - stop
+- `pg-status` - status
+- `pg-connect` - `psql` shell
+
+### IDE setup
+
+**Recommended:** **VS Code** or **Cursor** with **rust-analyzer**.
+
+- **Extensions:** `rust-lang.rust-analyzer`, `tamasfe.even-better-toml`, and (optional) `nix-community.nix-ide` if you edit Nix.
+- **Repo settings:** [.vscode/settings.json](.vscode/settings.json) enables clippy as the `rust-analyzer` check command with `-D warnings`. If checks are slow on save, switch `rust-analyzer.check.command` to `"check"` locally.
+
+**Helix:** `.helix/` exists for Helix editor users.
+
+---
+
+## 3. Building the project
 
 ```bash
-# Build a single target
-just build-static cdk-mintd-static
-
-# Build all static targets
-just build-static-all
-
-# Or use nix directly
-nix build .#cdk-mintd-static
-cp ./result/bin/* ./static-bin/
+# Entire workspace
+cargo build --workspace --all-targets
 ```
-
-Built binaries are placed in `./static-bin/`.
-
-**Release process:**
-
-When a GitHub release is published, the [`static-build-publish.yml`](.github/workflows/static-build-publish.yml) workflow automatically:
-
-1. Builds all three static binaries via Nix
-2. Generates a `SHA256SUMS` file with checksums for each binary
-3. Uploads the binaries and checksums to the GitHub release
-
-The workflow can also be triggered manually via `workflow_dispatch` with a tag input. Pre-built static binaries are available on the [GitHub releases page](https://github.com/cashubtc/cdk/releases).
-
-**Reproducibility:**
-
-Static builds are designed to be reproducible. Two builds from the same source and `flake.lock` should produce identical binaries. This is achieved through:
-
-- **Pinned toolchain and dependencies**: All inputs (Rust compiler, musl, OpenSSL, etc.) are pinned via the Nix flake lockfile.
-- **`release-static` Cargo profile**: Uses `codegen-units = 1` (eliminates parallel codegen ordering non-determinism), LTO, and `panic = "abort"`.
-- **Nix store path stripping**: A `postFixup` step runs `remove-references-to` on the final binaries to strip any embedded Nix store paths (e.g., the Rust toolchain path), which would otherwise differ across build machines.
-- **No non-deterministic metadata**: The codebase does not embed git hashes, build timestamps, or other non-deterministic values into binaries.
-
-You can verify a release binary by building locally and comparing checksums:
 
 ```bash
-nix build .#cdk-mintd-static
-sha256sum ./result/bin/*
-# Compare against SHA256SUMS from the release
-```
-
-### Nix Troubleshooting
-
-- **Updating Dependencies**: If you notice dependencies are out of date or a new tool has been added to the flake, run `nix flake update` to refresh the `flake.lock` file.
-- **Command Not Found**: Ensure you have entered the shell (e.g., `nix develop`). Some tools like `mprocs` or `bitcoind` are only available in the `regtest` shell.
-- **Binary Cache**: The flake advertises the `cashudevkit` Cachix cache to speed up local builds and shell setup. If your Nix installation does not accept flake-provided cache settings automatically, the project will still work, but dependencies may build locally and take longer.
-- **Cache Issues**: If you suspect the environment is not reflecting recent flake changes, you can force a re-evaluation with `nix flake check`.
-- **Persistent Data**: The local PostgreSQL instance stores data in the `.pg_data/` directory. If you want to reset your database completely, stop the database and delete this directory.
-
-## Regtest Environment
-
-For testing and development, CDK provides a complete regtest environment with Bitcoin, Lightning Network nodes, and CDK mints.
-
-### Quick Start
-```bash
-just regtest  # Starts full environment with mprocs TUI
-```
-
-This provides:
-- Bitcoin regtest node
-- 4 Lightning Network nodes (2 CLN + 2 LND)
-- 2 CDK mints (one connected to CLN, one to LND)
-- Real-time log monitoring via mprocs
-- Helper commands for testing Lightning payments and CDK operations
-
-### Comprehensive Guide
-See [REGTEST_GUIDE.md](REGTEST_GUIDE.md) for complete documentation including:
-- Detailed setup and usage instructions
-- Development workflows and testing scenarios
-- mprocs TUI interface guide
-- Troubleshooting and advanced usage
-
-## Common Development Tasks
-
-### Building the Project
-```sh
+# or use just (from repo root)
 just build
 ```
 
-### Running Unit Tests
 ```bash
-just test
+# Single crate
+cargo build -p cdk-sqlite
 ```
 
-### Running Integration Tests
 ```bash
-just itest REDB/SQLITE/MEMORY
+# All features (may be slow; some combinations are feature-gated per crate)
+cargo build --workspace --all-targets --all-features
 ```
 
-NOTE: if this command fails on macos change the nix channel to unstable (in the `flake.nix` file modify `nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";` to `nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";`)
+```bash
+# Release binaries
+cargo build --release --bin cdk-cli
+cargo build --release --bin cdk-mintd
+```
 
-### Running Mutation Tests
-
-Mutation testing validates test suite quality by introducing small code changes (mutations) and verifying tests catch them.
+### Nix flake outputs (without `cargo`)
 
 ```bash
-# Run mutation tests on cashu crate (configured in .cargo/mutants.toml)
+nix build .#cdk-cli
+./result/bin/cdk-cli --help
+
+nix build .#cdk-mintd
+```
+
+```bash
+# Static musl binaries (Linux x86_64; see flake for targets)
+just build-static cdk-mintd-static
+nix build .#cdk-mintd-static
+```
+
+Release automation: [static-build-publish.yml](.github/workflows/static-build-publish.yml).
+
+### Common build issues
+
+| Problem                                       | What to try                                                                                                                                           |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`openssl-sys` / native TLS build failures** | Most HTTP stack uses **rustls**; if a native SSL crate appears, install `libssl-dev` / `openssl-devel` and `pkg-config` (Linux). On macOS, Xcode CLT. |
+| **PostgreSQL not found (pg tests)**           | Start Postgres (`start-postgres` in Nix shell) or point `DATABASE_URL` at your instance.                                                              |
+| **Nix builds slow / cache misses**            | Cachix `cashudevkit` is used in CI; ensure substituters are trusted. Run `nix flake update` when inputs change.                                       |
+| **`protoc` not found**                        | Install `protobuf-compiler` / `brew install protobuf`.                                                                                                |
+| **Linking on macOS**                          | Ensure Xcode Command Line Tools are installed.                                                                                                        |
+
+---
+
+## 4. Testing strategy
+
+### Unit tests
+
+```bash
+# All library tests (excludes cdk-postgres - needs DB)
+cargo test --lib --workspace --exclude cdk-postgres
+```
+
+```bash
+just test    # same + selective integration tests (see justfile)
+```
+
+```bash
+# One crate
+cargo test -p cdk-sqlite
+```
+
+```bash
+# Feature-gated crate (example)
+cargo test -p cdk --features wallet
+```
+
+### Regtest stack (Bitcoin + Lightning + mints)
+
+For full local integration (not only Rust unit tests):
+
+```bash
+nix develop .#regtest
+just regtest
+```
+
+See **[REGTEST_GUIDE.md](REGTEST_GUIDE.md)** for topology, mprocs, and workflows.
+
+### Integration tests
+
+Integration tests live in **`crates/cdk-integration-tests/`**. Some suites use **`just`** (often with **`nix develop .#regtest`**) and a prebuilt **nextest archive** in CI (`CDK_ITEST_ARCHIVE`).
+
+```bash
+nix develop .#regtest
+just itest SQLITE          # or POSTGRES, REDB, MEMORY, … - see justfile
+```
+
+```bash
+docker compose -f misc/keycloak/docker-compose-recover.yml up -d   # auth-related tests
+# … run targeted tests from justfile (e.g. fake-auth-mint-itest)
+```
+
+**Pure integration tests** (memory / sqlite / redb):
+
+```bash
+just test-pure memory
+```
+
+**Postgres**
+
+```bash
+start-postgres   # in Nix shell
+cargo test -p cdk-postgres
+```
+
+### Test organization
+
+- **Unit tests:** `#[cfg(test)]` in `src/` or `tests/*.rs` per crate.
+- **Integration tests:** `crates/cdk-integration-tests/tests/` and harness binaries.
+- **Fixtures / helpers:** `crates/cdk/src/test_helpers/`, `crates/cdk-integration-tests/src/`, etc. - follow existing patterns.
+
+### Testing practices
+
+- **Mock Lightning** with **`cdk-fake-wallet`** in tests where possible.
+- **Isolate DB state** - use temp dirs or in-memory SQLite when the test allows.
+- **Run `cargo test --doc`** for doctests where relevant (`just test-units` includes doc tests).
+
+### Mutation testing
+
+```bash
 cargo mutants
-
-# Check specific files only
 cargo mutants --file crates/cashu/src/amount.rs
-
-# Re-run previously caught mutations to verify fixes
-cargo mutants --in-diff
 ```
 
-**Understanding Results:**
-- **Caught mutations**: Tests correctly detected the code change (good!)
-- **Missed mutations**: Code change went undetected - indicates missing test coverage
-- **Timeouts**: Mutation caused infinite loop - some are excluded in config to keep tests practical
+See `.cargo/mutants.toml` and [mutation-testing-weekly.yml](.github/workflows/mutation-testing-weekly.yml).
 
-The `.cargo/mutants.toml` file excludes mutations that cause infinite loops during testing. These don't indicate bugs - they're just mutations that would make the test suite hang indefinitely.
-
-See [cargo-mutants documentation](https://mutants.rs/) for more options.
-
-### Running Format
-```bash
-just format
-```
-
-## Code Formatting
-
-CDK uses a flexible rustfmt policy to balance code quality with developer experience:
-
-### Formatting Requirements for PRs
-Pull requests can be formatted with **either stable or nightly** rustfmt - both are accepted:
-
-- **Stable rustfmt:** Standard Rust formatting (less strict)
-- **Nightly rustfmt:** More strict formatting with additional rules
-
-**Why both are accepted:**
-- We prefer nightly rustfmt's stricter formatting
-- We don't want to force contributors to install nightly Rust
-- This reduces friction for developers using stable toolchains
+### Common `just` recipes
 
 ```bash
-# Format with stable (default)
-just format
-
-# Format with nightly (if you have it installed)
-cargo +nightly fmt
-```
-
-The CI will check your PR with stable rustfmt, so as long as your code passes stable formatting, your PR will pass CI.
-
-### Automated Nightly Formatting
-To keep the codebase consistently formatted with nightly rustfmt over time:
-
-- **Daily Check:** Every night at midnight UTC, a GitHub Action runs nightly rustfmt on the `main` branch
-- **Automated PRs:** If nightly rustfmt produces formatting changes, a PR is automatically created with:
-  - Title: `Automated nightly rustfmt (YYYY-MM-DD)`
-  - Label: `rustfmt`
-  - Author: `Fmt Bot <bot@cashudevkit.org>`
-- **Review Process:** These automated PRs are reviewed and merged to keep the codebase aligned with nightly formatting
-
-This approach ensures the codebase gradually adopts nightly formatting improvements without blocking contributors who use stable Rust.
-
-
-### Running Clippy
-```bash
-just clippy
-```
-
-### Running final check before commit
-```sh
+just build
+just test
+just quick-check
 just final-check
+just format
+just clippy
+just itest SQLITE
 ```
 
+Run `just` with no arguments to list all recipes.
 
-## Best Practices
+---
 
-1. **Branch Management**
-   - Create feature branches from `main`
-   - Use descriptive branch names: `feature/new-feature` or `fix/bug-description`
+## 5. Database development
 
-2. **Commit Messages**
-   - Follow conventional commits format
-   - Begin with type: `feat:`, `fix:`, `docs:`, `chore:`, etc.
-   - Provide clear, concise descriptions
+### Where migrations live
 
-3. **Testing**
-   - Write tests for new features
-   - Ensure all tests pass before submitting PR
-   - Include integration tests where applicable
+- **SQL migrations:** `crates/cdk-sql-common/src/mint/migrations/` and `.../wallet/migrations/`, with subdirs **`sqlite/`** and **`postgres/`** (and auth-specific trees under `mint/auth/migrations/`).
+- **Build:** `crates/cdk-sql-common/build.rs` discovers `migrations/` directories and embeds SQL at compile time.
 
-## Troubleshooting
+### Naming
 
-### Common Issues
+Use **`YYYYMMDDHHMMSS_short_description.sql`** (see existing files). Keep **SQLite and Postgres** in sync when both backends must change.
 
-1. **Development Shell Issues**
-   - Clean Nix store: `nix-collect-garbage -d`
-   - Remove and recreate development shell
+### Applying migrations
 
-### Getting Help
+Applications (**`cdk-mintd`**, wallet DB code in **`cdk-sqlite`**, etc.) run the **embedded migration runner** when opening a pool - there is **no** separate `cargo run -p cdk-cli -- migrate` in this repository. If you add tooling, document it in the crate README.
 
-- Open an issue on GitHub
-- Check existing issues for similar problems
-- Include relevant error messages and system information
-- Reach out in Matrix [Invite link](https://matrix.to/#/#dev:matrix.cashu.space)
+### Creating a new migration
 
-## Contributing
+1. Add SQL under **`sqlite/`** and **`postgres/`** as needed.
+2. Optionally scaffold a timestamp with:
 
-1. Create a feature branch
-2. Make your changes
-3. Run tests and formatting
-4. Submit a pull request
-5. Wait for review and address feedback
+   ```bash
+   just new-migration mint my_change_name
+   ```
 
-## Backporting Changes
+   **Verify** the path matches how existing migrations are laid out (`sqlite/` / `postgres/`). If the recipe places a file at the wrong level, create files manually beside existing migrations.
 
-CDK uses an automated backport bot to help maintain stable release branches. This section explains how the backport process works.
+3. Rebuild the crate that depends on `cdk-sql-common` to regenerate embedded includes.
 
-### How the Backport Bot Works
+### Migration SQL
 
-The backport bot creates pull requests to backport merged changes from `main` to stable release branches. **You control which branches to backport to by adding labels to your PR.**
+- Prefer **database-agnostic** SQL where possible; otherwise maintain two files.
+- Test **upgrade** paths; down migrations are not always modeled - follow project conventions in existing files.
 
-**Available Target Branches:**
-- `v0.10.x`
-- `v0.11.x`
-- `v0.12.x`
-- `v0.13.x`
+---
 
-### Using Backport Labels
+## 6. Running examples
 
-To backport a PR to specific stable branches, add labels to your PR **before or after merging**:
+Examples are defined on the **`cdk`** crate:
 
-**Label Format:**
-- `backport v0.13.x` - backports to v0.13.x branch
-- `backport v0.12.x` - backports to v0.12.x branch
-- Add multiple labels to backport to multiple branches
-
-**Example Workflow:**
-1. Create and merge your PR to `main`
-2. Add label `backport v0.13.x` to the PR
-3. The bot automatically creates a backport PR for the v0.13.x branch
-4. Review and merge the backport PR
-5. Repeat for other branches as needed
-
-**When to Add Labels:**
-- Add labels before merging - backport PRs are created automatically on merge
-- Add labels after merging - backport PRs are created when you add the label
-- You can add multiple backport labels at once
-
-### When Backports Fail
-
-Sometimes the backport bot cannot automatically create a backport PR due to merge conflicts or other issues. When this happens:
-
-1. The bot automatically creates a GitHub issue labeled with `backport`
-2. The issue will contain details about the original PR and which branch(es) failed
-3. You'll need to manually create the backport PR for the failed branch
-
-**Manual Backporting Process:**
 ```bash
-# Checkout the target stable branch
+cargo run -p cdk --example wallet --features wallet
+```
+
+```bash
+cargo run -p cdk --example mint-token --features wallet
+```
+
+```bash
+cargo run -p cdk --example receive-token --features wallet
+```
+
+List example sources:
+
+```bash
+ls crates/cdk/examples/
+```
+
+**Representative examples**
+
+| Example                                     | `required-features` | What it demonstrates        |
+| ------------------------------------------- | ------------------- | --------------------------- |
+| `wallet`                                    | `wallet`            | Basic wallet usage          |
+| `mint-token`, `receive-token`, `melt-token` | `wallet`            | Mint / receive / melt flows |
+| `batch-mint`                                | `wallet`            | Batch minting               |
+| `auth_wallet`                               | `wallet`            | Auth wallet patterns        |
+| `p2pk`                                      | `wallet`            | P2PK                        |
+| `nostr_backup`                              | `wallet` + `nostr`  | Nostr backup                |
+| `npubcash`, `multimint-npubcash`            | `npubcash`          | npub.cash                   |
+| `bip353`, `resolve_human_readable`          | `wallet`, `bip353`  | BIP-353 resolution          |
+
+**Other crates:** e.g. `crates/cdk-npubcash/examples/`, `crates/cashu/examples/` - run with `-p cdk-npubcash` / `-p cashu`.
+
+---
+
+## 7. Docker development
+
+### Compose stacks (repo root)
+
+- **`docker-compose.yaml`** - Mint + Prometheus + Grafana + related services (see comments in file).
+- **`docker-compose.postgres.yaml`**, **`docker-compose.ldk-node.yaml`**, **`docker-compose.tor.yaml`** - variant stacks.
+- **`misc/keycloak/docker-compose.yml`** - Keycloak for auth integration tests.
+
+```bash
+docker compose up
+```
+
+(Use `--profile` or `-f` as documented in `crates/cdk-mintd/README.md` for LDK variants.)
+
+### Building images
+
+**CI publishes** static images to Docker Hub (`cashubtc/mintd`) - see [`docker-publish.yml`](.github/workflows/docker-publish.yml): builds **`nix` targets** `cdk-mintd-static` / `cdk-mintd-ldk-static`, copies binaries into **`Dockerfile.static`**, multi-arch build.
+
+**Local Dockerfile (legacy Nix-in-Docker):**
+
+```bash
+docker build -f Dockerfile -t cdk-mintd:local .
+```
+
+Prefer **`nix build .#cdk-mintd-static`** + `Dockerfile.static` for images that match releases.
+
+---
+
+## 8. Debugging
+
+### `println!` / `dbg!`
+
+```rust
+dbg!(&some_value);
+tracing::debug!("{:#?}", some_struct);
+```
+
+Avoid committing noisy `println!` in non-test code; prefer **`tracing`** (see below).
+
+### Debuggers
+
+```bash
+rust-lldb target/debug/cdk-cli
+# or
+rust-gdb target/debug/cdk-cli
+```
+
+### Logging (`tracing`)
+
+CDK uses **`tracing`** (see [AGENTS.md](AGENTS.md) for macro style).
+
+```bash
+RUST_LOG=debug cargo run --bin cdk-cli -- …
+RUST_LOG=debug cargo test -p cdk -- --nocapture
+```
+
+Use **`RUST_LOG=trace`** sparingly (very verbose).
+
+### Common scenarios
+
+| Symptom                | Where to look                                                            |
+| ---------------------- | ------------------------------------------------------------------------ |
+| DB connection failures | `DATABASE_URL`, Postgres running, `pg-status`, logs                      |
+| Lightning timeouts     | Backend config, `cdk-fake-wallet` vs real node, regtest (`just regtest`) |
+| Proof / crypto errors  | `cashu` crate, keyset state, `cdk` mint verification paths               |
+
+---
+
+## 9. Performance profiling
+
+### Flamegraph
+
+```bash
+cargo install flamegraph
+cargo flamegraph --bin cdk-mintd
+```
+
+### Benchmarks
+
+```bash
+cargo bench -p cashu
+cargo bench -p cdk
+```
+
+Criterion benches exist where `[[bench]]` is declared (e.g. `crates/cashu`).
+
+### Coverage
+
+```bash
+just coverage   # requires llvm-cov + Nix integration shell (see justfile)
+```
+
+---
+
+## 10. Code style and linting
+
+```bash
+cargo fmt --all
+cargo fmt --all -- --check
+```
+
+```bash
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+```bash
+cargo clippy --fix --workspace --all-targets -- -D warnings
+```
+
+```bash
+typos
+```
+
+Workspace **lint rules** are in root `Cargo.toml` `[workspace.lints]` and `[workspace.lints.clippy]` (e.g. `unwrap_used = "deny"`). Full style guide: **[CODE_STYLE.md](CODE_STYLE.md)** - **mandatory** for contributors.
+
+**PR tip:** CI uses **stable** rustfmt; nightly rustfmt may be applied by automated PRs - see [nightly-rustfmt.yml](.github/workflows/nightly-rustfmt.yml).
+
+---
+
+## 11. Documentation
+
+### Build docs locally
+
+```bash
+cargo doc --workspace --no-deps --open
+```
+
+Strict docs checks run in CI (`flake` checks `doc-tests`, `strict-docs`).
+
+### Writing rustdoc
+
+````rust
+/// Short summary line.
+///
+/// Longer explanation with examples:
+///
+/// # Examples
+///
+/// ```
+/// use cdk::…;
+/// ```
+///
+/// # Errors
+///
+/// Returns error when …
+pub fn my_function() -> Result<(), Error> {
+````
+
+---
+
+## 12. Release process
+
+**Maintainer-oriented** - exact steps may evolve.
+
+1. **Version bump** - `version` in `[workspace.package]` in root `Cargo.toml` and aligned crate versions (workspace uses `version.workspace = true` in most crates).
+2. **CHANGELOG** - Update [CHANGELOG.md](CHANGELOG.md) for the release (see `[Unreleased]`-> release section).
+3. **Tag** - Git tag (e.g. `v0.16.0`).
+4. **crates.io** - Publish crates in dependency order (`cargo publish -p cashu`, then `cdk-common`, …) as maintainers do today.
+5. **GitHub Releases** - Release notes + **static binaries** via [static-build-publish.yml](.github/workflows/static-build-publish.yml) (or manual `nix build` + checksums).
+6. **Docker** - [docker-publish.yml](.github/workflows/docker-publish.yml) on `release: published` or `workflow_dispatch` with tag.
+
+### Backporting to stable branches
+
+Use GitHub labels like **`backport v0.13.x`** on the merged PR (see [backport.yml](.github/workflows/backport.yml)). The bot opens cherry-pick PRs; if it fails, an issue may be filed.
+
+**Manual cherry-pick (example):**
+
+```bash
 git checkout v0.13.x
 git pull origin v0.13.x
-
-# Create a new branch for the backport
 git checkout -b backport-pr-NUMBER-to-v0.13.x
-
-# Cherry-pick the commits from the original PR
 git cherry-pick COMMIT_HASH
-
-# Resolve any conflicts if they occur
-# Then push and create a PR
-git push origin backport-pr-NUMBER-to-v0.13.x
+# resolve conflicts, test, then push and open PR
 ```
 
-### Best Practices for Backporting
+Do **not** backport breaking API changes, large refactors, or experimental work.
 
-1. **Label Appropriately:** Only add backport labels for changes that should be in stable branches
-2. **Keep PRs Focused:** Smaller, focused PRs are easier to backport automatically
-3. **Review Backport PRs:** Always review automatically created backport PRs to ensure they're appropriate
-4. **Test Backports:** Run tests on backport PRs just like regular PRs
-5. **Address Conflicts Promptly:** If a backport fails, address it promptly or close the issue with an explanation
+---
 
-### When NOT to Backport
+## 13. CI/CD pipeline
 
-Not all changes should be backported to stable branches. **Don't add backport labels** for:
-- Breaking API changes
-- New features that aren't needed in older versions
-- Changes that don't apply to older version branches
-- Large refactorings
-- Experimental or unstable features
+### Main workflows
 
-If a backport isn't appropriate, simply don't add the backport label to the PR.
+| Workflow                                                                         | Role                                                                                                                                                                                                                                                                                                                                                                                 |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **[ci.yml](.github/workflows/ci.yml)**                                           | Primary CI: **fmt**, **typos**, **quick-check** (`just quick-check`), **per-crate flake checks** (clippy + tests), **examples** (nix `example-*` checks), **Postgres tests**, **integration** (regtest, fake mint, pure, payment processor), **MSRV**, **WASM**, **auth** (Keycloak + Docker), **doc-tests**, **strict-docs**, **FFI**, **coverage**, **Dart/Kotlin/Swift bindings** |
+| **[nutshell_itest.yml](.github/workflows/nutshell_itest.yml)**                   | Nutshell mint/wallet integration                                                                                                                                                                                                                                                                                                                                                     |
+| **[docker-publish.yml](.github/workflows/docker-publish.yml)**                   | Docker Hub images on release / manual dispatch                                                                                                                                                                                                                                                                                                                                       |
+| **[static-build-publish.yml](.github/workflows/static-build-publish.yml)**       | Static Linux binaries + `SHA256SUMS` on releases                                                                                                                                                                                                                                                                                                                                     |
+| **[nightly-rustfmt.yml](.github/workflows/nightly-rustfmt.yml)**                 | Automated rustfmt PRs                                                                                                                                                                                                                                                                                                                                                                |
+| **[mutation-testing-weekly.yml](.github/workflows/mutation-testing-weekly.yml)** | Weekly mutation tests                                                                                                                                                                                                                                                                                                                                                                |
+| **[daily-flake-check.yml](.github/workflows/daily-flake-check.yml)**             | Flake health                                                                                                                                                                                                                                                                                                                                                                         |
+| **[backport.yml](.github/workflows/backport.yml)**                               | Backport labels-> stable branches                                                                                                                                                                                                                                                                                                                                                    |
 
-## CI & Infrastructure
+**Required checks:** Whatever branches protect on GitHub (typically `pre-commit-checks`, `quick-check`, matrix jobs, etc.). Exact required status names should match **Settings-> Branches** in the repo.
 
-CDK uses a specialized self-hosted infrastructure for CI/CD, specifically for fuzzing and integration tests.
+### Self-hosted runners
 
-### Self-Hosted Runners
+Heavy jobs use **self-hosted** runners and **Cachix** (`cashudevkit`). Infra details: [cdk-infra](https://github.com/thesimplekid/cdk-infra).
 
-Our infrastructure is defined in the [cdk-infra](https://github.com/thesimplekid/cdk-infra) repository. It utilizes a "warm pool" of ephemeral NixOS containers to provide reproducible, isolated, and high-performance runners.
+---
 
-**Key Features:**
-- **Ephemeral:** Each job runs in a fresh, ephemeral NixOS container that is destroyed immediately after use.
-- **Warm Pool:** Containers are pre-provisioned to ensure instant job pickup.
-- **Nix Native:** Fully supports Nix builds and caching.
-- **Isolation:** Runners are network-isolated for security.
+## 14. Troubleshooting guide
 
-### Architecture
+| Problem                                                         | Suggestion                                                                                                      |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| **`error: failed to run custom build command for openssl-sys`** | Install OpenSSL dev packages + `pkg-config`; or ensure no dependency forced OpenSSL when rustls is expected.    |
+| **Database migration / schema errors**                          | Match Postgres/SQLite versions; wipe **dev** `.pg_data/` only if safe; check migrations under `cdk-sql-common`. |
+| **Lightning backend timeout**                                   | Network, regtest topology, or use `cdk-fake-wallet` for tests.                                                  |
+| **Nix command not found**                                       | Enter `nix develop`; regtest-only tools need `.#regtest`.                                                       |
+| **`just itest` fails on macOS**                                 | See notes in `justfile` / flake about `nixpkgs` pin (`nixos-unstable` workaround).                              |
 
-The system consists of:
-- **Runners:** Two dedicated hosts (`cdk-runner-01` and `cdk-runner-02`) running NixOS.
-- **Controller:** A custom Rust controller manages the lifecycle of the containers, monitoring the repository for queued jobs and maintaining the warm pool.
+---
 
-For more details on the infrastructure implementation, deployment, and management, please refer to the [cdk-infra repository](https://github.com/thesimplekid/cdk-infra).
+## 15. Architecture deep dives
 
-## Additional Resources
+### Cashu protocol flow (summary)
 
-- [Nix Documentation](https://nixos.org/manual/nix/stable/)
-- [Contributing Guidelines](CODE_STYLE.md)
+- **Mint** publishes keys and keyset info; **wallet** requests **blind signatures** for mints; **proofs** encode amounts and secrets; **melt** swaps proofs for Lightning payment.
+- **DHKE**, **DLEQ** (where applicable), and **NUT** rules are implemented in **`cashu`** and orchestrated by **`cdk`**.
+
+### Storage layer
+
+- **`cdk-sql-common`** - Shared migrations and query modules; `build.rs` wires SQL into Rust.
+- **Transactions** - Use pool APIs and existing `run_db_operation` patterns from `cdk-common` / SQL crates.
+
+### Lightning integration
+
+- Backends implement **`MintPayment`** from **`cdk-common`**; **`cdk-mintd`** selects one via config.
+- **Quote lifecycle** - mint/melt quotes, invoice handling, and payment verification differ per backend; see each `cdk-*` crate and `cdk` sagas.
+
+---
+
+## 16. Adding a new crate
+
+1. **Create** `crates/my-crate/` with `Cargo.toml` (`version.workspace = true`, `edition.workspace = true`, `rust-version.workspace = true`, `license.workspace = true` as in other crates).
+2. **Workspace** - `crates/*` is a glob; new directories auto-join unless excluded.
+3. **Implement** traits / APIs; add **tests** and **README.md**.
+4. **Wire** dependencies - add to `[workspace.dependencies]` in root `Cargo.toml` if shared.
+5. **Document** in the root README “Project structure” if user-facing.
+6. **CI** - Nix flake may need a new `checks` entry for clippy/tests; follow existing patterns.
+
+---
+
+## 17. Security considerations
+
+- **Secrets** - Never commit keys, mnemonics, or production URLs; use env vars and config files excluded from git.
+- **Crypto** - Prefer **`cashu`** / **`cdk`** primitives; do not roll your own crypto.
+- **Disclosure** - Report vulnerabilities per **SECURITY.md** (private email), not public issues.
+- **Unsafe** - Workspace forbids **`unsafe_code`** (`forbid` in `Cargo.toml`).
+
+---
+
+## 18. Resources
+
+| Resource    | Link                                        |
+| ----------- | ------------------------------------------- |
+| Cashu org   | https://github.com/cashubtc                 |
+| NUTs        | https://github.com/cashubtc/nuts            |
+| Matrix #dev | https://matrix.to/#/#dev:matrix.cashu.space |
+| This repo   | https://github.com/cashubtc/cdk             |
+
+---
 
 ## License
 
-Refer to the LICENSE file in the repository for terms of use and distribution.
+See [LICENSE](LICENSE).

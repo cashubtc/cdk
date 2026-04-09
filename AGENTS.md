@@ -1,7 +1,7 @@
 # AGENTS.md - Cashu Development Kit (CDK)
 
 Rust workspace (edition 2021) implementing the Cashu e-cash protocol.
-24 crates in `crates/`, stable Rust (see `rust-toolchain.toml`), MSRV 1.85.0.
+24 crates in `crates/`, stable Rust (see **`rust-toolchain.toml`**); MSRV is **`rust-version`** in **`[workspace.package]`** in the root **`Cargo.toml`**.
 
 ## Build / Check / Test / Lint Commands
 
@@ -214,7 +214,7 @@ impl fmt::Display for MyType { ... }
 - `cdk-integration-tests` -- full-stack integration tests
 
 **Non-workspace**
-- `fuzz/` -- fuzzing targets (20 fuzz harnesses, excluded from workspace)
+- `fuzz/` -- fuzzing targets (21 fuzz harnesses, excluded from workspace)
 - `misc/` -- helper scripts, Docker configs, Keycloak setup, Grafana dashboards
 
 ### Dependency Flow
@@ -257,6 +257,7 @@ Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`.
 
 | Document | Path |
 |---|---|
+| Contributing (process, first PR) | `CONTRIBUTING.md` |
 | Developer setup & workflow | `DEVELOPMENT.md` |
 | Code style guide | `CODE_STYLE.md` |
 | Regtest testing guide | `REGTEST_GUIDE.md` |
