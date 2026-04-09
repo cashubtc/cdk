@@ -37,29 +37,14 @@ impl WalletRepository {
         // Convert the FFI database trait to a CDK database implementation
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
-        let wallet = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => tokio::task::block_in_place(|| {
-                handle.block_on(async move {
-                    WalletRepositoryBuilder::new()
-                        .localstore(localstore)
-                        .seed(seed)
-                        .build()
-                        .await
-                })
-            }),
-            Err(_) => {
-                // No current runtime, create a new one
-                tokio::runtime::Runtime::new()
-                    .map_err(|e| FfiError::internal(format!("Failed to create runtime: {}", e)))?
-                    .block_on(async move {
-                        WalletRepositoryBuilder::new()
-                            .localstore(localstore)
-                            .seed(seed)
-                            .build()
-                            .await
-                    })
-            }
-        }?;
+        let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;
+        let wallet = rt.block_on(async move {
+            WalletRepositoryBuilder::new()
+                .localstore(localstore)
+                .seed(seed)
+                .build()
+                .await
+        })?;
 
         Ok(Self {
             inner: Arc::new(wallet),
@@ -87,31 +72,15 @@ impl WalletRepository {
         let proxy_url = url::Url::parse(&proxy_url)
             .map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))?;
 
-        let wallet = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => tokio::task::block_in_place(|| {
-                handle.block_on(async move {
-                    WalletRepositoryBuilder::new()
-                        .localstore(localstore)
-                        .seed(seed)
-                        .proxy_url(proxy_url)
-                        .build()
-                        .await
-                })
-            }),
-            Err(_) => {
-                // No current runtime, create a new one
-                tokio::runtime::Runtime::new()
-                    .map_err(|e| FfiError::internal(format!("Failed to create runtime: {}", e)))?
-                    .block_on(async move {
-                        WalletRepositoryBuilder::new()
-                            .localstore(localstore)
-                            .seed(seed)
-                            .proxy_url(proxy_url)
-                            .build()
-                            .await
-                    })
-            }
-        }?;
+        let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;
+        let wallet = rt.block_on(async move {
+            WalletRepositoryBuilder::new()
+                .localstore(localstore)
+                .seed(seed)
+                .proxy_url(proxy_url)
+                .build()
+                .await
+        })?;
 
         Ok(Self {
             inner: Arc::new(wallet),

@@ -407,10 +407,6 @@ where
     type Err = Error;
 
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
-        if ys.is_empty() {
-            return Ok(vec![]);
-        }
-
         let conn = self
             .pool
             .get()

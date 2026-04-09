@@ -340,9 +340,6 @@ where
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
-        if ys.is_empty() {
-            return Ok(vec![]);
-        }
         let conn = self
             .pool
             .get()
@@ -368,10 +365,6 @@ where
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
-        if blinded_messages.is_empty() {
-            return Ok(vec![]);
-        }
-
         let conn = self
             .pool
             .get()

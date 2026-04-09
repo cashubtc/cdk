@@ -550,10 +550,6 @@ where
         &self,
         ys: Vec<PublicKey>,
     ) -> Result<Vec<ProofInfo>, database::Error> {
-        if ys.is_empty() {
-            return Ok(Vec::new());
-        }
-
         let conn = self
             .pool
             .get()
@@ -853,10 +849,6 @@ where
         ys: Vec<PublicKey>,
         state: State,
     ) -> Result<(), database::Error> {
-        if ys.is_empty() {
-            return Ok(());
-        }
-
         let conn = self
             .pool
             .get()
