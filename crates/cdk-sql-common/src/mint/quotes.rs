@@ -758,12 +758,12 @@ where
             let unit_str = column_as_string!(&row[2]);
             let unit = CurrencyUnit::from_str(&unit_str)?;
 
-            // Get blinded messages from blind_signature table where c IS NULL
             let blinded_messages_rows = query(
                 r#"
                 SELECT blinded_message, keyset_id, amount
                 FROM blind_signature
                 WHERE quote_id = :quote_id AND c IS NULL
+                FOR UPDATE
                 "#,
             )?
             .bind("quote_id", quote_id.to_string())
