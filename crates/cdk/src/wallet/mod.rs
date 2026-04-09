@@ -114,7 +114,7 @@ use crate::nuts::nut00::ProofsMethods;
 ///
 /// For pending mint quotes, call [`Wallet::mint_unissued_quotes`] which checks
 /// quote states with the mint and mints available tokens. This makes network calls.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Wallet {
     /// Mint Url
     pub mint_url: MintUrl,

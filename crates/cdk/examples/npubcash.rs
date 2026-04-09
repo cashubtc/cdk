@@ -96,8 +96,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Waiting for the invoice to be paid and processed...\n");
 
     // Subscribe to quote updates and wait for the single payment
-    let mut stream =
-        wallet.npubcash_proof_stream(SplitTarget::default(), None, Duration::from_secs(5));
+    let mut stream = Arc::clone(&wallet).npubcash_proof_stream(
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(5),
+    );
 
     if let Some(result) = stream.next().await {
         match result {
