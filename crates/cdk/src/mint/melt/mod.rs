@@ -562,7 +562,7 @@ impl Mint {
             expiry: quote.expiry,
             amount: quote.amount().into(),
             fee_reserve: quote.fee_reserve().into(),
-            payment_preimage: quote.payment_preimage,
+            payment_preimage: quote.payment_proof,
             change,
             request: Some(quote.request.to_string()),
             unit: Some(quote.unit.clone()),

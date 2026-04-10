@@ -263,7 +263,7 @@ impl PubSubManager {
     pub fn melt_quote_status(
         &self,
         quote: &MeltQuote,
-        payment_preimage: Option<String>,
+        payment_proof: Option<String>,
         change: Option<Vec<BlindSignature>>,
         new_state: MeltQuoteState,
     ) {
@@ -271,14 +271,14 @@ impl PubSubManager {
             cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
                 let mut event: MeltQuoteBolt11Response<QuoteId> = quote.clone().into();
                 event.state = new_state;
-                event.payment_preimage = payment_preimage;
+                event.payment_preimage = payment_proof;
                 event.change = change;
                 self.publish(NotificationPayload::MeltQuoteBolt11Response(event));
             }
             cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
                 let mut event: MeltQuoteBolt12Response<QuoteId> = quote.clone().into();
                 event.state = new_state;
-                event.payment_preimage = payment_preimage;
+                event.payment_preimage = payment_proof;
                 event.change = change;
                 self.publish(NotificationPayload::MeltQuoteBolt12Response(event));
             }
@@ -296,7 +296,7 @@ impl PubSubManager {
                     fee_reserve: quote.fee_reserve().into(),
                     state: new_state,
                     expiry: quote.expiry,
-                    payment_preimage,
+                    payment_preimage: payment_proof,
                     change,
                     request: request_str,
                     unit: Some(quote.unit.clone()),

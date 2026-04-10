@@ -116,7 +116,7 @@ impl<'a> PendingMelt<'a> {
                 Some(event) => {
                     let notification = event.into_inner();
 
-                    let (response_quote_id, state, payment_preimage, change) = match notification {
+                    let (response_quote_id, state, payment_proof, change) = match notification {
                         NotificationPayload::MeltQuoteBolt11Response(response) => (
                             response.quote,
                             response.state,
@@ -179,7 +179,7 @@ impl<'a> PendingMelt<'a> {
 
                             let finalized = self
                                 .saga
-                                .finalize(state, payment_preimage, change, self.metadata)
+                                .finalize(state, payment_proof, change, self.metadata)
                                 .await?;
 
                             return Ok(FinalizedMelt::new(
@@ -247,7 +247,7 @@ impl MeltQuoteStatusResponse {
     }
 
     /// Get the payment preimage
-    pub fn payment_preimage(&self) -> Option<String> {
+    pub fn payment_proof(&self) -> Option<String> {
         match self {
             Self::Standard(r) => r.payment_preimage.clone(),
             Self::Bolt12(r) => r.payment_preimage.clone(),
@@ -785,7 +785,7 @@ impl Wallet {
         new_state: MeltQuoteState,
         amount: Amount,
         change_amount: Option<Amount>,
-        payment_preimage: Option<String>,
+        payment_proof: Option<String>,
     ) -> Result<(), Error> {
         if quote.state != new_state {
             tracing::info!(
@@ -817,7 +817,7 @@ impl Wallet {
                         metadata: HashMap::new(),
                         quote_id: Some(quote.id.clone()),
                         payment_request: Some(quote.request.clone()),
-                        payment_proof: payment_preimage,
+                        payment_proof,
                         payment_method: Some(quote.payment_method.clone()),
                         saga_id: quote
                             .used_by_operation
@@ -948,7 +948,7 @@ impl Wallet {
         new_state: MeltQuoteState,
         amount: Amount,
         change_amount: Option<Amount>,
-        payment_preimage: Option<String>,
+        payment_proof: Option<String>,
     ) -> Result<(), Error> {
         if let Err(e) = self
             .add_transaction_for_pending_melt(
@@ -956,7 +956,7 @@ impl Wallet {
                 new_state,
                 amount,
                 change_amount,
-                payment_preimage.clone(),
+                payment_proof.clone(),
             )
             .await
         {

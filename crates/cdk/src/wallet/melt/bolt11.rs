@@ -65,7 +65,7 @@ impl Wallet {
             fee_reserve: quote_res.fee_reserve,
             state: quote_res.state,
             expiry: quote_res.expiry,
-            payment_preimage: quote_res.payment_preimage,
+            payment_proof: quote_res.payment_preimage,
             payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             used_by_operation: None,
             version: 0,

@@ -667,7 +667,7 @@ mod tests {
             "fee_reserve": 1,
             "state": "PAID",
             "expiry": 1234,
-            "payment_preimage": "abc"
+            "payment_proof": "abc"
         });
 
         let mint_decoded =
@@ -727,7 +727,7 @@ mod tests {
             "fee_reserve": 1,
             "state": "PAID",
             "expiry": 1234,
-            "payment_preimage": null,
+            "payment_proof": null,
             "request": "custom-request",
             "unit": "sat",
             "extra_field": "value"

@@ -849,8 +849,8 @@ pub struct MeltQuote {
     pub state: MeltQuoteState,
     /// Expiration time of quote
     pub expiry: u64,
-    /// Payment preimage
-    pub payment_preimage: Option<String>,
+    /// Payment proof
+    pub payment_proof: Option<String>,
     /// Value used by ln backend to look up state of request
     pub request_lookup_id: Option<PaymentIdentifier>,
     /// Payment options
@@ -889,7 +889,7 @@ impl MeltQuote {
             fee_reserve,
             state: MeltQuoteState::Unpaid,
             expiry,
-            payment_preimage: None,
+            payment_proof: None,
             request_lookup_id,
             options,
             created_time: unix_time(),
@@ -929,7 +929,7 @@ impl MeltQuote {
         fee_reserve: u64,
         state: MeltQuoteState,
         expiry: u64,
-        payment_preimage: Option<String>,
+        payment_proof: Option<String>,
         request_lookup_id: Option<PaymentIdentifier>,
         options: Option<MeltOptions>,
         created_time: u64,
@@ -944,7 +944,7 @@ impl MeltQuote {
             fee_reserve: Amount::new(fee_reserve, unit),
             state,
             expiry,
-            payment_preimage,
+            payment_proof,
             request_lookup_id,
             options,
             created_time,
@@ -1158,7 +1158,7 @@ impl From<MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
             fee_reserve: melt_quote.fee_reserve().clone().into(),
             state: melt_quote.state,
             expiry: melt_quote.expiry,
-            payment_preimage: melt_quote.payment_preimage,
+            payment_preimage: melt_quote.payment_proof,
             change: None,
             request: Some(melt_quote.request.to_string()),
             unit: Some(melt_quote.unit.clone()),

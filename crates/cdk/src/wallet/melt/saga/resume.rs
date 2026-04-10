@@ -217,7 +217,7 @@ impl Wallet {
         Ok(FinalizedMelt::new(
             data.quote_id.clone(),
             MeltQuoteState::Paid,
-            quote_status.payment_preimage(),
+            quote_status.payment_proof(),
             data.amount,
             fee_paid,
             change_proofs,
@@ -584,7 +584,7 @@ mod tests {
         melt_quote.id = quote_id.clone();
         db.add_melt_quote(melt_quote).await.unwrap();
 
-        // Mock: quote is Pending (no payment_preimage)
+        // Mock: quote is Pending (no payment_proof)
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id,

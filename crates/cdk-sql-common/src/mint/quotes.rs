@@ -273,7 +273,7 @@ where
             fee_reserve,
             expiry,
             state,
-            payment_preimage,
+            payment_proof,
             request_lookup_id,
             created_time,
             paid_time,
@@ -380,7 +380,7 @@ where
             fee_reserve,
             expiry,
             state,
-            payment_preimage,
+            payment_proof,
             request_lookup_id,
             created_time,
             paid_time,
@@ -433,7 +433,7 @@ where
             fee_reserve,
             expiry,
             state,
-            payment_preimage,
+            payment_proof,
             request_lookup_id,
             created_time,
             paid_time,
@@ -539,7 +539,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
                 fee_reserve,
                 expiry,
                 state,
-                payment_preimage,
+                payment_proof,
                 request_lookup_id,
                 created_time,
                 paid_time,
@@ -554,7 +554,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
     let fee_reserve: u64 = column_as_number!(fee_reserve);
 
     let expiry = column_as_number!(expiry);
-    let payment_preimage = column_as_nullable_string!(payment_preimage);
+    let payment_proof = column_as_nullable_string!(payment_proof);
     let options = column_as_nullable_string!(options);
     let options = options.and_then(|o| serde_json::from_str(&o).ok());
     let created_time: i64 = column_as_number!(created_time);
@@ -608,7 +608,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
         fee_reserve,
         state,
         expiry,
-        payment_preimage,
+        payment_proof,
         request_lookup_id,
         options,
         created_time as u64,
@@ -925,13 +925,13 @@ where
             INSERT INTO melt_quote
             (
                 id, unit, amount, request, fee_reserve, state,
-                expiry, payment_preimage, request_lookup_id,
+                expiry, payment_proof, request_lookup_id,
                 created_time, paid_time, options, request_lookup_id_kind, payment_method
             )
             VALUES
             (
                 :id, :unit, :amount, :request, :fee_reserve, :state,
-                :expiry, :payment_preimage, :request_lookup_id,
+                :expiry, :payment_proof, :request_lookup_id,
                 :created_time, :paid_time, :options, :request_lookup_id_kind, :payment_method
             )
         "#,
@@ -943,7 +943,7 @@ where
         .bind("fee_reserve", quote.fee_reserve().to_i64())
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
-        .bind("payment_preimage", quote.payment_preimage)
+        .bind("payment_proof", quote.payment_proof)
         .bind(
             "request_lookup_id",
             quote.request_lookup_id.as_ref().map(|id| id.to_string()),
@@ -993,11 +993,11 @@ where
         let rec = if state == MeltQuoteState::Paid {
             let current_time = unix_time();
             quote.paid_time = Some(current_time);
-            quote.payment_preimage = payment_proof.clone();
-            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_preimage = :payment_preimage WHERE id = :id"#)?
+            quote.payment_proof = payment_proof.clone();
+            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_proof = :payment_proof WHERE id = :id"#)?
                 .bind("state", state.to_string())
                 .bind("paid_time", current_time as i64)
-                .bind("payment_preimage", payment_proof)
+                .bind("payment_proof", payment_proof)
                 .bind("id", quote.id.to_string())
                 .execute(&self.inner)
                 .await
@@ -1229,7 +1229,7 @@ where
                 fee_reserve,
                 expiry,
                 state,
-                payment_preimage,
+                payment_proof,
                 request_lookup_id,
                 created_time,
                 paid_time,

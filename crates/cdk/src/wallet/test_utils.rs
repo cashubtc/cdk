@@ -348,7 +348,7 @@ pub fn test_melt_quote() -> MeltQuote {
         fee_reserve: Amount::from(10),
         state: MeltQuoteState::Unpaid,
         expiry: 9999999999,
-        payment_preimage: None,
+        payment_proof: None,
         payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
         used_by_operation: None,
         version: 0,
