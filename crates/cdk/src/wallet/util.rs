@@ -6,8 +6,22 @@ use std::str::FromStr;
 use bitcoin::XOnlyPublicKey;
 
 use crate::nuts::nut10::Kind;
-use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey};
+use crate::nuts::{Conditions, Proof, Proofs, PublicKey, SecretKey};
 use crate::{Error, SECP256K1};
+
+/// Returns `true` if the proof has a P2PK (NUT-11) spending condition.
+///
+/// Checks `Kind::P2PK` specifically. HTLC proofs also carry a NUT-10 secret but require a
+/// preimage to spend; they are intentionally excluded here because routing them through a swap
+/// via signing keys alone would fail at the mint.
+pub(crate) fn is_p2pk_locked(proof: &Proof) -> bool {
+    match <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
+        proof.secret.clone(),
+    ) {
+        Ok(s) => s.kind() == Kind::P2PK,
+        Err(_) => false,
+    }
+}
 
 /// Sign P2PK-locked proofs using the provided signing keys.
 ///

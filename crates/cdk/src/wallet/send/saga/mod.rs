@@ -73,8 +73,9 @@ use cdk_common::Id;
 use tracing::instrument;
 
 use self::state::{Initial, Prepared, TokenCreated};
-use super::{split_proofs_for_send, SendMemo, SendOptions};
+use super::{split_proofs_for_send, ProofSplitResult, SendMemo, SendOptions};
 use crate::amount::SplitTarget;
+use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut11::{enforce_sig_flag, SigFlag};
 use crate::nuts::{Proofs, State, Token};
@@ -317,26 +318,53 @@ impl<'a> SendSaga<'a, Initial> {
         let is_exact_or_offline =
             exact_proofs || opts.send_kind.is_offline() || opts.send_kind.has_tolerance();
 
-        // When p2pk_signing_keys are provided and passthrough is not opted in, all proofs must go
-        // through a swap so the token contains fresh, unconditioned proofs.
-        let force_swap =
-            force_swap || (!opts.p2pk_signing_keys.is_empty() && !opts.allow_locked_proofs);
-
         let keyset_fees_and_amounts = self.wallet.get_keyset_fees_and_amounts().await?;
         let keyset_fees: HashMap<Id, u64> = keyset_fees_and_amounts
             .iter()
             .map(|(key, values)| (*key, values.fee()))
             .collect();
 
-        let split_result = split_proofs_for_send(
-            proofs,
-            &send_amounts,
-            amount,
-            send_fee.total,
-            &keyset_fees,
-            force_swap,
-            is_exact_or_offline,
-        )?;
+        // When p2pk_signing_keys are provided and passthrough is not opted in, route only
+        // P2PK-locked proofs through the swap so the token contains fresh, unlocked proofs.
+        // Unlocked proofs bypass the swap entirely — they are already bearer and need no
+        // treatment.
+        //
+        // HTLC-locked proofs are intentionally excluded from this forced-swap path even though
+        // they also carry a NUT-10 secret. Spending an HTLC requires a preimage that
+        // `p2pk_signing_keys` cannot provide; routing HTLC proofs to a swap here would cause a
+        // mint rejection. HTLC support in the send path (including a `htlc_preimages` field on
+        // `SendOptions` and its own partition logic) is left for a follow-up PR.
+        let split_result = if !opts.p2pk_signing_keys.is_empty() && !opts.allow_locked_proofs {
+            let (p2pk_locked, rest): (Vec<_>, Vec<_>) = proofs
+                .into_iter()
+                .partition(crate::wallet::util::is_p2pk_locked);
+
+            let mut split = split_proofs_for_send(
+                rest,
+                &send_amounts,
+                amount,
+                send_fee.total,
+                &keyset_fees,
+                force_swap,
+                is_exact_or_offline,
+            )?;
+
+            // Append the locked proofs to the swap set and recalculate the swap fee.
+            split.proofs_to_swap.extend(p2pk_locked);
+            split.swap_fee =
+                calculate_fee(&split.proofs_to_swap.count_by_keyset(), &keyset_fees)?.total;
+            split
+        } else {
+            split_proofs_for_send(
+                proofs,
+                &send_amounts,
+                amount,
+                send_fee.total,
+                &keyset_fees,
+                force_swap,
+                is_exact_or_offline,
+            )?
+        };
 
         Ok(SendSaga {
             wallet: self.wallet,

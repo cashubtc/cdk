@@ -2291,7 +2291,7 @@ async fn test_p2pk_send_options_signing_keys() {
         .await
         .expect("prepare_send should succeed with P2PK-locked input proofs");
 
-    let (token, _) = prepared
+    let token = prepared
         .confirm(None)
         .await
         .expect("confirm should succeed — P2PK proofs signed before swap");
@@ -2406,7 +2406,7 @@ async fn test_p2pk_signing_keys_exact_denomination_short_circuit() {
         .await
         .expect("prepare_send should succeed");
 
-    let (token, _) = prepared
+    let token = prepared
         .confirm(None)
         .await
         .expect("confirm should succeed");
@@ -2512,20 +2512,16 @@ async fn test_p2pk_allow_locked_proofs_passthrough() {
         .await
         .expect("prepare_send should succeed");
 
-    let (token, _) = prepared
+    let token = prepared
         .confirm(None)
         .await
         .expect("confirm should succeed with allow_locked_proofs");
 
-    // Bob receives using the shared key to satisfy the spending conditions
+    // Alice pre-signed the proofs before sending, so the witness is already attached and the
+    // proof is effectively bearer.  Bob does NOT need to provide the signing key — the mint
+    // will verify Alice's existing witness signature and accept the swap.
     let received = wallet_bob
-        .receive(
-            &token.to_string(),
-            ReceiveOptions {
-                p2pk_signing_keys: vec![shared_secret],
-                ..Default::default()
-            },
-        )
+        .receive(&token.to_string(), ReceiveOptions::default())
         .await
         .expect("Bob should receive the token using the shared signing key");
 
@@ -2627,5 +2623,130 @@ async fn test_p2pk_allow_locked_proofs_rejects_sig_all() {
     assert!(
         result.is_err(),
         "confirm should fail for SIG_ALL proofs in passthrough mode"
+    );
+}
+
+/// Test that when a wallet holds a mix of P2PK-locked and plain unlocked proofs, sending with
+/// `p2pk_signing_keys` only routes the locked proofs through the swap.
+///
+/// The plain proofs are already bearer and go directly to `proofs_to_send` without a swap.
+/// Bob receives a clean token with no spending conditions and needs no signing key to redeem it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_p2pk_signing_keys_mixed_locked_and_unlocked_proofs() {
+    setup_tracing();
+
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create alice wallet");
+    let wallet_bob = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create bob wallet");
+
+    // Fund alice with 64 sats of plain (unlocked) proofs.
+    fund_wallet(wallet_alice.clone(), 64, None)
+        .await
+        .expect("Failed to fund alice");
+
+    let alice_secret = SecretKey::generate();
+    let spending_conditions = SpendingConditions::new_p2pk(alice_secret.public_key(), None);
+
+    // Swap 8 sats of alice's plain proofs for P2PK-locked proofs at the mint,
+    // then replace them in her wallet.  After this alice holds:
+    //   - ~56 sats of plain unlocked proofs
+    //   -   8 sats of P2PK-locked proofs
+    let plain_proofs = wallet_alice
+        .get_unspent_proofs()
+        .await
+        .expect("Failed to get alice's proofs");
+
+    let keyset_id = get_keyset_id(&mint).await;
+    let keys = mint.pubkeys().keysets.first().cloned().unwrap().keys;
+    let fee_and_amounts = (0u64, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
+
+    // Select only the 8-sat proof to lock.
+    let proof_to_lock = plain_proofs
+        .iter()
+        .find(|p| p.amount == cashu::Amount::from(8))
+        .cloned()
+        .expect("Alice should have an 8-sat proof");
+    let proof_to_lock_y = proof_to_lock.y().unwrap();
+
+    let pre_mint = PreMintSecrets::with_conditions(
+        keyset_id,
+        cashu::Amount::from(8),
+        &SplitTarget::default(),
+        &spending_conditions,
+        &fee_and_amounts,
+    )
+    .unwrap();
+
+    let swap_request = SwapRequest::new(vec![proof_to_lock], pre_mint.blinded_messages());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let locked_proofs = construct_proofs(
+        swap_response.signatures,
+        pre_mint.rs(),
+        pre_mint.secrets(),
+        &keys,
+    )
+    .unwrap();
+
+    // Replace the plain 8-sat proof with the locked ones in alice's wallet.
+    let locked_proof_infos: Vec<_> = locked_proofs
+        .iter()
+        .map(|p| {
+            ProofInfo::new(
+                p.clone(),
+                wallet_alice.mint_url.clone(),
+                State::Unspent,
+                CurrencyUnit::Sat,
+            )
+            .unwrap()
+        })
+        .collect();
+    wallet_alice
+        .localstore
+        .update_proofs(locked_proof_infos, vec![proof_to_lock_y])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        cashu::Amount::from(64),
+        wallet_alice.total_balance().await.unwrap(),
+        "Alice should still have 64 sats total (56 unlocked + 8 locked)"
+    );
+
+    // Alice sends 10 sats.  The selection algorithm will pick a mix of proofs that
+    // includes the locked 8-sat proof.  With the partition fix, only the locked proofs
+    // are routed through the swap; the unlocked ones bypass it.
+    let send_amount = cashu::Amount::from(10);
+    let prepared = wallet_alice
+        .prepare_send(
+            send_amount,
+            SendOptions {
+                p2pk_signing_keys: vec![alice_secret],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("prepare_send should succeed with a mixed wallet");
+
+    let token = prepared
+        .confirm(None)
+        .await
+        .expect("confirm should succeed");
+
+    // Bob must be able to receive the token without any signing keys, proving that
+    // the locked proofs were swapped to fresh, unconditioned ones.
+    let received = wallet_bob
+        .receive(&token.to_string(), ReceiveOptions::default())
+        .await
+        .expect("Bob should receive the token without signing keys");
+
+    assert_eq!(
+        send_amount, received,
+        "Bob should receive exactly the send amount"
     );
 }
