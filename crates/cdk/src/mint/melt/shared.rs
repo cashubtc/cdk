@@ -392,7 +392,7 @@ pub async fn load_melt_quotes_exclusively(
 /// * `inputs_amount` - Total amount from inputs
 /// * `inputs_fee` - Fee for inputs
 /// * `total_spent` - Amount spent on payment
-/// * `payment_preimage` - Payment preimage (if any)
+/// * `payment_proof` - Payment preimage (if any)
 /// * `payment_lookup_id` - Payment lookup identifier
 ///
 /// # Returns
@@ -417,7 +417,7 @@ pub(crate) async fn finalize_melt_core(
     inputs_amount: Amount<CurrencyUnit>,
     inputs_fee: Amount<CurrencyUnit>,
     total_spent: Amount<CurrencyUnit>,
-    payment_preimage: Option<String>,
+    payment_proof: Option<String>,
     payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
 ) -> Result<(Proofs, MeltQuote), Error> {
     // Validate quote amount vs payment amount
@@ -483,7 +483,7 @@ pub(crate) async fn finalize_melt_core(
 
     // Update quote state to Paid
     if let Err(err) = tx
-        .update_melt_quote_state(&mut quote, MeltQuoteState::Paid, payment_preimage.clone())
+        .update_melt_quote_state(&mut quote, MeltQuoteState::Paid, payment_proof.clone())
         .await
     {
         tx.rollback().await?;
@@ -552,7 +552,7 @@ pub(crate) async fn finalize_melt_core(
 /// * `pubsub` - Pubsub manager
 /// * `quote` - Melt quote to finalize
 /// * `total_spent` - Amount spent on payment
-/// * `payment_preimage` - Payment preimage (if any)
+/// * `payment_proof` - Payment preimage (if any)
 /// * `payment_lookup_id` - Payment lookup identifier
 /// * `operation_id` - Saga operation ID for recording the completed operation
 ///   and deleting the saga. When `None`, operation recording and saga deletion
@@ -568,7 +568,7 @@ pub async fn finalize_melt_quote(
     pubsub: &PubSubManager,
     quote: &MeltQuote,
     total_spent: Amount<CurrencyUnit>,
-    payment_preimage: Option<String>,
+    payment_proof: Option<String>,
     payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
     operation_id: Option<uuid::Uuid>,
 ) -> Result<Option<Vec<BlindSignature>>, Error> {
@@ -652,7 +652,7 @@ pub async fn finalize_melt_quote(
             melt_request_info.inputs_amount.clone(),
             melt_request_info.inputs_fee.clone(),
             total_spent.clone(),
-            payment_preimage.clone(),
+            payment_proof.clone(),
             payment_lookup_id,
         )
         .await?;
@@ -745,7 +745,7 @@ pub async fn finalize_melt_quote(
     // Publish quote status change
     pubsub.melt_quote_status(
         &quote,
-        payment_preimage,
+        payment_proof,
         change_sigs.clone(),
         MeltQuoteState::Paid,
     );

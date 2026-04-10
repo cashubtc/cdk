@@ -91,7 +91,7 @@ async fn finalize_melt_common<'a>(
     final_proofs: &Proofs,
     premint_secrets: &PreMintSecrets,
     state: MeltQuoteState,
-    payment_preimage: Option<String>,
+    payment_proof: Option<String>,
     change: Option<Vec<crate::nuts::BlindSignature>>,
     metadata: HashMap<String, String>,
 ) -> Result<MeltSaga<'a, Finalized>, Error> {
@@ -180,7 +180,7 @@ async fn finalize_melt_common<'a>(
             metadata,
             quote_id: Some(quote_info.id.clone()),
             payment_request: Some(quote_info.request.clone()),
-            payment_proof: payment_preimage.clone(),
+            payment_proof: payment_proof.clone(),
             payment_method: Some(quote_info.payment_method.clone()),
             saga_id: Some(operation_id),
         })
@@ -210,7 +210,7 @@ async fn finalize_melt_common<'a>(
             state,
             amount: quote_info.amount,
             fee,
-            payment_proof: payment_preimage,
+            payment_proof,
             change: change_proofs,
         },
     })
@@ -1076,7 +1076,7 @@ impl<'a> MeltSaga<'a, PaymentPending> {
     pub async fn finalize(
         self,
         state: MeltQuoteState,
-        payment_preimage: Option<String>,
+        payment_proof: Option<String>,
         change: Option<Vec<crate::nuts::BlindSignature>>,
         metadata: HashMap<String, String>,
     ) -> Result<MeltSaga<'a, Finalized>, Error> {
@@ -1088,7 +1088,7 @@ impl<'a> MeltSaga<'a, PaymentPending> {
             &self.state_data.final_proofs,
             &self.state_data.premint_secrets,
             state,
-            payment_preimage,
+            payment_proof,
             change,
             metadata,
         )

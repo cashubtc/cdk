@@ -223,8 +223,9 @@ pub struct MeltQuote {
     pub state: MeltQuoteState,
     /// Expiration time of quote
     pub expiry: u64,
-    /// Payment preimage
-    pub payment_preimage: Option<String>,
+    /// Payment proof
+    #[serde(alias = "payment_preimage")]
+    pub payment_proof: Option<String>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Operation ID that has reserved this quote (for saga pattern)
@@ -419,6 +420,7 @@ pub struct Transaction {
     /// Payment request (e.g., BOLT11 invoice, BOLT12 offer)
     pub payment_request: Option<String>,
     /// Payment proof (e.g., preimage for Lightning melt transactions)
+    #[serde(alias = "payment_preimage")]
     pub payment_proof: Option<String>,
     /// Payment method (e.g., Bolt11, Bolt12) for mint/melt transactions
     #[serde(default)]

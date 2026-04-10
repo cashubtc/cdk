@@ -94,7 +94,7 @@ impl Mint {
         &self,
         quote: &MeltQuote,
         total_spent: cdk_common::Amount<cdk_common::CurrencyUnit>,
-        payment_preimage: Option<String>,
+        payment_proof: Option<String>,
         payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
         operation_id: uuid::Uuid,
     ) -> Result<(), Error> {
@@ -108,7 +108,7 @@ impl Mint {
             &self.pubsub_manager,
             quote,
             total_spent,
-            payment_preimage,
+            payment_proof,
             payment_lookup_id,
             Some(operation_id),
         )
