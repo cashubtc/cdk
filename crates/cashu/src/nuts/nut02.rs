@@ -1061,6 +1061,64 @@ mod test {
     }
 
     #[test]
+    fn test_v2_from_data_expiry_zero_is_same_as_none() {
+        let unit: CurrencyUnit = CurrencyUnit::from_str("sat").unwrap();
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+
+        let id_with_none = Id::v2_from_data(&keys, &unit, 0, None);
+        let id_with_zero = Id::v2_from_data(&keys, &unit, 0, Some(0));
+        assert_eq!(
+            id_with_none, id_with_zero,
+            "expiry=Some(0) should be treated the same as expiry=None"
+        );
+    }
+
+    #[test]
+    fn test_from_short_keyset_id_prefix_too_short() {
+        let v1_info = KeySetInfo {
+            id: Id::from_str("00009a1f293253e4").unwrap(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+        let keysets = vec![v1_info];
+
+        let short_id = ShortKeysetId::from_bytes(&[0x00, 0x01, 0x02, 0x03]).unwrap();
+        let res = Id::from_short_keyset_id(&short_id, &keysets);
+        assert!(
+            matches!(res, Err(Error::MalformedShortKeysetId)),
+            "Expected MalformedShortKeysetId for prefix < 7 bytes, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn test_from_short_keyset_id_prefix_too_long() {
+        let v2_id =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+        let v2_info = KeySetInfo {
+            id: v2_id,
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+        let keysets = vec![v2_info];
+
+        let mut bytes = vec![0x01u8];
+        bytes.extend_from_slice(&[0xAA; 33]);
+        let short_id = ShortKeysetId::from_bytes(&bytes).unwrap();
+        let res = Id::from_short_keyset_id(&short_id, &keysets);
+        assert!(
+            matches!(res, Err(Error::MalformedShortKeysetId)),
+            "Expected MalformedShortKeysetId for prefix > 32 bytes, got {:?}",
+            res
+        );
+    }
+
+    #[test]
     fn test_from_short_keyset_id_panic_regression() {
         // v1 id - 7 bytes + 1 byte version prefix = 16 hex chars
         let v1_id = Id::from_str("00009a1f293253e4").unwrap();
