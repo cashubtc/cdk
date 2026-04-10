@@ -18,7 +18,8 @@ use cdk::nuts::CurrencyUnit;
     feature = "cln",
     feature = "lnd",
     feature = "ldk-node",
-    feature = "fakewallet"
+    feature = "fakewallet",
+    feature = "onchain"
 ))]
 use cdk::types::FeeReserve;
 
@@ -227,6 +228,120 @@ impl LnBackendSetup for config::GrpcProcessor {
         .await?;
 
         Ok(payment_processor)
+    }
+}
+
+#[cfg(feature = "onchain")]
+#[async_trait]
+impl LnBackendSetup for config::Onchain {
+    async fn setup(
+        &self,
+        settings: &Settings,
+        _unit: CurrencyUnit,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+        work_dir: &Path,
+        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+    ) -> anyhow::Result<cdk_bdk::CdkBdk> {
+        use anyhow::bail;
+        use bip39::Mnemonic;
+        use bitcoin::Network;
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: self.reserve_fee_min,
+            percent_fee_reserve: self.fee_percent,
+        };
+
+        let network = match self.network.to_lowercase().as_str() {
+            "mainnet" | "bitcoin" => Network::Bitcoin,
+            "testnet" => Network::Testnet,
+            "signet" => Network::Signet,
+            _ => Network::Regtest,
+        };
+
+        let mnemonic_str = self
+            .mnemonic
+            .as_ref()
+            .or(settings.info.mnemonic.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("Onchain mnemonic or Info mnemonic is required"))?;
+
+        let mnemonic = mnemonic_str
+            .parse::<Mnemonic>()
+            .map_err(|e| anyhow::anyhow!("Invalid mnemonic: {e}"))?;
+
+        let rpc_url = &self.rpc_url;
+        let rpc_user = &self.rpc_user;
+        let rpc_pass = &self.rpc_pass;
+
+        let chain_source = match self
+            .chain_source_type
+            .as_ref()
+            .map(|s| s.to_lowercase())
+            .as_deref()
+        {
+            Some("esplora") => {
+                let esplora_url = self.esplora_url.clone().ok_or_else(|| {
+                    anyhow::anyhow!("esplora_url is required when chain_source_type is 'esplora'")
+                })?;
+                cdk_bdk::ChainSource::Esplora {
+                    url: esplora_url,
+                    parallel_requests: 5,
+                }
+            }
+            _ => {
+                let parts: Vec<&str> = rpc_url.split(':').collect();
+                if parts.len() != 2 {
+                    bail!("Invalid rpc_url: expected host:port");
+                }
+                let host = parts[0].to_string();
+                let port = parts[1].parse::<u16>()?;
+
+                cdk_bdk::ChainSource::BitcoinRpc(cdk_bdk::BitcoinRpcConfig {
+                    host,
+                    port,
+                    user: rpc_user.clone(),
+                    password: rpc_pass.clone(),
+                })
+            }
+        };
+
+        let mut bdk_work_dir = work_dir.to_path_buf();
+        bdk_work_dir.push("bdk-onchain");
+
+        let batch_config = cdk_bdk::BatchConfig {
+            poll_interval: std::time::Duration::from_secs(self.batch_config.poll_interval_secs),
+            max_batch_size: self.batch_config.max_batch_size,
+            standard_deadline: std::time::Duration::from_secs(
+                self.batch_config.standard_deadline_secs,
+            ),
+            economy_deadline: std::time::Duration::from_secs(
+                self.batch_config.economy_deadline_secs,
+            ),
+            min_batch_threshold: self.batch_config.min_batch_threshold,
+            max_intent_age: Some(std::time::Duration::from_secs(24 * 60 * 60)),
+        };
+
+        // For now, onchain backend needs its own KV store for sagas
+        // We use the same underlying localstore if possible, or create a new one.
+        // Actually, CdkBdk needs Arc<dyn KVStore<Err = cdk_common::database::Error>>
+        // cdk-mintd usually uses cdk-sqlite or cdk-postgres.
+
+        // We'll reuse the kv_store passed in if it's available
+        let bdk_kv_store =
+            _kv_store.ok_or_else(|| anyhow::anyhow!("KV store is required for BDK backend"))?;
+
+        let bdk = cdk_bdk::CdkBdk::new(
+            mnemonic,
+            network,
+            chain_source,
+            bdk_work_dir.to_string_lossy().to_string(),
+            fee_reserve,
+            bdk_kv_store,
+            Some(batch_config),
+            self.num_confs,
+            self.min_receive_amount_sat,
+        )?;
+
+        Ok(bdk)
     }
 }
 

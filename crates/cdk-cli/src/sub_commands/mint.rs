@@ -8,6 +8,7 @@ use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::WalletRepository;
 use cdk::{Amount, StreamExt};
 use cdk_common::nut00::KnownMethod;
+use cdk_common::nuts::MintQuoteState;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
@@ -49,10 +50,10 @@ pub async fn mint(
 
     let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
 
-    let payment_method = PaymentMethod::from_str(&sub_command_args.method)?;
+    let requested_payment_method = PaymentMethod::from_str(&sub_command_args.method)?;
 
     let quote = match &sub_command_args.quote_id {
-        None => match payment_method {
+        None => match requested_payment_method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
                 let amount = sub_command_args
                     .amount
@@ -88,7 +89,7 @@ pub async fn mint(
                 );
                 let quote = wallet
                     .mint_quote(
-                        payment_method.clone(),
+                        requested_payment_method.clone(),
                         amount.map(|a| a.into()),
                         description,
                         None,
@@ -116,7 +117,12 @@ pub async fn mint(
                         .map_or("none".to_string(), |b| b.to_string())
                 );
                 let quote = wallet
-                    .mint_quote(payment_method.clone(), amount.map(|a| a.into()), None, None)
+                    .mint_quote(
+                        requested_payment_method.clone(),
+                        amount.map(|a| a.into()),
+                        None,
+                        None,
+                    )
                     .await?;
 
                 println!(
@@ -132,28 +138,42 @@ pub async fn mint(
                 quote
             }
         },
-        Some(quote_id) => wallet
-            .localstore
-            .get_mint_quote(quote_id)
-            .await?
-            .ok_or(anyhow!("Unknown quote"))?,
+        Some(quote_id) => {
+            let quote = match wallet.localstore.get_mint_quote(quote_id).await? {
+                Some(quote) => quote,
+                None => {
+                    wallet
+                        .fetch_mint_quote(quote_id, Some(requested_payment_method.clone()))
+                        .await?
+                }
+            };
+
+            wallet
+                .fetch_mint_quote(quote_id, Some(quote.payment_method.clone()))
+                .await?
+        }
     };
 
-    tracing::debug!("Attempting mint for: {}", payment_method);
+    tracing::debug!("Attempting mint for: {}", quote.payment_method);
 
     let mut amount_minted = Amount::ZERO;
 
-    let mut proof_streams = wallet.proof_stream(quote, SplitTarget::default(), None);
-
-    while let Some(proofs) = proof_streams.next().await {
-        let proofs = match proofs {
-            Ok(proofs) => proofs,
-            Err(err) => {
-                tracing::error!("Proof streams ended with {:?}", err);
-                break;
-            }
-        };
+    if quote.state == MintQuoteState::Paid && quote.amount_paid > quote.amount_issued {
+        let proofs = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
         amount_minted += proofs.total_amount()?;
+    } else {
+        let mut proof_streams = wallet.proof_stream(quote, SplitTarget::default(), None);
+
+        while let Some(proofs) = proof_streams.next().await {
+            let proofs = match proofs {
+                Ok(proofs) => proofs,
+                Err(err) => {
+                    tracing::error!("Proof streams ended with {:?}", err);
+                    break;
+                }
+            };
+            amount_minted += proofs.total_amount()?;
+        }
     }
 
     println!("Received {amount_minted} from mint {mint_url}");

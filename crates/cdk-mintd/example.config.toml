@@ -200,6 +200,25 @@ max_delay_time = 3
 # input_fee_ppk = 0
 # expired = false
 
+# [onchain]
+# Onchain Bitcoin backend configuration
+# enabled = true
+# network = "signet"  # mainnet, testnet, signet, regtest
+# chain_source_type = "esplora"  # esplora or bitcoinrpc (default)
+# esplora_url = "https://blockstream.info/testnet/api"  # Required when chain_source_type = "esplora"
+# rpc_url = "127.0.0.1:18443"  # Required when chain_source_type = "bitcoinrpc"
+# rpc_user = "user"
+# rpc_pass = "pass"
+# mnemonic = ""  # Optional, uses info.mnemonic if not set
+# num_confs = 3  # Number of confirmations required
+# fee_percent = 0.02
+# reserve_fee_min = 2
+# poll_interval_secs = 10
+# max_batch_size = 50
+# standard_deadline_secs = 300
+# economy_deadline_secs = 3600
+# min_batch_threshold = 1
+
 # [grpc_processor]
 # gRPC Payment Processor configuration
 # supported_units = ["sat"]

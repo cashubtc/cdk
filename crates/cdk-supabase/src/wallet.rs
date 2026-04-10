@@ -2509,7 +2509,8 @@ impl TryInto<wallet::MeltQuote> for MeltQuoteTable {
             state: cdk_common::nuts::MeltQuoteState::from_str(&self.state)
                 .map_err(|_| DatabaseError::Internal("Invalid state".into()))?,
             expiry: self.expiry as u64,
-            payment_preimage: self.payment_preimage,
+            payment_proof: self.payment_preimage,
+            estimated_blocks: None,
             payment_method: cdk_common::PaymentMethod::from_str(&self.payment_method)
                 .map_err(|_| DatabaseError::Internal("Invalid payment method".into()))?,
             used_by_operation: self.used_by_operation,
@@ -2530,7 +2531,7 @@ impl TryFrom<wallet::MeltQuote> for MeltQuoteTable {
             fee_reserve: q.fee_reserve.to_u64() as i64,
             state: q.state.to_string(),
             expiry: q.expiry as i64,
-            payment_preimage: q.payment_preimage,
+            payment_preimage: q.payment_proof,
             payment_method: q.payment_method.to_string(),
             used_by_operation: q.used_by_operation,
             version: Some(q.version as i32),

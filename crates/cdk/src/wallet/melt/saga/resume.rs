@@ -203,10 +203,15 @@ impl Wallet {
             None
         };
 
+        let change_amount_from_status = quote_status
+            .change()
+            .and_then(|change| Amount::try_sum(change.iter().map(|sig| sig.amount)).ok());
+
         // Calculate fee paid
         let change_amount = change_proofs
             .as_ref()
             .and_then(|p| Amount::try_sum(p.iter().map(|proof| proof.amount)).ok())
+            .or(change_amount_from_status)
             .unwrap_or(Amount::ZERO);
         let fee_paid = input_amount
             .checked_sub(data.amount + change_amount)
@@ -259,6 +264,7 @@ impl Wallet {
 mod tests {
     use std::sync::Arc;
 
+    use cdk_common::nut_onchain::MeltQuoteOnchainResponse;
     use cdk_common::nuts::{CurrencyUnit, State};
     use cdk_common::wallet::{
         MeltOperationData, MeltSagaState, OperationData, WalletSaga, WalletSagaState,
@@ -433,7 +439,7 @@ mod tests {
 
         // Mock: quote is Paid
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        mock_client.set_bolt11_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id,
             state: MeltQuoteState::Paid,
             expiry: 9999999999,
@@ -508,7 +514,7 @@ mod tests {
 
         // Mock: quote is Unpaid
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        mock_client.set_bolt11_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id,
             state: MeltQuoteState::Unpaid,
             expiry: 9999999999,
@@ -586,7 +592,7 @@ mod tests {
 
         // Mock: quote is Pending (no payment_preimage)
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        mock_client.set_bolt11_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id,
             state: MeltQuoteState::Pending,
             expiry: 9999999999,
@@ -613,5 +619,83 @@ mod tests {
 
         // Saga should still exist
         assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_recover_onchain_melt_uses_change_from_status_for_fee() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_id = format!("test_melt_quote_{}", uuid::Uuid::new_v4());
+
+        for amount in [4096_u64, 1024, 512, 256, 128, 2, 1] {
+            let proof_info = test_proof_info(keyset_id, amount, mint_url.clone(), State::Unspent);
+            db.update_proofs(vec![proof_info.clone()], vec![])
+                .await
+                .unwrap();
+            db.reserve_proofs(vec![proof_info.y], &saga_id)
+                .await
+                .unwrap();
+        }
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Melt(MeltSagaState::MeltRequested),
+            Amount::from(5000_u64),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Melt(MeltOperationData {
+                quote_id: quote_id.clone(),
+                amount: Amount::from(5000_u64),
+                fee_reserve: Amount::from(1019_u64),
+                counter_start: None,
+                counter_end: None,
+                change_amount: None,
+                change_blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let mut melt_quote = test_melt_quote();
+        melt_quote.id = quote_id.clone();
+        melt_quote.payment_method =
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Onchain);
+        melt_quote.amount = Amount::from(5000_u64);
+        melt_quote.fee_reserve = Amount::from(1019_u64);
+        db.add_melt_quote(melt_quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_onchain_melt_quote_status_response(Ok(MeltQuoteOnchainResponse {
+            quote: quote_id,
+            request: "tb1qtestaddress".to_string(),
+            amount: Amount::from(5000_u64),
+            unit: CurrencyUnit::Sat,
+            fee: Amount::from(1019_u64),
+            estimated_blocks: 1,
+            state: MeltQuoteState::Paid,
+            expiry: 9999999999,
+            change: Some(vec![crate::nuts::BlindSignature {
+                amount: Amount::from(619_u64),
+                keyset_id,
+                c: crate::nuts::PublicKey::from_hex(
+                    "0331ad6dbac09400338c17d43fc23d70330547ff7416801c7900735b23fdab189b",
+                )
+                .unwrap(),
+                dleq: None,
+            }]),
+            outpoint: Some("txid:0".to_string()),
+        }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await
+            .unwrap();
+
+        let finalized = result.expect("expected finalized melt");
+        assert_eq!(finalized.state(), MeltQuoteState::Paid);
+        assert_eq!(finalized.amount(), Amount::from(5000_u64));
+        assert_eq!(finalized.fee_paid(), Amount::from(400_u64));
     }
 }

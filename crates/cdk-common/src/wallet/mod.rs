@@ -223,8 +223,12 @@ pub struct MeltQuote {
     pub state: MeltQuoteState,
     /// Expiration time of quote
     pub expiry: u64,
-    /// Payment preimage
-    pub payment_preimage: Option<String>,
+    /// Payment proof (e.g. Lightning preimage or onchain outpoint)
+    #[serde(alias = "payment_preimage")]
+    pub payment_proof: Option<String>,
+    /// Estimated confirmation target in blocks for onchain quotes
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_blocks: Option<u32>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Operation ID that has reserved this quote (for saga pattern)

@@ -491,9 +491,12 @@ mod tests {
         });
 
         let quote_response = mint.get_melt_quote(request).await.unwrap();
+        let quote_id = quote_response
+            .quote()
+            .expect("expected single quote response");
 
         mint.localstore
-            .get_melt_quote(&quote_response.quote)
+            .get_melt_quote(quote_id)
             .await
             .unwrap()
             .expect("quote should exist in database")

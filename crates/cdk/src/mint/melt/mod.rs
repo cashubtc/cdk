@@ -8,10 +8,14 @@ use cdk_common::nut00::KnownMethod;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, CustomOutgoingPaymentOptions,
-    OutgoingPaymentOptions,
+    OutgoingPaymentOptions, PaymentIdentifier,
 };
 use cdk_common::quote_id::QuoteId;
-use cdk_common::{MeltOptions, MeltQuoteBolt12Request, MeltQuoteCustomRequest};
+use cdk_common::{
+    MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse, MeltQuoteCustomRequest,
+    MeltQuoteCustomResponse, MeltQuoteOnchainOptions, MeltQuoteOnchainRequest,
+    MeltQuoteOnchainResponse, MeltQuoteResponse,
+};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use lightning::offers::offer::Offer;
@@ -152,15 +156,23 @@ impl Mint {
     pub async fn get_melt_quote(
         &self,
         melt_quote_request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltQuoteCreateResponse<QuoteId>, Error> {
         match melt_quote_request {
-            MeltQuoteRequest::Bolt11(bolt11_request) => {
-                self.get_melt_bolt11_quote_impl(&bolt11_request).await
+            MeltQuoteRequest::Bolt11(bolt11_request) => Ok(MeltQuoteCreateResponse::Bolt11(
+                self.get_melt_bolt11_quote_impl(&bolt11_request).await?,
+            )),
+            MeltQuoteRequest::Bolt12(bolt12_request) => Ok(MeltQuoteCreateResponse::Bolt12(
+                self.get_melt_bolt12_quote_impl(&bolt12_request).await?,
+            )),
+            MeltQuoteRequest::Onchain(onchain_request) => {
+                Ok(MeltQuoteCreateResponse::Onchain(MeltQuoteOnchainOptions {
+                    quotes: self.get_melt_onchain_quote_impl(&onchain_request).await?,
+                }))
             }
-            MeltQuoteRequest::Bolt12(bolt12_request) => {
-                self.get_melt_bolt12_quote_impl(&bolt12_request).await
-            }
-            MeltQuoteRequest::Custom(request) => self.get_melt_custom_quote_impl(&request).await,
+            MeltQuoteRequest::Custom(request) => Ok(MeltQuoteCreateResponse::Custom((
+                PaymentMethod::from(request.method.as_str()),
+                self.get_melt_custom_quote_impl(&request).await?,
+            ))),
         }
     }
 
@@ -373,12 +385,109 @@ impl Mint {
         Ok(quote.into())
     }
 
+    /// Implementation of get_melt_onchain_quote
+    #[instrument(skip_all)]
+    async fn get_melt_onchain_quote_impl(
+        &self,
+        melt_request: &MeltQuoteOnchainRequest,
+    ) -> Result<Vec<MeltQuoteOnchainResponse<QuoteId>>, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("get_melt_onchain_quote");
+
+        let unit = &melt_request.unit;
+
+        let ln = self
+            .payment_processors
+            .get(&PaymentProcessorKey::new(
+                unit.clone(),
+                PaymentMethod::Known(KnownMethod::Onchain),
+            ))
+            .ok_or_else(|| {
+                tracing::info!("Could not get ln backend for {}, onchain ", unit);
+                Error::UnsupportedUnit
+            })?;
+
+        let outgoing_payment_options = cdk_common::payment::OnchainOutgoingPaymentOptions {
+            address: melt_request.request.clone(),
+            amount: melt_request.amount.with_unit(unit.clone()),
+            max_fee_amount: melt_request
+                .max_fee_amount
+                .map(|amount| amount.with_unit(unit.clone())),
+            quote_id: QuoteId::UUID(uuid::Uuid::new_v4()), // Temporary ID for fee estimation
+            tier: melt_request.tier.clone(),
+            metadata: melt_request.metadata.clone(),
+        };
+
+        let payment_quote = ln
+            .get_payment_quote(
+                unit,
+                OutgoingPaymentOptions::Onchain(Box::new(outgoing_payment_options)),
+            )
+            .await
+            .map_err(|err| {
+                tracing::error!(
+                    "Could not get payment quote for mint quote, {} onchain, {}",
+                    unit,
+                    err
+                );
+                err
+            })?;
+
+        if payment_quote.unit() != unit {
+            return Err(Error::UnitMismatch);
+        }
+
+        // Validate using processor quote amount for currency conversion
+        self.check_melt_request_acceptable(
+            payment_quote.amount.clone(),
+            PaymentMethod::Known(KnownMethod::Onchain),
+            melt_request.request.clone(),
+            None,
+        )
+        .await?;
+
+        let melt_ttl = self.quote_ttl().await?.melt_ttl;
+
+        let quote_id = match &payment_quote.request_lookup_id {
+            Some(PaymentIdentifier::QuoteId(id)) => Some(id.clone()),
+            _ => None,
+        };
+
+        let quote = MeltQuote::new(
+            quote_id,
+            MeltPaymentRequest::Onchain {
+                address: melt_request.request.clone(),
+            },
+            unit.clone(),
+            payment_quote.amount,
+            payment_quote.fee,
+            unix_time() + melt_ttl,
+            payment_quote.request_lookup_id.clone(),
+            None,
+            PaymentMethod::Known(KnownMethod::Onchain),
+        );
+        let mut quote = quote;
+        quote.estimated_blocks = payment_quote.estimated_blocks;
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.add_melt_quote(quote.clone()).await?;
+        tx.commit().await?;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("get_melt_onchain_quote");
+            METRICS.record_mint_operation("get_melt_onchain_quote", true);
+        }
+
+        Ok(vec![quote.into()])
+    }
+
     /// Implementation of get_melt_custom_quote
     #[instrument(skip_all)]
     async fn get_melt_custom_quote_impl(
         &self,
         melt_request: &MeltQuoteCustomRequest,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltQuoteCustomResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("get_melt_custom_quote");
 
@@ -506,11 +615,11 @@ impl Mint {
     }
 
     /// Check melt quote status
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     pub async fn check_melt_quote(
         &self,
         quote_id: &QuoteId,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("check_melt_quote");
         let mut quote = match self.localstore.get_melt_quote(quote_id).await {
@@ -556,16 +665,42 @@ impl Mint {
 
         let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
 
-        let response = MeltQuoteBolt11Response {
-            quote: quote.id.clone(),
-            state: quote.state,
-            expiry: quote.expiry,
-            amount: quote.amount().into(),
-            fee_reserve: quote.fee_reserve().into(),
-            payment_preimage: quote.payment_preimage,
-            change,
-            request: Some(quote.request.to_string()),
-            unit: Some(quote.unit.clone()),
+        let response = match quote.payment_method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                MeltQuoteResponse::Bolt11(MeltQuoteBolt11Response {
+                    quote: quote.id.clone(),
+                    state: quote.state,
+                    expiry: quote.expiry,
+                    amount: quote.amount().into(),
+                    fee_reserve: quote.fee_reserve().into(),
+                    payment_preimage: quote.payment_proof,
+                    change,
+                    request: Some(quote.request.to_string()),
+                    unit: Some(quote.unit.clone()),
+                })
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                MeltQuoteResponse::Bolt12(MeltQuoteBolt11Response {
+                    quote: quote.id.clone(),
+                    state: quote.state,
+                    expiry: quote.expiry,
+                    amount: quote.amount().into(),
+                    fee_reserve: quote.fee_reserve().into(),
+                    payment_preimage: quote.payment_proof,
+                    change,
+                    request: Some(quote.request.to_string()),
+                    unit: Some(quote.unit.clone()),
+                })
+            }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                let mut response: MeltQuoteOnchainResponse<QuoteId> = quote.clone().into();
+                response.change = change;
+                MeltQuoteResponse::Onchain(response)
+            }
+            _ => {
+                let custom_response: MeltQuoteCustomResponse<QuoteId> = quote.clone().into();
+                MeltQuoteResponse::Custom((quote.payment_method.clone(), custom_response))
+            }
         };
 
         #[cfg(feature = "prometheus")]

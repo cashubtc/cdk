@@ -69,6 +69,7 @@ async fn start_fake_auth_mint(
         Some(Mnemonic::generate(12)?.to_string()),
         None,
         Some(fake_wallet_config),
+        None,
     );
 
     // Enable authentication

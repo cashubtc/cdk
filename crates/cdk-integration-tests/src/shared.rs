@@ -178,6 +178,7 @@ pub fn create_fake_wallet_settings(
     mnemonic: Option<String>,
     signatory_config: Option<(String, String)>, // (url, certs_dir)
     fake_wallet_config: Option<cdk_mintd::config::FakeWallet>,
+    onchain_config: Option<cdk_mintd::config::Onchain>,
 ) -> cdk_mintd::config::Settings {
     let engine = DatabaseEngine::from_str(database).expect("valid database");
 
@@ -194,6 +195,8 @@ pub fn create_fake_wallet_settings(
         None
     };
 
+    let onchain_enabled = onchain_config.as_ref().map(|c| c.enabled).unwrap_or(false);
+
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
             url: format!("http://127.0.0.1:{port}"),
@@ -202,7 +205,7 @@ pub fn create_fake_wallet_settings(
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
             seed: None,
-            mnemonic,
+            mnemonic: mnemonic.clone(),
             signatory_url: signatory_config.as_ref().map(|(url, _)| url.clone()),
             signatory_certs: signatory_config
                 .as_ref()
@@ -222,6 +225,8 @@ pub fn create_fake_wallet_settings(
         limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::FakeWallet,
+            #[cfg(feature = "onchain")]
+            onchain: onchain_enabled,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),
@@ -232,6 +237,8 @@ pub fn create_fake_wallet_settings(
         lnbits: None,
         lnd: None,
         ldk_node: None,
+        #[cfg(feature = "onchain")]
+        onchain: onchain_config,
         fake_wallet: fake_wallet_config,
         grpc_processor: None,
         database: Database {
@@ -278,6 +285,8 @@ pub fn create_cln_settings(
         limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::Cln,
+            #[cfg(feature = "onchain")]
+            onchain: false,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),
@@ -288,7 +297,10 @@ pub fn create_cln_settings(
         lnbits: None,
         lnd: None,
         ldk_node: None,
+        #[cfg(feature = "onchain")]
+        onchain: None,
         fake_wallet: None,
+
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
         auth_database: None,
@@ -329,6 +341,8 @@ pub fn create_lnd_settings(
         limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::Lnd,
+            #[cfg(feature = "onchain")]
+            onchain: false,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),
@@ -337,9 +351,12 @@ pub fn create_lnd_settings(
         },
         cln: None,
         lnbits: None,
-        ldk_node: None,
         lnd: Some(lnd_config),
+        ldk_node: None,
+        #[cfg(feature = "onchain")]
+        onchain: None,
         fake_wallet: None,
+
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
         auth_database: None,

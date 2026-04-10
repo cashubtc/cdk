@@ -17,9 +17,9 @@ use thiserror::Error;
 
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::nuts::{CurrencyUnit, MeltQuoteState};
-use crate::Amount;
+use crate::{Amount, QuoteId};
 
-/// CDK Lightning Error
+/// CDK Payment Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Invoice already paid
@@ -43,6 +43,9 @@ pub enum Error {
     /// Lightning Error
     #[error(transparent)]
     Lightning(Box<dyn std::error::Error + Send + Sync>),
+    /// Onchain Error
+    #[error(transparent)]
+    Onchain(Box<dyn std::error::Error + Send + Sync>),
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
@@ -97,6 +100,8 @@ pub enum PaymentIdentifier {
     PaymentId([u8; 32]),
     /// Custom Payment ID
     CustomId(String),
+    /// Quote ID
+    QuoteId(QuoteId),
 }
 
 impl PaymentIdentifier {
@@ -121,6 +126,11 @@ impl PaymentIdentifier {
                     .try_into()
                     .map_err(|_| Error::InvalidHash)?,
             )),
+            "quote_id" => {
+                Ok(Self::QuoteId(identifier.parse().map_err(|_| {
+                    Error::Custom("Invalid QuoteId".to_string())
+                })?))
+            }
             _ => Err(Error::UnsupportedPaymentOption),
         }
     }
@@ -134,6 +144,7 @@ impl PaymentIdentifier {
             Self::Bolt12PaymentHash(_) => "bolt12_payment_hash".to_string(),
             Self::PaymentId(_) => "payment_id".to_string(),
             Self::CustomId(_) => "custom".to_string(),
+            Self::QuoteId(_) => "quote_id".to_string(),
         }
     }
 }
@@ -147,6 +158,7 @@ impl std::fmt::Display for PaymentIdentifier {
             Self::Bolt12PaymentHash(h) => write!(f, "{}", hex::encode(h)),
             Self::PaymentId(h) => write!(f, "{}", hex::encode(h)),
             Self::CustomId(c) => write!(f, "{c}"),
+            Self::QuoteId(q) => write!(f, "{q}"),
         }
     }
 }
@@ -162,6 +174,7 @@ impl std::fmt::Debug for PaymentIdentifier {
             PaymentIdentifier::Label(s) => write!(f, "Label({})", s),
             PaymentIdentifier::OfferId(s) => write!(f, "OfferId({})", s),
             PaymentIdentifier::CustomId(s) => write!(f, "CustomId({})", s),
+            PaymentIdentifier::QuoteId(q) => write!(f, "QuoteId({:?})", q),
         }
     }
 }
@@ -216,6 +229,13 @@ pub struct CustomIncomingPaymentOptions {
     pub extra_json: Option<String>,
 }
 
+/// Options for creating an onchain incoming payment request
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OnchainIncomingPaymentOptions {
+    /// Quote ID for the incoming payment
+    pub quote_id: QuoteId,
+}
+
 /// Options for creating an incoming payment request
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IncomingPaymentOptions {
@@ -225,6 +245,8 @@ pub enum IncomingPaymentOptions {
     Bolt12(Box<Bolt12IncomingPaymentOptions>),
     /// Custom payment method options
     Custom(Box<CustomIncomingPaymentOptions>),
+    /// Onchain payment request options
+    Onchain(OnchainIncomingPaymentOptions),
 }
 
 /// Options for BOLT11 outgoing payments
@@ -273,6 +295,23 @@ pub struct CustomOutgoingPaymentOptions {
     pub extra_json: Option<String>,
 }
 
+/// Options for onchain outgoing payments
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OnchainOutgoingPaymentOptions {
+    /// Bitcoin address to send to
+    pub address: String,
+    /// Payment amount
+    pub amount: Amount<CurrencyUnit>,
+    /// Maximum fee amount allowed for the payment
+    pub max_fee_amount: Option<Amount<CurrencyUnit>>,
+    /// Quote ID for linking payment to quote
+    pub quote_id: QuoteId,
+    /// Batching tier hint (e.g. "immediate", "standard", "economy")
+    pub tier: Option<String>,
+    /// Opaque metadata as a JSON string for future extensions
+    pub metadata: Option<String>,
+}
+
 /// Options for creating an outgoing payment
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum OutgoingPaymentOptions {
@@ -282,6 +321,8 @@ pub enum OutgoingPaymentOptions {
     Bolt12(Box<Bolt12OutgoingPaymentOptions>),
     /// Custom payment method options
     Custom(Box<CustomOutgoingPaymentOptions>),
+    /// Onchain payment options
+    Onchain(Box<OnchainOutgoingPaymentOptions>),
 }
 
 impl OutgoingPaymentOptions {
@@ -323,6 +364,16 @@ impl OutgoingPaymentOptions {
                     timeout_secs: None,
                     melt_options: melt_quote.options,
                     extra_json: None,
+                }),
+            )),
+            MeltPaymentRequest::Onchain { address } => Ok(OutgoingPaymentOptions::Onchain(
+                Box::new(OnchainOutgoingPaymentOptions {
+                    address: address.clone(),
+                    amount: melt_quote.amount(),
+                    max_fee_amount: Some(fee_reserve),
+                    quote_id: melt_quote.id,
+                    tier: None,
+                    metadata: None,
                 }),
             )),
         }
@@ -403,6 +454,20 @@ pub trait MintPayment {
 pub enum Event {
     /// A payment has been received.
     PaymentReceived(WaitPaymentResponse),
+    /// An outgoing payment has been confirmed.
+    PaymentSuccessful {
+        /// Quote ID linking to the melt quote
+        quote_id: QuoteId,
+        /// Payment response details
+        details: MakePaymentResponse,
+    },
+    /// An outgoing payment has permanently failed.
+    PaymentFailed {
+        /// Quote ID linking to the melt quote
+        quote_id: QuoteId,
+        /// Human-readable reason for the failure
+        reason: String,
+    },
 }
 
 impl Default for Event {
@@ -417,13 +482,53 @@ impl Default for Event {
     }
 }
 
+/// Serde helper for `Amount<CurrencyUnit>` fields.
+///
+/// Serializes as `{"value": u64, "unit": "sat"}` so both the numeric value
+/// and the currency unit survive a round-trip, unlike the default `Amount`
+/// `Serialize` impl which only emits the bare `u64`.
+mod amount_cu_serde {
+    use serde::de::Deserializer;
+    use serde::ser::Serializer;
+    use serde::{Deserialize, Serialize};
+
+    use crate::nuts::CurrencyUnit;
+    use crate::Amount;
+
+    #[derive(Serialize, Deserialize)]
+    struct Repr {
+        value: u64,
+        unit: CurrencyUnit,
+    }
+
+    pub fn serialize<S>(amount: &Amount<CurrencyUnit>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let repr = Repr {
+            value: amount.value(),
+            unit: amount.unit().clone(),
+        };
+        repr.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Amount<CurrencyUnit>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let repr = Repr::deserialize(deserializer)?;
+        Ok(Amount::new(repr.value, repr.unit))
+    }
+}
+
 /// Wait any invoice response
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone, Hash, Serialize, Deserialize)]
 pub struct WaitPaymentResponse {
     /// Request look up id
     /// Id that relates the quote and payment request
     pub payment_identifier: PaymentIdentifier,
     /// Payment amount (typed with unit for compile-time safety)
+    #[serde(with = "amount_cu_serde")]
     pub payment_amount: Amount<CurrencyUnit>,
     /// Unique id of payment
     // Payment hash
@@ -455,7 +560,7 @@ pub struct CreateIncomingPaymentResponse {
 }
 
 /// Payment response
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MakePaymentResponse {
     /// Payment hash
     pub payment_lookup_id: PaymentIdentifier,
@@ -464,6 +569,7 @@ pub struct MakePaymentResponse {
     /// Status
     pub status: MeltQuoteState,
     /// Total Amount Spent (typed with unit for compile-time safety)
+    #[serde(with = "amount_cu_serde")]
     pub total_spent: Amount<CurrencyUnit>,
 }
 
@@ -485,6 +591,8 @@ pub struct PaymentQuoteResponse {
     pub fee: Amount<CurrencyUnit>,
     /// Status
     pub state: MeltQuoteState,
+    /// Estimated confirmation target in blocks for onchain quotes
+    pub estimated_blocks: Option<u32>,
 }
 
 impl PaymentQuoteResponse {
@@ -512,6 +620,15 @@ pub struct Bolt12Settings {
     pub amountless: bool,
 }
 
+/// Onchain settings
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct OnchainSettings {
+    /// Number of confirmations required
+    pub confirmations: u32,
+    /// Minimum incoming onchain payment amount accepted by the backend
+    pub min_receive_amount_sat: u64,
+}
+
 /// Payment processor settings response
 /// Mirrors the proto SettingsResponse structure
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -522,6 +639,8 @@ pub struct SettingsResponse {
     pub bolt11: Option<Bolt11Settings>,
     /// BOLT12 settings (None if not supported)
     pub bolt12: Option<Bolt12Settings>,
+    /// Onchain settings (None if not supported)
+    pub onchain: Option<OnchainSettings>,
     /// Custom payment methods settings (method name -> settings data)
     #[serde(default)]
     pub custom: std::collections::HashMap<String, String>,
@@ -579,6 +698,32 @@ where
     T: MintPayment + Send + Sync,
 {
     type Err = T::Err;
+
+    async fn start(&self) -> Result<(), Self::Err> {
+        let start = std::time::Instant::now();
+        METRICS.inc_in_flight_requests("start");
+
+        let result = self.inner.start().await;
+
+        let duration = start.elapsed().as_secs_f64();
+        METRICS.record_mint_operation_histogram("start", result.is_ok(), duration);
+        METRICS.dec_in_flight_requests("start");
+
+        result
+    }
+
+    async fn stop(&self) -> Result<(), Self::Err> {
+        let start = std::time::Instant::now();
+        METRICS.inc_in_flight_requests("stop");
+
+        let result = self.inner.stop().await;
+
+        let duration = start.elapsed().as_secs_f64();
+        METRICS.record_mint_operation_histogram("stop", result.is_ok(), duration);
+        METRICS.dec_in_flight_requests("stop");
+
+        result
+    }
 
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
         let start = std::time::Instant::now();
@@ -725,3 +870,41 @@ where
 
 /// Type alias for Mint Payment trait
 pub type DynMintPayment = std::sync::Arc<dyn MintPayment<Err = Error> + Send + Sync>;
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use crate::QuoteId;
+
+    #[test]
+    fn test_payment_identifier_quote_id_roundtrip() {
+        let quote_id = QuoteId::new_uuid();
+        let identifier = PaymentIdentifier::QuoteId(quote_id.clone());
+
+        let kind = identifier.kind();
+        assert_eq!(kind, "quote_id");
+
+        let display = identifier.to_string();
+        assert_eq!(display, quote_id.to_string());
+
+        let parsed = PaymentIdentifier::new(&kind, &display).unwrap();
+        assert_eq!(parsed, identifier);
+    }
+
+    #[test]
+    fn test_payment_identifier_quote_id_base64_roundtrip() {
+        let quote_id_str = "SGVsbG8gV29ybGQh"; // Valid Base64
+        let identifier = PaymentIdentifier::QuoteId(QuoteId::from_str(quote_id_str).unwrap());
+
+        let kind = identifier.kind();
+        assert_eq!(kind, "quote_id");
+
+        let display = identifier.to_string();
+        assert_eq!(display, quote_id_str);
+
+        let parsed = PaymentIdentifier::new(&kind, &display).unwrap();
+        assert_eq!(parsed, identifier);
+    }
+}

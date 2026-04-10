@@ -11,9 +11,18 @@ pub const ENV_LN_MIN_MINT: &str = "CDK_MINTD_LN_MIN_MINT";
 pub const ENV_LN_MAX_MINT: &str = "CDK_MINTD_LN_MAX_MINT";
 pub const ENV_LN_MIN_MELT: &str = "CDK_MINTD_LN_MIN_MELT";
 pub const ENV_LN_MAX_MELT: &str = "CDK_MINTD_LN_MAX_MELT";
+#[cfg(feature = "onchain")]
+pub const ENV_LN_ONCHAIN: &str = "CDK_MINTD_LN_ONCHAIN";
 
 impl Ln {
     pub fn from_env(mut self) -> Self {
+        #[cfg(feature = "onchain")]
+        if let Ok(onchain) = env::var(ENV_LN_ONCHAIN) {
+            if let Ok(onchain) = onchain.parse::<bool>() {
+                self.onchain = onchain;
+            }
+        }
+
         // LnBackend
         if let Ok(backend_str) = env::var(ENV_LN_BACKEND) {
             if let Ok(backend) = backend_str.parse() {

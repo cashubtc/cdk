@@ -485,6 +485,35 @@ async fn configure_lightning_backend(
 
     tracing::debug!("Ln backend: {:?}", settings.ln.ln_backend);
 
+    #[cfg(feature = "onchain")]
+    if settings.ln.onchain {
+        let onchain_settings = settings
+            .onchain
+            .clone()
+            .expect("Config checked at load that onchain is some");
+        let onchain = onchain_settings
+            .setup(
+                settings,
+                CurrencyUnit::Sat,
+                _runtime.clone(),
+                work_dir,
+                _kv_store.clone(),
+            )
+            .await?;
+
+        #[cfg(feature = "prometheus")]
+        let onchain = MetricsMintPayment::new(onchain);
+
+        mint_builder = configure_backend_for_unit(
+            settings,
+            mint_builder,
+            CurrencyUnit::Sat,
+            mint_melt_limits,
+            Arc::new(onchain),
+        )
+        .await?;
+    }
+
     match settings.ln.ln_backend {
         #[cfg(feature = "cln")]
         LnBackend::Cln => {
@@ -665,6 +694,11 @@ async fn configure_backend_for_unit(
     // Add bolt12 if supported by payment processor
     if payment_settings.bolt12.is_some() {
         methods.push(PaymentMethod::Known(KnownMethod::Bolt12));
+    }
+
+    // Add onchain if supported by payment processor
+    if payment_settings.onchain.is_some() {
+        methods.push(PaymentMethod::Known(KnownMethod::Onchain));
     }
 
     // Add custom methods from payment settings
@@ -1038,6 +1072,10 @@ async fn start_services_with_shutdown(
     let bolt12_method = PaymentMethod::Known(KnownMethod::Bolt12);
     let bolt12_supported =
         nut04_methods.contains(&&bolt12_method) || nut05_methods.contains(&&bolt12_method);
+    // Add onchain if it's supported by any payment processor
+    let onchain_method = PaymentMethod::Known(KnownMethod::Onchain);
+    let onchain_supported =
+        nut04_methods.contains(&&onchain_method) || nut05_methods.contains(&&onchain_method);
 
     if bolt11_supported
         && !custom_methods.contains(&PaymentMethod::Known(KnownMethod::Bolt11).to_string())
@@ -1048,6 +1086,11 @@ async fn start_services_with_shutdown(
         && !custom_methods.contains(&PaymentMethod::Known(KnownMethod::Bolt12).to_string())
     {
         custom_methods.push(PaymentMethod::Known(KnownMethod::Bolt12).to_string());
+    }
+    if onchain_supported
+        && !custom_methods.contains(&PaymentMethod::Known(KnownMethod::Onchain).to_string())
+    {
+        custom_methods.push(PaymentMethod::Known(KnownMethod::Onchain).to_string());
     }
 
     tracing::info!("Payment methods: {:?}", custom_methods);

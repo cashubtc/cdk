@@ -356,9 +356,12 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
         options: None,
     });
     let quote_response = mint.get_melt_quote(melt_quote_request).await.unwrap();
+    let quote_id = quote_response
+        .quote()
+        .expect("expected single quote response");
     let quote = mint
         .localstore
-        .get_melt_quote(&quote_response.quote)
+        .get_melt_quote(quote_id)
         .await
         .unwrap()
         .expect("Melt quote should exist");
@@ -760,9 +763,12 @@ async fn test_crash_recovery_internal_settlement() {
     let melt_quote_request = MeltQuoteRequest::Bolt11(melt_bolt11_request);
 
     let melt_quote_response = mint.get_melt_quote(melt_quote_request).await.unwrap();
+    let melt_quote_id = melt_quote_response
+        .quote()
+        .expect("expected single quote response");
     let melt_quote = mint
         .localstore
-        .get_melt_quote(&melt_quote_response.quote)
+        .get_melt_quote(melt_quote_id)
         .await
         .unwrap()
         .expect("Melt quote should exist");
@@ -1365,9 +1371,12 @@ async fn test_saga_deleted_after_payment_failure() {
 
     let request = cdk_common::melt::MeltQuoteRequest::Bolt11(bolt11_request);
     let quote_response = mint.get_melt_quote(request).await.unwrap();
+    let quote_id = quote_response
+        .quote()
+        .expect("expected single quote response");
     let quote = mint
         .localstore
-        .get_melt_quote(&quote_response.quote)
+        .get_melt_quote(quote_id)
         .await
         .unwrap()
         .expect("Quote should exist");
@@ -2988,11 +2997,14 @@ async fn create_test_melt_quote(
 
     // Get quote from mint
     let quote_response = mint.get_melt_quote(request).await.unwrap();
+    let quote_id = quote_response
+        .quote()
+        .expect("expected single quote response");
 
     // Retrieve the full quote from database
     let quote = mint
         .localstore
-        .get_melt_quote(&quote_response.quote)
+        .get_melt_quote(quote_id)
         .await
         .unwrap()
         .expect("Quote should exist in database");
@@ -3119,14 +3131,22 @@ async fn test_duplicate_lookup_id_prevents_second_pending() {
     // Retrieve full quotes
     let quote1 = mint
         .localstore
-        .get_melt_quote(&quote_response1.quote)
+        .get_melt_quote(
+            quote_response1
+                .quote()
+                .expect("expected single quote response"),
+        )
         .await
         .unwrap()
         .expect("Quote 1 should exist");
 
     let quote2 = mint
         .localstore
-        .get_melt_quote(&quote_response2.quote)
+        .get_melt_quote(
+            quote_response2
+                .quote()
+                .expect("expected single quote response"),
+        )
         .await
         .unwrap()
         .expect("Quote 2 should exist");
@@ -3288,13 +3308,21 @@ async fn test_paid_lookup_id_prevents_pending() {
     // Retrieve full quotes
     let quote1 = mint
         .localstore
-        .get_melt_quote(&quote_response1.quote)
+        .get_melt_quote(
+            quote_response1
+                .quote()
+                .expect("expected single quote response"),
+        )
         .await
         .unwrap()
         .expect("Quote 1 should exist");
     let quote2 = mint
         .localstore
-        .get_melt_quote(&quote_response2.quote)
+        .get_melt_quote(
+            quote_response2
+                .quote()
+                .expect("expected single quote response"),
+        )
         .await
         .unwrap()
         .expect("Quote 2 should exist");

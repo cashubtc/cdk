@@ -945,7 +945,7 @@ mod tests {
 
         // Mock: quote is Failed
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        mock_client.set_bolt11_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id.clone(),
             amount: Amount::from(100),
             fee_reserve: Amount::from(10),
@@ -1020,7 +1020,7 @@ mod tests {
 
         // Mock: quote payment is in progress (Pending state)
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        mock_client.set_bolt11_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id.clone(),
             amount: Amount::from(100),
             fee_reserve: Amount::from(10),
@@ -1089,7 +1089,7 @@ mod tests {
 
         // Mock: quote is Unpaid (payment was never initiated or was rolled back)
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        mock_client.set_bolt11_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id.clone(),
             amount: Amount::from(100),
             fee_reserve: Amount::from(10),
@@ -1165,7 +1165,7 @@ mod tests {
 
         // Mock: quote is Paid
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        mock_client.set_bolt11_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id.clone(),
             amount: Amount::from(100),
             fee_reserve: Amount::from(10),

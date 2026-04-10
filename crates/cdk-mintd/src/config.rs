@@ -177,6 +177,9 @@ impl std::str::FromStr for LnBackend {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ln {
     pub ln_backend: LnBackend,
+    #[cfg(feature = "onchain")]
+    #[serde(default)]
+    pub onchain: bool,
     pub invoice_description: Option<String>,
     pub min_mint: Amount,
     pub max_mint: Amount,
@@ -188,6 +191,8 @@ impl Default for Ln {
     fn default() -> Self {
         Ln {
             ln_backend: LnBackend::default(),
+            #[cfg(feature = "onchain")]
+            onchain: false,
             invoice_description: None,
             min_mint: 1.into(),
             max_mint: 500_000.into(),
@@ -642,6 +647,103 @@ fn default_blind() -> AuthType {
     AuthType::Blind
 }
 
+#[cfg(feature = "onchain")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchConfig {
+    pub poll_interval_secs: u64,
+    pub max_batch_size: usize,
+    pub standard_deadline_secs: u64,
+    pub economy_deadline_secs: u64,
+    pub min_batch_threshold: usize,
+}
+
+#[cfg(feature = "onchain")]
+impl Default for BatchConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: 30,
+            max_batch_size: 50,
+            standard_deadline_secs: 300,
+            economy_deadline_secs: 3600,
+            min_batch_threshold: 1,
+        }
+    }
+}
+
+#[cfg(feature = "onchain")]
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Onchain {
+    pub enabled: bool,
+    pub mnemonic: Option<String>,
+    pub network: String,
+    pub rpc_url: String,
+    pub rpc_user: String,
+    pub rpc_pass: String,
+    pub chain_source_type: Option<String>,
+    pub esplora_url: Option<String>,
+    #[serde(default = "default_onchain_num_confs")]
+    pub num_confs: u32,
+    #[serde(default = "default_fee_percent")]
+    pub fee_percent: f32,
+    #[serde(default = "default_reserve_fee_min")]
+    pub reserve_fee_min: Amount,
+    #[serde(default = "default_min_receive_amount_sat")]
+    pub min_receive_amount_sat: u64,
+    #[serde(default)]
+    pub batch_config: BatchConfig,
+}
+
+#[cfg(feature = "onchain")]
+impl std::fmt::Debug for Onchain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Onchain")
+            .field("enabled", &self.enabled)
+            .field("mnemonic", &"[REDACTED]")
+            .field("network", &self.network)
+            .field("rpc_url", &self.rpc_url)
+            .field("rpc_user", &self.rpc_user)
+            .field("rpc_pass", &"[REDACTED]")
+            .field("chain_source_type", &self.chain_source_type)
+            .field("esplora_url", &self.esplora_url)
+            .field("num_confs", &self.num_confs)
+            .field("fee_percent", &self.fee_percent)
+            .field("reserve_fee_min", &self.reserve_fee_min)
+            .field("batch_config", &self.batch_config)
+            .finish()
+    }
+}
+
+#[cfg(feature = "onchain")]
+fn default_onchain_num_confs() -> u32 {
+    3
+}
+
+#[cfg(feature = "onchain")]
+fn default_min_receive_amount_sat() -> u64 {
+    1000
+}
+
+#[cfg(feature = "onchain")]
+impl Default for Onchain {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mnemonic: None,
+            network: "regtest".to_string(),
+            rpc_url: "127.0.0.1:18443".to_string(),
+            rpc_user: "user".to_string(),
+            rpc_pass: "pass".to_string(),
+            chain_source_type: None,
+            esplora_url: None,
+            num_confs: 3,
+            fee_percent: 0.02,
+            reserve_fee_min: 2.into(),
+            min_receive_amount_sat: 1000,
+            batch_config: BatchConfig::default(),
+        }
+    }
+}
+
 /// CDK settings, derived from `config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
@@ -659,6 +761,8 @@ pub struct Settings {
     pub lnd: Option<Lnd>,
     #[cfg(feature = "ldk-node")]
     pub ldk_node: Option<LdkNode>,
+    #[cfg(feature = "onchain")]
+    pub onchain: Option<Onchain>,
     #[cfg(feature = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
     pub grpc_processor: Option<GrpcProcessor>,
@@ -857,6 +961,52 @@ mod tests {
         // The mnemonic with special chars should be hashed
         assert!(!debug_output.contains("特殊字符 !@#$%^&*()"));
         assert!(debug_output.contains("<hashed: "));
+    }
+
+    #[cfg(feature = "onchain")]
+    #[test]
+    fn test_onchain_missing_min_receive_amount_uses_default() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_onchain_min_receive_default");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[info]
+url = "http://127.0.0.1:8085"
+listen_host = "127.0.0.1"
+listen_port = 8085
+
+[ln]
+ln_backend = "none"
+onchain = true
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+
+[database]
+engine = "sqlite"
+
+[mint_info]
+name = "test"
+
+[onchain]
+enabled = true
+network = "signet"
+rpc_url = "127.0.0.1:18443"
+rpc_user = "user"
+rpc_pass = "pass"
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings = Settings::new(Some(&config_path));
+        let onchain = settings.onchain.expect("onchain config should exist");
+
+        assert_eq!(onchain.min_receive_amount_sat, 1000);
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     /// Test that configuration can be loaded purely from environment variables

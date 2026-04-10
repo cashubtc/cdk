@@ -354,8 +354,10 @@ pub struct MeltQuote {
     pub state: QuoteState,
     /// Expiry timestamp
     pub expiry: u64,
-    /// Payment preimage
-    pub payment_preimage: Option<String>,
+    /// Payment proof (e.g. Lightning preimage or onchain outpoint)
+    pub payment_proof: Option<String>,
+    /// Estimated confirmation target in blocks for onchain quotes
+    pub estimated_blocks: Option<u32>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Operation ID that reserved this quote
@@ -376,7 +378,8 @@ impl From<cdk::wallet::MeltQuote> for MeltQuote {
             fee_reserve: quote.fee_reserve.into(),
             state: quote.state.into(),
             expiry: quote.expiry,
-            payment_preimage: quote.payment_preimage.clone(),
+            payment_proof: quote.payment_proof.clone(),
+            estimated_blocks: quote.estimated_blocks,
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
             version: quote.version,
@@ -397,7 +400,8 @@ impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
             fee_reserve: quote.fee_reserve.into(),
             state: quote.state.into(),
             expiry: quote.expiry,
-            payment_preimage: quote.payment_preimage,
+            payment_proof: quote.payment_proof,
+            estimated_blocks: quote.estimated_blocks,
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation,
             version: quote.version,

@@ -11,7 +11,9 @@ pub(crate) use saga::MintSaga;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
-use crate::nuts::{BatchCheckMintQuoteRequest, Proofs, SecretKey, SpendingConditions};
+use crate::nuts::{
+    BatchCheckMintQuoteRequest, MintQuoteOnchainRequest, Proofs, SecretKey, SpendingConditions,
+};
 use crate::util::unix_time;
 use crate::wallet::recovery::RecoveryAction;
 use crate::wallet::{MintQuote, MintQuoteState};
@@ -80,6 +82,12 @@ impl Wallet {
                     },
                 }
             }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                MintQuoteRequest::Onchain(MintQuoteOnchainRequest {
+                    unit: unit.clone(),
+                    pubkey: secret_key.public_key(),
+                })
+            }
         };
 
         let response: MintQuoteResponse<String> = self.client.post_mint_quote(request).await?;
@@ -125,6 +133,17 @@ impl Wallet {
             MintQuoteResponse::Bolt12(response) => {
                 mint_quote.amount_issued = response.amount_issued;
                 mint_quote.amount_paid = response.amount_paid;
+            }
+            MintQuoteResponse::Onchain(response) => {
+                mint_quote.amount_issued = response.amount_issued;
+                mint_quote.amount_paid = response.amount_paid;
+                mint_quote.state = if response.amount_paid > response.amount_issued {
+                    MintQuoteState::Paid
+                } else if response.amount_issued > Amount::ZERO {
+                    MintQuoteState::Issued
+                } else {
+                    MintQuoteState::Unpaid
+                };
             }
             MintQuoteResponse::Custom { response, .. } => match response.state {
                 MintQuoteState::Paid => {
@@ -426,6 +445,17 @@ impl Wallet {
                         existing.amount_paid = r.amount_paid;
                         existing.amount_issued = r.amount_issued;
                     }
+                    MintQuoteResponse::Onchain(r) => {
+                        existing.amount_paid = r.amount_paid;
+                        existing.amount_issued = r.amount_issued;
+                        existing.state = if r.amount_paid > r.amount_issued {
+                            MintQuoteState::Paid
+                        } else if r.amount_issued > Amount::ZERO {
+                            MintQuoteState::Issued
+                        } else {
+                            MintQuoteState::Unpaid
+                        };
+                    }
                     MintQuoteResponse::Bolt11(r) => {
                         if let Some(amount) = r.amount {
                             existing.amount_paid = amount;
@@ -445,11 +475,13 @@ impl Wallet {
                 let amount = match &response {
                     MintQuoteResponse::Bolt11(r) => r.amount,
                     MintQuoteResponse::Bolt12(r) => r.amount,
+                    MintQuoteResponse::Onchain(r) => Some(r.amount_paid),
                     MintQuoteResponse::Custom { response: r, .. } => r.amount,
                 };
                 let unit = match &response {
                     MintQuoteResponse::Bolt11(r) => r.unit.clone(),
                     MintQuoteResponse::Bolt12(r) => Some(r.unit.clone()),
+                    MintQuoteResponse::Onchain(r) => Some(r.unit.clone()),
                     MintQuoteResponse::Custom { response: r, .. } => r.unit.clone(),
                 };
                 MintQuote::new(

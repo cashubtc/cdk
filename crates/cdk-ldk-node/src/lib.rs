@@ -521,6 +521,7 @@ impl MintPayment for CdkLdkNode {
                 invoice_description: true,
             }),
             bolt12: Some(payment::Bolt12Settings { amountless: true }),
+            onchain: None,
             custom: std::collections::HashMap::new(),
         };
         Ok(settings)
@@ -609,6 +610,9 @@ impl MintPayment for CdkLdkNode {
             cdk_common::payment::IncomingPaymentOptions::Custom(_) => {
                 Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
+            cdk_common::payment::IncomingPaymentOptions::Onchain(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
         }
     }
 
@@ -622,6 +626,9 @@ impl MintPayment for CdkLdkNode {
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         match options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(_) => {
                 Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
@@ -658,6 +665,7 @@ impl MintPayment for CdkLdkNode {
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
+                    estimated_blocks: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -694,6 +702,7 @@ impl MintPayment for CdkLdkNode {
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
+                    estimated_blocks: None,
                 })
             }
         }
@@ -708,6 +717,9 @@ impl MintPayment for CdkLdkNode {
     ) -> Result<MakePaymentResponse, Self::Err> {
         match options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(_) => {
                 Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
