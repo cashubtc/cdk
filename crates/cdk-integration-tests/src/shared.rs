@@ -1,3 +1,4 @@
+#![allow(clippy::needless_update)]
 //! Shared utilities for mint integration tests
 //!
 //! This module provides common functionality used across different
@@ -190,12 +191,12 @@ pub fn create_fake_wallet_settings(
         limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::FakeWallet,
-            onchain: onchain_config.clone(),
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),
             min_melt: DEFAULT_MIN_MELT.into(),
             max_melt: DEFAULT_MAX_MELT.into(),
+            ..Default::default()
         },
         cln: None,
         lnbits: None,
@@ -212,6 +213,7 @@ pub fn create_fake_wallet_settings(
         mint_management_rpc: None,
         auth: None,
         prometheus: Some(Default::default()),
+        ..Default::default()
     }
 }
 
@@ -248,25 +250,18 @@ pub fn create_cln_settings(
         limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::Cln,
-            onchain: None,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),
             min_melt: DEFAULT_MIN_MELT.into(),
             max_melt: DEFAULT_MAX_MELT.into(),
+            ..Default::default()
         },
         onchain: None,
         cln: Some(cln_config),
-        lnbits: None,
-        lnd: None,
-        ldk_node: None,
-        fake_wallet: None,
-        grpc_processor: None,
-        database: cdk_mintd::config::Database::default(),
-        auth_database: None,
-        mint_management_rpc: None,
         auth: None,
         prometheus: Some(Default::default()),
+        ..Default::default()
     }
 }
 
@@ -301,25 +296,18 @@ pub fn create_lnd_settings(
         limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::Lnd,
-            onchain: None,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),
             min_melt: DEFAULT_MIN_MELT.into(),
             max_melt: DEFAULT_MAX_MELT.into(),
+            ..Default::default()
         },
         onchain: None,
-        cln: None,
-        lnbits: None,
-        ldk_node: None,
         lnd: Some(lnd_config),
-        fake_wallet: None,
-        grpc_processor: None,
-        database: cdk_mintd::config::Database::default(),
-        auth_database: None,
-        mint_management_rpc: None,
         auth: None,
         prometheus: Some(Default::default()),
+        ..Default::default()
     }
 }
 
