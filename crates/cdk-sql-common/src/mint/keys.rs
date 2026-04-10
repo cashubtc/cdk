@@ -141,7 +141,10 @@ where
     ) -> Result<Box<dyn MintKeyDatabaseTransaction<'a, Error> + Send + Sync + 'a>, Error> {
         let tx = SQLTransaction {
             inner: ConnectionWithTransaction::new(
-                self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
+                self.pool
+                    .get()
+                    .await
+                    .map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
         };
@@ -150,7 +153,11 @@ where
     }
 
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(
             query(r#" SELECT id FROM keyset WHERE active = :active AND unit = :unit"#)?
                 .bind("active", true)
@@ -167,7 +174,11 @@ where
     }
 
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(
             query(r#"SELECT id, unit FROM keyset WHERE active = :active"#)?
                 .bind("active", true)
@@ -185,7 +196,11 @@ where
     }
 
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"SELECT
                 id,
@@ -210,7 +225,11 @@ where
     }
 
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"SELECT
                 id,

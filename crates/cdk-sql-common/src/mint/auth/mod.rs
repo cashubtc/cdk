@@ -42,7 +42,7 @@ where
         X: Into<RM::Config>,
     {
         let pool = Pool::new(db.into());
-        Self::migrate(pool.get().map_err(|e| Error::Database(Box::new(e)))?).await?;
+        Self::migrate(pool.get().await.map_err(|e| Error::Database(Box::new(e)))?).await?;
         Ok(Self { pool })
     }
 
@@ -255,14 +255,21 @@ where
     {
         Ok(Box::new(SQLTransaction {
             inner: ConnectionWithTransaction::new(
-                self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
+                self.pool
+                    .get()
+                    .await
+                    .map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
         }))
     }
 
     async fn get_active_keyset_id(&self) -> Result<Option<Id>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -281,7 +288,11 @@ where
     }
 
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"SELECT
                 id,
@@ -305,7 +316,11 @@ where
     }
 
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"SELECT
                 id,
@@ -332,7 +347,11 @@ where
         if ys.is_empty() {
             return Ok(vec![]);
         }
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         let mut current_states = query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)?
             .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
             .fetch_all(&*conn)
@@ -357,7 +376,11 @@ where
             return Ok(vec![]);
         }
 
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         let mut blinded_signatures = query(
             r#"SELECT
                 keyset_id,
@@ -402,7 +425,11 @@ where
         &self,
         protected_endpoint: ProtectedEndpoint,
     ) -> Result<Option<AuthRequired>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(
             query(r#"SELECT auth FROM protected_endpoints WHERE endpoint = :endpoint"#)?
                 .bind("endpoint", serde_json::to_string(&protected_endpoint)?)
@@ -422,7 +449,11 @@ where
     async fn get_auth_for_endpoints(
         &self,
     ) -> Result<HashMap<ProtectedEndpoint, Option<AuthRequired>>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(r#"SELECT endpoint, auth FROM protected_endpoints"#)?
             .fetch_all(&*conn)
             .await?

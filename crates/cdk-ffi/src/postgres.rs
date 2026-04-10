@@ -12,24 +12,8 @@ use crate::{
 #[derive(uniffi::Object)]
 pub struct WalletPostgresDatabase {
     inner: Arc<FfiWalletDatabaseWrapper<WalletPgDatabase, CdkDatabaseError>>,
-}
-
-// Keep a long-lived Tokio runtime for Postgres-created resources so that
-// background tasks (e.g., tokio-postgres connection drivers spawned during
-// construction) are not tied to a short-lived, ad-hoc runtime.
-#[cfg(feature = "postgres")]
-static PG_RUNTIME: once_cell::sync::OnceCell<tokio::runtime::Runtime> =
-    once_cell::sync::OnceCell::new();
-
-#[cfg(feature = "postgres")]
-fn pg_runtime() -> &'static tokio::runtime::Runtime {
-    PG_RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("cdk-ffi-pg")
-            .build()
-            .expect("failed to build pg runtime")
-    })
+    // Keep the runtime alive so Postgres background connection tasks survive.
+    _runtime: crate::runtime::RuntimeGuard,
 }
 
 #[uniffi::export]
@@ -41,19 +25,13 @@ impl WalletPostgresDatabase {
     #[cfg(feature = "postgres")]
     #[uniffi::constructor]
     pub fn new(url: String) -> Result<Arc<Self>, FfiError> {
-        let inner = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => tokio::task::block_in_place(|| {
-                handle.block_on(
-                    async move { cdk_postgres::new_wallet_pg_database(url.as_str()).await },
-                )
-            }),
-            // Important: use a process-long runtime so background connection tasks stay alive.
-            Err(_) => pg_runtime()
-                .block_on(async move { cdk_postgres::new_wallet_pg_database(url.as_str()).await }),
-        }
-        .map_err(FfiError::internal)?;
+        let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;
+        let inner = rt
+            .block_on(async move { cdk_postgres::new_wallet_pg_database(url.as_str()).await })
+            .map_err(FfiError::internal)?;
         Ok(Arc::new(WalletPostgresDatabase {
             inner: FfiWalletDatabaseWrapper::new(inner),
+            _runtime: rt,
         }))
     }
 }

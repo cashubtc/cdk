@@ -162,7 +162,7 @@ where
     // Validate parameters according to KV store requirements
     validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
-    let conn = pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+    let conn = pool.get().await.map_err(|e| Error::Database(Box::new(e)))?;
     Ok(query(
         r#"
         SELECT value
@@ -195,7 +195,7 @@ where
     // Validate namespace parameters according to KV store requirements
     validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
 
-    let conn = pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+    let conn = pool.get().await.map_err(|e| Error::Database(Box::new(e)))?;
     query(
         r#"
         SELECT key

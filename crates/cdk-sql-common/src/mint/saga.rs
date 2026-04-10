@@ -222,7 +222,11 @@ where
         &self,
         operation_kind: mint::OperationKind,
     ) -> Result<Vec<mint::Saga>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT

@@ -35,7 +35,7 @@ mod test {
         let config: Config = "test.db".into();
 
         let pool = Pool::<SqliteConnectionManager>::new(config);
-        let db = pool.get();
+        let db = pool.get().await;
         assert!(db.is_ok());
         let _ = remove_file("test.db");
     }
@@ -56,7 +56,7 @@ mod test {
 
             let pool = Pool::<SqliteConnectionManager>::new(config);
 
-            let conn = pool.get().expect("valid connection");
+            let conn = pool.get().await.expect("valid connection");
 
             query(include_str!("../../tests/legacy-sqlx.sql"))
                 .expect("query")
