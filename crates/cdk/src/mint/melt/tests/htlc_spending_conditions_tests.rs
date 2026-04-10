@@ -112,7 +112,7 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
         .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
         .await
         .unwrap();
-    println!("Created melt quote: {}", melt_quote.quote());
+    println!("Created melt quote: {}", melt_quote.quote().unwrap());
 
     // Step 7: Try to melt with only preimage (should fail - signature required)
 
@@ -123,8 +123,11 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
         proof.add_preimage(preimage.clone());
     }
 
-    let melt_request_preimage_only =
-        cdk_common::MeltRequest::new(melt_quote.quote().clone(), proofs_preimage_only, None);
+    let melt_request_preimage_only = cdk_common::MeltRequest::new(
+        melt_quote.quote().unwrap().clone(),
+        proofs_preimage_only,
+        None,
+    );
 
     let result = melt_request_preimage_only.verify_spending_conditions();
     assert!(
@@ -149,8 +152,11 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
         proof.sign_p2pk(alice_secret.clone()).unwrap();
     }
 
-    let melt_request_signature_only =
-        cdk_common::MeltRequest::new(melt_quote.quote().clone(), proofs_signature_only, None);
+    let melt_request_signature_only = cdk_common::MeltRequest::new(
+        melt_quote.quote().unwrap().clone(),
+        proofs_signature_only,
+        None,
+    );
 
     let result = melt_request_signature_only.verify_spending_conditions();
     assert!(
@@ -176,7 +182,8 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
         proof.sign_p2pk(alice_secret.clone()).unwrap();
     }
 
-    let melt_request = cdk_common::MeltRequest::new(melt_quote.quote().clone(), proofs_both, None);
+    let melt_request =
+        cdk_common::MeltRequest::new(melt_quote.quote().unwrap().clone(), proofs_both, None);
 
     // Verify spending conditions pass
     melt_request.verify_spending_conditions().unwrap();
@@ -186,5 +193,5 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
     let melt_response = mint.melt(&melt_request).await.unwrap().await.unwrap();
     println!("✓ Melt operation completed successfully!");
     println!("  Quote state: {}", melt_response.state());
-    assert_eq!(melt_response.quote(), melt_quote.quote());
+    assert_eq!(melt_response.quote(), melt_quote.quote().unwrap());
 }

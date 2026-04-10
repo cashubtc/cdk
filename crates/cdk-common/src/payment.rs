@@ -46,6 +46,9 @@ pub enum Error {
     /// Lightning Error
     #[error(transparent)]
     Lightning(Box<dyn std::error::Error + Send + Sync>),
+    /// Onchain Error
+    #[error(transparent)]
+    Onchain(Box<dyn std::error::Error + Send + Sync>),
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
@@ -229,6 +232,13 @@ pub struct CustomIncomingPaymentOptions {
     pub extra_json: Option<String>,
 }
 
+/// Options for creating an onchain incoming payment request
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OnchainIncomingPaymentOptions {
+    /// Quote ID for the incoming payment
+    pub quote_id: QuoteId,
+}
+
 /// Options for incoming payments
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IncomingPaymentOptions {
@@ -238,6 +248,8 @@ pub enum IncomingPaymentOptions {
     Bolt12(Box<Bolt12IncomingPaymentOptions>),
     /// Custom payment method options
     Custom(Box<CustomIncomingPaymentOptions>),
+    /// Onchain payment request options
+    Onchain(OnchainIncomingPaymentOptions),
 }
 
 /// Options for BOLT11 outgoing payments
@@ -286,6 +298,34 @@ pub struct CustomOutgoingPaymentOptions {
     pub extra_json: Option<String>,
 }
 
+/// Options for onchain outgoing payments
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OnchainOutgoingPaymentOptions {
+    /// Bitcoin address to send to
+    pub address: String,
+    /// Payment amount
+    pub amount: Amount<CurrencyUnit>,
+    /// Maximum fee amount allowed for the payment
+    pub max_fee_amount: Option<Amount<CurrencyUnit>>,
+    /// Opaque stable identifier supplied by the mint.
+    ///
+    /// The mint generates this value and uses it to correlate the quote with
+    /// subsequent `make_payment` and `check_outgoing_payment` calls. Backends
+    /// MUST NOT synthesize or modify this value. Backends MUST persist it
+    /// (for example as the send intent id) and echo it verbatim in
+    /// [`PaymentQuoteResponse::request_lookup_id`] and
+    /// [`MakePaymentResponse::payment_lookup_id`] as
+    /// `PaymentIdentifier::QuoteId(..)`. The mint layer validates the echo
+    /// and will reject quotes whose backend response disagrees with the
+    /// supplied `quote_id` (see
+    /// [`Error::OnchainQuoteLookupIdMismatch`](crate::Error::OnchainQuoteLookupIdMismatch)).
+    pub quote_id: QuoteId,
+    /// Batching tier hint (e.g. "immediate", "standard", "economy")
+    pub tier: Option<String>,
+    /// Opaque metadata as a JSON string for future extensions
+    pub metadata: Option<String>,
+}
+
 /// Options for outgoing payments
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum OutgoingPaymentOptions {
@@ -295,6 +335,8 @@ pub enum OutgoingPaymentOptions {
     Bolt12(Box<Bolt12OutgoingPaymentOptions>),
     /// Custom payment method options
     Custom(Box<CustomOutgoingPaymentOptions>),
+    /// Onchain payment options
+    Onchain(Box<OnchainOutgoingPaymentOptions>),
 }
 
 impl OutgoingPaymentOptions {
@@ -336,6 +378,16 @@ impl OutgoingPaymentOptions {
                     timeout_secs: None,
                     melt_options: melt_quote.options,
                     extra_json: None,
+                }),
+            )),
+            MeltPaymentRequest::Onchain { address } => Ok(OutgoingPaymentOptions::Onchain(
+                Box::new(OnchainOutgoingPaymentOptions {
+                    address: address.clone(),
+                    amount: melt_quote.amount(),
+                    max_fee_amount: Some(fee_reserve),
+                    quote_id: melt_quote.id,
+                    tier: None,
+                    metadata: None,
                 }),
             )),
         }
@@ -478,7 +530,8 @@ pub struct MakePaymentResponse {
     pub payment_proof: Option<String>,
     /// Status
     pub status: MeltQuoteState,
-    /// Total Amount Spent (typed with unit for compile-time safety)
+    /// Total amount spent, including fees. Only authoritative when `status`
+    /// is [`MeltQuoteState::Paid`]; otherwise backends return `0`.
     pub total_spent: Amount<CurrencyUnit>,
 }
 
@@ -502,6 +555,8 @@ pub struct PaymentQuoteResponse {
     pub state: MeltQuoteState,
     /// Extra payment-method-specific fields
     pub extra_json: Option<serde_json::Value>,
+    /// Estimated confirmation target in blocks for onchain quotes
+    pub estimated_blocks: Option<u32>,
 }
 
 impl PaymentQuoteResponse {
@@ -529,7 +584,17 @@ pub struct Bolt12Settings {
     pub amountless: bool,
 }
 
+/// Onchain settings
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct OnchainSettings {
+    /// Number of confirmations required
+    pub confirmations: u32,
+    /// Minimum incoming onchain payment amount accepted by the backend
+    pub min_receive_amount_sat: u64,
+}
+
 /// Payment processor settings response
+/// Mirrors the proto SettingsResponse structure
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingsResponse {
     /// Base unit of backend
@@ -538,6 +603,8 @@ pub struct SettingsResponse {
     pub bolt11: Option<Bolt11Settings>,
     /// BOLT12 settings (None if not supported)
     pub bolt12: Option<Bolt12Settings>,
+    /// Onchain settings (None if not supported)
+    pub onchain: Option<OnchainSettings>,
     /// Custom payment methods settings (method name -> settings data)
     #[serde(default)]
     pub custom: std::collections::HashMap<String, String>,

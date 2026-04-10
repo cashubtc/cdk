@@ -164,6 +164,7 @@ impl From<Quote> for MintQuote {
             } else {
                 Amount::ZERO
             },
+            estimated_blocks: None,
             used_by_operation: None,
             version: 0,
         }

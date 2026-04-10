@@ -103,6 +103,20 @@ impl Wallet {
                     Ok(Some(melted))
                 }
                 MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
+                    // Safety: refuse to compensate while the mint still
+                    // reports a payment proof (Lightning preimage or
+                    // Onchain outpoint). Treat it as pending so the next
+                    // recovery pass can re-check. The outpoint is the
+                    // onchain equivalent of the preimage for this rule.
+                    if quote_status.payment_proof().is_some() {
+                        tracing::warn!(
+                            "Melt saga {} - payment reported {:?} but mint holds \
+                             a payment proof; keeping pending to avoid loss",
+                            saga_id,
+                            quote_status.state()
+                        );
+                        return Ok(None);
+                    }
                     // Payment failed - compensate and return FinalizedMelt with failed state
                     tracing::info!("Melt saga {} - payment failed, compensating", saga_id);
                     self.compensate_melt(saga_id).await?;

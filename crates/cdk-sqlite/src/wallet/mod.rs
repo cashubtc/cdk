@@ -177,6 +177,7 @@ mod tests {
                 payment_method: payment_method.clone(),
                 amount_issued: Amount::from(0),
                 amount_paid: Amount::from(0),
+                estimated_blocks: None,
                 used_by_operation: None,
                 version: 0,
             };
@@ -321,6 +322,7 @@ mod tests {
             payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             amount_issued: Amount::from(100),
             amount_paid: Amount::from(100),
+            estimated_blocks: None,
             used_by_operation: None,
             version: 0,
         };
@@ -338,6 +340,7 @@ mod tests {
             payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(100),
+            estimated_blocks: None,
             used_by_operation: None,
             version: 0,
         };
@@ -355,6 +358,7 @@ mod tests {
             payment_method: PaymentMethod::Known(KnownMethod::Bolt12),
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(0),
+            estimated_blocks: None,
             used_by_operation: None,
             version: 0,
         };
@@ -372,6 +376,7 @@ mod tests {
             payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(0),
+            estimated_blocks: None,
             used_by_operation: None,
             version: 0,
         };

@@ -102,7 +102,7 @@ impl Serialize for MintMethodSettings {
     where
         S: Serializer,
     {
-        let mut num_fields = 3; // method and unit are always present
+        let mut num_fields = 2; // method and unit are always present
         if self.min_amount.is_some() {
             num_fields += 1;
         }
@@ -111,11 +111,18 @@ impl Serialize for MintMethodSettings {
         }
 
         let mut description_in_top_level = false;
-        if let Some(MintMethodOptions::Bolt11 { description }) = &self.options {
-            if *description {
+        let mut onchain_confirmations: Option<u32> = None;
+
+        match &self.options {
+            Some(MintMethodOptions::Bolt11 { description }) if *description => {
                 num_fields += 1;
                 description_in_top_level = true;
             }
+            Some(MintMethodOptions::Onchain { confirmations }) => {
+                onchain_confirmations = Some(*confirmations);
+                num_fields += 1; // for the "options" field
+            }
+            _ => {}
         }
 
         let mut state = serializer.serialize_struct("MintMethodSettings", num_fields)?;
@@ -134,6 +141,15 @@ impl Serialize for MintMethodSettings {
         // If there's a description flag in Bolt11 options, add it at the top level
         if description_in_top_level {
             state.serialize_field("description", &true)?;
+        }
+
+        // Serialize onchain options as a nested "options" object
+        if let Some(confirmations) = onchain_confirmations {
+            #[derive(Serialize)]
+            struct OnchainOptions {
+                confirmations: u32,
+            }
+            state.serialize_field("options", &OnchainOptions { confirmations })?;
         }
 
         state.end()
@@ -158,6 +174,7 @@ impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
         let mut min_amount: Option<Amount> = None;
         let mut max_amount: Option<Amount> = None;
         let mut description: Option<bool> = None;
+        let mut confirmations: Option<u32> = None;
 
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -191,6 +208,9 @@ impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
                     }
                     description = Some(map.next_value()?);
                 }
+                "confirmations" => {
+                    return Err(de::Error::unknown_field("confirmations", &["options"]));
+                }
                 "options" => {
                     // If there are explicit options, they take precedence, except the description
                     // field which we will handle specially
@@ -205,6 +225,13 @@ impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
                             description = Some(desc_from_options);
                         }
                     }
+
+                    if let Some(MintMethodOptions::Onchain {
+                        confirmations: conf_from_options,
+                    }) = options
+                    {
+                        confirmations = Some(conf_from_options);
+                    }
                 }
                 _ => {
                     // Skip unknown fields
@@ -218,7 +245,11 @@ impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
 
         // Create options based on the method and the description flag
         let options = if method == PaymentMethod::Known(KnownMethod::Bolt11) {
-            description.map(|description| MintMethodOptions::Bolt11 { description })
+            description.map(|desc| MintMethodOptions::Bolt11 { description: desc })
+        } else if method == PaymentMethod::Known(KnownMethod::Onchain) {
+            confirmations.map(|conf| MintMethodOptions::Onchain {
+                confirmations: conf,
+            })
         } else {
             None
         };
@@ -251,6 +282,11 @@ pub enum MintMethodOptions {
     Bolt11 {
         /// Mint supports setting bolt11 description
         description: bool,
+    },
+    /// Onchain Options
+    Onchain {
+        /// Minimum number of confirmations required
+        confirmations: u32,
     },
     /// Custom Options
     Custom {},
@@ -493,5 +529,69 @@ mod tests {
             }
             _ => panic!("Expected Bolt11 options with description = true"),
         }
+    }
+
+    #[test]
+    fn test_onchain_settings_nested_options_round_trip() {
+        // NUT-26 spec format: confirmations nested inside "options"
+        let json_str = r#"{
+            "method": "onchain",
+            "unit": "sat",
+            "min_amount": 1000,
+            "max_amount": 1000000,
+            "options": {
+                "confirmations": 3
+            }
+        }"#;
+
+        let settings: MintMethodSettings = from_str(json_str).unwrap();
+
+        assert_eq!(settings.method, PaymentMethod::Known(KnownMethod::Onchain));
+        assert_eq!(settings.unit, CurrencyUnit::Sat);
+        assert_eq!(settings.min_amount, Some(Amount::from(1000)));
+        assert_eq!(settings.max_amount, Some(Amount::from(1000000)));
+
+        match settings.options {
+            Some(MintMethodOptions::Onchain { confirmations }) => {
+                assert_eq!(confirmations, 3);
+            }
+            _ => panic!("Expected Onchain options with confirmations = 3"),
+        }
+
+        // Serialize it back and verify the nested "options" structure
+        let serialized = to_string(&settings).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        assert_eq!(parsed["method"], json!("onchain"));
+        assert_eq!(parsed["options"]["confirmations"], json!(3));
+        // Verify confirmations is NOT at top level
+        assert!(parsed.get("confirmations").is_none());
+    }
+
+    #[test]
+    fn test_onchain_settings_top_level_confirmations_rejected() {
+        let json_str = r#"{
+            "method": "onchain",
+            "unit": "sat",
+            "confirmations": 6
+        }"#;
+
+        let err = from_str::<MintMethodSettings>(json_str).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn test_onchain_settings_top_level_and_nested_rejected() {
+        let json_str = r#"{
+            "method": "onchain",
+            "unit": "sat",
+            "confirmations": 6,
+            "options": {
+                "confirmations": 3
+            }
+        }"#;
+
+        let err = from_str::<MintMethodSettings>(json_str).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
     }
 }

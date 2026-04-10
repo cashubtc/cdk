@@ -192,7 +192,7 @@ async fn create_test_melt_quote(mint: &Mint, amount: Amount) -> MeltQuote {
         .expect("melt quote created");
 
     mint.localstore()
-        .get_melt_quote(quote_response.quote())
+        .get_melt_quote(quote_response.quote().expect("single-quote method"))
         .await
         .expect("db read")
         .expect("quote exists")

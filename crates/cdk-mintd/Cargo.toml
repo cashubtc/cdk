@@ -22,6 +22,10 @@ lnd = ["dep:cdk-lnd"]
 lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
 ldk-node = ["dep:cdk-ldk-node"]
+# Placeholder feature for a future BDK-backed onchain payment backend.
+# The `OnchainBackend::Bdk` config variant is gated on this feature. No implementing
+# crate exists yet; enabling this feature today has no effect.
+bdk = []
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 # MSRV is not committed to with swagger enabled

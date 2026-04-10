@@ -60,6 +60,7 @@ mod custom;
 mod melt_bip353;
 #[cfg(feature = "wallet")]
 mod melt_lightning_address;
+mod onchain;
 pub(crate) mod saga;
 
 use saga::state::Prepared;
@@ -103,6 +104,13 @@ impl<'a> PendingMelt<'a> {
                     ]))
                     .await
             }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                wallet
+                    .subscribe(WalletSubscription::MeltQuoteOnchainState(vec![
+                        quote_id.clone()
+                    ]))
+                    .await
+            }
             PaymentMethod::Custom(ref method) => {
                 wallet
                     .subscribe(WalletSubscription::MeltQuoteCustom(
@@ -125,6 +133,12 @@ impl<'a> PendingMelt<'a> {
                 Some(event) => {
                     let notification = event.into_inner();
 
+                    // `payment_proof` is the method-specific settlement
+                    // artifact: Lightning preimage for Bolt11/Bolt12/Custom,
+                    // broadcast outpoint (`txid:vout`) for Onchain. Either
+                    // presence signals an irreversible mint-side action and
+                    // is used by the failure path below to block proof
+                    // reversion.
                     let (response_quote_id, state, payment_proof, change) = match notification {
                         NotificationPayload::MeltQuoteBolt11Response(response) => (
                             response.quote,
@@ -144,6 +158,11 @@ impl<'a> PendingMelt<'a> {
                             response.payment_preimage,
                             response.change,
                         ),
+                        NotificationPayload::MeltQuoteOnchainResponse(response) => {
+                            // Onchain melts never return NUT-08 change outputs;
+                            // the outpoint is surfaced as the payment proof.
+                            (response.quote, response.state, response.outpoint, None)
+                        }
                         _ => continue,
                     };
 
@@ -169,11 +188,7 @@ impl<'a> PendingMelt<'a> {
                                 tracing::debug!("Received WS with no change checking with HTTP");
 
                                 match self.saga.wallet.internal_check_melt_status(&quote_id).await {
-                                    Ok(response) => match response {
-                                        MeltQuoteStatusResponse::Standard(r) => r.change,
-                                        MeltQuoteStatusResponse::Bolt12(r) => r.change,
-                                        MeltQuoteStatusResponse::Custom(r) => r.change,
-                                    },
+                                    Ok(response) => response.change(),
                                     Err(e) => {
                                         tracing::warn!(
                                             "Failed to check melt status via HTTP: {}",
@@ -211,6 +226,23 @@ impl<'a> PendingMelt<'a> {
                         MeltQuoteState::Failed
                         | MeltQuoteState::Unpaid
                         | MeltQuoteState::Unknown => {
+                            // Safety: if the mint has emitted a payment
+                            // proof (Lightning preimage or Onchain
+                            // outpoint), an irreversible settlement
+                            // artifact exists. Do not revert proofs —
+                            // continue waiting for the next subscription
+                            // event or reconciliation to resolve the
+                            // state.
+                            if payment_proof.is_some() {
+                                tracing::warn!(
+                                    "Melt quote {} reported {:?} via WS but \
+                                     carries a payment proof; continuing to \
+                                     wait to avoid proof loss",
+                                    quote_id,
+                                    state
+                                );
+                                continue;
+                            }
                             self.saga.handle_failure().await;
                             return Err(Error::PaymentFailed);
                         }
@@ -250,6 +282,8 @@ pub(crate) enum MeltQuoteStatusResponse {
     Standard(cdk_common::MeltQuoteBolt11Response<String>),
     /// Bolt12 response
     Bolt12(cdk_common::MeltQuoteBolt12Response<String>),
+    /// Onchain response
+    Onchain(cdk_common::MeltQuoteOnchainResponse<String>),
     /// Custom payment method response
     Custom(cdk_common::MeltQuoteCustomResponse<String>),
 }
@@ -260,24 +294,66 @@ impl MeltQuoteStatusResponse {
         match self {
             Self::Standard(r) => r.state,
             Self::Bolt12(r) => r.state,
+            Self::Onchain(r) => r.state,
             Self::Custom(r) => r.state,
         }
     }
 
-    /// Get the payment preimage
+    /// Get the payment proof.
+    ///
+    /// For Bolt11/Bolt12/Custom methods this is the Lightning payment preimage.
+    /// For Onchain, the "proof" is the broadcast outpoint (`txid:vout`) — it
+    /// plays the same role: it is the canonical, method-specific artifact that
+    /// proves the mint executed the payment. Callers that persist
+    /// `payment_proof` on a `MeltQuote` will keep the txid reference alongside
+    /// other methods' preimages.
     pub fn payment_proof(&self) -> Option<String> {
         match self {
             Self::Standard(r) => r.payment_preimage.clone(),
             Self::Bolt12(r) => r.payment_preimage.clone(),
+            Self::Onchain(r) => r.outpoint.clone(),
             Self::Custom(r) => r.payment_preimage.clone(),
         }
     }
 
+    /// Get the change signatures
+    ///
+    /// Onchain melts never return NUT-08 change outputs.
+    pub fn change(&self) -> Option<Vec<crate::nuts::BlindSignature>> {
+        match self {
+            Self::Standard(r) => r.change.clone(),
+            Self::Bolt12(r) => r.change.clone(),
+            Self::Onchain(_) => None,
+            Self::Custom(r) => r.change.clone(),
+        }
+    }
+
     /// Convert to standard response (for Bolt11).
-    /// Returns error for Custom payment methods and Bolt12 (since types differ).
+    ///
+    /// Also supports the Onchain variant by synthesizing a standard-shaped
+    /// response: the broadcast outpoint (`txid:vout`) is used as the
+    /// `payment_preimage` because onchain treats the outpoint as its
+    /// payment proof (the on-wire artifact proving the mint executed the
+    /// payment), analogous to the Lightning preimage. Returns error for
+    /// Custom payment methods and Bolt12 (since their types differ
+    /// meaningfully).
     pub fn into_standard(self) -> Result<cdk_common::MeltQuoteBolt11Response<String>, Error> {
         match self {
             Self::Standard(r) => Ok(r),
+            Self::Onchain(r) => Ok(cdk_common::MeltQuoteBolt11Response {
+                quote: r.quote,
+                amount: r.amount,
+                fee_reserve: r.fee,
+                state: r.state,
+                expiry: r.expiry,
+                // Onchain uses `outpoint` as payment proof; surface it here
+                // via the `payment_preimage` slot for parity with Bolt11/Bolt12.
+                payment_preimage: r.outpoint,
+                // Onchain melts never return NUT-08 change.
+                change: None,
+                request: Some(r.request),
+                unit: Some(r.unit),
+            }),
             _ => Err(Error::Custom(
                 "Cannot convert response to standard bolt11 response".to_string(),
             )),
@@ -1035,6 +1111,17 @@ impl Wallet {
     /// Melt quote for all payment methods
     ///
     /// Accepts `Bolt11Invoice`, `Offer`, `String`, or `&str` for the request parameter.
+    ///
+    /// # Onchain
+    ///
+    /// The onchain payment method is **not** reachable through this generic
+    /// entry point: onchain melt quotes require a payout `amount` (the address
+    /// alone is insufficient) and the mint returns an array of candidate fee
+    /// tiers that must be selected explicitly. Callers needing onchain should
+    /// use [`Wallet::quote_onchain_melt_options`] to fetch the candidate quotes
+    /// and [`Wallet::select_onchain_melt_quote`] to persist the chosen one.
+    /// Invoking `melt_quote` with [`KnownMethod::Onchain`] returns
+    /// [`Error::UnsupportedPaymentMethod`].
     #[instrument(skip(self, request, options, extra))]
     pub async fn melt_quote<T, R>(
         &self,
@@ -1062,6 +1149,17 @@ impl Wallet {
                     extra.map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::Null));
                 self.melt_quote_custom(&custom_method, request_str, options, extra_json)
                     .await
+            }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                // Onchain cannot be dispatched generically: the generic
+                // signature lacks an explicit `amount` and the protocol
+                // returns an array of candidate quotes that must be selected
+                // by the caller. See the doc-comment above.
+                tracing::debug!(
+                    "melt_quote called with onchain method; callers must use \
+                     quote_onchain_melt_options + select_onchain_melt_quote"
+                );
+                Err(Error::UnsupportedPaymentMethod)
             }
         }
     }
@@ -1243,6 +1341,27 @@ impl Wallet {
                 )
                 .await?;
             }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                let response = self
+                    .client
+                    .get_melt_quote_status(quote.payment_method.clone(), quote_id)
+                    .await?;
+                let response = match response {
+                    cdk_common::MeltQuoteResponse::Onchain(response) => response,
+                    _ => return Err(Error::InvalidPaymentMethod),
+                };
+                // Onchain melts never return NUT-08 change outputs.
+                self.update_melt_quote_state(
+                    &mut quote,
+                    response.state,
+                    response.amount,
+                    None,
+                    response.outpoint.clone(),
+                )
+                .await?;
+                quote.estimated_blocks = Some(response.estimated_blocks);
+                self.localstore.add_melt_quote(quote.clone()).await?;
+            }
         };
 
         Ok(quote)
@@ -1273,6 +1392,7 @@ impl Wallet {
         let response = match response {
             cdk_common::MeltQuoteResponse::Bolt11(r) => MeltQuoteStatusResponse::Standard(r),
             cdk_common::MeltQuoteResponse::Bolt12(r) => MeltQuoteStatusResponse::Bolt12(r),
+            cdk_common::MeltQuoteResponse::Onchain(r) => MeltQuoteStatusResponse::Onchain(r),
             cdk_common::MeltQuoteResponse::Custom((_, r)) => MeltQuoteStatusResponse::Custom(r),
         };
 
