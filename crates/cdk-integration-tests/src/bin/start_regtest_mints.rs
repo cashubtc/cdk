@@ -316,12 +316,7 @@ fn create_ldk_settings(
         ldk_node: Some(ldk_config),
         fake_wallet: None,
         onchain: None,
-        grpc_processor: None,
-        database: cdk_mintd::config::Database::default(),
-        auth_database: None,
-        mint_management_rpc: None,
-        prometheus: None,
-        auth: None,
+        ..Default::default()
     }
 }
 
