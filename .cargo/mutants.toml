@@ -98,4 +98,13 @@ exclude_re = [
     # PreMintSecrets trivial methods - standard delegation patterns
     "crates/cashu/src/nuts/nut00/mod.rs:.*PreMintSecrets::iter",
     "crates/cashu/src/nuts/nut00/mod.rs:.*PreMintSecrets::is_empty",
+
+    # Keys/MintKeys trivial delegation - Deref/DerefMut/keys() just return &self.0
+    "crates/cashu/src/nuts/nut01/mod.rs:.*impl Deref for Keys.*deref",
+    "crates/cashu/src/nuts/nut01/mod.rs:.*Keys::keys",
+    "crates/cashu/src/nuts/nut01/mod.rs:.*impl Deref for MintKeys.*deref",
+    "crates/cashu/src/nuts/nut01/mod.rs:.*impl DerefMut for MintKeys.*deref_mut",
+
+    # KeysVisitor::expecting - just a diagnostic string for deserialization errors
+    "crates/cashu/src/nuts/nut01/mod.rs:.*KeysVisitor.*expecting",
 ]
