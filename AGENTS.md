@@ -217,6 +217,13 @@ impl fmt::Display for MyType { ... }
 - `fuzz/` -- fuzzing targets (20 fuzz harnesses, excluded from workspace)
 - `misc/` -- helper scripts, Docker configs, Keycloak setup, Grafana dashboards
 
+### FFI Sync Requirement
+
+When adding, removing, or modifying methods on the `cdk` Wallet API, you **must** keep the `cdk-ffi` crate in sync:
+1. Update the exported FFI wallet implementation (`crates/cdk-ffi/src/wallet.rs`) using `#[uniffi::export]`.
+2. Update the `Wallet` trait implementation (`crates/cdk-ffi/src/wallet_trait.rs`).
+3. Add or update any necessary FFI-compatible type conversions in `crates/cdk-ffi/src/types/`.
+
 ### Dependency Flow
 
 ```
