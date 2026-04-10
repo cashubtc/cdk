@@ -44,6 +44,12 @@ impl SubscriptionRequest for Params {
                 Kind::Bolt12MeltQuote => QuoteId::from_str(filter)
                     .map(NotificationId::MeltQuoteBolt12)
                     .map_err(|_| Error::ParsingError(filter.to_owned())),
+                Kind::OnchainMintQuote => QuoteId::from_str(filter)
+                    .map(NotificationId::MintQuoteOnchain)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
+                Kind::OnchainMeltQuote => QuoteId::from_str(filter)
+                    .map(NotificationId::MeltQuoteOnchain)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
                 Kind::Custom(ref s) => {
                     if let Some(method) = s.strip_suffix("_mint_quote") {
                         QuoteId::from_str(filter)
@@ -90,6 +96,8 @@ impl SubscriptionRequest for WalletParams {
 
                     Kind::Bolt12MintQuote => NotificationId::MintQuoteBolt12(filter.to_owned()),
                     Kind::Bolt12MeltQuote => NotificationId::MeltQuoteBolt12(filter.to_owned()),
+                    Kind::OnchainMintQuote => NotificationId::MintQuoteOnchain(filter.to_owned()),
+                    Kind::OnchainMeltQuote => NotificationId::MeltQuoteOnchain(filter.to_owned()),
                     Kind::Custom(ref s) => {
                         if let Some(method) = s.strip_suffix("_mint_quote") {
                             NotificationId::MintQuoteCustom(method.to_string(), filter.to_owned())

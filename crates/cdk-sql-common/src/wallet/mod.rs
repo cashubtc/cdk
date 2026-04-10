@@ -168,6 +168,7 @@ where
                   expiry,
                   payment_proof,
                   payment_method,
+                  estimated_blocks,
                   used_by_operation,
                   version,
                   mint_url
@@ -345,6 +346,7 @@ where
                 payment_method,
                 amount_issued,
                 amount_paid,
+                estimated_blocks,
                 used_by_operation,
                 version
             FROM
@@ -381,6 +383,7 @@ where
                 payment_method,
                 amount_issued,
                 amount_paid,
+                estimated_blocks,
                 used_by_operation,
                 version
             FROM
@@ -415,6 +418,7 @@ where
                 payment_method,
                 amount_issued,
                 amount_paid,
+                estimated_blocks,
                 used_by_operation,
                 version
             FROM
@@ -454,6 +458,7 @@ where
                 expiry,
                 payment_proof,
                 payment_method,
+                estimated_blocks,
                 used_by_operation,
                 version,
                 mint_url
@@ -1177,9 +1182,9 @@ where
         let rows_affected = query(
                 r#"
     INSERT INTO mint_quote
-    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, version, used_by_operation)
+    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, estimated_blocks, version, used_by_operation)
     VALUES
-    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :version, :used_by_operation)
+    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :estimated_blocks, :version, :used_by_operation)
     ON CONFLICT(id) DO UPDATE SET
         mint_url = excluded.mint_url,
         amount = excluded.amount,
@@ -1191,6 +1196,7 @@ where
         payment_method = excluded.payment_method,
         amount_issued = excluded.amount_issued,
         amount_paid = excluded.amount_paid,
+        estimated_blocks = excluded.estimated_blocks,
         version = :new_version,
         used_by_operation = excluded.used_by_operation
     WHERE mint_quote.version = :expected_version
@@ -1208,6 +1214,7 @@ where
             .bind("payment_method", quote.payment_method.to_string())
             .bind("amount_issued", quote.amount_issued.to_i64())
             .bind("amount_paid", quote.amount_paid.to_i64())
+            .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
             .bind("version", quote.version as i64)
             .bind("new_version", new_version as i64)
             .bind("expected_version", expected_version as i64)
@@ -1251,9 +1258,9 @@ where
         let rows_affected = query(
             r#"
  INSERT INTO melt_quote
- (id, unit, amount, request, fee_reserve, state, expiry, payment_method, version, mint_url, used_by_operation)
+ (id, unit, amount, request, fee_reserve, state, expiry, payment_method, estimated_blocks, version, mint_url, used_by_operation)
  VALUES
- (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method, :version, :mint_url, :used_by_operation)
+ (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method, :estimated_blocks, :version, :mint_url, :used_by_operation)
  ON CONFLICT(id) DO UPDATE SET
      unit = excluded.unit,
      amount = excluded.amount,
@@ -1262,6 +1269,7 @@ where
      state = excluded.state,
      expiry = excluded.expiry,
      payment_method = excluded.payment_method,
+     estimated_blocks = excluded.estimated_blocks,
      version = :new_version,
      mint_url = excluded.mint_url,
      used_by_operation = excluded.used_by_operation
@@ -1277,6 +1285,7 @@ where
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
         .bind("payment_method", quote.payment_method.to_string())
+        .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
         .bind("version", quote.version as i64)
         .bind("new_version", new_version as i64)
         .bind("expected_version", expected_version as i64)
@@ -1988,6 +1997,7 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
             row_method,
             row_amount_minted,
             row_amount_paid,
+            estimated_blocks,
             used_by_operation,
             version
         ) = row
@@ -2014,6 +2024,7 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
         payment_method,
         amount_issued: Amount::from(amount_minted),
         amount_paid: Amount::from(amount_paid),
+        estimated_blocks: column_as_nullable_number!(estimated_blocks),
         used_by_operation: column_as_nullable_string!(used_by_operation),
         version: version_val,
     })
@@ -2031,6 +2042,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
             expiry,
             payment_proof,
             row_method,
+            estimated_blocks,
             used_by_operation,
             version,
             mint_url
@@ -2055,6 +2067,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
         state: column_as_string!(state, MeltQuoteState::from_str),
         expiry: expiry_val,
         payment_proof: column_as_nullable_string!(payment_proof),
+        estimated_blocks: column_as_nullable_number!(estimated_blocks),
         payment_method,
         used_by_operation: column_as_nullable_string!(used_by_operation),
         version: version_val,

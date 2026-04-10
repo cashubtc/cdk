@@ -2272,6 +2272,7 @@ impl MintPayment for CustomPaymentProcessor {
             unit: CurrencyUnit::Sat.to_string(),
             bolt11: None,
             bolt12: None,
+            onchain: None,
             custom: HashMap::from([("test-custom".to_string(), "{}".to_string())]),
         })
     }
@@ -2309,6 +2310,7 @@ impl MintPayment for CustomPaymentProcessor {
                     amount: Amount::new(21, unit.clone()),
                     fee: Amount::new(3, unit.clone()),
                     state: cdk_common::nuts::MeltQuoteState::Unpaid,
+                    estimated_blocks: None,
                     extra_json: Some(serde_json::json!({
                         "redirect_url": "https://example.com/pay/custom-lookup-id",
                         "status": "pending"
@@ -2423,7 +2425,7 @@ async fn test_custom_melt_quote_status_preserves_extra_json() {
 
     let stored_quote = mint
         .localstore()
-        .get_melt_quote(response.quote())
+        .get_melt_quote(response.quote().unwrap())
         .await
         .expect("db read")
         .expect("stored quote");

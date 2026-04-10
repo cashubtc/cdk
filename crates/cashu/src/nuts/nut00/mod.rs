@@ -731,6 +731,8 @@ pub enum KnownMethod {
     Bolt11,
     /// Lightning BOLT12
     Bolt12,
+    /// Onchain Bitcoin
+    Onchain,
 }
 
 impl KnownMethod {
@@ -739,6 +741,7 @@ impl KnownMethod {
         match self {
             Self::Bolt11 => "bolt11",
             Self::Bolt12 => "bolt12",
+            Self::Onchain => "onchain",
         }
     }
 }
@@ -755,6 +758,7 @@ impl FromStr for KnownMethod {
         match value.to_lowercase().as_str() {
             "bolt11" => Ok(Self::Bolt11),
             "bolt12" => Ok(Self::Bolt12),
+            "onchain" => Ok(Self::Onchain),
             _ => Err(Error::UnsupportedPaymentMethod),
         }
     }
@@ -809,6 +813,11 @@ impl PaymentMethod {
     /// Check if this is bolt12
     pub fn is_bolt12(&self) -> bool {
         matches!(self, Self::Known(KnownMethod::Bolt12))
+    }
+
+    /// Check if this is onchain
+    pub fn is_onchain(&self) -> bool {
+        matches!(self, Self::Known(KnownMethod::Onchain))
     }
 }
 

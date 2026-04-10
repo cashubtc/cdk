@@ -123,6 +123,15 @@ impl MintConnector for DirectMintConnection {
                     _ => Err(Error::InvalidPaymentMethod),
                 }
             }
+            MintQuoteRequest::Onchain(req) => {
+                let response = self.mint.get_mint_quote(req.into()).await?;
+                match response {
+                    cdk_common::MintQuoteResponse::Onchain(r) => {
+                        Ok(MintQuoteResponse::Onchain(r.to_string_id()))
+                    }
+                    _ => Err(Error::InvalidPaymentMethod),
+                }
+            }
         }
     }
 
@@ -224,6 +233,15 @@ impl MintConnector for DirectMintConnection {
                     _ => Err(Error::InvalidPaymentMethod),
                 }
             }
+            MeltQuoteRequest::Onchain(req) => {
+                let response = self.mint.get_melt_quote(req.into()).await?;
+                match response {
+                    cdk_common::MeltQuoteCreateResponse::Onchain(r) => {
+                        Ok(MeltQuoteCreateResponse::Onchain(r.into()))
+                    }
+                    _ => Err(Error::InvalidPaymentMethod),
+                }
+            }
         }
     }
 
@@ -256,6 +274,12 @@ impl MintConnector for DirectMintConnection {
                 }
                 _ => Err(Error::InvalidPaymentMethod),
             },
+            PaymentMethod::Known(KnownMethod::Onchain) => match response {
+                cdk_common::MeltQuoteResponse::Onchain(r) => {
+                    Ok(MeltQuoteResponse::Onchain(r.into()))
+                }
+                _ => Err(Error::InvalidPaymentMethod),
+            },
         }
     }
 
@@ -283,6 +307,12 @@ impl MintConnector for DirectMintConnection {
             PaymentMethod::Custom(_) => match response {
                 cdk_common::MeltQuoteResponse::Custom((quote_method, r)) => {
                     Ok(MeltQuoteResponse::Custom((quote_method, r.to_string_id())))
+                }
+                _ => Err(Error::InvalidPaymentMethod),
+            },
+            PaymentMethod::Known(KnownMethod::Onchain) => match response {
+                cdk_common::MeltQuoteResponse::Onchain(r) => {
+                    Ok(MeltQuoteResponse::Onchain(r.into()))
                 }
                 _ => Err(Error::InvalidPaymentMethod),
             },

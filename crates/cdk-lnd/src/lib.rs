@@ -131,6 +131,7 @@ impl Lnd {
                     invoice_description: true,
                 }),
                 bolt12: None,
+                onchain: None,
                 custom: std::collections::HashMap::new(),
             },
             unit,
@@ -387,12 +388,15 @@ impl MintPayment for Lnd {
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
+                    estimated_blocks: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
-            OutgoingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
+            OutgoingPaymentOptions::Custom(_) | OutgoingPaymentOptions::Onchain(_) => {
+                Err(payment::Error::UnsupportedPaymentOption)
+            }
         }
     }
 
@@ -615,7 +619,9 @@ impl MintPayment for Lnd {
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
-            OutgoingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
+            OutgoingPaymentOptions::Custom(_) | OutgoingPaymentOptions::Onchain(_) => {
+                Err(payment::Error::UnsupportedPaymentOption)
+            }
         }
     }
 
@@ -671,7 +677,9 @@ impl MintPayment for Lnd {
             IncomingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
-            IncomingPaymentOptions::Custom(_) => Err(payment::Error::UnsupportedPaymentOption),
+            IncomingPaymentOptions::Custom(_) | IncomingPaymentOptions::Onchain(_) => {
+                Err(payment::Error::UnsupportedPaymentOption)
+            }
         }
     }
 

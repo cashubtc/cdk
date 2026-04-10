@@ -100,6 +100,7 @@ impl MintPayment for Cln {
                 invoice_description: true,
             }),
             bolt12: Some(payment::Bolt12Settings { amountless: true }),
+            onchain: None,
             custom: HashMap::new(),
         })
     }
@@ -362,6 +363,7 @@ impl MintPayment for Cln {
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
+                    estimated_blocks: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -394,8 +396,10 @@ impl MintPayment for Cln {
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
+                    estimated_blocks: None,
                 })
             }
+            OutgoingPaymentOptions::Onchain(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
 
@@ -541,6 +545,9 @@ impl MintPayment for Cln {
                     OutgoingPaymentOptions::Bolt12(_) => {
                         PaymentIdentifier::Bolt12PaymentHash(*pay_response.payment_hash.as_ref())
                     }
+                    OutgoingPaymentOptions::Onchain(_) => {
+                        return Err(payment::Error::UnsupportedPaymentOption);
+                    }
                 };
 
                 MakePaymentResponse {
@@ -679,6 +686,7 @@ impl MintPayment for Cln {
                     extra_json: None,
                 })
             }
+            IncomingPaymentOptions::Onchain(_) => Err(payment::Error::UnsupportedPaymentOption),
         }
     }
 

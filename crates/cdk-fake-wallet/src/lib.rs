@@ -471,6 +471,7 @@ impl MintPayment for FakeWallet {
                 invoice_description: true,
             }),
             bolt12: Some(payment::Bolt12Settings { amountless: false }),
+            onchain: None,
             custom,
         })
     }
@@ -564,7 +565,11 @@ impl MintPayment for FakeWallet {
                     fee: self.fee_for_amount(&amount),
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
+                    estimated_blocks: None,
                 });
+            }
+            OutgoingPaymentOptions::Onchain(_) => {
+                return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
             }
         };
 
@@ -582,6 +587,7 @@ impl MintPayment for FakeWallet {
             amount,
             state: MeltQuoteState::Unpaid,
             extra_json: None,
+            estimated_blocks: None,
         })
     }
 
@@ -695,6 +701,9 @@ impl MintPayment for FakeWallet {
                     total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
                 })
             }
+            OutgoingPaymentOptions::Onchain(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
         }
     }
 
@@ -761,8 +770,8 @@ impl MintPayment for FakeWallet {
                     expiry,
                 )
             }
-            IncomingPaymentOptions::Custom(_) => {
-                // Custom payment methods are not supported by fake wallet
+            IncomingPaymentOptions::Custom(_) | IncomingPaymentOptions::Onchain(_) => {
+                // Custom payment methods and Onchain are not supported by fake wallet
                 return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
             }
         };

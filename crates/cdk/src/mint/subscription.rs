@@ -13,8 +13,9 @@ use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
 use cdk_common::subscription::SubId;
 use cdk_common::{
     Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
-    MeltQuoteState, MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
-    MintQuoteState, NotificationPayload, ProofState, PublicKey, QuoteId,
+    MeltQuoteOnchainResponse, MeltQuoteState, MintQuoteBolt11Response, MintQuoteBolt12Response,
+    MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteState, NotificationPayload,
+    ProofState, PublicKey, QuoteId,
 };
 
 use super::Mint;
@@ -70,9 +71,9 @@ impl MintPubSubSpec {
         let mint_quote_ids = request
             .iter()
             .filter_map(|idx| match idx {
-                NotificationId::MintQuoteBolt11(uuid) | NotificationId::MintQuoteBolt12(uuid) => {
-                    Some(uuid.clone())
-                }
+                NotificationId::MintQuoteBolt11(uuid)
+                | NotificationId::MintQuoteBolt12(uuid)
+                | NotificationId::MintQuoteOnchain(uuid) => Some(uuid.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -108,7 +109,20 @@ impl MintPubSubSpec {
                         to_return.push(melt_quote.into());
                     }
                 }
-                NotificationId::MintQuoteBolt11(uuid) | NotificationId::MintQuoteBolt12(uuid) => {
+                NotificationId::MeltQuoteOnchain(uuid) => {
+                    if let Some(melt_quote) = self
+                        .db
+                        .get_melt_quote(uuid)
+                        .await
+                        .map_err(|e| e.to_string())?
+                    {
+                        let melt_quote: MeltQuoteOnchainResponse<_> = melt_quote.into();
+                        to_return.push(melt_quote.into());
+                    }
+                }
+                NotificationId::MintQuoteBolt11(uuid)
+                | NotificationId::MintQuoteBolt12(uuid)
+                | NotificationId::MintQuoteOnchain(uuid) => {
                     if let Some(mint_quote) = mint_quotes.get(uuid).cloned() {
                         let mint_quote = match idx {
                             NotificationId::MintQuoteBolt11(_) => {
@@ -118,6 +132,13 @@ impl MintPubSubSpec {
                             NotificationId::MintQuoteBolt12(_) => match mint_quote.try_into() {
                                 Ok(response) => {
                                     let response: MintQuoteBolt12Response<QuoteId> = response;
+                                    response.into()
+                                }
+                                Err(_) => continue,
+                            },
+                            NotificationId::MintQuoteOnchain(_) => match mint_quote.try_into() {
+                                Ok(response) => {
+                                    let response: MintQuoteOnchainResponse<QuoteId> = response;
                                     response.into()
                                 }
                                 Err(_) => continue,
@@ -224,6 +245,12 @@ impl PubSubManager {
                     ));
                 }
             }
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Onchain) => {
+                if let Ok(res) = mint_quote.clone().try_into() {
+                    let res: MintQuoteOnchainResponse<QuoteId> = res;
+                    self.publish(NotificationPayload::MintQuoteOnchainResponse(res));
+                }
+            }
         }
     }
 
@@ -246,6 +273,12 @@ impl PubSubManager {
                         method.clone(),
                         response,
                     ));
+                }
+            }
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Onchain) => {
+                if let Ok(res) = mint_quote.clone().try_into() {
+                    let res: MintQuoteOnchainResponse<QuoteId> = res;
+                    self.publish(NotificationPayload::MintQuoteOnchainResponse(res));
                 }
             }
         }
@@ -314,6 +347,13 @@ impl PubSubManager {
                     method.clone(),
                     response,
                 ));
+            }
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Onchain) => {
+                // Onchain melts never return NUT-08 change outputs.
+                let _ = change;
+                let mut event: MeltQuoteOnchainResponse<QuoteId> = quote.clone().into();
+                event.state = new_state;
+                self.publish(NotificationPayload::MeltQuoteOnchainResponse(event));
             }
         }
     }

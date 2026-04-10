@@ -19,6 +19,10 @@ pub enum SubscriptionKind {
     Bolt12MintQuote,
     /// Bolt 12 Melt Quote
     Bolt12MeltQuote,
+    /// Onchain Mint Quote
+    OnchainMintQuote,
+    /// Onchain Melt Quote
+    OnchainMeltQuote,
     /// Proof State
     ProofState,
 }
@@ -30,6 +34,8 @@ impl From<SubscriptionKind> for cdk::nuts::nut17::Kind {
             SubscriptionKind::Bolt11MintQuote => cdk::nuts::nut17::Kind::Bolt11MintQuote,
             SubscriptionKind::Bolt12MintQuote => cdk::nuts::nut17::Kind::Bolt12MintQuote,
             SubscriptionKind::Bolt12MeltQuote => cdk::nuts::nut17::Kind::Bolt12MeltQuote,
+            SubscriptionKind::OnchainMintQuote => cdk::nuts::nut17::Kind::OnchainMintQuote,
+            SubscriptionKind::OnchainMeltQuote => cdk::nuts::nut17::Kind::OnchainMeltQuote,
             SubscriptionKind::ProofState => cdk::nuts::nut17::Kind::ProofState,
         }
     }
@@ -42,6 +48,8 @@ impl From<cdk::nuts::nut17::Kind> for SubscriptionKind {
             cdk::nuts::nut17::Kind::Bolt11MintQuote => SubscriptionKind::Bolt11MintQuote,
             cdk::nuts::nut17::Kind::Bolt12MintQuote => SubscriptionKind::Bolt12MintQuote,
             cdk::nuts::nut17::Kind::Bolt12MeltQuote => SubscriptionKind::Bolt12MeltQuote,
+            cdk::nuts::nut17::Kind::OnchainMintQuote => SubscriptionKind::OnchainMintQuote,
+            cdk::nuts::nut17::Kind::OnchainMeltQuote => SubscriptionKind::OnchainMeltQuote,
             cdk::nuts::nut17::Kind::Custom(_) => {
                 panic!("Custom subscription kind not supported in FFI")
             }

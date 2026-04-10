@@ -202,6 +202,10 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             bolt12: settings.bolt12.map(|b| super::Bolt12Settings {
                 amountless: b.amountless,
             }),
+            onchain: settings.onchain.map(|o| super::OnchainSettings {
+                confirmations: o.confirmations,
+                min_receive_amount_sat: o.min_receive_amount_sat,
+            }),
             custom: settings.custom,
         }))
     }
@@ -262,6 +266,13 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     },
                 ))
             }
+            incoming_payment_options::Options::Onchain(opts) => IncomingPaymentOptions::Onchain(
+                cdk_common::payment::OnchainIncomingPaymentOptions {
+                    quote_id: opts.quote_id.parse().map_err(|_| {
+                        Status::invalid_argument("Invalid quote_id in Onchain options")
+                    })?,
+                },
+            ),
         };
 
         let invoice_response = self
@@ -325,6 +336,37 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         melt_options: request.options.map(Into::into),
                         extra_json: request.extra_json.clone(),
                         quote_id,
+                    },
+                ))
+            }
+            OutgoingPaymentRequestType::Onchain => {
+                let opts = request.onchain_options.ok_or_else(|| {
+                    Status::invalid_argument("Missing onchain_options for onchain quote")
+                })?;
+                let amount = opts
+                    .amount
+                    .ok_or_else(|| Status::invalid_argument("Missing amount in onchain quote"))?
+                    .try_into()
+                    .map_err(|_| Status::invalid_argument("Invalid amount"))?;
+                let max_fee_amount = opts
+                    .max_fee_amount
+                    .try_from_proto()
+                    .map_err(|_| Status::invalid_argument("Invalid max_fee_amount"))?;
+                let onchain_quote_id = parse_quote_id(&opts.quote_id)?;
+                if onchain_quote_id != quote_id {
+                    return Err(Status::invalid_argument(
+                        "quote_id does not match onchain_options quote_id",
+                    ));
+                }
+
+                cdk_common::payment::OutgoingPaymentOptions::Onchain(Box::new(
+                    cdk_common::payment::OnchainOutgoingPaymentOptions {
+                        address: opts.address,
+                        amount,
+                        max_fee_amount,
+                        quote_id,
+                        fee_index: opts.fee_index,
+                        metadata: opts.metadata,
                     },
                 ))
             }
@@ -417,6 +459,31 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         melt_options: opts.melt_options.map(Into::into),
                         extra_json: opts.extra_json,
                         quote_id,
+                    },
+                ))
+            }
+            outgoing_payment_variant::Options::Onchain(opts) => {
+                let amount = opts
+                    .amount
+                    .ok_or_else(|| Status::invalid_argument("Missing amount"))?
+                    .try_into()
+                    .map_err(|_| Status::invalid_argument("Invalid amount"))?;
+
+                let max_fee_amount = opts
+                    .max_fee_amount
+                    .try_from_proto()
+                    .map_err(|_| Status::invalid_argument("Invalid max_fee_amount"))?;
+
+                cdk_common::payment::OutgoingPaymentOptions::Onchain(Box::new(
+                    cdk_common::payment::OnchainOutgoingPaymentOptions {
+                        address: opts.address,
+                        amount,
+                        max_fee_amount,
+                        quote_id: opts.quote_id.parse().map_err(|_| {
+                            Status::invalid_argument("Invalid quote_id in Onchain options")
+                        })?,
+                        tier: opts.tier,
+                        metadata: opts.metadata,
                     },
                 ))
             }

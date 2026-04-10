@@ -42,9 +42,9 @@ impl From<CdkPaymentIdentifier> for PaymentIdentifier {
                 r#type: PaymentIdentifierType::PaymentId.into(),
                 value: Some(payment_identifier::Value::Hash(hex::encode(hash))),
             },
-            CdkPaymentIdentifier::QuoteId(id) => Self {
+            CdkPaymentIdentifier::QuoteId(quote_id) => Self {
                 r#type: PaymentIdentifierType::QuoteId.into(),
-                value: Some(payment_identifier::Value::Id(id.to_string())),
+                value: Some(payment_identifier::Value::Id(quote_id.to_string())),
             },
         }
     }
@@ -81,16 +81,17 @@ impl TryFrom<PaymentIdentifier> for CdkPaymentIdentifier {
             (PaymentIdentifierType::CustomId, Some(payment_identifier::Value::Id(id))) => {
                 Ok(CdkPaymentIdentifier::CustomId(id))
             }
+            (PaymentIdentifierType::QuoteId, Some(payment_identifier::Value::Id(id))) => {
+                Ok(CdkPaymentIdentifier::QuoteId(id.parse().map_err(|_| {
+                    crate::error::Error::InvalidPaymentIdentifier
+                })?))
+            }
             (PaymentIdentifierType::PaymentId, Some(payment_identifier::Value::Hash(hash))) => {
                 let decoded = hex::decode(hash)?;
                 let hash_array: [u8; 32] = decoded
                     .try_into()
                     .map_err(|_| crate::error::Error::InvalidHash)?;
                 Ok(CdkPaymentIdentifier::PaymentId(hash_array))
-            }
-            (PaymentIdentifierType::QuoteId, Some(payment_identifier::Value::Id(id))) => {
-                let id = id.parse().map_err(|_| crate::error::Error::InvalidHash)?;
-                Ok(CdkPaymentIdentifier::QuoteId(id))
             }
             _ => Err(crate::error::Error::InvalidPaymentIdentifier),
         }
@@ -216,6 +217,7 @@ impl From<CdkPaymentQuoteResponse> for PaymentQuoteResponse {
             fee: Some(value.fee.into()),
             state: QuoteState::from(value.state).into(),
             extra_json: value.extra_json.map(|value| value.to_string()),
+            estimated_blocks: value.estimated_blocks,
         }
     }
 }
@@ -241,6 +243,7 @@ impl TryFrom<PaymentQuoteResponse> for CdkPaymentQuoteResponse {
             extra_json: value
                 .extra_json
                 .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok()),
+            estimated_blocks: value.estimated_blocks,
         })
     }
 }
@@ -422,6 +425,7 @@ mod tests {
             amount: Amount::new(100, CurrencyUnit::Sat),
             fee: Amount::new(2, CurrencyUnit::Sat),
             state: MeltQuoteState::Unpaid,
+            estimated_blocks: None,
             extra_json: Some(serde_json::json!({
                 "method": "custom",
                 "redirect_url": "https://example.com/pay",

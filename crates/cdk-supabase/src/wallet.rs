@@ -2440,6 +2440,7 @@ impl TryInto<MintQuote> for MintQuoteTable {
                 .map_err(|_| DatabaseError::Internal("Invalid payment method".into()))?,
             amount_issued: cdk_common::Amount::from(self.amount_issued as u64),
             amount_paid: cdk_common::Amount::from(self.amount_paid as u64),
+            estimated_blocks: None,
             used_by_operation: self.used_by_operation,
             version: self.version.unwrap_or(0) as u32,
         })
@@ -2512,6 +2513,7 @@ impl TryInto<wallet::MeltQuote> for MeltQuoteTable {
             payment_proof: self.payment_proof,
             payment_method: cdk_common::PaymentMethod::from_str(&self.payment_method)
                 .map_err(|_| DatabaseError::Internal("Invalid payment method".into()))?,
+            estimated_blocks: None,
             used_by_operation: self.used_by_operation,
             version: self.version.unwrap_or(0) as u32,
         })

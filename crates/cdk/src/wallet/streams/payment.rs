@@ -166,6 +166,18 @@ impl<'a> PaymentStream<'a> {
                                     }
                                 }
                             }
+                            NotificationPayload::MintQuoteOnchainResponse(info) => {
+                                let quote_id = info.quote.clone();
+                                if let Ok(Some(mut quote)) =
+                                    localstore.get_mint_quote(&quote_id).await
+                                {
+                                    quote.amount_paid = info.amount_paid;
+                                    quote.amount_issued = info.amount_issued;
+                                    if let Err(e) = localstore.add_mint_quote(quote).await {
+                                        tracing::warn!("Failed to update quote state: {}", e);
+                                    }
+                                }
+                            }
                             _ => (),
                         }
                     }
@@ -208,7 +220,19 @@ impl<'a> PaymentStream<'a> {
                                     return Poll::Ready(Some(Ok((info.quote, Some(to_be_issued)))));
                                 }
                             }
+                            NotificationPayload::MintQuoteOnchainResponse(info) => {
+                                let to_be_issued = info.amount_paid - info.amount_issued;
+                                if to_be_issued > Amount::ZERO {
+                                    return Poll::Ready(Some(Ok((info.quote, Some(to_be_issued)))));
+                                }
+                            }
                             NotificationPayload::MeltQuoteBolt11Response(info)
+                                if info.state == MeltQuoteState::Paid =>
+                            {
+                                self.is_finalized = true;
+                                return Poll::Ready(Some(Ok((info.quote, None))));
+                            }
+                            NotificationPayload::MeltQuoteOnchainResponse(info)
                                 if info.state == MeltQuoteState::Paid =>
                             {
                                 self.is_finalized = true;

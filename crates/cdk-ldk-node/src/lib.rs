@@ -521,6 +521,7 @@ impl MintPayment for CdkLdkNode {
                 invoice_description: true,
             }),
             bolt12: Some(payment::Bolt12Settings { amountless: true }),
+            onchain: None,
             custom: std::collections::HashMap::new(),
         };
         Ok(settings)
@@ -614,7 +615,7 @@ impl MintPayment for CdkLdkNode {
                     extra_json: None,
                 })
             }
-            cdk_common::payment::IncomingPaymentOptions::Custom(_) => {
+            IncomingPaymentOptions::Custom(_) | IncomingPaymentOptions::Onchain(_) => {
                 Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
         }
@@ -667,6 +668,7 @@ impl MintPayment for CdkLdkNode {
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
+                    estimated_blocks: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -704,7 +706,11 @@ impl MintPayment for CdkLdkNode {
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
+                    estimated_blocks: None,
                 })
+            }
+            OutgoingPaymentOptions::Onchain(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
         }
     }
@@ -886,6 +892,9 @@ impl MintPayment for CdkLdkNode {
                     status,
                     total_spent,
                 })
+            }
+            OutgoingPaymentOptions::Onchain(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
         }
     }

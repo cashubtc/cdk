@@ -158,6 +158,12 @@ impl MintPayment for PaymentProcessorClient {
                 .map(|b| cdk_common::payment::Bolt12Settings {
                     amountless: b.amountless,
                 }),
+            onchain: settings
+                .onchain
+                .map(|o| cdk_common::payment::OnchainSettings {
+                    confirmations: o.confirmations,
+                    min_receive_amount_sat: o.min_receive_amount_sat,
+                }),
             custom: settings.custom,
         })
     }
@@ -198,6 +204,13 @@ impl MintPayment for PaymentProcessorClient {
                     },
                 )),
             },
+            CdkIncomingPaymentOptions::Onchain(opts) => IncomingPaymentOptions {
+                options: Some(super::incoming_payment_options::Options::Onchain(
+                    super::OnchainIncomingPaymentOptions {
+                        quote_id: opts.quote_id.to_string(),
+                    },
+                )),
+            },
         };
 
         let response = inner
@@ -234,18 +247,23 @@ impl MintPayment for PaymentProcessorClient {
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(_) => {
                 OutgoingPaymentRequestType::Bolt12Offer
             }
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(_) => {
+                OutgoingPaymentRequestType::Onchain
+            }
         };
 
         let proto_request = match &options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.request.to_string(),
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => opts.bolt11.to_string(),
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(opts) => opts.offer.to_string(),
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(opts) => opts.address.clone(),
         };
 
         let proto_options = match &options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.melt_options,
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => opts.melt_options,
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(opts) => opts.melt_options,
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(_) => None,
         };
 
         let extra_json = match &options {
@@ -257,6 +275,7 @@ impl MintPayment for PaymentProcessorClient {
             cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.quote_id.to_string(),
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => opts.quote_id.to_string(),
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(opts) => opts.quote_id.to_string(),
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(opts) => opts.quote_id.to_string(),
         };
 
         let response = inner
@@ -267,6 +286,7 @@ impl MintPayment for PaymentProcessorClient {
                 request_type: request_type.into(),
                 extra_json,
                 quote_id,
+                onchain_options,
             }))
             .await
             .map_err(|err| {
@@ -326,6 +346,20 @@ impl MintPayment for PaymentProcessorClient {
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),
                             quote_id: opts.quote_id.to_string(),
+                        },
+                    )),
+                }
+            }
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(opts) => {
+                super::OutgoingPaymentVariant {
+                    options: Some(super::outgoing_payment_variant::Options::Onchain(
+                        super::OnchainOutgoingPaymentOptions {
+                            address: opts.address.clone(),
+                            amount: Some(opts.amount.into()),
+                            max_fee_amount: opts.max_fee_amount.into_proto(),
+                            quote_id: opts.quote_id.to_string(),
+                            tier: opts.tier.clone(),
+                            metadata: opts.metadata.clone(),
                         },
                     )),
                 }

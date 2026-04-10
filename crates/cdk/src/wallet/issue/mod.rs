@@ -38,6 +38,11 @@ fn apply_mint_quote_response(quote: &mut MintQuote, response: &MintQuoteResponse
             quote.amount_issued = response.amount_issued;
             quote.update_state_from_amounts();
         }
+        MintQuoteResponse::Onchain(response) => {
+            quote.amount_paid = response.amount_paid;
+            quote.amount_issued = response.amount_issued;
+            quote.update_state_from_amounts();
+        }
         MintQuoteResponse::Custom { response, .. } => {
             quote.amount_paid = response.amount_paid;
             quote.amount_issued = response.amount_issued;
@@ -108,6 +113,12 @@ impl Wallet {
                         extra: serde_json::from_str(extra.as_deref().unwrap_or("{}"))?,
                     },
                 }
+            }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                MintQuoteRequest::Onchain(cdk_common::nuts::nut_onchain::MintQuoteOnchainRequest {
+                    unit: unit.clone(),
+                    pubkey: secret_key.public_key(),
+                })
             }
         };
 
@@ -431,11 +442,13 @@ impl Wallet {
                     MintQuoteResponse::Bolt11(r) => r.amount,
                     MintQuoteResponse::Bolt12(r) => r.amount,
                     MintQuoteResponse::Custom { response: r, .. } => r.amount,
+                    MintQuoteResponse::Onchain(r) => Some(r.amount_paid),
                 };
                 let unit = match &response {
                     MintQuoteResponse::Bolt11(r) => r.unit.clone(),
                     MintQuoteResponse::Bolt12(r) => Some(r.unit.clone()),
                     MintQuoteResponse::Custom { response: r, .. } => r.unit.clone(),
+                    MintQuoteResponse::Onchain(r) => Some(r.unit.clone()),
                 };
                 let mut quote = MintQuote::new(
                     quote_id.to_string(),

@@ -69,7 +69,9 @@ impl Wallet {
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_proof: quote_res.payment_preimage,
+            estimated_blocks: None,
             payment_method: PaymentMethod::Known(KnownMethod::Bolt12),
+
             used_by_operation: None,
             version: 0,
         };

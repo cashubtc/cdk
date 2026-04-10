@@ -4,14 +4,14 @@ use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
-    IncomingPaymentOptions, WaitPaymentResponse,
+    IncomingPaymentOptions, OnchainIncomingPaymentOptions, WaitPaymentResponse,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteState, MintRequest, MintResponse,
-    NotificationPayload, PublicKey,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, MintQuoteState,
+    MintRequest, MintResponse, NotificationPayload, PublicKey,
 };
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -321,6 +321,11 @@ impl Mint {
 
                     IncomingPaymentOptions::Custom(Box::new(custom_options))
                 }
+                MintQuoteRequest::Onchain(_) => {
+                    IncomingPaymentOptions::Onchain(OnchainIncomingPaymentOptions {
+                        quote_id: quote_id.clone(),
+                    })
+                }
             };
 
             let create_invoice_response = ln
@@ -369,6 +374,10 @@ impl Mint {
                 let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
                 self.pubsub_manager
                     .publish(NotificationPayload::MintQuoteBolt12Response(res));
+            } else if payment_method.is_onchain() {
+                let res: MintQuoteOnchainResponse<QuoteId> = quote.clone().try_into()?;
+                self.pubsub_manager
+                    .publish(NotificationPayload::MintQuoteOnchainResponse(res));
             }
 
             quote.try_into()
@@ -841,12 +850,32 @@ impl Mint {
             // Phase 3: Amount validation
             ensure_cdk!(outputs_amount.unit() == &batch_unit, Error::UnsupportedUnit);
 
-            if outputs_amount.value() != total_expected_value {
+            if outputs_amount.value() > total_expected_value {
                 return Err(Error::TransactionUnbalanced(
                     total_expected_value,
                     outputs_amount.value(),
                     0,
                 ));
+            }
+
+            if outputs_amount.value() < total_expected_value {
+                // If it is a single quote and not bolt11 we allow the outputs to be less than the total paid
+                // This is to handle the case where a quote is paid multiple times or more than the quote amount
+                let is_partial_allowed = !input.is_batch() && !batch_method.is_bolt11();
+
+                if !is_partial_allowed {
+                    return Err(Error::TransactionUnbalanced(
+                        total_expected_value,
+                        outputs_amount.value(),
+                        0,
+                    ));
+                }
+
+                tracing::info!(
+                    "Partial mint allowed for single non-bolt11 quote: {} < {}",
+                    outputs_amount.value(),
+                    total_expected_value
+                );
             }
 
             // Phase 4: Generate blind signatures (stateless, safe outside transaction)

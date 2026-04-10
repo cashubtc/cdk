@@ -197,6 +197,49 @@ impl Default for Ln {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OnchainBackend {
+    #[default]
+    None,
+    #[cfg(feature = "bdk")]
+    Bdk,
+}
+
+impl std::str::FromStr for OnchainBackend {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "none" => Ok(OnchainBackend::None),
+            #[cfg(feature = "bdk")]
+            "bdk" => Ok(OnchainBackend::Bdk),
+            _ => Err(format!("Unknown Onchain backend: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Onchain {
+    pub onchain_backend: OnchainBackend,
+    pub min_mint: Amount,
+    pub max_mint: Amount,
+    pub min_melt: Amount,
+    pub max_melt: Amount,
+}
+
+impl Default for Onchain {
+    fn default() -> Self {
+        Onchain {
+            onchain_backend: OnchainBackend::default(),
+            min_mint: 1.into(),
+            max_mint: 500_000.into(),
+            min_melt: 1.into(),
+            max_melt: 500_000.into(),
+        }
+    }
+}
+
 #[cfg(feature = "lnbits")]
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LNbits {
@@ -648,6 +691,7 @@ pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
     pub ln: Ln,
+    pub onchain: Option<Onchain>,
     /// Transaction limits for DoS protection
     #[serde(default)]
     pub limits: Limits,

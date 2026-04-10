@@ -6,8 +6,8 @@ use std::ops::Deref;
 use cdk_common::nut17::NotificationId;
 use cdk_common::pub_sub::Event;
 use cdk_common::{
-    MeltQuoteBolt11Response, MintQuoteBolt11Response, MintQuoteBolt12Response, NotificationPayload,
-    ProofState,
+    MeltQuoteBolt11Response, MeltQuoteOnchainResponse, MintQuoteBolt11Response,
+    MintQuoteBolt12Response, MintQuoteOnchainResponse, NotificationPayload, ProofState,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,24 @@ where
     }
 }
 
+impl<T> From<MintQuoteOnchainResponse<T>> for MintEvent<T>
+where
+    T: Clone + Eq + PartialEq,
+{
+    fn from(value: MintQuoteOnchainResponse<T>) -> Self {
+        Self(NotificationPayload::MintQuoteOnchainResponse(value))
+    }
+}
+
+impl<T> From<MeltQuoteOnchainResponse<T>> for MintEvent<T>
+where
+    T: Clone + Eq + PartialEq,
+{
+    fn from(value: MeltQuoteOnchainResponse<T>) -> Self {
+        Self(NotificationPayload::MeltQuoteOnchainResponse(value))
+    }
+}
+
 impl<T> Event for MintEvent<T>
 where
     T: Clone + Serialize + DeserializeOwned + Debug + Ord + Hash + Send + Sync + Eq + PartialEq,
@@ -131,6 +149,12 @@ where
             }
             NotificationPayload::MeltQuoteBolt12Response(r) => {
                 vec![NotificationId::MeltQuoteBolt12(r.quote.to_owned())]
+            }
+            NotificationPayload::MeltQuoteOnchainResponse(r) => {
+                vec![NotificationId::MeltQuoteOnchain(r.quote.to_owned())]
+            }
+            NotificationPayload::MintQuoteOnchainResponse(r) => {
+                vec![NotificationId::MintQuoteOnchain(r.quote.to_owned())]
             }
             NotificationPayload::CustomMintQuoteResponse(method, r) => {
                 vec![NotificationId::MintQuoteCustom(
