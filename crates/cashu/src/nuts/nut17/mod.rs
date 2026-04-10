@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::PublicKey;
 use crate::nut00::KnownMethod;
 use crate::nut25::MeltQuoteBolt12Response;
+use crate::nut_onchain::{MeltQuoteOnchainResponse, MintQuoteOnchainResponse};
 use crate::nuts::{
     CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteCustomResponse, MintQuoteBolt11Response,
     MintQuoteCustomResponse, PaymentMethod, ProofState,
@@ -204,6 +205,10 @@ where
     MintQuoteBolt12Response(MintQuoteBolt12Response<T>),
     /// Melt Quote Bolt12 Response
     MeltQuoteBolt12Response(MeltQuoteBolt12Response<T>),
+    /// Melt Quote Onchain Response
+    MeltQuoteOnchainResponse(MeltQuoteOnchainResponse<T>),
+    /// Mint Quote Onchain Response
+    MintQuoteOnchainResponse(MintQuoteOnchainResponse<T>),
     /// Custom Mint Quote Response (method, response)
     CustomMintQuoteResponse(String, MintQuoteCustomResponse<T>),
     /// Custom Melt Quote Response (method, response)
@@ -228,6 +233,10 @@ where
     /// MintQuote id is an QuoteId
     MeltQuoteBolt12(T),
     /// MintQuote id is an QuoteId
+    MintQuoteOnchain(T),
+    /// MintQuote id is an QuoteId
+    MeltQuoteOnchain(T),
+    /// MintQuote id is an QuoteId
     MintQuoteCustom(String, T),
     /// MintQuote id is an QuoteId
     MeltQuoteCustom(String, T),
@@ -246,6 +255,10 @@ pub enum Kind {
     Bolt12MintQuote,
     /// Bolt 12 Melt Quote
     Bolt12MeltQuote,
+    /// Onchain Mint Quote
+    OnchainMintQuote,
+    /// Onchain Melt Quote
+    OnchainMeltQuote,
     /// Custom
     Custom(String),
 }
@@ -260,6 +273,8 @@ impl Serialize for Kind {
             Kind::Bolt11MeltQuote => "bolt11_melt_quote",
             Kind::Bolt12MintQuote => "bolt12_mint_quote",
             Kind::Bolt12MeltQuote => "bolt12_melt_quote",
+            Kind::OnchainMintQuote => "onchain_mint_quote",
+            Kind::OnchainMeltQuote => "onchain_melt_quote",
             Kind::ProofState => "proof_state",
             Kind::Custom(custom) => custom.as_str(),
         };
@@ -278,6 +293,8 @@ impl<'de> Deserialize<'de> for Kind {
             "bolt11_melt_quote" => Kind::Bolt11MeltQuote,
             "bolt12_mint_quote" => Kind::Bolt12MintQuote,
             "bolt12_melt_quote" => Kind::Bolt12MeltQuote,
+            "onchain_mint_quote" => Kind::OnchainMintQuote,
+            "onchain_melt_quote" => Kind::OnchainMeltQuote,
             "proof_state" => Kind::ProofState,
             custom => Kind::Custom(custom.to_string()),
         })

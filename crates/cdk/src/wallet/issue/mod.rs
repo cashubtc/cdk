@@ -80,6 +80,12 @@ impl Wallet {
                     },
                 }
             }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                MintQuoteRequest::Onchain(cdk_common::nuts::nut_onchain::MintQuoteOnchainRequest {
+                    unit: unit.clone(),
+                    pubkey: secret_key.public_key(),
+                })
+            }
         };
 
         let response: MintQuoteResponse<String> = self.client.post_mint_quote(request).await?;
@@ -136,6 +142,10 @@ impl Wallet {
                 }
                 MintQuoteState::Unpaid => (),
             },
+            MintQuoteResponse::Onchain(response) => {
+                mint_quote.amount_paid = response.amount_paid;
+                mint_quote.amount_issued = response.amount_issued;
+            }
         }
 
         Ok(())
@@ -437,6 +447,10 @@ impl Wallet {
                             existing.amount_issued = amount;
                         }
                     }
+                    MintQuoteResponse::Onchain(r) => {
+                        existing.amount_paid = r.amount_paid;
+                        existing.amount_issued = r.amount_issued;
+                    }
                 }
                 existing
             }
@@ -446,11 +460,13 @@ impl Wallet {
                     MintQuoteResponse::Bolt11(r) => r.amount,
                     MintQuoteResponse::Bolt12(r) => r.amount,
                     MintQuoteResponse::Custom { response: r, .. } => r.amount,
+                    MintQuoteResponse::Onchain(r) => Some(r.amount_paid),
                 };
                 let unit = match &response {
                     MintQuoteResponse::Bolt11(r) => r.unit.clone(),
                     MintQuoteResponse::Bolt12(r) => Some(r.unit.clone()),
                     MintQuoteResponse::Custom { response: r, .. } => r.unit.clone(),
+                    MintQuoteResponse::Onchain(r) => Some(r.unit.clone()),
                 };
                 MintQuote::new(
                     quote_id.to_string(),

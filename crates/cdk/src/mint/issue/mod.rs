@@ -4,14 +4,14 @@ use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
-    IncomingPaymentOptions, WaitPaymentResponse,
+    IncomingPaymentOptions, OnchainIncomingPaymentOptions, WaitPaymentResponse,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteState, MintRequest, MintResponse,
-    NotificationPayload, PublicKey,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, MintQuoteState,
+    MintRequest, MintResponse, NotificationPayload, PublicKey,
 };
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -321,6 +321,11 @@ impl Mint {
 
                     IncomingPaymentOptions::Custom(Box::new(custom_options))
                 }
+                MintQuoteRequest::Onchain(_) => {
+                    IncomingPaymentOptions::Onchain(OnchainIncomingPaymentOptions {
+                        quote_id: quote_id.clone(),
+                    })
+                }
             };
 
             let create_invoice_response = ln
@@ -369,6 +374,10 @@ impl Mint {
                 let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
                 self.pubsub_manager
                     .publish(NotificationPayload::MintQuoteBolt12Response(res));
+            } else if payment_method.is_onchain() {
+                let res: MintQuoteOnchainResponse<QuoteId> = quote.clone().try_into()?;
+                self.pubsub_manager
+                    .publish(NotificationPayload::MintQuoteOnchainResponse(res));
             }
 
             quote.try_into()

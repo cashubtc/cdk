@@ -59,6 +59,7 @@ mod custom;
 mod melt_bip353;
 #[cfg(feature = "wallet")]
 mod melt_lightning_address;
+mod onchain;
 pub(crate) mod saga;
 
 use saga::state::Prepared;
@@ -109,6 +110,13 @@ impl<'a> PendingMelt<'a> {
                     ))
                     .await?
             }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                wallet
+                    .subscribe(WalletSubscription::MeltQuoteOnchainState(vec![
+                        quote_id.clone()
+                    ]))
+                    .await?
+            }
         };
 
         loop {
@@ -135,6 +143,9 @@ impl<'a> PendingMelt<'a> {
                             response.payment_preimage,
                             response.change,
                         ),
+                        NotificationPayload::MeltQuoteOnchainResponse(response) => {
+                            (response.quote, response.state, None, response.change)
+                        }
                         _ => continue,
                     };
 
@@ -160,11 +171,7 @@ impl<'a> PendingMelt<'a> {
                                 tracing::debug!("Received WS with no change checking with HTTP");
 
                                 match self.saga.wallet.internal_check_melt_status(&quote_id).await {
-                                    Ok(response) => match response {
-                                        MeltQuoteStatusResponse::Standard(r) => r.change,
-                                        MeltQuoteStatusResponse::Bolt12(r) => r.change,
-                                        MeltQuoteStatusResponse::Custom(r) => r.change,
-                                    },
+                                    Ok(response) => response.change(),
                                     Err(e) => {
                                         tracing::warn!(
                                             "Failed to check melt status via HTTP: {}",
@@ -232,6 +239,8 @@ pub(crate) enum MeltQuoteStatusResponse {
     Standard(cdk_common::MeltQuoteBolt11Response<String>),
     /// Bolt12 response
     Bolt12(cdk_common::MeltQuoteBolt12Response<String>),
+    /// Onchain response
+    Onchain(cdk_common::MeltQuoteOnchainResponse<String>),
     /// Custom payment method response
     Custom(cdk_common::MeltQuoteCustomResponse<String>),
 }
@@ -242,6 +251,7 @@ impl MeltQuoteStatusResponse {
         match self {
             Self::Standard(r) => r.state,
             Self::Bolt12(r) => r.state,
+            Self::Onchain(r) => r.state,
             Self::Custom(r) => r.state,
         }
     }
@@ -251,7 +261,18 @@ impl MeltQuoteStatusResponse {
         match self {
             Self::Standard(r) => r.payment_preimage.clone(),
             Self::Bolt12(r) => r.payment_preimage.clone(),
+            Self::Onchain(_) => None,
             Self::Custom(r) => r.payment_preimage.clone(),
+        }
+    }
+
+    /// Get the change signatures
+    pub fn change(&self) -> Option<Vec<crate::nuts::BlindSignature>> {
+        match self {
+            Self::Standard(r) => r.change.clone(),
+            Self::Bolt12(r) => r.change.clone(),
+            Self::Onchain(r) => r.change.clone(),
+            Self::Custom(r) => r.change.clone(),
         }
     }
 
@@ -938,6 +959,11 @@ impl Wallet {
                 self.melt_quote_custom(&custom_method, request_str, options, extra_json)
                     .await
             }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                return Err(Error::Custom(
+                    "Onchain melt not yet implemented".to_string(),
+                ));
+            }
         }
     }
 
@@ -1118,6 +1144,28 @@ impl Wallet {
                 )
                 .await?;
             }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                let response = self
+                    .client
+                    .get_melt_quote_status(quote.payment_method.clone(), quote_id)
+                    .await?;
+                let response = match response {
+                    cdk_common::MeltQuoteResponse::Onchain(response) => response,
+                    _ => return Err(Error::InvalidPaymentMethod),
+                };
+                self.update_melt_quote_state(
+                    &mut quote,
+                    response.state,
+                    response.amount,
+                    response.change.as_ref().and_then(|change| {
+                        Amount::try_sum(change.iter().map(|sig| sig.amount)).ok()
+                    }),
+                    response.outpoint.clone(),
+                )
+                .await?;
+                quote.estimated_blocks = Some(response.estimated_blocks);
+                self.localstore.add_melt_quote(quote.clone()).await?;
+            }
         };
 
         Ok(quote)
@@ -1148,6 +1196,7 @@ impl Wallet {
         let response = match response {
             cdk_common::MeltQuoteResponse::Bolt11(r) => MeltQuoteStatusResponse::Standard(r),
             cdk_common::MeltQuoteResponse::Bolt12(r) => MeltQuoteStatusResponse::Bolt12(r),
+            cdk_common::MeltQuoteResponse::Onchain(r) => MeltQuoteStatusResponse::Onchain(r),
             cdk_common::MeltQuoteResponse::Custom((_, r)) => MeltQuoteStatusResponse::Custom(r),
         };
 

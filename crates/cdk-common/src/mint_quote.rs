@@ -7,6 +7,7 @@ use crate::nuts::nut00::KnownMethod;
 use crate::nuts::nut04::{MintQuoteCustomRequest, MintQuoteCustomResponse};
 use crate::nuts::nut23::{MintQuoteBolt11Request, MintQuoteBolt11Response};
 use crate::nuts::nut25::{MintQuoteBolt12Request, MintQuoteBolt12Response};
+use crate::nuts::nut_onchain::{MintQuoteOnchainRequest, MintQuoteOnchainResponse};
 use crate::{Amount, CurrencyUnit, PaymentMethod, PublicKey};
 
 /// Unified mint quote request for all payment methods
@@ -16,6 +17,8 @@ pub enum MintQuoteRequest {
     Bolt11(MintQuoteBolt11Request),
     /// Bolt12 (Offers)
     Bolt12(MintQuoteBolt12Request),
+    /// Onchain
+    Onchain(MintQuoteOnchainRequest),
     /// Custom payment method
     Custom {
         /// Payment method identifier
@@ -37,12 +40,19 @@ impl From<MintQuoteBolt12Request> for MintQuoteRequest {
     }
 }
 
+impl From<MintQuoteOnchainRequest> for MintQuoteRequest {
+    fn from(request: MintQuoteOnchainRequest) -> Self {
+        MintQuoteRequest::Onchain(request)
+    }
+}
+
 impl MintQuoteRequest {
     /// Returns the payment method for this request.
     pub fn method(&self) -> PaymentMethod {
         match self {
             Self::Bolt11(_) => PaymentMethod::Known(KnownMethod::Bolt11),
             Self::Bolt12(_) => PaymentMethod::Known(KnownMethod::Bolt12),
+            Self::Onchain(_) => PaymentMethod::Known(KnownMethod::Onchain),
             Self::Custom { method, .. } => method.clone(),
         }
     }
@@ -52,6 +62,7 @@ impl MintQuoteRequest {
         match self {
             Self::Bolt11(request) => Some(request.amount),
             Self::Bolt12(request) => request.amount,
+            Self::Onchain(_) => None,
             Self::Custom { request, .. } => Some(request.amount),
         }
     }
@@ -61,6 +72,7 @@ impl MintQuoteRequest {
         match self {
             Self::Bolt11(request) => request.unit.clone(),
             Self::Bolt12(request) => request.unit.clone(),
+            Self::Onchain(request) => request.unit.clone(),
             Self::Custom { request, .. } => request.unit.clone(),
         }
     }
@@ -75,6 +87,7 @@ impl MintQuoteRequest {
         match self {
             Self::Bolt11(request) => request.pubkey,
             Self::Bolt12(request) => Some(request.pubkey),
+            Self::Onchain(request) => Some(request.pubkey),
             Self::Custom { request, .. } => request.pubkey,
         }
     }
@@ -88,6 +101,8 @@ pub enum MintQuoteResponse<Q> {
     Bolt11(MintQuoteBolt11Response<Q>),
     /// Bolt12 (Offers)
     Bolt12(MintQuoteBolt12Response<Q>),
+    /// Onchain
+    Onchain(MintQuoteOnchainResponse<Q>),
     /// Custom payment method
     Custom {
         /// Payment method identifier
@@ -103,6 +118,7 @@ impl<Q> MintQuoteResponse<Q> {
         match self {
             Self::Bolt11(_) => PaymentMethod::Known(KnownMethod::Bolt11),
             Self::Bolt12(_) => PaymentMethod::Known(KnownMethod::Bolt12),
+            Self::Onchain(_) => PaymentMethod::Known(KnownMethod::Onchain),
             Self::Custom { method, .. } => method.clone(),
         }
     }
@@ -112,6 +128,7 @@ impl<Q> MintQuoteResponse<Q> {
         match self {
             Self::Bolt11(r) => &r.quote,
             Self::Bolt12(r) => &r.quote,
+            Self::Onchain(r) => &r.quote,
             Self::Custom { response: r, .. } => &r.quote,
         }
     }
@@ -121,6 +138,7 @@ impl<Q> MintQuoteResponse<Q> {
         match self {
             Self::Bolt11(r) => &r.request,
             Self::Bolt12(r) => &r.request,
+            Self::Onchain(r) => &r.request,
             Self::Custom { response: r, .. } => &r.request,
         }
     }
@@ -138,6 +156,15 @@ impl<Q> MintQuoteResponse<Q> {
                     crate::nuts::nut23::QuoteState::Unpaid
                 }
             }
+            Self::Onchain(r) => {
+                if r.amount_issued > Amount::ZERO {
+                    crate::nuts::nut23::QuoteState::Issued
+                } else if r.amount_paid > Amount::ZERO {
+                    crate::nuts::nut23::QuoteState::Paid
+                } else {
+                    crate::nuts::nut23::QuoteState::Unpaid
+                }
+            }
             Self::Custom { response: r, .. } => r.state,
         }
     }
@@ -147,6 +174,7 @@ impl<Q> MintQuoteResponse<Q> {
         match self {
             Self::Bolt11(r) => r.expiry,
             Self::Bolt12(r) => r.expiry,
+            Self::Onchain(r) => r.expiry,
             Self::Custom { response: r, .. } => r.expiry,
         }
     }

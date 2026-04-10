@@ -304,6 +304,7 @@ fn create_ldk_settings(
         limits: cdk_mintd::config::Limits::default(),
         ln: cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::LdkNode,
+            onchain: None,
             invoice_description: None,
             min_mint: 1.into(),
             max_mint: 500_000.into(),
@@ -315,6 +316,7 @@ fn create_ldk_settings(
         lnd: None,
         ldk_node: Some(ldk_config),
         fake_wallet: None,
+        onchain: None,
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
         auth_database: None,

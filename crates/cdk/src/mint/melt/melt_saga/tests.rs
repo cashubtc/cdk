@@ -17,7 +17,7 @@ use cdk_common::nuts::{MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::{Amount, MintQuoteBolt11Request, PaymentMethod, ProofsMethods, State};
 
-use crate::mint::melt::melt_saga::MeltSaga;
+use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
 use crate::mint::melt::shared::{finalize_melt_quote, rollback_melt_quote};
 use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 
@@ -191,7 +191,10 @@ async fn test_saga_deletion_on_success() {
         .unwrap();
 
     // Make payment (FakeWallet will return success based on FakeInvoiceDescription)
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let confirmed_saga = match payment_saga.make_payment(decision).await.unwrap() {
+        PaymentOutcome::Confirmed(s) => s,
+        _ => panic!("Expected Confirmed"),
+    };
 
     // Finalize
     let _response = confirmed_saga.finalize().await.unwrap();
@@ -238,7 +241,10 @@ async fn test_completed_operation_recorded_on_finalize() {
         .attempt_internal_settlement(&melt_request)
         .await
         .unwrap();
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let confirmed_saga = match payment_saga.make_payment(decision).await.unwrap() {
+        PaymentOutcome::Confirmed(s) => s,
+        _ => panic!("Expected Confirmed"),
+    };
 
     let response = confirmed_saga.finalize().await.unwrap();
 
@@ -346,10 +352,10 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
         .await
         .unwrap()
         .into();
-    let mint_quote_id = cdk_common::QuoteId::from_str(&mint_quote_response.quote).unwrap();
+    let mint_quote_id = mint_quote_response.quote.clone();
     let mint_quote = mint
         .localstore
-        .get_mint_quote(&mint_quote_id)
+        .get_mint_quote(&cdk_common::QuoteId::from_str(&mint_quote_id).unwrap())
         .await
         .unwrap()
         .expect("Mint quote should exist");
@@ -362,7 +368,7 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
     let quote_response = mint.get_melt_quote(melt_quote_request).await.unwrap();
     let quote = mint
         .localstore
-        .get_melt_quote(quote_response.quote())
+        .get_melt_quote(quote_response.quote().unwrap())
         .await
         .unwrap()
         .expect("Melt quote should exist");
@@ -393,7 +399,10 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
         _ => panic!("expected internal settlement"),
     }
 
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let confirmed_saga = match payment_saga.make_payment(decision).await.unwrap() {
+        PaymentOutcome::Confirmed(s) => s,
+        _ => panic!("Expected Confirmed"),
+    };
 
     let mut tx = mint.localstore.begin_transaction().await.unwrap();
     tx.update_saga(
@@ -420,7 +429,7 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
 
     let paid_mint_quote = mint
         .localstore
-        .get_mint_quote(&mint_quote_id)
+        .get_mint_quote(&cdk_common::QuoteId::from_str(&mint_quote_id).unwrap())
         .await
         .unwrap()
         .expect("Mint quote should still exist");
@@ -743,10 +752,10 @@ async fn test_crash_recovery_internal_settlement() {
         .into();
 
     // Get the mint quote from database
-    let mint_quote_id = cdk_common::QuoteId::from_str(&mint_quote_response.quote).unwrap();
+    let mint_quote_id = mint_quote_response.quote.clone();
     let mint_quote = mint
         .localstore
-        .get_mint_quote(&mint_quote_id)
+        .get_mint_quote(&cdk_common::QuoteId::from_str(&mint_quote_id).unwrap())
         .await
         .unwrap()
         .expect("Mint quote should exist");
@@ -766,7 +775,7 @@ async fn test_crash_recovery_internal_settlement() {
     let melt_quote_response = mint.get_melt_quote(melt_quote_request).await.unwrap();
     let melt_quote = mint
         .localstore
-        .get_melt_quote(melt_quote_response.quote())
+        .get_melt_quote(melt_quote_response.quote().unwrap())
         .await
         .unwrap()
         .expect("Melt quote should exist");
@@ -832,7 +841,7 @@ async fn test_crash_recovery_internal_settlement() {
     // Mint quote should be paid (internal settlement committed)
     let mint_quote_after = mint
         .localstore
-        .get_mint_quote(&mint_quote_id)
+        .get_mint_quote(&cdk_common::QuoteId::from_str(&mint_quote_id).unwrap())
         .await
         .unwrap()
         .expect("Mint quote should exist");
@@ -871,7 +880,7 @@ async fn test_crash_recovery_internal_settlement() {
     // Mint quote should still be paid
     let mint_quote_final = mint
         .localstore
-        .get_mint_quote(&mint_quote_id)
+        .get_mint_quote(&cdk_common::QuoteId::from_str(&mint_quote_id).unwrap())
         .await
         .unwrap()
         .expect("Mint quote should exist");
@@ -1371,7 +1380,7 @@ async fn test_saga_deleted_after_payment_failure() {
     let quote_response = mint.get_melt_quote(request).await.unwrap();
     let quote = mint
         .localstore
-        .get_melt_quote(quote_response.quote())
+        .get_melt_quote(quote_response.quote().unwrap())
         .await
         .unwrap()
         .expect("Quote should exist");
@@ -2148,7 +2157,10 @@ async fn test_quote_already_paid() {
         .await
         .unwrap();
 
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let confirmed_saga = match payment_saga.make_payment(decision).await.unwrap() {
+        PaymentOutcome::Confirmed(s) => s,
+        _ => panic!("Expected Confirmed"),
+    };
     let _response = confirmed_saga.finalize().await.unwrap();
 
     // Verify quote is now paid
@@ -2229,7 +2241,10 @@ async fn test_finalize_melt_quote_duplicate_success_is_idempotent() {
         .attempt_internal_settlement(&melt_request)
         .await
         .unwrap();
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let confirmed_saga = match payment_saga.make_payment(decision).await.unwrap() {
+        PaymentOutcome::Confirmed(s) => s,
+        _ => panic!("Expected Confirmed"),
+    };
     let payment_result = confirmed_saga.state_data.payment_result.clone();
 
     let first_change = confirmed_saga.finalize().await.unwrap();
@@ -2284,7 +2299,10 @@ async fn test_finalize_melt_quote_conflicting_success_is_rejected() {
         .attempt_internal_settlement(&melt_request)
         .await
         .unwrap();
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let confirmed_saga = match payment_saga.make_payment(decision).await.unwrap() {
+        PaymentOutcome::Confirmed(s) => s,
+        _ => panic!("Expected Confirmed"),
+    };
     let payment_result = confirmed_saga.state_data.payment_result.clone();
 
     confirmed_saga.finalize().await.unwrap();
@@ -2903,7 +2921,10 @@ async fn test_saga_drop_after_payment() {
         .unwrap();
 
     // Make payment
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let confirmed_saga = match payment_saga.make_payment(decision).await.unwrap() {
+        PaymentOutcome::Confirmed(s) => s,
+        _ => panic!("Expected Confirmed"),
+    };
 
     // STEP 3: Verify saga state is now PaymentAttempted (not SetupComplete)
     let saga_in_db = assert_saga_exists(&mint, &operation_id).await;
@@ -2999,7 +3020,10 @@ async fn test_payment_attempted_state_triggers_ln_check() {
         .attempt_internal_settlement(&melt_request)
         .await
         .unwrap();
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let confirmed_saga = match payment_saga.make_payment(decision).await.unwrap() {
+        PaymentOutcome::Confirmed(s) => s,
+        _ => panic!("Expected Confirmed"),
+    };
 
     // STEP 3: Verify state transitioned to PaymentAttempted
     let saga_after_payment = assert_saga_exists(&mint, &operation_id).await;
@@ -3178,7 +3202,7 @@ async fn create_test_melt_quote(
     // Retrieve the full quote from database
     let quote = mint
         .localstore
-        .get_melt_quote(quote_response.quote())
+        .get_melt_quote(quote_response.quote().unwrap())
         .await
         .unwrap()
         .expect("Quote should exist in database");
@@ -3305,14 +3329,14 @@ async fn test_duplicate_lookup_id_prevents_second_pending() {
     // Retrieve full quotes
     let quote1 = mint
         .localstore
-        .get_melt_quote(quote_response1.quote())
+        .get_melt_quote(quote_response1.quote().unwrap())
         .await
         .unwrap()
         .expect("Quote 1 should exist");
 
     let quote2 = mint
         .localstore
-        .get_melt_quote(quote_response2.quote())
+        .get_melt_quote(quote_response2.quote().unwrap())
         .await
         .unwrap()
         .expect("Quote 2 should exist");
@@ -3474,13 +3498,13 @@ async fn test_paid_lookup_id_prevents_pending() {
     // Retrieve full quotes
     let quote1 = mint
         .localstore
-        .get_melt_quote(quote_response1.quote())
+        .get_melt_quote(quote_response1.quote().unwrap())
         .await
         .unwrap()
         .expect("Quote 1 should exist");
     let quote2 = mint
         .localstore
-        .get_melt_quote(quote_response2.quote())
+        .get_melt_quote(quote_response2.quote().unwrap())
         .await
         .unwrap()
         .expect("Quote 2 should exist");
@@ -3509,7 +3533,10 @@ async fn test_paid_lookup_id_prevents_pending() {
         .attempt_internal_settlement(&melt_request1)
         .await
         .unwrap();
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let confirmed_saga = match payment_saga.make_payment(decision).await.unwrap() {
+        PaymentOutcome::Confirmed(s) => s,
+        _ => panic!("Expected Confirmed"),
+    };
     let _response = confirmed_saga.finalize().await.unwrap();
 
     // Verify quote1 is now paid
