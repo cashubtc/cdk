@@ -211,7 +211,7 @@ pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Err
 /// - Vector of blinded messages
 /// - PreMintSecrets (needed to construct proofs later)
 pub async fn create_test_blinded_messages(
-    mint: &Mint,
+    mint: Arc<Mint>,
     amount: Amount,
 ) -> Result<(Vec<BlindedMessage>, PreMintSecrets), Error> {
     let keyset_id = get_active_keyset_id(mint).await?;
@@ -225,7 +225,7 @@ pub async fn create_test_blinded_messages(
 }
 
 /// Gets the active keyset ID from the mint.
-pub async fn get_active_keyset_id(mint: &Mint) -> Result<Id, Error> {
+pub async fn get_active_keyset_id(mint: Arc<Mint>) -> Result<Id, Error> {
     let keys = mint
         .pubkeys()
         .keysets

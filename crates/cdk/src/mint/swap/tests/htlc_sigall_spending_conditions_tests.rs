@@ -2,6 +2,8 @@
 //!
 //! These tests verify that the mint correctly enforces SIG_ALL flag behavior for HTLC
 
+use std::sync::Arc;
+
 use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
 use cdk_common::Amount;
 
@@ -93,7 +95,7 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
 
     // Step 6: Try to spend with only preimage (should fail - signature required)
     use crate::test_helpers::mint::create_test_blinded_messages;
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_preimage_only =
@@ -102,7 +104,9 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
     // Add only preimage to first proof (no signature)
     swap_request_preimage_only.inputs_mut()[0].add_preimage(preimage.clone());
 
-    let result = mint.process_swap_request(swap_request_preimage_only).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_preimage_only)
+        .await;
     assert!(
         result.is_err(),
         "Should fail with only preimage (no signature)"
@@ -197,7 +201,7 @@ async fn test_htlc_sig_all_wrong_preimage() {
 
     // Try to spend with WRONG preimage (but correct SIG_ALL signature)
     use crate::test_helpers::mint::create_test_blinded_messages;
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request =
@@ -266,7 +270,7 @@ async fn test_htlc_sig_all_locktime_after_expiry() {
 
     // After locktime, Bob (refund key) can spend WITHOUT preimage using SIG_ALL
     use crate::test_helpers::mint::create_test_blinded_messages;
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request =
@@ -277,7 +281,7 @@ async fn test_htlc_sig_all_locktime_after_expiry() {
     swap_request.inputs_mut()[0].add_preimage(String::new());
     swap_request.sign_sig_all(bob_secret.clone()).unwrap();
 
-    let result = mint.process_swap_request(swap_request).await;
+    let result = Arc::clone(&mint).process_swap_request(swap_request).await;
     assert!(
         result.is_ok(),
         "Bob should be able to spend after locktime without preimage"
@@ -338,7 +342,7 @@ async fn test_htlc_sig_all_multisig_2of3() {
 
     // Try with preimage + only 1 SIG_ALL signature (should fail - need 2)
     use crate::test_helpers::mint::create_test_blinded_messages;
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request_one_sig =
@@ -349,7 +353,9 @@ async fn test_htlc_sig_all_multisig_2of3() {
         .sign_sig_all(alice_secret.clone())
         .unwrap(); // Only Alice signs
 
-    let result = mint.process_swap_request(swap_request_one_sig).await;
+    let result = Arc::clone(&mint)
+        .process_swap_request(swap_request_one_sig)
+        .await;
     assert!(
         result.is_err(),
         "Should fail with only 1 signature (need 2)"
@@ -436,7 +442,7 @@ async fn test_htlc_sig_all_receiver_path_after_locktime() {
     // Even though locktime has passed, Alice (receiver) should STILL be able to spend
     // using the preimage + her SIG_ALL signature (receiver path is ALWAYS available per NUT-14)
     use crate::test_helpers::mint::create_test_blinded_messages;
-    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount)
+    let (new_outputs, _) = create_test_blinded_messages(Arc::clone(&mint), input_amount)
         .await
         .unwrap();
     let mut swap_request =
@@ -446,7 +452,7 @@ async fn test_htlc_sig_all_receiver_path_after_locktime() {
     swap_request.inputs_mut()[0].add_preimage(preimage.clone());
     swap_request.sign_sig_all(alice_secret.clone()).unwrap();
 
-    let result = mint.process_swap_request(swap_request).await;
+    let result = Arc::clone(&mint).process_swap_request(swap_request).await;
     assert!(
         result.is_ok(),
         "Receiver should be able to spend with preimage + SIG_ALL even after locktime"
