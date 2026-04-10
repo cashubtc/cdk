@@ -61,8 +61,9 @@
 //! | `[compensated]` | Send cancelled before token created, reserved proofs released |
 //! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use bitcoin::XOnlyPublicKey;
 use cdk_common::nut02::KeySetInfosMethods;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
@@ -73,7 +74,7 @@ use cdk_common::Id;
 use tracing::instrument;
 
 use self::state::{Initial, Prepared, TokenCreated};
-use super::{split_proofs_for_send, ProofSplitResult, SendMemo, SendOptions};
+use super::{split_proofs_for_send, SendMemo, SendOptions};
 use crate::amount::SplitTarget;
 use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
@@ -89,6 +90,35 @@ use crate::{Amount, Error, Wallet};
 
 pub(crate) mod resume;
 pub(crate) mod state;
+
+/// Build the signing key list for the given proofs by merging explicitly-provided keys with
+/// any matching keys found in the wallet keyring.
+///
+/// Explicit keys (from `SendOptions.p2pk_signing_keys`) take precedence; the keyring is only
+/// consulted for pubkeys not already covered by the explicit set.
+async fn merge_keyring_keys(
+    wallet: &Wallet,
+    proofs: &crate::nuts::Proofs,
+    explicit_keys: &[crate::nuts::SecretKey],
+) -> Result<Vec<crate::nuts::SecretKey>, Error> {
+    let mut keys = explicit_keys.to_vec();
+    let covered: HashSet<XOnlyPublicKey> = keys
+        .iter()
+        .map(|k| k.x_only_public_key(&crate::SECP256K1).0)
+        .collect();
+
+    let pubkeys = crate::wallet::util::collect_p2pk_pubkeys(proofs)?;
+    for pubkey in pubkeys {
+        let x_only = pubkey.x_only_public_key();
+        if !covered.contains(&x_only) {
+            if let Some(secret_key) = wallet.get_signing_key(&pubkey).await? {
+                keys.push(secret_key);
+            }
+        }
+    }
+
+    Ok(keys)
+}
 
 /// Saga pattern implementation for send operations.
 ///
@@ -324,17 +354,21 @@ impl<'a> SendSaga<'a, Initial> {
             .map(|(key, values)| (*key, values.fee()))
             .collect();
 
-        // When p2pk_signing_keys are provided and passthrough is not opted in, route only
-        // P2PK-locked proofs through the swap so the token contains fresh, unlocked proofs.
-        // Unlocked proofs bypass the swap entirely — they are already bearer and need no
-        // treatment.
+        // When the wallet holds P2PK-locked proofs and passthrough is not opted in, route them
+        // through a swap so the token contains fresh, unlocked proofs. The signing key may come
+        // from `SendOptions.p2pk_signing_keys` or be discovered automatically from the wallet
+        // keyring at confirm time; we partition eagerly regardless so that the swap is set up
+        // correctly even when only keyring keys will be used.
+        //
+        // Unlocked proofs bypass the swap entirely — they are already bearer.
         //
         // HTLC-locked proofs are intentionally excluded from this forced-swap path even though
-        // they also carry a NUT-10 secret. Spending an HTLC requires a preimage that
-        // `p2pk_signing_keys` cannot provide; routing HTLC proofs to a swap here would cause a
-        // mint rejection. HTLC support in the send path (including a `htlc_preimages` field on
+        // they also carry a NUT-10 secret. Spending an HTLC requires a preimage that signing
+        // keys alone cannot provide; routing HTLC proofs to a swap here would cause a mint
+        // rejection. HTLC support in the send path (including a `htlc_preimages` field on
         // `SendOptions` and its own partition logic) is left for a follow-up PR.
-        let split_result = if !opts.p2pk_signing_keys.is_empty() && !opts.allow_locked_proofs {
+        let has_p2pk_locked = proofs.iter().any(crate::wallet::util::is_p2pk_locked);
+        let split_result = if has_p2pk_locked && !opts.allow_locked_proofs {
             let (p2pk_locked, rest): (Vec<_>, Vec<_>) = proofs
                 .into_iter()
                 .partition(crate::wallet::util::is_p2pk_locked);
@@ -489,15 +523,20 @@ impl<'a> SendSaga<'a, Prepared> {
             // create valid outputs for a proof signed with SIG_ALL, so any attempt to redeem
             // it at the mint would fail. Reject early with a clear error rather than silently
             // producing an unspendable token.
-            if options.allow_locked_proofs && !options.p2pk_signing_keys.is_empty() {
+            if options.allow_locked_proofs {
                 let sig_flag = enforce_sig_flag(final_proofs_to_send.clone()).sig_flag;
                 if sig_flag == SigFlag::SigAll {
                     return Err(crate::nuts::nut11::Error::SigAllNotSupportedHere.into());
                 }
-                crate::wallet::util::sign_proofs(
-                    &mut final_proofs_to_send,
+                let keys = merge_keyring_keys(
+                    self.wallet,
+                    &final_proofs_to_send,
                     &options.p2pk_signing_keys,
-                )?;
+                )
+                .await?;
+                if !keys.is_empty() {
+                    crate::wallet::util::sign_proofs(&mut final_proofs_to_send, &keys)?;
+                }
             }
 
             if !proofs_to_swap.is_empty() {
@@ -507,11 +546,11 @@ impl<'a> SendSaga<'a, Prepared> {
 
                 tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
 
-                if !options.p2pk_signing_keys.is_empty() {
-                    crate::wallet::util::sign_proofs(
-                        &mut proofs_to_swap,
-                        &options.p2pk_signing_keys,
-                    )?;
+                let keys =
+                    merge_keyring_keys(self.wallet, &proofs_to_swap, &options.p2pk_signing_keys)
+                        .await?;
+                if !keys.is_empty() {
+                    crate::wallet::util::sign_proofs(&mut proofs_to_swap, &keys)?;
                 }
 
                 let keyset_id = self.wallet.fetch_active_keyset().await?.id;

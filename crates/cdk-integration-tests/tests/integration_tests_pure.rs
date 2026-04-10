@@ -2626,6 +2626,116 @@ async fn test_p2pk_allow_locked_proofs_rejects_sig_all() {
     );
 }
 
+/// The wallet's keyring automatically supplies signing keys at send time.
+///
+/// Alice generates a P2PK key via `generate_public_key()`, which stores the key in the wallet
+/// keyring. She then receives P2PK-locked proofs for that key. When she sends without providing
+/// any `p2pk_signing_keys` in `SendOptions`, the send saga must auto-detect the key from the
+/// keyring, sign the proofs before the swap, and produce a clean, unlocked token that Bob can
+/// receive without any signing keys.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_p2pk_send_keyring_auto_detection() {
+    setup_tracing();
+
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create alice wallet");
+    let wallet_bob = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create bob wallet");
+
+    // Alice generates a P2PK key and stores it in her keyring.
+    let alice_pubkey = wallet_alice
+        .generate_public_key()
+        .await
+        .expect("generate_public_key should succeed");
+    let spending_conditions = SpendingConditions::new_p2pk(alice_pubkey, None);
+
+    // Fund alice with plain proofs, then swap them for P2PK-locked proofs.
+    fund_wallet(wallet_alice.clone(), 64, None)
+        .await
+        .expect("Failed to fund alice");
+
+    let plain_proofs = wallet_alice
+        .get_unspent_proofs()
+        .await
+        .expect("Failed to get alice's proofs");
+    let plain_ys: Vec<_> = plain_proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    let keyset_id = get_keyset_id(&mint).await;
+    let keys = mint.pubkeys().keysets.first().cloned().unwrap().keys;
+    let fee_and_amounts = (0u64, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
+
+    let pre_mint = PreMintSecrets::with_conditions(
+        keyset_id,
+        Amount::from(64),
+        &SplitTarget::default(),
+        &spending_conditions,
+        &fee_and_amounts,
+    )
+    .unwrap();
+
+    let swap_request = SwapRequest::new(plain_proofs, pre_mint.blinded_messages());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let p2pk_proofs = construct_proofs(
+        swap_response.signatures,
+        pre_mint.rs(),
+        pre_mint.secrets(),
+        &keys,
+    )
+    .unwrap();
+
+    let p2pk_proof_infos: Vec<_> = p2pk_proofs
+        .iter()
+        .map(|p| {
+            ProofInfo::new(
+                p.clone(),
+                wallet_alice.mint_url.clone(),
+                State::Unspent,
+                CurrencyUnit::Sat,
+            )
+            .unwrap()
+        })
+        .collect();
+    wallet_alice
+        .localstore
+        .update_proofs(p2pk_proof_infos, plain_ys)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        Amount::from(64),
+        wallet_alice.total_balance().await.unwrap(),
+        "Alice should have 64 sats of P2PK-locked proofs"
+    );
+
+    // Alice sends 10 sats without providing p2pk_signing_keys — keyring auto-detects the key.
+    let send_amount = Amount::from(10);
+    let prepared = wallet_alice
+        .prepare_send(send_amount, SendOptions::default())
+        .await
+        .expect("prepare_send should succeed with keyring keys");
+
+    let token = prepared
+        .confirm(None)
+        .await
+        .expect("confirm should sign proofs from keyring and produce a clean token");
+
+    // Bob receives the clean token without needing any signing keys.
+    let received = wallet_bob
+        .receive(&token.to_string(), ReceiveOptions::default())
+        .await
+        .expect("Bob should receive the token without signing keys");
+
+    assert_eq!(
+        send_amount, received,
+        "Bob should receive exactly the send amount"
+    );
+}
+
 /// Test that when a wallet holds a mix of P2PK-locked and plain unlocked proofs, sending with
 /// `p2pk_signing_keys` only routes the locked proofs through the swap.
 ///

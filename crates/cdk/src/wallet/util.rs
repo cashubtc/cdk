@@ -23,6 +23,55 @@ pub(crate) fn is_p2pk_locked(proof: &Proof) -> bool {
     }
 }
 
+/// Collect all pubkeys that require a signature across a set of proofs.
+///
+/// For each proof with a recognised NUT-10 secret:
+/// - P2PK: returns the data key (slot 0) and any condition/refund keys
+/// - HTLC: returns condition/refund keys only (slot 0 is a hash, not a pubkey)
+///
+/// Proofs without a NUT-10 secret are skipped.
+pub(crate) fn collect_p2pk_pubkeys(proofs: &Proofs) -> Result<Vec<PublicKey>, Error> {
+    let mut result = Vec::new();
+
+    for proof in proofs.iter() {
+        let Ok(secret) = <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
+            proof.secret.clone(),
+        ) else {
+            continue;
+        };
+
+        let conditions: Result<Conditions, _> = secret
+            .secret_data()
+            .tags()
+            .cloned()
+            .unwrap_or_default()
+            .try_into();
+
+        let Ok(conditions) = conditions else {
+            continue;
+        };
+
+        match secret.kind() {
+            Kind::P2PK => {
+                let data_key = PublicKey::from_str(secret.secret_data().data())?;
+                result.push(data_key);
+            }
+            Kind::HTLC => {
+                // HTLC slot 0 is a hash, not a pubkey.
+            }
+        }
+
+        if let Some(cond_pubkeys) = conditions.pubkeys {
+            result.extend(cond_pubkeys);
+        }
+        if let Some(refund_keys) = conditions.refund_keys {
+            result.extend(refund_keys);
+        }
+    }
+
+    Ok(result)
+}
+
 /// Sign P2PK-locked proofs using the provided signing keys.
 ///
 /// For each proof with a recognised NUT-10 secret:
