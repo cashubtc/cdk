@@ -2736,6 +2736,184 @@ async fn test_p2pk_send_keyring_auto_detection() {
     );
 }
 
+/// When the wallet holds a mix of P2PK-locked proofs (unknown key) and bearer proofs,
+/// `prepare_send` should exclude the locked proofs from selection and succeed using the
+/// bearer proofs alone. The resulting token contains no spending conditions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_p2pk_unsignable_proof_falls_back_to_bearer() {
+    setup_tracing();
+
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create alice wallet");
+    let wallet_bob = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create bob wallet");
+
+    // Fund alice with 64 sats of plain bearer proofs.
+    fund_wallet(wallet_alice.clone(), 64, None)
+        .await
+        .expect("Failed to fund alice");
+
+    // Lock 8 sats to a random key that alice does NOT have in her keyring.
+    let unknown_key = SecretKey::generate();
+    let spending_conditions = SpendingConditions::new_p2pk(unknown_key.public_key(), None);
+
+    let plain_proofs = wallet_alice
+        .get_unspent_proofs()
+        .await
+        .expect("Failed to get alice's proofs");
+    let proof_to_lock = plain_proofs
+        .iter()
+        .find(|p| p.amount == cashu::Amount::from(8))
+        .cloned()
+        .expect("Alice should have an 8-sat proof");
+    let proof_to_lock_y = proof_to_lock.y().unwrap();
+
+    let keyset_id = get_keyset_id(&mint).await;
+    let keys = mint.pubkeys().keysets.first().cloned().unwrap().keys;
+    let fee_and_amounts = (0u64, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
+
+    let pre_mint = PreMintSecrets::with_conditions(
+        keyset_id,
+        cashu::Amount::from(8),
+        &SplitTarget::default(),
+        &spending_conditions,
+        &fee_and_amounts,
+    )
+    .unwrap();
+
+    let swap_request = SwapRequest::new(vec![proof_to_lock], pre_mint.blinded_messages());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let locked_proofs = construct_proofs(
+        swap_response.signatures,
+        pre_mint.rs(),
+        pre_mint.secrets(),
+        &keys,
+    )
+    .unwrap();
+
+    let locked_proof_infos: Vec<_> = locked_proofs
+        .iter()
+        .map(|p| {
+            ProofInfo::new(
+                p.clone(),
+                wallet_alice.mint_url.clone(),
+                State::Unspent,
+                CurrencyUnit::Sat,
+            )
+            .unwrap()
+        })
+        .collect();
+    wallet_alice
+        .localstore
+        .update_proofs(locked_proof_infos, vec![proof_to_lock_y])
+        .await
+        .unwrap();
+
+    // Alice sends 4 sats — a small amount well within her bearer balance.
+    // The selection algorithm must skip the locked 8-sat proof and use bearer proofs only.
+    let send_amount = cashu::Amount::from(4);
+    let token = wallet_alice
+        .prepare_send(send_amount, SendOptions::default())
+        .await
+        .expect("prepare_send should succeed using only bearer proofs")
+        .confirm(None)
+        .await
+        .expect("confirm should succeed");
+
+    let received = wallet_bob
+        .receive(&token.to_string(), ReceiveOptions::default())
+        .await
+        .expect("Bob should receive the clean token");
+
+    assert_eq!(send_amount, received);
+}
+
+/// When the wallet holds ONLY P2PK-locked proofs for which it has no signing key,
+/// `prepare_send` must return `InsufficientFunds` rather than propagating a confusing
+/// mint-rejection error from confirm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_p2pk_unsignable_proof_only_gives_insufficient_funds() {
+    setup_tracing();
+
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create alice wallet");
+
+    // Fund alice with 64 sats, then swap all of them for proofs locked to an unknown key.
+    fund_wallet(wallet_alice.clone(), 64, None)
+        .await
+        .expect("Failed to fund alice");
+
+    let unknown_key = SecretKey::generate();
+    let spending_conditions = SpendingConditions::new_p2pk(unknown_key.public_key(), None);
+
+    let plain_proofs = wallet_alice
+        .get_unspent_proofs()
+        .await
+        .expect("Failed to get alice's proofs");
+    let plain_ys: Vec<_> = plain_proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    let keyset_id = get_keyset_id(&mint).await;
+    let keys = mint.pubkeys().keysets.first().cloned().unwrap().keys;
+    let fee_and_amounts = (0u64, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
+
+    let pre_mint = PreMintSecrets::with_conditions(
+        keyset_id,
+        Amount::from(64),
+        &SplitTarget::default(),
+        &spending_conditions,
+        &fee_and_amounts,
+    )
+    .unwrap();
+
+    let swap_request = SwapRequest::new(plain_proofs, pre_mint.blinded_messages());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    let locked_proofs = construct_proofs(
+        swap_response.signatures,
+        pre_mint.rs(),
+        pre_mint.secrets(),
+        &keys,
+    )
+    .unwrap();
+
+    let locked_proof_infos: Vec<_> = locked_proofs
+        .iter()
+        .map(|p| {
+            ProofInfo::new(
+                p.clone(),
+                wallet_alice.mint_url.clone(),
+                State::Unspent,
+                CurrencyUnit::Sat,
+            )
+            .unwrap()
+        })
+        .collect();
+    wallet_alice
+        .localstore
+        .update_proofs(locked_proof_infos, plain_ys)
+        .await
+        .unwrap();
+
+    // All proofs are locked to an unknown key. prepare_send must fail with InsufficientFunds.
+    let err = wallet_alice
+        .prepare_send(Amount::from(10), SendOptions::default())
+        .await
+        .expect_err("prepare_send should fail when no signable proofs exist");
+
+    assert!(
+        matches!(err, cdk::Error::InsufficientFunds),
+        "expected InsufficientFunds, got: {err:?}"
+    );
+}
+
 /// Test that when a wallet holds a mix of P2PK-locked and plain unlocked proofs, sending with
 /// `p2pk_signing_keys` only routes the locked proofs through the swap.
 ///

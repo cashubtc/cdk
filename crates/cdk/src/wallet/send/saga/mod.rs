@@ -62,6 +62,7 @@
 //! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
 use bitcoin::XOnlyPublicKey;
 use cdk_common::nut02::KeySetInfosMethods;
@@ -90,6 +91,67 @@ use crate::{Amount, Error, Wallet};
 
 pub(crate) mod resume;
 pub(crate) mod state;
+
+/// Filter a proof pool to retain only proofs that the wallet can sign.
+///
+/// P2PK-locked proofs with no matching key (neither in `explicit_keys` nor the wallet keyring)
+/// are removed. All other proofs (plain, HTLC) pass through unchanged.
+async fn filter_signable_proofs(
+    wallet: &Wallet,
+    proofs: crate::nuts::Proofs,
+    explicit_keys: &[crate::nuts::SecretKey],
+) -> Result<crate::nuts::Proofs, Error> {
+    let mut out = Vec::with_capacity(proofs.len());
+    // Cache keyring results per pubkey to avoid redundant DB reads.
+    let mut cache: HashMap<XOnlyPublicKey, bool> = HashMap::new();
+
+    for proof in proofs {
+        // Fast path: non-P2PK proofs are always included.
+        if !crate::wallet::util::is_p2pk_locked(&proof) {
+            out.push(proof);
+            continue;
+        }
+
+        // Extract the data key and check explicit keys first.
+        let Ok(secret) = <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
+            proof.secret.clone(),
+        ) else {
+            out.push(proof);
+            continue;
+        };
+
+        let Ok(data_key) = crate::nuts::PublicKey::from_str(secret.secret_data().data()) else {
+            // Malformed key — exclude to avoid a confusing error later.
+            continue;
+        };
+
+        let x_only = data_key.x_only_public_key();
+
+        // Check explicit keys.
+        if explicit_keys
+            .iter()
+            .any(|k| k.x_only_public_key(&crate::SECP256K1).0 == x_only)
+        {
+            out.push(proof);
+            continue;
+        }
+
+        // Check keyring, using cache.
+        let can_sign = if let Some(&cached) = cache.get(&x_only) {
+            cached
+        } else {
+            let result = wallet.get_signing_key(&data_key).await?.is_some();
+            cache.insert(x_only, result);
+            result
+        };
+
+        if can_sign {
+            out.push(proof);
+        }
+    }
+
+    Ok(out)
+}
 
 /// Build the signing key list for the given proofs by merging explicitly-provided keys with
 /// any matching keys found in the wallet keyring.
@@ -180,6 +242,17 @@ impl<'a> SendSaga<'a, Initial> {
             )
             .await?;
 
+        // When passthrough is not opted in, exclude P2PK-locked proofs for which the wallet
+        // holds no signing key (neither explicit nor in the keyring). Without a key, such proofs
+        // cannot be signed before the swap and would cause a mint rejection at confirm time.
+        // Excluding them here lets the selection algorithm work with only spendable proofs and
+        // surfaces a clean InsufficientFunds error if nothing else is available.
+        if !opts.allow_locked_proofs {
+            available_proofs =
+                filter_signable_proofs(self.wallet, available_proofs, &opts.p2pk_signing_keys)
+                    .await?;
+        }
+
         let mut force_swap = false;
         let available_sum = available_proofs.total_amount()?;
         if available_sum < amount {
@@ -201,6 +274,15 @@ impl<'a> SendSaga<'a, Initial> {
                     .into_iter()
                     .map(|p| p.proof)
                     .collect();
+
+                if !opts.allow_locked_proofs {
+                    available_proofs = filter_signable_proofs(
+                        self.wallet,
+                        available_proofs,
+                        &opts.p2pk_signing_keys,
+                    )
+                    .await?;
+                }
             }
         }
 
