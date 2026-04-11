@@ -242,10 +242,20 @@ async fn main() -> Result<()> {
     for wallet in wallets {
         // Recover from incomplete operations (required after wallet creation)
         let recovery = wallet.recover_incomplete_sagas().await?;
-        println!(
-            "Recovered {} operations, {} compensated, {} skipped, {} failed",
-            recovery.recovered, recovery.compensated, recovery.skipped, recovery.failed
-        );
+        if recovery.recovered != 0
+            || recovery.compensated != 0
+            || recovery.skipped != 0
+            || recovery.failed != 0
+        {
+            eprintln!(
+                "Recovery {}: {} recovered, {} compensated, {} skipped, {} failed",
+                wallet.mint_url,
+                recovery.recovered,
+                recovery.compensated,
+                recovery.skipped,
+                recovery.failed
+            );
+        }
     }
 
     match &args.command {
