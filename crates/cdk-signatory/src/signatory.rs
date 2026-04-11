@@ -87,6 +87,17 @@ pub struct SignatoryKeySet {
     pub issuer_version: Option<IssuerVersion>,
     /// Version is the derivation_path_index
     pub version: u32,
+    /// If this is a NUT-CTF conditional keyset, the hex-encoded 32-byte
+    /// condition identifier it is bound to; otherwise `None`.
+    ///
+    /// Conditional keysets must never appear in the plain `GET /v1/keys` and
+    /// `GET /v1/keysets` list endpoints — they are only enumerated via the
+    /// NUT-CTF `GET /v1/conditional/keysets` endpoint. Per-ID lookups
+    /// (`GET /v1/keys/{id}`) remain open so wallets holding a conditional
+    /// token can still fetch its keys. The in-memory signing map keeps them
+    /// alongside primary keysets so signing/verification continues to work.
+    #[cfg(feature = "conditional-tokens")]
+    pub condition_id: Option<String>,
 }
 
 impl From<&SignatoryKeySet> for KeySet {
@@ -127,6 +138,12 @@ impl From<SignatoryKeySet> for MintKeySetInfo {
             final_expiry: val.final_expiry,
             issuer_version: val.issuer_version,
             valid_from: 0,
+            #[cfg(feature = "conditional-tokens")]
+            condition_id: None,
+            #[cfg(feature = "conditional-tokens")]
+            outcome_collection: None,
+            #[cfg(feature = "conditional-tokens")]
+            outcome_collection_id: None,
         }
     }
 }
@@ -143,6 +160,8 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
             version: info.derivation_path_index.unwrap_or(1),
             final_expiry: key.final_expiry,
             issuer_version: info.issuer_version.clone(),
+            #[cfg(feature = "conditional-tokens")]
+            condition_id: info.condition_id.clone(),
         }
     }
 }
@@ -171,4 +190,30 @@ pub trait Signatory {
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error>;
+
+    /// Create a conditional keyset for a specific condition and outcome collection (NUT-CTF)
+    #[cfg(feature = "conditional-tokens")]
+    async fn create_conditional_keyset(
+        &self,
+        unit: CurrencyUnit,
+        condition_id: &str,
+        outcome_collection: &str,
+        outcome_collection_id: &str,
+        amounts: Vec<u64>,
+        input_fee_ppk: u64,
+        final_expiry: Option<u64>,
+    ) -> Result<SignatoryKeySet, Error> {
+        let _ = (
+            unit,
+            condition_id,
+            outcome_collection,
+            outcome_collection_id,
+            amounts,
+            input_fee_ppk,
+            final_expiry,
+        );
+        Err(Error::Custom(
+            "Conditional keysets not supported by this signatory".to_string(),
+        ))
+    }
 }

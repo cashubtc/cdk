@@ -20,6 +20,8 @@ use crate::pool::{DatabasePool, Pool, PooledResource};
 
 mod auth;
 mod completed_operations;
+#[cfg(feature = "conditional-tokens")]
+mod conditions;
 mod keys;
 mod keyvalue;
 mod proofs;

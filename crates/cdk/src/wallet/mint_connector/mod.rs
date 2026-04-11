@@ -10,9 +10,11 @@ use super::Error;
 pub use crate::lightning_address::{LnurlPayInvoiceResponse, LnurlPayResponse};
 use crate::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse, Id,
-    KeySet, KeysetResponse, MeltQuoteBolt11Response, MeltRequest, MintInfo,
-    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    KeySet, KeysetResponse, MeltQuoteBolt11Response, MeltQuoteBolt12Request, MeltQuoteBolt12Response,
+    MeltQuoteCustomRequest, MeltQuoteCustomResponse, MeltRequest, MintInfo,
+    MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
+    MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest, MintResponse, PaymentMethod,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::AuthWallet;
 
@@ -130,4 +132,112 @@ pub trait MintConnector: Debug {
 
     /// Set auth wallet on client
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>);
+    /// Mint Quote [NUT-04]
+    async fn post_mint_bolt12_quote(
+        &self,
+        request: MintQuoteBolt12Request,
+    ) -> Result<MintQuoteBolt12Response<String>, Error>;
+    /// Mint Quote status
+    async fn get_mint_quote_bolt12_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt12Response<String>, Error>;
+    /// Melt Quote [NUT-23]
+    async fn post_melt_bolt12_quote(
+        &self,
+        request: MeltQuoteBolt12Request,
+    ) -> Result<MeltQuoteBolt12Response<String>, Error>;
+    /// Melt Quote Status [NUT-23]
+    async fn get_melt_bolt12_quote_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MeltQuoteBolt12Response<String>, Error>;
+
+    /// Mint Quote for Custom Payment Method
+    async fn post_mint_custom_quote(
+        &self,
+        method: &PaymentMethod,
+        request: MintQuoteCustomRequest,
+    ) -> Result<MintQuoteCustomResponse<String>, Error>;
+
+    /// Mint Quote Status for Custom Payment Method
+    async fn get_mint_quote_custom_status(
+        &self,
+        method: &str,
+        quote_id: &str,
+    ) -> Result<MintQuoteCustomResponse<String>, Error>;
+
+    /// Melt Quote for Custom Payment Method
+    async fn post_melt_custom_quote(
+        &self,
+        request: MeltQuoteCustomRequest,
+    ) -> Result<MeltQuoteCustomResponse<String>, Error>;
+
+    /// Melt Quote Status for Custom Payment Method
+    async fn get_melt_quote_custom_status(
+        &self,
+        method: &str,
+        quote_id: &str,
+    ) -> Result<MeltQuoteCustomResponse<String>, Error>;
+
+    /// Get all conditions [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_conditions(
+        &self,
+        since: Option<u64>,
+        limit: Option<u64>,
+        status: &[String],
+    ) -> Result<crate::nuts::nut_ctf::GetConditionsResponse, Error>;
+
+    /// Get a specific condition [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_condition(
+        &self,
+        condition_id: &str,
+    ) -> Result<crate::nuts::nut_ctf::ConditionInfo, Error>;
+
+    /// Register a condition [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_register_condition(
+        &self,
+        request: crate::nuts::nut_ctf::RegisterConditionRequest,
+    ) -> Result<crate::nuts::nut_ctf::RegisterConditionResponse, Error>;
+
+    /// Register a partition [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_register_partition(
+        &self,
+        condition_id: &str,
+        request: crate::nuts::nut_ctf::RegisterPartitionRequest,
+    ) -> Result<crate::nuts::nut_ctf::RegisterPartitionResponse, Error>;
+
+    /// Get conditional keysets [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_conditional_keysets(
+        &self,
+        since: Option<u64>,
+        limit: Option<u64>,
+        active: Option<bool>,
+    ) -> Result<crate::nuts::nut_ctf::ConditionalKeysetsResponse, Error>;
+
+    /// CTF split [NUT-CTF-split-merge]
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_ctf_split(
+        &self,
+        request: crate::nuts::nut_ctf::CtfSplitRequest,
+    ) -> Result<crate::nuts::nut_ctf::CtfSplitResponse, Error>;
+
+    /// CTF merge [NUT-CTF-split-merge]
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_ctf_merge(
+        &self,
+        request: crate::nuts::nut_ctf::CtfMergeRequest,
+    ) -> Result<crate::nuts::nut_ctf::CtfMergeResponse, Error>;
+
+    /// Redeem outcome [NUT-CTF]
+    #[cfg(feature = "conditional-tokens")]
+    async fn post_redeem_outcome(
+        &self,
+        request: crate::nuts::nut_ctf::RedeemOutcomeRequest,
+    ) -> Result<crate::nuts::nut_ctf::RedeemOutcomeResponse, Error>;
 }
