@@ -87,6 +87,17 @@ pub struct SignatoryKeySet {
     pub issuer_version: Option<IssuerVersion>,
     /// Version is the derivation_path_index
     pub version: u32,
+    /// If this is a NUT-CTF conditional keyset, the hex-encoded 32-byte
+    /// condition identifier it is bound to; otherwise `None`.
+    ///
+    /// Conditional keysets must never appear in the plain `GET /v1/keys` and
+    /// `GET /v1/keysets` list endpoints — they are only enumerated via the
+    /// NUT-CTF `GET /v1/conditional/keysets` endpoint. Per-ID lookups
+    /// (`GET /v1/keys/{id}`) remain open so wallets holding a conditional
+    /// token can still fetch its keys. The in-memory signing map keeps them
+    /// alongside primary keysets so signing/verification continues to work.
+    #[cfg(feature = "conditional-tokens")]
+    pub condition_id: Option<String>,
 }
 
 impl From<&SignatoryKeySet> for KeySet {
@@ -149,6 +160,8 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
             version: info.derivation_path_index.unwrap_or(1),
             final_expiry: key.final_expiry,
             issuer_version: info.issuer_version.clone(),
+            #[cfg(feature = "conditional-tokens")]
+            condition_id: info.condition_id.clone(),
         }
     }
 }

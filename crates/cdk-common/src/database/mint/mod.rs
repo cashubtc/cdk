@@ -157,6 +157,34 @@ pub trait KeysDatabase {
 
     /// Get [`MintKeySetInfo`]s
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
+
+    /// Add a conditional keyset row (NUT-CTF) into the dedicated `conditional_keyset` table.
+    ///
+    /// The `MintKeySetInfo` must have `condition_id`, `outcome_collection`, and
+    /// `outcome_collection_id` all set; otherwise the implementation returns an error.
+    #[cfg(feature = "conditional-tokens")]
+    async fn add_conditional_keyset(
+        &self,
+        keyset_info: MintKeySetInfo,
+        created_at: u64,
+    ) -> Result<(), Self::Err> {
+        let _ = (keyset_info, created_at);
+        Err(Error::Internal(
+            "add_conditional_keyset not implemented by this backend".to_string(),
+        )
+        .into())
+    }
+
+    /// Load every conditional keyset row from the dedicated table.
+    ///
+    /// Used by the signatory's `reload_keys_from_db` path to populate the in-memory
+    /// signing map for conditional keysets alongside the regular keysets.
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_all_conditional_mint_keyset_infos(
+        &self,
+    ) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+        Ok(Vec::new())
+    }
 }
 
 /// Mint Quote Database writer trait
@@ -632,17 +660,7 @@ pub trait ConditionsDatabase {
         attested_at: Option<u64>,
     ) -> Result<bool, Self::Err>;
 
-    /// Add a conditional keyset mapping
-    async fn add_conditional_keyset_info(
-        &self,
-        condition_id: &str,
-        outcome_collection: &str,
-        outcome_collection_id: &str,
-        keyset_id: &Id,
-        created_at: u64,
-    ) -> Result<(), Self::Err>;
-
-    /// Get conditional keysets for a condition
+    /// Get conditional keysets for a condition (mapping outcome_collection → keyset id)
     async fn get_conditional_keysets_for_condition(
         &self,
         condition_id: &str,

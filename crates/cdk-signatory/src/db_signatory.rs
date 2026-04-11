@@ -76,6 +76,14 @@ impl DbSignatory {
     ///
     /// Any operation performed with keysets, are done through this trait and never to the database
     /// directly.
+    ///
+    /// The load path is split in two:
+    /// - Regular keysets come from the `keyset` table. Active status is derived from
+    ///   `get_active_keysets()` which returns one keyset per unit (the primary).
+    /// - Conditional keysets (NUT-CTF) live in the separate `conditional_keyset` table.
+    ///   Each row's `active` flag is honoured verbatim (the unique partial index enforces
+    ///   "at most one active per outcome_collection_id"), so conditional keysets do NOT
+    ///   collapse the per-unit primary keyset.
     async fn reload_keys_from_db(&self) -> Result<(), Error> {
         let mut keysets = self.keysets.write().await;
         let mut active_keysets = self.active_keysets.write().await;
@@ -92,6 +100,22 @@ impl DbSignatory {
                 active_keysets.insert(info.unit.clone(), id);
             }
             keysets.insert(id, (info, keyset));
+        }
+
+        #[cfg(feature = "conditional-tokens")]
+        {
+            for info in self
+                .localstore
+                .get_all_conditional_mint_keyset_infos()
+                .await?
+            {
+                let id = info.id;
+                let keyset = self.generate_keyset(&info);
+                // Conditional keysets are NOT registered in active_keysets — that map
+                // still has "one primary per unit" semantics so that wallets binding
+                // via /v1/keys find the real collateral keyset, not a CTF keyset.
+                keysets.insert(id, (info, keyset));
+            }
         }
 
         Ok(())
@@ -268,20 +292,29 @@ impl Signatory for DbSignatory {
         .ok_or(Error::UnsupportedUnit)?;
 
         info.outcome_collection = Some(outcome_collection.to_string());
-
-        let mut tx = self.localstore.begin_transaction().await?;
-        tx.add_keyset_info(info.clone()).await?;
-        tx.commit().await?;
-
-        // Insert directly into the in-memory map with active=true.
-        // Do NOT use reload_keys_from_db() because it determines active status
-        // from the active_keysets table (one per unit), which would set
-        // conditional keysets to active=false since they aren't the "primary"
-        // active keyset for their unit.
         info.active = true;
-        let id = info.id;
-        let mut keysets = self.keysets.write().await;
-        keysets.insert(id, (info.clone(), keyset.clone()));
+
+        // Persist to the dedicated `conditional_keyset` table (NOT the shared
+        // `keyset` table). This keeps `get_active_keysets()` returning exactly
+        // one primary keyset per unit, which is what `reload_keys_from_db`
+        // relies on for the non-conditional active-keyset marking.
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        self.localstore
+            .add_conditional_keyset(info.clone(), created_at)
+            .await?;
+
+        // Insert directly into the in-memory signing map so subsequent
+        // blind_sign / verify_proofs can find this keyset without reloading
+        // the entire DB. Conditional keysets are never added to
+        // `active_keysets` (that map has "one primary per unit" semantics).
+        self.keysets
+            .write()
+            .await
+            .insert(info.id, (info.clone(), keyset.clone()));
 
         Ok((&(info, keyset)).into())
     }
