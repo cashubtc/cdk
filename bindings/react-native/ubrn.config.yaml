@@ -1,0 +1,17 @@
+rust:
+  directory: ./rust
+  manifestPath: Cargo.toml
+bindings:
+  cpp: cpp/generated
+  ts: src/generated
+android:
+  useSharedLibrary: true
+ios:
+  targets:
+    - aarch64-apple-ios
+    - aarch64-apple-ios-sim
+    - x86_64-apple-ios
+  frameworkName: build/RnCdk
+turboModule:
+  cpp: cpp
+  ts: src

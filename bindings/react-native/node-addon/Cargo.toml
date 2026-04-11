@@ -1,0 +1,18 @@
+[package]
+name = "cdk-node-test-addon"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Node.js native addon for CDK React Native integration tests"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+cdk-ffi = { path = "../../../crates/cdk-ffi", default-features = false, features = ["bip353"] }
+napi = { version = "2", features = ["async", "napi6", "tokio_rt"] }
+napi-derive = "2"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[build-dependencies]
+napi-build = "2"
