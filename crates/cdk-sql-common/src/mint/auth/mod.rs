@@ -224,10 +224,6 @@ where
         &mut self,
         protected_endpoints: Vec<ProtectedEndpoint>,
     ) -> Result<(), database::Error> {
-        if protected_endpoints.is_empty() {
-            return Ok(());
-        }
-
         query(r#"DELETE FROM protected_endpoints WHERE endpoint IN (:endpoints)"#)?
             .bind_vec(
                 "endpoints",
@@ -235,7 +231,7 @@ where
                     .iter()
                     .map(serde_json::to_string)
                     .collect::<Result<_, _>>()?,
-            )
+            )?
             .execute(&self.inner)
             .await?;
         Ok(())
@@ -329,12 +325,9 @@ where
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
-        if ys.is_empty() {
-            return Ok(vec![]);
-        }
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut current_states = query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)?
-            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
             .fetch_all(&*conn)
             .await?
             .into_iter()
@@ -353,10 +346,6 @@ where
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
-        if blinded_messages.is_empty() {
-            return Ok(vec![]);
-        }
-
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut blinded_signatures = query(
             r#"SELECT
@@ -377,7 +366,7 @@ where
                 .iter()
                 .map(|bm| bm.to_bytes().to_vec())
                 .collect(),
-        )
+        )?
         .fetch_all(&*conn)
         .await?
         .into_iter()

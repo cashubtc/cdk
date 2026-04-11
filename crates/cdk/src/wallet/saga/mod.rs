@@ -102,11 +102,14 @@ impl CompensatingAction for RevertProofReservation {
 
         // Fetch current states to avoid reverting proofs that were already spent
         // (e.g. by a successful internal swap that occurred before a crash)
-        let current_proofs = self
-            .localstore
-            .get_proofs_by_ys(self.proof_ys.clone())
-            .await
-            .map_err(Error::Database)?;
+        let current_proofs = if self.proof_ys.is_empty() {
+            vec![]
+        } else {
+            self.localstore
+                .get_proofs_by_ys(self.proof_ys.clone())
+                .await
+                .map_err(Error::Database)?
+        };
 
         let ys_to_revert: Vec<_> = current_proofs
             .into_iter()

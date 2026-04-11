@@ -304,18 +304,6 @@ pub(super) async fn get_mint_quotes_inner<T>(
 where
     T: DatabaseExecutor,
 {
-    if quote_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Build placeholders for IN clause: :id0, :id1, :id2, ...
-    let placeholders: Vec<String> = quote_ids
-        .iter()
-        .enumerate()
-        .map(|(i, _)| format!(":id{i}"))
-        .collect();
-    let in_clause = placeholders.join(", ");
-
     let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
     let query_str = format!(
         r#"
@@ -335,17 +323,18 @@ where
             extra_json
         FROM
             mint_quote
-        WHERE id IN ({in_clause})
+        WHERE id IN (:quote_ids)
         {for_update_clause}
         "#
     );
 
-    let mut stmt = query(&query_str)?;
-    for (i, id) in quote_ids.iter().enumerate() {
-        stmt = stmt.bind(format!("id{i}"), id.to_string());
-    }
-
-    let rows = stmt.fetch_all(executor).await?;
+    let rows = query(&query_str)?
+        .bind_vec(
+            "quote_ids",
+            quote_ids.iter().map(|x| x.to_string()).collect(),
+        )?
+        .fetch_all(executor)
+        .await?;
 
     // Build a map from quote ID to MintQuote (without payments/issuance yet)
     let mut quote_map: HashMap<String, MintQuote> = HashMap::with_capacity(rows.len());
@@ -710,10 +699,6 @@ where
         &mut self,
         blinded_secrets: &[PublicKey],
     ) -> Result<(), Self::Err> {
-        if blinded_secrets.is_empty() {
-            return Ok(());
-        }
-
         // Delete blinded messages from blind_signature table where c IS NULL
         // (only delete unsigned blinded messages)
         query(
@@ -728,7 +713,7 @@ where
                 .iter()
                 .map(|secret| secret.to_bytes().to_vec())
                 .collect(),
-        )
+        )?
         .execute(&self.inner)
         .await?;
 

@@ -883,8 +883,12 @@ async fn setup_authentication(
 
         let mut tx = auth_localstore.begin_transaction().await?;
 
-        tx.remove_protected_endpoints(unprotected_endpoints).await?;
-        tx.add_protected_endpoints(protected_endpoints).await?;
+        if !unprotected_endpoints.is_empty() {
+            tx.remove_protected_endpoints(unprotected_endpoints).await?;
+        }
+        if !protected_endpoints.is_empty() {
+            tx.add_protected_endpoints(protected_endpoints).await?;
+        }
         tx.commit().await?;
 
         Ok((mint_builder, Some(auth_localstore)))

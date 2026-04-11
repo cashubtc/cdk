@@ -27,16 +27,13 @@ pub(super) async fn get_current_states<C>(
 where
     C: DatabaseExecutor + Send + Sync,
 {
-    if ys.is_empty() {
-        return Ok(Default::default());
-    }
     let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
 
     query(&format!(
         r#"SELECT y, state FROM proof WHERE y IN (:ys) {}"#,
         for_update_clause
     ))?
-    .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+    .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
     .fetch_all(conn)
     .await?
     .into_iter()
@@ -135,10 +132,6 @@ where
         quote_id: Option<QuoteId>,
         operation: &Operation,
     ) -> Result<Acquired<ProofsWithState>, Self::Err> {
-        if proofs.is_empty() {
-            return Ok(ProofsWithState::new(proofs, State::Unspent).into());
-        }
-
         let current_time = unix_time();
 
         // Check any previous proof, this query should return None in order to proceed storing
@@ -150,7 +143,7 @@ where
                     .iter()
                     .map(|y| y.y().map(|y| y.to_bytes().to_vec()))
                     .collect::<Result<_, _>>()?,
-            )
+            )?
             .pluck(&self.inner)
             .await?
             .map(|state| Ok::<_, Error>(column_as_string!(&state, State::from_str)))
@@ -212,14 +205,9 @@ where
     ) -> Result<(), Self::Err> {
         let ys = proofs.ys()?;
 
-        if ys.is_empty() {
-            proofs.state = new_state;
-            return Ok(());
-        }
-
         query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)?
             .bind("new_state", new_state.to_string())
-            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
             .execute(&self.inner)
             .await?;
 
@@ -235,7 +223,7 @@ where
                     DO UPDATE SET total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed
                     "#,
                 )?
-                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
                 .execute(&self.inner)
                 .await?;
         }
@@ -250,16 +238,13 @@ where
         ys: &[PublicKey],
         _quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err> {
-        if ys.is_empty() {
-            return Ok(());
-        }
         let total_deleted = query(
             r#"
             DELETE FROM proof WHERE y IN (:ys) AND state NOT IN (:exclude_state)
             "#,
         )?
-        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-        .bind_vec("exclude_state", vec![State::Spent.to_string()])
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+        .bind_vec("exclude_state", vec![State::Spent.to_string()])?
         .execute(&self.inner)
         .await?;
 
@@ -363,10 +348,6 @@ where
         &mut self,
         ys: &[PublicKey],
     ) -> Result<Acquired<ProofsWithState>, Self::Err> {
-        if ys.is_empty() {
-            return Err(database::Error::ProofNotFound);
-        }
-
         let rows = query(
             r#"
              SELECT
@@ -383,7 +364,7 @@ where
              FOR UPDATE
              "#,
         )?
-        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
         .fetch_all(&self.inner)
         .await?;
 
@@ -426,10 +407,6 @@ where
     type Err = Error;
 
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
-        if ys.is_empty() {
-            return Ok(vec![]);
-        }
-
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut proofs = query(
             r#"
@@ -446,7 +423,7 @@ where
                 y IN (:ys)
             "#,
         )?
-        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
         .fetch_all(&*conn)
         .await?
         .into_iter()
