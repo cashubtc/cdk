@@ -1,5 +1,6 @@
 //! FFI Wallet bindings
 
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -119,6 +120,54 @@ impl Wallet {
     pub async fn total_reserved_balance(&self) -> Result<Amount, FfiError> {
         let balance = self.inner.total_reserved_balance().await?;
         Ok(balance.into())
+    }
+
+    /// Get fee breakdown for a set of proofs
+    pub async fn get_proofs_fee(&self, proofs: Proofs) -> Result<ProofsFeeBreakdown, FfiError> {
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
+        let breakdown = self.inner.get_proofs_fee(&cdk_proofs).await?;
+        Ok(breakdown.into())
+    }
+
+    /// Get fee breakdown by proof count per keyset
+    pub async fn get_proofs_fee_by_count(
+        &self,
+        proofs_per_keyset: HashMap<String, u64>,
+    ) -> Result<ProofsFeeBreakdown, FfiError> {
+        let map = proofs_per_keyset
+            .into_iter()
+            .map(|(id_str, count)| {
+                let id: cdk::nuts::Id = id_str
+                    .parse()
+                    .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {e}")))?;
+                Ok((id, count))
+            })
+            .collect::<Result<HashMap<_, _>, FfiError>>()?;
+        let breakdown = self.inner.get_proofs_fee_by_count(map).await?;
+        Ok(breakdown.into())
+    }
+
+    /// Get proofs filtered by state and spending conditions
+    pub async fn get_proofs_with(
+        &self,
+        states: Option<Vec<ProofState>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
+    ) -> Result<Proofs, FfiError> {
+        let cdk_states = states.map(|s| s.into_iter().map(Into::into).collect());
+        let cdk_conditions: Option<Vec<cdk::nuts::SpendingConditions>> = spending_conditions
+            .map(|c| {
+                c.into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<Result<_, _>>()
+            })
+            .transpose()?;
+        let proofs = self
+            .inner
+            .get_proofs_with(cdk_states, cdk_conditions)
+            .await?;
+        Ok(proofs.into_iter().map(Into::into).collect())
     }
 
     /// Get mint info from mint

@@ -24,6 +24,7 @@ pub mod grpc;
 pub mod common;
 pub mod database;
 pub mod error;
+pub mod fees;
 pub mod melt;
 #[cfg(feature = "mint")]
 pub mod mint;
