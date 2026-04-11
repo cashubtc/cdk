@@ -58,10 +58,6 @@ where
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
-        if blinded_messages.is_empty() {
-            return Ok(());
-        }
-
         if blinded_messages.len() != blind_signatures.len() {
             return Err(database::Error::Internal(
                 "Mismatched array lengths for blinded messages and blind signatures".to_string(),
@@ -83,7 +79,7 @@ where
                 .iter()
                 .map(|message| message.to_bytes().to_vec())
                 .collect(),
-        )
+        )?
         .fetch_all(&self.inner)
         .await?
         .into_iter()
@@ -213,10 +209,6 @@ where
         &mut self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
-        if blinded_messages.is_empty() {
-            return Ok(vec![]);
-        }
-
         let mut blinded_signatures = query(
             r#"SELECT
                 keyset_id,
@@ -236,7 +228,7 @@ where
                 .iter()
                 .map(|b| b.to_bytes().to_vec())
                 .collect(),
-        )
+        )?
         .fetch_all(&self.inner)
         .await?
         .into_iter()
@@ -269,10 +261,6 @@ where
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
-        if blinded_messages.is_empty() {
-            return Ok(vec![]);
-        }
-
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut blinded_signatures = query(
             r#"SELECT
@@ -293,7 +281,7 @@ where
                 .iter()
                 .map(|b_| b_.to_bytes().to_vec())
                 .collect(),
-        )
+        )?
         .fetch_all(&*conn)
         .await?
         .into_iter()

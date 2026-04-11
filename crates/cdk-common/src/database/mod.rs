@@ -197,6 +197,10 @@ pub enum Error {
     #[error("Missing placeholder value {0}")]
     MissingPlaceholder(String),
 
+    /// Empty IN clause
+    #[error("Empty IN clause for placeholder: {0}")]
+    EmptyInClause(String),
+
     /// Unknown quote ttl
     #[error("Unknown quote ttl")]
     UnknownQuoteTTL,

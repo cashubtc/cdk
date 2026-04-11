@@ -20,7 +20,7 @@ lib_file = "libcdk_ffi.dylib" if sys.platform == "darwin" else "libcdk_ffi.so"
 src_lib = lib_path / lib_file
 dst_lib = bindings_path / lib_file
 
-if src_lib.exists() and not dst_lib.exists():
+if src_lib.exists():
     shutil.copy2(src_lib, dst_lib)
 
 # Add target/bindings/python to path to load cdk_ffi module
@@ -212,8 +212,33 @@ async def test_wallet_quotes():
             os.unlink(db_path)
 
 
+async def test_wallet_proofs_by_ys_empty_errors():
+    """Test that get_proofs_by_ys errors with empty list"""
+    print("\n=== Test: Wallet Get Proofs by Y Values (Empty Errors) ===")
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+
+    try:
+        backend = cdk_ffi.WalletDbBackend.SQLITE(path=db_path)
+        db = cdk_ffi.create_wallet_db(backend)
+
+        try:
+            await db.get_proofs_by_ys([])
+            assert False, "Expected error for empty ys but got success"
+        except Exception as e:
+            assert "Empty IN clause" in str(e), f"Expected EmptyInClause error, got: {e}"
+            print("✓ get_proofs_by_ys errors on empty input")
+
+        print("✓ Test passed")
+
+    finally:
+        if os.path.exists(db_path):
+            os.unlink(db_path)
+
+
 async def test_wallet_proofs_by_ys():
-    """Test retrieving proofs by Y values"""
+    """Test retrieving proofs by Y values from the database"""
     print("\n=== Test: Wallet Get Proofs by Y Values ===")
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
@@ -223,12 +248,69 @@ async def test_wallet_proofs_by_ys():
         backend = cdk_ffi.WalletDbBackend.SQLITE(path=db_path)
         db = cdk_ffi.create_wallet_db(backend)
 
-        # Test with empty list
-        proofs = await db.get_proofs_by_ys([])
-        assert len(proofs) == 0, f"Expected 0 proofs, got {len(proofs)}"
-        print("✓ get_proofs_by_ys returns empty for empty input")
+        # Build test proofs using JSON decode helpers
+        import json
+        import hashlib
+        import secrets as secrets_mod
 
-        print("✓ Test passed: get_proofs_by_ys works")
+        mint_url = "https://example.com"
+        keyset_id = "00deadbeef123456"
+
+        proof_infos = []
+        expected_ys = []
+
+        for i in range(3):
+            # Generate a random secret string (matching cashu secret format)
+            random_hex = secrets_mod.token_hex(32)
+            secret_str = json.dumps(["P2PK", {"nonce": random_hex, "data": random_hex}])
+
+            # Use a valid secp256k1 generator point as C (just needs to be a valid pubkey)
+            # secp256k1 generator point G
+            c_hex = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+
+            proof = cdk_ffi.Proof(
+                amount=cdk_ffi.Amount(value=64),
+                secret=secret_str,
+                c=c_hex,
+                keyset_id=keyset_id,
+                witness=None,
+                dleq=None,
+                p2pk_e=None,
+            )
+
+            # Calculate Y from the proof
+            y_hex = cdk_ffi.proof_y(proof)
+            y = cdk_ffi.PublicKey(hex=y_hex)
+
+            proof_info = cdk_ffi.ProofInfo(
+                proof=proof,
+                y=y,
+                mint_url=cdk_ffi.MintUrl(url=mint_url),
+                state=cdk_ffi.ProofState.UNSPENT,
+                spending_condition=None,
+                unit=cdk_ffi.CurrencyUnit.SAT(),
+                used_by_operation=None,
+                created_by_operation=None,
+            )
+            proof_infos.append(proof_info)
+            expected_ys.append(y)
+
+        # Store proofs
+        await db.update_proofs(proof_infos, [])
+        print("✓ Stored 3 proofs")
+
+        # Retrieve all by Y values
+        retrieved = await db.get_proofs_by_ys(expected_ys)
+        assert len(retrieved) == 3, f"Expected 3 proofs, got {len(retrieved)}"
+        print("✓ Retrieved all 3 proofs by Y values")
+
+        # Retrieve subset
+        subset = await db.get_proofs_by_ys([expected_ys[0]])
+        assert len(subset) == 1, f"Expected 1 proof, got {len(subset)}"
+        assert subset[0].y.hex == expected_ys[0].hex
+        print("✓ Retrieved single proof by Y value")
+
+        print("✓ Test passed")
 
     finally:
         if os.path.exists(db_path):
@@ -246,6 +328,7 @@ async def main():
         ("Wallet Keyset Management", test_wallet_keyset_management),
         ("Wallet Keyset Counter", test_wallet_keyset_counter),
         ("Wallet Quote Operations", test_wallet_quotes),
+        ("Wallet Get Proofs by Y Values (Empty Errors)", test_wallet_proofs_by_ys_empty_errors),
         ("Wallet Get Proofs by Y Values", test_wallet_proofs_by_ys),
     ]
 

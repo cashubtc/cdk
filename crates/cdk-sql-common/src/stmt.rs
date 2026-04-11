@@ -327,13 +327,20 @@ impl Statement {
     ///
     /// This will rewrite the function from `:foo` (where value is vec![1, 2, 3]) to `:foo0, :foo1,
     /// :foo2` and binds each value from the value vector accordingly.
+    ///
+    /// Returns an error if the vector is empty, as empty `IN` clauses produce invalid SQL.
     #[inline]
-    pub fn bind_vec<C, V>(mut self, name: C, value: Vec<V>) -> Self
+    pub fn bind_vec<C, V>(mut self, name: C, value: Vec<V>) -> Result<Self, Error>
     where
         C: ToString,
         V: Into<Value>,
     {
         let name = name.to_string();
+
+        if value.is_empty() {
+            return Err(Error::EmptyInClause(name));
+        }
+
         let value: PlaceholderValue = value
             .into_iter()
             .map(|x| x.into())
@@ -348,7 +355,7 @@ impl Statement {
             }
         }
 
-        self
+        Ok(self)
     }
 
     /// Executes a query and returns the affected rows
@@ -397,4 +404,17 @@ impl Statement {
 pub fn query(sql: &str) -> Result<Statement, Error> {
     static CACHE: Lazy<Arc<RwLock<Cache>>> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
     Statement::new(sql, CACHE.clone()).map_err(|e| Error::Database(Box::new(e)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bind_vec_errors_on_empty_vec() {
+        let stmt = query("SELECT * FROM foo WHERE id IN (:ids)").unwrap();
+        let result = stmt.bind_vec("ids", Vec::<Vec<u8>>::new());
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::EmptyInClause(name) if name == "ids"));
+    }
 }

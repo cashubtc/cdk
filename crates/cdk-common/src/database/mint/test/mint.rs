@@ -1684,8 +1684,8 @@ where
     assert_eq!(quotes[2].as_ref().unwrap().id, quote2.id);
 
     // 3. Test empty list
-    let quotes = db.get_mint_quotes_by_ids(&[]).await.unwrap();
-    assert!(quotes.is_empty());
+    let quotes = db.get_mint_quotes_by_ids(&[]).await;
+    assert!(quotes.is_err());
 
     // 4. Test within transaction (with locking)
     let mut tx = Database::begin_transaction(&db).await.unwrap();
