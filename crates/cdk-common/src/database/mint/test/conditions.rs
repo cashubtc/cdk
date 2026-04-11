@@ -2,10 +2,36 @@
 
 use std::str::FromStr;
 
-use cashu::Id;
+use bitcoin::bip32::DerivationPath;
+use cashu::{CurrencyUnit, Id};
 
-use crate::database::mint::{ConditionsDatabase, Database, Error};
-use crate::mint::{StoredCondition, StoredPartition};
+use crate::database::mint::{ConditionsDatabase, Database, Error, KeysDatabase};
+use crate::mint::{MintKeySetInfo, StoredCondition, StoredPartition};
+
+/// Build a minimal conditional keyset info for tests. The amounts/derivation_path
+/// values are arbitrary but syntactically valid.
+fn test_conditional_keyset_info(
+    id: Id,
+    condition_id: &str,
+    outcome_collection: &str,
+    outcome_collection_id: &str,
+) -> MintKeySetInfo {
+    MintKeySetInfo {
+        id,
+        unit: CurrencyUnit::Sat,
+        active: true,
+        valid_from: 0,
+        derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
+        derivation_path_index: Some(0),
+        amounts: vec![1, 2, 4, 8],
+        input_fee_ppk: 0,
+        final_expiry: None,
+        issuer_version: None,
+        condition_id: Some(condition_id.to_string()),
+        outcome_collection: Some(outcome_collection.to_string()),
+        outcome_collection_id: Some(outcome_collection_id.to_string()),
+    }
+}
 
 fn test_condition(condition_id: &str) -> StoredCondition {
     StoredCondition {
@@ -136,21 +162,21 @@ where
 /// Test add and get conditional keyset info
 pub async fn add_and_get_conditional_keyset_info<DB>(db: DB)
 where
-    DB: Database<Error> + ConditionsDatabase<Err = Error>,
+    DB: Database<Error> + ConditionsDatabase<Err = Error> + KeysDatabase<Err = Error> + Sync,
 {
     let cond = test_condition(&"dd".repeat(32));
     db.add_condition(cond.clone()).await.unwrap();
 
     let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
-    db.add_conditional_keyset_info(
+    let info = test_conditional_keyset_info(
+        keyset_id,
         &cond.condition_id,
         "YES",
         &"ee".repeat(32),
-        &keyset_id,
-        1000000,
-    )
-    .await
-    .unwrap();
+    );
+    <DB as KeysDatabase>::add_conditional_keyset(&db, info, 1000000)
+        .await
+        .unwrap();
 
     let keysets = db
         .get_conditional_keysets_for_condition(&cond.condition_id)
@@ -163,7 +189,7 @@ where
 /// Test multiple outcome collections for the same condition
 pub async fn get_conditional_keysets_multiple<DB>(db: DB)
 where
-    DB: Database<Error> + ConditionsDatabase<Err = Error>,
+    DB: Database<Error> + ConditionsDatabase<Err = Error> + KeysDatabase<Err = Error> + Sync,
 {
     let cond = test_condition(&"ff".repeat(32));
     db.add_condition(cond.clone()).await.unwrap();
@@ -171,10 +197,14 @@ where
     let ks_yes = Id::from_str("00916bbf7ef91a36").unwrap();
     let ks_no = Id::from_str("009a1f293253e41e").unwrap();
 
-    db.add_conditional_keyset_info(&cond.condition_id, "YES", &"e1".repeat(32), &ks_yes, 1000000)
+    let info_yes =
+        test_conditional_keyset_info(ks_yes, &cond.condition_id, "YES", &"e1".repeat(32));
+    let info_no =
+        test_conditional_keyset_info(ks_no, &cond.condition_id, "NO", &"e2".repeat(32));
+    <DB as KeysDatabase>::add_conditional_keyset(&db, info_yes, 1000000)
         .await
         .unwrap();
-    db.add_conditional_keyset_info(&cond.condition_id, "NO", &"e2".repeat(32), &ks_no, 1000001)
+    <DB as KeysDatabase>::add_conditional_keyset(&db, info_no, 1000001)
         .await
         .unwrap();
 
@@ -190,14 +220,15 @@ where
 /// Test get_condition_for_keyset lookup by keyset_id
 pub async fn get_condition_for_keyset<DB>(db: DB)
 where
-    DB: Database<Error> + ConditionsDatabase<Err = Error>,
+    DB: Database<Error> + ConditionsDatabase<Err = Error> + KeysDatabase<Err = Error> + Sync,
 {
     let cond = test_condition(&"a1".repeat(32));
     db.add_condition(cond.clone()).await.unwrap();
 
     let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
     let oc_id = "b1".repeat(32);
-    db.add_conditional_keyset_info(&cond.condition_id, "YES", &oc_id, &keyset_id, 1000000)
+    let info = test_conditional_keyset_info(keyset_id, &cond.condition_id, "YES", &oc_id);
+    <DB as KeysDatabase>::add_conditional_keyset(&db, info, 1000000)
         .await
         .unwrap();
 

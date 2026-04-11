@@ -239,6 +239,89 @@ where
         .map(sql_row_to_keyset_info)
         .collect::<Result<Vec<_>, _>>()?)
     }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn add_conditional_keyset(
+        &self,
+        keyset_info: MintKeySetInfo,
+        created_at: u64,
+    ) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let condition_id = keyset_info.condition_id.as_ref().ok_or_else(|| {
+            Error::Internal("add_conditional_keyset: condition_id missing".to_string())
+        })?;
+        let outcome_collection = keyset_info.outcome_collection.as_ref().ok_or_else(|| {
+            Error::Internal("add_conditional_keyset: outcome_collection missing".to_string())
+        })?;
+        let outcome_collection_id = keyset_info.outcome_collection_id.as_ref().ok_or_else(|| {
+            Error::Internal("add_conditional_keyset: outcome_collection_id missing".to_string())
+        })?;
+
+        query(
+            r#"
+            INSERT INTO conditional_keyset (
+                id, unit, active, valid_from, valid_to, derivation_path,
+                derivation_path_index, amounts, input_fee_ppk, issuer_version,
+                condition_id, outcome_collection, outcome_collection_id, created_at
+            ) VALUES (
+                :id, :unit, :active, :valid_from, :valid_to, :derivation_path,
+                :derivation_path_index, :amounts, :input_fee_ppk, :issuer_version,
+                :condition_id, :outcome_collection, :outcome_collection_id, :created_at
+            )
+            ON CONFLICT(id) DO UPDATE SET
+                unit = excluded.unit,
+                active = excluded.active,
+                valid_from = excluded.valid_from,
+                valid_to = excluded.valid_to,
+                derivation_path = excluded.derivation_path,
+                derivation_path_index = excluded.derivation_path_index,
+                amounts = excluded.amounts,
+                input_fee_ppk = excluded.input_fee_ppk,
+                issuer_version = excluded.issuer_version,
+                condition_id = excluded.condition_id,
+                outcome_collection = excluded.outcome_collection,
+                outcome_collection_id = excluded.outcome_collection_id
+            "#,
+        )?
+        .bind("id", keyset_info.id.to_string())
+        .bind("unit", keyset_info.unit.to_string())
+        .bind("active", keyset_info.active)
+        .bind("valid_from", keyset_info.valid_from as i64)
+        .bind("valid_to", keyset_info.final_expiry.map(|v| v as i64))
+        .bind("derivation_path", keyset_info.derivation_path.to_string())
+        .bind("derivation_path_index", keyset_info.derivation_path_index)
+        .bind(
+            "amounts",
+            serde_json::to_string(&keyset_info.amounts)
+                .map_err(|e| Error::Internal(e.to_string()))?,
+        )
+        .bind("input_fee_ppk", keyset_info.input_fee_ppk as i64)
+        .bind(
+            "issuer_version",
+            keyset_info.issuer_version.map(|v| v.to_string()),
+        )
+        .bind("condition_id", condition_id.clone())
+        .bind("outcome_collection", outcome_collection.clone())
+        .bind("outcome_collection_id", outcome_collection_id.clone())
+        .bind("created_at", created_at as i64)
+        .execute(&*conn)
+        .await?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_all_conditional_mint_keyset_infos(
+        &self,
+    ) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+        Ok(self
+            .query_conditional_keysets(None, None, None)
+            .await?
+            .into_iter()
+            .map(|(info, _)| info)
+            .collect())
+    }
 }
 
 #[cfg(test)]

@@ -291,11 +291,6 @@ impl Mint {
 
         let mut keysets = std::collections::HashMap::new();
         let amounts = (0..32).map(|n| 2u64.pow(n)).collect::<Vec<u64>>();
-        let mut new_signatory_keysets = Vec::new();
-        let keyset_created_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
 
         for partition_key in &partition {
             // Normalize: parse outcomes from the key, sort, rejoin
@@ -310,7 +305,7 @@ impl Mint {
             )?;
             let outcome_collection_id = to_hex(&outcome_collection_id_bytes);
 
-            let mut keyset = self
+            let keyset = self
                 .signatory
                 .create_conditional_keyset(
                     unit.clone(),
@@ -323,32 +318,16 @@ impl Mint {
                 )
                 .await?;
 
-            // Store the keyset mapping
-            self.localstore
-                .add_conditional_keyset_info(
-                    condition_id,
-                    &outcome_collection_string,
-                    &outcome_collection_id,
-                    &keyset.id,
-                    keyset_created_at,
-                )
-                .await?;
-
-            // Conditional keysets must be active for swaps
-            keyset.active = true;
-            let keyset_id = keyset.id;
-            new_signatory_keysets.push(keyset);
-
-            keysets.insert(outcome_collection_string, keyset_id);
+            keysets.insert(outcome_collection_string, keyset.id);
         }
 
         // 8. Persist partition only after all keysets were created successfully
         self.localstore.add_partition(stored_partition).await?;
 
-        // Append new conditional keysets to the existing in-memory store
-        let mut current = self.keysets.load().as_ref().clone();
-        current.extend(new_signatory_keysets);
-        self.keysets.store(current.into());
+        // Refresh the Mint's cached keyset list from the signatory so the new
+        // conditional keysets are reachable in-memory for swaps / redemption.
+        let new_keysets = self.signatory.keysets().await?;
+        self.keysets.store(new_keysets.keysets.into());
 
         Ok(RegisterPartitionResponse { keysets })
     }

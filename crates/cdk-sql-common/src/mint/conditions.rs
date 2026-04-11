@@ -1,12 +1,11 @@
 //! Conditions database implementation (NUT-CTF)
 
 use std::collections::HashMap;
-use std::str::FromStr;
 
 use async_trait::async_trait;
 use cdk_common::database::mint::ConditionsDatabase;
 use cdk_common::database::Error;
-use cdk_common::mint::{StoredCondition, StoredPartition};
+use cdk_common::mint::{MintKeySetInfo, StoredCondition, StoredPartition};
 use cdk_common::nuts::nut_ctf::ConditionalKeySetInfo;
 use cdk_common::nuts::Id;
 
@@ -121,49 +120,127 @@ fn sql_row_to_keyset_mapping(row: Vec<Column>) -> Result<(String, Id), Error> {
     Ok((oc, kid))
 }
 
-fn sql_row_to_conditional_keyset_info(row: Vec<Column>) -> Result<ConditionalKeySetInfo, Error> {
-    unpack_into!(
-        let (
-            keyset_id,
-            unit,
-            active,
-            input_fee_ppk,
-            final_expiry,
-            condition_id,
-            outcome_collection,
-            outcome_collection_id,
-            created_at
-        ) = row
-    );
+/// Columns selected by every `conditional_keyset` read path. The first 10
+/// columns match `sql_row_to_keyset_info` exactly so the base parser can be
+/// reused; the last 4 are the conditional-specific fields.
+pub(crate) const CONDITIONAL_KEYSET_COLUMNS: &str =
+    "id, unit, active, valid_from, valid_to, \
+     derivation_path, derivation_path_index, amounts, input_fee_ppk, issuer_version, \
+     condition_id, outcome_collection, outcome_collection_id, created_at";
 
-    let kid_str = column_as_string!(&keyset_id);
-    let kid: Id = Id::from_str(&kid_str)
-        .map_err(|e| Error::Internal(format!("Invalid keyset id: {e}")))?;
+pub(crate) fn sql_row_to_conditional_mint_keyset_info(
+    mut row: Vec<Column>,
+) -> Result<(MintKeySetInfo, u64), Error> {
+    if row.len() != 14 {
+        return Err(Error::Internal(format!(
+            "expected 14 columns for conditional_keyset, got {}",
+            row.len()
+        )));
+    }
 
-    let active_val: i64 = column_as_number!(active);
+    // Split off the trailing 4 conditional-specific columns, leaving the
+    // first 10 to be parsed by the shared base parser.
+    let tail: Vec<Column> = row.split_off(10);
+    let mut info = super::keys::sql_row_to_keyset_info(row)?;
+
+    let mut tail_iter = tail.into_iter();
+    let condition_id = tail_iter.next().expect("length checked above");
+    let outcome_collection = tail_iter.next().expect("length checked above");
+    let outcome_collection_id = tail_iter.next().expect("length checked above");
+    let created_at = tail_iter.next().expect("length checked above");
+
+    info.condition_id = Some(column_as_string!(&condition_id));
+    info.outcome_collection = Some(column_as_string!(&outcome_collection));
+    info.outcome_collection_id = Some(column_as_string!(&outcome_collection_id));
+
     let created_at_val: u64 = column_as_number!(created_at);
+    Ok((info, created_at_val))
+}
 
-    let fee: Option<u64> = match &input_fee_ppk {
-        Column::Integer(n) => Some(*n as u64),
-        _ => None,
-    };
-
-    let expiry: Option<u64> = match &final_expiry {
-        Column::Integer(n) => Some(*n as u64),
-        _ => None,
-    };
+fn mint_keyset_info_to_conditional_keyset_info(
+    info: &MintKeySetInfo,
+    created_at: u64,
+) -> Result<ConditionalKeySetInfo, Error> {
+    let condition_id = info
+        .condition_id
+        .clone()
+        .ok_or_else(|| Error::Internal("condition_id missing on conditional keyset".to_string()))?;
+    let outcome_collection = info.outcome_collection.clone().ok_or_else(|| {
+        Error::Internal("outcome_collection missing on conditional keyset".to_string())
+    })?;
+    let outcome_collection_id = info.outcome_collection_id.clone().ok_or_else(|| {
+        Error::Internal("outcome_collection_id missing on conditional keyset".to_string())
+    })?;
 
     Ok(ConditionalKeySetInfo {
-        id: kid,
-        unit: column_as_string!(&unit),
-        active: active_val != 0,
-        input_fee_ppk: fee,
-        final_expiry: expiry,
-        condition_id: column_as_string!(&condition_id),
-        outcome_collection: column_as_string!(&outcome_collection),
-        outcome_collection_id: column_as_string!(&outcome_collection_id),
-        registered_at: created_at_val,
+        id: info.id,
+        unit: info.unit.to_string(),
+        active: info.active,
+        input_fee_ppk: Some(info.input_fee_ppk),
+        final_expiry: info.final_expiry,
+        condition_id,
+        outcome_collection,
+        outcome_collection_id,
+        registered_at: created_at,
     })
+}
+
+impl<RM> SQLMintDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    /// Query the `conditional_keyset` table with optional cursor pagination
+    /// (`since` is strictly greater than), `limit`, and active filter. This
+    /// is the shared path for both the public NUT-CTF listing endpoint and
+    /// the internal `reload_keys_from_db` bootstrap.
+    pub(crate) async fn query_conditional_keysets(
+        &self,
+        since: Option<u64>,
+        limit: Option<u64>,
+        active: Option<bool>,
+    ) -> Result<Vec<(MintKeySetInfo, u64)>, Error> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let mut sql = format!(
+            "SELECT {} FROM conditional_keyset WHERE 1=1",
+            CONDITIONAL_KEYSET_COLUMNS
+        );
+
+        if since.is_some() {
+            // Cursor pagination: strictly greater than the last-seen timestamp.
+            sql.push_str(" AND created_at > :since");
+        }
+
+        if active.is_some() {
+            sql.push_str(" AND active = :active");
+        }
+
+        sql.push_str(" ORDER BY created_at ASC");
+
+        if limit.is_some() {
+            sql.push_str(" LIMIT :limit");
+        }
+
+        let mut stmt = query(&sql)?;
+
+        if let Some(since_ts) = since {
+            stmt = stmt.bind("since", since_ts as i64);
+        }
+
+        if let Some(active_val) = active {
+            stmt = stmt.bind("active", active_val as i64);
+        }
+
+        if let Some(limit_val) = limit {
+            stmt = stmt.bind("limit", limit_val as i64);
+        }
+
+        stmt.fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(sql_row_to_conditional_mint_keyset_info)
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -245,7 +322,9 @@ where
         );
 
         if since.is_some() {
-            sql.push_str(" AND created_at >= :since");
+            // Cursor pagination: strictly greater, so callers can pass the
+            // last-seen `created_at` without re-receiving the boundary row.
+            sql.push_str(" AND created_at > :since");
         }
 
         if !status.is_empty() {
@@ -315,33 +394,6 @@ where
         Ok(rows_affected > 0)
     }
 
-    async fn add_conditional_keyset_info(
-        &self,
-        condition_id: &str,
-        outcome_collection: &str,
-        outcome_collection_id: &str,
-        keyset_id: &Id,
-        created_at: u64,
-    ) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
-        query(
-            r#"
-            INSERT INTO conditional_keysets (condition_id, outcome_collection, outcome_collection_id, keyset_id, created_at)
-            VALUES (:condition_id, :outcome_collection, :outcome_collection_id, :keyset_id, :created_at)
-            "#,
-        )?
-        .bind("condition_id", condition_id.to_string())
-        .bind("outcome_collection", outcome_collection.to_string())
-        .bind("outcome_collection_id", outcome_collection_id.to_string())
-        .bind("keyset_id", keyset_id.to_string())
-        .bind("created_at", created_at as i64)
-        .execute(&*conn)
-        .await?;
-
-        Ok(())
-    }
-
     async fn get_conditional_keysets_for_condition(
         &self,
         condition_id: &str,
@@ -350,8 +402,8 @@ where
 
         let rows = query(
             r#"
-            SELECT outcome_collection, keyset_id
-            FROM conditional_keysets
+            SELECT outcome_collection, id
+            FROM conditional_keyset
             WHERE condition_id = :condition_id
             "#,
         )?
@@ -374,47 +426,11 @@ where
         limit: Option<u64>,
         active: Option<bool>,
     ) -> Result<Vec<ConditionalKeySetInfo>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
-        let mut sql = String::from(
-            "SELECT ck.keyset_id, ki.unit, ki.active, ki.input_fee_ppk, ki.valid_to, \
-             ck.condition_id, ck.outcome_collection, ck.outcome_collection_id, ck.created_at \
-             FROM conditional_keysets ck \
-             JOIN keyset ki ON ck.keyset_id = ki.id WHERE 1=1",
-        );
-
-        if since.is_some() {
-            sql.push_str(" AND ck.created_at >= :since");
-        }
-
-        if active.is_some() {
-            sql.push_str(" AND ki.active = :active");
-        }
-
-        sql.push_str(" ORDER BY ck.created_at ASC");
-
-        if limit.is_some() {
-            sql.push_str(" LIMIT :limit");
-        }
-
-        let mut stmt = query(&sql)?;
-
-        if let Some(since_ts) = since {
-            stmt = stmt.bind("since", since_ts as i64);
-        }
-
-        if let Some(active_val) = active {
-            stmt = stmt.bind("active", active_val as i64);
-        }
-
-        if let Some(limit_val) = limit {
-            stmt = stmt.bind("limit", limit_val as i64);
-        }
-
-        let rows = stmt.fetch_all(&*conn).await?;
-
+        let rows = self
+            .query_conditional_keysets(since, limit, active)
+            .await?;
         rows.into_iter()
-            .map(sql_row_to_conditional_keyset_info)
+            .map(|(info, created_at)| mint_keyset_info_to_conditional_keyset_info(&info, created_at))
             .collect()
     }
 
@@ -427,11 +443,11 @@ where
         let row = query(
             r#"
             SELECT condition_id, outcome_collection, outcome_collection_id
-            FROM conditional_keysets
-            WHERE keyset_id = :keyset_id
+            FROM conditional_keyset
+            WHERE id = :id
             "#,
         )?
-        .bind("keyset_id", keyset_id.to_string())
+        .bind("id", keyset_id.to_string())
         .fetch_one(&*conn)
         .await?;
 
