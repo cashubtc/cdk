@@ -1,10 +1,39 @@
 use std::io::{self, Write};
 use std::str::FromStr;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::WalletRepository;
+
+/// Parse global `--unit`: trim, plural aliases (`sats`→`sat`, …), then [`CurrencyUnit::from_str`].
+pub fn parse_cli_currency_unit(s: &str) -> Result<CurrencyUnit> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        bail!("Currency unit must not be empty (omit `--unit` to use the default `sat`)");
+    }
+
+    if trimmed.eq_ignore_ascii_case("satt") {
+        bail!("Unknown currency unit '{trimmed}'. Did you mean 'sat'?");
+    }
+
+    let normalized: &str = match trimmed.to_ascii_lowercase().as_str() {
+        "sats" => "sat",
+        "msats" => "msat",
+        "usds" => "usd",
+        "eurs" => "eur",
+        "auths" => "auth",
+        _ => trimmed,
+    };
+
+    let unit = CurrencyUnit::from_str(normalized).map_err(|e| anyhow::anyhow!(e))?;
+    if let CurrencyUnit::Custom(ref name) = unit {
+        tracing::info!(
+            "Using custom currency unit '{name}' (not one of sat, msat, usd, eur, auth)"
+        );
+    }
+    Ok(unit)
+}
 
 /// Helper function to get user input with a prompt
 pub fn get_user_input(prompt: &str) -> Result<String> {

@@ -7,9 +7,13 @@ use cdk::wallet::WalletRepository;
 use cdk::Amount;
 use cdk_common::wallet::WalletKey;
 
-pub async fn balance(wallet_repository: &WalletRepository) -> Result<()> {
-    // Show individual mint balances
-    let mint_balances = mint_balances(wallet_repository).await?;
+/// Print balances for each mint for the given [`CurrencyUnit`] (e.g. sat from `cdk balance`, or
+/// `--unit usd` for USD-only wallets).
+pub async fn balance(
+    wallet_repository: &WalletRepository,
+    filter_unit: &CurrencyUnit,
+) -> Result<()> {
+    let mint_balances = mint_balances(wallet_repository, filter_unit).await?;
 
     if !mint_balances.is_empty() {
         // Aggregate totals per currency unit
@@ -29,6 +33,8 @@ pub async fn balance(wallet_repository: &WalletRepository) -> Result<()> {
                 println!("  {} {}", total, unit);
             }
         }
+    } else {
+        println!("No balance for unit {filter_unit}.");
     }
 
     Ok(())
@@ -36,6 +42,7 @@ pub async fn balance(wallet_repository: &WalletRepository) -> Result<()> {
 
 pub async fn mint_balances(
     wallet_repository: &WalletRepository,
+    filter_unit: &CurrencyUnit,
 ) -> Result<Vec<(MintUrl, CurrencyUnit, Amount)>> {
     let wallets = wallet_repository.get_balances().await?;
 
@@ -44,6 +51,7 @@ pub async fn mint_balances(
     for (i, (wallet_key, amount)) in wallets
         .iter()
         .filter(|(_, a)| a > &&Amount::ZERO)
+        .filter(|(wk, _)| wk.unit == *filter_unit)
         .enumerate()
     {
         let WalletKey { mint_url, unit } = wallet_key.clone();
