@@ -534,7 +534,7 @@ where
             WHERE y IN (:ys)
         "#,
         )?
-        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
         .fetch_all(&*conn)
         .await?
         .into_iter()
@@ -583,7 +583,7 @@ where
         }
 
         if !states.is_empty() {
-            q = q.bind_vec("states", states);
+            q = q.bind_vec("states", states)?;
         }
 
         let balance = q
@@ -773,7 +773,7 @@ where
                 .bind_vec(
                     "ys",
                     removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
-                )
+                )?
                 .execute(&tx)
                 .await?;
         }
@@ -789,14 +789,10 @@ where
         ys: Vec<PublicKey>,
         state: State,
     ) -> Result<(), database::Error> {
-        if ys.is_empty() {
-            return Ok(());
-        }
-
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         query("UPDATE proof SET state = :state WHERE y IN (:ys)")?
-            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
             .bind("state", state.to_string())
             .execute(&*conn)
             .await?;
