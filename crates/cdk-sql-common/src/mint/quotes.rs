@@ -728,7 +728,7 @@ where
                 .iter()
                 .map(|secret| secret.to_bytes().to_vec())
                 .collect(),
-        )
+        )?
         .execute(&self.inner)
         .await?;
 
