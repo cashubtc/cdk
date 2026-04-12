@@ -100,6 +100,16 @@ impl SecretData {
     }
 }
 
+fn check_duplicate_pubkeys(pubkeys: &[PublicKey]) -> Result<(), Error> {
+    let mut x_coords = std::collections::HashSet::with_capacity(pubkeys.len());
+    for pk in pubkeys {
+        if !x_coords.insert(pk.x_only_public_key().serialize()) {
+            return Err(Error::NUT11(crate::nuts::nut11::Error::DuplicatePubkey));
+        }
+    }
+    Ok(())
+}
+
 /// Get the relevant public keys and required signature count for P2PK or HTLC verification
 /// This is for NUT-11(P2PK) and NUT-14(HTLC)
 ///
@@ -161,11 +171,14 @@ pub(crate) fn get_pubkeys_and_required_sigs(
                 primary_keys.extend(additional_keys.clone());
             }
 
+            check_duplicate_pubkeys(&primary_keys)?;
+
             let primary_num_sigs_required = conditions.num_sigs.unwrap_or(1);
 
             // Refund path is available after locktime
             let refund_path = if locktime_passed {
                 if let Some(refund_keys) = &conditions.refund_keys {
+                    check_duplicate_pubkeys(refund_keys)?;
                     Some(RefundPath {
                         pubkeys: refund_keys.clone(),
                         required_sigs: conditions.num_sigs_refund.unwrap_or(1),
@@ -192,6 +205,11 @@ pub(crate) fn get_pubkeys_and_required_sigs(
             // HTLC: receiver path (preimage + pubkeys) is ALWAYS available per NUT-14
             // "This pathway is ALWAYS available to the receivers"
             let pubkeys = conditions.pubkeys.clone().unwrap_or_default();
+
+            if !pubkeys.is_empty() {
+                check_duplicate_pubkeys(&pubkeys)?;
+            }
+
             let required_sigs = if pubkeys.is_empty() {
                 0
             } else {
@@ -201,6 +219,7 @@ pub(crate) fn get_pubkeys_and_required_sigs(
             // Refund path is available after locktime
             let refund_path = if locktime_passed {
                 if let Some(refund_keys) = &conditions.refund_keys {
+                    check_duplicate_pubkeys(refund_keys)?;
                     Some(RefundPath {
                         pubkeys: refund_keys.clone(),
                         required_sigs: conditions.num_sigs_refund.unwrap_or(1),
