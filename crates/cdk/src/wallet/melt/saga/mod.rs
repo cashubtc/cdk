@@ -977,7 +977,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             }
         };
 
-        match melt_response.state {
+        match melt_response.state() {
             MeltQuoteState::Paid => {
                 let finalized = finalize_melt_common(
                     self.wallet,
@@ -986,9 +986,9 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                     &self.state_data.quote,
                     &self.state_data.final_proofs,
                     &self.state_data.premint_secrets,
-                    melt_response.state,
-                    melt_response.payment_preimage,
-                    melt_response.change,
+                    melt_response.state(),
+                    melt_response.payment_proof().map(|s| s.to_string()),
+                    melt_response.change().cloned(),
                     metadata,
                 )
                 .await?;
@@ -1015,7 +1015,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                 tracing::warn!(
                     "Melt quote {} returned unexpected state {:?}",
                     quote_info.id,
-                    melt_response.state
+                    melt_response.state()
                 );
                 let finalized = finalize_melt_common(
                     self.wallet,
@@ -1024,9 +1024,9 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                     &self.state_data.quote,
                     &self.state_data.final_proofs,
                     &self.state_data.premint_secrets,
-                    melt_response.state,
-                    melt_response.payment_preimage,
-                    melt_response.change,
+                    melt_response.state(),
+                    melt_response.payment_proof().map(|s| s.to_string()),
+                    melt_response.change().cloned(),
                     metadata,
                 )
                 .await?;

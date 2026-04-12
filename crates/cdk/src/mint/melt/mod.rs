@@ -11,15 +11,18 @@ use cdk_common::payment::{
     OutgoingPaymentOptions,
 };
 use cdk_common::quote_id::QuoteId;
-use cdk_common::{MeltOptions, MeltQuoteBolt12Request, MeltQuoteCustomRequest};
+use cdk_common::{
+    MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse, MeltQuoteCustomRequest,
+    MeltQuoteCustomResponse, MeltQuoteResponse,
+};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
 use super::{
-    CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, Mint,
-    PaymentMethod,
+    CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    MeltQuoteBolt12Response, MeltRequest, Mint, PaymentMethod,
 };
 use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
 use crate::nuts::MeltQuoteState;
@@ -38,22 +41,22 @@ use melt_saga::MeltSaga;
 /// A pending mint melt that can optionally be awaited.
 #[derive(Debug)]
 pub struct PendingMelt {
-    response: MeltQuoteBolt11Response<QuoteId>,
-    completion: tokio::task::JoinHandle<Result<MeltQuoteBolt11Response<QuoteId>, Error>>,
+    response: MeltQuoteResponse<QuoteId>,
+    completion: tokio::task::JoinHandle<Result<MeltQuoteResponse<QuoteId>, Error>>,
 }
 
 impl PendingMelt {
     /// Return the immediate pending response (NUT-05 style) without consuming self.
-    pub fn pending_response(&self) -> &MeltQuoteBolt11Response<QuoteId> {
+    pub fn pending_response(&self) -> &MeltQuoteResponse<QuoteId> {
         &self.response
     }
 
     /// Return the immediate pending response (NUT-05 style).
-    pub fn into_pending_response(self) -> MeltQuoteBolt11Response<QuoteId> {
+    pub fn into_pending_response(self) -> MeltQuoteResponse<QuoteId> {
         self.response
     }
 
-    async fn wait(self) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    async fn wait(self) -> Result<MeltQuoteResponse<QuoteId>, Error> {
         match self.completion.await {
             Ok(result) => result,
             Err(err) => {
@@ -65,7 +68,7 @@ impl PendingMelt {
 }
 
 impl std::future::IntoFuture for PendingMelt {
-    type Output = Result<MeltQuoteBolt11Response<QuoteId>, Error>;
+    type Output = Result<MeltQuoteResponse<QuoteId>, Error>;
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
@@ -152,15 +155,20 @@ impl Mint {
     pub async fn get_melt_quote(
         &self,
         melt_quote_request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltQuoteCreateResponse<QuoteId>, Error> {
         match melt_quote_request {
-            MeltQuoteRequest::Bolt11(bolt11_request) => {
-                self.get_melt_bolt11_quote_impl(&bolt11_request).await
+            MeltQuoteRequest::Bolt11(bolt11_request) => Ok(MeltQuoteCreateResponse::Bolt11(
+                self.get_melt_bolt11_quote_impl(&bolt11_request).await?,
+            )),
+            MeltQuoteRequest::Bolt12(bolt12_request) => Ok(MeltQuoteCreateResponse::Bolt12(
+                self.get_melt_bolt12_quote_impl(&bolt12_request).await?,
+            )),
+            MeltQuoteRequest::Custom(request) => {
+                let quote = self.get_melt_custom_quote_impl(&request).await?;
+                let method = PaymentMethod::from(request.method.as_str());
+
+                Ok(MeltQuoteCreateResponse::Custom((method, quote)))
             }
-            MeltQuoteRequest::Bolt12(bolt12_request) => {
-                self.get_melt_bolt12_quote_impl(&bolt12_request).await
-            }
-            MeltQuoteRequest::Custom(request) => self.get_melt_custom_quote_impl(&request).await,
         }
     }
 
@@ -380,7 +388,7 @@ impl Mint {
     async fn get_melt_custom_quote_impl(
         &self,
         melt_request: &MeltQuoteCustomRequest,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltQuoteCustomResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("get_melt_custom_quote");
 
@@ -513,7 +521,7 @@ impl Mint {
     pub async fn check_melt_quote(
         &self,
         quote_id: &QuoteId,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("check_melt_quote");
         let mut quote = match self.localstore.get_melt_quote(quote_id).await {
@@ -559,16 +567,37 @@ impl Mint {
 
         let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
 
-        let response = MeltQuoteBolt11Response {
-            quote: quote.id.clone(),
-            state: quote.state,
-            expiry: quote.expiry,
-            amount: quote.amount().into(),
-            fee_reserve: quote.fee_reserve().into(),
-            payment_preimage: quote.payment_proof,
-            change,
-            request: Some(quote.request.to_string()),
-            unit: Some(quote.unit.clone()),
+        let response = match quote.payment_method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                MeltQuoteResponse::Bolt11(MeltQuoteBolt11Response {
+                    quote: quote.id.clone(),
+                    state: quote.state,
+                    expiry: quote.expiry,
+                    amount: quote.amount().into(),
+                    fee_reserve: quote.fee_reserve().into(),
+                    payment_preimage: quote.payment_proof.clone(),
+                    change: change.clone(),
+                    request: Some(quote.request.to_string()),
+                    unit: Some(quote.unit.clone()),
+                })
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                MeltQuoteResponse::Bolt12(MeltQuoteBolt12Response {
+                    quote: quote.id.clone(),
+                    state: quote.state,
+                    expiry: quote.expiry,
+                    amount: quote.amount().into(),
+                    fee_reserve: quote.fee_reserve().into(),
+                    payment_preimage: quote.payment_proof.clone(),
+                    change: change.clone(),
+                    request: Some(quote.request.to_string()),
+                    unit: Some(quote.unit.clone()),
+                })
+            }
+            _ => {
+                let custom_response: MeltQuoteCustomResponse<QuoteId> = quote.clone().into();
+                MeltQuoteResponse::Custom((quote.payment_method.clone(), custom_response))
+            }
         };
 
         #[cfg(feature = "prometheus")]
@@ -578,6 +607,18 @@ impl Mint {
         }
 
         Ok(response)
+    }
+
+    /// Get the configured payment method for an existing melt quote.
+    #[instrument(skip(self))]
+    pub async fn get_melt_quote_method(&self, quote_id: &QuoteId) -> Result<PaymentMethod, Error> {
+        let quote = self
+            .localstore
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(quote.payment_method)
     }
 
     /// Get melt quotes
@@ -676,18 +717,12 @@ impl Mint {
         });
 
         // Return immediately with the quote in PENDING state and an awaitable completion future.
+        let mut quote_clone = quote.clone();
+        quote_clone.state = MeltQuoteState::Pending;
+        let response = quote_clone.into_response(None);
+
         Ok(PendingMelt {
-            response: MeltQuoteBolt11Response {
-                quote: quote_id,
-                amount: quote.amount().into(),
-                fee_reserve: quote.fee_reserve().into(),
-                state: MeltQuoteState::Pending,
-                expiry: quote.expiry,
-                payment_preimage: None,
-                change: None,
-                request: Some(quote.request.to_string()),
-                unit: Some(quote.unit),
-            },
+            response,
             completion,
         })
     }
