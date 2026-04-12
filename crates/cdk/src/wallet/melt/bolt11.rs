@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::MeltQuote;
-use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, PaymentMethod};
+use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, PaymentMethod};
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
@@ -31,7 +31,7 @@ impl Wallet {
             .await?;
 
         let quote_res = match quote_res {
-            MeltQuoteResponse::Bolt11(response) => response,
+            MeltQuoteCreateResponse::Bolt11(response) => response,
             _ => return Err(Error::InvalidPaymentMethod),
         };
 
@@ -65,7 +65,7 @@ impl Wallet {
             fee_reserve: quote_res.fee_reserve,
             state: quote_res.state,
             expiry: quote_res.expiry,
-            payment_preimage: quote_res.payment_preimage,
+            payment_proof: quote_res.payment_proof,
             payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             used_by_operation: None,
             version: 0,

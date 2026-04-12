@@ -1,0 +1,1065 @@
+Modified regular file crates/cdk/src/lib.rs:
+    ...
+  46   46: pub use cdk_common::{
+  47   47:     amount, common as types, dhke, ensure_cdk,
+  48   48:     error::{self, Error},
+  49   49:     lightning_invoice,
+       50:     melt::{MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse},
+       51:     mint_quote::{MintQuoteRequest, MintQuoteResponse},
+  49   52:     mint_url, nuts, secret, util, ws, Amount, Bolt11Invoice,
+  50   53: };
+  51   54: 
+  52   55: #[cfg(any(feature = "wallet", feature = "mint"))]
+    ...
+Modified regular file crates/cdk/src/mint/issue/mod.rs:
+    ...
+  10   10: use cdk_common::util::unix_time;
+  11   11: use cdk_common::{
+  12   12:     database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
+  13   13:     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteRequest, MintQuoteResponse,
+  14   13:     MintQuoteState, MintRequest, MintResponse,
+  14   14:     NotificationPayload, PublicKey,
+  15   15: };
+  16   16: #[cfg(feature = "prometheus")]
+  17   17: use cdk_prometheus::METRICS;
+    ...
+  22   22: 
+  23   23: mod auth;
+  24   24: 
+       25: use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
+       26: 
+  25   27: /// Input enum to handle both single and batch mint formats (internal to CDK, not spec)
+  26   28: #[derive(Debug, Clone)]
+  27   29: pub enum MintInput {
+    ...
+ 194  196:     /// * `mint_quote_request` - The request containing payment details
+ 195  197:     ///
+ 196  198:     /// # Returns
+ 197  199:     /// * `MintQuoteResponse<QuoteId>` - Response with payment details if successful
+ 198  200:     /// * `Error` - If the request is invalid or payment creation fails
+ 199  201:     #[instrument(skip_all)]
+ 200  202:     pub async fn get_mint_quote(
+    ...
+ 219  221: 
+ 220  222:             let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
+ 221  223: 
+      224:             let quote_id = QuoteId::new_uuid();
+      225: 
+ 222  226:             let payment_options = match mint_quote_request {
+ 223  227:                 MintQuoteRequest::Bolt11(bolt11_request) => {
+ 224  228:                     if let Some(ref desc) = bolt11_request.description {
+    ...
+ 275  279: 
+ 276  280:                     IncomingPaymentOptions::Bolt12(Box::new(bolt12_options))
+ 277  281:                 }
+ 278  282:                 MintQuoteRequest::Custom { method, request, .. } => {
+ 279  283:                     if let Some(ref desc) = request.description {
+ 280  284:                         if desc.len() > MAX_REQUEST_FIELD_LEN {
+ 281  285:                             return Err(Error::RequestFieldTooLarge {
+    ...
+ 308  312:                     };
+ 309  313: 
+ 310  314:                     let custom_options = CustomIncomingPaymentOptions {
+ 311  315:                         method: methodpayment_method.to_string(),
+ 312  316:                         description: request.description,
+ 313  317:                         amount: request.amount.with_unit(unit.clone()),
+ 314  318:                         unix_expiry: Some(quote_expiry),
+    ...
+ 328  332:                 })?;
+ 329  333: 
+ 330  334:             let quote = MintQuote::new(
+ 331  335:                 NoneSome(quote_id),
+ 332  336:                 create_invoice_response.request.to_string(),
+ 333  337:                 unit.clone(),
+ 334  338:                 amount.map(|a| a.with_unit(unit.clone())),
+    ...
+ 535  539:     /// * `quote_id` - The UUID of the quote to check
+ 536  540:     ///
+ 537  541:     /// # Returns
+ 538  542:     /// * `MintQuoteResponse<QuoteId>` - The current state of the quote
+ 539  543:     /// * `Error` if the quote doesn't exist or checking fails
+ 540  544:     #[instrument(skip(self))]
+ 541  545:     pub async fn check_mint_quote(
+    ...
+ 575  579:     /// * `quote_ids` - The list of quote IDs to check
+ 576  580:     ///
+ 577  581:     /// # Returns
+ 578  582:     /// * `Vec<MintQuoteResponse<QuoteId>>` - Current states of all quotes in order
+ 579  583:     /// * `Error` if any quote doesn't exist
+ 580  584:     #[instrument(skip(self))]
+ 581  585:     pub async fn check_mint_quotes(
+    ...
+Modified regular file crates/cdk/src/mint/melt/melt_saga/tests.rs:
+    ...
+ 358  358:     let quote_response = mint.get_melt_quote(melt_quote_request).await.unwrap();
+ 359  359:     let quote = mint
+ 360  360:         .localstore
+ 361  361:         .get_melt_quote(&quote_response.quote())
+ 362  362:         .await
+ 363  363:         .unwrap()
+ 364  364:         .expect("Melt quote should exist");
+    ...
+ 762  762:     let melt_quote_response = mint.get_melt_quote(melt_quote_request).await.unwrap();
+ 763  763:     let melt_quote = mint
+ 764  764:         .localstore
+ 765  765:         .get_melt_quote(&melt_quote_response.quote())
+ 766  766:         .await
+ 767  767:         .unwrap()
+ 768  768:         .expect("Melt quote should exist");
+    ...
+1367 1367:     let quote_response = mint.get_melt_quote(request).await.unwrap();
+1368 1368:     let quote = mint
+1369 1369:         .localstore
+1370 1370:         .get_melt_quote(&quote_response.quote())
+1371 1371:         .await
+1372 1372:         .unwrap()
+1373 1373:         .expect("Quote should exist");
+    ...
+2992 2992:     // Retrieve the full quote from database
+2993 2993:     let quote = mint
+2994 2994:         .localstore
+2995 2995:         .get_melt_quote(&quote_response.quote())
+2996 2996:         .await
+2997 2997:         .unwrap()
+2998 2998:         .expect("Quote should exist in database");
+    ...
+3119 3119:     // Retrieve full quotes
+3120 3120:     let quote1 = mint
+3121 3121:         .localstore
+3122 3122:         .get_melt_quote(&quote_response1.quote())
+3123 3123:         .await
+3124 3124:         .unwrap()
+3125 3125:         .expect("Quote 1 should exist");
+3126 3126: 
+3127 3127:     let quote2 = mint
+3128 3128:         .localstore
+3129 3129:         .get_melt_quote(&quote_response2.quote())
+3130 3130:         .await
+3131 3131:         .unwrap()
+3132 3132:         .expect("Quote 2 should exist");
+    ...
+3288 3288:     // Retrieve full quotes
+3289 3289:     let quote1 = mint
+3290 3290:         .localstore
+3291 3291:         .get_melt_quote(&quote_response1.quote())
+3292 3292:         .await
+3293 3293:         .unwrap()
+3294 3294:         .expect("Quote 1 should exist");
+3295 3295:     let quote2 = mint
+3296 3296:         .localstore
+3297 3297:         .get_melt_quote(&quote_response2.quote())
+3298 3298:         .await
+3299 3299:         .unwrap()
+3300 3300:         .expect("Quote 2 should exist");
+    ...
+Modified regular file crates/cdk/src/mint/melt/mod.rs:
+    ...
+  11   11:     OutgoingPaymentOptions,
+  12   12: };
+  13   13: use cdk_common::quote_id::QuoteId;
+  14   14: use cdk_common::{
+  14   15:     MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse, MeltQuoteCustomRequest,
+       16:     MeltQuoteCustomResponse, MeltQuoteResponse,
+  14   17: };
+  15   18: #[cfg(feature = "prometheus")]
+  16   19: use cdk_prometheus::METRICS;
+  17   20: use lightning::offers::offer::Offer;
+    ...
+ 152  155:     pub async fn get_melt_quote(
+ 153  156:         &self,
+ 154  157:         melt_quote_request: MeltQuoteRequest,
+ 155  158:     ) -> Result<MeltQuoteBolt11ResponseMeltQuoteCreateResponse<QuoteId>, Error> {
+ 156  159:         match melt_quote_request {
+ 157  160:             MeltQuoteRequest::Bolt11(bolt11_request) => {Ok(MeltQuoteCreateResponse::Bolt11(
+ 158  161:                 self.get_melt_bolt11_quote_impl(&bolt11_request).await?,
+ 159  162:             })),
+ 160  163:             MeltQuoteRequest::Bolt12(bolt12_request) => {Ok(MeltQuoteCreateResponse::Bolt12(
+ 161  164:                 self.get_melt_bolt12_quote_impl(&bolt12_request).await?,
+ 162  165:             })),
+ 163  166:             MeltQuoteRequest::Custom(request) => Ok(MeltQuoteCreateResponse::Custom((
+      167:                 PaymentMethod::from(request.method.as_str()),
+ 163  168:                 self.get_melt_custom_quote_impl(&request).await?,
+ 163  169:             ))),
+ 164  170:         }
+ 165  171:     }
+ 166  172: 
+    ...
+ 378  384:     async fn get_melt_custom_quote_impl(
+ 379  385:         &self,
+ 380  386:         melt_request: &MeltQuoteCustomRequest,
+ 381  387:     ) -> Result<MeltQuoteBolt11ResponseMeltQuoteCustomResponse<QuoteId>, Error> {
+ 382  388:         #[cfg(feature = "prometheus")]
+ 383  389:         METRICS.inc_in_flight_requests("get_melt_custom_quote");
+ 384  390: 
+    ...
+ 506  512:     }
+ 507  513: 
+ 508  514:     /// Check melt quote status
+ 509  515:     #[instrument(skip(self)skip_all)]
+ 510  516:     pub async fn check_melt_quote(
+ 511  517:         &self,
+ 512  518:         quote_id: &QuoteId,
+ 513  519:     ) -> Result<MeltQuoteBolt11ResponseMeltQuoteResponse<QuoteId>, Error> {
+ 514  520:         #[cfg(feature = "prometheus")]
+ 515  521:         METRICS.inc_in_flight_requests("check_melt_quote");
+ 516  522:         let mut quote = match self.localstore.get_melt_quote(quote_id).await {
+    ...
+ 556  562: 
+ 557  563:         let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
+ 558  564: 
+ 559     :         let response = MeltQuoteBolt11Response {
+ 560     :             quote: quote.id.clone(),
+ 561     :             state: quote.state,
+ 562     :             expiry: quote.expiry,
+ 563     :             amount: quote.amount().into(),
+ 564     :             fee_reserve: quote.fee_reserve().into(),
+ 565     :             payment_proof: quote.payment_proof,
+ 566     :             change,
+ 567     :             request: Some(quote.request.to_string()),
+ 568     :             unit: Some(quote.unit.clone()),
+      565:         let response = match quote.payment_method {
+      566:             PaymentMethod::Known(KnownMethod::Bolt11) => {
+      567:                 MeltQuoteResponse::Bolt11(MeltQuoteBolt11Response {
+      568:                     quote: quote.id.clone(),
+      569:                     state: quote.state,
+      570:                     expiry: quote.expiry,
+      571:                     amount: quote.amount().into(),
+      572:                     fee_reserve: quote.fee_reserve().into(),
+      573:                     payment_proof: quote.payment_proof.clone(),
+      574:                     change: change.clone(),
+      575:                     request: Some(quote.request.to_string()),
+      576:                     unit: Some(quote.unit.clone()),
+      577:                 })
+      578:             }
+      579:             PaymentMethod::Known(KnownMethod::Bolt12) => {
+      580:                 MeltQuoteResponse::Bolt12(MeltQuoteBolt11Response {
+      581:                     quote: quote.id.clone(),
+      582:                     state: quote.state,
+      583:                     expiry: quote.expiry,
+      584:                     amount: quote.amount().into(),
+      585:                     fee_reserve: quote.fee_reserve().into(),
+      586:                     payment_proof: quote.payment_proof.clone(),
+      587:                     change: change.clone(),
+      588:                     request: Some(quote.request.to_string()),
+      589:                     unit: Some(quote.unit.clone()),
+      590:                 })
+      591:             }
+      592:             _ => {
+      593:                 let custom_response: MeltQuoteCustomResponse<QuoteId> = quote.clone().into();
+      594:                 MeltQuoteResponse::Custom((quote.payment_method.clone(), custom_response))
+      595:             }
+ 569  596:         };
+ 570  597: 
+ 571  598:         #[cfg(feature = "prometheus")]
+    ...
+Modified regular file crates/cdk/src/mint/melt/tests/htlc_sigall_spending_conditions_tests.rs:
+    ...
+ 108  108:         .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
+ 109  109:         .await
+ 110  110:         .unwrap();
+ 111  111:     println!("Created melt quote: {}", melt_quote.quote().clone());
+ 112  112: 
+ 113  113:     // Step 7: Try to melt with only preimage (should fail - signature required)
+ 114  114:     let mut proofs_preimage_only = htlc_proofs.clone();
+ 115  115:     // Add only preimage to first proof (no signature)
+ 116  116:     proofs_preimage_only[0].add_preimage(preimage.clone());
+ 117  117: 
+ 118  118:     let melt_request_preimage_only =
+ 119  119:         cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), proofs_preimage_only, None);
+ 120  120: 
+ 121  121:     let result = melt_request_preimage_only.verify_spending_conditions();
+ 122  122:     assert!(
+    ...
+ 134  134: 
+ 135  135:     // Step 8: Try to melt with SIG_INPUTS signatures (should fail - SIG_ALL required)
+ 136  136:     let mut melt_request_sig_inputs =
+ 137  137:         cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), htlc_proofs.clone(), None);
+ 138  138: 
+ 139  139:     // Add preimage to first proof
+ 140  140:     melt_request_sig_inputs.inputs_mut()[0].add_preimage(preimage.clone());
+    ...
+ 160  160: 
+ 161  161:     // Step 9: Now melt with correct preimage + SIG_ALL signature
+ 162  162:     let mut melt_request =
+ 163  163:         cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), htlc_proofs.clone(), None);
+ 164  164: 
+ 165  165:     // Add preimage to first proof
+ 166  166:     melt_request.inputs_mut()[0].add_preimage(preimage.clone());
+    ...
+ 176  176:     let melt_response = mint.melt(&melt_request).await.unwrap().await.unwrap();
+ 177  177:     println!("✓ Melt operation completed successfully!");
+ 178  178:     println!("  Quote state: {}", melt_response.state);
+ 179  179:     assert_eq!(melt_response.quote, melt_quote.quote().clone());
+ 180  180: }
+Modified regular file crates/cdk/src/mint/melt/tests/htlc_spending_conditions_tests.rs:
+    ...
+ 112  112:         .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
+ 113  113:         .await
+ 114  114:         .unwrap();
+ 115  115:     println!("Created melt quote: {}", melt_quote.quote().clone());
+ 116  116: 
+ 117  117:     // Step 7: Try to melt with only preimage (should fail - signature required)
+ 118  118: 
+    ...
+ 124  124:     }
+ 125  125: 
+ 126  126:     let melt_request_preimage_only =
+ 127  127:         cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), proofs_preimage_only, None);
+ 128  128: 
+ 129  129:     let result = melt_request_preimage_only.verify_spending_conditions();
+ 130  130:     assert!(
+    ...
+ 150  150:     }
+ 151  151: 
+ 152  152:     let melt_request_signature_only =
+ 153  153:         cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), proofs_signature_only, None);
+ 154  154: 
+ 155  155:     let result = melt_request_signature_only.verify_spending_conditions();
+ 156  156:     assert!(
+    ...
+ 176  176:         proof.sign_p2pk(alice_secret.clone()).unwrap();
+ 177  177:     }
+ 178  178: 
+ 179  179:     let melt_request = cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), proofs_both, None);
+ 180  180: 
+ 181  181:     // Verify spending conditions pass
+ 182  182:     melt_request.verify_spending_conditions().unwrap();
+    ...
+ 186  186:     let melt_response = mint.melt(&melt_request).await.unwrap().await.unwrap();
+ 187  187:     println!("✓ Melt operation completed successfully!");
+ 188  188:     println!("  Quote state: {}", melt_response.state);
+ 189  189:     assert_eq!(melt_response.quote, melt_quote.quote().clone());
+ 190  190: }
+Modified regular file crates/cdk/src/mint/melt/tests/locktime_spending_conditions_tests.rs:
+    ...
+ 105  105:         .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
+ 106  106:         .await
+ 107  107:         .unwrap();
+ 108  108:     println!("Created melt quote: {}", melt_quote.quote().clone());
+ 109  109: 
+ 110  110:     // Step 6: Try to melt with Bob's signature (wrong key, but locktime expired so should work)
+ 111  111:     let mut proofs_bob_signed = p2pk_proofs.clone();
+    ...
+ 116  116:     }
+ 117  117: 
+ 118  118:     let melt_request_bob =
+ 119  119:         cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), proofs_bob_signed, None);
+ 120  120: 
+ 121  121:     // After locktime expiry, anyone can spend (signature verification is skipped)
+ 122  122:     melt_request_bob.verify_spending_conditions().unwrap();
+    ...
+ 126  126:     let melt_response = mint.melt(&melt_request_bob).await.unwrap().await.unwrap();
+ 127  127:     println!("✓ Melt operation completed successfully with Bob's key after locktime!");
+ 128  128:     println!("  Quote state: {}", melt_response.state);
+ 129  129:     assert_eq!(melt_response.quote, melt_quote.quote().clone());
+ 130  130: }
+ 131  131: 
+ 132  132: /// Test: P2PK with future locktime - must use correct key before expiry
+    ...
+ 224  224:         .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
+ 225  225:         .await
+ 226  226:         .unwrap();
+ 227  227:     println!("Created melt quote: {}", melt_quote.quote().clone());
+ 228  228: 
+ 229  229:     // Step 6: Try to melt with Bob's signature (wrong key, locktime not expired)
+ 230  230:     let mut proofs_bob_signed = p2pk_proofs.clone();
+    ...
+ 235  235:     }
+ 236  236: 
+ 237  237:     let melt_request_bob =
+ 238  238:         cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), proofs_bob_signed, None);
+ 239  239: 
+ 240  240:     // Before locktime expiry, wrong key should fail
+ 241  241:     let result = melt_request_bob.verify_spending_conditions();
+    ...
+ 262  262:     }
+ 263  263: 
+ 264  264:     let melt_request_alice =
+ 265  265:         cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), proofs_alice_signed, None);
+ 266  266: 
+ 267  267:     // Verify spending conditions pass
+ 268  268:     melt_request_alice.verify_spending_conditions().unwrap();
+    ...
+ 272  272:     let melt_response = mint.melt(&melt_request_alice).await.unwrap().await.unwrap();
+ 273  273:     println!("✓ Melt operation completed successfully with Alice's key before locktime!");
+ 274  274:     println!("  Quote state: {}", melt_response.state);
+ 275  275:     assert_eq!(melt_response.quote, melt_quote.quote().clone());
+ 276  276: }
+Modified regular file crates/cdk/src/mint/melt/tests/p2pk_sigall_spending_conditions_tests.rs:
+    ...
+ 106  106:         .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
+ 107  107:         .await
+ 108  108:         .unwrap();
+ 109  109:     println!("Created melt quote: {}", melt_quote.quote().clone());
+ 110  110: 
+ 111  111:     // Step 6: Try to melt P2PK proof WITHOUT signature (should fail)
+ 112  112: 
+ 113  113:     let melt_request_no_sig =
+ 114  114:         cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), p2pk_proofs.clone(), None);
+ 115  115: 
+ 116  116:     let result = melt_request_no_sig.verify_spending_conditions();
+ 117  117:     assert!(result.is_err(), "Should fail without signature");
+    ...
+ 127  127: 
+ 128  128:     // Step 7: Sign all proofs individually (SIG_INPUTS way) - should fail for SIG_ALL
+ 129  129:     let mut melt_request_sig_inputs =
+ 130  130:         cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), p2pk_proofs.clone(), None);
+ 131  131: 
+ 132  132:     // Sign each proof individually (SIG_INPUTS mode)
+ 133  133:     for proof in melt_request_sig_inputs.inputs_mut() {
+    ...
+ 151  151: 
+ 152  152:     // Step 8: Sign the transaction with SIG_ALL and perform the melt
+ 153  153:     let mut melt_request =
+ 154  154:         cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), p2pk_proofs.clone(), None);
+ 155  155: 
+ 156  156:     // Use sign_sig_all to sign the transaction (signature goes on first proof's witness)
+ 157  157:     melt_request.sign_sig_all(alice_secret.clone()).unwrap();
+    ...
+ 164  164:     let melt_response = mint.melt(&melt_request).await.unwrap().await.unwrap();
+ 165  165:     println!("✓ Melt operation completed successfully!");
+ 166  166:     println!("  Quote state: {}", melt_response.state);
+ 167  167:     assert_eq!(melt_response.quote, melt_quote.quote().clone());
+ 168  168: }
+Modified regular file crates/cdk/src/mint/melt/tests/p2pk_spending_conditions_tests.rs:
+    ...
+  93   93:         .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
+  94   94:         .await
+  95   95:         .unwrap();
+  96   96:     println!("Created melt quote: {}", melt_quote.quote().clone());
+  97   97: 
+  98   98:     // Step 6: Try to melt P2PK proof WITHOUT signature (should fail)
+  99   99:     let melt_request_no_sig =
+ 100  100:         cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), p2pk_proofs.clone(), None);
+ 101  101: 
+ 102  102:     let result = melt_request_no_sig.verify_spending_conditions();
+ 103  103:     assert!(result.is_err(), "Should fail without signature");
+    ...
+ 119  119:         proof.sign_p2pk(alice_secret.clone()).unwrap();
+ 120  120:     }
+ 121  121: 
+ 122  122:     let melt_request = cdk_common::MeltRequest::new(melt_quote.quote().clone().clone(), proofs_signed, None);
+ 123  123: 
+ 124  124:     // Verify spending conditions pass
+ 125  125:     melt_request.verify_spending_conditions().unwrap();
+    ...
+ 129  129:     let melt_response = mint.melt(&melt_request).await.unwrap().await.unwrap();
+ 130  130:     println!("✓ Melt operation completed successfully!");
+ 131  131:     println!("  Quote state: {}", melt_response.state);
+ 132  132:     assert_eq!(melt_response.quote, melt_quote.quote().clone());
+ 133  133: }
+Modified regular file crates/cdk/src/mint/saga_recovery.rs:
+    ...
+ 493  493:         let quote_response = mint.get_melt_quote(request).await.unwrap();
+ 494  494: 
+ 495  495:         mint.localstore
+ 496  496:             .get_melt_quote(&quote_response.quote())
+ 497  497:             .await
+ 498  498:             .unwrap()
+ 499  499:             .expect("quote should exist in database")
+    ...
+Modified regular file crates/cdk/src/wallet/melt/bolt11.rs:
+   1    1: use std::str::FromStr;
+   2    2: 
+   3    3: use cdk_common::nut00::KnownMethod;
+   4    4: use cdk_common::wallet::MeltQuote;
+   5    5: use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, PaymentMethod};
+   6    6: use lightning_invoice::Bolt11Invoice;
+   7    7: use tracing::instrument;
+   8    8: 
+    ...
+  31   31:             .await?;
+  32   32: 
+  33   33:         let quote_res = match quote_res {
+  34   34:             MeltQuoteResponseMeltQuoteCreateResponse::Bolt11(response) => response,
+  35   35:             _ => return Err(Error::InvalidPaymentMethod),
+  36   36:         };
+  37   37: 
+    ...
+Modified regular file crates/cdk/src/wallet/melt/bolt12.rs:
+    ...
+   7    7: use cdk_common::amount::amount_for_offer;
+   8    8: use cdk_common::nut00::KnownMethod;
+   9    9: use cdk_common::wallet::MeltQuote;
+  10   10: use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, PaymentMethod};
+  11   11: use lightning::offers::offer::Offer;
+  12   12: use tracing::instrument;
+  13   13: 
+    ...
+  34   34:             .await?;
+  35   35: 
+  36   36:         let quote_res = match quote_res {
+  37   37:             MeltQuoteResponseMeltQuoteCreateResponse::Bolt12(response) => response,
+  38   38:             _ => return Err(Error::InvalidPaymentMethod),
+  39   39:         };
+  40   40: 
+    ...
+Modified regular file crates/cdk/src/wallet/melt/custom.rs:
+   1    1: use cdk_common::wallet::MeltQuote;
+   2    2: use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, PaymentMethod};
+   3    3: use tracing::instrument;
+   4    4: 
+   5    5: use crate::nuts::{MeltOptions, MeltQuoteCustomRequest};
+    ...
+  35   35:             .await?;
+  36   36: 
+  37   37:         let quote_res = match quote_res {
+  38   38:             MeltQuoteResponseMeltQuoteCreateResponse::Custom((_, response)) => response,
+  39   39:             _ => return Err(Error::InvalidPaymentMethod),
+  40   40:         };
+  41   41: 
+    ...
+Modified regular file crates/cdk/src/wallet/melt/mod.rs:
+    ...
+ 964  964:         }
+ 965  965: 
+ 966  966:         quote.state = new_state;
+      967:         quote.payment_proof = payment_proof;
+ 967  968: 
+ 968  969:         match self.localstore.add_melt_quote(quote.clone()).await {
+ 969  970:             Ok(_) => Ok(()),
+    ...
+ 980  981:                         .ok_or(Error::UnknownQuote)?;
+ 981  982: 
+ 982  983:                     fresh_quote.state = new_state;
+      984:                     fresh_quote.payment_proof = quote.payment_proof.clone();
+ 983  985: 
+ 984  986:                     match self.localstore.add_melt_quote(fresh_quote.clone()).await {
+ 985  987:                         Ok(_) => (),
+    ...
+1116 1118:                 )
+1117 1119:                 .await?;
+1118 1120:             }
+1119 1121:         };
+1120 1122: 
+1121 1123:         Ok(quote)
+1122 1124:     }
+    ...
+Modified regular file crates/cdk/src/wallet/mint_connector/http_client.rs:
+    ...
+   4    4: 
+   5    5: use async_trait::async_trait;
+   6    6: use cdk_common::{
+   7     :     nut19, MeltQuoteBolt11Response, MeltQuoteRequest, MeltQuoteResponse, Method,
+   8     :     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteRequest,
+   9     :     MintQuoteResponse, ProtectedEndpoint, RoutePath,
+        7:     nut19, MeltQuoteBolt11Response, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse,
+        8:     Method, MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
+        9:     MintQuoteRequest, MintQuoteResponse, ProtectedEndpoint, RoutePath,
+  10   10: };
+  11   11: use serde::de::DeserializeOwned;
+  12   12: use serde::Serialize;
+    ...
+ 332  332: 
+ 333  333:                 Ok(MintQuoteResponse::Bolt12(response))
+ 334  334:             }
+ 335     :             // PaymentMethod::Known(KnownMethod::Onchain) => Err(Error::UnsupportedPaymentMethod),
+ 336  335:             PaymentMethod::Custom(method_name) => {
+ 337  336:                 let url =
+ 338  337:                     self.mint_url
+    ...
+ 415  414:     async fn post_melt_quote(
+ 416  415:         &self,
+ 417  416:         request: MeltQuoteRequest,
+ 418  417:     ) -> Result<MeltQuoteResponseMeltQuoteCreateResponse<String>, Error> {
+ 419  418:         let method = request.method().to_string();
+ 420  419:         let path = format!("v1/melt/quote/{}", method);
+ 421  420: 
+    ...
+ 430  429:             MeltQuoteRequest::Bolt11(req) => {
+ 431  430:                 let response: cdk_common::nut23::MeltQuoteBolt11Response<String> =
+ 432  431:                     self.transport.http_post(url, auth_token, req).await?;
+ 433  432:                 Ok(MeltQuoteResponseMeltQuoteCreateResponse::Bolt11(response))
+ 434  433:             }
+ 435  434:             MeltQuoteRequest::Bolt12(req) => {
+ 436  435:                 let response: cdk_common::nut25::MeltQuoteBolt12Response<String> =
+ 437  436:                     self.transport.http_post(url, auth_token, req).await?;
+ 438  437:                 Ok(MeltQuoteResponseMeltQuoteCreateResponse::Bolt12(response))
+ 439  438:             }
+ 440  439:             MeltQuoteRequest::Custom(req) => {
+ 441  440:                 let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
+ 442  441:                     self.transport.http_post(url, auth_token, req).await?;
+ 443  442:                 Ok(MeltQuoteResponseMeltQuoteCreateResponse::Custom((
+ 443  443:                     request.method(),
+ 443  444:                     response,
+ 443  445:                 )))
+ 444  446:             }
+ 445  447:         }
+ 446  448:     }
+    ...
+Modified regular file crates/cdk/src/wallet/mint_connector/mod.rs:
+    ...
+   3    3: use std::fmt::Debug;
+   4    4: 
+   5    5: use async_trait::async_trait;
+   6    6: use cdk_common::{
+   6    7:     MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
+   6    8:     MintQuoteResponse,
+   6    9: };
+   7   10: 
+   8   11: use super::Error;
+   9   12: // Re-export Lightning address types for trait implementers
+    ...
+  89   92:     async fn post_melt_quote(
+  90   93:         &self,
+  91   94:         request: MeltQuoteRequest,
+  92   95:     ) -> Result<MeltQuoteResponseMeltQuoteCreateResponse<String>, Error>;
+  93   96: 
+  94   97:     /// Mint Quote status with payment method
+  95   98:     async fn get_mint_quote_status(
+    ...
+Modified regular file crates/cdk/src/wallet/streams/payment.rs:
+    ...
+ 160  160:                                     localstore.get_mint_quote(&quote_id).await
+ 161  161:                                 {
+ 162  162:                                     quote.amount_paid = info.amount_paid;
+ 163  163:                                     // quote.amount_issued = info.amount_issued;
+ 164  164:                                     if let Err(e) = localstore.add_mint_quote(quote).await {
+ 165  165:                                         tracing::warn!("Failed to update quote state: {}", e);
+ 166  166:                                     }
+    ...
+Modified regular file crates/cdk/src/wallet/test_utils.rs:
+    ...
+  11   11: use cdk_common::mint_url::MintUrl;
+  12   12: use cdk_common::nut00::KnownMethod;
+  13   13: use cdk_common::nuts::{
+  14     :     CheckStateResponse, CurrencyUnit, Id, KeySet, KeySetInfo, KeysetResponse, MeltMethodSettings,
+  15     :     MintInfo, MintMethodSettings, MintRequest, MintResponse, MintVersion, MppMethodSettings, Proof,
+  16     :     RestoreResponse, SwapRequest, SwapResponse,
+  17     : };
+  18     : use cdk_common::secret::Secret;
+       14:     CurrencyUnit, Id, KeySet, KeySetInfo, KeysetResponse, MeltMethodSettings,
+       15:     MintInfo, MintMethodSettings, MintVersion, MppMethodSettings, Proof,
+       16: };
+       17: use crate::secret::Secret;
+       18: use cdk_common::{
+       19:     Amount, CheckStateRequest, CheckStateResponse, MeltQuoteCreateResponse, MeltQuoteRequest,
+       20:     MeltQuoteResponse, MeltRequest, MintQuoteRequest, MintQuoteResponse,
+       21:     MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+       22: };
+       23: use crate::nuts::{MeltQuoteState, MintQuoteBolt11Response, MeltQuoteBolt11Response, SecretKey, State};
+  19   24: use cdk_common::wallet::{MeltQuote, MintQuote};
+  20     : use cdk_common::{
+  21     :     Amount, MeltQuoteRequest, MeltQuoteResponse, MeltQuoteState, MintQuoteRequest,
+  22     :     MintQuoteResponse, SecretKey, State,
+  23     : };
+  24   25: 
+  25   26: use crate::nuts::{
+  26   27:     nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest,
+  27   27:     MeltQuoteBolt11Response, MeltRequest, MintQuoteBolt11Response, NUT04Settings, NUT05Settings,
+  28   28:     PaymentMethod, RestoreRequest,
+  29   29: };
+  30   30: use crate::wallet::{MintConnector, Wallet};
+  31   31: use crate::Error;
+    ...
+ 648  648:     async fn post_melt_quote(
+ 649  649:         &self,
+ 650  650:         _request: MeltQuoteRequest,
+ 651  651:     ) -> Result<MeltQuoteResponseMeltQuoteCreateResponse<String>, Error> {
+ 652  652:         unimplemented!()
+ 653  653:     }
+ 654  654: 
+    ...
+Modified regular file crates/cdk-axum/src/custom_handlers.rs:
+    ...
+  19   19:     MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
+  20   20:     MintQuoteCustomRequest, MintRequest, MintResponse,
+  21   21: };
+       22: use cdk::{MeltQuoteCreateResponse, MeltQuoteResponse};
+  22   23: use serde_json::Value;
+  23   24: use tracing::instrument;
+  24   25: 
+    ...
+ 111  112:             let bolt12_request: MintQuoteBolt12Request =
+ 112  113:                 serde_json::from_value(payload).map_err(|e| {
+ 113  114:                     tracing::error!("Failed to parse bolt12 request: {}", e);
+ 114  115:                     if e.to_string().contains("missing field `pubkey`") {
+      116:                         into_response(cdk::Error::PubkeyRequired)
+      117:                     } else {
+ 114  118:                         into_response(cdk::Error::InvalidPaymentMethod)
+      119:                     }
+ 115  120:                 })?;
+ 116  121: 
+ 117  122:             let quote = state
+    ...
+ 128  133:             let custom_request: MintQuoteCustomRequest =
+ 129  134:                 serde_json::from_value(payload).map_err(|e| {
+ 130  135:                     tracing::error!("Failed to parse custom request: {}", e);
+ 131  136:                     if e.to_string().contains("missing field `pubkey`") {
+      137:                         into_response(cdk::Error::PubkeyRequired)
+      138:                     } else {
+ 131  139:                         into_response(cdk::Error::InvalidPaymentMethod)
+      140:                     }
+ 132  141:                 })?;
+ 133  142: 
+ 134  143:             let quote_request = cdk::mint::MintQuoteRequest::Custom {
+ 135  144:                 method: cdk::nuts::PaymentMethod::Customfrom(method.clone()),
+ 136  145:                 request: custom_request,
+ 137  146:             };
+ 138  147: 
+    ...
+ 251  260:             let responses: Vec<cdk::nuts::MintQuoteCustomResponse<QuoteId>> = responses
+ 252  261:                 .into_iter()
+ 253  262:                 .map(|r| match r {
+ 254  263:                     cdk::mint::MintQuoteResponse::Custom {
+ 255     :                         method: _,
+ 256  263:                         response,
+ 257  263:                     .. } => Ok(response),
+ 258  264:                     _ => Err(cdk::Error::InvalidPaymentMethod),
+ 259  265:                 })
+ 260  266:                 .collect::<Result<Vec<_>, _>>()
+    ...
+ 323  329:     State(state): State<MintState>,
+ 324  330:     Path(method): Path<String>,
+ 325  331:     Json(payload): Json<Value>,
+ 326  332: ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>Response, Response> {
+ 327  333:     state
+ 328  334:         .mint
+ 329  335:         .verify_auth(
+    ...
+ 375  381:         }
+ 376  382:     };
+ 377  383: 
+ 378     :     Ok(Json(response))
+      384:     match response {
+      385:         MeltQuoteCreateResponse::Bolt11(r) => Ok(Json(r).into_response()),
+      386:         MeltQuoteCreateResponse::Bolt12(r) => Ok(Json(r).into_response()),
+      387:         MeltQuoteCreateResponse::Custom((_, r)) => Ok(Json(r).into_response()),
+      388:     }
+ 379  389: }
+ 380  390: 
+ 381  391: /// Get custom payment method melt quote status
+    ...
+ 384  394:     auth: AuthHeader,
+ 385  395:     State(state): State<MintState>,
+ 386  396:     Path((method, quote_id)): Path<(String, QuoteId)>,
+ 387  397: ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>Response, Response> {
+ 388  398:     state
+ 389  399:         .mint
+ 390  400:         .verify_auth(
+    ...
+ 402  412:         .await
+ 403  413:         .map_err(into_response)?;
+ 404  414: 
+ 405     :     Ok(Json(quote))
+      415:     match quote {
+      416:         MeltQuoteResponse::Bolt11(r) => Ok(Json(r).into_response()),
+      417:         MeltQuoteResponse::Bolt12(r) => Ok(Json(r).into_response()),
+      418:         MeltQuoteResponse::Custom((_, r)) => Ok(Json(r).into_response()),
+      419:     }
+ 406  420: }
+ 407  421: 
+ 408  422: /// Melt tokens with custom payment method
+    ...
+Modified regular file crates/cdk-common/src/lib.rs:
+    ...
+  57   57: // Re-export common types
+  58   58: pub use common::FinalizedMelt;
+  59   59: pub use error::Error;
+  60   60: pub use melt::{MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse};
+  61   61: pub use mint_quote::{MintQuoteRequest, MintQuoteResponse};
+  62   62: /// Re-export parking_lot for reuse
+  63   63: pub use parking_lot;
+Modified regular file crates/cdk-common/src/melt.rs:
+    ...
+  64   64:     Custom((PaymentMethod, MeltQuoteCustomResponse<Q>)),
+  65   65: }
+  66   66: 
+       67: /// Melt quote creation response for all payment methods.
+       68: #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+       69: #[serde(bound = "Q: Serialize + DeserializeOwned")]
+       70: pub enum MeltQuoteCreateResponse<Q> {
+       71:     /// Bolt11 (Lightning invoice)
+       72:     Bolt11(MeltQuoteBolt11Response<Q>),
+       73:     /// Bolt12 (Offers)
+       74:     Bolt12(MeltQuoteBolt12Response<Q>),
+       75:     /// Custom payment method
+       76:     Custom((PaymentMethod, MeltQuoteCustomResponse<Q>)),
+       77: }
+       78: 
+  67   79: impl<Q> MeltQuoteResponse<Q> {
+  68   80:     /// Returns the payment method for this response.
+  69   81:     pub fn method(&self) -> PaymentMethod {
+    ...
+ 155  167:         }
+ 156  168:     }
+ 157  169: }
+      170: 
+      171: impl<Q> MeltQuoteCreateResponse<Q> {
+      172:     /// Returns the payment method for this response.
+      173:     pub fn method(&self) -> PaymentMethod {
+      174:         match self {
+      175:             Self::Bolt11(_) => PaymentMethod::Known(KnownMethod::Bolt11),
+      176:             Self::Bolt12(_) => PaymentMethod::Known(KnownMethod::Bolt12),
+      177:             Self::Custom((method, _)) => method.clone(),
+      178:         }
+      179:     }
+      180: 
+      181:     /// Returns the quote ID for single-quote methods.
+      182:     pub fn quote(&self) -> &Q {
+      183:         match self {
+      184:             Self::Bolt11(r) => &r.quote,
+      185:             Self::Bolt12(r) => &r.quote,
+      186:             Self::Custom((_, r)) => &r.quote,
+      187:         }
+      188:     }
+      189: }
+Modified regular file crates/cdk-common/src/mint.rs:
+    ...
+   8    8: use cashu::quote_id::QuoteId;
+   9    9: use cashu::util::unix_time;
+  10   10: use cashu::{
+  11   11:     Bolt11Invoice, MeltOptions, MeltQuoteBolt11Response, MeltQuoteCustomResponse,
+  11   12:     MintQuoteBolt11Response,
+  12   12:     MintQuoteBolt12Response, MintQuoteCustomResponse, PaymentMethod,
+  12   13:     Proofs, State,
+  13   14: };
+  14   15: use lightning::offers::offer::Offer;
+  15   16: use serde::{Deserialize, Serialize};
+    ...
+ 849  850:     pub state: MeltQuoteState,
+ 850  851:     /// Expiration time of quote
+ 851  852:     pub expiry: u64,
+ 852  853:     /// Payment proof (e.g. Lightning preimage or onchain outpoint)
+ 853  854:     pub payment_proof: Option<String>,
+ 854  855:     /// Value used by ln backend to look up state of request
+ 855  856:     pub request_lookup_id: Option<PaymentIdentifier>,
+    ...
+ 999 1000: }
+1000 1001: 
+1001 1002: impl From<MintQuote> for MintQuoteBolt11Response<QuoteId> {
+1002 1003:     fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt11Response<QuoteId> {
+1003 1004:         MintQuoteBolt11Response {
+1004 1005:             quote: mint_quote.id.clone(),
+1005 1006:             state: mint_quote.state(),
+1006 1007:             request: mint_quote.request,
+1007 1008:             expiry: Some(mint_quote.expiry),
+1008 1009:             pubkey: mint_quote.pubkey,
+1009 1010:             amount: mint_quote.amount.map(Into::into),
+1010 1011:             unit: Some(mint_quote.unit.clone()),
+1011 1012:         }
+1012 1013:     }
+1013 1014: }
+1014 1015: 
+1015 1016: impl From<MintQuote> for MintQuoteBolt11Response<String> {
+1016 1017:     fn from(quote: MintQuote) -> Self {
+1017 1018:         let quote: MintQuoteBolt11Response<QuoteId> = quote.into();
+1018     : 
+1019 1019:         quote.into()
+1020 1020:     }
+1021 1021: }
+1022 1022: 
+1023 1023: impl TryFrom<crate::mint::MintQuote> for MintQuoteBolt12Response<QuoteId> {
+1024 1024:     type Error = crate::Error;
+1025 1025: 
+1026 1026:     fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
+1027 1027:         Ok(MintQuoteBolt12Response {
+1028 1028:             quote: mint_quote.id.clone(),
+1029 1029:             request: mint_quote.request,
+1030 1030:             expiry: Some(mint_quote.expiry),
+1031 1031:             amount_paid: Amount::from(mint_quote.amount_paid.valueinto()),
+1032 1032:             amount_issued: Amount::from(mint_quote.amount_issued.valueinto()),
+1033 1033:             pubkey: mint_quote.pubkey.ok_or(crate::Error::PubkeyRequired)?,
+1034 1034:             amount: mint_quote.amount.map(Into::into),
+1035 1035:             unit: mint_quote.unit,
+1036 1036:         })
+1037 1037:     }
+1038 1038: }
+1039 1039: 
+1040 1040: impl TryFrom<MintQuote> for MintQuoteBolt12Response<String> {
+1041 1041:     type Error = crate::Error;
+1042 1042: 
+1043 1043:     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
+1044 1044:         let quote: MintQuoteBolt12Response<QuoteId> = quote.try_into()?;
+1045     : 
+1046 1045:         Ok(quote.into())
+1047 1046:     }
+1048 1047: }
+1049 1048: 
+1050 1049: impl TryFrom<crate::mint::MintQuote> for crate::nuts::MintQuoteCustomResponse<QuoteId> {
+1051 1050:     type Error = crate::Error;
+1052 1051: 
+1053     :     fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
+1054     :         Ok(crate::nuts::MintQuoteCustomResponse {
+1055     :             state: mint_quote.state(),
+1056     :             quote: mint_quote.id.clone(),
+1057     :             request: mint_quote.request,
+1058     :             expiry: Some(mint_quote.expiry),
+1059     :             pubkey: mint_quote.pubkey,
+1060     :             amount: mint_quote.amount.map(Into::into),
+1061     :             unit: Some(mint_quote.unit),
+1062     :             extra: mint_quote.extra_json.unwrap_or_default(),
+     1052:     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
+     1053:         Ok(MintQuoteCustomResponse {
+     1054:             quote: quote.id.clone(),
+     1055:             request: quote.request.clone(),
+     1056:             unit: Some(quote.unit.clone()),
+     1057:             expiry: Some(quote.expiry),
+     1058:             pubkey: quote.pubkey,
+     1059:             amount: quote.amount.as_ref().map(|a| a.clone().into()),
+     1060:             state: quote.state(),
+     1061:             extra: quote.extra_json.clone().unwrap_or_default(),
+1063 1062:         })
+1064 1063:     }
+1065 1064: }
+1066 1065: 
+1067 1066: impl TryFrom<MintQuote> for crate::nuts::MintQuoteCustomResponse<String> {
+1068 1067:     type Error = crate::Error;
+1069 1068: 
+1070 1069:     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
+1071 1070:         let quote: crate::nuts::MintQuoteCustomResponse<QuoteId> = quote.try_into()?;
+1072     : 
+1073 1071:         Ok(quote.into())
+1074 1072:     }
+1075 1073: }
+    ...
+1108 1106:             Ok(MintQuoteResponse::Bolt12(bolt12_response))
+1109 1107:         } else {
+1110 1108:             let method = quote.payment_method.clone();
+1111 1109:             let custom_response = crate::nuts::MintQuoteCustomResponse::try_from(quote)?;
+1112 1110:             Ok(MintQuoteResponse::Custom {
+1113 1111:                 method,
+1114 1112:                 response: custom_response,
+    ...
+1142 1140:             change: None,
+1143 1141:             state: melt_quote.state,
+1144 1142:             expiry: melt_quote.expiry,
+1145 1143:             amount: melt_quote.amount().clone().into(),
+1146 1144:             fee_reserve: melt_quote.fee_reserve().clone().into(),
+1147 1145:             request: None,
+1148 1146:             unit: Some(melt_quote.unit.clone()),
+1149 1147:         }
+    ...
+1154 1152:     fn from(melt_quote: MeltQuote) -> MeltQuoteBolt11Response<QuoteId> {
+1155 1153:         MeltQuoteBolt11Response {
+1156 1154:             quote: melt_quote.id.clone(),
+1157 1155:             amount: melt_quote.amount().clone().into(),
+1158 1156:             fee_reserve: melt_quote.fee_reserve().clone().into(),
+1159 1157:             state: melt_quote.state,
+1160 1158:             expiry: melt_quote.expiry,
+1161 1159:             payment_proof: melt_quote.payment_proof,
+    ...
+1166 1164:     }
+1167 1165: }
+1168 1166: 
+     1167: impl From<MeltQuote> for MeltQuoteCustomResponse<QuoteId> {
+     1168:     fn from(quote: MeltQuote) -> Self {
+     1169:         Self {
+     1170:             quote: quote.id.clone(),
+     1171:             amount: quote.amount().into(),
+     1172:             fee_reserve: quote.fee_reserve().into(),
+     1173:             state: quote.state,
+     1174:             expiry: quote.expiry,
+     1175:             payment_proof: quote.payment_proof,
+     1176:             change: None,
+     1177:             request: Some(quote.request.to_string()),
+     1178:             unit: Some(quote.unit),
+     1179:             extra: serde_json::Value::Null,
+     1180:         }
+     1181:     }
+     1182: }
+     1183: 
+1169 1184: /// Payment request
+1170 1185: #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+1171 1186: pub enum MeltPaymentRequest {
+    ...
+Modified regular file crates/cdk-common/src/wallet/mod.rs:
+    ...
+ 223  223:     pub state: MeltQuoteState,
+ 224  224:     /// Expiration time of quote
+ 225  225:     pub expiry: u64,
+ 226  226:     /// Payment proof (e.g. Lightning preimage or onchain outpoint)
+ 227  227:     #[serde(alias = "payment_preimage")]
+ 228  228:     pub payment_proof: Option<String>,
+ 229  229:     /// Payment method
+    ...
+Modified regular file crates/cdk-ffi/src/types/quote.rs:
+    ...
+ 354  354:     pub state: QuoteState,
+ 355  355:     /// Expiry timestamp
+ 356  356:     pub expiry: u64,
+ 357  357:     /// Payment preimageproof
+ 358  358:     pub payment_proof: Option<String>,
+ 359  359:     /// Payment method
+ 360  360:     pub payment_method: PaymentMethod,
+    ...
+Modified regular file crates/cdk-integration-tests/src/init_pure_tests.rs:
+    ...
+  23   23: use cdk::types::{FeeReserve, QuoteTTL};
+  24   24: use cdk::util::unix_time;
+  25   25: use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
+  26   26: use cdk::{Amount, Error, MeltQuoteCreateResponse, Mint, StreamExt};
+  27   27: use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest, MintQuoteResponse};
+  28   28: use cdk_fake_wallet::FakeWallet;
+  29   29: use tokio::sync::RwLock;
+    ...
+ 168  168:     async fn post_melt_quote(
+ 169  169:         &self,
+ 170  170:         request: MeltQuoteRequest,
+ 171  171:     ) -> Result<MeltQuoteResponseMeltQuoteCreateResponse<String>, Error> {
+ 172  172:         match request {
+ 173  173:             MeltQuoteRequest::Bolt11(req) => {
+ 174     :                 let response = self.mint.get_melt_quote(req.into()).await.map(Into::into)?;
+ 175     :                 Ok(MeltQuoteResponse::Bolt11(response))
+      174:                 let response = self.mint.get_melt_quote(req.into()).await?;
+      175:                 match response {
+      176:                     cdk_common::MeltQuoteCreateResponse::Bolt11(r) => {
+      177:                         Ok(MeltQuoteCreateResponse::Bolt11(r.to_string_id()))
+      178:                     }
+      179:                     _ => Err(Error::InvalidPaymentMethod),
+      180:                 }
+ 176  181:             }
+ 177  182:             MeltQuoteRequest::Bolt12(req) => {
+ 178     :                 let response = self.mint.get_melt_quote(req.into()).await.map(Into::into)?;
+ 179     :                 Ok(MeltQuoteResponse::Bolt12(response))
+      183:                 let response = self.mint.get_melt_quote(req.into()).await?;
+      184:                 match response {
+      185:                     cdk_common::MeltQuoteCreateResponse::Bolt12(r) => {
+      186:                         Ok(MeltQuoteCreateResponse::Bolt12(r.to_string_id()))
+      187:                     }
+      188:                     _ => Err(Error::InvalidPaymentMethod),
+      189:                 }
+ 180  190:             }
+ 181  191:             MeltQuoteRequest::Custom(_) => Err(Error::UnsupportedPaymentMethod),
+ 182  192:         }
+    ...
+ 187  197:         method: PaymentMethod,
+ 188  198:         quote_id: &str,
+ 189  199:     ) -> Result<MeltQuoteResponse<String>, Error> {
+ 190  200:         let response: MeltQuoteBolt11Response<String> = self
+ 191  201:             .mint
+ 192  202:             .check_melt_quote(&QuoteId::from_str(quote_id)?)
+ 193  203:             .await
+ 194  203:             .map(Into::into)?;
+ 195  204: 
+ 196  205:         match method {
+ 197     :             PaymentMethod::Known(KnownMethod::Bolt11) => Ok(MeltQuoteResponse::Bolt11(response)),
+ 198     :             PaymentMethod::Known(KnownMethod::Bolt12) => Ok(MeltQuoteResponse::Bolt12(response)),
+      206:             PaymentMethod::Known(KnownMethod::Bolt11) => match response {
+      207:                 cdk_common::MeltQuoteResponse::Bolt11(r) => {
+      208:                     Ok(MeltQuoteResponse::Bolt11(r.to_string_id()))
+      209:                 }
+      210:                 _ => Err(Error::InvalidPaymentMethod),
+      211:             },
+      212:             PaymentMethod::Known(KnownMethod::Bolt12) => match response {
+      213:                 cdk_common::MeltQuoteResponse::Bolt12(r) => {
+      214:                     Ok(MeltQuoteResponse::Bolt12(r.to_string_id()))
+      215:                 }
+      216:                 _ => Err(Error::InvalidPaymentMethod),
+      217:             },
+ 199  218:             PaymentMethod::Custom(_) => Err(Error::UnsupportedPaymentMethod),
+ 200  219:         }
+ 201  220:     }
+    ...
+Modified regular file crates/cdk-sql-common/src/mint/quotes.rs:
+    ...
+ 567  567:     let expiry = column_as_number!(expiry);
+ 568  568:     let payment_proof = column_as_nullable_string!(payment_proof);
+ 569  569:     let options = column_as_nullable_string!(options);
+      570: 
+ 570  571:     let options = options.and_then(|o| serde_json::from_str(&o).ok());
+ 571  572:     let created_time: i64 = column_as_number!(created_time);
+ 572  573:     let paid_time = column_as_nullable_number!(paid_time);
+    ...
+Added regular file diff.patch:
+    (empty)

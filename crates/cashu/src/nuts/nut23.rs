@@ -256,7 +256,8 @@ pub struct MeltQuoteBolt11Response<Q> {
     pub expiry: u64,
     /// Payment preimage
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub payment_preimage: Option<String>,
+    #[serde(rename = "payment_preimage")]
+    pub payment_proof: Option<String>,
     /// Change
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change: Option<Vec<BlindSignature>>,
@@ -280,7 +281,7 @@ impl<Q: ToString> MeltQuoteBolt11Response<Q> {
             fee_reserve: self.fee_reserve,
             state: self.state,
             expiry: self.expiry,
-            payment_preimage: self.payment_preimage,
+            payment_proof: self.payment_proof,
             change: self.change,
             request: self.request,
             unit: self.unit,
@@ -297,7 +298,7 @@ impl From<MeltQuoteBolt11Response<QuoteId>> for MeltQuoteBolt11Response<String> 
             fee_reserve: value.fee_reserve,
             state: value.state,
             expiry: value.expiry,
-            payment_preimage: value.payment_preimage,
+            payment_proof: value.payment_proof,
             change: value.change,
             request: value.request,
             unit: value.unit,

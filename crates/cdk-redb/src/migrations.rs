@@ -53,7 +53,8 @@ pub struct V1MeltQuote {
     /// Expiration time of quote
     pub expiry: u64,
     /// Payment preimage
-    pub payment_preimage: Option<String>,
+    #[serde(alias = "payment_preimage")]
+    pub payment_proof: Option<String>,
 }
 
 impl From<V0MintQuote> for V1MintQuote {
@@ -100,7 +101,7 @@ impl From<V0MeltQuote> for V1MeltQuote {
             state,
             expiry: quote.expiry,
             fee_reserve: quote.fee_reserve,
-            payment_preimage: None,
+            payment_proof: None,
         }
     }
 }

@@ -11,22 +11,22 @@ use cdk_common::database::WalletDatabase;
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::{
-    CheckStateResponse, CurrencyUnit, Id, KeySet, KeySetInfo, KeysetResponse, MeltMethodSettings,
-    MintInfo, MintMethodSettings, MintRequest, MintResponse, MintVersion, MppMethodSettings, Proof,
-    RestoreResponse, SwapRequest, SwapResponse,
+    CurrencyUnit, Id, KeySet, KeySetInfo, KeysetResponse, MeltMethodSettings, MintInfo,
+    MintMethodSettings, MintVersion, MppMethodSettings, Proof,
 };
-use cdk_common::secret::Secret;
 use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{
-    Amount, MeltQuoteRequest, MeltQuoteResponse, MeltQuoteState, MintQuoteRequest,
-    MintQuoteResponse, SecretKey, State,
+    Amount, CheckStateRequest, CheckStateResponse, MeltQuoteCreateResponse, MeltQuoteRequest,
+    MeltQuoteResponse, MeltRequest, MintQuoteRequest, MintQuoteResponse, MintRequest, MintResponse,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 
 use crate::nuts::{
-    nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest,
-    MeltQuoteBolt11Response, MeltRequest, MintQuoteBolt11Response, NUT04Settings, NUT05Settings,
-    PaymentMethod, RestoreRequest,
+    nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, MeltQuoteBolt11Response,
+    MeltQuoteState, MintQuoteBolt11Response, NUT04Settings, NUT05Settings, PaymentMethod,
+    SecretKey, State,
 };
+use crate::secret::Secret;
 use crate::wallet::{MintConnector, Wallet};
 use crate::Error;
 
@@ -348,7 +348,7 @@ pub fn test_melt_quote() -> MeltQuote {
         fee_reserve: Amount::from(10),
         state: MeltQuoteState::Unpaid,
         expiry: 9999999999,
-        payment_preimage: None,
+        payment_proof: None,
         payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
         used_by_operation: None,
         version: 0,
@@ -648,7 +648,7 @@ impl MintConnector for MockMintConnector {
     async fn post_melt_quote(
         &self,
         _request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteResponse<String>, Error> {
+    ) -> Result<MeltQuoteCreateResponse<String>, Error> {
         unimplemented!()
     }
 

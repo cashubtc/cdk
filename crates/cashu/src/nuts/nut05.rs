@@ -500,7 +500,7 @@ pub struct MeltQuoteCustomResponse<Q> {
     pub expiry: u64,
     /// Payment preimage (if payment completed)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub payment_preimage: Option<String>,
+    pub payment_proof: Option<String>,
     /// Change (blinded signatures for overpaid amount)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change: Option<Vec<BlindSignature>>,
@@ -529,7 +529,7 @@ impl<Q: ToString> MeltQuoteCustomResponse<Q> {
             fee_reserve: self.fee_reserve,
             state: self.state,
             expiry: self.expiry,
-            payment_preimage: self.payment_preimage.clone(),
+            payment_proof: self.payment_proof.clone(),
             change: self.change.clone(),
             request: self.request.clone(),
             unit: self.unit.clone(),
@@ -547,7 +547,7 @@ impl From<MeltQuoteCustomResponse<QuoteId>> for MeltQuoteCustomResponse<String> 
             fee_reserve: value.fee_reserve,
             state: value.state,
             expiry: value.expiry,
-            payment_preimage: value.payment_preimage,
+            payment_proof: value.payment_proof,
             change: value.change,
             request: value.request,
             unit: value.unit,
