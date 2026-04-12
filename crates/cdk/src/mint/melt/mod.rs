@@ -11,7 +11,10 @@ use cdk_common::payment::{
     OutgoingPaymentOptions,
 };
 use cdk_common::quote_id::QuoteId;
-use cdk_common::{MeltOptions, MeltQuoteBolt12Request, MeltQuoteCustomRequest};
+use cdk_common::{
+    MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse, MeltQuoteCustomRequest,
+    MeltQuoteCustomResponse, MeltQuoteResponse,
+};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use lightning::offers::offer::Offer;
@@ -152,15 +155,18 @@ impl Mint {
     pub async fn get_melt_quote(
         &self,
         melt_quote_request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltQuoteCreateResponse<QuoteId>, Error> {
         match melt_quote_request {
-            MeltQuoteRequest::Bolt11(bolt11_request) => {
-                self.get_melt_bolt11_quote_impl(&bolt11_request).await
-            }
-            MeltQuoteRequest::Bolt12(bolt12_request) => {
-                self.get_melt_bolt12_quote_impl(&bolt12_request).await
-            }
-            MeltQuoteRequest::Custom(request) => self.get_melt_custom_quote_impl(&request).await,
+            MeltQuoteRequest::Bolt11(bolt11_request) => Ok(MeltQuoteCreateResponse::Bolt11(
+                self.get_melt_bolt11_quote_impl(&bolt11_request).await?,
+            )),
+            MeltQuoteRequest::Bolt12(bolt12_request) => Ok(MeltQuoteCreateResponse::Bolt12(
+                self.get_melt_bolt12_quote_impl(&bolt12_request).await?,
+            )),
+            MeltQuoteRequest::Custom(request) => Ok(MeltQuoteCreateResponse::Custom((
+                PaymentMethod::from(request.method.as_str()),
+                self.get_melt_custom_quote_impl(&request).await?,
+            ))),
         }
     }
 
@@ -378,7 +384,7 @@ impl Mint {
     async fn get_melt_custom_quote_impl(
         &self,
         melt_request: &MeltQuoteCustomRequest,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltQuoteCustomResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("get_melt_custom_quote");
 
@@ -506,11 +512,11 @@ impl Mint {
     }
 
     /// Check melt quote status
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     pub async fn check_melt_quote(
         &self,
         quote_id: &QuoteId,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("check_melt_quote");
         let mut quote = match self.localstore.get_melt_quote(quote_id).await {
@@ -556,16 +562,37 @@ impl Mint {
 
         let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
 
-        let response = MeltQuoteBolt11Response {
-            quote: quote.id.clone(),
-            state: quote.state,
-            expiry: quote.expiry,
-            amount: quote.amount().into(),
-            fee_reserve: quote.fee_reserve().into(),
-            payment_proof: quote.payment_proof,
-            change,
-            request: Some(quote.request.to_string()),
-            unit: Some(quote.unit.clone()),
+        let response = match quote.payment_method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                MeltQuoteResponse::Bolt11(MeltQuoteBolt11Response {
+                    quote: quote.id.clone(),
+                    state: quote.state,
+                    expiry: quote.expiry,
+                    amount: quote.amount().into(),
+                    fee_reserve: quote.fee_reserve().into(),
+                    payment_proof: quote.payment_proof.clone(),
+                    change: change.clone(),
+                    request: Some(quote.request.to_string()),
+                    unit: Some(quote.unit.clone()),
+                })
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                MeltQuoteResponse::Bolt12(MeltQuoteBolt11Response {
+                    quote: quote.id.clone(),
+                    state: quote.state,
+                    expiry: quote.expiry,
+                    amount: quote.amount().into(),
+                    fee_reserve: quote.fee_reserve().into(),
+                    payment_proof: quote.payment_proof.clone(),
+                    change: change.clone(),
+                    request: Some(quote.request.to_string()),
+                    unit: Some(quote.unit.clone()),
+                })
+            }
+            _ => {
+                let custom_response: MeltQuoteCustomResponse<QuoteId> = quote.clone().into();
+                MeltQuoteResponse::Custom((quote.payment_method.clone(), custom_response))
+            }
         };
 
         #[cfg(feature = "prometheus")]

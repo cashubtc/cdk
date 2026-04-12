@@ -354,7 +354,7 @@ pub struct MeltQuote {
     pub state: QuoteState,
     /// Expiry timestamp
     pub expiry: u64,
-    /// Payment preimage
+    /// Payment proof
     pub payment_proof: Option<String>,
     /// Payment method
     pub payment_method: PaymentMethod,

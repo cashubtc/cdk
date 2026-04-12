@@ -46,7 +46,10 @@ pub use cdk_common::wallet::WalletKey;
 pub use cdk_common::{
     amount, common as types, dhke, ensure_cdk,
     error::{self, Error},
-    lightning_invoice, mint_url, nuts, secret, util, ws, Amount, Bolt11Invoice,
+    lightning_invoice,
+    melt::{MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse},
+    mint_quote::{MintQuoteRequest, MintQuoteResponse},
+    mint_url, nuts, secret, util, ws, Amount, Bolt11Invoice,
 };
 
 #[cfg(any(feature = "wallet", feature = "mint"))]

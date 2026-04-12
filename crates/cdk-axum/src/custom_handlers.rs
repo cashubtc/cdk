@@ -19,6 +19,7 @@ use cdk::nuts::{
     MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
     MintQuoteCustomRequest, MintRequest, MintResponse,
 };
+use cdk::{MeltQuoteCreateResponse, MeltQuoteResponse};
 use serde_json::Value;
 use tracing::instrument;
 
@@ -111,7 +112,11 @@ pub async fn post_mint_custom_quote(
             let bolt12_request: MintQuoteBolt12Request =
                 serde_json::from_value(payload).map_err(|e| {
                     tracing::error!("Failed to parse bolt12 request: {}", e);
-                    into_response(cdk::Error::InvalidPaymentMethod)
+                    if e.to_string().contains("missing field `pubkey`") {
+                        into_response(cdk::Error::PubkeyRequired)
+                    } else {
+                        into_response(cdk::Error::InvalidPaymentMethod)
+                    }
                 })?;
 
             let quote = state
@@ -128,11 +133,15 @@ pub async fn post_mint_custom_quote(
             let custom_request: MintQuoteCustomRequest =
                 serde_json::from_value(payload).map_err(|e| {
                     tracing::error!("Failed to parse custom request: {}", e);
-                    into_response(cdk::Error::InvalidPaymentMethod)
+                    if e.to_string().contains("missing field `pubkey`") {
+                        into_response(cdk::Error::PubkeyRequired)
+                    } else {
+                        into_response(cdk::Error::InvalidPaymentMethod)
+                    }
                 })?;
 
             let quote_request = cdk::mint::MintQuoteRequest::Custom {
-                method: cdk::nuts::PaymentMethod::Custom(method.clone()),
+                method: cdk::nuts::PaymentMethod::from(method.clone()),
                 request: custom_request,
             };
 
@@ -251,10 +260,7 @@ pub async fn post_batch_check_mint_quote(
             let responses: Vec<cdk::nuts::MintQuoteCustomResponse<QuoteId>> = responses
                 .into_iter()
                 .map(|r| match r {
-                    cdk::mint::MintQuoteResponse::Custom {
-                        method: _,
-                        response,
-                    } => Ok(response),
+                    cdk::mint::MintQuoteResponse::Custom { response, .. } => Ok(response),
                     _ => Err(cdk::Error::InvalidPaymentMethod),
                 })
                 .collect::<Result<Vec<_>, _>>()
@@ -323,7 +329,7 @@ pub async fn post_melt_custom_quote(
     State(state): State<MintState>,
     Path(method): Path<String>,
     Json(payload): Json<Value>,
-) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
+) -> Result<Response, Response> {
     state
         .mint
         .verify_auth(
@@ -375,7 +381,11 @@ pub async fn post_melt_custom_quote(
         }
     };
 
-    Ok(Json(response))
+    match response {
+        MeltQuoteCreateResponse::Bolt11(r) => Ok(Json(r).into_response()),
+        MeltQuoteCreateResponse::Bolt12(r) => Ok(Json(r).into_response()),
+        MeltQuoteCreateResponse::Custom((_, r)) => Ok(Json(r).into_response()),
+    }
 }
 
 /// Get custom payment method melt quote status
@@ -384,7 +394,7 @@ pub async fn get_check_melt_custom_quote(
     auth: AuthHeader,
     State(state): State<MintState>,
     Path((method, quote_id)): Path<(String, QuoteId)>,
-) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
+) -> Result<Response, Response> {
     state
         .mint
         .verify_auth(
@@ -402,7 +412,11 @@ pub async fn get_check_melt_custom_quote(
         .await
         .map_err(into_response)?;
 
-    Ok(Json(quote))
+    match quote {
+        MeltQuoteResponse::Bolt11(r) => Ok(Json(r).into_response()),
+        MeltQuoteResponse::Bolt12(r) => Ok(Json(r).into_response()),
+        MeltQuoteResponse::Custom((_, r)) => Ok(Json(r).into_response()),
+    }
 }
 
 /// Melt tokens with custom payment method

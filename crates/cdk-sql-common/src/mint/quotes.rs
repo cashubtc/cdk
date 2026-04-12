@@ -567,6 +567,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
     let expiry = column_as_number!(expiry);
     let payment_proof = column_as_nullable_string!(payment_proof);
     let options = column_as_nullable_string!(options);
+
     let options = options.and_then(|o| serde_json::from_str(&o).ok());
     let created_time: i64 = column_as_number!(created_time);
     let paid_time = column_as_nullable_number!(paid_time);

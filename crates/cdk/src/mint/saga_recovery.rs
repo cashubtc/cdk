@@ -493,7 +493,7 @@ mod tests {
         let quote_response = mint.get_melt_quote(request).await.unwrap();
 
         mint.localstore
-            .get_melt_quote(&quote_response.quote)
+            .get_melt_quote(quote_response.quote())
             .await
             .unwrap()
             .expect("quote should exist in database")

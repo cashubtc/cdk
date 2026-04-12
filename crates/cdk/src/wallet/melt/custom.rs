@@ -1,5 +1,5 @@
 use cdk_common::wallet::MeltQuote;
-use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, PaymentMethod};
+use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, PaymentMethod};
 use tracing::instrument;
 
 use crate::nuts::{MeltOptions, MeltQuoteCustomRequest};
@@ -35,7 +35,7 @@ impl Wallet {
             .await?;
 
         let quote_res = match quote_res {
-            MeltQuoteResponse::Custom((_, response)) => response,
+            MeltQuoteCreateResponse::Custom((_, response)) => response,
             _ => return Err(Error::InvalidPaymentMethod),
         };
 

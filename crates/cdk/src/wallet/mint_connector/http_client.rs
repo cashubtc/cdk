@@ -4,9 +4,9 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use cdk_common::{
-    nut19, MeltQuoteBolt11Response, MeltQuoteRequest, MeltQuoteResponse, Method,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteRequest,
-    MintQuoteResponse, ProtectedEndpoint, RoutePath,
+    nut19, MeltQuoteBolt11Response, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse,
+    Method, MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
+    MintQuoteRequest, MintQuoteResponse, ProtectedEndpoint, RoutePath,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -332,7 +332,6 @@ where
 
                 Ok(MintQuoteResponse::Bolt12(response))
             }
-            // PaymentMethod::Known(KnownMethod::Onchain) => Err(Error::UnsupportedPaymentMethod),
             PaymentMethod::Custom(method_name) => {
                 let url =
                     self.mint_url
@@ -415,7 +414,7 @@ where
     async fn post_melt_quote(
         &self,
         request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteResponse<String>, Error> {
+    ) -> Result<MeltQuoteCreateResponse<String>, Error> {
         let method = request.method().to_string();
         let path = format!("v1/melt/quote/{}", method);
 
@@ -430,17 +429,20 @@ where
             MeltQuoteRequest::Bolt11(req) => {
                 let response: cdk_common::nut23::MeltQuoteBolt11Response<String> =
                     self.transport.http_post(url, auth_token, req).await?;
-                Ok(MeltQuoteResponse::Bolt11(response))
+                Ok(MeltQuoteCreateResponse::Bolt11(response))
             }
             MeltQuoteRequest::Bolt12(req) => {
                 let response: cdk_common::nut25::MeltQuoteBolt12Response<String> =
                     self.transport.http_post(url, auth_token, req).await?;
-                Ok(MeltQuoteResponse::Bolt12(response))
+                Ok(MeltQuoteCreateResponse::Bolt12(response))
             }
             MeltQuoteRequest::Custom(req) => {
                 let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
                     self.transport.http_post(url, auth_token, req).await?;
-                Ok(MeltQuoteResponse::Custom((request.method(), response)))
+                Ok(MeltQuoteCreateResponse::Custom((
+                    request.method(),
+                    response,
+                )))
             }
         }
     }

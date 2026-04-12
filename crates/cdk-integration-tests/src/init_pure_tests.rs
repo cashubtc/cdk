@@ -23,7 +23,7 @@ use cdk::nuts::{
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
-use cdk::{Amount, Error, Mint, StreamExt};
+use cdk::{Amount, Error, MeltQuoteCreateResponse, Mint, StreamExt};
 use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest, MintQuoteResponse};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
@@ -168,15 +168,25 @@ impl MintConnector for DirectMintConnection {
     async fn post_melt_quote(
         &self,
         request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteResponse<String>, Error> {
+    ) -> Result<MeltQuoteCreateResponse<String>, Error> {
         match request {
             MeltQuoteRequest::Bolt11(req) => {
-                let response = self.mint.get_melt_quote(req.into()).await.map(Into::into)?;
-                Ok(MeltQuoteResponse::Bolt11(response))
+                let response = self.mint.get_melt_quote(req.into()).await?;
+                match response {
+                    cdk_common::MeltQuoteCreateResponse::Bolt11(r) => {
+                        Ok(MeltQuoteCreateResponse::Bolt11(r.to_string_id()))
+                    }
+                    _ => Err(Error::InvalidPaymentMethod),
+                }
             }
             MeltQuoteRequest::Bolt12(req) => {
-                let response = self.mint.get_melt_quote(req.into()).await.map(Into::into)?;
-                Ok(MeltQuoteResponse::Bolt12(response))
+                let response = self.mint.get_melt_quote(req.into()).await?;
+                match response {
+                    cdk_common::MeltQuoteCreateResponse::Bolt12(r) => {
+                        Ok(MeltQuoteCreateResponse::Bolt12(r.to_string_id()))
+                    }
+                    _ => Err(Error::InvalidPaymentMethod),
+                }
             }
             MeltQuoteRequest::Custom(_) => Err(Error::UnsupportedPaymentMethod),
         }
@@ -187,15 +197,24 @@ impl MintConnector for DirectMintConnection {
         method: PaymentMethod,
         quote_id: &str,
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        let response: MeltQuoteBolt11Response<String> = self
+        let response = self
             .mint
             .check_melt_quote(&QuoteId::from_str(quote_id)?)
-            .await
-            .map(Into::into)?;
+            .await?;
 
         match method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => Ok(MeltQuoteResponse::Bolt11(response)),
-            PaymentMethod::Known(KnownMethod::Bolt12) => Ok(MeltQuoteResponse::Bolt12(response)),
+            PaymentMethod::Known(KnownMethod::Bolt11) => match response {
+                cdk_common::MeltQuoteResponse::Bolt11(r) => {
+                    Ok(MeltQuoteResponse::Bolt11(r.to_string_id()))
+                }
+                _ => Err(Error::InvalidPaymentMethod),
+            },
+            PaymentMethod::Known(KnownMethod::Bolt12) => match response {
+                cdk_common::MeltQuoteResponse::Bolt12(r) => {
+                    Ok(MeltQuoteResponse::Bolt12(r.to_string_id()))
+                }
+                _ => Err(Error::InvalidPaymentMethod),
+            },
             PaymentMethod::Custom(_) => Err(Error::UnsupportedPaymentMethod),
         }
     }

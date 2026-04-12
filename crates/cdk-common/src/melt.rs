@@ -64,6 +64,18 @@ pub enum MeltQuoteResponse<Q> {
     Custom((PaymentMethod, MeltQuoteCustomResponse<Q>)),
 }
 
+/// Melt quote creation response for all payment methods.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(bound = "Q: Serialize + DeserializeOwned")]
+pub enum MeltQuoteCreateResponse<Q> {
+    /// Bolt11 (Lightning invoice)
+    Bolt11(MeltQuoteBolt11Response<Q>),
+    /// Bolt12 (Offers)
+    Bolt12(MeltQuoteBolt12Response<Q>),
+    /// Custom payment method
+    Custom((PaymentMethod, MeltQuoteCustomResponse<Q>)),
+}
+
 impl<Q> MeltQuoteResponse<Q> {
     /// Returns the payment method for this response.
     pub fn method(&self) -> PaymentMethod {
@@ -152,6 +164,26 @@ impl<Q> MeltQuoteResponse<Q> {
             Self::Bolt11(r) => r.unit.clone(),
             Self::Bolt12(r) => r.unit.clone(),
             Self::Custom((_, r)) => r.unit.clone(),
+        }
+    }
+}
+
+impl<Q> MeltQuoteCreateResponse<Q> {
+    /// Returns the payment method for this response.
+    pub fn method(&self) -> PaymentMethod {
+        match self {
+            Self::Bolt11(_) => PaymentMethod::Known(KnownMethod::Bolt11),
+            Self::Bolt12(_) => PaymentMethod::Known(KnownMethod::Bolt12),
+            Self::Custom((method, _)) => method.clone(),
+        }
+    }
+
+    /// Returns the quote ID for single-quote methods.
+    pub fn quote(&self) -> &Q {
+        match self {
+            Self::Bolt11(r) => &r.quote,
+            Self::Bolt12(r) => &r.quote,
+            Self::Custom((_, r)) => &r.quote,
         }
     }
 }

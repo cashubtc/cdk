@@ -108,15 +108,18 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
         .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
         .await
         .unwrap();
-    println!("Created melt quote: {}", melt_quote.quote);
+    println!("Created melt quote: {}", melt_quote.quote().clone());
 
     // Step 7: Try to melt with only preimage (should fail - signature required)
     let mut proofs_preimage_only = htlc_proofs.clone();
     // Add only preimage to first proof (no signature)
     proofs_preimage_only[0].add_preimage(preimage.clone());
 
-    let melt_request_preimage_only =
-        cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_preimage_only, None);
+    let melt_request_preimage_only = cdk_common::MeltRequest::new(
+        melt_quote.quote().clone().clone(),
+        proofs_preimage_only,
+        None,
+    );
 
     let result = melt_request_preimage_only.verify_spending_conditions();
     assert!(
@@ -133,8 +136,11 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
     println!("✓ Actual melt with ONLY preimage also failed as expected");
 
     // Step 8: Try to melt with SIG_INPUTS signatures (should fail - SIG_ALL required)
-    let mut melt_request_sig_inputs =
-        cdk_common::MeltRequest::new(melt_quote.quote.clone(), htlc_proofs.clone(), None);
+    let mut melt_request_sig_inputs = cdk_common::MeltRequest::new(
+        melt_quote.quote().clone().clone(),
+        htlc_proofs.clone(),
+        None,
+    );
 
     // Add preimage to first proof
     melt_request_sig_inputs.inputs_mut()[0].add_preimage(preimage.clone());
@@ -159,8 +165,11 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
     println!("✓ Actual melt with SIG_INPUTS signatures also failed as expected");
 
     // Step 9: Now melt with correct preimage + SIG_ALL signature
-    let mut melt_request =
-        cdk_common::MeltRequest::new(melt_quote.quote.clone(), htlc_proofs.clone(), None);
+    let mut melt_request = cdk_common::MeltRequest::new(
+        melt_quote.quote().clone().clone(),
+        htlc_proofs.clone(),
+        None,
+    );
 
     // Add preimage to first proof
     melt_request.inputs_mut()[0].add_preimage(preimage.clone());
@@ -176,5 +185,5 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
     let melt_response = mint.melt(&melt_request).await.unwrap().await.unwrap();
     println!("✓ Melt operation completed successfully!");
     println!("  Quote state: {}", melt_response.state);
-    assert_eq!(melt_response.quote, melt_quote.quote);
+    assert_eq!(melt_response.quote, melt_quote.quote().clone());
 }
