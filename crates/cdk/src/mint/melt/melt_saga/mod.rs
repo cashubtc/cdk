@@ -871,7 +871,7 @@ impl MeltSaga<PaymentConfirmed> {
                 Error::UnitMismatch
             })?;
 
-        let payment_preimage = self.state_data.payment_result.payment_proof.clone();
+        let payment_proof = self.state_data.payment_result.payment_proof.clone();
         let payment_lookup_id = &self.state_data.payment_result.payment_lookup_id;
 
         // Persist Finalizing state so crash recovery knows TX1 may have completed.
@@ -881,7 +881,7 @@ impl MeltSaga<PaymentConfirmed> {
             let finalization_data = MeltFinalizationData {
                 total_spent: total_spent.clone(),
                 payment_lookup_id: payment_lookup_id.clone(),
-                payment_proof: payment_preimage.clone(),
+                payment_proof: payment_proof.clone(),
             };
             tx.update_saga_with_finalization_data(
                 &self.operation_id,
@@ -904,7 +904,7 @@ impl MeltSaga<PaymentConfirmed> {
             &self.pubsub,
             &self.state_data.quote,
             total_spent,
-            payment_preimage.clone(),
+            payment_proof.clone(),
             payment_lookup_id,
             Some(self.operation_id),
         )
@@ -930,7 +930,7 @@ impl MeltSaga<PaymentConfirmed> {
 
         let response = MeltQuoteBolt11Response {
             amount: self.state_data.quote.amount().into(),
-            payment_preimage,
+            payment_proof,
             change,
             quote: self.state_data.quote.id.clone(),
             fee_reserve: self.state_data.quote.fee_reserve().into(),

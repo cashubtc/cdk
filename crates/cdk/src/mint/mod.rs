@@ -708,15 +708,27 @@ impl Mint {
                 result = processor.wait_payment_event() => {
                     match result {
                         Ok(mut stream) => {
-                            while let Some(event) = stream.next().await {
-                                match event {
-                                    cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
-                                        if let Err(e) = Self::handle_payment_notification(
-                                            &localstore,
-                                            &pubsub_manager,
-                                            wait_payment_response,
-                                        ).await {
-                                            tracing::warn!("Payment notification error: {:?}", e);
+                            loop {
+                                tokio::select! {
+                                    _ = shutdown.notified() => {
+                                        processor.cancel_wait_invoice();
+                                        return Ok(());
+                                    }
+                                    maybe_event = stream.next() => {
+                                        let Some(event) = maybe_event else {
+                                            break;
+                                        };
+
+                                        match event {
+                                            cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
+                                                if let Err(e) = Self::handle_payment_notification(
+                                                    &localstore,
+                                                    &pubsub_manager,
+                                                    wait_payment_response,
+                                                ).await {
+                                                    tracing::warn!("Payment notification error: {:?}", e);
+                                                }
+                                            }
                                         }
                                     }
                                 }

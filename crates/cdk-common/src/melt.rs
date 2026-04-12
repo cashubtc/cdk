@@ -120,11 +120,11 @@ impl<Q> MeltQuoteResponse<Q> {
     }
 
     /// Returns the payment preimage.
-    pub fn payment_preimage(&self) -> Option<&str> {
+    pub fn payment_proof(&self) -> Option<&str> {
         match self {
-            Self::Bolt11(r) => r.payment_preimage.as_deref(),
-            Self::Bolt12(r) => r.payment_preimage.as_deref(),
-            Self::Custom((_, r)) => r.payment_preimage.as_deref(),
+            Self::Bolt11(r) => r.payment_proof.as_deref(),
+            Self::Bolt12(r) => r.payment_proof.as_deref(),
+            Self::Custom((_, r)) => r.payment_proof.as_deref(),
         }
     }
 

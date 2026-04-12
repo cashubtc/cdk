@@ -146,7 +146,7 @@ mod tests {
             fee_reserve: Amount::from(0_u64),
             state: MeltQuoteState::Unpaid,
             expiry: 0,
-            payment_preimage: None,
+            payment_proof: None,
             change: None,
             request: None,
             unit: None,
