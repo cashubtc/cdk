@@ -55,6 +55,9 @@ pub enum Error {
     /// Duplicate signature from same pubkey
     #[error("Duplicate signature from the same pubkey detected")]
     DuplicateSignature,
+    /// Duplicate public key in multisig (same x-coordinate)
+    #[error("Duplicate public key in multisig (same x-coordinate)")]
+    DuplicatePubkey,
     /// Impossible multisig configuration: num_sigs exceeds available pubkeys
     #[error(
         "Impossible multisig: required {required} signatures but only {available} keys available"
@@ -340,8 +343,10 @@ pub(crate) fn valid_signatures(
     for pubkey in pubkeys {
         for signature in signatures {
             if pubkey.verify(msg, signature).is_ok() {
-                // If the pubkey is already verified, return a duplicate signature error
-                if !verified_pubkeys.insert(*pubkey) {
+                // Insert the x-only coordinate to prevent double counting
+                let x_only = pubkey.x_only_public_key();
+                // If the pubkey's x-coordinate is already verified, return a duplicate signature error
+                if !verified_pubkeys.insert(x_only) {
                     return Err(Error::DuplicateSignature);
                 }
             }
@@ -387,8 +392,8 @@ impl BlindedMessage {
                     let sig = Signature::from_str(signature)?;
 
                     if v.verify(msg, &sig).is_ok() {
-                        // If the pubkey is already verified, return a duplicate signature error
-                        if !verified_pubkeys.insert(*v) {
+                        let x_only = v.x_only_public_key();
+                        if !verified_pubkeys.insert(x_only) {
                             return Err(Error::DuplicateSignature);
                         }
                     } else {
@@ -696,6 +701,108 @@ mod tests {
 
         // Verification should fail without the requires signatures
         assert!(invalid_proof.verify_p2pk().is_err());
+    }
+
+    #[test]
+    fn test_duplicate_key_in_main_pathway() {
+        let secret_key = SecretKey::generate();
+        let pubkey = secret_key.public_key();
+        let mut bytes = pubkey.to_bytes();
+        bytes[0] = 0x02;
+        let pk_02 = PublicKey::from_slice(&bytes).unwrap();
+        bytes[0] = 0x03;
+        let pk_03 = PublicKey::from_slice(&bytes).unwrap();
+
+        // data is pk_02, pubkeys contains pk_03. They are duplicates in the primary path.
+        let conditions = Conditions {
+            locktime: None,
+            pubkeys: Some(vec![pk_03]),
+            refund_keys: None,
+            num_sigs: Some(2),
+            sig_flag: SigFlag::SigInputs,
+            num_sigs_refund: None,
+        };
+
+        let secret: Secret = SpendingConditions::new_p2pk(pk_02, Some(conditions))
+            .try_into()
+            .unwrap();
+
+        let mut proof = Proof {
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            amount: Amount::ZERO,
+            secret,
+            c: PublicKey::from_str(
+                "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+            )
+            .unwrap(),
+            witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
+            dleq: None,
+            p2pk_e: None,
+        };
+
+        // We sign twice (since we need 2 sigs). It can even be the same signature or different (if we had different messages, but here it's the same message).
+        proof.sign_p2pk(secret_key.clone()).unwrap();
+        // Just duplicate the signature in the witness
+        if let Some(Witness::P2PKWitness(w)) = &mut proof.witness {
+            w.signatures.push(w.signatures[0].clone());
+        }
+
+        let res = proof.verify_p2pk();
+        assert!(res.is_err(), "Expected an error but got {:?}", res);
+        let err = res.unwrap_err();
+        assert!(
+            matches!(err, Error::DuplicatePubkey),
+            "Expected DuplicatePubkey, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_duplicate_key_in_both_pathways() {
+        let secret_key = SecretKey::generate();
+        let pubkey = secret_key.public_key();
+        let mut bytes = pubkey.to_bytes();
+        bytes[0] = 0x02;
+        let pk_02 = PublicKey::from_slice(&bytes).unwrap();
+        bytes[0] = 0x03;
+        let pk_03 = PublicKey::from_slice(&bytes).unwrap();
+
+        // Let's modify the test to put a duplicate key inside the refund path.
+        let conditions = Conditions {
+            locktime: Some(0),
+            pubkeys: None,
+            refund_keys: Some(vec![pk_03, pk_02]), // Duplicate x-coord in refund path
+            num_sigs: None,
+            sig_flag: SigFlag::SigInputs,
+            num_sigs_refund: Some(2),
+        };
+
+        let secret: Secret =
+            SpendingConditions::new_p2pk(secret_key.public_key(), Some(conditions))
+                .try_into()
+                .unwrap();
+
+        let proof = Proof {
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            amount: Amount::ZERO,
+            secret,
+            c: PublicKey::from_str(
+                "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+            )
+            .unwrap(),
+            witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
+            dleq: None,
+            p2pk_e: None,
+        };
+
+        let res = proof.verify_p2pk();
+        assert!(res.is_err(), "Expected an error but got {:?}", res);
+        let err = res.unwrap_err();
+        assert!(
+            matches!(err, Error::DuplicatePubkey),
+            "Expected DuplicatePubkey, got {:?}",
+            err
+        );
     }
 
     #[test]
