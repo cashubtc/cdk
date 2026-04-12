@@ -902,6 +902,20 @@ test-kotlin:
   cd "{{justfile_directory()}}/bindings/kotlin"
   ./gradlew :cdk-jvm:test
 
+# Generate Go FFI bindings
+binding-go:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  bindings/go/generate-bindings.sh
+
+# Run Go binding tests
+test-go:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/go"
+  CGO_ENABLED=1 go test ./cdkffi/...
+
 # Generate Swift FFI bindings and XCFramework
 binding-swift:
   #!/usr/bin/env bash
