@@ -580,6 +580,31 @@ where
 {
     type Err = T::Err;
 
+    async fn start(&self) -> Result<(), Self::Err> {
+        let start = std::time::Instant::now();
+        METRICS.inc_in_flight_requests("start");
+
+        let result = self.inner.start().await;
+
+        let duration = start.elapsed().as_secs_f64();
+        METRICS.record_mint_operation_histogram("start", result.is_ok(), duration);
+        METRICS.dec_in_flight_requests("start");
+
+        result
+    }
+
+    async fn stop(&self) -> Result<(), Self::Err> {
+        let start = std::time::Instant::now();
+        METRICS.inc_in_flight_requests("stop");
+
+        let result = self.inner.stop().await;
+
+        let duration = start.elapsed().as_secs_f64();
+        METRICS.record_mint_operation_histogram("stop", result.is_ok(), duration);
+        METRICS.dec_in_flight_requests("stop");
+
+        result
+    }
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
         let start = std::time::Instant::now();
         METRICS.inc_in_flight_requests("get_settings");
