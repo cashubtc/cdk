@@ -252,7 +252,7 @@ async fn test_completed_operation_recorded_on_finalize() {
     assert_eq!(completed_operation.id(), &operation_id);
     assert_eq!(completed_operation.total_redeemed(), Amount::from(10_000));
     assert_eq!(completed_operation.total_issued(), Amount::ZERO);
-    assert_eq!(response.state, MeltQuoteState::Paid);
+    assert_eq!(response.state(), MeltQuoteState::Paid);
 }
 
 #[tokio::test]
@@ -358,7 +358,7 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
     let quote_response = mint.get_melt_quote(melt_quote_request).await.unwrap();
     let quote = mint
         .localstore
-        .get_melt_quote(&quote_response.quote)
+        .get_melt_quote(quote_response.quote())
         .await
         .unwrap()
         .expect("Melt quote should exist");
@@ -762,7 +762,7 @@ async fn test_crash_recovery_internal_settlement() {
     let melt_quote_response = mint.get_melt_quote(melt_quote_request).await.unwrap();
     let melt_quote = mint
         .localstore
-        .get_melt_quote(&melt_quote_response.quote)
+        .get_melt_quote(melt_quote_response.quote())
         .await
         .unwrap()
         .expect("Melt quote should exist");
@@ -1367,7 +1367,7 @@ async fn test_saga_deleted_after_payment_failure() {
     let quote_response = mint.get_melt_quote(request).await.unwrap();
     let quote = mint
         .localstore
-        .get_melt_quote(&quote_response.quote)
+        .get_melt_quote(quote_response.quote())
         .await
         .unwrap()
         .expect("Quote should exist");
@@ -2992,7 +2992,7 @@ async fn create_test_melt_quote(
     // Retrieve the full quote from database
     let quote = mint
         .localstore
-        .get_melt_quote(&quote_response.quote)
+        .get_melt_quote(quote_response.quote())
         .await
         .unwrap()
         .expect("Quote should exist in database");
@@ -3119,14 +3119,14 @@ async fn test_duplicate_lookup_id_prevents_second_pending() {
     // Retrieve full quotes
     let quote1 = mint
         .localstore
-        .get_melt_quote(&quote_response1.quote)
+        .get_melt_quote(quote_response1.quote())
         .await
         .unwrap()
         .expect("Quote 1 should exist");
 
     let quote2 = mint
         .localstore
-        .get_melt_quote(&quote_response2.quote)
+        .get_melt_quote(quote_response2.quote())
         .await
         .unwrap()
         .expect("Quote 2 should exist");
@@ -3288,13 +3288,13 @@ async fn test_paid_lookup_id_prevents_pending() {
     // Retrieve full quotes
     let quote1 = mint
         .localstore
-        .get_melt_quote(&quote_response1.quote)
+        .get_melt_quote(quote_response1.quote())
         .await
         .unwrap()
         .expect("Quote 1 should exist");
     let quote2 = mint
         .localstore
-        .get_melt_quote(&quote_response2.quote)
+        .get_melt_quote(quote_response2.quote())
         .await
         .unwrap()
         .expect("Quote 2 should exist");

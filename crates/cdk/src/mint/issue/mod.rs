@@ -10,8 +10,8 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteRequest, MintQuoteResponse,
-    MintQuoteState, MintRequest, MintResponse, NotificationPayload, PublicKey,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteState, MintRequest, MintResponse,
+    NotificationPayload, PublicKey,
 };
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -21,6 +21,8 @@ use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
 use crate::Mint;
 
 mod auth;
+
+use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 
 /// Input enum to handle both single and batch mint formats (internal to CDK, not spec)
 #[derive(Debug, Clone)]
@@ -194,7 +196,7 @@ impl Mint {
     /// * `mint_quote_request` - The request containing payment details
     ///
     /// # Returns
-    /// * `MintQuoteResponse` - Response with payment details if successful
+    /// * `MintQuoteResponse<QuoteId>` - Response with payment details if successful
     /// * `Error` - If the request is invalid or payment creation fails
     #[instrument(skip_all)]
     pub async fn get_mint_quote(
@@ -218,6 +220,8 @@ impl Mint {
             let pubkey = mint_quote_request.pubkey();
 
             let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
+
+            let quote_id = QuoteId::new_uuid();
 
             let payment_options = match mint_quote_request {
                 MintQuoteRequest::Bolt11(bolt11_request) => {
@@ -275,7 +279,7 @@ impl Mint {
 
                     IncomingPaymentOptions::Bolt12(Box::new(bolt12_options))
                 }
-                MintQuoteRequest::Custom { method, request } => {
+                MintQuoteRequest::Custom { request, .. } => {
                     if let Some(ref desc) = request.description {
                         if desc.len() > MAX_REQUEST_FIELD_LEN {
                             return Err(Error::RequestFieldTooLarge {
@@ -308,7 +312,7 @@ impl Mint {
                     };
 
                     let custom_options = CustomIncomingPaymentOptions {
-                        method: method.to_string(),
+                        method: payment_method.to_string(),
                         description: request.description,
                         amount: request.amount.with_unit(unit.clone()),
                         unix_expiry: Some(quote_expiry),
@@ -328,7 +332,7 @@ impl Mint {
                 })?;
 
             let quote = MintQuote::new(
-                None,
+                Some(quote_id),
                 create_invoice_response.request.to_string(),
                 unit.clone(),
                 amount.map(|a| a.with_unit(unit.clone())),
@@ -535,7 +539,7 @@ impl Mint {
     /// * `quote_id` - The UUID of the quote to check
     ///
     /// # Returns
-    /// * `MintQuoteResponse` - The current state of the quote
+    /// * `MintQuoteResponse<QuoteId>` - The current state of the quote
     /// * `Error` if the quote doesn't exist or checking fails
     #[instrument(skip(self))]
     pub async fn check_mint_quote(
@@ -575,7 +579,7 @@ impl Mint {
     /// * `quote_ids` - The list of quote IDs to check
     ///
     /// # Returns
-    /// * `Vec<MintQuoteResponse>` - Current states of all quotes in order
+    /// * `Vec<MintQuoteResponse<QuoteId>>` - Current states of all quotes in order
     /// * `Error` if any quote doesn't exist
     #[instrument(skip(self))]
     pub async fn check_mint_quotes(

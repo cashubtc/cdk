@@ -30,12 +30,13 @@ use cdk::nuts::nut00::ProofsMethods;
 use cdk::subscription::Params;
 use cdk::types::QuoteTTL;
 use cdk::wallet::types::{TransactionDirection, TransactionId};
-use cdk::wallet::{KeysetFilter, ReceiveOptions, SendMemo, SendOptions};
+use cdk::wallet::{KeysetFilter, MintConnector, ReceiveOptions, SendMemo, SendOptions};
 use cdk::{Amount, StreamExt};
 use cdk_common::mint::OperationKind;
 use cdk_common::payment::{
     MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
 };
+use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse};
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
 use futures::Stream;
@@ -1736,6 +1737,53 @@ async fn test_batch_mint_empty_quotes() {
 }
 
 #[tokio::test]
+async fn test_direct_connector_custom_melt_enum_roundtrip() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let connector = DirectMintConnection::new(mint.clone());
+
+    let request = MeltQuoteRequest::Custom(cdk::nuts::MeltQuoteCustomRequest {
+        method: "paypal".to_string(),
+        request: "invoice-123".to_string(),
+        unit: CurrencyUnit::Sat,
+        extra: serde_json::Value::Null,
+    });
+
+    let quote = connector
+        .post_melt_quote(request)
+        .await
+        .expect("Failed to create custom melt quote");
+
+    let (method, quote_response) = match quote {
+        MeltQuoteCreateResponse::Custom((method, response)) => (method, response),
+        other => panic!("Expected custom melt quote create response, got {other:?}"),
+    };
+
+    assert_eq!(method, PaymentMethod::Custom("paypal".to_string()));
+    assert!(quote_response.extra.is_null());
+
+    let status = connector
+        .get_melt_quote_status(method.clone(), &quote_response.quote)
+        .await
+        .expect("Failed to check custom melt quote status");
+
+    let quote_status = match status {
+        MeltQuoteResponse::Custom((status_method, response)) => {
+            assert_eq!(status_method, method);
+            response
+        }
+        other => panic!("Expected custom melt status response, got {other:?}"),
+    };
+
+    assert_eq!(quote_status.quote, quote_response.quote);
+
+    assert_eq!(quote_status.request.as_deref(), Some("invoice-123"));
+    assert_eq!(quote_status.extra, quote_response.extra);
+}
+
+#[tokio::test]
 async fn test_batch_mint_unknown_quote() {
     setup_tracing();
     let mint = create_and_start_test_mint()
@@ -2355,7 +2403,7 @@ async fn test_custom_melt_quote_status_preserves_extra_json() {
 
     let stored_quote = mint
         .localstore()
-        .get_melt_quote(&response.quote)
+        .get_melt_quote(response.quote())
         .await
         .expect("db read")
         .expect("stored quote");

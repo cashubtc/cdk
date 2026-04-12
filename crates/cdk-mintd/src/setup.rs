@@ -404,10 +404,6 @@ impl LnBackendSetup for config::LdkNode {
             Some(cdk_ldk_node::CdkLdkNode::default_web_addr())
         };
 
-        println!(
-            "webserver: {}",
-            webserver_addr.map_or("none".to_string(), |a| a.to_string())
-        );
         if let Some(log_dir_path) = ldk_node_settings.log_dir_path.as_ref() {
             ldk_node_builder = ldk_node_builder.with_log_dir_path(log_dir_path.clone());
         }

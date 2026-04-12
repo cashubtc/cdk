@@ -223,7 +223,7 @@ pub struct MeltQuote {
     pub state: MeltQuoteState,
     /// Expiration time of quote
     pub expiry: u64,
-    /// Payment proof
+    /// Payment proof (e.g. Lightning preimage or onchain outpoint)
     #[serde(alias = "payment_preimage")]
     pub payment_proof: Option<String>,
     /// Payment method

@@ -21,8 +21,8 @@ use crate::cdk_payment::MakePaymentResponse;
 use crate::mint::melt::shared;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::Verification;
-use crate::mint::{MeltQuoteBolt11Response, MeltRequest};
-use crate::Mint;
+use crate::mint::MeltRequest;
+use crate::{MeltQuoteResponse, Mint};
 
 mod compensation;
 mod state;
@@ -858,7 +858,7 @@ impl MeltSaga<PaymentConfirmed> {
     /// - `BlindedMessageAlreadySigned`: Change outputs already signed
     /// - `UnitMismatch`: Failed to convert payment amount to quote unit
     #[instrument(skip_all)]
-    pub async fn finalize(self) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    pub async fn finalize(mut self) -> Result<MeltQuoteResponse<QuoteId>, Error> {
         tracing::info!("TX2: Finalizing melt (mark spent + change)");
 
         let total_spent: Amount<CurrencyUnit> = self
@@ -928,17 +928,9 @@ impl MeltSaga<PaymentConfirmed> {
             METRICS.record_mint_operation("melt_bolt11", true);
         }
 
-        let response = MeltQuoteBolt11Response {
-            amount: self.state_data.quote.amount().into(),
-            payment_preimage: payment_proof,
-            change,
-            quote: self.state_data.quote.id.clone(),
-            fee_reserve: self.state_data.quote.fee_reserve().into(),
-            state: MeltQuoteState::Paid,
-            expiry: self.state_data.quote.expiry,
-            request: Some(self.state_data.quote.request.to_string()),
-            unit: Some(self.state_data.quote.unit.clone()),
-        };
+        self.state_data.quote.payment_proof = payment_proof;
+        self.state_data.quote.state = MeltQuoteState::Paid;
+        let response = self.state_data.quote.into_response(change);
 
         Ok(response)
     }

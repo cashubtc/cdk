@@ -3,16 +3,18 @@
 use std::fmt::Debug;
 
 use async_trait::async_trait;
-use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest, MintQuoteResponse};
+use cdk_common::{
+    MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
+    MintQuoteResponse,
+};
 
 use super::Error;
 // Re-export Lightning address types for trait implementers
 pub use crate::lightning_address::{LnurlPayInvoiceResponse, LnurlPayResponse};
 use crate::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse, Id,
-    KeySet, KeysetResponse, MeltQuoteBolt11Response, MeltRequest, MintInfo,
-    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    KeySet, KeysetResponse, MeltRequest, MintInfo, MintQuoteBolt11Response, MintRequest,
+    MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::AuthWallet;
 
@@ -89,7 +91,7 @@ pub trait MintConnector: Debug {
     async fn post_melt_quote(
         &self,
         request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteResponse<String>, Error>;
+    ) -> Result<MeltQuoteCreateResponse<String>, Error>;
 
     /// Mint Quote status with payment method
     async fn get_mint_quote_status(
@@ -111,7 +113,7 @@ pub trait MintConnector: Debug {
         &self,
         method: &PaymentMethod,
         request: MeltRequest<String>,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+    ) -> Result<MeltQuoteResponse<String>, Error>;
 
     /// Split Token [NUT-06]
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error>;

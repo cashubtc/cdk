@@ -7,7 +7,7 @@ use std::str::FromStr;
 use cdk_common::amount::amount_for_offer;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::MeltQuote;
-use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, PaymentMethod};
+use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, PaymentMethod};
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
@@ -34,7 +34,7 @@ impl Wallet {
             .await?;
 
         let quote_res = match quote_res {
-            MeltQuoteResponse::Bolt12(response) => response,
+            MeltQuoteCreateResponse::Bolt12(response) => response,
             _ => return Err(Error::InvalidPaymentMethod),
         };
 
