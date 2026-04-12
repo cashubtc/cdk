@@ -23,11 +23,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use cashu::{Bolt11Invoice, PaymentMethod};
 use cdk::amount::{Amount, SplitTarget};
-use cdk::nuts::{
-    MeltQuoteBolt11Response, MeltRequest, MintRequest, MintResponse, PreMintSecrets, Proofs,
-};
+use cdk::nuts::{MeltRequest, MintRequest, MintResponse, PreMintSecrets, Proofs};
 use cdk::wallet::{HttpClient, MintConnector, MintQuote};
-use cdk::{StreamExt, Wallet};
+use cdk::{MeltQuoteResponse, StreamExt, Wallet};
 use cdk_fake_wallet::create_fake_invoice;
 use init_regtest::{get_lnd_dir, LND_RPC_ADDR};
 use ln_regtest::ln_client::{ClnClient, LightningClient, LndClient};
@@ -269,7 +267,7 @@ pub async fn attempt_manual_melt(
     quote_id: String,
     inputs: Proofs,
     payment_method: PaymentMethod,
-) -> Result<MeltQuoteBolt11Response<String>, cdk::Error> {
+) -> Result<MeltQuoteResponse<String>, cdk::Error> {
     let http_client = HttpClient::new(mint_url.parse().unwrap(), None);
 
     let request = MeltRequest::new(quote_id, inputs, None);
