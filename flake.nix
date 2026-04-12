@@ -1028,13 +1028,18 @@
         # Integration test harness binaries (pre-built via Crane, cached by Cachix)
         # These are used by CI integration test scripts instead of cargo build/run
         # ========================================
-        mkItestBinary = name: cargoExtraArgs: craneLib.buildPackage (commonCraneArgs // {
-          pname = "cdk-itest-${name}";
-          cargoArtifacts = workspaceDeps;
-          inherit cargoExtraArgs;
-          # Only install the specific binary, not the entire workspace
-          doCheck = false;
-        });
+        mkItestBinary =
+          name: cargoExtraArgs:
+          craneLib.buildPackage (
+            commonCraneArgs
+            // {
+              pname = "cdk-itest-${name}";
+              cargoArtifacts = workspaceDeps;
+              inherit cargoExtraArgs;
+              # Only install the specific binary, not the entire workspace
+              doCheck = false;
+            }
+          );
 
         itestBinaries = {
           start-fake-mint = mkItestBinary "start-fake-mint" "--bin start_fake_mint";
@@ -1047,20 +1052,23 @@
         };
 
         # Nextest archive for integration tests (pre-compiled test binaries)
-        itestArchive = craneLib.mkCargoDerivation (commonCraneArgs // {
-          pname = "cdk-itest-archive";
-          cargoArtifacts = workspaceDeps;
-          nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
-            pkgs.cargo-nextest
-          ];
-          buildPhaseCargoCommand = ''
-            mkdir -p $out
-            cargo nextest archive \
-              -p cdk-integration-tests \
-              --archive-file $out/itest-archive.tar.zst
-          '';
-          installPhaseCommand = "";
-        });
+        itestArchive = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-itest-archive";
+            cargoArtifacts = workspaceDeps;
+            nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
+              pkgs.cargo-nextest
+            ];
+            buildPhaseCargoCommand = ''
+              mkdir -p $out
+              cargo nextest archive \
+                -p cdk-integration-tests \
+                --archive-file $out/itest-archive.tar.zst
+            '';
+            installPhaseCommand = "";
+          }
+        );
 
         # Common arguments can be set here to avoid repeating them later
         nativeBuildInputs = [
