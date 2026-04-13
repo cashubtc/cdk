@@ -130,6 +130,7 @@ nostr-sdk = { version = "0.44.1", default-features = false, features = [
     "nip59"
 ]}
 bitcoin-payment-instructions = { version = "0.7.0", default-features = false }
+dlc-messages = { version = "0.8.0" }
 
 
 
