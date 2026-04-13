@@ -347,7 +347,9 @@ impl MintPayment for LNbits {
                 let unix_expiry = bolt11_options.unix_expiry;
 
                 let time_now = unix_time();
-                let expiry = unix_expiry.map(|t| t - time_now);
+                let expiry = unix_expiry
+                    .map(|t| t.checked_sub(time_now).ok_or(payment::Error::InvalidExpiry))
+                    .transpose()?;
 
                 let invoice_request = CreateInvoiceRequest {
                     amount: amount.to_sat()?,

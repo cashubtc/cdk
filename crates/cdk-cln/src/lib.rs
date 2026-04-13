@@ -585,11 +585,15 @@ impl MintPayment for Cln {
                 let amount_msat =
                     AmountOrAny::Amount(CLN_Amount::from_msat(amount_converted.value()));
 
+                let expiry = unix_expiry
+                    .map(|t| t.checked_sub(time_now).ok_or(payment::Error::InvalidExpiry))
+                    .transpose()?;
+
                 let request = InvoiceRequest {
                     amount_msat,
                     description: description.unwrap_or_default(),
                     label: label.clone(),
-                    expiry: unix_expiry.map(|t| t - time_now),
+                    expiry,
                     fallbacks: None,
                     preimage: None,
                     cltv: None,

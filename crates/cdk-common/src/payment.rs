@@ -40,6 +40,9 @@ pub enum Error {
     /// Amount mismatch
     #[error("Amount is not what is expected")]
     AmountMismatch,
+    /// Invalid expiry
+    #[error("Invalid expiry")]
+    InvalidExpiry,
     /// Lightning Error
     #[error(transparent)]
     Lightning(Box<dyn std::error::Error + Send + Sync>),
