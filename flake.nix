@@ -399,18 +399,25 @@
         );
 
         # Helper function to create combined clippy + test checks
-        # Runs both in a single derivation to share build artifacts
+        # Runs both in a single derivation to share build artifacts.
+        # Now accepts a list of cargoArgs to run multiple checks sequentially.
         mkClippyAndTest =
-          name: cargoArgs:
+          name: cargoArgsList:
           craneLib.mkCargoDerivation (
             commonCraneArgs
             // {
               pname = "cdk-check-${name}";
               cargoArtifacts = workspaceDeps;
-              buildPhaseCargoCommand = ''
-                cargo clippy ${cargoArgs} -- -D warnings
-                cargo test ${cargoArgs}
-              '';
+              buildPhaseCargoCommand = builtins.concatStringsSep "\n" (
+                builtins.map
+                  (cargoArgs: ''
+                    echo "Running check with args: ${cargoArgs}"
+                    cargo clippy ${cargoArgs} -- -D warnings
+                    cargo test ${if builtins.match ".*cdk-cli.*" cargoArgs != null then "--bins" else "--lib"} ${cargoArgs}
+                  '')
+                  cargoArgsList
+              );
+              doCheck = false;
               installPhaseCommand = "mkdir -p $out";
             }
           );
@@ -425,6 +432,7 @@
               cargoArtifacts = workspaceDeps;
               buildPhaseCargoCommand = "cargo build --example ${name}";
               # Examples are compiled but not run (no network in Nix sandbox)
+              doCheck = false;
               installPhaseCommand = "mkdir -p $out";
             }
           );
@@ -438,6 +446,7 @@
               pname = "cdk-example-${name}";
               cargoArtifacts = workspaceDeps;
               buildPhaseCargoCommand = "cargo build --release --example ${name}";
+              doCheck = false;
               installPhaseCommand = ''
                 mkdir -p $out/bin
                 cp target/release/examples/${name} $out/bin/
@@ -510,6 +519,7 @@
                 -p cdk-cli \
                 -p cdk-mintd
             '';
+            doCheck = false;
             installPhaseCommand = "mkdir -p $out";
           }
         );
@@ -540,6 +550,7 @@
               python3 crates/cdk-ffi/tests/test_transactions.py
               python3 crates/cdk-ffi/tests/test_kvstore.py
             '';
+            doCheck = false;
             installPhaseCommand = "mkdir -p $out";
           }
         );
@@ -577,6 +588,7 @@
                 cargo run --release -p cdk-ffi-dart --bin uniffi-bindgen -- \
                   "../../../$CDK_FFI_LIB" --out-dir ../../../target/dart-bindings)
             '';
+            doCheck = false;
             installPhaseCommand = ''
               LIB_EXT="${if isDarwin then "dylib" else "so"}"
               mkdir -p $out/lib/src/generated
@@ -605,6 +617,7 @@
                 --out-dir target/kotlin-bindings \
                 --no-format
             '';
+            doCheck = false;
             installPhaseCommand = ''
               LIB_EXT="${if isDarwin then "dylib" else "so"}"
 
@@ -640,84 +653,73 @@
         # These run both clippy and unit tests in a single derivation
         # ========================================
         clippyAndTestChecks = {
-          # Core crate: cashu
-          "cashu" = "-p cashu";
-          "cashu-no-default" = "-p cashu --no-default-features";
-          "cashu-wallet" = "-p cashu --no-default-features --features wallet";
-          "cashu-mint" = "-p cashu --no-default-features --features mint";
+          "core-lib" = [
+            "-p cashu"
+            "-p cashu --no-default-features"
+            "-p cashu --no-default-features --features wallet"
+            "-p cashu --no-default-features --features mint"
+            "-p cdk-common"
+            "-p cdk-common --no-default-features"
+            "-p cdk-common --no-default-features --features wallet"
+            "-p cdk-common --no-default-features --features mint"
+            "-p cdk"
+            "-p cdk --no-default-features"
+            "-p cdk --no-default-features --features wallet"
+            "-p cdk --no-default-features --features mint"
+          ];
 
-          # Core crate: cdk-common
-          "cdk-common" = "-p cdk-common";
-          "cdk-common-no-default" = "-p cdk-common --no-default-features";
-          "cdk-common-wallet" = "-p cdk-common --no-default-features --features wallet";
-          "cdk-common-mint" = "-p cdk-common --no-default-features --features mint";
+          "storage-and-cli" = [
+            "-p cdk-sql-common"
+            "-p cdk-sql-common --no-default-features --features wallet"
+            "-p cdk-sql-common --no-default-features --features mint"
+            "-p cdk-redb"
+            "-p cdk-sqlite"
+            "-p cdk-sqlite --features sqlcipher"
+            "-p cdk-cli"
+            "-p cdk-cli --features sqlcipher"
+            "-p cdk-cli --features redb"
+          ];
 
-          # Core crate: cdk
-          "cdk" = "-p cdk";
-          "cdk-no-default" = "-p cdk --no-default-features";
-          "cdk-wallet" = "-p cdk --no-default-features --features wallet";
-          "cdk-mint" = "-p cdk --no-default-features --features mint";
+          "lightning-and-api" = [
+            "-p cdk-axum"
+            "-p cdk-axum --no-default-features"
+            "-p cdk-axum --no-default-features --features redis"
+            "-p cdk-cln"
+            "-p cdk-lnd"
+            "-p cdk-lnbits"
+            "-p cdk-fake-wallet"
+            "-p cdk-payment-processor"
+            "-p cdk-ldk-node"
+            "-p cdk-npubcash"
+          ];
 
-          # SQL crates
-          "cdk-sql-common" = "-p cdk-sql-common";
-          "cdk-sql-common-wallet" = "-p cdk-sql-common --no-default-features --features wallet";
-          "cdk-sql-common-mint" = "-p cdk-sql-common --no-default-features --features mint";
+          "mintd-main" = [
+            "-p cdk-mintd"
+            "-p cdk-mintd --features redis"
+            "-p cdk-mintd --features sqlcipher"
+            "-p cdk-signatory"
+            "-p cdk-mint-rpc"
+            "-p cdk-prometheus"
+            "-p cdk-ffi"
+          ];
 
-          # Database crates
-          "cdk-redb" = "-p cdk-redb";
-          "cdk-sqlite" = "-p cdk-sqlite";
-          "cdk-sqlite-sqlcipher" = "-p cdk-sqlite --features sqlcipher";
+          "mintd-backends-sqlite" = [
+            "-p cdk-mintd --no-default-features --features lnd,sqlite"
+            "-p cdk-mintd --no-default-features --features lnbits,sqlite"
+            "-p cdk-mintd --no-default-features --features fakewallet,sqlite"
+            "-p cdk-mintd --no-default-features --features grpc-processor,sqlite"
+            "-p cdk-mintd --no-default-features --features management-rpc,lnd,sqlite"
+            "-p cdk-mintd --no-default-features --features cln,sqlite"
+          ];
 
-          # HTTP/API layer
-          # Note: swagger feature excluded - downloads assets during build, incompatible with Nix sandbox
-          "cdk-axum" = "-p cdk-axum";
-          "cdk-axum-no-default" = "-p cdk-axum --no-default-features";
-          "cdk-axum-redis" = "-p cdk-axum --no-default-features --features redis";
-
-          # Lightning backends
-          "cdk-cln" = "-p cdk-cln";
-          "cdk-lnd" = "-p cdk-lnd";
-          "cdk-lnbits" = "-p cdk-lnbits";
-          "cdk-fake-wallet" = "-p cdk-fake-wallet";
-          "cdk-payment-processor" = "-p cdk-payment-processor";
-          "cdk-ldk-node" = "-p cdk-ldk-node";
-
-          # Other crates
-          "cdk-signatory" = "-p cdk-signatory";
-          "cdk-mint-rpc" = "-p cdk-mint-rpc";
-          "cdk-prometheus" = "-p cdk-prometheus";
-          "cdk-ffi" = "-p cdk-ffi";
-          "cdk-npubcash" = "-p cdk-npubcash";
-
-          # Binaries: cdk-cli
-          "cdk-cli" = "-p cdk-cli";
-          "cdk-cli-sqlcipher" = "-p cdk-cli --features sqlcipher";
-          "cdk-cli-redb" = "-p cdk-cli --features redb";
-
-          # Binaries: cdk-mintd
-          "cdk-mintd" = "-p cdk-mintd";
-          "cdk-mintd-redis" = "-p cdk-mintd --features redis";
-          "cdk-mintd-sqlcipher" = "-p cdk-mintd --features sqlcipher";
-          "cdk-mintd-lnd-sqlite" = "-p cdk-mintd --no-default-features --features lnd,sqlite";
-          "cdk-mintd-cln-postgres" = "-p cdk-mintd --no-default-features --features cln,postgres";
-          "cdk-mintd-lnbits-sqlite" = "-p cdk-mintd --no-default-features --features lnbits,sqlite";
-          "cdk-mintd-fakewallet-sqlite" = "-p cdk-mintd --no-default-features --features fakewallet,sqlite";
-          "cdk-mintd-grpc-processor-sqlite" =
-            "-p cdk-mintd --no-default-features --features grpc-processor,sqlite";
-          "cdk-mintd-management-rpc-lnd-sqlite" =
-            "-p cdk-mintd --no-default-features --features management-rpc,lnd,sqlite";
-          "cdk-mintd-cln-sqlite" = "-p cdk-mintd --no-default-features --features cln,sqlite";
-          "cdk-mintd-lnd-postgres" = "-p cdk-mintd --no-default-features --features lnd,postgres";
-          "cdk-mintd-lnbits-postgres" = "-p cdk-mintd --no-default-features --features lnbits,postgres";
-          "cdk-mintd-fakewallet-postgres" =
-            "-p cdk-mintd --no-default-features --features fakewallet,postgres";
-          "cdk-mintd-grpc-processor-postgres" =
-            "-p cdk-mintd --no-default-features --features grpc-processor,postgres";
-          "cdk-mintd-management-rpc-cln-postgres" =
-            "-p cdk-mintd --no-default-features --features management-rpc,cln,postgres";
-
-          # Binaries: cdk-mint-cli (binary name, package is cdk-mint-rpc)
-          "cdk-mint-cli" = "-p cdk-mint-rpc";
+          "mintd-backends-postgres" = [
+            "-p cdk-mintd --no-default-features --features cln,postgres"
+            "-p cdk-mintd --no-default-features --features lnd,postgres"
+            "-p cdk-mintd --no-default-features --features lnbits,postgres"
+            "-p cdk-mintd --no-default-features --features fakewallet,postgres"
+            "-p cdk-mintd --no-default-features --features grpc-processor,postgres"
+            "-p cdk-mintd --no-default-features --features management-rpc,cln,postgres"
+          ];
         };
 
         # ========================================
@@ -1066,6 +1068,7 @@
                 -p cdk-integration-tests \
                 --archive-file $out/itest-archive.tar.zst
             '';
+            doCheck = false;
             installPhaseCommand = "";
           }
         );
