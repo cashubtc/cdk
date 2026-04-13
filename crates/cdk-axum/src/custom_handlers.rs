@@ -520,7 +520,8 @@ async fn post_melt_custom_internal(
     validate_melt_quote_method(&state, &method, payload.quote()).await?;
 
     // Check for async preference in either the Prefer header or the request body
-    let respond_async = prefer.respond_async || payload.is_prefer_async();
+    // For onchain we always want to do the async flow
+    let respond_async = prefer.respond_async || payload.is_prefer_async() || method == "onchain";
 
     let pending = state.mint.melt(&payload).await?;
 

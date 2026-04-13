@@ -12,7 +12,7 @@ impl CdkBdk {
     pub(crate) async fn sync_wallet(&self) -> Result<(), Error> {
         match &self.chain_source {
             ChainSource::BitcoinRpc(rpc_config) => {
-                let mut sync_interval = interval(Duration::from_secs(30));
+                let mut sync_interval = interval(Duration::from_secs(self.sync_interval_secs));
                 let mut startup_reconciliation_pending = true;
 
                 tracing::info!("Starting continuous block monitoring...");
@@ -92,7 +92,7 @@ impl CdkBdk {
                 url,
                 parallel_requests,
             } => {
-                let mut sync_interval = interval(Duration::from_secs(30));
+                let mut sync_interval = interval(Duration::from_secs(self.sync_interval_secs));
 
                 tracing::info!("Starting esplora block sync...");
                 loop {

@@ -232,6 +232,12 @@ impl<'a> PaymentStream<'a> {
                                 self.is_finalized = true;
                                 return Poll::Ready(Some(Ok((info.quote, None))));
                             }
+                            NotificationPayload::MeltQuoteOnchainResponse(info)
+                                if info.state == MeltQuoteState::Paid =>
+                            {
+                                self.is_finalized = true;
+                                return Poll::Ready(Some(Ok((info.quote, None))));
+                            }
                             _ => {}
                         }
 

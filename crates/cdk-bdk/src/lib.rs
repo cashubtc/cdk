@@ -79,6 +79,8 @@ pub struct CdkBdk {
     pub(crate) num_confs: u32,
     /// Minimum on-chain receive amount that should count toward minting
     pub(crate) min_receive_amount_sat: u64,
+    /// Sync interval in seconds
+    pub(crate) sync_interval_secs: u64,
 }
 
 /// Configuration for connecting to Bitcoin RPC
@@ -165,6 +167,7 @@ impl CdkBdk {
         batch_config: Option<BatchConfig>,
         num_confs: u32,
         min_receive_amount_sat: u64,
+        sync_interval_secs: u64,
     ) -> Result<Self, Error> {
         let storage_dir_path = PathBuf::from(storage_dir_path);
         let storage_dir_path = storage_dir_path.join("bdk_wallet");
@@ -216,6 +219,7 @@ impl CdkBdk {
             batch_notify: Arc::new(Notify::new()),
             num_confs,
             min_receive_amount_sat,
+            sync_interval_secs,
         })
     }
 }

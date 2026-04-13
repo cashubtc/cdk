@@ -729,6 +729,8 @@ pub struct Bdk {
     pub reserve_fee_min: Amount,
     #[serde(default = "default_min_receive_amount_sat")]
     pub min_receive_amount_sat: u64,
+    #[serde(default = "default_sync_interval_secs")]
+    pub sync_interval_secs: u64,
     #[serde(default)]
     pub batch_config: BatchConfig,
 }
@@ -764,6 +766,11 @@ fn default_min_receive_amount_sat() -> u64 {
 }
 
 #[cfg(feature = "bdk")]
+fn default_sync_interval_secs() -> u64 {
+    30
+}
+
+#[cfg(feature = "bdk")]
 impl Default for Bdk {
     fn default() -> Self {
         Self {
@@ -779,6 +786,7 @@ impl Default for Bdk {
             fee_percent: 0.02,
             reserve_fee_min: 2.into(),
             min_receive_amount_sat: 1000,
+            sync_interval_secs: 30,
             batch_config: BatchConfig::default(),
         }
     }

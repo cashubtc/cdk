@@ -71,7 +71,7 @@ impl CdkBdk {
 
     pub(crate) async fn scan_for_new_payments(&self) -> Result<(), Error> {
         let tracked_addresses = self.storage.get_tracked_receive_addresses().await?;
-        tracing::info!(
+        tracing::debug!(
             tracked_address_count = tracked_addresses.len(),
             "Scanning wallet for tracked onchain receive addresses"
         );
@@ -84,7 +84,7 @@ impl CdkBdk {
             tracked_addresses.into_iter().collect();
 
         let wallet_with_db = self.wallet_with_db.lock().await;
-        tracing::info!(
+        tracing::debug!(
             wallet_balance = ?wallet_with_db.wallet.balance(),
             checkpoint_height = wallet_with_db.wallet.latest_checkpoint().height(),
             "Inspecting wallet outputs for tracked receive payments"
@@ -153,7 +153,7 @@ impl CdkBdk {
             .await
             {
                 Ok(Some(intent)) => {
-                    tracing::info!(
+                    tracing::debug!(
                         address = %intent.state.address,
                         txid = %intent.state.txid,
                         amount_sat = intent.state.amount_sat,

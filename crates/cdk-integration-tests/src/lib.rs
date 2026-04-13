@@ -180,11 +180,11 @@ pub async fn get_test_client() -> Box<dyn LightningClient> {
         Ok(val) => {
             let val = val.to_lowercase();
             match val.as_str() {
-                "cln" => Box::new(create_cln_client_with_retry().await),
-                _ => Box::new(_get_lnd_client().await),
+                "cln" => Box::new(create_cln_client_with_retry().await) as Box<dyn LightningClient>,
+                _ => Box::new(_get_lnd_client().await) as Box<dyn LightningClient>,
             }
         }
-        Err(_) => Box::new(_get_lnd_client().await), // Default to LND
+        Err(_) => Box::new(_get_lnd_client().await) as Box<dyn LightningClient>, // Default to LND
     }
 }
 

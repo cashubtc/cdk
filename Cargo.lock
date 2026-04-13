@@ -1658,6 +1658,7 @@ dependencies = [
  "bitcoin 0.32.8",
  "cdk",
  "cdk-axum",
+ "cdk-bdk",
  "cdk-cln",
  "cdk-common",
  "cdk-fake-wallet",

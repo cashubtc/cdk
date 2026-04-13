@@ -517,6 +517,7 @@ impl OnchainBackendSetup for config::Bdk {
             Some(self.batch_config.clone().into()),
             self.num_confs,
             self.min_receive_amount_sat,
+            self.sync_interval_secs,
         )?;
 
         Ok(bdk)
