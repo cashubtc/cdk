@@ -56,9 +56,10 @@ struct Cli {
     /// NWS Proxy
     #[arg(short, long)]
     proxy: Option<Url>,
-    /// Currency unit to use for the wallet
-    #[arg(short, long, default_value = "sat")]
-    unit: String,
+    /// Currency unit (default `sat` when omitted). Standard: sat, msat, usd, eur, auth; other values are custom.
+    /// `cdk --unit usd balance` and `cdk balance --unit usd` are equivalent. `cdk --unit balance` parses `balance` as the unit value, not the subcommand.
+    #[arg(short, long, global = true)]
+    unit: Option<String>,
     /// NpubCash API URL
     #[cfg(feature = "npubcash")]
     #[arg(long, default_value = "https://npubx.cash")]
@@ -215,9 +216,10 @@ async fn main() -> Result<()> {
     };
     let seed = mnemonic.to_seed_normalized("");
 
-    // Parse currency unit from args
-    let currency_unit = CurrencyUnit::from_str(&args.unit)
-        .unwrap_or_else(|_| CurrencyUnit::Custom(args.unit.clone()));
+    let currency_unit = match &args.unit {
+        Some(s) => utils::parse_cli_currency_unit(s)?,
+        None => CurrencyUnit::Sat,
+    };
 
     // Create WalletRepository using builder pattern
     let wallet_repository = {
@@ -252,7 +254,9 @@ async fn main() -> Result<()> {
         Commands::DecodeToken(sub_command_args) => {
             sub_commands::decode_token::decode_token(sub_command_args)
         }
-        Commands::Balance => sub_commands::balance::balance(&wallet_repository).await,
+        Commands::Balance => {
+            sub_commands::balance::balance(&wallet_repository, &currency_unit).await
+        }
         Commands::Melt(sub_command_args) => {
             sub_commands::melt::pay(&wallet_repository, sub_command_args, &currency_unit).await
         }
