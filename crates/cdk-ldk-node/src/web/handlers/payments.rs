@@ -160,8 +160,8 @@ pub async fn payments_page(
 
                     @let amount_str = {
                         match (payment.amount_msat, payment.fee_paid_msat) {
-                            (Some(amount), Some(fee)) => format_msats_as_btc(amount + fee),
-                            (Some(amount), None) => format_msats_as_btc(amount),
+                            (Some(amount), Some(fee)) if payment.direction == PaymentDirection::Outbound => format_msats_as_btc(amount + fee),
+                            (Some(amount), _) => format_msats_as_btc(amount),
                             _ => "Unknown".to_string()
                         }
                     };
