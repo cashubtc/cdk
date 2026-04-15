@@ -472,13 +472,15 @@ impl Mint {
                                     payment_response
                                 }
                             };
+                            let payment_lookup_id = payment_response.payment_lookup_id.clone();
+                            let payment_proof = payment_response.payment_proof.clone();
 
                             if let Err(err) = self
                                 .finalize_paid_melt_quote(
                                     &quote,
                                     payment_response.total_spent,
-                                    payment_response.payment_proof,
-                                    &payment_response.payment_lookup_id,
+                                    payment_proof.clone(),
+                                    &payment_lookup_id,
                                     saga.operation_id,
                                 )
                                 .await
@@ -490,6 +492,10 @@ impl Mint {
                                 );
                                 continue;
                             }
+
+                            quote.state = MeltQuoteState::Paid;
+                            quote.payment_proof = payment_proof;
+                            quote.request_lookup_id = Some(payment_lookup_id);
 
                             tracing::info!(
                                 "Successfully recovered Finalizing saga {}",

@@ -576,7 +576,7 @@ impl MeltSaga<SetupComplete> {
     pub async fn make_payment(
         self,
         settlement: SettlementDecision,
-    ) -> Result<MeltSaga<PaymentConfirmed>, Error> {
+    ) -> Result<PaymentOutcome, Error> {
         let payment_result = match settlement {
             SettlementDecision::Internal { amount } => self.handle_internal_payment(amount),
             SettlementDecision::RequiresExternalPayment => {
@@ -597,21 +597,21 @@ impl MeltSaga<SetupComplete> {
                             "Lightning payment for quote {} unknown.",
                             self.state_data.quote.id
                         );
-                        return Err(Error::PendingQuote);
+                        return Ok(PaymentOutcome::Pending);
                     }
                     MeltQuoteState::Pending => {
                         tracing::warn!(
                             "LN payment pending, proofs remain pending for quote: {}",
                             self.state_data.quote.id
                         );
-                        return Err(Error::PendingQuote);
+                        return Ok(PaymentOutcome::Pending);
                     }
                 }
             }
         };
 
         // Transition to PaymentConfirmed state
-        Ok(MeltSaga {
+        Ok(PaymentOutcome::Confirmed(MeltSaga {
             mint: self.mint,
             db: self.db,
             pubsub: self.pubsub,
@@ -623,7 +623,7 @@ impl MeltSaga<SetupComplete> {
                 quote: self.state_data.quote,
                 payment_result,
             },
-        })
+        }))
     }
 
     fn handle_internal_payment(&self, amount: Amount<CurrencyUnit>) -> MakePaymentResponse {
@@ -934,6 +934,11 @@ impl MeltSaga<PaymentConfirmed> {
 
         Ok(response)
     }
+}
+
+pub enum PaymentOutcome {
+    Confirmed(MeltSaga<PaymentConfirmed>),
+    Pending,
 }
 
 impl<S> MeltSaga<S> {
