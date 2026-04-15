@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
+use cdk_common::nutxx::MintQuoteByPubkeyRequest;
 use cdk_common::{
     nut19, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, Method,
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
@@ -405,6 +406,99 @@ where
                     self.transport.http_get(url, auth_token).await?;
 
                 Ok(MintQuoteResponse::Custom { method, response })
+            }
+        }
+    }
+
+    /// NUT-XX: Mint Quote Lookup by Public Key
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn post_mint_quote_by_pubkey(
+        &self,
+        method: PaymentMethod,
+        request: MintQuoteByPubkeyRequest,
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
+        match &method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                let url = self
+                    .mint_url
+                    .join_paths(&["v1", "mint", "quote", "bolt11", "pubkey"])?;
+
+                let auth_token = self
+                    .get_auth_token(
+                        Method::Post,
+                        RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+                    )
+                    .await?;
+
+                let response: Vec<MintQuoteBolt11Response<String>> =
+                    self.transport.http_post(url, auth_token, &request).await?;
+
+                Ok(response
+                    .iter()
+                    .map(|r| MintQuoteResponse::Bolt11(r.clone()))
+                    .collect())
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                let url = self
+                    .mint_url
+                    .join_paths(&["v1", "mint", "quote", "bolt12", "pubkey"])?;
+
+                let auth_token = self
+                    .get_auth_token(
+                        Method::Post,
+                        RoutePath::MintQuote(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
+                    )
+                    .await?;
+
+                let response: Vec<MintQuoteBolt12Response<String>> =
+                    self.transport.http_post(url, auth_token, &request).await?;
+
+                Ok(response
+                    .iter()
+                    .map(|r| MintQuoteResponse::Bolt12(r.clone()))
+                    .collect())
+            }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                let url = self
+                    .mint_url
+                    .join_paths(&["v1", "mint", "quote", "onchain", "pubkey"])?;
+
+                let auth_token = self
+                    .get_auth_token(
+                        Method::Post,
+                        RoutePath::MintQuote(
+                            PaymentMethod::Known(KnownMethod::Onchain).to_string(),
+                        ),
+                    )
+                    .await?;
+
+                let response: Vec<MintQuoteOnchainResponse<String>> =
+                    self.transport.http_post(url, auth_token, &request).await?;
+
+                Ok(response
+                    .iter()
+                    .map(|r| MintQuoteResponse::Onchain(r.clone()))
+                    .collect())
+            }
+            PaymentMethod::Custom(method_name) => {
+                let url =
+                    self.mint_url
+                        .join_paths(&["v1", "mint", "quote", method_name, "pubkey"])?;
+
+                let auth_token = self
+                    .get_auth_token(Method::Post, RoutePath::MintQuote(method_name.clone()))
+                    .await?;
+
+                let response: Vec<MintQuoteCustomResponse<String>> =
+                    self.transport.http_post(url, auth_token, &request).await?;
+
+                Ok(response
+                    .iter()
+                    .map(|r| MintQuoteResponse::Custom {
+                        method: method.clone(),
+                        response: r.clone(),
+                    })
+                    .collect())
             }
         }
     }
