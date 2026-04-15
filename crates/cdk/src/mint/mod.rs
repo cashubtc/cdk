@@ -42,7 +42,8 @@ mod verification;
 
 pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
-pub use issue::{MintInput, MintQuoteRequest, MintQuoteResponse};
+pub use cdk_common::{MintQuoteRequest, MintQuoteResponse};
+pub use issue::MintInput;
 pub use melt::PendingMelt;
 pub use verification::Verification;
 
@@ -669,10 +670,12 @@ impl Mint {
         if join_set.is_empty() {
             shutdown.notified().await;
         } else {
+            let shutdown_future = shutdown.notified();
+            tokio::pin!(shutdown_future);
             // Wait for shutdown or all tasks to complete
             loop {
                 tokio::select! {
-                    _ = shutdown.notified() => {
+                    _ = &mut shutdown_future => {
                         tracing::info!("Shutting down payment processors");
                         break;
                     }
@@ -698,24 +701,39 @@ impl Mint {
         pubsub_manager: Arc<PubSubManager>,
         shutdown: Arc<Notify>,
     ) -> Result<(), Error> {
+        let shutdown_future = shutdown.notified();
+        tokio::pin!(shutdown_future);
+
         loop {
             tokio::select! {
-                _ = shutdown.notified() => {
+                _ = &mut shutdown_future => {
                     processor.cancel_wait_invoice();
                     break;
                 }
                 result = processor.wait_payment_event() => {
                     match result {
                         Ok(mut stream) => {
-                            while let Some(event) = stream.next().await {
-                                match event {
-                                    cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
-                                        if let Err(e) = Self::handle_payment_notification(
-                                            &localstore,
-                                            &pubsub_manager,
-                                            wait_payment_response,
-                                        ).await {
-                                            tracing::warn!("Payment notification error: {:?}", e);
+                            loop {
+                                tokio::select! {
+                                    _ = &mut shutdown_future => {
+                                        processor.cancel_wait_invoice();
+                                        return Ok(());
+                                    }
+                                    maybe_event = stream.next() => {
+                                        let Some(event) = maybe_event else {
+                                            break;
+                                        };
+
+                                        match event {
+                                            cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
+                                                if let Err(e) = Self::handle_payment_notification(
+                                                    &localstore,
+                                                    &pubsub_manager,
+                                                    wait_payment_response,
+                                                ).await {
+                                                    tracing::warn!("Payment notification error: {:?}", e);
+                                                }
+                                            }
                                         }
                                     }
                                 }

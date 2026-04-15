@@ -531,6 +531,14 @@ pub trait SagaTransaction {
         new_state: mint::SagaStateEnum,
     ) -> Result<(), Self::Err>;
 
+    /// Update saga state and optional finalization metadata.
+    async fn update_saga_with_finalization_data(
+        &mut self,
+        operation_id: &uuid::Uuid,
+        new_state: mint::SagaStateEnum,
+        finalization_data: Option<&mint::MeltFinalizationData>,
+    ) -> Result<(), Self::Err>;
+
     /// Delete saga
     async fn delete_saga(&mut self, operation_id: &uuid::Uuid) -> Result<(), Self::Err>;
 }

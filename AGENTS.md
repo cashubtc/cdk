@@ -1,7 +1,7 @@
 # AGENTS.md - Cashu Development Kit (CDK)
 
 Rust workspace (edition 2021) implementing the Cashu e-cash protocol.
-23 crates in `crates/`, toolchain pinned to 1.93.0, MSRV 1.85.0.
+24 crates in `crates/`, stable Rust (see `rust-toolchain.toml`), MSRV 1.85.0.
 
 ## Build / Check / Test / Lint Commands
 
@@ -171,7 +171,7 @@ impl fmt::Display for MyType { ... }
 
 ## Project Structure
 
-23 workspace crates in `crates/`, grouped by role:
+24 workspace crates in `crates/`, grouped by role:
 
 **Foundation**
 - `cashu` -- core Cashu protocol types, crypto, NUT specs (`nuts/nut00`–`nut27`)
@@ -186,6 +186,7 @@ impl fmt::Display for MyType { ... }
 - `cdk-sqlite` -- SQLite storage (includes in-memory mode for testing)
 - `cdk-postgres` -- PostgreSQL storage (requires running instance)
 - `cdk-redb` -- Redb embedded storage (wallet only)
+- `cdk-supabase` -- Supabase remote storage (wallet)
 
 **Lightning backends**
 - `cdk-cln` -- Core Lightning (CLN)
@@ -216,6 +217,13 @@ impl fmt::Display for MyType { ... }
 - `fuzz/` -- fuzzing targets (20 fuzz harnesses, excluded from workspace)
 - `misc/` -- helper scripts, Docker configs, Keycloak setup, Grafana dashboards
 
+### FFI Sync Requirement
+
+When adding, removing, or modifying methods on the `cdk` Wallet API, you **must** keep the `cdk-ffi` crate in sync:
+1. Update the exported FFI wallet implementation (`crates/cdk-ffi/src/wallet.rs`) using `#[uniffi::export]`.
+2. Update the `Wallet` trait implementation (`crates/cdk-ffi/src/wallet_trait.rs`).
+3. Add or update any necessary FFI-compatible type conversions in `crates/cdk-ffi/src/types/`.
+
 ### Dependency Flow
 
 ```
@@ -228,7 +236,7 @@ cashu  (protocol types, crypto, NUT specs)
        │    ├─ cdk-mint-rpc
        │    └─ cdk-http-client  (wallet-side)
        ├─ Storage: cdk-sql-common → cdk-sqlite, cdk-postgres
-       │           cdk-redb
+       │           cdk-redb, cdk-supabase
        └─ Lightning: cdk-cln, cdk-lnd, cdk-lnbits, cdk-ldk-node, cdk-fake-wallet
 ```
 
@@ -265,4 +273,4 @@ Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`.
 | Mint daemon example config | `crates/cdk-mintd/example.config.toml` |
 | LDK Node networking | `crates/cdk-ldk-node/NETWORK_GUIDE.md` |
 | TLS/certificate setup | `crates/cdk-mint-rpc/CERTIFICATES.md` |
-| Wallet SDK examples (21) | `crates/cdk/examples/` |
+| Wallet SDK examples (23) | `crates/cdk/examples/` |

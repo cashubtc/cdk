@@ -198,6 +198,8 @@ pub struct CreateRequestParams {
     pub http_url: Option<String>,
     /// Nostr relay URLs (required if transport is "nostr")
     pub nostr_relays: Option<Vec<String>>,
+    /// Optional list of mint URLs the receiver trusts. If not provided, the wallet's current mints for the requested unit will be used.
+    pub mints: Option<Vec<String>>,
 }
 
 impl Default for CreateRequestParams {
@@ -213,6 +215,7 @@ impl Default for CreateRequestParams {
             transport: "none".to_string(),
             http_url: None,
             nostr_relays: None,
+            mints: None,
         }
     }
 }
@@ -230,6 +233,7 @@ impl From<CreateRequestParams> for cdk::wallet::payment_request::CreateRequestPa
             transport: params.transport,
             http_url: params.http_url,
             nostr_relays: params.nostr_relays,
+            mints: params.mints,
         }
     }
 }
@@ -247,6 +251,7 @@ impl From<cdk::wallet::payment_request::CreateRequestParams> for CreateRequestPa
             transport: params.transport,
             http_url: params.http_url,
             nostr_relays: params.nostr_relays,
+            mints: params.mints,
         }
     }
 }

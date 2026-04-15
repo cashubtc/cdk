@@ -110,9 +110,6 @@ pub(super) async fn get_mint_quote_inner<T>(
 where
     T: DatabaseExecutor,
 {
-    let payments = get_mint_quote_payments(executor, quote_id).await?;
-    let issuance = get_mint_quote_issuance(executor, quote_id).await?;
-
     let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
     let query_str = format!(
         r#"
@@ -137,12 +134,24 @@ where
         "#
     );
 
-    query(&query_str)?
+    let mut mint_quote = query(&query_str)?
         .bind("id", quote_id.to_string())
         .fetch_one(executor)
         .await?
-        .map(|row| sql_row_to_mint_quote(row, payments, issuance))
-        .transpose()
+        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
+        .transpose()?;
+
+    // Read payments and issuance while the row lock is held (when for_update=true).
+    // Any concurrent writer must wait for our transaction before it can acquire its
+    // own lock, so these reads reflect the true committed state.
+    if let Some(quote) = mint_quote.as_mut() {
+        let payments = get_mint_quote_payments(executor, quote_id).await?;
+        let issuance = get_mint_quote_issuance(executor, quote_id).await?;
+        quote.payments = payments;
+        quote.issuance = issuance;
+    }
+
+    Ok(mint_quote)
 }
 
 pub(super) async fn get_mint_quote_by_request_inner<T>(
@@ -295,18 +304,6 @@ pub(super) async fn get_mint_quotes_inner<T>(
 where
     T: DatabaseExecutor,
 {
-    if quote_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Build placeholders for IN clause: :id0, :id1, :id2, ...
-    let placeholders: Vec<String> = quote_ids
-        .iter()
-        .enumerate()
-        .map(|(i, _)| format!(":id{i}"))
-        .collect();
-    let in_clause = placeholders.join(", ");
-
     let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
     let query_str = format!(
         r#"
@@ -326,17 +323,18 @@ where
             extra_json
         FROM
             mint_quote
-        WHERE id IN ({in_clause})
+        WHERE id IN (:quote_ids)
         {for_update_clause}
         "#
     );
 
-    let mut stmt = query(&query_str)?;
-    for (i, id) in quote_ids.iter().enumerate() {
-        stmt = stmt.bind(format!("id{i}"), id.to_string());
-    }
-
-    let rows = stmt.fetch_all(executor).await?;
+    let rows = query(&query_str)?
+        .bind_vec(
+            "quote_ids",
+            quote_ids.iter().map(|x| x.to_string()).collect(),
+        )?
+        .fetch_all(executor)
+        .await?;
 
     // Build a map from quote ID to MintQuote (without payments/issuance yet)
     let mut quote_map: HashMap<String, MintQuote> = HashMap::with_capacity(rows.len());
@@ -701,10 +699,6 @@ where
         &mut self,
         blinded_secrets: &[PublicKey],
     ) -> Result<(), Self::Err> {
-        if blinded_secrets.is_empty() {
-            return Ok(());
-        }
-
         // Delete blinded messages from blind_signature table where c IS NULL
         // (only delete unsigned blinded messages)
         query(
@@ -719,7 +713,7 @@ where
                 .iter()
                 .map(|secret| secret.to_bytes().to_vec())
                 .collect(),
-        )
+        )?
         .execute(&self.inner)
         .await?;
 
@@ -749,12 +743,12 @@ where
             let unit_str = column_as_string!(&row[2]);
             let unit = CurrencyUnit::from_str(&unit_str)?;
 
-            // Get blinded messages from blind_signature table where c IS NULL
             let blinded_messages_rows = query(
                 r#"
                 SELECT blinded_message, keyset_id, amount
                 FROM blind_signature
                 WHERE quote_id = :quote_id AND c IS NULL
+                FOR UPDATE
                 "#,
             )?
             .bind("quote_id", quote_id.to_string())

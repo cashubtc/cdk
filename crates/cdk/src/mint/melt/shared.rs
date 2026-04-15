@@ -8,7 +8,8 @@
 
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintDatabase};
-use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, State};
+use cdk_common::mint::{self as mint_types};
+use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, Proofs, State};
 use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
 use cdk_signatory::signatory::SignatoryKeySet;
 
@@ -223,19 +224,34 @@ pub async fn process_melt_change(
     ),
     Error,
 > {
-    // Check if change is needed
-    let needs_change = inputs_amount > total_spent;
+    let change_target: Amount = match inputs_amount
+        .checked_sub(&total_spent)
+        .ok()
+        .and_then(|rem| rem.checked_sub(&inputs_fee).ok())
+    {
+        Some(amt) if amt.value() > 0 => amt.into(),
+        Some(_) => {
+            // Exactly 0 change needed - open transaction and return empty result
+            let tx = db.begin_transaction().await?;
+            return Ok((None, tx));
+        }
+        None => {
+            tracing::warn!(
+                "Fee was too high for quote {}. inputs_amount: {}, total_spent: {}, inputs_fee: {}",
+                quote_id,
+                inputs_amount,
+                total_spent,
+                inputs_fee
+            );
+            let tx = db.begin_transaction().await?;
+            return Ok((None, tx));
+        }
+    };
 
-    if !needs_change || change_outputs.is_empty() {
-        // No change needed - open transaction and return empty result
+    if change_outputs.is_empty() {
         let tx = db.begin_transaction().await?;
         return Ok((None, tx));
     }
-
-    let change_target: Amount = inputs_amount
-        .checked_sub(&total_spent)?
-        .checked_sub(&inputs_fee)?
-        .into();
 
     // Get keyset configuration
     let fee_and_amounts = get_keyset_fee_and_amounts(&mint.keysets, &change_outputs);
@@ -381,7 +397,10 @@ pub async fn load_melt_quotes_exclusively(
 ///
 /// # Returns
 ///
-/// `Ok(())` if finalization succeeds
+/// `Ok(Proofs)` — a clone of the input proofs (now marked Spent), which callers
+/// can use to compute the per-keyset fee breakdown for operation recording.
+/// The proofs are cloned out of the `Acquired` wrapper so that no database
+/// row locks are held after this function returns.
 ///
 /// # Errors
 ///
@@ -390,17 +409,17 @@ pub async fn load_melt_quotes_exclusively(
 /// - Proofs are already spent
 /// - Database operations fail
 #[allow(clippy::too_many_arguments)]
-pub async fn finalize_melt_core(
-    tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
+pub(crate) async fn finalize_melt_core(
+    mut tx: Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     pubsub: &PubSubManager,
-    quote: &mut Acquired<MeltQuote>,
+    mut quote: Acquired<MeltQuote>,
     input_ys: &[PublicKey],
     inputs_amount: Amount<CurrencyUnit>,
     inputs_fee: Amount<CurrencyUnit>,
     total_spent: Amount<CurrencyUnit>,
     payment_preimage: Option<String>,
     payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
-) -> Result<(), Error> {
+) -> Result<(Proofs, MeltQuote), Error> {
     // Validate quote amount vs payment amount
     if quote.amount() > total_spent {
         tracing::error!(
@@ -409,15 +428,28 @@ pub async fn finalize_melt_core(
             quote.amount(),
             quote.id
         );
+        tx.rollback().await?;
         return Err(Error::IncorrectQuoteAmount);
     }
 
     // Validate inputs amount
-    let net_inputs = inputs_amount.checked_sub(&inputs_fee)?;
+    let net_inputs = match inputs_amount.checked_sub(&inputs_fee) {
+        Ok(net_inputs) => net_inputs,
+        Err(err) => {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
+    };
 
     // Convert total_spent to the same unit as net_inputs for comparison.
     // Backends should return total_spent in the quote's unit, but we convert defensively.
-    let total_spent = total_spent.convert_to(net_inputs.unit())?;
+    let total_spent = match total_spent.convert_to(net_inputs.unit()) {
+        Ok(total_spent) => total_spent,
+        Err(err) => {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
+    };
 
     tracing::debug!(
         "Melt validation for quote {}: inputs_amount={}, inputs_fee={}, net_inputs={}, total_spent={}, quote_amount={}, fee_reserve={}",
@@ -450,8 +482,13 @@ pub async fn finalize_melt_core(
     }
 
     // Update quote state to Paid
-    tx.update_melt_quote_state(quote, MeltQuoteState::Paid, payment_preimage.clone())
-        .await?;
+    if let Err(err) = tx
+        .update_melt_quote_state(&mut quote, MeltQuoteState::Paid, payment_preimage.clone())
+        .await
+    {
+        tx.rollback().await?;
+        return Err(err.into());
+    }
 
     quote.state = MeltQuoteState::Paid;
 
@@ -463,31 +500,50 @@ pub async fn finalize_melt_core(
             payment_lookup_id
         );
 
-        tx.update_melt_quote_request_lookup_id(quote, payment_lookup_id)
-            .await?;
+        if let Err(err) = tx
+            .update_melt_quote_request_lookup_id(&mut quote, payment_lookup_id)
+            .await
+        {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
     }
 
-    let mut proofs = tx.get_proofs(input_ys).await?;
+    let mut proofs = match tx.get_proofs(input_ys).await {
+        Ok(proofs) => proofs,
+        Err(err) => {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
+    };
 
-    Mint::update_proofs_state(tx, &mut proofs, State::Spent).await?;
+    if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
+        tx.rollback().await?;
+        return Err(err);
+    }
+
+    tx.commit().await?;
 
     // Publish proof state changes
     for pk in input_ys.iter() {
         pubsub.proof_state((*pk, State::Spent));
     }
 
-    Ok(())
+    // Clone the proofs out of the Acquired wrapper so that no database
+    // row locks are held after this function returns.
+    Ok((proofs.to_vec(), quote.inner()))
 }
 
 /// High-level melt finalization that handles the complete workflow.
 ///
-/// This function orchestrates:
-/// 1. Getting melt request info
-/// 2. Getting input proof Y values
+/// This is the **single finalization path** for all melt operations — both the
+/// normal saga flow and all recovery/async paths. It orchestrates:
+/// 1. Getting melt request info and input proof Y values
+/// 2. Core finalization (mark proofs spent, update quote to Paid)
 /// 3. Processing change (if needed)
-/// 4. Core finalization operations
-/// 5. Transaction commit
-/// 6. Pubsub notification
+/// 4. Recording the completed operation (fee tracking, audit)
+/// 5. Deleting the saga record
+/// 6. Transaction commit and pubsub notification
 ///
 /// # Arguments
 ///
@@ -498,10 +554,14 @@ pub async fn finalize_melt_core(
 /// * `total_spent` - Amount spent on payment
 /// * `payment_preimage` - Payment preimage (if any)
 /// * `payment_lookup_id` - Payment lookup identifier
+/// * `operation_id` - Saga operation ID for recording the completed operation
+///   and deleting the saga. When `None`, operation recording and saga deletion
+///   are skipped (should not happen in practice).
 ///
 /// # Returns
 ///
 /// `Option<Vec<BlindSignature>>` - Change signatures (if any)
+#[allow(clippy::too_many_arguments)]
 pub async fn finalize_melt_quote(
     mint: &super::super::Mint,
     db: &DynMintDatabase,
@@ -510,6 +570,7 @@ pub async fn finalize_melt_quote(
     total_spent: Amount<CurrencyUnit>,
     payment_preimage: Option<String>,
     payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
+    operation_id: Option<uuid::Uuid>,
 ) -> Result<Option<Vec<BlindSignature>>, Error> {
     tracing::info!("Finalizing melt quote {}", quote.id);
 
@@ -517,7 +578,7 @@ pub async fn finalize_melt_quote(
 
     // Acquire lock on the quote for safe state update
 
-    let mut locked_quote = load_melt_quotes_exclusively(&mut tx, &quote.id).await?;
+    let locked_quote = load_melt_quotes_exclusively(&mut tx, &quote.id).await?;
 
     // Get melt request info
     let melt_request_info = match tx.get_melt_request_and_blinded_messages(&quote.id).await? {
@@ -527,7 +588,16 @@ pub async fn finalize_melt_quote(
                 "No melt request found for quote {} - may have been completed already",
                 quote.id
             );
-            tx.rollback().await?;
+            // Melt request already cleaned up (likely completed in a prior run).
+            // Delete the saga if present so recovery doesn't retry.
+            if let Some(op_id) = operation_id {
+                if let Err(e) = tx.delete_saga(&op_id).await {
+                    tracing::warn!("Failed to delete saga {} during early return: {}", op_id, e);
+                }
+                tx.commit().await?;
+            } else {
+                tx.rollback().await?;
+            }
             return Ok(None);
         }
     };
@@ -540,7 +610,16 @@ pub async fn finalize_melt_quote(
             "No input proofs found for quote {} - may have been completed already",
             quote.id
         );
-        tx.rollback().await?;
+        // No proofs (likely completed in a prior run).
+        // Delete the saga if present so recovery doesn't retry.
+        if let Some(op_id) = operation_id {
+            if let Err(e) = tx.delete_saga(&op_id).await {
+                tracing::warn!("Failed to delete saga {} during early return: {}", op_id, e);
+            }
+            tx.commit().await?;
+        } else {
+            tx.rollback().await?;
+        }
         return Ok(None);
     }
 
@@ -548,18 +627,27 @@ pub async fn finalize_melt_quote(
     // If the quote is already Paid, proofs are already Spent — calling finalize_melt_core
     // would fail on the Paid→Paid and Spent→Spent state transitions. Skip directly to
     // change signing and cleanup so the user receives their change.
-    if locked_quote.state == MeltQuoteState::Paid {
+    //
+    // We still need the proofs for fee calculation (operation recording), so fetch them
+    // from the DB even in the already-Paid case.
+    let (proofs, quote) = if locked_quote.state == MeltQuoteState::Paid {
         tracing::info!(
             "Melt quote {} already Paid — TX1 previously committed, skipping to change/cleanup",
             quote.id
         );
+        // Fetch proofs for fee calculation (they're already Spent but still in DB).
+        // Clone out of Acquired to release the row lock before committing.
+        let proofs = tx.get_proofs(&input_ys).await?.to_vec();
+        // Release the Acquired quote lock before committing TX1
+        let locked_quote = locked_quote.inner();
         tx.commit().await?;
+        (proofs, locked_quote)
     } else {
         // Core finalization (marks proofs spent, updates quote)
-        finalize_melt_core(
-            &mut tx,
+        let (proofs, quote) = finalize_melt_core(
+            tx,
             pubsub,
-            &mut locked_quote,
+            locked_quote,
             &input_ys,
             melt_request_info.inputs_amount.clone(),
             melt_request_info.inputs_fee.clone(),
@@ -569,46 +657,94 @@ pub async fn finalize_melt_quote(
         )
         .await?;
 
-        // Close transaction before external call
-        tx.commit().await?;
-    }
-
-    // Check if change signatures already exist from a previous attempt
-    let existing_sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
-    let needs_change = melt_request_info.inputs_amount > total_spent;
-
-    // Process change (if needed) - opens new transaction
-    let (change_sigs, mut tx) = if needs_change && !existing_sigs.is_empty() {
-        // Change already signed from a previous attempt — skip re-signing
-        tracing::info!(
-            "Change signatures already exist for quote {} ({} sigs), skipping re-sign",
-            quote.id,
-            existing_sigs.len()
-        );
-        let tx = db.begin_transaction().await?;
-        (Some(existing_sigs), tx)
-    } else {
-        process_melt_change(
-            mint,
-            db,
-            &quote.id,
-            melt_request_info.inputs_amount,
-            total_spent,
-            melt_request_info.inputs_fee,
-            melt_request_info.change_outputs.clone(),
-        )
-        .await?
+        (proofs, quote)
     };
 
-    // Delete melt request tracking
-    tx.delete_melt_request(&quote.id).await?;
+    // Process change (if needed) - opens new transaction
+    let (change_sigs, mut tx) = process_melt_change(
+        mint,
+        db,
+        &quote.id,
+        melt_request_info.inputs_amount.clone(),
+        total_spent.clone(),
+        melt_request_info.inputs_fee.clone(),
+        melt_request_info.change_outputs.clone(),
+    )
+    .await?;
 
-    // Commit transaction
+    // Compute the fee breakdown from the spent proofs before cleanup.
+    // We reuse the cloned proofs from TX1 / recovery so TX2 can atomically
+    // persist the completed operation with the rest of the post-payment work.
+    let fee_breakdown = if operation_id.is_some() {
+        Some(match mint.get_proofs_fee(&proofs).await {
+            Ok(fee_breakdown) => fee_breakdown,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(err);
+            }
+        })
+    } else {
+        None
+    };
+
+    // Delete melt request tracking, completed operation, and saga in the same transaction.
+    if let Err(err) = tx.delete_melt_request(&quote.id).await {
+        tx.rollback().await?;
+        return Err(err.into());
+    }
+
+    if let (Some(op_id), Some(fee_breakdown)) = (operation_id, fee_breakdown.as_ref()) {
+        let change_amount = change_sigs
+            .as_ref()
+            .map(|sigs| {
+                Amount::try_sum(sigs.iter().map(|s| s.amount))
+                    .expect("Change amount cannot overflow")
+            })
+            .unwrap_or_default();
+
+        let mut operation = mint_types::Operation::new(
+            op_id,
+            mint_types::OperationKind::Melt,
+            Amount::ZERO,
+            melt_request_info.inputs_amount.clone().into(),
+            fee_breakdown.total,
+            None,
+            Some(quote.payment_method.clone()),
+        );
+
+        operation.add_change(change_amount);
+
+        let payment_fee = match total_spent.checked_sub(&quote.amount()) {
+            Ok(payment_fee) => payment_fee,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(err.into());
+            }
+        };
+        operation.set_payment_details(quote.amount().into(), payment_fee.into());
+
+        if let Err(err) = tx
+            .add_completed_operation(&operation, &fee_breakdown.per_keyset)
+            .await
+        {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
+    }
+
+    if let Some(op_id) = operation_id {
+        if let Err(err) = tx.delete_saga(&op_id).await {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
+    }
+
+    // Commit TX2 (change signatures + operation record + melt request + saga cleanup)
     tx.commit().await?;
 
     // Publish quote status change
     pubsub.melt_quote_status(
-        &locked_quote,
+        &quote,
         payment_preimage,
         change_sigs.clone(),
         MeltQuoteState::Paid,

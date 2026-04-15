@@ -240,10 +240,69 @@ pub struct Saga {
     /// Quote ID for melt operations (used for payment status lookup during recovery)
     /// None for swap operations
     pub quote_id: Option<String>,
+    /// Exact payment result for resuming melt finalization after TX1 commits.
+    pub finalization_data: Option<MeltFinalizationData>,
     /// Unix timestamp when saga was created
     pub created_at: u64,
     /// Unix timestamp when saga was last updated
     pub updated_at: u64,
+}
+
+/// Persisted payment result for resuming melt finalization after a crash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeltFinalizationData {
+    /// Total amount actually spent on the payment.
+    pub total_spent: Amount<CurrencyUnit>,
+    /// Backend payment lookup identifier.
+    pub payment_lookup_id: PaymentIdentifier,
+    /// Optional payment proof / preimage.
+    pub payment_proof: Option<String>,
+}
+
+impl Serialize for MeltFinalizationData {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        struct MeltFinalizationDataSer<'a> {
+            total_spent: Amount,
+            unit: &'a CurrencyUnit,
+            payment_lookup_id: &'a PaymentIdentifier,
+            payment_proof: &'a Option<String>,
+        }
+
+        MeltFinalizationDataSer {
+            total_spent: self.total_spent.clone().into(),
+            unit: self.total_spent.unit(),
+            payment_lookup_id: &self.payment_lookup_id,
+            payment_proof: &self.payment_proof,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MeltFinalizationData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct MeltFinalizationDataDe {
+            total_spent: Amount,
+            unit: CurrencyUnit,
+            payment_lookup_id: PaymentIdentifier,
+            payment_proof: Option<String>,
+        }
+
+        let data = MeltFinalizationDataDe::deserialize(deserializer)?;
+
+        Ok(Self {
+            total_spent: data.total_spent.with_unit(data.unit),
+            payment_lookup_id: data.payment_lookup_id,
+            payment_proof: data.payment_proof,
+        })
+    }
 }
 
 impl Saga {
@@ -255,6 +314,7 @@ impl Saga {
             operation_kind: OperationKind::Swap,
             state: SagaStateEnum::Swap(state),
             quote_id: None,
+            finalization_data: None,
             created_at: now,
             updated_at: now,
         }
@@ -274,6 +334,7 @@ impl Saga {
             operation_kind: OperationKind::Melt,
             state: SagaStateEnum::Melt(state),
             quote_id: Some(quote_id),
+            finalization_data: None,
             created_at: now,
             updated_at: now,
         }
@@ -282,6 +343,12 @@ impl Saga {
     /// Update melt saga state
     pub fn update_melt_state(&mut self, new_state: MeltSagaState) {
         self.state = SagaStateEnum::Melt(new_state);
+        self.updated_at = unix_time();
+    }
+
+    /// Store exact payment data needed to resume melt finalization after TX1.
+    pub fn set_melt_finalization_data(&mut self, finalization_data: MeltFinalizationData) {
+        self.finalization_data = Some(finalization_data);
         self.updated_at = unix_time();
     }
 }
@@ -1042,7 +1109,10 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
         } else {
             let method = quote.payment_method.clone();
             let custom_response = crate::nuts::MintQuoteCustomResponse::try_from(quote)?;
-            Ok(MintQuoteResponse::Custom((method, custom_response)))
+            Ok(MintQuoteResponse::Custom {
+                method,
+                response: custom_response,
+            })
         }
     }
 }

@@ -55,6 +55,9 @@ pub struct CreateRequestSubCommand {
     /// If not provided, defaults to standard relays
     #[arg(long, action = clap::ArgAction::Append)]
     nostr_relay: Option<Vec<String>>,
+    /// Mint URLs the receiver trusts. Can be specified multiple times.
+    #[arg(long, action = clap::ArgAction::Append)]
+    mints: Option<Vec<String>>,
     /// Use bech32 encoding (CREQ-B)
     #[arg(short, long)]
     bech32: bool,
@@ -77,6 +80,7 @@ pub async fn create_request(
         transport: sub_command_args.transport.to_lowercase(),
         http_url: sub_command_args.http_url.clone(),
         nostr_relays: sub_command_args.nostr_relay.clone(),
+        mints: sub_command_args.mints.clone(),
     };
 
     let (req, nostr_wait) = wallet_repository.create_request(params).await?;

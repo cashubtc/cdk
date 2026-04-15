@@ -220,6 +220,8 @@ pub struct CreateRequestParams {
     pub http_url: Option<String>, // when transport == http
     /// List of Nostr relay URLs to include in the nprofile (used if `transport == nostr`)
     pub nostr_relays: Option<Vec<String>>, // when transport == nostr
+    /// Optional list of mint URLs the receiver trusts. If not provided, the wallet's current mints for the requested unit will be used.
+    pub mints: Option<Vec<String>>,
 }
 
 /// Extra information needed to wait for an incoming Nostr payment
@@ -467,13 +469,12 @@ impl WalletRepository {
     ) -> Result<(PaymentRequest, Option<NostrWaitInfo>), Error> {
         // Collect available mints for the selected unit
         // Filter by the requested unit and extract unique mint URLs
-        let requested_unit = CurrencyUnit::from_str(&params.unit)?;
-        let mints: Vec<MintUrl> = self
-            .get_balances()
-            .await?
-            .keys()
-            .filter(|key| key.unit == requested_unit)
-            .map(|key| key.mint_url.clone())
+        let mints: Vec<MintUrl> = params
+            .mints
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|url| MintUrl::from_str(&url).ok())
             .collect();
 
         // Transports
@@ -572,13 +573,12 @@ impl WalletRepository {
     ) -> Result<PaymentRequest, Error> {
         // Collect available mints for the selected unit
         // Filter by the requested unit and extract unique mint URLs
-        let requested_unit = CurrencyUnit::from_str(&params.unit)?;
-        let mints: Vec<MintUrl> = self
-            .get_balances()
-            .await?
-            .keys()
-            .filter(|key| key.unit == requested_unit)
-            .map(|key| key.mint_url.clone())
+        let mints: Vec<MintUrl> = params
+            .mints
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|url| MintUrl::from_str(&url).ok())
             .collect();
 
         // Transports
