@@ -366,13 +366,13 @@ impl MintPayment for PaymentProcessorClient {
     }
 
     /// Is wait invoice active
-    fn is_wait_invoice_active(&self) -> bool {
+    fn is_payment_event_stream_active(&self) -> bool {
         self.wait_incoming_payment_stream_is_active
             .load(Ordering::SeqCst)
     }
 
     /// Cancel wait invoice
-    fn cancel_wait_invoice(&self) {
+    fn cancel_payment_event_stream(&self) {
         self.cancel_incoming_payment_listener.cancel();
     }
 

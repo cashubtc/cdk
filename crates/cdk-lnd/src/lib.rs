@@ -197,12 +197,12 @@ impl MintPayment for Lnd {
     }
 
     #[instrument(skip_all)]
-    fn is_wait_invoice_active(&self) -> bool {
+    fn is_payment_event_stream_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)
     }
 
     #[instrument(skip_all)]
-    fn cancel_wait_invoice(&self) {
+    fn cancel_payment_event_stream(&self) {
         self.wait_invoice_cancel_token.cancel()
     }
 

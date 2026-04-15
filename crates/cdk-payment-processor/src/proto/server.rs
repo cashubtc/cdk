@@ -495,7 +495,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                 tokio::select! {
                     _ = shutdown_clone.notified() => {
                         tracing::info!("Shutdown signal received, stopping task");
-                        ln.cancel_wait_invoice();
+                        ln.cancel_payment_event_stream();
                         break;
                     }
                     result = ln.wait_payment_event() => {

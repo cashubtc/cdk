@@ -393,10 +393,10 @@ pub trait MintPayment {
     ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err>;
 
     /// Is wait invoice active
-    fn is_wait_invoice_active(&self) -> bool;
+    fn is_payment_event_stream_active(&self) -> bool;
 
     /// Cancel wait invoice
-    fn cancel_wait_invoice(&self);
+    fn cancel_payment_event_stream(&self);
 
     /// Check the status of an incoming payment
     async fn check_incoming_payment_status(
@@ -711,12 +711,12 @@ where
         result
     }
 
-    fn is_wait_invoice_active(&self) -> bool {
-        self.inner.is_wait_invoice_active()
+    fn is_payment_event_stream_active(&self) -> bool {
+        self.inner.is_payment_event_stream_active()
     }
 
-    fn cancel_wait_invoice(&self) {
-        self.inner.cancel_wait_invoice()
+    fn cancel_payment_event_stream(&self) {
+        self.inner.cancel_payment_event_stream()
     }
 
     async fn check_incoming_payment_status(
