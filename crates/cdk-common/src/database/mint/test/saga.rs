@@ -289,6 +289,70 @@ where
         .any(|s| s.operation_id == saga3.operation_id));
 }
 
+/// Test saga with quote_id for melt operations
+pub async fn get_melt_saga_by_quote_id<DB>(db: DB)
+where
+    DB: Database<Error>,
+{
+    let quote_id = crate::QuoteId::new_uuid();
+    let saga = Saga {
+        operation_id: uuid::Uuid::new_v4(),
+        operation_kind: OperationKind::Melt,
+        state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
+        quote_id: Some(quote_id.to_string()),
+        finalization_data: None,
+        created_at: 1234567890,
+        updated_at: 1234567890,
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_saga(&saga).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let retrieved = db.get_melt_saga_by_quote_id(&quote_id).await.unwrap();
+    assert!(retrieved.is_some());
+    let retrieved = retrieved.unwrap();
+    assert_eq!(retrieved.operation_id, saga.operation_id);
+    assert_eq!(retrieved.quote_id, Some(quote_id.to_string()));
+}
+
+/// Test melt-specific quote lookup ignores non-melt sagas with the same quote id
+pub async fn get_melt_saga_by_quote_id_filters_non_melt<DB>(db: DB)
+where
+    DB: Database<Error>,
+{
+    let quote_id = crate::QuoteId::new_uuid();
+    let swap_saga = Saga {
+        operation_id: uuid::Uuid::new_v4(),
+        operation_kind: OperationKind::Swap,
+        state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
+        quote_id: Some(quote_id.to_string()),
+        finalization_data: None,
+        created_at: 1234567890,
+        updated_at: 1234567890,
+    };
+    let melt_saga = Saga {
+        operation_id: uuid::Uuid::new_v4(),
+        operation_kind: OperationKind::Melt,
+        state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
+        quote_id: Some(quote_id.to_string()),
+        finalization_data: None,
+        created_at: 1234567891,
+        updated_at: 1234567891,
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_saga(&swap_saga).await.unwrap();
+    tx.add_saga(&melt_saga).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let retrieved = db.get_melt_saga_by_quote_id(&quote_id).await.unwrap();
+    assert!(retrieved.is_some());
+    let retrieved = retrieved.unwrap();
+    assert_eq!(retrieved.operation_id, melt_saga.operation_id);
+    assert_eq!(retrieved.quote_id, Some(quote_id.to_string()));
+}
+
 /// Test getting incomplete sagas for melt operation
 pub async fn get_incomplete_melt_sagas<DB>(db: DB)
 where
