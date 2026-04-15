@@ -667,6 +667,7 @@
           "cdk-redb" = "-p cdk-redb";
           "cdk-sqlite" = "-p cdk-sqlite";
           "cdk-sqlite-sqlcipher" = "-p cdk-sqlite --features sqlcipher";
+          "cdk-supabase" = "-p cdk-supabase";
 
           # HTTP/API layer
           # Note: swagger feature excluded - downloads assets during build, incompatible with Nix sandbox
@@ -687,6 +688,7 @@
           "cdk-mint-rpc" = "-p cdk-mint-rpc";
           "cdk-prometheus" = "-p cdk-prometheus";
           "cdk-ffi" = "-p cdk-ffi";
+          "cdk-ffi-supabase" = "-p cdk-ffi --features supabase";
           "cdk-npubcash" = "-p cdk-npubcash";
 
           # Binaries: cdk-cli

@@ -190,24 +190,6 @@ jobs:
       - name: Run clippy and tests for cdk-postgres
         run: nix develop -i -L .#regtest --command bash -c "start-postgres && cargo clippy -p cdk-postgres -- -D warnings && cargo test -p cdk-postgres"
 
-  # Build and deterministic tests for cdk-supabase without a live Supabase stack
-  supabase-tests:
-    name: "Supabase Feature Checks"
-    runs-on: self-hosted
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Run clippy and tests for cdk-supabase
-        run: nix develop -i -L .#stable --command bash -c "cargo clippy -p cdk-supabase --all-targets -- -D warnings && cargo test -p cdk-supabase -- --test-threads 4 && cargo test -p cdk-ffi --features supabase --no-run"
-
   regtest-itest:
     name: "Integration regtest tests"
     runs-on: self-hosted
