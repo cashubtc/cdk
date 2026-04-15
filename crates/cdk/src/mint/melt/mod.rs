@@ -1,16 +1,19 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut05::MeltMethodOptions;
+use cdk_common::nuts::nut17::{Kind, NotificationPayload};
 use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, CustomOutgoingPaymentOptions,
     OutgoingPaymentOptions,
 };
 use cdk_common::quote_id::QuoteId;
+use cdk_common::subscription::Params;
 use cdk_common::{
     MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse, MeltQuoteCustomRequest,
     MeltQuoteCustomResponse, MeltQuoteResponse,
@@ -36,7 +39,7 @@ pub(crate) mod shared;
 #[cfg(test)]
 mod tests;
 
-use melt_saga::MeltSaga;
+use melt_saga::{MeltSaga, PaymentOutcome};
 
 /// A pending mint melt that can optionally be awaited.
 #[derive(Debug)]
@@ -672,6 +675,10 @@ impl Mint {
 
         let melt_request_owned = melt_request.clone();
         let quote_id_for_log = quote_id.clone();
+        let localstore = self.localstore();
+        let pubsub = self.pubsub_manager();
+
+        let quote_for_spawn = quote.clone();
         let completion = tokio::spawn(async move {
             tracing::debug!(
                 "Starting background melt completion for quote: {}",
@@ -687,9 +694,80 @@ impl Mint {
                 Ok((setup_saga, settlement)) => {
                     // Step 3: Make payment (internal or external)
                     match setup_saga.make_payment(settlement).await {
-                        Ok(payment_saga) => {
+                        Ok(PaymentOutcome::Confirmed(payment_saga)) => {
                             // Step 4: Finalize (TX2 - marks spent, issues change)
                             payment_saga.finalize().await
+                        }
+                        Ok(PaymentOutcome::Pending) => {
+                            let mut quote_clone = quote_for_spawn.clone();
+                            quote_clone.state = MeltQuoteState::Pending;
+
+                            // Wait for the background task to complete the payment
+                            let kind = match quote_clone.payment_method {
+                                PaymentMethod::Known(KnownMethod::Bolt11) => Kind::Bolt11MeltQuote,
+                                PaymentMethod::Known(KnownMethod::Bolt12) => Kind::Bolt12MeltQuote,
+                                PaymentMethod::Custom(ref method) => {
+                                    Kind::Custom(format!("{}_melt_quote", method))
+                                }
+                            };
+
+                            let params = Params {
+                                id: Arc::new(crate::subscription::SubId::from("sync_wait")),
+                                kind,
+                                filters: vec![quote_id_for_log.to_string()],
+                            };
+
+                            let mut sub = match pubsub.subscribe(params) {
+                                Ok(sub) => sub,
+                                Err(_err) => return Err(Error::Internal),
+                            };
+
+                            let current_quote = localstore
+                                .get_melt_quote(&quote_id_for_log)
+                                .await?
+                                .ok_or(Error::UnknownQuote)?;
+
+                            if current_quote.state != MeltQuoteState::Pending {
+                                let change = localstore
+                                    .get_blind_signatures_for_quote(&quote_id_for_log)
+                                    .await?;
+                                let change_opt = if change.is_empty() {
+                                    None
+                                } else {
+                                    Some(change)
+                                };
+                                return Ok(current_quote.into_response(change_opt));
+                            }
+
+                            loop {
+                                if let Some(event) = sub.recv().await {
+                                    let (event_quote_id, state, payment_proof, change) =
+                                        match event.into_inner() {
+                                            NotificationPayload::MeltQuoteBolt11Response(r) => {
+                                                (r.quote, r.state, r.payment_preimage, r.change)
+                                            }
+                                            NotificationPayload::MeltQuoteBolt12Response(r) => {
+                                                (r.quote, r.state, r.payment_preimage, r.change)
+                                            }
+                                            NotificationPayload::CustomMeltQuoteResponse(_, r) => {
+                                                (r.quote, r.state, r.payment_preimage, r.change)
+                                            }
+                                            _ => continue,
+                                        };
+
+                                    if event_quote_id == quote_id_for_log
+                                        && state != MeltQuoteState::Pending
+                                    {
+                                        let mut final_quote = localstore
+                                            .get_melt_quote(&quote_id_for_log)
+                                            .await?
+                                            .ok_or(Error::UnknownQuote)?;
+                                        final_quote.state = state;
+                                        final_quote.payment_proof = payment_proof;
+                                        return Ok(final_quote.into_response(change));
+                                    }
+                                }
+                            }
                         }
                         Err(err) => Err(err),
                     }

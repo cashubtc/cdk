@@ -17,7 +17,7 @@ use cdk_common::nuts::{MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::{Amount, MintQuoteBolt11Request, PaymentMethod, ProofsMethods, State};
 
-use crate::mint::melt::melt_saga::MeltSaga;
+use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
 use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 
 // ============================================================================
@@ -190,7 +190,11 @@ async fn test_saga_deletion_on_success() {
         .unwrap();
 
     // Make payment (FakeWallet will return success based on FakeInvoiceDescription)
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let PaymentOutcome::Confirmed(confirmed_saga) =
+        payment_saga.make_payment(decision).await.unwrap()
+    else {
+        panic!("Expected Confirmed outcome");
+    };
 
     // Finalize
     let _response = confirmed_saga.finalize().await.unwrap();
@@ -237,7 +241,11 @@ async fn test_completed_operation_recorded_on_finalize() {
         .attempt_internal_settlement(&melt_request)
         .await
         .unwrap();
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let PaymentOutcome::Confirmed(confirmed_saga) =
+        payment_saga.make_payment(decision).await.unwrap()
+    else {
+        panic!("Expected Confirmed outcome");
+    };
 
     let response = confirmed_saga.finalize().await.unwrap();
 
@@ -389,7 +397,11 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
         _ => panic!("expected internal settlement"),
     }
 
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let PaymentOutcome::Confirmed(confirmed_saga) =
+        payment_saga.make_payment(decision).await.unwrap()
+    else {
+        panic!("Expected Confirmed outcome");
+    };
 
     let mut tx = mint.localstore.begin_transaction().await.unwrap();
     tx.update_saga(
@@ -2144,7 +2156,11 @@ async fn test_quote_already_paid() {
         .await
         .unwrap();
 
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let PaymentOutcome::Confirmed(confirmed_saga) =
+        payment_saga.make_payment(decision).await.unwrap()
+    else {
+        panic!("Expected Confirmed outcome");
+    };
     let _response = confirmed_saga.finalize().await.unwrap();
 
     // Verify quote is now paid
@@ -2717,7 +2733,11 @@ async fn test_saga_drop_after_payment() {
         .unwrap();
 
     // Make payment
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let PaymentOutcome::Confirmed(confirmed_saga) =
+        payment_saga.make_payment(decision).await.unwrap()
+    else {
+        panic!("Expected Confirmed outcome");
+    };
 
     // STEP 3: Verify saga state is now PaymentAttempted (not SetupComplete)
     let saga_in_db = assert_saga_exists(&mint, &operation_id).await;
@@ -2813,7 +2833,11 @@ async fn test_payment_attempted_state_triggers_ln_check() {
         .attempt_internal_settlement(&melt_request)
         .await
         .unwrap();
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let PaymentOutcome::Confirmed(confirmed_saga) =
+        payment_saga.make_payment(decision).await.unwrap()
+    else {
+        panic!("Expected Confirmed outcome");
+    };
 
     // STEP 3: Verify state transitioned to PaymentAttempted
     let saga_after_payment = assert_saga_exists(&mint, &operation_id).await;
@@ -3323,7 +3347,11 @@ async fn test_paid_lookup_id_prevents_pending() {
         .attempt_internal_settlement(&melt_request1)
         .await
         .unwrap();
-    let confirmed_saga = payment_saga.make_payment(decision).await.unwrap();
+    let PaymentOutcome::Confirmed(confirmed_saga) =
+        payment_saga.make_payment(decision).await.unwrap()
+    else {
+        panic!("Expected Confirmed outcome");
+    };
     let _response = confirmed_saga.finalize().await.unwrap();
 
     // Verify quote1 is now paid
