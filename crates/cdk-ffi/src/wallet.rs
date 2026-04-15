@@ -344,6 +344,35 @@ impl Wallet {
         Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
 
+    /// Prepare a melt operation from an encoded token
+    ///
+    /// Decodes the token internally (handling keyset state for v2 keysets),
+    /// extracts proofs, and prepares the melt operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
+    /// * `encoded_token` - The encoded token string (cashuA or cashuB format)
+    ///
+    /// # Returns
+    ///
+    /// A `PreparedMelt` that can be confirmed or cancelled
+    pub async fn prepare_melt_token(
+        &self,
+        quote_id: String,
+        encoded_token: String,
+    ) -> Result<PreparedMelt, FfiError> {
+        let prepared = self
+            .inner
+            .prepare_melt_token(
+                &quote_id,
+                &encoded_token,
+                std::collections::HashMap::new(),
+            )
+            .await?;
+        Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
+    }
+
     pub async fn mint_unified(
         &self,
         quote_id: String,

@@ -868,6 +868,18 @@ pub trait Wallet: Send + Sync {
         metadata: HashMap<String, String>,
     ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 
+    /// Prepare a melt operation from an encoded token
+    ///
+    /// Decodes the token, extracts proofs (handling keyset state internally),
+    /// and prepares the melt. This is useful when the caller has a token and
+    /// wants to skip manual decoding, which requires keyset state for v2 keysets.
+    async fn prepare_melt_token(
+        &self,
+        quote_id: &str,
+        encoded_token: &str,
+        metadata: HashMap<String, String>,
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
+
     /// Swap proofs
     async fn swap(
         &self,
