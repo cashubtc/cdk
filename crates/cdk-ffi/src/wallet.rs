@@ -364,11 +364,7 @@ impl Wallet {
     ) -> Result<PreparedMelt, FfiError> {
         let prepared = self
             .inner
-            .prepare_melt_token(
-                &quote_id,
-                &encoded_token,
-                std::collections::HashMap::new(),
-            )
+            .prepare_melt_token(&quote_id, &encoded_token, std::collections::HashMap::new())
             .await?;
         Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
