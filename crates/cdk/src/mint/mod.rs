@@ -632,7 +632,7 @@ impl Mint {
         let mut seen_processors = Vec::new();
         for (key, processor) in payment_processors {
             // Skip if processor is already active
-            if processor.is_wait_invoice_active() {
+            if processor.is_payment_event_stream_active() {
                 continue;
             }
 
@@ -707,7 +707,7 @@ impl Mint {
         loop {
             tokio::select! {
                 _ = &mut shutdown_future => {
-                    processor.cancel_wait_invoice();
+                    processor.cancel_payment_event_stream();
                     break;
                 }
                 result = processor.wait_payment_event() => {
@@ -716,7 +716,7 @@ impl Mint {
                             loop {
                                 tokio::select! {
                                     _ = &mut shutdown_future => {
-                                        processor.cancel_wait_invoice();
+                                        processor.cancel_payment_event_stream();
                                         return Ok(());
                                     }
                                     maybe_event = stream.next() => {

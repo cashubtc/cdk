@@ -154,11 +154,11 @@ impl MintPayment for LNbits {
         Ok(self.settings.clone())
     }
 
-    fn is_wait_invoice_active(&self) -> bool {
+    fn is_payment_event_stream_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)
     }
 
-    fn cancel_wait_invoice(&self) {
+    fn cancel_payment_event_stream(&self) {
         self.wait_invoice_cancel_token.cancel()
     }
 

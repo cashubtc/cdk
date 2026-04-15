@@ -324,9 +324,9 @@ impl CdkLdkNode {
         tracing::info!("Cancelling event handler");
         self.events_cancel_token.cancel();
 
-        // Cancel any wait_invoice streams
-        if self.is_wait_invoice_active() {
-            tracing::info!("Cancelling wait_invoice stream");
+        // Cancel any payment event streams
+        if self.is_payment_event_stream_active() {
+            tracing::info!("Cancelling payment event stream");
             self.wait_invoice_cancel_token.cancel();
         }
 
@@ -935,13 +935,13 @@ impl MintPayment for CdkLdkNode {
         Ok(stream)
     }
 
-    /// Is wait invoice active
-    fn is_wait_invoice_active(&self) -> bool {
+    /// Is payment event stream active
+    fn is_payment_event_stream_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)
     }
 
-    /// Cancel wait invoice
-    fn cancel_wait_invoice(&self) {
+    /// Cancel payment event stream
+    fn cancel_payment_event_stream(&self) {
         self.wait_invoice_cancel_token.cancel()
     }
 

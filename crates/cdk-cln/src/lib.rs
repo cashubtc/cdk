@@ -104,13 +104,13 @@ impl MintPayment for Cln {
         })
     }
 
-    /// Is wait invoice active
-    fn is_wait_invoice_active(&self) -> bool {
+    /// Is payment event stream active
+    fn is_payment_event_stream_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)
     }
 
-    /// Cancel wait invoice
-    fn cancel_wait_invoice(&self) {
+    /// Cancel payment event stream
+    fn cancel_payment_event_stream(&self) {
         self.wait_invoice_cancel_token.cancel()
     }
 
