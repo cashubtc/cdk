@@ -218,6 +218,36 @@ where
 {
     type Err = Error;
 
+    async fn get_melt_saga_by_quote_id(
+        &self,
+        quote_id: &cdk_common::QuoteId,
+    ) -> Result<Option<mint::Saga>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                operation_id,
+                operation_kind,
+                state,
+                quote_id,
+                finalization_data,
+                created_at,
+                updated_at
+            FROM
+                saga_state
+            WHERE
+                quote_id = :quote_id
+                AND operation_kind = :operation_kind
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .bind("operation_kind", mint::OperationKind::Melt.to_string())
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_saga)
+        .transpose()?)
+    }
+
     async fn get_incomplete_sagas(
         &self,
         operation_kind: mint::OperationKind,

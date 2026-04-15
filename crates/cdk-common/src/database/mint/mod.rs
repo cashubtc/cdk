@@ -549,6 +549,12 @@ pub trait SagaDatabase {
     /// Saga Database Error
     type Err: Into<Error> + From<Error>;
 
+    /// Get the melt saga associated with a melt quote id
+    async fn get_melt_saga_by_quote_id(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<mint::Saga>, Self::Err>;
+
     /// Get all incomplete sagas for a given operation kind
     async fn get_incomplete_sagas(
         &self,
