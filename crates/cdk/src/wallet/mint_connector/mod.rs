@@ -4,6 +4,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cdk_common::nutxx::MintQuoteByPubkeyRequest;
 use cdk_common::{
     AuthToken, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
     MintQuoteResponse,
@@ -131,6 +132,13 @@ pub trait MintConnector: Debug {
         method: PaymentMethod,
         quote_id: &str,
     ) -> Result<MintQuoteResponse<String>, Error>;
+
+    /// NUT-XX: Mint Quote Lookup by Public Key
+    async fn post_mint_quote_by_pubkey(
+        &self,
+        method: PaymentMethod,
+        request: MintQuoteByPubkeyRequest,
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error>;
 
     /// Melt [NUT-05]
     /// Melt Quote Status
