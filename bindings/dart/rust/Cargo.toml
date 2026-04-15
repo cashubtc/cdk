@@ -16,11 +16,6 @@ name = "cdk_ffi_dart"
 name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
 
-[profile.release]
-lto = true
-strip = true
-codegen-units = 1
-
 [dependencies]
 cdk-ffi = { workspace = true, features = ["npubcash", "bip353"] }
 uniffi = { workspace = true, features = ["cli"] }
