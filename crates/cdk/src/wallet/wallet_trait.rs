@@ -275,6 +275,17 @@ impl WalletTrait for super::Wallet {
         self.prepare_melt_proofs(quote_id, proofs, metadata).await
     }
 
+    #[instrument(skip(self, encoded_token, metadata))]
+    async fn prepare_melt_token(
+        &self,
+        quote_id: &str,
+        encoded_token: &str,
+        metadata: HashMap<String, String>,
+    ) -> Result<super::melt::PreparedMelt<'_>, Self::Error> {
+        self.prepare_melt_token(quote_id, encoded_token, metadata)
+            .await
+    }
+
     #[instrument(skip(self, input_proofs, spending_conditions))]
     async fn swap(
         &self,

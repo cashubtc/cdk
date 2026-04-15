@@ -38,6 +38,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::{Future, IntoFuture};
 use std::pin::Pin;
+use std::str::FromStr;
 
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
@@ -46,11 +47,11 @@ use tracing::instrument;
 use uuid::Uuid;
 
 use crate::nuts::nut00::KnownMethod;
-use crate::nuts::{MeltOptions, Proofs};
+use crate::nuts::{MeltOptions, Proofs, Token};
 use crate::types::FinalizedMelt;
 use crate::wallet::subscription::NotificationPayload;
 use crate::wallet::WalletSubscription;
-use crate::{Amount, Wallet};
+use crate::{ensure_cdk, Amount, Wallet};
 
 mod bolt11;
 mod bolt12;
@@ -633,6 +634,29 @@ impl Wallet {
             saga: prepared_saga,
             metadata,
         })
+    }
+
+    /// Prepare a melt operation from an encoded token.
+    ///
+    /// Decodes the token, validates unit and mint URL, extracts proofs,
+    /// and delegates to [`prepare_melt_proofs`](Wallet::prepare_melt_proofs).
+    #[instrument(skip(self, encoded_token, metadata))]
+    pub async fn prepare_melt_token(
+        &self,
+        quote_id: &str,
+        encoded_token: &str,
+        metadata: HashMap<String, String>,
+    ) -> Result<PreparedMelt<'_>, Error> {
+        let token = Token::from_str(encoded_token)?;
+
+        let unit = token.unit().unwrap_or_default();
+        ensure_cdk!(unit == self.unit, Error::UnsupportedUnit);
+        ensure_cdk!(self.mint_url == token.mint_url()?, Error::IncorrectMint);
+
+        let keysets_info = self.load_mint_keysets().await?;
+        let proofs = token.proofs(&keysets_info)?;
+
+        self.prepare_melt_proofs(quote_id, proofs, metadata).await
     }
 
     /// Finalize pending melt operations.
