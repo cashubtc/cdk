@@ -890,7 +890,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
         let melt_response = match melt_result {
             Ok(response) => response,
             Err(error) => {
-                // Check for known terminal errors first
+                // Check for known unrecoverable errors first
                 if matches!(error, Error::RequestAlreadyPaid) {
                     tracing::info!("Invoice already paid by another wallet - releasing proofs");
                     self.handle_failure().await;

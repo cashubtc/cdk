@@ -176,6 +176,16 @@ pub enum Error {
     /// Quote is pending
     #[error("Quote pending")]
     PendingQuote,
+    /// Timed out waiting for a pending melt to complete.
+    ///
+    /// If the most recent backend status check failed, its error message is
+    /// attached for operator visibility; wallets should continue polling
+    /// regardless since the quote remains `Pending`.
+    #[error("Timed out waiting for pending melt to complete{}", .last_backend_error.as_ref().map(|e| format!(": last backend error: {}", e)).unwrap_or_default())]
+    PendingMeltTimeout {
+        /// Last error observed from the LN backend status check, if any.
+        last_backend_error: Option<String>,
+    },
     /// ecash already issued for quote
     #[error("Quote already issued")]
     IssuedQuote,
@@ -787,6 +797,10 @@ impl From<Error> for ErrorResponse {
                 detail: err.to_string(),
             },
             Error::PendingQuote => ErrorResponse {
+                code: ErrorCode::QuotePending,
+                detail: err.to_string(),
+            },
+            Error::PendingMeltTimeout { .. } => ErrorResponse {
                 code: ErrorCode::QuotePending,
                 detail: err.to_string(),
             },

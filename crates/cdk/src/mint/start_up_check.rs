@@ -40,7 +40,7 @@ impl Mint {
     ///
     /// - `Ok(MakePaymentResponse)`: Payment status successfully retrieved from backend
     /// - `Err(Error)`: Failed to check payment status (backend unavailable, no lookup_id, etc.)
-    async fn check_melt_payment_status(
+    pub(super) async fn check_melt_payment_status(
         &self,
         quote: &MeltQuote,
     ) -> Result<crate::cdk_payment::MakePaymentResponse, Error> {
@@ -472,13 +472,15 @@ impl Mint {
                                     payment_response
                                 }
                             };
+                            let payment_lookup_id = payment_response.payment_lookup_id.clone();
+                            let payment_proof = payment_response.payment_proof.clone();
 
                             if let Err(err) = self
                                 .finalize_paid_melt_quote(
                                     &quote,
                                     payment_response.total_spent,
-                                    payment_response.payment_proof,
-                                    &payment_response.payment_lookup_id,
+                                    payment_proof.clone(),
+                                    &payment_lookup_id,
                                     saga.operation_id,
                                 )
                                 .await
@@ -490,6 +492,10 @@ impl Mint {
                                 );
                                 continue;
                             }
+
+                            quote.state = MeltQuoteState::Paid;
+                            quote.payment_proof = payment_proof;
+                            quote.request_lookup_id = Some(payment_lookup_id);
 
                             tracing::info!(
                                 "Successfully recovered Finalizing saga {}",

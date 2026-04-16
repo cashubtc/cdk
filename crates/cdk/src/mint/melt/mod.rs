@@ -1,16 +1,21 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use cdk_common::database::DynMintDatabase;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut05::MeltMethodOptions;
+use cdk_common::nuts::nut17::{Kind, NotificationPayload};
 use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, CustomOutgoingPaymentOptions,
     OutgoingPaymentOptions,
 };
 use cdk_common::quote_id::QuoteId;
+use cdk_common::subscription::Params;
 use cdk_common::{
     MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse, MeltQuoteCustomRequest,
     MeltQuoteCustomResponse, MeltQuoteResponse,
@@ -36,7 +41,33 @@ pub(crate) mod shared;
 #[cfg(test)]
 mod tests;
 
-use melt_saga::MeltSaga;
+use melt_saga::{MeltSaga, PaymentOutcome};
+
+fn pending_melt_wait_timeout() -> Duration {
+    if cfg!(test) {
+        // Bumped from 100ms to 250ms to reduce flake on loaded CI while
+        // keeping the timeout test fast.
+        Duration::from_millis(250)
+    } else {
+        Duration::from_secs(60)
+    }
+}
+
+fn pending_melt_notification_wait_interval() -> Duration {
+    if cfg!(test) {
+        Duration::from_millis(10)
+    } else {
+        Duration::from_secs(1)
+    }
+}
+
+fn pending_melt_status_recheck_interval() -> Duration {
+    if cfg!(test) {
+        Duration::from_millis(20)
+    } else {
+        Duration::from_secs(5)
+    }
+}
 
 /// A pending mint melt that can optionally be awaited.
 #[derive(Debug)]
@@ -77,6 +108,102 @@ impl std::future::IntoFuture for PendingMelt {
 }
 
 impl Mint {
+    /// Loads a settled (non-pending, non-unknown) melt response from the database.
+    ///
+    /// Returns `Ok(None)` while the quote is still `Pending` or in an `Unknown`
+    /// state (backend could not determine status); the caller should keep
+    /// polling. Returns `Ok(Some(response))` once the quote has reached a
+    /// final state (`Paid`, `Failed`, or post-attempt `Unpaid`), with any
+    /// change blind signatures attached.
+    ///
+    /// `Unknown` is treated as "keep polling" by design: a backend may recover
+    /// and report a definitive status on a later check. A permanently `Unknown`
+    /// quote in the pending-wait path will eventually hit
+    /// `pending_melt_wait_timeout` and return `Error::PendingMeltTimeout`;
+    /// startup recovery / explicit status checks handle the long-tail case.
+    async fn load_settled_melt_response(
+        localstore: &DynMintDatabase,
+        quote_id: &QuoteId,
+    ) -> Result<Option<MeltQuoteResponse<QuoteId>>, Error> {
+        let quote = localstore
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        if matches!(
+            quote.state,
+            MeltQuoteState::Pending | MeltQuoteState::Unknown
+        ) {
+            return Ok(None);
+        }
+
+        let change = localstore.get_blind_signatures_for_quote(quote_id).await?;
+        let change_opt = if change.is_empty() {
+            None
+        } else {
+            Some(change)
+        };
+
+        Ok(Some(quote.into_response(change_opt)))
+    }
+
+    /// Attempts to resolve a pending melt quote by checking the backend and
+    /// running saga outcome processing.
+    ///
+    /// Returns `Ok(None)` when reconciliation proceeded normally (whether or
+    /// not the quote moved out of `Pending`). Returns `Ok(Some(err_string))`
+    /// when the backend status check itself failed — the caller may surface
+    /// this message on a subsequent `PendingMeltTimeout` for better diagnostics.
+    /// Returns `Err` on database errors or on unrecoverable saga processing
+    /// failures.
+    async fn reconcile_pending_melt_quote(
+        mint: &Mint,
+        localstore: &DynMintDatabase,
+        pubsub_manager: &Arc<crate::mint::subscription::PubSubManager>,
+        quote_id: &QuoteId,
+    ) -> Result<Option<String>, Error> {
+        let Some(mut quote) = localstore.get_melt_quote(quote_id).await? else {
+            return Err(Error::UnknownQuote);
+        };
+
+        if quote.state != MeltQuoteState::Pending {
+            return Ok(None);
+        }
+
+        let Some(saga) = localstore.get_melt_saga_by_quote_id(quote_id).await? else {
+            tracing::warn!(
+                "Pending melt quote {} has no saga metadata during reconciliation",
+                quote_id
+            );
+            return Ok(None);
+        };
+
+        let payment_response = match mint.check_melt_payment_status(&quote).await {
+            Ok(payment_response) => payment_response,
+            Err(err) => {
+                let err_string = err.to_string();
+                tracing::warn!(
+                    "Failed to reconcile pending melt quote {} with backend status: {}",
+                    quote_id,
+                    err_string
+                );
+                return Ok(Some(err_string));
+            }
+        };
+
+        crate::mint::saga_recovery::process_melt_saga_outcome(
+            &saga,
+            &mut quote,
+            &payment_response,
+            localstore,
+            pubsub_manager,
+            mint,
+        )
+        .await?;
+
+        Ok(None)
+    }
+
     #[instrument(skip_all)]
     async fn check_melt_request_acceptable(
         &self,
@@ -672,6 +799,11 @@ impl Mint {
 
         let melt_request_owned = melt_request.clone();
         let quote_id_for_log = quote_id.clone();
+        let localstore = self.localstore();
+        let pubsub = self.pubsub_manager();
+
+        let quote_for_spawn = quote.clone();
+        let mint_for_spawn = Arc::new(self.clone());
         let completion = tokio::spawn(async move {
             tracing::debug!(
                 "Starting background melt completion for quote: {}",
@@ -687,9 +819,119 @@ impl Mint {
                 Ok((setup_saga, settlement)) => {
                     // Step 3: Make payment (internal or external)
                     match setup_saga.make_payment(settlement).await {
-                        Ok(payment_saga) => {
+                        Ok(PaymentOutcome::Confirmed(payment_saga)) => {
                             // Step 4: Finalize (TX2 - marks spent, issues change)
                             payment_saga.finalize().await
+                        }
+                        Ok(PaymentOutcome::Pending) => {
+                            // Wait for the background task to complete the payment
+                            let kind = match quote_for_spawn.payment_method {
+                                PaymentMethod::Known(KnownMethod::Bolt11) => Kind::Bolt11MeltQuote,
+                                PaymentMethod::Known(KnownMethod::Bolt12) => Kind::Bolt12MeltQuote,
+                                PaymentMethod::Custom(ref method) => {
+                                    Kind::Custom(format!("{}_melt_quote", method))
+                                }
+                            };
+
+                            let params = Params {
+                                id: Arc::new(crate::subscription::SubId::from(format!(
+                                    "melt_sync_wait_{}",
+                                    quote_id_for_log
+                                ))),
+                                kind,
+                                filters: vec![quote_id_for_log.to_string()],
+                            };
+
+                            let mut sub = match pubsub.subscribe(params) {
+                                Ok(sub) => sub,
+                                Err(_err) => return Err(Error::Internal),
+                            };
+
+                            let start = Instant::now();
+                            let mut last_status_recheck = start
+                                .checked_sub(pending_melt_status_recheck_interval())
+                                .unwrap_or(start);
+                            let mut last_backend_error: Option<String> = None;
+
+                            loop {
+                                if let Some(response) =
+                                    Self::load_settled_melt_response(&localstore, &quote_id_for_log)
+                                        .await?
+                                {
+                                    return Ok(response);
+                                }
+
+                                if start.elapsed() >= pending_melt_wait_timeout() {
+                                    return Err(Error::PendingMeltTimeout { last_backend_error });
+                                }
+
+                                if last_status_recheck.elapsed()
+                                    >= pending_melt_status_recheck_interval()
+                                {
+                                    match Self::reconcile_pending_melt_quote(
+                                        &mint_for_spawn,
+                                        &localstore,
+                                        &pubsub,
+                                        &quote_id_for_log,
+                                    )
+                                    .await?
+                                    {
+                                        Some(err_string) => {
+                                            last_backend_error = Some(err_string);
+                                        }
+                                        None => {
+                                            last_backend_error = None;
+                                        }
+                                    }
+                                    last_status_recheck = Instant::now();
+
+                                    if let Some(response) = Self::load_settled_melt_response(
+                                        &localstore,
+                                        &quote_id_for_log,
+                                    )
+                                    .await?
+                                    {
+                                        return Ok(response);
+                                    }
+                                }
+
+                                let Ok(maybe_event) = tokio::time::timeout(
+                                    pending_melt_notification_wait_interval(),
+                                    sub.recv(),
+                                )
+                                .await
+                                else {
+                                    continue;
+                                };
+
+                                if let Some(event) = maybe_event {
+                                    let (event_quote_id, state) = match event.into_inner() {
+                                        NotificationPayload::MeltQuoteBolt11Response(r) => {
+                                            (r.quote, r.state)
+                                        }
+                                        NotificationPayload::MeltQuoteBolt12Response(r) => {
+                                            (r.quote, r.state)
+                                        }
+                                        NotificationPayload::CustomMeltQuoteResponse(_, r) => {
+                                            (r.quote, r.state)
+                                        }
+                                        _ => continue,
+                                    };
+
+                                    if event_quote_id == quote_id_for_log
+                                        && state != MeltQuoteState::Pending
+                                    {
+                                        if let Some(response) = Self::load_settled_melt_response(
+                                            &localstore,
+                                            &quote_id_for_log,
+                                        )
+                                        .await?
+                                        {
+                                            return Ok(response);
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Err(err) => Err(err),
                     }

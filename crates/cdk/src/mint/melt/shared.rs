@@ -119,19 +119,38 @@ pub async fn rollback_melt_quote(
         tx.delete_blinded_messages(blinded_secrets).await?;
     }
 
-    // Get and lock the quote, then reset state from Pending to Unpaid
     let quote_option = if let Some(mut quote) = tx.get_melt_quote(quote_id).await? {
-        let previous_state = tx
-            .update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
-            .await?;
-
-        if previous_state != MeltQuoteState::Pending {
-            tracing::warn!(
-                "Unexpected quote state during rollback: expected Pending, got {}",
-                previous_state
-            );
+        // Rollback transitions Pending → Unpaid (not Pending → Pending): the input
+        // proofs, change outputs, and melt request tracking have all been removed
+        // above, so no payment attempt is in flight. Unpaid is the correct
+        // retryable pre-melt state.
+        match quote.state {
+            MeltQuoteState::Pending => {
+                tx.update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
+                    .await?;
+                Some(quote)
+            }
+            MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
+                // Already in a non-pending state; fall through to saga /
+                // melt-request cleanup so the rollback is idempotent and the
+                // saga isn't orphaned when recovery invokes rollback_melt_quote
+                // twice or when the quote was reset by another path first.
+                None
+            }
+            MeltQuoteState::Paid => {
+                tx.rollback().await?;
+                return Err(Error::PaidQuote);
+            }
+            state => {
+                tracing::warn!(
+                    "Refusing rollback for melt quote {} in unexpected state {}",
+                    quote_id,
+                    state
+                );
+                tx.rollback().await?;
+                return Err(Error::UnknownPaymentState);
+            }
         }
-        Some(quote)
     } else {
         None
     };
@@ -574,6 +593,11 @@ pub async fn finalize_melt_quote(
 ) -> Result<Option<Vec<BlindSignature>>, Error> {
     tracing::info!("Finalizing melt quote {}", quote.id);
 
+    let settlement_matches = |stored_quote: &MeltQuote| {
+        stored_quote.request_lookup_id.as_ref() == Some(payment_lookup_id)
+            && stored_quote.payment_proof == payment_proof
+    };
+
     let mut tx = db.begin_transaction().await?;
 
     // Acquire lock on the quote for safe state update
@@ -584,6 +608,17 @@ pub async fn finalize_melt_quote(
     let melt_request_info = match tx.get_melt_request_and_blinded_messages(&quote.id).await? {
         Some(info) => info,
         None => {
+            if locked_quote.state == MeltQuoteState::Paid {
+                let locked_quote = locked_quote.inner();
+
+                if locked_quote.request_lookup_id.as_ref() != Some(payment_lookup_id)
+                    || locked_quote.payment_proof != payment_proof
+                {
+                    tx.rollback().await?;
+                    return Err(Error::PaidQuote);
+                }
+            }
+
             tracing::warn!(
                 "No melt request found for quote {} - may have been completed already",
                 quote.id
@@ -598,7 +633,9 @@ pub async fn finalize_melt_quote(
             } else {
                 tx.rollback().await?;
             }
-            return Ok(None);
+
+            let sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
+            return Ok(if sigs.is_empty() { None } else { Some(sigs) });
         }
     };
 
@@ -620,7 +657,9 @@ pub async fn finalize_melt_quote(
         } else {
             tx.rollback().await?;
         }
-        return Ok(None);
+
+        let sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
+        return Ok(if sigs.is_empty() { None } else { Some(sigs) });
     }
 
     // Check if TX1 already completed (e.g., crash between TX1 commit and TX2 commit).
@@ -631,19 +670,21 @@ pub async fn finalize_melt_quote(
     // We still need the proofs for fee calculation (operation recording), so fetch them
     // from the DB even in the already-Paid case.
     let (proofs, quote) = if locked_quote.state == MeltQuoteState::Paid {
+        let locked_quote = locked_quote.inner();
+
+        if !settlement_matches(&locked_quote) {
+            tx.rollback().await?;
+            return Err(Error::PaidQuote);
+        }
+
         tracing::info!(
-            "Melt quote {} already Paid — TX1 previously committed, skipping to change/cleanup",
+            "Melt quote {} already Paid, skipping to change/cleanup",
             quote.id
         );
-        // Fetch proofs for fee calculation (they're already Spent but still in DB).
-        // Clone out of Acquired to release the row lock before committing.
         let proofs = tx.get_proofs(&input_ys).await?.to_vec();
-        // Release the Acquired quote lock before committing TX1
-        let locked_quote = locked_quote.inner();
         tx.commit().await?;
         (proofs, locked_quote)
     } else {
-        // Core finalization (marks proofs spent, updates quote)
         let (proofs, quote) = finalize_melt_core(
             tx,
             pubsub,

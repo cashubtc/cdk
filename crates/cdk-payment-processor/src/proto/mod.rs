@@ -345,12 +345,75 @@ impl TryFrom<WaitIncomingPaymentResponse> for WaitPaymentResponse {
     }
 }
 
+impl From<cdk_common::payment::Event> for PaymentEventResponse {
+    fn from(value: cdk_common::payment::Event) -> Self {
+        match value {
+            cdk_common::payment::Event::PaymentReceived(response) => Self {
+                event: Some(payment_event_response::Event::PaymentReceived(
+                    response.into(),
+                )),
+            },
+            cdk_common::payment::Event::PaymentSuccessful { quote_id, details } => Self {
+                event: Some(payment_event_response::Event::PaymentSuccessful(
+                    PaymentSuccessfulResponse {
+                        quote_id: quote_id.to_string(),
+                        details: Some(details.into()),
+                    },
+                )),
+            },
+            cdk_common::payment::Event::PaymentFailed { quote_id, reason } => Self {
+                event: Some(payment_event_response::Event::PaymentFailed(
+                    PaymentFailedResponse {
+                        quote_id: quote_id.to_string(),
+                        reason,
+                    },
+                )),
+            },
+        }
+    }
+}
+
+impl TryFrom<PaymentEventResponse> for cdk_common::payment::Event {
+    type Error = crate::error::Error;
+
+    fn try_from(value: PaymentEventResponse) -> Result<Self, Self::Error> {
+        match value.event {
+            Some(payment_event_response::Event::PaymentReceived(response)) => {
+                Ok(Self::PaymentReceived(response.try_into()?))
+            }
+            Some(payment_event_response::Event::PaymentSuccessful(response)) => {
+                let quote_id = cdk_common::QuoteId::from_str(&response.quote_id)
+                    .map_err(|_| crate::error::Error::InvalidPaymentIdentifier)?;
+                let details = response
+                    .details
+                    .ok_or(crate::error::Error::InvalidPaymentIdentifier)?
+                    .try_into()?;
+                Ok(Self::PaymentSuccessful { quote_id, details })
+            }
+            Some(payment_event_response::Event::PaymentFailed(response)) => {
+                let quote_id = cdk_common::QuoteId::from_str(&response.quote_id)
+                    .map_err(|_| crate::error::Error::InvalidPaymentIdentifier)?;
+                Ok(Self::PaymentFailed {
+                    quote_id,
+                    reason: response.reason,
+                })
+            }
+            None => Err(crate::error::Error::InvalidPaymentIdentifier),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use cdk_common::payment::{PaymentIdentifier, PaymentQuoteResponse as CdkPaymentQuoteResponse};
-    use cdk_common::{Amount, CurrencyUnit, MeltQuoteState};
+    use std::str::FromStr;
 
-    use super::PaymentQuoteResponse;
+    use cdk_common::payment::{
+        Event, MakePaymentResponse, PaymentIdentifier,
+        PaymentQuoteResponse as CdkPaymentQuoteResponse, WaitPaymentResponse,
+    };
+    use cdk_common::{Amount, CurrencyUnit, MeltQuoteState, QuoteId};
+
+    use super::{PaymentEventResponse, PaymentQuoteResponse};
 
     #[test]
     fn payment_quote_response_extra_json_roundtrip() {
@@ -374,5 +437,118 @@ mod tests {
         assert_eq!(roundtrip.fee, response.fee);
         assert_eq!(roundtrip.state, response.state);
         assert_eq!(roundtrip.extra_json, response.extra_json);
+    }
+
+    #[test]
+    fn payment_event_response_received_roundtrip() {
+        let event = Event::PaymentReceived(WaitPaymentResponse {
+            payment_identifier: PaymentIdentifier::CustomId("incoming-lookup".to_string()),
+            payment_amount: Amount::new(500, CurrencyUnit::Msat),
+            payment_id: "payment-xyz".to_string(),
+        });
+
+        let proto: PaymentEventResponse = event.clone().into();
+        let roundtrip = Event::try_from(proto).expect("valid proto event");
+
+        match (event, roundtrip) {
+            (Event::PaymentReceived(a), Event::PaymentReceived(b)) => {
+                assert_eq!(a.payment_identifier, b.payment_identifier);
+                assert_eq!(a.payment_amount, b.payment_amount);
+                assert_eq!(a.payment_id, b.payment_id);
+            }
+            _ => panic!("expected PaymentReceived variant after roundtrip"),
+        }
+    }
+
+    #[test]
+    fn payment_event_response_successful_roundtrip() {
+        let quote_id = QuoteId::new_uuid();
+        let event = Event::PaymentSuccessful {
+            quote_id: quote_id.clone(),
+            details: MakePaymentResponse {
+                payment_lookup_id: PaymentIdentifier::CustomId("outgoing-lookup".to_string()),
+                payment_proof: Some("deadbeef".to_string()),
+                status: MeltQuoteState::Paid,
+                total_spent: Amount::new(1_000, CurrencyUnit::Sat),
+            },
+        };
+
+        let proto: PaymentEventResponse = event.clone().into();
+        let roundtrip = Event::try_from(proto).expect("valid proto event");
+
+        match (event, roundtrip) {
+            (
+                Event::PaymentSuccessful {
+                    quote_id: a_quote,
+                    details: a,
+                },
+                Event::PaymentSuccessful {
+                    quote_id: b_quote,
+                    details: b,
+                },
+            ) => {
+                assert_eq!(a_quote, b_quote);
+                assert_eq!(a.payment_lookup_id, b.payment_lookup_id);
+                assert_eq!(a.payment_proof, b.payment_proof);
+                assert_eq!(a.status, b.status);
+                assert_eq!(a.total_spent, b.total_spent);
+            }
+            _ => panic!("expected PaymentSuccessful variant after roundtrip"),
+        }
+    }
+
+    #[test]
+    fn payment_event_response_failed_roundtrip() {
+        let quote_id = QuoteId::new_uuid();
+        let event = Event::PaymentFailed {
+            quote_id: quote_id.clone(),
+            reason: "route not found".to_string(),
+        };
+
+        let proto: PaymentEventResponse = event.clone().into();
+        let roundtrip = Event::try_from(proto).expect("valid proto event");
+
+        match (event, roundtrip) {
+            (
+                Event::PaymentFailed {
+                    quote_id: a_quote,
+                    reason: a,
+                },
+                Event::PaymentFailed {
+                    quote_id: b_quote,
+                    reason: b,
+                },
+            ) => {
+                assert_eq!(a_quote, b_quote);
+                assert_eq!(a, b);
+            }
+            _ => panic!("expected PaymentFailed variant after roundtrip"),
+        }
+    }
+
+    #[test]
+    fn payment_event_response_missing_oneof_errors() {
+        let proto = PaymentEventResponse { event: None };
+        assert!(Event::try_from(proto).is_err());
+    }
+
+    #[test]
+    fn payment_event_response_invalid_quote_id_errors() {
+        use super::{payment_event_response, PaymentFailedResponse};
+
+        // `!!!` is neither a valid UUID nor valid URL-safe base64, so QuoteId's
+        // FromStr rejects it and try_from should surface InvalidPaymentIdentifier.
+        let bogus = "!!!";
+        assert!(QuoteId::from_str(bogus).is_err());
+
+        let proto = PaymentEventResponse {
+            event: Some(payment_event_response::Event::PaymentFailed(
+                PaymentFailedResponse {
+                    quote_id: bogus.to_string(),
+                    reason: "bad".to_string(),
+                },
+            )),
+        };
+        assert!(Event::try_from(proto).is_err());
     }
 }
