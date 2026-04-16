@@ -150,13 +150,6 @@ impl Mint {
         max_outputs: usize,
     ) -> Result<Self, Error> {
         let keysets = signatory.keysets().await?;
-        if !keysets
-            .keysets
-            .iter()
-            .any(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
-        {
-            return Err(Error::NoActiveKeyset);
-        }
 
         tracing::info!(
             "Using Signatory {} with {} active keys",
@@ -1334,6 +1327,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mint_starts_with_no_active_keysets() {
+        // Empty supported_units means no keysets will be created
+        let supported_units = HashMap::new();
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        // This should NOT error, a mint with no active keysets is valid
+        let mint = create_mint(config).await;
+        assert!(mint.get_active_keysets().is_empty());
+        // pubkeys endpoint returns empty
+        assert!(mint.pubkeys().keysets.is_empty());
+        // keysets endpoint returns empty
+        assert!(mint.keysets().keysets.is_empty());
+    }
+
+    #[tokio::test]
     async fn mint_unit_string_collision() {
         let mut supported_units = HashMap::new();
         let amounts: Vec<u64> = (0..32).map(|i| 2_u64.pow(i as u32)).collect();
@@ -1360,5 +1370,33 @@ mod tests {
             rotation_result,
             Err(Error::UnitStringCollision(_currency_unit))
         ));
+    }
+
+    #[tokio::test]
+    async fn builder_respects_deactivated_keysets() {
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts.clone()));
+
+        let config = MintConfig::<'_> {
+            supported_units: supported_units.clone(),
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        // Verify we start with an active keyset
+        let active = mint.get_active_keysets();
+        let keyset_id = *active
+            .get(&CurrencyUnit::default())
+            .expect("should have active keyset");
+        assert!(!active.is_empty());
+
+        // Deactivate the keyset by ID
+        mint.deactivate_keyset(keyset_id)
+            .await
+            .expect("deactivate should work");
+
+        // Verify no active keysets
+        assert!(mint.get_active_keysets().is_empty());
     }
 }
