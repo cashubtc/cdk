@@ -964,6 +964,7 @@ impl Wallet {
         }
 
         quote.state = new_state;
+        quote.payment_proof = payment_proof;
 
         match self.localstore.add_melt_quote(quote.clone()).await {
             Ok(_) => Ok(()),
@@ -980,6 +981,7 @@ impl Wallet {
                         .ok_or(Error::UnknownQuote)?;
 
                     fresh_quote.state = new_state;
+                    fresh_quote.payment_proof = quote.payment_proof.clone();
 
                     match self.localstore.add_melt_quote(fresh_quote.clone()).await {
                         Ok(_) => (),
