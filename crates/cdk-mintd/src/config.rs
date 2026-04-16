@@ -240,6 +240,146 @@ impl Default for Onchain {
     }
 }
 
+#[cfg(feature = "bdk")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchConfig {
+    /// How often the batch processor wakes up to check for ready intents
+    #[serde(default = "default_bdk_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    /// Maximum number of intents to include in a single batch
+    #[serde(default = "default_bdk_max_batch_size")]
+    pub max_batch_size: usize,
+    /// How long standard-tier intents wait before being eligible
+    #[serde(default = "default_bdk_standard_deadline_secs")]
+    pub standard_deadline_secs: u64,
+    /// How long economy-tier intents wait before being eligible
+    #[serde(default = "default_bdk_economy_deadline_secs")]
+    pub economy_deadline_secs: u64,
+    /// Minimum number of pending intents required before creating a
+    /// non-immediate batch
+    #[serde(default = "default_bdk_min_batch_threshold")]
+    pub min_batch_threshold: usize,
+}
+
+#[cfg(feature = "bdk")]
+impl Default for BatchConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: default_bdk_poll_interval_secs(),
+            max_batch_size: default_bdk_max_batch_size(),
+            standard_deadline_secs: default_bdk_standard_deadline_secs(),
+            economy_deadline_secs: default_bdk_economy_deadline_secs(),
+            min_batch_threshold: default_bdk_min_batch_threshold(),
+        }
+    }
+}
+
+#[cfg(feature = "bdk")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bdk {
+    /// Fee percentage (e.g., 0.02 for 2%)
+    #[serde(default = "default_fee_percent")]
+    pub fee_percent: f32,
+    /// Minimum reserve fee
+    #[serde(default = "default_reserve_fee_min")]
+    pub reserve_fee_min: Amount,
+    /// Bitcoin network (mainnet, testnet, signet, regtest)
+    pub network: Option<String>,
+    /// Chain source type ("esplora" or "bitcoinrpc"; defaults to "bitcoinrpc")
+    pub chain_source_type: Option<String>,
+    /// Esplora URL (when chain_source_type = "esplora")
+    pub esplora_url: Option<String>,
+    /// Bitcoin RPC host (when chain_source_type = "bitcoinrpc")
+    pub bitcoind_rpc_host: Option<String>,
+    /// Bitcoin RPC port
+    pub bitcoind_rpc_port: Option<u16>,
+    /// Bitcoin RPC user
+    pub bitcoind_rpc_user: Option<String>,
+    /// Bitcoin RPC password
+    pub bitcoind_rpc_password: Option<String>,
+    /// BIP-39 mnemonic for the BDK wallet
+    pub mnemonic: Option<String>,
+    /// Batch processor configuration
+    #[serde(default)]
+    pub batch_config: BatchConfig,
+    /// Number of confirmations required for incoming payments.
+    ///
+    /// Must be >= 1. A value of 0 is rejected at startup because the
+    /// confirmation check still requires the transaction to have an on-chain
+    /// anchor (i.e. 0 would mean "confirmed in any block", not "accept
+    /// unconfirmed"). Use 1 for "accept any confirmation".
+    #[serde(default = "default_bdk_num_confs")]
+    pub num_confs: u32,
+    /// Minimum receive amount in sats
+    #[serde(default = "default_bdk_min_receive_amount_sat")]
+    pub min_receive_amount_sat: u64,
+    /// Wallet sync interval in seconds
+    #[serde(default = "default_bdk_sync_interval_secs")]
+    pub sync_interval_secs: u64,
+}
+
+#[cfg(feature = "bdk")]
+impl Default for Bdk {
+    fn default() -> Self {
+        Self {
+            fee_percent: default_fee_percent(),
+            reserve_fee_min: default_reserve_fee_min(),
+            network: None,
+            chain_source_type: None,
+            esplora_url: None,
+            bitcoind_rpc_host: None,
+            bitcoind_rpc_port: None,
+            bitcoind_rpc_user: None,
+            bitcoind_rpc_password: None,
+            mnemonic: None,
+            batch_config: BatchConfig::default(),
+            num_confs: default_bdk_num_confs(),
+            min_receive_amount_sat: default_bdk_min_receive_amount_sat(),
+            sync_interval_secs: default_bdk_sync_interval_secs(),
+        }
+    }
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_num_confs() -> u32 {
+    6
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_min_receive_amount_sat() -> u64 {
+    1000
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_sync_interval_secs() -> u64 {
+    30
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_poll_interval_secs() -> u64 {
+    30
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_max_batch_size() -> usize {
+    50
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_standard_deadline_secs() -> u64 {
+    300
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_economy_deadline_secs() -> u64 {
+    3600
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_min_batch_threshold() -> usize {
+    1
+}
+
 #[cfg(feature = "lnbits")]
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LNbits {
@@ -706,6 +846,8 @@ pub struct Settings {
     #[cfg(feature = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
     pub grpc_processor: Option<GrpcProcessor>,
+    #[cfg(feature = "bdk")]
+    pub bdk: Option<Bdk>,
     pub database: Database,
     pub auth_database: Option<AuthDatabase>,
     #[cfg(feature = "management-rpc")]

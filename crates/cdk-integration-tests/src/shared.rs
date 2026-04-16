@@ -208,6 +208,8 @@ pub fn create_fake_wallet_settings(
             postgres: postgres_config,
         },
         auth_database: None,
+        #[cfg(feature = "bdk")]
+        bdk: None,
         mint_management_rpc: None,
         auth: None,
         prometheus: Some(Default::default()),
@@ -262,6 +264,8 @@ pub fn create_cln_settings(
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
         auth_database: None,
+        #[cfg(feature = "bdk")]
+        bdk: None,
         mint_management_rpc: None,
         auth: None,
         prometheus: Some(Default::default()),
@@ -314,6 +318,8 @@ pub fn create_lnd_settings(
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
         auth_database: None,
+        #[cfg(feature = "bdk")]
+        bdk: None,
         mint_management_rpc: None,
         auth: None,
         prometheus: Some(Default::default()),

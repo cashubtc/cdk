@@ -6,6 +6,8 @@ use std::path::Path;
 #[cfg(feature = "ldk-node")]
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(feature = "bdk")]
+use std::time::Duration;
 
 use async_trait::async_trait;
 #[cfg(feature = "fakewallet")]
@@ -18,6 +20,7 @@ use cdk::nuts::CurrencyUnit;
     feature = "cln",
     feature = "lnd",
     feature = "ldk-node",
+    feature = "bdk",
     feature = "fakewallet"
 ))]
 use cdk::types::FeeReserve;
@@ -35,7 +38,19 @@ pub trait LnBackendSetup {
         runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
         kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
-    ) -> anyhow::Result<impl MintPayment>;
+    ) -> anyhow::Result<impl MintPayment<Err = cdk_common::payment::Error>>;
+}
+
+#[async_trait]
+pub trait OnchainBackendSetup {
+    async fn setup(
+        &self,
+        settings: &Settings,
+        unit: CurrencyUnit,
+        runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+        work_dir: &Path,
+        kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+    ) -> anyhow::Result<impl MintPayment<Err = cdk_common::payment::Error>>;
 }
 
 #[cfg(feature = "cln")]
@@ -253,17 +268,17 @@ impl LnBackendSetup for config::LdkNode {
         };
 
         // Parse network from config
-        let network = match self
+        let network_str = self
             .bitcoin_network
             .as_ref()
-            .map(|n| n.to_lowercase())
-            .as_deref()
-            .unwrap_or("regtest")
-        {
+            .ok_or_else(|| anyhow::anyhow!("LDK Node bitcoin_network must be set via config or CDK_MINTD_LDK_NODE_BITCOIN_NETWORK env var"))?;
+
+        let network = match network_str.to_lowercase().as_str() {
             "mainnet" | "bitcoin" => Network::Bitcoin,
             "testnet" => Network::Testnet,
             "signet" => Network::Signet,
-            _ => Network::Regtest,
+            "regtest" => Network::Regtest,
+            _ => bail!("Unknown LDK Node bitcoin_network: {}", network_str),
         };
 
         // Parse chain source from config
@@ -411,5 +426,130 @@ impl LnBackendSetup for config::LdkNode {
         ldk_node.set_web_addr(webserver_addr);
 
         Ok(ldk_node)
+    }
+}
+
+#[cfg(feature = "bdk")]
+#[async_trait]
+impl OnchainBackendSetup for crate::config::Bdk {
+    async fn setup(
+        &self,
+        _settings: &Settings,
+        _unit: CurrencyUnit,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+        work_dir: &Path,
+        kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+    ) -> anyhow::Result<cdk_bdk::CdkBdk> {
+        use anyhow::bail;
+        use bip39::Mnemonic;
+        use bitcoin::Network;
+
+        // Reject `num_confs = 0`: the confirmation check still requires the
+        // transaction to have an on-chain anchor, so 0 actually means
+        // "confirmed in any block" rather than the intuitive "accept
+        // unconfirmed". This is almost never what an operator wants, so fail
+        // fast at startup with a clear error instead of silently accepting it.
+        if self.num_confs == 0 {
+            bail!(
+                "BDK num_confs must be >= 1 (0 is rejected because it still \
+                 requires an on-chain anchor and is almost never intended; \
+                 use 1 for 'any confirmation')"
+            );
+        }
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: self.reserve_fee_min,
+            percent_fee_reserve: self.fee_percent,
+        };
+
+        let network_str = self.network.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("BDK network must be set via config or CDK_MINTD_BDK_NETWORK env var")
+        })?;
+
+        let network = match network_str.to_lowercase().as_str() {
+            "mainnet" | "bitcoin" => Network::Bitcoin,
+            "testnet" => Network::Testnet,
+            "signet" => Network::Signet,
+            "regtest" => Network::Regtest,
+            _ => bail!("Unknown BDK network: {}", network_str),
+        };
+
+        let chain_source = match self
+            .chain_source_type
+            .as_ref()
+            .map(|s| s.to_lowercase())
+            .as_deref()
+            .unwrap_or("bitcoinrpc")
+        {
+            "esplora" => {
+                let esplora_url = self
+                    .esplora_url
+                    .clone()
+                    .unwrap_or_else(|| "https://mutinynet.com/api".to_string());
+                cdk_bdk::ChainSource::Esplora {
+                    url: esplora_url,
+                    parallel_requests: 5,
+                }
+            }
+            _ => {
+                let host = self
+                    .bitcoind_rpc_host
+                    .clone()
+                    .unwrap_or_else(|| "127.0.0.1".to_string());
+                let port = self.bitcoind_rpc_port.unwrap_or(18443);
+                let user = self
+                    .bitcoind_rpc_user
+                    .clone()
+                    .unwrap_or_else(|| "user".to_string());
+                let password = self
+                    .bitcoind_rpc_password
+                    .clone()
+                    .unwrap_or_else(|| "pass".to_string());
+
+                cdk_bdk::ChainSource::BitcoinRpc(cdk_bdk::BitcoinRpcConfig {
+                    host,
+                    port,
+                    user,
+                    password,
+                })
+            }
+        };
+
+        let mnemonic = match &self.mnemonic {
+            Some(m) => Mnemonic::parse(m)?,
+            None => bail!("BDK mnemonic must be set"),
+        };
+
+        let bdk = cdk_bdk::CdkBdk::new(
+            mnemonic,
+            network,
+            chain_source,
+            work_dir.to_string_lossy().to_string(),
+            fee_reserve,
+            kv_store.expect("BDK needs kv store"),
+            Some(self.batch_config.clone().into()),
+            self.num_confs,
+            self.min_receive_amount_sat,
+            self.sync_interval_secs,
+            None,
+            None,
+        )?;
+
+        Ok(bdk)
+    }
+}
+
+#[cfg(feature = "bdk")]
+impl From<crate::config::BatchConfig> for cdk_bdk::BatchConfig {
+    fn from(config: crate::config::BatchConfig) -> Self {
+        Self {
+            poll_interval: Duration::from_secs(config.poll_interval_secs),
+            max_batch_size: config.max_batch_size,
+            standard_deadline: Duration::from_secs(config.standard_deadline_secs),
+            economy_deadline: Duration::from_secs(config.economy_deadline_secs),
+            min_batch_threshold: config.min_batch_threshold,
+            max_intent_age: Some(Duration::from_secs(24 * 60 * 60)),
+            fee_estimation: Default::default(),
+        }
     }
 }
