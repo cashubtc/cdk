@@ -160,7 +160,7 @@ impl<'a> PaymentStream<'a> {
                                     localstore.get_mint_quote(&quote_id).await
                                 {
                                     quote.amount_paid = info.amount_paid;
-                                    // quote.amount_issued = info.amount_issued;
+                                    quote.amount_issued = info.amount_issued;
                                     if let Err(e) = localstore.add_mint_quote(quote).await {
                                         tracing::warn!("Failed to update quote state: {}", e);
                                     }
