@@ -386,6 +386,12 @@ impl OutgoingPaymentOptions {
                     amount: melt_quote.amount(),
                     max_fee_amount: Some(fee_reserve),
                     quote_id: melt_quote.id,
+                    // TODO(#TBD): Propagate tier and metadata from MeltQuote
+                    // once the quote struct carries them. Hard-wired to None
+                    // today because MeltQuote has no tier/metadata fields, so
+                    // cdk-bdk's Standard/Economy batching is unreachable via
+                    // the standard melt flow. Load-bearing pair of this site:
+                    // crates/cdk/src/mint/melt/mod.rs (get_melt_onchain_quote_impl).
                     tier: None,
                     metadata: None,
                 }),
