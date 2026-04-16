@@ -99,4 +99,15 @@ impl Mint {
 
         Ok(result.into())
     }
+
+    /// Deactivate a specific keyset by ID without creating a replacement
+    #[instrument(skip(self))]
+    pub async fn deactivate_keyset(&self, id: Id) -> Result<(), Error> {
+        self.signatory.deactivate_keyset(id).await?;
+
+        let new_keyset = self.signatory.keysets().await?;
+        self.keysets.store(new_keyset.keysets.into());
+
+        Ok(())
+    }
 }
