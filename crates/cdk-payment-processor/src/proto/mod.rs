@@ -42,6 +42,10 @@ impl From<CdkPaymentIdentifier> for PaymentIdentifier {
                 r#type: PaymentIdentifierType::PaymentId.into(),
                 value: Some(payment_identifier::Value::Hash(hex::encode(hash))),
             },
+            CdkPaymentIdentifier::QuoteId(id) => Self {
+                r#type: PaymentIdentifierType::QuoteId.into(),
+                value: Some(payment_identifier::Value::Id(id.to_string())),
+            },
         }
     }
 }
@@ -83,6 +87,10 @@ impl TryFrom<PaymentIdentifier> for CdkPaymentIdentifier {
                     .try_into()
                     .map_err(|_| crate::error::Error::InvalidHash)?;
                 Ok(CdkPaymentIdentifier::PaymentId(hash_array))
+            }
+            (PaymentIdentifierType::QuoteId, Some(payment_identifier::Value::Id(id))) => {
+                let id = id.parse().map_err(|_| crate::error::Error::InvalidHash)?;
+                Ok(CdkPaymentIdentifier::QuoteId(id))
             }
             _ => Err(crate::error::Error::InvalidPaymentIdentifier),
         }

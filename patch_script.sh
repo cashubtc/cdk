@@ -1,0 +1,44 @@
+#!/bin/bash
+cat << 'INNER_EOF' >> crates/cdk-common/src/payment.rs
+
+    #[test]
+    fn test_payment_identifier_hash_variants_roundtrip() {
+        let dummy_hash = [1u8; 32];
+        let hex_encoded = hex::encode(dummy_hash);
+
+        // Test Bolt12PaymentHash
+        let bolt12_identifier = PaymentIdentifier::Bolt12PaymentHash(dummy_hash);
+        
+        let kind = bolt12_identifier.kind();
+        assert_eq!(kind, "bolt12_payment_hash");
+        
+        let display = bolt12_identifier.to_string();
+        assert_eq!(display, hex_encoded);
+        
+        let debug = format!("{:?}", bolt12_identifier);
+        assert_eq!(debug, format!("Bolt12PaymentHash({})", hex_encoded));
+        
+        let parsed = PaymentIdentifier::new(&kind, &display).unwrap();
+        assert_eq!(parsed, bolt12_identifier);
+
+        // Test PaymentId
+        let dummy_hash_2 = [2u8; 32];
+        let hex_encoded_2 = hex::encode(dummy_hash_2);
+        let payment_id_identifier = PaymentIdentifier::PaymentId(dummy_hash_2);
+        
+        let kind = payment_id_identifier.kind();
+        assert_eq!(kind, "payment_id");
+        
+        let display = payment_id_identifier.to_string();
+        assert_eq!(display, hex_encoded_2);
+        
+        let debug = format!("{:?}", payment_id_identifier);
+        assert_eq!(debug, format!("PaymentId({})", hex_encoded_2));
+        
+        let parsed = PaymentIdentifier::new(&kind, &display).unwrap();
+        assert_eq!(parsed, payment_id_identifier);
+    }
+}
+INNER_EOF
+# Remove the last extra } from the file since we appended one too many
+sed -i '$d' crates/cdk-common/src/payment.rs

@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::nuts::{CurrencyUnit, MeltQuoteState};
-use crate::Amount;
+use crate::{Amount, QuoteId};
 
 /// CDK Lightning Error
 #[derive(Debug, Error)]
@@ -100,6 +100,8 @@ pub enum PaymentIdentifier {
     PaymentId([u8; 32]),
     /// Custom Payment ID
     CustomId(String),
+    /// Quote ID
+    QuoteId(QuoteId),
 }
 
 impl PaymentIdentifier {
@@ -124,6 +126,11 @@ impl PaymentIdentifier {
                     .try_into()
                     .map_err(|_| Error::InvalidHash)?,
             )),
+            "quote_id" => {
+                Ok(Self::QuoteId(identifier.parse().map_err(|_| {
+                    Error::Custom("Invalid QuoteId".to_string())
+                })?))
+            }
             _ => Err(Error::UnsupportedPaymentOption),
         }
     }
@@ -137,6 +144,7 @@ impl PaymentIdentifier {
             Self::Bolt12PaymentHash(_) => "bolt12_payment_hash".to_string(),
             Self::PaymentId(_) => "payment_id".to_string(),
             Self::CustomId(_) => "custom".to_string(),
+            Self::QuoteId(_) => "quote_id".to_string(),
         }
     }
 }
@@ -150,6 +158,7 @@ impl std::fmt::Display for PaymentIdentifier {
             Self::Bolt12PaymentHash(h) => write!(f, "{}", hex::encode(h)),
             Self::PaymentId(h) => write!(f, "{}", hex::encode(h)),
             Self::CustomId(c) => write!(f, "{c}"),
+            Self::QuoteId(q) => write!(f, "{q}"),
         }
     }
 }
@@ -165,6 +174,7 @@ impl std::fmt::Debug for PaymentIdentifier {
             PaymentIdentifier::Label(s) => write!(f, "Label({})", s),
             PaymentIdentifier::OfferId(s) => write!(f, "OfferId({})", s),
             PaymentIdentifier::CustomId(s) => write!(f, "CustomId({})", s),
+            PaymentIdentifier::QuoteId(q) => write!(f, "QuoteId({})", q),
         }
     }
 }
@@ -753,3 +763,110 @@ where
 
 /// Type alias for Mint Payment trait
 pub type DynMintPayment = std::sync::Arc<dyn MintPayment<Err = Error> + Send + Sync>;
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use crate::QuoteId;
+
+    #[test]
+    fn test_payment_identifier_quote_id_roundtrip() {
+        let quote_id = QuoteId::new_uuid();
+        let identifier = PaymentIdentifier::QuoteId(quote_id.clone());
+
+        let kind = identifier.kind();
+        assert_eq!(kind, "quote_id");
+
+        let display = identifier.to_string();
+        assert_eq!(display, quote_id.to_string());
+
+        let debug = format!("{:?}", identifier);
+        assert_eq!(debug, format!("QuoteId({})", quote_id));
+
+        let parsed = PaymentIdentifier::new(&kind, &display).unwrap();
+        assert_eq!(parsed, identifier);
+    }
+
+    #[test]
+    fn test_payment_identifier_quote_id_base64_roundtrip() {
+        let quote_id_str = "SGVsbG8gV29ybGQh"; // Valid Base64
+        let identifier = PaymentIdentifier::QuoteId(QuoteId::from_str(quote_id_str).unwrap());
+
+        let kind = identifier.kind();
+        assert_eq!(kind, "quote_id");
+
+        let display = identifier.to_string();
+        assert_eq!(display, quote_id_str);
+
+        let parsed = PaymentIdentifier::new(&kind, &display).unwrap();
+        assert_eq!(parsed, identifier);
+    }
+
+    #[test]
+    fn test_payment_identifier_unsupported_kind() {
+        let result = PaymentIdentifier::new("unsupported_kind", "123");
+        assert!(matches!(result, Err(Error::UnsupportedPaymentOption)));
+    }
+
+    #[test]
+    fn test_payment_identifier_invalid_quote_id() {
+        // An invalid base64 and invalid UUID string (e.g. spaces and special characters)
+        let result = PaymentIdentifier::new("quote_id", "invalid!@#quote");
+        assert!(matches!(result, Err(Error::Custom(_))));
+    }
+
+    #[test]
+    fn test_payment_identifier_invalid_hash() {
+        // Invalid hex
+        let result_hex = PaymentIdentifier::new("payment_hash", "not_hex!");
+        assert!(matches!(result_hex, Err(Error::Hex(_))));
+
+        // Valid hex, but wrong length (e.g. 1 byte instead of 32)
+        let result_len = PaymentIdentifier::new("payment_hash", "00");
+        assert!(matches!(result_len, Err(Error::InvalidHash)));
+
+        // Invalid length for bolt12_payment_hash
+        let result_bolt12 = PaymentIdentifier::new("bolt12_payment_hash", "00");
+        assert!(matches!(result_bolt12, Err(Error::InvalidHash)));
+    }
+}
+
+#[test]
+fn test_payment_identifier_hash_variants_roundtrip() {
+    let dummy_hash = [1u8; 32];
+    let hex_encoded = hex::encode(dummy_hash);
+
+    // Test Bolt12PaymentHash
+    let bolt12_identifier = PaymentIdentifier::Bolt12PaymentHash(dummy_hash);
+
+    let kind = bolt12_identifier.kind();
+    assert_eq!(kind, "bolt12_payment_hash");
+
+    let display = bolt12_identifier.to_string();
+    assert_eq!(display, hex_encoded);
+
+    let debug = format!("{:?}", bolt12_identifier);
+    assert_eq!(debug, format!("Bolt12PaymentHash({})", hex_encoded));
+
+    let parsed = PaymentIdentifier::new(&kind, &display).unwrap();
+    assert_eq!(parsed, bolt12_identifier);
+
+    // Test PaymentId
+    let dummy_hash_2 = [2u8; 32];
+    let hex_encoded_2 = hex::encode(dummy_hash_2);
+    let payment_id_identifier = PaymentIdentifier::PaymentId(dummy_hash_2);
+
+    let kind = payment_id_identifier.kind();
+    assert_eq!(kind, "payment_id");
+
+    let display = payment_id_identifier.to_string();
+    assert_eq!(display, hex_encoded_2);
+
+    let debug = format!("{:?}", payment_id_identifier);
+    assert_eq!(debug, format!("PaymentId({})", hex_encoded_2));
+
+    let parsed = PaymentIdentifier::new(&kind, &display).unwrap();
+    assert_eq!(parsed, payment_id_identifier);
+}
