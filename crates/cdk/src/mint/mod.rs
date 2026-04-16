@@ -724,15 +724,13 @@ impl Mint {
                                             break;
                                         };
 
-                                        match event {
-                                            cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
-                                                if let Err(e) = Self::handle_payment_notification(
-                                                    &localstore,
-                                                    &pubsub_manager,
-                                                    wait_payment_response,
-                                                ).await {
-                                                    tracing::warn!("Payment notification error: {:?}", e);
-                                                }
+                                        if let cdk_common::payment::Event::PaymentReceived(wait_payment_response) = event {
+                                            if let Err(e) = Self::handle_payment_notification(
+                                                &localstore,
+                                                &pubsub_manager,
+                                                wait_payment_response,
+                                            ).await {
+                                                tracing::warn!("Payment notification error: {:?}", e);
                                             }
                                         }
                                     }

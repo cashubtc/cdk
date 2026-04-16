@@ -19,7 +19,7 @@ use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::nuts::{CurrencyUnit, MeltQuoteState};
 use crate::{Amount, QuoteId};
 
-/// CDK Lightning Error
+/// CDK Payment Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Invoice already paid
@@ -229,7 +229,7 @@ pub struct CustomIncomingPaymentOptions {
     pub extra_json: Option<String>,
 }
 
-/// Options for creating an incoming payment request
+/// Options for incoming payments
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IncomingPaymentOptions {
     /// BOLT11 payment request options
@@ -286,7 +286,7 @@ pub struct CustomOutgoingPaymentOptions {
     pub extra_json: Option<String>,
 }
 
-/// Options for creating an outgoing payment
+/// Options for outgoing payments
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum OutgoingPaymentOptions {
     /// BOLT11 payment options
@@ -392,10 +392,10 @@ pub trait MintPayment {
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err>;
 
-    /// Is wait invoice active
+    /// Is the payment event stream active
     fn is_payment_event_stream_active(&self) -> bool;
 
-    /// Cancel wait invoice
+    /// Cancel the payment event stream
     fn cancel_payment_event_stream(&self);
 
     /// Check the status of an incoming payment
@@ -416,6 +416,20 @@ pub trait MintPayment {
 pub enum Event {
     /// A payment has been received.
     PaymentReceived(WaitPaymentResponse),
+    /// An outgoing payment has been confirmed.
+    PaymentSuccessful {
+        /// Quote ID linking to the melt quote
+        quote_id: QuoteId,
+        /// Payment response details
+        details: MakePaymentResponse,
+    },
+    /// An outgoing payment has permanently failed.
+    PaymentFailed {
+        /// Quote ID linking to the melt quote
+        quote_id: QuoteId,
+        /// Human-readable reason for the failure
+        reason: String,
+    },
 }
 
 impl Default for Event {
@@ -528,7 +542,6 @@ pub struct Bolt12Settings {
 }
 
 /// Payment processor settings response
-/// Mirrors the proto SettingsResponse structure
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingsResponse {
     /// Base unit of backend
