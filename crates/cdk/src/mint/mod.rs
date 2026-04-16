@@ -734,6 +734,7 @@ impl Mint {
                                                     tracing::warn!("Payment notification error: {:?}", e);
                                                 }
                                             }
+                                            _ => {}
                                         }
                                     }
                                 }

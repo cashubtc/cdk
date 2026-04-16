@@ -345,6 +345,64 @@ impl TryFrom<WaitIncomingPaymentResponse> for WaitPaymentResponse {
     }
 }
 
+impl From<cdk_common::payment::Event> for PaymentEventResponse {
+    fn from(value: cdk_common::payment::Event) -> Self {
+        match value {
+            cdk_common::payment::Event::PaymentReceived(response) => Self {
+                event: Some(payment_event_response::Event::PaymentReceived(
+                    response.into(),
+                )),
+            },
+            cdk_common::payment::Event::PaymentSuccessful { quote_id, details } => Self {
+                event: Some(payment_event_response::Event::PaymentSuccessful(
+                    PaymentSuccessfulResponse {
+                        quote_id: quote_id.to_string(),
+                        details: Some(details.into()),
+                    },
+                )),
+            },
+            cdk_common::payment::Event::PaymentFailed { quote_id, reason } => Self {
+                event: Some(payment_event_response::Event::PaymentFailed(
+                    PaymentFailedResponse {
+                        quote_id: quote_id.to_string(),
+                        reason,
+                    },
+                )),
+            },
+        }
+    }
+}
+
+impl TryFrom<PaymentEventResponse> for cdk_common::payment::Event {
+    type Error = crate::error::Error;
+
+    fn try_from(value: PaymentEventResponse) -> Result<Self, Self::Error> {
+        match value.event {
+            Some(payment_event_response::Event::PaymentReceived(response)) => {
+                Ok(Self::PaymentReceived(response.try_into()?))
+            }
+            Some(payment_event_response::Event::PaymentSuccessful(response)) => {
+                let quote_id = cdk_common::QuoteId::from_str(&response.quote_id)
+                    .map_err(|_| crate::error::Error::InvalidPaymentIdentifier)?;
+                let details = response
+                    .details
+                    .ok_or(crate::error::Error::InvalidPaymentIdentifier)?
+                    .try_into()?;
+                Ok(Self::PaymentSuccessful { quote_id, details })
+            }
+            Some(payment_event_response::Event::PaymentFailed(response)) => {
+                let quote_id = cdk_common::QuoteId::from_str(&response.quote_id)
+                    .map_err(|_| crate::error::Error::InvalidPaymentIdentifier)?;
+                Ok(Self::PaymentFailed {
+                    quote_id,
+                    reason: response.reason,
+                })
+            }
+            None => Err(crate::error::Error::InvalidPaymentIdentifier),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use cdk_common::payment::{PaymentIdentifier, PaymentQuoteResponse as CdkPaymentQuoteResponse};
