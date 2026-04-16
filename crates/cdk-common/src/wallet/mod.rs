@@ -324,6 +324,10 @@ pub struct SendOptions {
     pub metadata: HashMap<String, String>,
     /// Use P2BK (NUT-28)
     pub use_p2bk: bool,
+    /// Signing keys for P2PK-locked input proofs; auto-detected from the wallet keyring if omitted
+    pub p2pk_signing_keys: Vec<SecretKey>,
+    /// If `true`, sign and forward P2PK-locked proofs directly without swapping them for fresh ones
+    pub allow_locked_proofs: bool,
 }
 
 /// Send memo
