@@ -291,6 +291,7 @@ pub async fn start_regtest_end(
     sender: Sender<()>,
     notify: Arc<Notify>,
     ldk_node: Option<Arc<Node>>,
+    skip_ln: bool,
 ) -> anyhow::Result<()> {
     let mut bitcoind = init_bitcoind(work_dir);
     bitcoind.start_bitcoind()?;
@@ -301,6 +302,15 @@ pub async fn start_regtest_end(
 
     let new_add = bitcoin_client.get_new_address()?;
     bitcoin_client.generate_blocks(&new_add, 200).unwrap();
+
+    if skip_ln {
+        // Send notification that regtest set up is complete
+        sender.send(()).expect("Could not send oneshot");
+
+        // Wait until we are told to shutdown
+        notify.notified().await;
+        return Ok(());
+    }
 
     let cln_one_dir = get_cln_dir(work_dir, "one");
     let mut clnd = Clnd::new(

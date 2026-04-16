@@ -190,8 +190,8 @@ jobs:
       - name: Run clippy and tests for cdk-postgres
         run: nix develop -i -L .#regtest --command bash -c "start-postgres && cargo clippy -p cdk-postgres -- -D warnings && cargo test -p cdk-postgres"
 
-  regtest-itest:
-    name: "Integration regtest tests"
+  regtest-ln-itest:
+    name: "Integration regtest LN tests"
     runs-on: self-hosted
     timeout-minutes: 30
     needs: [pre-commit-checks, build-itest-binaries]
@@ -212,7 +212,31 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test
-        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest ${{ matrix.database }}"
+        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-ln ${{ matrix.database }}"
+
+  regtest-onchain-itest:
+    name: "Integration regtest Onchain tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: [pre-commit-checks, build-itest-binaries]
+    strategy:
+      fail-fast: true
+      matrix:
+        database: [SQLITE, POSTGRES]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Resolve nextest archive path
+        id: archive
+        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+      - name: Test
+        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-onchain ${{ matrix.database }}"
 
   fake-mint-itest:
     name: "Integration fake mint tests"

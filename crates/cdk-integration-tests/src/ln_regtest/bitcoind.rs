@@ -41,7 +41,7 @@ impl Bitcoind {
 
     /// Start bitcoind
     pub fn start_bitcoind(&mut self) -> Result<()> {
-        println!("Starting btcd");
+        println!("Starting bitcoind");
 
         std::fs::create_dir_all(&self.data_dir).unwrap();
         println!("created dir: {}", self.data_dir.display());
@@ -63,7 +63,12 @@ impl Bitcoind {
         // Send output to dev null
         cmd.stdout(Stdio::null());
 
-        let child = cmd.spawn().unwrap();
+        let child = cmd.spawn().map_err(|e| {
+            anyhow!(
+                "Failed to spawn bitcoind process: {}. Is 'bitcoind' installed and in your PATH?",
+                e
+            )
+        })?;
 
         self.child = Some(child);
 

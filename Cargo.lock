@@ -730,6 +730,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bdk_bitcoind_rpc"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a52a57cc5e07e207711a5064def0bd04b18e183b9f2247f41561cb12dd393be"
+dependencies = [
+ "bdk_core",
+ "bitcoin 0.32.9",
+ "bitcoincore-rpc",
+]
+
+[[package]]
 name = "bdk_chain"
 version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -738,6 +749,7 @@ dependencies = [
  "bdk_core",
  "bitcoin 0.32.9",
  "miniscript",
+ "rusqlite",
  "serde",
 ]
 
@@ -779,6 +791,21 @@ name = "bdk_wallet"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c99821af39c7df004bd411ece2ef22d9fba5a631b4489f3d9a0ac0d19637e2d0"
+dependencies = [
+ "bdk_chain",
+ "bip39",
+ "bitcoin 0.32.9",
+ "miniscript",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "bdk_wallet"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67f3c4f9526d22374fca5b7ff1d6bf8d921ab56db2dac8df66a2c5561b31d4ef"
 dependencies = [
  "bdk_chain",
  "bip39",
@@ -1294,6 +1321,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdk-bdk"
+version = "0.16.0"
+dependencies = [
+ "async-trait",
+ "bdk_bitcoind_rpc",
+ "bdk_esplora",
+ "bdk_wallet 3.0.0",
+ "cdk-common",
+ "cdk-sqlite",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "cdk-cli"
 version = "0.16.0"
 dependencies = [
@@ -1619,6 +1668,7 @@ dependencies = [
  "bitcoin 0.32.9",
  "cdk",
  "cdk-axum",
+ "cdk-bdk",
  "cdk-cln",
  "cdk-common",
  "cdk-fake-wallet",
@@ -2935,6 +2985,7 @@ dependencies = [
  "bitcoin 0.32.9",
  "hex-conservative 0.2.2",
  "log",
+ "minreq",
  "reqwest",
  "serde",
  "serde_json",
@@ -3860,6 +3911,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyper-tls"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper 1.9.0",
+ "hyper-util",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tower-service",
+]
+
+[[package]]
 name = "hyper-util"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4239,7 +4306,7 @@ dependencies = [
  "bdk_chain",
  "bdk_electrum",
  "bdk_esplora",
- "bdk_wallet",
+ "bdk_wallet 2.4.0",
  "bip21",
  "bip39",
  "bitcoin 0.32.9",
@@ -4683,8 +4750,12 @@ version = "2.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05015102dad0f7d61691ca347e9d9d9006685a64aefb3d79eecf62665de2153d"
 dependencies = [
+ "base64 0.22.1",
+ "rustls 0.21.12",
+ "rustls-webpki 0.101.7",
  "serde",
  "serde_json",
+ "webpki-roots 0.25.4",
 ]
 
 [[package]]
@@ -6199,9 +6270,11 @@ dependencies = [
  "http-body-util",
  "hyper 1.9.0",
  "hyper-rustls 0.27.9",
+ "hyper-tls",
  "hyper-util",
  "js-sys",
  "log",
+ "native-tls",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -6213,6 +6286,7 @@ dependencies = [
  "serde_urlencoded",
  "sync_wrapper 1.0.2",
  "tokio",
+ "tokio-native-tls",
  "tokio-rustls 0.26.4",
  "tower 0.5.3",
  "tower-http",
@@ -6809,9 +6883,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.149"
+version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
+checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
  "itoa",
  "memchr",

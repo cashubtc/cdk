@@ -1,3 +1,4 @@
+#![allow(clippy::needless_update)]
 //! Shared utilities for mint integration tests
 //!
 //! This module provides common functionality used across different
@@ -195,6 +196,7 @@ pub fn create_fake_wallet_settings(
             max_mint: DEFAULT_MAX_MINT.into(),
             min_melt: DEFAULT_MIN_MELT.into(),
             max_melt: DEFAULT_MAX_MELT.into(),
+            ..Default::default()
         },
         cln: None,
         lnbits: None,
@@ -208,9 +210,12 @@ pub fn create_fake_wallet_settings(
             postgres: postgres_config,
         },
         auth_database: None,
+        #[cfg(feature = "bdk")]
+        bdk: None,
         mint_management_rpc: None,
         auth: None,
         prometheus: Some(Default::default()),
+        ..Default::default()
     }
 }
 
@@ -252,6 +257,7 @@ pub fn create_cln_settings(
             max_mint: DEFAULT_MAX_MINT.into(),
             min_melt: DEFAULT_MIN_MELT.into(),
             max_melt: DEFAULT_MAX_MELT.into(),
+            ..Default::default()
         },
         onchain: None,
         cln: Some(cln_config),
@@ -262,9 +268,12 @@ pub fn create_cln_settings(
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
         auth_database: None,
+        #[cfg(feature = "bdk")]
+        bdk: None,
         mint_management_rpc: None,
         auth: None,
         prometheus: Some(Default::default()),
+        ..Default::default()
     }
 }
 
@@ -304,19 +313,20 @@ pub fn create_lnd_settings(
             max_mint: DEFAULT_MAX_MINT.into(),
             min_melt: DEFAULT_MIN_MELT.into(),
             max_melt: DEFAULT_MAX_MELT.into(),
+            ..Default::default()
         },
         onchain: None,
-        cln: None,
-        lnbits: None,
-        ldk_node: None,
         lnd: Some(lnd_config),
         fake_wallet: None,
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
         auth_database: None,
+        #[cfg(feature = "bdk")]
+        bdk: None,
         mint_management_rpc: None,
         auth: None,
         prometheus: Some(Default::default()),
+        ..Default::default()
     }
 }
 

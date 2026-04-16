@@ -193,6 +193,15 @@ export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
 export CDK_MINTD_LOGGING_FILE_LEVEL="debug"
 export RUST_BACKTRACE=1
 export CDK_MINTD_DATABASE="$CDK_MINTD_DATABASE"
+export CDK_MINTD_BDK_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
+export CDK_MINTD_ONCHAIN_BACKEND="bdk"
+export CDK_MINTD_BDK_BITCOIND_RPC_HOST="127.0.0.1"
+export CDK_MINTD_BDK_BITCOIND_RPC_PORT=18443
+export CDK_MINTD_BDK_BITCOIND_RPC_USER="testuser"
+export CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD="testpass"
+export CDK_MINTD_BDK_NETWORK="regtest"
+export CDK_MINTD_BDK_CHAIN_SOURCE_TYPE="bitcoinrpc"
+export CDK_MINTD_BDK_NUM_CONFS=1
 
 echo "Starting CLN Mint on port 8085..."
 echo "Project root: $PROJECT_ROOT"
@@ -222,6 +231,15 @@ export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
 export CDK_MINTD_LOGGING_FILE_LEVEL="debug"
 export RUST_BACKTRACE=1
 export CDK_MINTD_DATABASE="$CDK_MINTD_DATABASE"
+export CDK_MINTD_BDK_MNEMONIC="cattle gold bind busy sound reduce tone addict baby spend february strategy"
+export CDK_MINTD_ONCHAIN_BACKEND="bdk"
+export CDK_MINTD_BDK_BITCOIND_RPC_HOST="127.0.0.1"
+export CDK_MINTD_BDK_BITCOIND_RPC_PORT=18443
+export CDK_MINTD_BDK_BITCOIND_RPC_USER="testuser"
+export CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD="testpass"
+export CDK_MINTD_BDK_NETWORK="regtest"
+export CDK_MINTD_BDK_CHAIN_SOURCE_TYPE="bitcoinrpc"
+export CDK_MINTD_BDK_NUM_CONFS=1
 
 echo "Starting LND Mint on port 8087..."
 echo "Project root: $PROJECT_ROOT"
@@ -247,6 +265,15 @@ export CDK_MINTD_LOGGING_FILE_LEVEL="debug"
 export CDK_MINTD_MNEMONIC="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 export RUST_BACKTRACE=1
 export CDK_MINTD_DATABASE="$CDK_MINTD_DATABASE"
+export CDK_MINTD_BDK_MNEMONIC="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+export CDK_MINTD_ONCHAIN_BACKEND="bdk"
+export CDK_MINTD_BDK_BITCOIND_RPC_HOST="127.0.0.1"
+export CDK_MINTD_BDK_BITCOIND_RPC_PORT=18443
+export CDK_MINTD_BDK_BITCOIND_RPC_USER="testuser"
+export CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD="testpass"
+export CDK_MINTD_BDK_NETWORK="regtest"
+export CDK_MINTD_BDK_CHAIN_SOURCE_TYPE="bitcoinrpc"
+export CDK_MINTD_BDK_NUM_CONFS=1
 
 # LDK Node specific environment variables
 export CDK_MINTD_LDK_NODE_BITCOIN_NETWORK="regtest"
