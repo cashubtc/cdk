@@ -23,6 +23,7 @@ use cdk::nuts::nut00::KnownMethod;
     feature = "lnd",
     feature = "ldk-node",
     feature = "fakewallet",
+    feature = "bdk",
     feature = "grpc-processor"
 ))]
 use cdk::nuts::nut17::SupportedMethods;
@@ -31,7 +32,8 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
-    feature = "ldk-node"
+    feature = "ldk-node",
+    feature = "bdk"
 ))]
 use cdk::nuts::CurrencyUnit;
 use cdk::nuts::{
@@ -375,9 +377,37 @@ async fn configure_mint_builder(
     // Configure basic mint information
     let mint_builder = configure_basic_info(settings, mint_builder);
 
+    // Check that fake wallet is not used on mainnet
+    #[cfg(feature = "fakewallet")]
+    if settings.ln.ln_backend == LnBackend::FakeWallet {
+        if let Some(_onchain) = &settings.onchain {
+            #[cfg(feature = "bdk")]
+            if _onchain.onchain_backend == config::OnchainBackend::Bdk {
+                if let Some(bdk) = &settings.bdk {
+                    if let Some(network) = &bdk.network {
+                        let network = network.to_lowercase();
+                        if network == "mainnet" || network == "bitcoin" {
+                            bail!("Fake wallet cannot be used for Lightning when On-chain is configured for Mainnet");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Configure lightning backend
+    let mint_builder = configure_lightning_backend(
+        settings,
+        mint_builder,
+        runtime.clone(),
+        work_dir,
+        kv_store.clone(),
+    )
+    .await?;
+
+    // Configure onchain backend
     let mint_builder =
-        configure_lightning_backend(settings, mint_builder, runtime, work_dir, kv_store).await?;
+        configure_onchain_backend(settings, mint_builder, runtime, work_dir, kv_store).await?;
 
     // Extract configured payment methods from mint_builder
     let mint_info = mint_builder.current_mint_info();
@@ -393,6 +423,17 @@ async fn configure_mint_builder(
     // Configure transaction limits
     let mint_builder =
         mint_builder.with_limits(settings.limits.max_inputs, settings.limits.max_outputs);
+
+    // Verify at least one payment processor is configured
+    if mint_builder
+        .current_mint_info()
+        .nuts
+        .nut04
+        .methods
+        .is_empty()
+    {
+        bail!("At least one payment backend (Lightning or On-chain) must be configured");
+    }
 
     Ok(mint_builder)
 }
@@ -498,12 +539,15 @@ async fn configure_lightning_backend(
             #[cfg(feature = "prometheus")]
             let cln = MetricsMintPayment::new(cln);
 
+            let cln: Arc<dyn MintPayment<Err = cdk_common::payment::Error> + Send + Sync> =
+                Arc::new(cln);
+
             mint_builder = configure_backend_for_unit(
                 settings,
                 mint_builder,
                 CurrencyUnit::Sat,
                 mint_melt_limits,
-                Arc::new(cln),
+                cln,
             )
             .await?;
         }
@@ -634,13 +678,53 @@ async fn configure_lightning_backend(
             .await?;
         }
         LnBackend::None => {
-            tracing::error!(
-                "Payment backend was not set or feature disabled. {:?}",
-                settings.ln.ln_backend
-            );
-            bail!("Lightning backend must be configured");
+            tracing::info!("No Lightning backend configured");
         }
     };
+
+    Ok(mint_builder)
+}
+
+/// Configures Onchain backend based on the specified backend type
+async fn configure_onchain_backend(
+    settings: &config::Settings,
+    #[cfg_attr(not(feature = "bdk"), allow(unused_mut))] mut mint_builder: MintBuilder,
+    _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    _work_dir: &Path,
+    _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+) -> Result<MintBuilder> {
+    use config::OnchainBackend;
+    #[cfg(feature = "bdk")]
+    use setup::OnchainBackendSetup;
+
+    if let Some(onchain_settings) = &settings.onchain {
+        match onchain_settings.onchain_backend {
+            #[cfg(feature = "bdk")]
+            OnchainBackend::Bdk => {
+                let mint_melt_limits = MintMeltLimits {
+                    mint_min: onchain_settings.min_mint,
+                    mint_max: onchain_settings.max_mint,
+                    melt_min: onchain_settings.min_melt,
+                    melt_max: onchain_settings.max_melt,
+                };
+
+                let bdk_settings = settings.bdk.clone().expect("BDK settings must be set");
+                let bdk = bdk_settings
+                    .setup(settings, CurrencyUnit::Sat, None, _work_dir, _kv_store)
+                    .await?;
+
+                mint_builder = configure_backend_for_unit(
+                    settings,
+                    mint_builder,
+                    CurrencyUnit::Sat,
+                    mint_melt_limits,
+                    Arc::new(bdk),
+                )
+                .await?;
+            }
+            OnchainBackend::None => {}
+        }
+    }
 
     Ok(mint_builder)
 }
@@ -665,6 +749,11 @@ async fn configure_backend_for_unit(
     // Add bolt12 if supported by payment processor
     if payment_settings.bolt12.is_some() {
         methods.push(PaymentMethod::Known(KnownMethod::Bolt12));
+    }
+
+    // Add onchain if supported by payment processor
+    if payment_settings.onchain.is_some() {
+        methods.push(PaymentMethod::Known(KnownMethod::Onchain));
     }
 
     // Add custom methods from payment settings
