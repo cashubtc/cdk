@@ -30,6 +30,16 @@ pub async fn init_keysets(
     for (unit, keysets) in keysets_by_unit {
         // We only care about units that are supported
         if let Some((input_fee_ppk, amounts)) = supported_units.get(&unit) {
+            // If no keyset is currently active for this unit, the operator
+            // deliberately deactivated it. Respect that and skip reactivation.
+            if !keysets.iter().any(|k| k.active) {
+                tracing::info!(
+                    "No active keyset for unit {}, respecting deliberate deactivation",
+                    unit
+                );
+                continue;
+            }
+
             let mut keysets = keysets;
             keysets.sort_by_key(|b| std::cmp::Reverse(b.derivation_path_index));
 
