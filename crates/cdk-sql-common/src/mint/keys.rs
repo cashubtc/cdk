@@ -127,6 +127,15 @@ where
 
         Ok(())
     }
+
+    async fn deactivate_keyset(&mut self, id: Id) -> Result<(), Error> {
+        query(r#"UPDATE keyset SET active=FALSE WHERE id = :id"#)?
+            .bind("id", id.to_string())
+            .execute(&self.inner)
+            .await?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
