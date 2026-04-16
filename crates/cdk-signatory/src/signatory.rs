@@ -171,4 +171,7 @@ pub trait Signatory {
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error>;
+
+    /// Deactivate a specific keyset by ID without creating a replacement
+    async fn deactivate_keyset(&self, id: Id) -> Result<(), Error>;
 }
