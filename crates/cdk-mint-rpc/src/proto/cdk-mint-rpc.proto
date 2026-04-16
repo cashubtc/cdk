@@ -19,6 +19,7 @@ service CdkMint {
     rpc GetQuoteTtl(GetQuoteTtlRequest) returns (GetQuoteTtlResponse) {}
     rpc UpdateNut04Quote(UpdateNut04QuoteRequest) returns (UpdateNut04QuoteRequest) {}
     rpc RotateNextKeyset(RotateNextKeysetRequest) returns (RotateNextKeysetResponse) {}
+    rpc DeactivateKeyset(DeactivateKeysetRequest) returns (UpdateResponse) {}
 }
 
 message GetInfoRequest {
@@ -134,4 +135,8 @@ message RotateNextKeysetResponse {
     string unit = 2;
     repeated uint64 amounts = 3;
     uint64 input_fee_ppk = 4;
+}
+
+message DeactivateKeysetRequest {
+    string id = 1;
 }

@@ -102,6 +102,8 @@ enum Commands {
     UpdateNut04QuoteState(subcommands::UpdateNut04QuoteCommand),
     /// Rotate next keyset
     RotateNextKeyset(subcommands::RotateNextKeysetCommand),
+    /// Deactivate a keyset by ID
+    DeactivateKeyset(subcommands::DeactivateKeysetCommand),
 }
 
 #[tokio::main]
@@ -233,6 +235,9 @@ async fn main() -> Result<()> {
         }
         Commands::RotateNextKeyset(sub_command_args) => {
             subcommands::rotate_next_keyset(&mut client, &sub_command_args).await?;
+        }
+        Commands::DeactivateKeyset(sub_command_args) => {
+            subcommands::deactivate_keyset(&mut client, &sub_command_args).await?;
         }
     }
 
