@@ -2,7 +2,7 @@ use std::path::Path;
 
 use cdk_common::error::Error;
 use cdk_common::grpc::{VersionInterceptor, VERSION_SIGNATORY_HEADER};
-use cdk_common::{BlindSignature, BlindedMessage, Proof};
+use cdk_common::{BlindSignature, BlindedMessage, Id, Proof};
 use tonic::codegen::InterceptedService;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
@@ -166,6 +166,24 @@ impl Signatory for SignatoryRpcClient {
             .rotate_keyset(tonic::Request::new(req))
             .await
             .map(|response| handle_error!(response, keyset).try_into())
+            .map_err(|e| Error::Custom(e.to_string()))?
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn deactivate_keyset(&self, id: Id) -> Result<(), Error> {
+        self.client
+            .clone()
+            .deactivate_keyset(tonic::Request::new(super::DeactivateKeysetRequest {
+                id: id.to_string(),
+            }))
+            .await
+            .map(|response| {
+                if handle_error!(response, success, scalar) {
+                    Ok(())
+                } else {
+                    Err(Error::Custom("Deactivation failed".to_string()))
+                }
+            })
             .map_err(|e| Error::Custom(e.to_string()))?
     }
 }

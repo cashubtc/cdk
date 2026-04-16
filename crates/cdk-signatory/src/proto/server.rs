@@ -1,9 +1,11 @@
 //! This module contains the generated gRPC server code for the Signatory service.
 use std::net::SocketAddr;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk_common::grpc::create_version_check_interceptor;
+use cdk_common::Id;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_stream::Stream;
 use tonic::metadata::MetadataMap;
@@ -158,6 +160,29 @@ where
         };
 
         Ok(Response::new(mint_keyset_info))
+    }
+
+    async fn deactivate_keyset(
+        &self,
+        request: Request<proto::DeactivateKeysetRequest>,
+    ) -> Result<Response<proto::BooleanResponse>, Status> {
+        let metadata = request.metadata();
+        let signatory = self.load_signatory(metadata).await?;
+        let id = Id::from_str(&request.into_inner().id)
+            .map_err(|_| Status::invalid_argument("Invalid keyset id"))?;
+
+        let result = match signatory.deactivate_keyset(id).await {
+            Ok(()) => proto::BooleanResponse {
+                success: true,
+                ..Default::default()
+            },
+            Err(err) => proto::BooleanResponse {
+                error: Some(err.into()),
+                ..Default::default()
+            },
+        };
+
+        Ok(Response::new(result))
     }
 }
 
