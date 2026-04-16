@@ -14,6 +14,8 @@ use cdk_common::nuts::{
     CurrencyUnit, Id, KeySet, KeySetInfo, Keys, KeysetResponse, MeltMethodSettings, MintInfo,
     MintMethodSettings, MintVersion, MppMethodSettings, Proof,
 };
+use cdk_common::nutxx::MintQuoteByPubkeyRequest;
+use cdk_common::secret::Secret;
 use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{
     Amount, CheckStateRequest, CheckStateResponse, MeltQuoteCreateResponse, MeltQuoteRequest,
@@ -25,7 +27,6 @@ use crate::nuts::{
     nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, MeltQuoteBolt11Response,
     MeltQuoteState, NUT04Settings, NUT05Settings, PaymentMethod, SecretKey, State,
 };
-use crate::secret::Secret;
 use crate::wallet::{MintConnector, Wallet};
 use crate::Error;
 
@@ -614,6 +615,13 @@ impl MockMintConnector {
             .push_back(response);
     }
 
+    pub fn set_post_mint_quote_by_pubkeys_response(
+        &self,
+        response: Result<Vec<MintQuoteResponse<String>>, Error>,
+    ) {
+        *self.post_mint_quote_by_pubkey_response.lock().unwrap() = Some(response);
+    }
+
     pub fn set_post_mint_response(&self, response: Result<MintResponse, Error>) {
         *self.post_mint_response.lock().unwrap() = Some(response);
     }
@@ -753,6 +761,20 @@ impl MintConnector for MockMintConnector {
         _request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
         unimplemented!()
+    }
+
+    async fn post_mint_quote_by_pubkey(
+        &self,
+        _method: PaymentMethod,
+        _request: MintQuoteByPubkeyRequest,
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
+        self.post_mint_quote_by_pubkey_response
+            .lock()
+            .unwrap()
+            .take()
+            .expect(
+                "MockMintConnector: post_mint_quote_by_pubkey called without configured response",
+            )
     }
 
     async fn get_mint_quote_status(
