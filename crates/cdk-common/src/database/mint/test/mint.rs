@@ -20,7 +20,7 @@ where
 {
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -47,7 +47,7 @@ where
 {
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -77,7 +77,7 @@ where
 {
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -148,7 +148,7 @@ where
 {
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -224,7 +224,7 @@ where
 {
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -276,7 +276,7 @@ where
 
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -331,7 +331,7 @@ where
 {
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -361,7 +361,7 @@ where
 {
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -399,7 +399,7 @@ where
 {
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -438,7 +438,7 @@ where
 {
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -874,7 +874,7 @@ where
 
     let quote1 = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -891,7 +891,7 @@ where
 
     let quote2 = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -1013,7 +1013,7 @@ where
     let lookup_id = PaymentIdentifier::CustomId(unique_string());
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -1128,7 +1128,7 @@ where
 
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -1198,7 +1198,7 @@ where
 
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -1277,7 +1277,7 @@ where
 
     let mint_quote = MintQuote::new(
         None,
-        "test_request".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -1303,7 +1303,7 @@ where
     assert!(retrieved.is_some());
     let retrieved = retrieved.unwrap();
     assert_eq!(retrieved.id, mint_quote.id);
-    assert_eq!(retrieved.request, "test_request");
+    assert_eq!(retrieved.request, mint_quote.request);
     tx.commit().await.unwrap();
 }
 
@@ -1391,7 +1391,7 @@ where
     let lookup_id = PaymentIdentifier::CustomId(unique_string());
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -1468,7 +1468,7 @@ where
 
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -1564,7 +1564,7 @@ where
 
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
