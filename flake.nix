@@ -123,7 +123,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.94.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.94.1".default.override {
           targets = [
             "wasm32-unknown-unknown"
             "aarch64-apple-ios"
