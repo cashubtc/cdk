@@ -22,8 +22,8 @@ use cashu::Amount;
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{
-    CurrencyUnit, MeltQuoteState, MeltRequest, MintRequest, PaymentMethod, PreMintSecrets, Proofs,
-    SecretKey, State, SwapRequest,
+    CurrencyUnit, MeltQuoteState, MeltRequest, MintQuoteState, MintRequest, PaymentMethod,
+    PreMintSecrets, Proofs, SecretKey, State, SwapRequest,
 };
 use cdk::wallet::types::TransactionDirection;
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
@@ -2552,4 +2552,88 @@ async fn test_check_mint_quote_status_updates_after_minting() {
         !unissued_ids.contains(&mint_quote.id.as_str()),
         "Fully minted quote should not appear in unissued quotes"
     );
+}
+
+/// Tests that Bolt12 payment notifications persist `amount_issued` updates.
+///
+/// This catches regressions where the wallet updates `amount_paid` from the
+/// notification stream but forgets to persist `amount_issued`, causing
+/// `check_mint_quote_status` to drift from the notification-driven state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_check_mint_quote_status_updates_amount_issued_for_bolt12() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, Some(Amount::from(100)), None, None)
+        .await
+        .expect("failed to create Bolt12 quote");
+
+    let mut payment_stream = wallet.payment_stream(&mint_quote);
+    let paid_amount = payment_stream
+        .next()
+        .await
+        .expect("payment event")
+        .expect("no payment stream error")
+        .1
+        .expect("Bolt12 payment stream should return remaining amount to mint");
+
+    let quote_after_notification = wallet
+        .localstore
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("quote lookup should succeed")
+        .expect("quote should remain in localstore after notification");
+
+    assert_eq!(quote_after_notification.amount_paid, Amount::from(100));
+    assert_eq!(
+        quote_after_notification.amount_issued,
+        Amount::ZERO,
+        "payment notification should not mark funds as issued before minting"
+    );
+
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await
+        .expect("minting should succeed");
+    let minted_amount = proofs.total_amount().expect("proofs should total");
+
+    assert_eq!(minted_amount, paid_amount);
+
+    let quote_after_mint = wallet
+        .check_mint_quote_status(&mint_quote.id)
+        .await
+        .expect("quote status check should succeed");
+
+    assert_eq!(quote_after_mint.payment_method, PaymentMethod::BOLT12);
+    assert_eq!(quote_after_mint.amount_paid, minted_amount);
+    assert_eq!(
+        quote_after_mint.amount_issued, minted_amount,
+        "amount_issued should match the issued amount after Bolt12 minting"
+    );
+    assert_eq!(
+        quote_after_mint.state,
+        MintQuoteState::Issued,
+        "quote should be fully issued after minting"
+    );
+
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
+    let mint_response = http_client
+        .get_mint_quote_status(PaymentMethod::BOLT12, &mint_quote.id)
+        .await
+        .expect("mint quote status request should succeed");
+
+    match mint_response {
+        cdk_common::MintQuoteResponse::Bolt12(response) => {
+            assert_eq!(response.amount_paid, minted_amount);
+            assert_eq!(response.amount_issued, minted_amount);
+        }
+        response => panic!("expected Bolt12 quote response, got {response:?}"),
+    }
 }
