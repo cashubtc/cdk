@@ -165,15 +165,25 @@ nix build .#checks.x86_64-linux.cashu
 
 ### Static Binaries
 
-CDK provides fully statically-linked Linux binaries built with [musl](https://musl.libc.org/). These binaries have zero runtime dependencies and run on any x86_64 Linux system.
+CDK publishes **fully statically-linked Linux binaries** built with [musl](https://musl.libc.org/). These have no libc or OpenSSL runtime dependencies and run on x86_64 and aarch64 Linux.
 
-**Available static build targets:**
+GitHub releases also include **macOS binaries** (`*-aarch64-apple-darwin`, `*-x86_64-apple-darwin`) built via Nix as native Mach-O executables. They are intended to run on stock macOS without Nix; system frameworks are linked normally.
+
+**Linux static build targets (musl):**
+
+| Target | Binary (per architecture) | Features |
+| :--- | :--- | :--- |
+| `cdk-mintd-static` | `cdk-mintd-{version}-x86_64`, `cdk-mintd-{version}-aarch64` | `postgres`, `prometheus`, `redis` |
+| `cdk-mintd-ldk-static` | `cdk-mintd-ldk-{version}-x86_64`, `cdk-mintd-ldk-{version}-aarch64` | `ldk-node`, `postgres`, `prometheus`, `redis` |
+| `cdk-cli-static` | `cdk-cli-{version}-x86_64`, `cdk-cli-{version}-aarch64` | default |
+
+**macOS release build targets (build on macOS only):**
 
 | Target | Binary | Features |
 | :--- | :--- | :--- |
-| `cdk-mintd-static` | `cdk-mintd-{version}-x86_64` | `postgres`, `prometheus`, `redis` |
-| `cdk-mintd-ldk-static` | `cdk-mintd-ldk-{version}-x86_64` | `ldk-node`, `postgres`, `prometheus`, `redis` |
-| `cdk-cli-static` | `cdk-cli-{version}-x86_64` | default |
+| `cdk-mintd-darwin` | `cdk-mintd-{version}-aarch64-apple-darwin`, `cdk-mintd-{version}-x86_64-apple-darwin` | same as `cdk-mintd-static` |
+| `cdk-mintd-ldk-darwin` | `cdk-mintd-ldk-{version}-aarch64-apple-darwin`, … | same as `cdk-mintd-ldk-static` |
+| `cdk-cli-darwin` | `cdk-cli-{version}-aarch64-apple-darwin`, … | default |
 
 **Building locally (requires Nix):**
 
@@ -195,11 +205,21 @@ Built binaries are placed in `./static-bin/`.
 
 When a GitHub release is published, the [`static-build-publish.yml`](.github/workflows/static-build-publish.yml) workflow automatically:
 
-1. Builds all three static binaries via Nix
-2. Generates a `SHA256SUMS` file with checksums for each binary
-3. Uploads the binaries and checksums to the GitHub release
+1. Builds the three **Linux musl** binaries on x86_64 and aarch64 (self-hosted / `ubuntu-24.04-arm`)
+2. Builds the three **macOS** binaries on `macos-15` (Apple Silicon) and `macos-15-intel` (x86_64)
+3. Generates a single `SHA256SUMS` file covering every uploaded binary
+4. Uploads all binaries and `SHA256SUMS` to the GitHub release
 
-The workflow can also be triggered manually via `workflow_dispatch` with a tag input. Pre-built static binaries are available on the [GitHub releases page](https://github.com/cashubtc/cdk/releases).
+The workflow can also be triggered manually via `workflow_dispatch` with a tag input (use the same tag as the release). Pre-built binaries are on the [GitHub releases page](https://github.com/cashubtc/cdk/releases).
+
+**If release uploads or macOS jobs fail**, check repository and organization settings:
+
+| Topic | What to check |
+| :--- | :--- |
+| **Actions enabled** | Repository *Settings* → *Actions* → *General*: Actions must be allowed (subject to organization policy). |
+| **`GITHUB_TOKEN` write access** | The workflow sets `permissions: contents: write` on the upload job. If the organization caps workflow permissions at read-only, an admin must allow `contents: write` for workflows. |
+| **Secrets** | `CACHIX_AUTH_TOKEN` is optional; without it, builds are slower but should still succeed. |
+| **macOS Intel runner** | Intel artifacts use `macos-15-intel`. If that job does not start, confirm the org/account can use GitHub-hosted macOS runners (avoid `macos-*-large` unless you intend billable larger runners). |
 
 **Reproducibility:**
 

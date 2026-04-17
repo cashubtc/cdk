@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- cdk: GitHub release workflow builds macOS binaries for Apple Silicon and Intel (`aarch64-apple-darwin`, `x86_64-apple-darwin`) (#1804).
+
 ## [0.16.0](https://github.com/cashubtc/cdk/releases/tag/v0.16.0)
 
 ### Summary

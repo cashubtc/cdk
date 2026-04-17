@@ -1114,7 +1114,7 @@
             cargoExtraArgs = "--bin cdk-cli";
           };
         }
-        # macOS release binary packages (dynamically linked, Apple Silicon only)
+        # macOS release binary packages (dynamically linked; x86_64 and aarch64)
         // lib.optionalAttrs isDarwin {
           cdk-mintd-darwin = mkDarwinPackage {
             bin = "cdk-mintd";

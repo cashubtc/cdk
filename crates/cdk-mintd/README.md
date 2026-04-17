@@ -29,28 +29,47 @@ For detailed configuration of each Lightning backend, see:
 
 ### Option 1: Download Pre-built Binary
 
-Statically-linked x86_64 Linux binaries are published to each [GitHub release](https://github.com/cashubtc/cdk/releases). These have zero runtime dependencies and run on any x86_64 Linux system.
+Pre-built binaries are published on each [GitHub release](https://github.com/cashubtc/cdk/releases). Replace `{version}` with the release tag (for example `0.16.0` without a leading `v` in the filename—match the assets list for the release you use).
 
-Available binaries:
-- **`cdk-mintd-{version}-x86_64`** -- standard mint with `postgres`, `prometheus`, and `redis` support
-- **`cdk-mintd-ldk-{version}-x86_64`** -- mint with built-in `ldk-node` Lightning backend
+#### Linux (fully static musl)
 
-Each release also includes a `SHA256SUMS` file to verify downloads:
+These run on x86_64 and aarch64 Linux without extra runtime libraries.
+
+| Asset | Description |
+| :--- | :--- |
+| `cdk-mintd-{version}-x86_64` / `cdk-mintd-{version}-aarch64` | Standard mint (`postgres`, `prometheus`, `redis`) |
+| `cdk-mintd-ldk-{version}-x86_64` / `...-aarch64` | Mint with built-in `ldk-node` backend |
 
 ```bash
-# Download the binary and checksums
 curl -LO https://github.com/cashubtc/cdk/releases/latest/download/cdk-mintd-{version}-x86_64
 curl -LO https://github.com/cashubtc/cdk/releases/latest/download/SHA256SUMS
-
-# Verify the checksum
 sha256sum -c SHA256SUMS --ignore-missing
-
-# Make executable and run
 chmod +x cdk-mintd-*-x86_64
 ./cdk-mintd-*-x86_64 --help
 ```
 
-To build static binaries locally, see the [Static Binaries](../../DEVELOPMENT.md#static-binaries) section in the Development Guide.
+#### macOS (native Mach-O)
+
+Apple Silicon and Intel each have their own binary. You do not need Nix installed to run them; they use normal macOS system libraries.
+
+| Asset | Machine |
+| :--- | :--- |
+| `cdk-mintd-{version}-aarch64-apple-darwin` | Apple Silicon (M-series) |
+| `cdk-mintd-{version}-x86_64-apple-darwin` | Intel Mac |
+| `cdk-mintd-ldk-{version}-aarch64-apple-darwin` / `...-x86_64-apple-darwin` | Same with `ldk-node` |
+
+```bash
+# Example: Apple Silicon — pick the asset that matches your Mac
+curl -LO https://github.com/cashubtc/cdk/releases/latest/download/cdk-mintd-{version}-aarch64-apple-darwin
+curl -LO https://github.com/cashubtc/cdk/releases/latest/download/SHA256SUMS
+grep "cdk-mintd-{version}-aarch64-apple-darwin\$" SHA256SUMS | shasum -a 256 -c
+chmod +x cdk-mintd-*-apple-darwin
+./cdk-mintd-*-aarch64-apple-darwin --help
+```
+
+Each release includes a `SHA256SUMS` file listing all published binaries (Linux, macOS, and `cdk-cli`).
+
+To build release-style binaries locally with Nix, see [Static Binaries](../../DEVELOPMENT.md#static-binaries) in the Development Guide.
 
 ### Option 2: Build from Source
 
