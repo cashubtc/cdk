@@ -10,11 +10,16 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
 serde_json = "1"
 bitcoin = { version = "0.32.2", default-features = false }
 
 [dependencies.cashu]
 path = "../crates/cashu"
+
+[lib]
+name = "cdk_fuzz"
+path = "src/lib.rs"
 
 [[bin]]
 name = "fuzz_token"
@@ -159,6 +164,73 @@ bench = false
 [[bin]]
 name = "fuzz_id_from_bytes"
 path = "fuzz_targets/fuzz_id_from_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_p2pk_verify"
+path = "fuzz_targets/fuzz_p2pk_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_htlc_verify"
+path = "fuzz_targets/fuzz_htlc_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dleq_verify"
+path = "fuzz_targets/fuzz_dleq_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_keyset_derivation"
+path = "fuzz_targets/fuzz_keyset_derivation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_token_conversion"
+path = "fuzz_targets/fuzz_token_conversion.rs"
+test = false
+doc = false
+bench = false
+
+# Structured bins: sibling bins that consume `arbitrary_ext`
+# wrappers directly. They complement -- they do not replace -- the
+# raw-bytes parsing bins above.
+
+[[bin]]
+name = "fuzz_proof_structured"
+path = "fuzz_targets/fuzz_proof_structured.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_token_structured"
+path = "fuzz_targets/fuzz_token_structured.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_blind_signature_structured"
+path = "fuzz_targets/fuzz_blind_signature_structured.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_payment_request_structured"
+path = "fuzz_targets/fuzz_payment_request_structured.rs"
 test = false
 doc = false
 bench = false
