@@ -675,6 +675,7 @@
             "-p cdk-redb"
             "-p cdk-sqlite"
             "-p cdk-sqlite --features sqlcipher"
+            "-p cdk-supabase"
             "-p cdk-cli"
             "-p cdk-cli --features sqlcipher"
             "-p cdk-cli --features redb"
@@ -701,6 +702,7 @@
             "-p cdk-mint-rpc"
             "-p cdk-prometheus"
             "-p cdk-ffi"
+            "-p cdk-ffi --features supabase"
           ];
 
           "mintd-backends-sqlite" = [
