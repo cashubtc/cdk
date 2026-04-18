@@ -215,7 +215,7 @@ impl From<CdkPaymentQuoteResponse> for PaymentQuoteResponse {
             amount: Some(value.amount.into()),
             fee: Some(value.fee.into()),
             state: QuoteState::from(value.state).into(),
-            extra_json: None,
+            extra_json: value.extra_json.map(|value| value.to_string()),
         }
     }
 }
@@ -238,6 +238,9 @@ impl TryFrom<PaymentQuoteResponse> for CdkPaymentQuoteResponse {
                 .ok_or(crate::error::Error::MissingAmount)?
                 .try_into()?,
             state: state_val.into(),
+            extra_json: value
+                .extra_json
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok()),
         })
     }
 }
@@ -339,5 +342,37 @@ impl TryFrom<WaitIncomingPaymentResponse> for WaitPaymentResponse {
                 .try_into()?,
             payment_id: value.payment_id,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::payment::{PaymentIdentifier, PaymentQuoteResponse as CdkPaymentQuoteResponse};
+    use cdk_common::{Amount, CurrencyUnit, MeltQuoteState};
+
+    use super::PaymentQuoteResponse;
+
+    #[test]
+    fn payment_quote_response_extra_json_roundtrip() {
+        let response = CdkPaymentQuoteResponse {
+            request_lookup_id: Some(PaymentIdentifier::CustomId("processor-quote".to_string())),
+            amount: Amount::new(100, CurrencyUnit::Sat),
+            fee: Amount::new(2, CurrencyUnit::Sat),
+            state: MeltQuoteState::Unpaid,
+            extra_json: Some(serde_json::json!({
+                "method": "custom",
+                "redirect_url": "https://example.com/pay",
+                "nested": { "attempt": 1 }
+            })),
+        };
+
+        let proto: PaymentQuoteResponse = response.clone().into();
+        let roundtrip = CdkPaymentQuoteResponse::try_from(proto).expect("valid proto response");
+
+        assert_eq!(roundtrip.request_lookup_id, response.request_lookup_id);
+        assert_eq!(roundtrip.amount, response.amount);
+        assert_eq!(roundtrip.fee, response.fee);
+        assert_eq!(roundtrip.state, response.state);
+        assert_eq!(roundtrip.extra_json, response.extra_json);
     }
 }

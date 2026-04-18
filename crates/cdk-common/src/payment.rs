@@ -498,6 +498,8 @@ pub struct PaymentQuoteResponse {
     pub fee: Amount<CurrencyUnit>,
     /// Status
     pub state: MeltQuoteState,
+    /// Extra payment-method-specific fields
+    pub extra_json: Option<serde_json::Value>,
 }
 
 impl PaymentQuoteResponse {
