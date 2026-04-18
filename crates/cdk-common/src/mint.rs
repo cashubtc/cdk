@@ -8,8 +8,9 @@ use bitcoin::bip32::DerivationPath;
 use cashu::quote_id::QuoteId;
 use cashu::util::unix_time;
 use cashu::{
-    Bolt11Invoice, MeltOptions, MeltQuoteBolt11Response, MintQuoteBolt11Response,
-    MintQuoteBolt12Response, PaymentMethod, Proofs, State,
+    Bolt11Invoice, MeltOptions, MeltQuoteBolt11Response, MeltQuoteCustomResponse,
+    MeltQuoteOnchainResponse, MintQuoteBolt11Response, MintQuoteBolt12Response,
+    MintQuoteCustomResponse, MintQuoteOnchainResponse, PaymentMethod, Proofs, State,
 };
 use lightning::offers::offer::Offer;
 use serde::{Deserialize, Serialize};
@@ -849,7 +850,7 @@ pub struct MeltQuote {
     pub state: MeltQuoteState,
     /// Expiration time of quote
     pub expiry: u64,
-    /// Payment proof
+    /// Payment proof (e.g. Lightning preimage or onchain outpoint)
     pub payment_proof: Option<String>,
     /// Value used by ln backend to look up state of request
     pub request_lookup_id: Option<PaymentIdentifier>,
@@ -863,6 +864,10 @@ pub struct MeltQuote {
     pub paid_time: Option<u64>,
     /// Payment method
     pub payment_method: PaymentMethod,
+    /// Extra payment-method-specific response fields
+    pub extra_json: Option<serde_json::Value>,
+    /// Estimated confirmation target in blocks for onchain quotes
+    pub estimated_blocks: Option<u32>,
 }
 
 impl MeltQuote {
@@ -878,6 +883,8 @@ impl MeltQuote {
         request_lookup_id: Option<PaymentIdentifier>,
         options: Option<MeltOptions>,
         payment_method: PaymentMethod,
+        extra_json: Option<serde_json::Value>,
+        estimated_blocks: Option<u32>,
     ) -> Self {
         let id = id.unwrap_or_else(QuoteId::new_uuid);
 
@@ -895,6 +902,8 @@ impl MeltQuote {
             created_time: unix_time(),
             paid_time: None,
             payment_method,
+            extra_json,
+            estimated_blocks,
         }
     }
 
@@ -908,6 +917,37 @@ impl MeltQuote {
     #[inline]
     pub fn fee_reserve(&self) -> Amount<CurrencyUnit> {
         self.fee_reserve.clone()
+    }
+
+    /// Convert into `MeltQuoteResponse`, overriding `change` on the inner
+    /// response with the provided signatures.
+    ///
+    /// Dispatches to the per-variant `From<MeltQuote>` conversions so that
+    /// field mapping stays centralized. Note that `MeltQuoteBolt12Response`
+    /// is a type alias for `MeltQuoteBolt11Response`, so both Bolt11 and
+    /// Bolt12 go through the same conversion.
+    pub fn into_response(
+        self,
+        change: Option<Vec<cashu::nuts::BlindSignature>>,
+    ) -> crate::MeltQuoteResponse<QuoteId> {
+        match self.payment_method {
+            PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt11) => {
+                let mut response: MeltQuoteBolt11Response<QuoteId> = self.into();
+                response.change = change;
+                crate::MeltQuoteResponse::Bolt11(response)
+            }
+            PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt12) => {
+                let mut response: MeltQuoteBolt11Response<QuoteId> = self.into();
+                response.change = change;
+                crate::MeltQuoteResponse::Bolt12(response)
+            }
+            _ => {
+                let method = self.payment_method.clone();
+                let mut response: MeltQuoteCustomResponse<QuoteId> = self.into();
+                response.change = change;
+                crate::MeltQuoteResponse::Custom((method, response))
+            }
+        }
     }
 
     /// Total amount needed (amount + fee_reserve)
@@ -935,6 +975,8 @@ impl MeltQuote {
         created_time: u64,
         paid_time: Option<u64>,
         payment_method: PaymentMethod,
+        extra_json: Option<serde_json::Value>,
+        estimated_blocks: Option<u32>,
     ) -> Self {
         Self {
             id,
@@ -950,7 +992,41 @@ impl MeltQuote {
             created_time,
             paid_time,
             payment_method,
+            extra_json,
+            estimated_blocks,
         }
+    }
+}
+
+impl From<MeltQuote> for MeltQuoteOnchainResponse<QuoteId> {
+    fn from(quote: MeltQuote) -> Self {
+        Self {
+            quote: quote.id.clone(),
+            request: quote.request.to_string(),
+            amount: quote.amount().into(),
+            unit: quote.unit.clone(),
+            fee: quote.fee_reserve().into(),
+            estimated_blocks: quote.estimated_blocks.unwrap_or_default(),
+            state: quote.state,
+            expiry: quote.expiry,
+            change: None,
+            outpoint: quote.payment_proof.clone(),
+        }
+    }
+}
+
+impl TryFrom<MintQuote> for MintQuoteOnchainResponse<QuoteId> {
+    type Error = crate::error::Error;
+    fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
+        Ok(Self {
+            quote: quote.id.clone(),
+            request: quote.request.clone(),
+            unit: quote.unit.clone(),
+            expiry: Some(quote.expiry),
+            pubkey: quote.pubkey.ok_or(crate::error::Error::MissingPubkey)?,
+            amount_paid: quote.amount_paid().into(),
+            amount_issued: quote.amount_issued().into(),
+        })
     }
 }
 
@@ -999,7 +1075,7 @@ impl From<MintKeySetInfo> for KeySetInfo {
 }
 
 impl From<MintQuote> for MintQuoteBolt11Response<QuoteId> {
-    fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt11Response<QuoteId> {
+    fn from(mint_quote: MintQuote) -> MintQuoteBolt11Response<QuoteId> {
         MintQuoteBolt11Response {
             quote: mint_quote.id.clone(),
             state: mint_quote.state(),
@@ -1007,7 +1083,7 @@ impl From<MintQuote> for MintQuoteBolt11Response<QuoteId> {
             expiry: Some(mint_quote.expiry),
             pubkey: mint_quote.pubkey,
             amount: mint_quote.amount.map(Into::into),
-            unit: Some(mint_quote.unit.clone()),
+            unit: Some(mint_quote.unit),
         }
     }
 }
@@ -1015,22 +1091,21 @@ impl From<MintQuote> for MintQuoteBolt11Response<QuoteId> {
 impl From<MintQuote> for MintQuoteBolt11Response<String> {
     fn from(quote: MintQuote) -> Self {
         let quote: MintQuoteBolt11Response<QuoteId> = quote.into();
-
         quote.into()
     }
 }
 
-impl TryFrom<crate::mint::MintQuote> for MintQuoteBolt12Response<QuoteId> {
-    type Error = crate::Error;
+impl TryFrom<MintQuote> for MintQuoteBolt12Response<QuoteId> {
+    type Error = Error;
 
-    fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
+    fn try_from(mint_quote: MintQuote) -> Result<Self, Self::Error> {
         Ok(MintQuoteBolt12Response {
             quote: mint_quote.id.clone(),
             request: mint_quote.request,
             expiry: Some(mint_quote.expiry),
-            amount_paid: Amount::from(mint_quote.amount_paid.value()),
-            amount_issued: Amount::from(mint_quote.amount_issued.value()),
-            pubkey: mint_quote.pubkey.ok_or(crate::Error::PubkeyRequired)?,
+            amount_paid: mint_quote.amount_paid.into(),
+            amount_issued: mint_quote.amount_issued.into(),
+            pubkey: mint_quote.pubkey.ok_or(Error::PubkeyRequired)?,
             amount: mint_quote.amount.map(Into::into),
             unit: mint_quote.unit,
         })
@@ -1038,80 +1113,104 @@ impl TryFrom<crate::mint::MintQuote> for MintQuoteBolt12Response<QuoteId> {
 }
 
 impl TryFrom<MintQuote> for MintQuoteBolt12Response<String> {
-    type Error = crate::Error;
+    type Error = Error;
 
     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
         let quote: MintQuoteBolt12Response<QuoteId> = quote.try_into()?;
-
         Ok(quote.into())
     }
 }
 
-impl TryFrom<crate::mint::MintQuote> for crate::nuts::MintQuoteCustomResponse<QuoteId> {
-    type Error = crate::Error;
+impl TryFrom<MintQuote> for MintQuoteCustomResponse<QuoteId> {
+    type Error = Error;
 
-    fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
-        Ok(crate::nuts::MintQuoteCustomResponse {
-            state: mint_quote.state(),
-            quote: mint_quote.id.clone(),
-            request: mint_quote.request,
-            expiry: Some(mint_quote.expiry),
-            pubkey: mint_quote.pubkey,
-            amount: mint_quote.amount.map(Into::into),
-            unit: Some(mint_quote.unit),
-            extra: mint_quote.extra_json.unwrap_or_default(),
+    fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
+        let state = quote.state();
+        Ok(MintQuoteCustomResponse {
+            quote: quote.id,
+            request: quote.request,
+            unit: Some(quote.unit),
+            expiry: Some(quote.expiry),
+            pubkey: quote.pubkey,
+            amount: quote.amount.map(Into::into),
+            state,
+            extra: quote.extra_json.unwrap_or_default(),
         })
     }
 }
 
-impl TryFrom<MintQuote> for crate::nuts::MintQuoteCustomResponse<String> {
-    type Error = crate::Error;
+impl TryFrom<MintQuote> for MintQuoteCustomResponse<String> {
+    type Error = Error;
 
     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
-        let quote: crate::nuts::MintQuoteCustomResponse<QuoteId> = quote.try_into()?;
-
+        let quote: MintQuoteCustomResponse<QuoteId> = quote.try_into()?;
         Ok(quote.into())
     }
 }
 
-impl TryFrom<MintQuoteResponse<QuoteId>> for MintQuoteBolt11Response<QuoteId> {
-    type Error = Error;
+impl From<MeltQuote> for crate::nuts::MeltQuoteCustomResponse<QuoteId> {
+    fn from(melt_quote: MeltQuote) -> Self {
+        let request = match melt_quote.request {
+            MeltPaymentRequest::Custom { request, .. } => Some(request),
+            _ => None,
+        };
 
-    fn try_from(response: MintQuoteResponse<QuoteId>) -> Result<Self, Self::Error> {
-        match response {
-            MintQuoteResponse::Bolt11(bolt11_response) => Ok(bolt11_response),
-            _ => Err(Error::InvalidPaymentMethod),
+        Self {
+            quote: melt_quote.id,
+            amount: melt_quote.amount.into(),
+            fee_reserve: melt_quote.fee_reserve.into(),
+            state: melt_quote.state,
+            expiry: melt_quote.expiry,
+            payment_preimage: melt_quote.payment_proof,
+            change: None,
+            request,
+            unit: Some(melt_quote.unit),
+            extra: melt_quote.extra_json.unwrap_or_default(),
         }
     }
 }
-
-impl TryFrom<MintQuoteResponse<QuoteId>> for MintQuoteBolt12Response<QuoteId> {
-    type Error = Error;
-
-    fn try_from(response: MintQuoteResponse<QuoteId>) -> Result<Self, Self::Error> {
-        match response {
-            MintQuoteResponse::Bolt12(bolt12_response) => Ok(bolt12_response),
-            _ => Err(Error::InvalidPaymentMethod),
-        }
-    }
-}
-
 impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
     type Error = Error;
 
     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
         if quote.payment_method.is_bolt11() {
-            let bolt11_response: MintQuoteBolt11Response<QuoteId> = quote.into();
-            Ok(MintQuoteResponse::Bolt11(bolt11_response))
+            Ok(Self::Bolt11(crate::nuts::nut23::MintQuoteBolt11Response {
+                quote: quote.id.clone(),
+                request: quote.request.clone(),
+                state: quote.state(),
+                expiry: Some(quote.expiry),
+                amount: quote.amount.as_ref().map(|a| a.clone().into()),
+                unit: Some(quote.unit.clone()),
+                pubkey: quote.pubkey,
+            }))
         } else if quote.payment_method.is_bolt12() {
-            let bolt12_response = MintQuoteBolt12Response::try_from(quote)?;
-            Ok(MintQuoteResponse::Bolt12(bolt12_response))
+            Ok(Self::Bolt12(crate::nuts::nut25::MintQuoteBolt12Response {
+                quote: quote.id.clone(),
+                request: quote.request.clone(),
+                amount: quote.amount.as_ref().map(|a| a.clone().into()),
+                unit: quote.unit.clone(),
+                expiry: Some(quote.expiry),
+                pubkey: quote.pubkey.ok_or(Error::PubkeyRequired)?,
+                amount_paid: quote.amount_paid().into(),
+                amount_issued: quote.amount_issued().into(),
+            }))
+        } else if quote.payment_method.is_onchain() {
+            let onchain_response = MintQuoteOnchainResponse::try_from(quote)?;
+            Ok(MintQuoteResponse::Onchain(onchain_response))
         } else {
             let method = quote.payment_method.clone();
-            let custom_response = crate::nuts::MintQuoteCustomResponse::try_from(quote)?;
             Ok(MintQuoteResponse::Custom {
                 method,
-                response: custom_response,
+                response: crate::nuts::nut04::MintQuoteCustomResponse {
+                    quote: quote.id.clone(),
+                    request: quote.request.clone(),
+                    state: quote.state(),
+                    expiry: Some(quote.expiry),
+                    amount: quote.amount.as_ref().map(|a| a.clone().into()),
+                    unit: Some(quote.unit.clone()),
+                    pubkey: quote.pubkey,
+                    extra: serde_json::Value::Null,
+                },
             })
         }
     }
@@ -1134,6 +1233,39 @@ impl From<MintQuoteResponse<QuoteId>> for MintQuoteBolt11Response<String> {
     }
 }
 
+impl TryFrom<MintQuoteResponse<QuoteId>> for MintQuoteBolt11Response<QuoteId> {
+    type Error = Error;
+
+    fn try_from(response: MintQuoteResponse<QuoteId>) -> Result<Self, Self::Error> {
+        match response {
+            MintQuoteResponse::Bolt11(r) => Ok(r),
+            _ => Err(Error::InvalidPaymentMethod),
+        }
+    }
+}
+
+impl TryFrom<MintQuoteResponse<QuoteId>> for MintQuoteBolt12Response<QuoteId> {
+    type Error = Error;
+
+    fn try_from(response: MintQuoteResponse<QuoteId>) -> Result<Self, Self::Error> {
+        match response {
+            MintQuoteResponse::Bolt12(r) => Ok(r),
+            _ => Err(Error::InvalidPaymentMethod),
+        }
+    }
+}
+
+impl TryFrom<MintQuoteResponse<QuoteId>> for MintQuoteOnchainResponse<QuoteId> {
+    type Error = Error;
+
+    fn try_from(response: MintQuoteResponse<QuoteId>) -> Result<Self, Self::Error> {
+        match response {
+            MintQuoteResponse::Onchain(r) => Ok(r),
+            _ => Err(Error::InvalidPaymentMethod),
+        }
+    }
+}
+
 impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
     fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response<QuoteId> {
         MeltQuoteBolt11Response {
@@ -1142,8 +1274,8 @@ impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
             change: None,
             state: melt_quote.state,
             expiry: melt_quote.expiry,
-            amount: melt_quote.amount().clone().into(),
-            fee_reserve: melt_quote.fee_reserve().clone().into(),
+            amount: melt_quote.amount().into(),
+            fee_reserve: melt_quote.fee_reserve().into(),
             request: None,
             unit: Some(melt_quote.unit.clone()),
         }
@@ -1154,8 +1286,8 @@ impl From<MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
     fn from(melt_quote: MeltQuote) -> MeltQuoteBolt11Response<QuoteId> {
         MeltQuoteBolt11Response {
             quote: melt_quote.id.clone(),
-            amount: melt_quote.amount().clone().into(),
-            fee_reserve: melt_quote.fee_reserve().clone().into(),
+            amount: melt_quote.amount().into(),
+            fee_reserve: melt_quote.fee_reserve().into(),
             state: melt_quote.state,
             expiry: melt_quote.expiry,
             payment_preimage: melt_quote.payment_proof,
@@ -1187,6 +1319,11 @@ pub enum MeltPaymentRequest {
         /// Payment request string
         request: String,
     },
+    /// Onchain Payment
+    Onchain {
+        /// Onchain address
+        address: String,
+    },
 }
 
 impl std::fmt::Display for MeltPaymentRequest {
@@ -1195,6 +1332,7 @@ impl std::fmt::Display for MeltPaymentRequest {
             MeltPaymentRequest::Bolt11 { bolt11 } => write!(f, "{bolt11}"),
             MeltPaymentRequest::Bolt12 { offer } => write!(f, "{offer}"),
             MeltPaymentRequest::Custom { request, .. } => write!(f, "{request}"),
+            MeltPaymentRequest::Onchain { address } => write!(f, "{address}"),
         }
     }
 }

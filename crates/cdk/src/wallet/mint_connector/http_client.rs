@@ -4,9 +4,9 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use cdk_common::{
-    nut19, MeltQuoteBolt11Response, MeltQuoteRequest, MeltQuoteResponse, Method,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteRequest,
-    MintQuoteResponse, ProtectedEndpoint, RoutePath,
+    nut19, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, Method,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
+    MintQuoteOnchainResponse, MintQuoteRequest, MintQuoteResponse, ProtectedEndpoint, RoutePath,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -279,6 +279,11 @@ where
                     self.transport.http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Bolt12(response))
             }
+            MintQuoteRequest::Onchain(req) => {
+                let response: cdk_common::nut_onchain::MintQuoteOnchainResponse<String> =
+                    self.transport.http_post(url, auth_token, req).await?;
+                Ok(MintQuoteResponse::Onchain(response))
+            }
             MintQuoteRequest::Custom { request: req, .. } => {
                 let response: cdk_common::nut04::MintQuoteCustomResponse<String> =
                     self.transport.http_post(url, auth_token, req).await?;
@@ -332,7 +337,25 @@ where
 
                 Ok(MintQuoteResponse::Bolt12(response))
             }
-            // PaymentMethod::Known(KnownMethod::Onchain) => Err(Error::UnsupportedPaymentMethod),
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                let url = self
+                    .mint_url
+                    .join_paths(&["v1", "mint", "quote", "onchain", quote_id])?;
+
+                let auth_token = self
+                    .get_auth_token(
+                        Method::Get,
+                        RoutePath::MintQuote(
+                            PaymentMethod::Known(KnownMethod::Onchain).to_string(),
+                        ),
+                    )
+                    .await?;
+
+                let response: MintQuoteOnchainResponse<String> =
+                    self.transport.http_get(url, auth_token).await?;
+
+                Ok(MintQuoteResponse::Onchain(response))
+            }
             PaymentMethod::Custom(method_name) => {
                 let url =
                     self.mint_url
@@ -369,6 +392,9 @@ where
                 nut19::Path::Custom("/v1/mint/bolt12".to_string())
             }
             PaymentMethod::Custom(m) => nut19::Path::custom_mint(m),
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                nut19::Path::Custom("/v1/mint/onchain".to_string())
+            }
         };
 
         self.retriable_http_request(nut19::Method::Post, path, auth_token, &request)
@@ -415,7 +441,7 @@ where
     async fn post_melt_quote(
         &self,
         request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteResponse<String>, Error> {
+    ) -> Result<MeltQuoteCreateResponse<String>, Error> {
         let method = request.method().to_string();
         let path = format!("v1/melt/quote/{}", method);
 
@@ -430,17 +456,27 @@ where
             MeltQuoteRequest::Bolt11(req) => {
                 let response: cdk_common::nut23::MeltQuoteBolt11Response<String> =
                     self.transport.http_post(url, auth_token, req).await?;
-                Ok(MeltQuoteResponse::Bolt11(response))
+                Ok(MeltQuoteCreateResponse::Bolt11(response))
             }
             MeltQuoteRequest::Bolt12(req) => {
                 let response: cdk_common::nut25::MeltQuoteBolt12Response<String> =
                     self.transport.http_post(url, auth_token, req).await?;
-                Ok(MeltQuoteResponse::Bolt12(response))
+                Ok(MeltQuoteCreateResponse::Bolt12(response))
+            }
+            MeltQuoteRequest::Onchain(req) => {
+                let responses: Vec<cdk_common::nut_onchain::MeltQuoteOnchainResponse<String>> =
+                    self.transport.http_post(url, auth_token, req).await?;
+                Ok(MeltQuoteCreateResponse::Onchain(
+                    cdk_common::melt::MeltQuoteOnchainOptions { quotes: responses },
+                ))
             }
             MeltQuoteRequest::Custom(req) => {
                 let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
                     self.transport.http_post(url, auth_token, req).await?;
-                Ok(MeltQuoteResponse::Custom((request.method(), response)))
+                Ok(MeltQuoteCreateResponse::Custom((
+                    request.method(),
+                    response,
+                )))
             }
         }
     }
@@ -487,6 +523,25 @@ where
 
                 Ok(MeltQuoteResponse::Bolt12(response))
             }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                let url = self
+                    .mint_url
+                    .join_paths(&["v1", "melt", "quote", "onchain", quote_id])?;
+
+                let auth_token = self
+                    .get_auth_token(
+                        Method::Get,
+                        RoutePath::MeltQuote(
+                            PaymentMethod::Known(KnownMethod::Onchain).to_string(),
+                        ),
+                    )
+                    .await?;
+
+                let response: cdk_common::nut_onchain::MeltQuoteOnchainResponse<String> =
+                    self.transport.http_get(url, auth_token).await?;
+
+                Ok(MeltQuoteResponse::Onchain(response))
+            }
             PaymentMethod::Custom(method_name) => {
                 let url =
                     self.mint_url
@@ -511,7 +566,7 @@ where
         &self,
         method: &PaymentMethod,
         request: MeltRequest<String>,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+    ) -> Result<MeltQuoteResponse<String>, Error> {
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::Melt(method.to_string()))
             .await?;
@@ -524,10 +579,31 @@ where
                 nut19::Path::Custom("/v1/melt/bolt12".to_string())
             }
             PaymentMethod::Custom(m) => nut19::Path::custom_melt(m),
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                nut19::Path::Custom("/v1/melt/onchain".to_string())
+            }
         };
 
-        self.retriable_http_request(nut19::Method::Post, path, auth_token, &request)
-            .await
+        match method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                let res: cdk_common::nuts::MeltQuoteBolt11Response<String> = self
+                    .retriable_http_request(nut19::Method::Post, path, auth_token, &request)
+                    .await?;
+                Ok(MeltQuoteResponse::Bolt11(res))
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                let res: cdk_common::nuts::MeltQuoteBolt12Response<String> = self
+                    .retriable_http_request(nut19::Method::Post, path, auth_token, &request)
+                    .await?;
+                Ok(MeltQuoteResponse::Bolt12(res))
+            }
+            _ => {
+                let res: cdk_common::nuts::MeltQuoteCustomResponse<String> = self
+                    .retriable_http_request(nut19::Method::Post, path, auth_token, &request)
+                    .await?;
+                Ok(MeltQuoteResponse::Custom((method.clone(), res)))
+            }
+        }
     }
 
     /// Swap Token [NUT-03]

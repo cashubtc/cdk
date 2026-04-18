@@ -105,7 +105,7 @@ async fn test_p2pk_post_locktime_anyone_can_spend() {
         .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
         .await
         .unwrap();
-    println!("Created melt quote: {}", melt_quote.quote);
+    println!("Created melt quote: {}", melt_quote.quote().unwrap());
 
     // Step 6: Try to melt with Bob's signature (wrong key, but locktime expired so should work)
     let mut proofs_bob_signed = p2pk_proofs.clone();
@@ -116,7 +116,7 @@ async fn test_p2pk_post_locktime_anyone_can_spend() {
     }
 
     let melt_request_bob =
-        cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_bob_signed, None);
+        cdk_common::MeltRequest::new(melt_quote.quote().unwrap().clone(), proofs_bob_signed, None);
 
     // After locktime expiry, anyone can spend (signature verification is skipped)
     melt_request_bob.verify_spending_conditions().unwrap();
@@ -125,8 +125,8 @@ async fn test_p2pk_post_locktime_anyone_can_spend() {
     // Perform the actual melt
     let melt_response = mint.melt(&melt_request_bob).await.unwrap().await.unwrap();
     println!("✓ Melt operation completed successfully with Bob's key after locktime!");
-    println!("  Quote state: {}", melt_response.state);
-    assert_eq!(melt_response.quote, melt_quote.quote);
+    println!("  Quote state: {}", melt_response.state());
+    assert_eq!(melt_response.quote(), melt_quote.quote().unwrap());
 }
 
 /// Test: P2PK with future locktime - must use correct key before expiry
@@ -224,7 +224,7 @@ async fn test_p2pk_before_locktime_requires_correct_key() {
         .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
         .await
         .unwrap();
-    println!("Created melt quote: {}", melt_quote.quote);
+    println!("Created melt quote: {}", melt_quote.quote().unwrap());
 
     // Step 6: Try to melt with Bob's signature (wrong key, locktime not expired)
     let mut proofs_bob_signed = p2pk_proofs.clone();
@@ -235,7 +235,7 @@ async fn test_p2pk_before_locktime_requires_correct_key() {
     }
 
     let melt_request_bob =
-        cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_bob_signed, None);
+        cdk_common::MeltRequest::new(melt_quote.quote().unwrap().clone(), proofs_bob_signed, None);
 
     // Before locktime expiry, wrong key should fail
     let result = melt_request_bob.verify_spending_conditions();
@@ -261,8 +261,11 @@ async fn test_p2pk_before_locktime_requires_correct_key() {
         proof.sign_p2pk(alice_secret.clone()).unwrap();
     }
 
-    let melt_request_alice =
-        cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_alice_signed, None);
+    let melt_request_alice = cdk_common::MeltRequest::new(
+        melt_quote.quote().unwrap().clone(),
+        proofs_alice_signed,
+        None,
+    );
 
     // Verify spending conditions pass
     melt_request_alice.verify_spending_conditions().unwrap();
@@ -271,6 +274,6 @@ async fn test_p2pk_before_locktime_requires_correct_key() {
     // Perform the actual melt
     let melt_response = mint.melt(&melt_request_alice).await.unwrap().await.unwrap();
     println!("✓ Melt operation completed successfully with Alice's key before locktime!");
-    println!("  Quote state: {}", melt_response.state);
-    assert_eq!(melt_response.quote, melt_quote.quote);
+    println!("  Quote state: {}", melt_response.state());
+    assert_eq!(melt_response.quote(), melt_quote.quote().unwrap());
 }

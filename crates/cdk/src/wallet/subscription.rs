@@ -10,6 +10,7 @@ use std::fmt::Debug;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
+use cdk_common::nut00::KnownMethod;
 use cdk_common::nut17::ws::{
     WsErrorResponse, WsMethodRequest, WsNotification, WsRequest, WsResponse, WsUnsubscribeRequest,
 };
@@ -23,8 +24,8 @@ use cdk_common::subscription::WalletParams;
 use cdk_common::ws_client::{connect as ws_connect, WsError};
 use cdk_common::{
     CheckStateRequest, MeltQuoteBolt11Response, MeltQuoteBolt12Response, MeltQuoteCustomResponse,
-    Method, MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
-    PaymentMethod, ProofState, RoutePath,
+    MeltQuoteOnchainResponse, Method, MintQuoteBolt11Response, MintQuoteBolt12Response,
+    MintQuoteCustomResponse, MintQuoteOnchainResponse, PaymentMethod, ProofState, RoutePath,
 };
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -173,6 +174,8 @@ impl SubscriptionClient {
             NotificationId::MeltQuoteBolt12(_) => Kind::Bolt12MeltQuote,
             NotificationId::MintQuoteBolt11(_) => Kind::Bolt11MintQuote,
             NotificationId::MintQuoteBolt12(_) => Kind::Bolt12MintQuote,
+            NotificationId::MintQuoteOnchain(_) => Kind::OnchainMintQuote,
+            NotificationId::MeltQuoteOnchain(_) => Kind::OnchainMeltQuote,
             NotificationId::MintQuoteCustom(method, _) => {
                 Kind::Custom(format!("{}_mint_quote", method))
             }
@@ -194,6 +197,8 @@ impl SubscriptionClient {
             | NotificationId::MeltQuoteBolt12(q)
             | NotificationId::MintQuoteBolt11(q)
             | NotificationId::MintQuoteBolt12(q)
+            | NotificationId::MintQuoteOnchain(q)
+            | NotificationId::MeltQuoteOnchain(q)
             | NotificationId::MintQuoteCustom(_, q)
             | NotificationId::MeltQuoteCustom(_, q) => q,
         };
@@ -255,6 +260,16 @@ fn decode_notification_payload(
         Kind::Bolt12MeltQuote => serde_json::from_value::<MeltQuoteBolt12Response<String>>(payload)
             .map(NotificationPayload::MeltQuoteBolt12Response)
             .map_err(|err| PubsubError::ParsingError(err.to_string())),
+        Kind::OnchainMintQuote => {
+            serde_json::from_value::<MintQuoteOnchainResponse<String>>(payload)
+                .map(NotificationPayload::MintQuoteOnchainResponse)
+                .map_err(|err| PubsubError::ParsingError(err.to_string()))
+        }
+        Kind::OnchainMeltQuote => {
+            serde_json::from_value::<MeltQuoteOnchainResponse<String>>(payload)
+                .map(NotificationPayload::MeltQuoteOnchainResponse)
+                .map_err(|err| PubsubError::ParsingError(err.to_string()))
+        }
         Kind::Custom(method) if method.ends_with("_mint_quote") => serde_json::from_value::<
             MintQuoteCustomResponse<String>,
         >(payload)
@@ -411,6 +426,52 @@ impl Transport for SubscriptionClient {
 
                     reply_to.send(MintEvent::new(
                         NotificationPayload::MeltQuoteBolt12Response(response),
+                    ));
+                }
+                NotificationId::MintQuoteOnchain(id) => {
+                    let response = match self
+                        .http_client
+                        .get_mint_quote_status(PaymentMethod::Known(KnownMethod::Onchain), &id)
+                        .await
+                    {
+                        Ok(success) => match success {
+                            cdk_common::MintQuoteResponse::Onchain(r) => r,
+                            _ => {
+                                tracing::error!("Unexpected response type for MintOnchain {}", id);
+                                continue;
+                            }
+                        },
+                        Err(err) => {
+                            tracing::error!("Error with MintOnchain {} with {:?}", id, err);
+                            continue;
+                        }
+                    };
+
+                    reply_to.send(MintEvent::new(
+                        NotificationPayload::MintQuoteOnchainResponse(response),
+                    ));
+                }
+                NotificationId::MeltQuoteOnchain(id) => {
+                    let response = match self
+                        .http_client
+                        .get_melt_quote_status(PaymentMethod::Known(KnownMethod::Onchain), &id)
+                        .await
+                    {
+                        Ok(success) => match success {
+                            cdk_common::MeltQuoteResponse::Onchain(r) => r,
+                            _ => {
+                                tracing::error!("Unexpected response type for MeltOnchain {}", id);
+                                continue;
+                            }
+                        },
+                        Err(err) => {
+                            tracing::error!("Error with MeltOnchain {} with {:?}", id, err);
+                            continue;
+                        }
+                    };
+
+                    reply_to.send(MintEvent::new(
+                        NotificationPayload::MeltQuoteOnchainResponse(response),
                     ));
                 }
                 NotificationId::MintQuoteCustom(method, id) => {

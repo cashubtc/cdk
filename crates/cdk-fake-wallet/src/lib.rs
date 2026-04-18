@@ -47,6 +47,8 @@ pub mod error;
 
 /// Default maximum size for the secondary repayment queue
 const DEFAULT_REPAY_QUEUE_MAX_SIZE: usize = 100;
+/// Default amount used for custom outgoing payments in tests
+const DEFAULT_CUSTOM_OUTGOING_AMOUNT: u64 = 1000;
 
 /// Payment state entry containing the melt quote state and amount spent
 type PaymentStateEntry = (MeltQuoteState, Amount<CurrencyUnit>);
@@ -393,6 +395,39 @@ impl FakeWallet {
             exchange_rate_cache: ExchangeRateCache::new(),
         }
     }
+
+    fn fee_for_amount(&self, amount: &Amount<CurrencyUnit>) -> Amount<CurrencyUnit> {
+        let relative_fee_reserve =
+            (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
+
+        let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
+
+        Amount::new(
+            max(relative_fee_reserve, absolute_fee_reserve),
+            amount.unit().clone(),
+        )
+    }
+
+    async fn custom_outgoing_amount(
+        &self,
+        unit: &CurrencyUnit,
+        extra_json: &Option<String>,
+    ) -> Result<Amount<CurrencyUnit>, Error> {
+        #[derive(Deserialize)]
+        struct CustomAmountField {
+            amount: Option<u64>,
+        }
+
+        let amount = match extra_json {
+            Some(extra_json) => serde_json::from_str::<CustomAmountField>(extra_json)
+                .ok()
+                .and_then(|extra| extra.amount)
+                .unwrap_or(DEFAULT_CUSTOM_OUTGOING_AMOUNT),
+            None => DEFAULT_CUSTOM_OUTGOING_AMOUNT,
+        };
+
+        convert_currency_amount(amount, &self.unit, unit, &self.exchange_rate_cache).await
+    }
 }
 
 /// Struct for signaling what methods should respond via invoice description
@@ -425,6 +460,9 @@ impl MintPayment for FakeWallet {
 
     #[instrument(skip_all)]
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        let mut custom = std::collections::HashMap::new();
+        custom.insert("paypal".to_string(), "{}".to_string());
+
         Ok(SettingsResponse {
             unit: self.unit.to_string(),
             bolt11: Some(payment::Bolt11Settings {
@@ -433,7 +471,8 @@ impl MintPayment for FakeWallet {
                 invoice_description: true,
             }),
             bolt12: Some(payment::Bolt12Settings { amountless: false }),
-            custom: std::collections::HashMap::new(),
+            onchain: None,
+            custom,
         })
     }
 
@@ -513,8 +552,23 @@ impl MintPayment for FakeWallet {
                 };
                 (amount_msat, None)
             }
-            OutgoingPaymentOptions::Custom(_) => {
-                // Custom payment methods are not supported by fake wallet
+            OutgoingPaymentOptions::Custom(custom_options) => {
+                let amount = self
+                    .custom_outgoing_amount(unit, &custom_options.extra_json)
+                    .await?;
+
+                return Ok(PaymentQuoteResponse {
+                    request_lookup_id: Some(PaymentIdentifier::CustomId(
+                        Uuid::new_v4().to_string(),
+                    )),
+                    amount: amount.clone(),
+                    fee: self.fee_for_amount(&amount),
+                    state: MeltQuoteState::Unpaid,
+                    extra_json: None,
+                    estimated_blocks: None,
+                });
+            }
+            OutgoingPaymentOptions::Onchain(_) => {
                 return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
             }
         };
@@ -527,18 +581,13 @@ impl MintPayment for FakeWallet {
         )
         .await?;
 
-        let relative_fee_reserve =
-            (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-
-        let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-
-        let fee = max(relative_fee_reserve, absolute_fee_reserve);
-
         Ok(PaymentQuoteResponse {
             request_lookup_id,
+            fee: self.fee_for_amount(&amount),
             amount,
-            fee: Amount::new(fee, unit.clone()),
             state: MeltQuoteState::Unpaid,
+            extra_json: None,
+            estimated_blocks: None,
         })
     }
 
@@ -640,8 +689,19 @@ impl MintPayment for FakeWallet {
                     total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
                 })
             }
-            OutgoingPaymentOptions::Custom(_) => {
-                // Custom payment methods are not supported by fake wallet
+            OutgoingPaymentOptions::Custom(custom_options) => {
+                let total_spent = self
+                    .custom_outgoing_amount(unit, &custom_options.extra_json)
+                    .await?;
+
+                Ok(MakePaymentResponse {
+                    payment_lookup_id: PaymentIdentifier::CustomId(Uuid::new_v4().to_string()),
+                    payment_proof: Some(custom_options.request),
+                    status: MeltQuoteState::Paid,
+                    total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
+                })
+            }
+            OutgoingPaymentOptions::Onchain(_) => {
                 Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
         }
@@ -710,8 +770,8 @@ impl MintPayment for FakeWallet {
                     expiry,
                 )
             }
-            IncomingPaymentOptions::Custom(_) => {
-                // Custom payment methods are not supported by fake wallet
+            IncomingPaymentOptions::Custom(_) | IncomingPaymentOptions::Onchain(_) => {
+                // Custom payment methods and Onchain are not supported by fake wallet
                 return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
             }
         };

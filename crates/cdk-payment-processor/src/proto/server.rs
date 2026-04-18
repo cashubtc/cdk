@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use cdk_common::grpc::create_version_check_interceptor;
 use cdk_common::payment::{IncomingPaymentOptions, MintPayment};
-use cdk_common::CurrencyUnit;
+use cdk_common::{Amount, CurrencyUnit, QuoteId};
 use futures::{Stream, StreamExt};
 use lightning::offers::offer::Offer;
 use tokio::sync::{mpsc, Notify};
@@ -22,8 +22,7 @@ use super::cdk_payment_processor_server::{CdkPaymentProcessor, CdkPaymentProcess
 use crate::error::Error;
 use crate::proto::{TryFromProtoAmount, *};
 
-type ResponseStream =
-    Pin<Box<dyn Stream<Item = Result<WaitIncomingPaymentResponse, Status>> + Send>>;
+type ResponseStream = Pin<Box<dyn Stream<Item = Result<PaymentEventResponse, Status>> + Send>>;
 
 /// Payment Processor
 #[derive(Clone)]
@@ -203,6 +202,10 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             bolt12: settings.bolt12.map(|b| super::Bolt12Settings {
                 amountless: b.amountless,
             }),
+            onchain: settings.onchain.map(|o| super::OnchainSettings {
+                confirmations: o.confirmations,
+                min_receive_amount_sat: o.min_receive_amount_sat,
+            }),
             custom: settings.custom,
         }))
     }
@@ -263,6 +266,13 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     },
                 ))
             }
+            incoming_payment_options::Options::Onchain(opts) => IncomingPaymentOptions::Onchain(
+                cdk_common::payment::OnchainIncomingPaymentOptions {
+                    quote_id: opts.quote_id.parse().map_err(|_| {
+                        Status::invalid_argument("Invalid quote_id in Onchain options")
+                    })?,
+                },
+            ),
         };
 
         let invoice_response = self
@@ -321,6 +331,18 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         timeout_secs: None,
                         melt_options: request.options.map(Into::into),
                         extra_json: request.extra_json.clone(),
+                    },
+                ))
+            }
+            OutgoingPaymentRequestType::Onchain => {
+                cdk_common::payment::OutgoingPaymentOptions::Onchain(Box::new(
+                    cdk_common::payment::OnchainOutgoingPaymentOptions {
+                        address: request.request.clone(),
+                        amount: Amount::new(0, unit.clone()), // Will be set from melt quote
+                        max_fee_amount: None,
+                        quote_id: QuoteId::new_uuid(), // Placeholder, should be resolved from request if possible or set later
+                        tier: None,
+                        metadata: None,
                     },
                 ))
             }
@@ -410,6 +432,31 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     },
                 ))
             }
+            outgoing_payment_variant::Options::Onchain(opts) => {
+                let amount = opts
+                    .amount
+                    .ok_or_else(|| Status::invalid_argument("Missing amount"))?
+                    .try_into()
+                    .map_err(|_| Status::invalid_argument("Invalid amount"))?;
+
+                let max_fee_amount = opts
+                    .max_fee_amount
+                    .try_from_proto()
+                    .map_err(|_| Status::invalid_argument("Invalid max_fee_amount"))?;
+
+                cdk_common::payment::OutgoingPaymentOptions::Onchain(Box::new(
+                    cdk_common::payment::OnchainOutgoingPaymentOptions {
+                        address: opts.address,
+                        amount,
+                        max_fee_amount,
+                        quote_id: opts.quote_id.parse().map_err(|_| {
+                            Status::invalid_argument("Invalid quote_id in Onchain options")
+                        })?,
+                        tier: opts.tier,
+                        metadata: opts.metadata,
+                    },
+                ))
+            }
         };
 
         let pay_response = self
@@ -477,14 +524,14 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         Ok(Response::new(check_response.into()))
     }
 
-    type WaitIncomingPaymentStream = ResponseStream;
+    type WaitPaymentEventStream = ResponseStream;
 
     #[allow(clippy::incompatible_msrv)]
     #[instrument(skip_all)]
-    async fn wait_incoming_payment(
+    async fn wait_payment_event(
         &self,
         _request: Request<EmptyRequest>,
-    ) -> Result<Response<Self::WaitIncomingPaymentStream>, Status> {
+    ) -> Result<Response<Self::WaitPaymentEventStream>, Status> {
         tracing::debug!("Server waiting for payment stream");
         let (tx, rx) = mpsc::channel(128);
 
@@ -502,19 +549,13 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         match result {
                             Ok(mut stream) => {
                                 while let Some(event) = stream.next().await {
-                                    match event {
-                                        cdk_common::payment::Event::PaymentReceived(payment_response) => {
-                                            match tx.send(Result::<_, Status>::Ok(payment_response.into()))
-                                            .await
-                                            {
-                                                Ok(_) => {
-                                                    // Response was queued to be sent to client
-                                                }
-                                                Err(item) => {
-                                                    tracing::error!("Error adding incoming payment to stream: {}", item);
-                                                    break;
-                                                }
-                                            }
+                                    match tx.send(Result::<_, Status>::Ok(event.into())).await {
+                                        Ok(_) => {
+                                            // Response was queued to be sent to client
+                                        }
+                                        Err(item) => {
+                                            tracing::error!("Error adding payment event to stream: {}", item);
+                                            break;
                                         }
                                     }
                                 }
@@ -531,7 +572,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
 
         let output_stream = ReceiverStream::new(rx);
         Ok(Response::new(
-            Box::pin(output_stream) as Self::WaitIncomingPaymentStream
+            Box::pin(output_stream) as Self::WaitPaymentEventStream
         ))
     }
 }

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use anyhow::anyhow;
 use cdk_common::grpc::{VersionInterceptor, VERSION_HEADER};
@@ -28,8 +29,8 @@ use crate::proto::{
 #[derive(Clone)]
 pub struct PaymentProcessorClient {
     inner: CdkPaymentProcessorClient<InterceptedService<Channel, VersionInterceptor>>,
-    wait_incoming_payment_stream_is_active: Arc<AtomicBool>,
-    cancel_incoming_payment_listener: CancellationToken,
+    payment_event_stream_is_active: Arc<AtomicBool>,
+    cancel_payment_event_stream: CancellationToken,
 }
 
 impl std::fmt::Debug for PaymentProcessorClient {
@@ -90,9 +91,39 @@ impl PaymentProcessorClient {
 
         Ok(Self {
             inner: client,
-            wait_incoming_payment_stream_is_active: Arc::new(AtomicBool::new(false)),
-            cancel_incoming_payment_listener: CancellationToken::new(),
+            payment_event_stream_is_active: Arc::new(AtomicBool::new(false)),
+            cancel_payment_event_stream: CancellationToken::new(),
         })
+    }
+}
+
+struct ActivePaymentEventStream {
+    inner: Pin<Box<dyn Stream<Item = cdk_common::payment::Event> + Send>>,
+    active_flag: Arc<AtomicBool>,
+}
+
+impl ActivePaymentEventStream {
+    fn new(
+        inner: Pin<Box<dyn Stream<Item = cdk_common::payment::Event> + Send>>,
+        active_flag: Arc<AtomicBool>,
+    ) -> Self {
+        Self { inner, active_flag }
+    }
+}
+
+impl Drop for ActivePaymentEventStream {
+    fn drop(&mut self) {
+        self.active_flag.store(false, Ordering::SeqCst);
+        tracing::info!("Payment event stream inactive");
+    }
+}
+
+impl Stream for ActivePaymentEventStream {
+    type Item = cdk_common::payment::Event;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        this.inner.as_mut().poll_next(cx)
     }
 }
 
@@ -125,6 +156,12 @@ impl MintPayment for PaymentProcessorClient {
                 .bolt12
                 .map(|b| cdk_common::payment::Bolt12Settings {
                     amountless: b.amountless,
+                }),
+            onchain: settings
+                .onchain
+                .map(|o| cdk_common::payment::OnchainSettings {
+                    confirmations: o.confirmations,
+                    min_receive_amount_sat: o.min_receive_amount_sat,
                 }),
             custom: settings.custom,
         })
@@ -166,6 +203,13 @@ impl MintPayment for PaymentProcessorClient {
                     },
                 )),
             },
+            CdkIncomingPaymentOptions::Onchain(opts) => IncomingPaymentOptions {
+                options: Some(super::incoming_payment_options::Options::Onchain(
+                    super::OnchainIncomingPaymentOptions {
+                        quote_id: opts.quote_id.to_string(),
+                    },
+                )),
+            },
         };
 
         let response = inner
@@ -202,18 +246,23 @@ impl MintPayment for PaymentProcessorClient {
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(_) => {
                 OutgoingPaymentRequestType::Bolt12Offer
             }
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(_) => {
+                OutgoingPaymentRequestType::Onchain
+            }
         };
 
         let proto_request = match &options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.request.to_string(),
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => opts.bolt11.to_string(),
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(opts) => opts.offer.to_string(),
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(opts) => opts.address.clone(),
         };
 
         let proto_options = match &options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.melt_options,
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => opts.melt_options,
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(opts) => opts.melt_options,
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(_) => None,
         };
 
         let extra_json = match &options {
@@ -288,6 +337,20 @@ impl MintPayment for PaymentProcessorClient {
                     )),
                 }
             }
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(opts) => {
+                super::OutgoingPaymentVariant {
+                    options: Some(super::outgoing_payment_variant::Options::Onchain(
+                        super::OnchainOutgoingPaymentOptions {
+                            address: opts.address.clone(),
+                            amount: Some(opts.amount.into()),
+                            max_fee_amount: opts.max_fee_amount.into_proto(),
+                            quote_id: opts.quote_id.to_string(),
+                            tier: opts.tier.clone(),
+                            metadata: opts.metadata.clone(),
+                        },
+                    )),
+                }
+            }
         };
 
         let response = inner
@@ -321,12 +384,12 @@ impl MintPayment for PaymentProcessorClient {
     async fn wait_payment_event(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = cdk_common::payment::Event> + Send>>, Self::Err> {
-        self.wait_incoming_payment_stream_is_active
+        self.payment_event_stream_is_active
             .store(true, Ordering::SeqCst);
         tracing::debug!("Client waiting for payment");
         let mut inner = self.inner.clone();
         let stream = inner
-            .wait_incoming_payment(Request::new(EmptyRequest {}))
+            .wait_payment_event(Request::new(EmptyRequest {}))
             .await
             .map_err(|err| {
                 tracing::error!("Could not check incoming payment stream: {}", err);
@@ -334,46 +397,40 @@ impl MintPayment for PaymentProcessorClient {
             })?
             .into_inner();
 
-        let cancel_token = self.cancel_incoming_payment_listener.clone();
+        let cancel_token = self.cancel_payment_event_stream.clone();
         let cancel_fut = cancel_token.cancelled_owned();
-        let active_flag = self.wait_incoming_payment_stream_is_active.clone();
+        let active_flag = self.payment_event_stream_is_active.clone();
 
-        let transformed_stream = stream
-            .take_until(cancel_fut)
-            .filter_map(|item| async {
-                match item {
-                    Ok(value) => match value.try_into() {
-                        Ok(payment_response) => Some(cdk_common::payment::Event::PaymentReceived(
-                            payment_response,
-                        )),
-                        Err(e) => {
-                            tracing::error!("Error converting payment response: {}", e);
-                            None
-                        }
-                    },
+        let transformed_stream = stream.take_until(cancel_fut).filter_map(|item| async {
+            match item {
+                Ok(value) => match value.try_into() {
+                    Ok(payment_event) => Some(payment_event),
                     Err(e) => {
-                        tracing::error!("Error in payment stream: {}", e);
+                        tracing::error!("Error converting payment event: {}", e);
                         None
                     }
+                },
+                Err(e) => {
+                    tracing::error!("Error in payment event stream: {}", e);
+                    None
                 }
-            })
-            .inspect(move |_| {
-                active_flag.store(false, Ordering::SeqCst);
-                tracing::info!("Payment stream inactive");
-            });
+            }
+        });
 
-        Ok(Box::pin(transformed_stream))
+        Ok(Box::pin(ActivePaymentEventStream::new(
+            Box::pin(transformed_stream),
+            active_flag,
+        )))
     }
 
-    /// Is wait invoice active
+    /// Is payment event stream active
     fn is_payment_event_stream_active(&self) -> bool {
-        self.wait_incoming_payment_stream_is_active
-            .load(Ordering::SeqCst)
+        self.payment_event_stream_is_active.load(Ordering::SeqCst)
     }
 
-    /// Cancel wait invoice
+    /// Cancel payment event stream
     fn cancel_payment_event_stream(&self) {
-        self.cancel_incoming_payment_listener.cancel();
+        self.cancel_payment_event_stream.cancel();
     }
 
     async fn check_incoming_payment_status(

@@ -196,6 +196,8 @@ pub struct MintQuote {
     /// Amount paid to the mint for the quote
     #[serde(default)]
     pub amount_paid: Amount,
+    /// Estimated confirmation target in blocks for onchain quotes
+    pub estimated_blocks: Option<u32>,
     /// Operation ID that has reserved this quote (for saga pattern)
     #[serde(default)]
     pub used_by_operation: Option<String>,
@@ -223,9 +225,12 @@ pub struct MeltQuote {
     pub state: MeltQuoteState,
     /// Expiration time of quote
     pub expiry: u64,
-    /// Payment proof
+    /// Payment proof (e.g. Lightning preimage or onchain outpoint)
     #[serde(alias = "payment_preimage")]
     pub payment_proof: Option<String>,
+    /// Estimated confirmation target in blocks for onchain quotes
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_blocks: Option<u32>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Operation ID that has reserved this quote (for saga pattern)
@@ -261,6 +266,7 @@ impl MintQuote {
             secret_key,
             amount_issued: Amount::ZERO,
             amount_paid: Amount::ZERO,
+            estimated_blocks: None,
             used_by_operation: None,
             version: 0,
         }

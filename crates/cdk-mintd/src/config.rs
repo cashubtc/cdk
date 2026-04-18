@@ -177,6 +177,7 @@ impl std::str::FromStr for LnBackend {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ln {
     pub ln_backend: LnBackend,
+    pub onchain: Option<Onchain>,
     pub invoice_description: Option<String>,
     pub min_mint: Amount,
     pub max_mint: Amount,
@@ -188,7 +189,51 @@ impl Default for Ln {
     fn default() -> Self {
         Ln {
             ln_backend: LnBackend::default(),
+            onchain: None,
             invoice_description: None,
+            min_mint: 1.into(),
+            max_mint: 500_000.into(),
+            min_melt: 1.into(),
+            max_melt: 500_000.into(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OnchainBackend {
+    #[default]
+    None,
+    #[cfg(feature = "bdk")]
+    Bdk,
+}
+
+impl std::str::FromStr for OnchainBackend {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "none" => Ok(OnchainBackend::None),
+            #[cfg(feature = "bdk")]
+            "bdk" => Ok(OnchainBackend::Bdk),
+            _ => Err(format!("Unknown Onchain backend: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Onchain {
+    pub onchain_backend: OnchainBackend,
+    pub min_mint: Amount,
+    pub max_mint: Amount,
+    pub min_melt: Amount,
+    pub max_melt: Amount,
+}
+
+impl Default for Onchain {
+    fn default() -> Self {
+        Onchain {
+            onchain_backend: OnchainBackend::default(),
             min_mint: 1.into(),
             max_mint: 500_000.into(),
             min_melt: 1.into(),
@@ -642,12 +687,118 @@ fn default_blind() -> AuthType {
     AuthType::Blind
 }
 
+#[cfg(feature = "bdk")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchConfig {
+    pub poll_interval_secs: u64,
+    pub max_batch_size: usize,
+    pub standard_deadline_secs: u64,
+    pub economy_deadline_secs: u64,
+    pub min_batch_threshold: usize,
+}
+
+#[cfg(feature = "bdk")]
+impl Default for BatchConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: 30,
+            max_batch_size: 50,
+            standard_deadline_secs: 300,
+            economy_deadline_secs: 3600,
+            min_batch_threshold: 1,
+        }
+    }
+}
+
+#[cfg(feature = "bdk")]
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Bdk {
+    pub mnemonic: Option<String>,
+    pub network: Option<String>,
+    pub bitcoind_rpc_host: Option<String>,
+    pub bitcoind_rpc_port: Option<u16>,
+    pub bitcoind_rpc_user: Option<String>,
+    pub bitcoind_rpc_password: Option<String>,
+    pub chain_source_type: Option<String>,
+    pub esplora_url: Option<String>,
+    #[serde(default = "default_onchain_num_confs")]
+    pub num_confs: u32,
+    #[serde(default = "default_fee_percent")]
+    pub fee_percent: f32,
+    #[serde(default = "default_reserve_fee_min")]
+    pub reserve_fee_min: Amount,
+    #[serde(default = "default_min_receive_amount_sat")]
+    pub min_receive_amount_sat: u64,
+    #[serde(default = "default_sync_interval_secs")]
+    pub sync_interval_secs: u64,
+    #[serde(default)]
+    pub batch_config: BatchConfig,
+}
+
+#[cfg(feature = "bdk")]
+impl std::fmt::Debug for Bdk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Bdk")
+            .field("mnemonic", &"[REDACTED]")
+            .field("network", &self.network)
+            .field("bitcoind_rpc_host", &self.bitcoind_rpc_host)
+            .field("bitcoind_rpc_port", &self.bitcoind_rpc_port)
+            .field("bitcoind_rpc_user", &self.bitcoind_rpc_user)
+            .field("bitcoind_rpc_password", &"[REDACTED]")
+            .field("chain_source_type", &self.chain_source_type)
+            .field("esplora_url", &self.esplora_url)
+            .field("num_confs", &self.num_confs)
+            .field("fee_percent", &self.fee_percent)
+            .field("reserve_fee_min", &self.reserve_fee_min)
+            .field("batch_config", &self.batch_config)
+            .finish()
+    }
+}
+
+#[cfg(feature = "bdk")]
+fn default_onchain_num_confs() -> u32 {
+    3
+}
+
+#[cfg(feature = "bdk")]
+fn default_min_receive_amount_sat() -> u64 {
+    1000
+}
+
+#[cfg(feature = "bdk")]
+fn default_sync_interval_secs() -> u64 {
+    30
+}
+
+#[cfg(feature = "bdk")]
+impl Default for Bdk {
+    fn default() -> Self {
+        Self {
+            mnemonic: None,
+            network: None,
+            bitcoind_rpc_host: None,
+            bitcoind_rpc_port: None,
+            bitcoind_rpc_user: None,
+            bitcoind_rpc_password: None,
+            chain_source_type: None,
+            esplora_url: None,
+            num_confs: 3,
+            fee_percent: 0.02,
+            reserve_fee_min: 2.into(),
+            min_receive_amount_sat: 1000,
+            sync_interval_secs: 30,
+            batch_config: BatchConfig::default(),
+        }
+    }
+}
+
 /// CDK settings, derived from `config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
     pub ln: Ln,
+    pub onchain: Option<Onchain>,
     /// Transaction limits for DoS protection
     #[serde(default)]
     pub limits: Limits,
@@ -661,6 +812,8 @@ pub struct Settings {
     pub ldk_node: Option<LdkNode>,
     #[cfg(feature = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
+    #[cfg(feature = "bdk")]
+    pub bdk: Option<Bdk>,
     pub grpc_processor: Option<GrpcProcessor>,
     pub database: Database,
     pub auth_database: Option<AuthDatabase>,
@@ -883,6 +1036,116 @@ mod tests {
 
         #[cfg(feature = "ldk-node")]
         test_ldk_node_env_config();
+
+        #[cfg(feature = "bdk")]
+        test_bdk_env_config();
+
+        #[cfg(feature = "bdk")]
+        test_onchain_only_config();
+    }
+
+    #[cfg(feature = "bdk")]
+    fn test_onchain_only_config() {
+        use std::{env, fs};
+
+        // Create a temporary directory for config file
+        let temp_dir = env::temp_dir().join("cdk_test_onchain_only");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        // Create a config.toml with onchain backend set and LN backend set to "none"
+        let config_content = r#"
+[ln]
+ln_backend = "none"
+
+[onchain]
+onchain_backend = "bdk"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+
+[bdk]
+network = "regtest"
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        // Load settings
+        let settings = Settings::new(Some(&config_path));
+
+        // Verify that settings were populated
+        assert_eq!(settings.ln.ln_backend, LnBackend::None);
+        assert!(settings.onchain.is_some());
+        assert_eq!(
+            settings.onchain.unwrap().onchain_backend,
+            OnchainBackend::Bdk
+        );
+        assert_eq!(settings.bdk.unwrap().network, Some("regtest".to_string()));
+
+        // Cleanup test file
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "bdk")]
+    fn test_bdk_env_config() {
+        use std::{env, fs};
+
+        // Create a temporary directory for config file
+        let temp_dir = env::temp_dir().join("cdk_test_env_vars_bdk");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        // Create a minimal config.toml with onchain backend set but NO [bdk] section
+        let config_content = r#"
+[onchain]
+onchain_backend = "bdk"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        // Set environment variables for BDK configuration using Esplora
+        env::set_var(crate::env_vars::BDK_CHAIN_SOURCE_TYPE_ENV_VAR, "esplora");
+        env::set_var(
+            crate::env_vars::BDK_ESPLORA_URL_ENV_VAR,
+            "http://localhost:3000",
+        );
+        env::set_var(
+            crate::env_vars::BDK_MNEMONIC_ENV_VAR,
+            "test mnemonic phrase",
+        );
+        env::set_var(crate::env_vars::BDK_NETWORK_ENV_VAR, "regtest");
+
+        // Load settings and apply environment variables
+        let mut settings = Settings::new(Some(&config_path));
+        settings.from_env().expect("Failed to apply env vars");
+
+        // Verify that settings were populated from env vars
+        assert!(settings.bdk.is_some());
+        let bdk_config = settings.bdk.as_ref().unwrap();
+        assert_eq!(bdk_config.chain_source_type, Some("esplora".to_string()));
+        assert_eq!(
+            bdk_config.esplora_url,
+            Some("http://localhost:3000".to_string())
+        );
+        assert_eq!(
+            bdk_config.mnemonic,
+            Some("test mnemonic phrase".to_string())
+        );
+        assert_eq!(bdk_config.network, Some("regtest".to_string()));
+        // RPC fields should be None (default)
+        assert!(bdk_config.bitcoind_rpc_host.is_none());
+
+        // Cleanup env vars
+        env::remove_var(crate::env_vars::BDK_CHAIN_SOURCE_TYPE_ENV_VAR);
+        env::remove_var(crate::env_vars::BDK_ESPLORA_URL_ENV_VAR);
+        env::remove_var(crate::env_vars::BDK_MNEMONIC_ENV_VAR);
+        env::remove_var(crate::env_vars::BDK_NETWORK_ENV_VAR);
+
+        // Cleanup test file
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[cfg(feature = "lnd")]
@@ -1224,6 +1487,75 @@ max_melt = 500000
         env::remove_var(crate::env_vars::LDK_NODE_CHAIN_SOURCE_TYPE_ENV_VAR);
         env::remove_var(crate::env_vars::LDK_NODE_ESPLORA_URL_ENV_VAR);
         env::remove_var(crate::env_vars::LDK_NODE_STORAGE_DIR_PATH_ENV_VAR);
+
+        // Cleanup test file
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "bdk", feature = "sqlite"))]
+    #[tokio::test]
+    async fn test_fake_wallet_mainnet_collision() {
+        use std::sync::Arc;
+        use std::{env, fs};
+
+        use cdk::mint::MintBuilder;
+
+        // Set environment variables to override any defaults and ensure we use the right backends
+        env::set_var("CDK_MINTD_LN_BACKEND", "fakewallet");
+        env::set_var("CDK_MINTD_ONCHAIN_BACKEND", "bdk");
+        env::set_var("CDK_MINTD_BDK_NETWORK", "mainnet");
+
+        // Create a temporary directory for config file
+        let temp_dir = env::temp_dir().join("cdk_test_collision");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        // Create a config.toml with fakewallet AND bdk on mainnet
+        let config_content = r#"
+[ln]
+ln_backend = "fakewallet"
+
+[onchain]
+onchain_backend = "bdk"
+
+[bdk]
+network = "mainnet"
+mnemonic = "test test test test test test test test test test test junk"
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        // Load settings
+        let mut settings = Settings::new(Some(&config_path));
+        settings.from_env().expect("Failed to apply env vars");
+
+        // Create an in-memory database for the builder
+        let localstore = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("Failed to create in-memory db");
+        let localstore = Arc::new(localstore);
+
+        // Attempting to configure the mint builder should fail
+        let mint_builder = MintBuilder::new(localstore.clone());
+        let result = crate::configure_mint_builder(
+            &settings,
+            mint_builder,
+            None,
+            &temp_dir,
+            Some(localstore),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Fake wallet cannot be used for Lightning when On-chain is configured for Mainnet"
+        );
+
+        // Cleanup env vars
+        env::remove_var("CDK_MINTD_LN_BACKEND");
+        env::remove_var("CDK_MINTD_ONCHAIN_BACKEND");
+        env::remove_var("CDK_MINTD_BDK_NETWORK");
 
         // Cleanup test file
         let _ = fs::remove_dir_all(&temp_dir);

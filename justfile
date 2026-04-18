@@ -424,10 +424,20 @@ update-msrv-lock:
         echo "Updated Cargo.lock (stable 1.94.0)"
     '
 
-itest db:
+itest db suite="all":
   #!/usr/bin/env bash
   set -euo pipefail
-  bash ./misc/itests.sh "{{db}}"
+  bash ./misc/itests.sh "{{db}}" "{{suite}}"
+
+itest-ln db:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  bash ./misc/itests.sh "{{db}}" ln
+
+itest-onchain db:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  bash ./misc/itests.sh "{{db}}" onchain
 
 fake-mint-itest db:
   #!/usr/bin/env bash

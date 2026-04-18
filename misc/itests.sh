@@ -44,7 +44,7 @@ cleanup() {
     unset CDK_TEST_MINT_URL
     unset CDK_TEST_MINT_URL_2
     unset CDK_REGTEST_PID
-    unset RUST_BACKTRACE
+    # unset RUST_BACKTRACE
     unset CDK_TEST_REGTEST
     unset CDK_TEST_LIGHTNING_CLIENT
 }
@@ -53,7 +53,7 @@ cleanup() {
 trap cleanup EXIT
 
 export CDK_TEST_REGTEST=1
-export RUST_BACKTRACE=full
+# export RUST_BACKTRACE=full
 
 # Create a temporary directory
 export CDK_ITESTS_DIR=$(mktemp -d)
@@ -69,6 +69,7 @@ fi
 
 echo "Temp directory created: $CDK_ITESTS_DIR"
 export CDK_MINTD_DATABASE="$1"
+SUITE=${2:-"all"}
 
 # Start PostgreSQL if needed
 if [ "${CDK_MINTD_DATABASE}" = "POSTGRES" ]; then
@@ -82,9 +83,14 @@ if ! command -v start_regtest_mints &>/dev/null; then
     cargo build --bin start_regtest_mints
 fi
 
+EXTRA_ARGS=""
+if [[ "$SUITE" == "onchain" ]]; then
+    EXTRA_ARGS="--skip-ln"
+fi
+
 echo "Starting regtest and mints"
 # Run the binary in background
-run_bin_bg start_regtest_mints --enable-logging "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" "$CDK_ITESTS_MINT_ADDR" "$CDK_ITESTS_MINT_PORT_0" "$CDK_ITESTS_MINT_PORT_1"
+run_bin_bg start_regtest_mints --enable-logging $EXTRA_ARGS "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" "$CDK_ITESTS_MINT_ADDR" "$CDK_ITESTS_MINT_PORT_0" "$CDK_ITESTS_MINT_PORT_1"
 export CDK_REGTEST_PID=$!
 
 # Give it a moment to start - reduced from 5 to 2 seconds since we have better waiting mechanisms now
@@ -121,9 +127,16 @@ echo "CDK_TEST_MINT_URL_2=$CDK_TEST_MINT_URL_2"
 echo "CDK_ITESTS_DIR=$CDK_ITESTS_DIR"
 
 # Validate that we sourced the variables
-if [ -z "$CDK_TEST_MINT_URL" ] || [ -z "$CDK_TEST_MINT_URL_2" ] || [ -z "$CDK_ITESTS_DIR" ]; then
-    echo "ERROR: Failed to source environment variables from the .env file"
-    exit 1
+if [[ "$SUITE" == "onchain" ]]; then
+    if [ -z "$CDK_TEST_MINT_URL" ] || [ -z "$CDK_ITESTS_DIR" ]; then
+        echo "ERROR: Failed to source environment variables from the .env file"
+        exit 1
+    fi
+else
+    if [ -z "$CDK_TEST_MINT_URL" ] || [ -z "$CDK_TEST_MINT_URL_2" ] || [ -z "$CDK_ITESTS_DIR" ]; then
+        echo "ERROR: Failed to source environment variables from the .env file"
+        exit 1
+    fi
 fi
 
 # Export all variables so they're available to the tests
@@ -162,129 +175,178 @@ while true; do
     fi
 done
 
-URL="$CDK_TEST_MINT_URL_2/v1/info"
+if [[ "$SUITE" != "onchain" ]]; then
+    URL="$CDK_TEST_MINT_URL_2/v1/info"
 
 
-TIMEOUT=100
-START_TIME=$(date +%s)
-# Loop until the endpoint returns a 200 OK status or timeout is reached
-while true; do
-    # Get the current time
-    CURRENT_TIME=$(date +%s)
-    
-    # Calculate the elapsed time
-    ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+    TIMEOUT=100
+    START_TIME=$(date +%s)
+    # Loop until the endpoint returns a 200 OK status or timeout is reached
+    while true; do
+        # Get the current time
+        CURRENT_TIME=$(date +%s)
+        
+        # Calculate the elapsed time
+        ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
 
-    # Check if the elapsed time exceeds the timeout
-    if [ $ELAPSED_TIME -ge $TIMEOUT ]; then
-        echo "Timeout of $TIMEOUT seconds reached. Exiting..."
+        # Check if the elapsed time exceeds the timeout
+        if [ $ELAPSED_TIME -ge $TIMEOUT ]; then
+            echo "Timeout of $TIMEOUT seconds reached. Exiting..."
+            exit 1
+        fi
+
+        # Make a request to the endpoint and capture the HTTP status code
+        HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" $URL)
+
+        # Check if the HTTP status is 200 OK
+        if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "Received 200 OK from $URL"
+            break
+        else
+            echo "Waiting for 200 OK response, current status: $HTTP_STATUS"
+            sleep 2  # Wait for 2 seconds before retrying
+        fi
+    done
+fi
+
+# Run cargo test
+if [[ "$SUITE" == "all" || "$SUITE" == "ln" ]]; then
+    echo "Running regtest test with CLN mint and CLN client"
+    export CDK_TEST_LIGHTNING_CLIENT="lnd"
+    run_test regtest
+    if [ $? -ne 0 ]; then
+        echo "regtest test with cln mint failed, exiting"
         exit 1
     fi
 
-    # Make a request to the endpoint and capture the HTTP status code
-    HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" $URL)
-
-    # Check if the HTTP status is 200 OK
-    if [ "$HTTP_STATUS" -eq 200 ]; then
-        echo "Received 200 OK from $URL"
-        break
-    else
-        echo "Waiting for 200 OK response, current status: $HTTP_STATUS"
-        sleep 2  # Wait for 2 seconds before retrying
+    echo "Running happy_path_mint_wallet test with CLN mint and CLN client"
+    run_test happy_path_mint_wallet
+    if [ $? -ne 0 ]; then
+        echo "happy_path_mint_wallet with cln mint test failed, exiting"
+        exit 1
     fi
-done
 
-# Run cargo test
-echo "Running regtest test with CLN mint and CLN client"
-export CDK_TEST_LIGHTNING_CLIENT="lnd"
-run_test regtest
-if [ $? -ne 0 ]; then
-    echo "regtest test with cln mint failed, exiting"
-    exit 1
+    echo "Running regtest test with cln mint for bolt12 (CLN client)"
+    run_test bolt12
+    if [ $? -ne 0 ]; then
+        echo "regtest test failed, exiting"
+        exit 1
+    fi
 fi
 
-echo "Running happy_path_mint_wallet test with CLN mint and CLN client"
-run_test happy_path_mint_wallet
-if [ $? -ne 0 ]; then
-    echo "happy_path_mint_wallet with cln mint test failed, exiting"
-    exit 1
+if [[ "$SUITE" == "onchain" ]]; then
+    echo "Running onchain_regtest test with dedicated onchain mint"
+    run_test onchain_regtest -- --nocapture --test-threads 1
+    if [ $? -ne 0 ]; then
+        echo "onchain_regtest failed, exiting"
+        exit 1
+    fi
+    echo "Onchain tests passed successfully"
+    exit 0
 fi
 
-echo "Running regtest test with cln mint for bolt12 (CLN client)"
-run_test bolt12
-if [ $? -ne 0 ]; then
-    echo "regtest test failed, exiting"
-    exit 1
+if [[ "$SUITE" == "all" ]]; then
+    echo "Running onchain_regtest test with CLN mint"
+    run_test onchain_regtest
+    if [ $? -ne 0 ]; then
+        echo "onchain_regtest with cln mint test failed, exiting"
+        exit 1
+    fi
 fi
 
 # Switch Mints: Run tests with LND mint
 echo "Switching to LND mint for tests"
 
-echo "Running regtest test with LND mint and LND client"
 CDK_TEST_MINT_URL_SWITCHED=$CDK_TEST_MINT_URL_2
 CDK_TEST_MINT_URL_2_SWITCHED=$CDK_TEST_MINT_URL
 export CDK_TEST_MINT_URL=$CDK_TEST_MINT_URL_SWITCHED
 export CDK_TEST_MINT_URL_2=$CDK_TEST_MINT_URL_2_SWITCHED
 
- run_test regtest
- if [ $? -ne 0 ]; then
-     echo "regtest test with LND mint failed, exiting"
-     exit 1
- fi
-
- echo "Running happy_path_mint_wallet test with LND mint and LND client"
- run_test happy_path_mint_wallet
- if [ $? -ne 0 ]; then
-     echo "happy_path_mint_wallet test with LND mint failed, exiting"
-     exit 1
- fi
-
-
-export CDK_TEST_MINT_URL="http://127.0.0.1:8089"
- 
-TIMEOUT=100
-START_TIME=$(date +%s)
-# Loop until the endpoint returns a 200 OK status or timeout is reached
-while true; do
-    # Get the current time
-    CURRENT_TIME=$(date +%s)
-    
-    # Calculate the elapsed time
-    ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
-
-    # Check if the elapsed time exceeds the timeout
-    if [ $ELAPSED_TIME -ge $TIMEOUT ]; then
-        echo "Timeout of $TIMEOUT seconds reached. Exiting..."
+if [[ "$SUITE" == "all" || "$SUITE" == "ln" ]]; then
+    echo "Running regtest test with LND mint and LND client"
+    run_test regtest
+    if [ $? -ne 0 ]; then
+        echo "regtest test with LND mint failed, exiting"
         exit 1
     fi
 
-    # Make a request to the endpoint and capture the HTTP status code
-    HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" $CDK_TEST_MINT_URL/v1/info)
-
-    # Check if the HTTP status is 200 OK
-    if [ "$HTTP_STATUS" -eq 200 ]; then
-        echo "Received 200 OK from $CDK_TEST_MINT_URL"
-        break
-    else
-        echo "Waiting for 200 OK response, current status: $HTTP_STATUS"
-        sleep 2  # Wait for 2 seconds before retrying
+    echo "Running happy_path_mint_wallet test with LND mint and LND client"
+    run_test happy_path_mint_wallet
+    if [ $? -ne 0 ]; then
+        echo "happy_path_mint_wallet test with LND mint failed, exiting"
+        exit 1
     fi
-done
-
-
-echo "Running happy_path_mint_wallet test with LDK mint and CLN client"
-export CDK_TEST_LIGHTNING_CLIENT="cln"  # Use CLN client for LDK tests
-run_test happy_path_mint_wallet
-if [ $? -ne 0 ]; then
-    echo "happy_path_mint_wallet test with LDK mint failed, exiting"
-    exit 1
 fi
 
-echo "Running regtest test with LDK mint and CLN client"
-run_test regtest
-if [ $? -ne 0 ]; then
-    echo "regtest test LDK mint failed, exiting"
-    exit 1
+if [[ "$SUITE" == "all" || "$SUITE" == "onchain" ]]; then
+    echo "Running onchain_regtest test with LND mint"
+    run_test onchain_regtest
+    if [ $? -ne 0 ]; then
+        echo "onchain_regtest test with LND mint failed, exiting"
+        exit 1
+    fi
+fi
+
+
+
+if [[ "$SUITE" != "onchain" ]]; then
+    export CDK_TEST_MINT_URL="http://127.0.0.1:8089"
+    
+    TIMEOUT=100
+    START_TIME=$(date +%s)
+    # Loop until the endpoint returns a 200 OK status or timeout is reached
+    while true; do
+        # Get the current time
+        CURRENT_TIME=$(date +%s)
+        
+        # Calculate the elapsed time
+        ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+
+        # Check if the elapsed time exceeds the timeout
+        if [ $ELAPSED_TIME -ge $TIMEOUT ]; then
+            echo "Timeout of $TIMEOUT seconds reached. Exiting..."
+            exit 1
+        fi
+
+        # Make a request to the endpoint and capture the HTTP status code
+        HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" $CDK_TEST_MINT_URL/v1/info)
+
+        # Check if the HTTP status is 200 OK
+        if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "Received 200 OK from $CDK_TEST_MINT_URL"
+            break
+        else
+            echo "Waiting for 200 OK response, current status: $HTTP_STATUS"
+            sleep 2  # Wait for 2 seconds before retrying
+        fi
+    done
+fi
+
+
+if [[ "$SUITE" == "all" || "$SUITE" == "ln" ]]; then
+    echo "Running happy_path_mint_wallet test with LDK mint and CLN client"
+    export CDK_TEST_LIGHTNING_CLIENT="cln"  # Use CLN client for LDK tests
+    run_test happy_path_mint_wallet
+    if [ $? -ne 0 ]; then
+        echo "happy_path_mint_wallet test with LDK mint failed, exiting"
+        exit 1
+    fi
+
+    echo "Running regtest test with LDK mint and CLN client"
+    run_test regtest
+    if [ $? -ne 0 ]; then
+        echo "regtest test LDK mint failed, exiting"
+        exit 1
+    fi
+fi
+
+if [[ "$SUITE" == "all" || "$SUITE" == "onchain" ]]; then
+    echo "Running onchain_regtest test with LDK mint"
+    run_test onchain_regtest
+    if [ $? -ne 0 ]; then
+        echo "onchain_regtest test with LDK mint failed, exiting"
+        exit 1
+    fi
 fi
 
 

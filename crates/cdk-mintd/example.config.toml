@@ -94,12 +94,38 @@ max_connections = 20
 connection_timeout_seconds = 10
 
 [ln]
-# Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldknode'
+# Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldknode' or 'none' (if onchain is enabled)
+# NOTE: fakewallet is NOT allowed if onchain is configured for mainnet.
 ln_backend = "fakewallet"
 # min_mint=1
 # max_mint=500000
 # min_melt=1
 # max_melt=500000
+
+[onchain]
+# Required onchain backend `bdk` or `none`. 
+# If `ln_backend` is set to `none`, `onchain_backend` MUST be set to a valid backend (e.g., `bdk`).
+onchain_backend = "none"
+# min_mint=1000
+# max_mint=1000000
+# min_melt=1000
+# max_melt=1000000
+
+# [bdk]
+# mnemonic = "your twelve or twenty-four word mnemonic phrase here"
+# network = "regtest"  # REQUIRED: mainnet, testnet, signet, regtest (no default)
+# num_confs = 3        # Number of confirmations required
+# chain_source_type = "bitcoinrpc"  # esplora, bitcoinrpc
+#
+# # Bitcoin RPC configuration (when chain_source_type = "bitcoinrpc")
+# # If omitted, defaults to 127.0.0.1:18443 with user/pass
+# # bitcoind_rpc_host = "127.0.0.1"
+# # bitcoind_rpc_port = 18443
+# # bitcoind_rpc_user = "user"
+# # bitcoind_rpc_password = "pass"
+#
+# # Esplora configuration (when chain_source_type = "esplora")
+# # esplora_url = "https://mutinynet.com/api"
 
 # [cln]
 # rpc_path = "/path/to/.lightning/bitcoin/lightning-rpc"
@@ -126,7 +152,7 @@ ln_backend = "fakewallet"
 # [ldk_node]
 # fee_percent = 0.02         # Optional, defaults to 2%
 # reserve_fee_min = 2        # Optional, defaults to 2 sats
-# bitcoin_network = "signet"  # mainnet, testnet, signet, regtest
+# bitcoin_network = "signet"  # REQUIRED: mainnet, testnet, signet, regtest (no default)
 # chain_source_type = "esplora"  # esplora, bitcoinrpc  
 # 
 # # IMPORTANT: LDK Node Seed Configuration

@@ -27,19 +27,24 @@ type RecvFuture<'a, Ret> = Pin<Box<dyn Future<Output = Ret> + 'a>>;
 #[allow(private_bounds)]
 #[allow(clippy::enum_variant_names)]
 enum WaitableEvent {
-    MeltQuote(Vec<String>),
+    MeltQuote(Vec<(String, PaymentMethod)>),
     MintQuote(Vec<(String, PaymentMethod)>),
 }
 
 impl From<&[MeltQuote]> for WaitableEvent {
     fn from(events: &[MeltQuote]) -> Self {
-        WaitableEvent::MeltQuote(events.iter().map(|event| event.id.to_owned()).collect())
+        WaitableEvent::MeltQuote(
+            events
+                .iter()
+                .map(|event| (event.id.to_owned(), event.payment_method.clone()))
+                .collect(),
+        )
     }
 }
 
 impl From<&MeltQuote> for WaitableEvent {
     fn from(event: &MeltQuote) -> Self {
-        WaitableEvent::MeltQuote(vec![event.id.to_owned()])
+        WaitableEvent::MeltQuote(vec![(event.id.to_owned(), event.payment_method.clone())])
     }
 }
 
@@ -64,15 +69,43 @@ impl WaitableEvent {
     fn into_subscription(self) -> Vec<WalletSubscription> {
         match self {
             WaitableEvent::MeltQuote(quotes) => {
-                vec![WalletSubscription::Bolt11MeltQuoteState(quotes)]
-            }
-            WaitableEvent::MintQuote(quotes) => {
-                let (bolt11, bolt12) = quotes.into_iter().fold(
-                    (Vec::new(), Vec::new()),
+                let (bolt11, bolt12, onchain) = quotes.into_iter().fold(
+                    (Vec::new(), Vec::new(), Vec::new()),
                     |mut acc, (quote_id, payment_method)| {
                         match payment_method.as_str() {
                             "bolt11" => acc.0.push(quote_id),
                             "bolt12" => acc.1.push(quote_id),
+                            "onchain" => acc.2.push(quote_id),
+                            _ => acc.0.push(quote_id),
+                        }
+                        acc
+                    },
+                );
+
+                let mut subscriptions = Vec::new();
+
+                if !bolt11.is_empty() {
+                    subscriptions.push(WalletSubscription::Bolt11MeltQuoteState(bolt11));
+                }
+
+                if !bolt12.is_empty() {
+                    subscriptions.push(WalletSubscription::Bolt12MeltQuoteState(bolt12));
+                }
+
+                if !onchain.is_empty() {
+                    subscriptions.push(WalletSubscription::MeltQuoteOnchainState(onchain));
+                }
+
+                subscriptions
+            }
+            WaitableEvent::MintQuote(quotes) => {
+                let (bolt11, bolt12, onchain) = quotes.into_iter().fold(
+                    (Vec::new(), Vec::new(), Vec::new()),
+                    |mut acc, (quote_id, payment_method)| {
+                        match payment_method.as_str() {
+                            "bolt11" => acc.0.push(quote_id),
+                            "bolt12" => acc.1.push(quote_id),
+                            "onchain" => acc.2.push(quote_id),
                             _ => acc.0.push(quote_id),
                         }
                         acc
@@ -87,6 +120,10 @@ impl WaitableEvent {
 
                 if !bolt12.is_empty() {
                     subscriptions.push(WalletSubscription::Bolt12MintQuoteState(bolt12));
+                }
+
+                if !onchain.is_empty() {
+                    subscriptions.push(WalletSubscription::MintQuoteOnchainState(onchain));
                 }
 
                 subscriptions

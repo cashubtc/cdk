@@ -12,6 +12,7 @@
 use std::assert_eq;
 use std::collections::{HashMap, HashSet};
 use std::hash::RandomState;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,12 +28,18 @@ use cashu::{
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::subscription::Params;
+use cdk::types::QuoteTTL;
 use cdk::wallet::types::{TransactionDirection, TransactionId};
-use cdk::wallet::{KeysetFilter, ReceiveOptions, SendMemo, SendOptions};
+use cdk::wallet::{KeysetFilter, MintConnector, ReceiveOptions, SendMemo, SendOptions};
 use cdk::{Amount, StreamExt};
 use cdk_common::mint::OperationKind;
+use cdk_common::payment::{
+    MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
+};
+use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse};
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
+use futures::Stream;
 use tokio::time::sleep;
 
 /// Tests the token swap and send functionality:
@@ -1730,6 +1737,53 @@ async fn test_batch_mint_empty_quotes() {
 }
 
 #[tokio::test]
+async fn test_direct_connector_custom_melt_enum_roundtrip() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let connector = DirectMintConnection::new(mint.clone());
+
+    let request = MeltQuoteRequest::Custom(cdk::nuts::MeltQuoteCustomRequest {
+        method: "paypal".to_string(),
+        request: "invoice-123".to_string(),
+        unit: CurrencyUnit::Sat,
+        extra: serde_json::Value::Null,
+    });
+
+    let quote = connector
+        .post_melt_quote(request)
+        .await
+        .expect("Failed to create custom melt quote");
+
+    let (method, quote_response) = match quote {
+        MeltQuoteCreateResponse::Custom((method, response)) => (method, response),
+        other => panic!("Expected custom melt quote create response, got {other:?}"),
+    };
+
+    assert_eq!(method, PaymentMethod::Custom("paypal".to_string()));
+    assert!(quote_response.extra.is_null());
+
+    let status = connector
+        .get_melt_quote_status(method.clone(), &quote_response.quote)
+        .await
+        .expect("Failed to check custom melt quote status");
+
+    let quote_status = match status {
+        MeltQuoteResponse::Custom((status_method, response)) => {
+            assert_eq!(status_method, method);
+            response
+        }
+        other => panic!("Expected custom melt status response, got {other:?}"),
+    };
+
+    assert_eq!(quote_status.quote, quote_response.quote);
+
+    assert_eq!(quote_status.request.as_deref(), Some("invoice-123"));
+    assert_eq!(quote_status.extra, quote_response.extra);
+}
+
+#[tokio::test]
 async fn test_batch_mint_unknown_quote() {
     setup_tracing();
     let mint = create_and_start_test_mint()
@@ -2188,5 +2242,179 @@ async fn test_restore_after_keyset_rotation() {
         restored.unspent,
         Amount::from(total),
         "Restore should recover proofs from both active and inactive keysets"
+    );
+}
+
+#[derive(Debug)]
+struct CustomPaymentProcessor;
+
+#[async_trait::async_trait]
+impl MintPayment for CustomPaymentProcessor {
+    type Err = cdk_common::payment::Error;
+
+    async fn get_settings(&self) -> Result<cdk_common::payment::SettingsResponse, Self::Err> {
+        Ok(cdk_common::payment::SettingsResponse {
+            unit: CurrencyUnit::Sat.to_string(),
+            bolt11: None,
+            bolt12: None,
+            onchain: None,
+            custom: HashMap::from([("test-custom".to_string(), "{}".to_string())]),
+        })
+    }
+
+    async fn create_incoming_payment_request(
+        &self,
+        _options: cdk_common::payment::IncomingPaymentOptions,
+    ) -> Result<cdk_common::payment::CreateIncomingPaymentResponse, Self::Err> {
+        Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+    }
+
+    async fn get_payment_quote(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        match options {
+            OutgoingPaymentOptions::Custom(custom) => {
+                assert_eq!(custom.method, "test-custom");
+                assert_eq!(custom.request, "custom-request");
+                assert_eq!(
+                    custom.extra_json,
+                    Some("{\"request_metadata\":true}".to_string())
+                );
+
+                Ok(PaymentQuoteResponse {
+                    request_lookup_id: Some(PaymentIdentifier::CustomId(
+                        "custom-lookup-id".to_string(),
+                    )),
+                    amount: Amount::new(21, unit.clone()),
+                    fee: Amount::new(3, unit.clone()),
+                    state: cdk_common::nuts::MeltQuoteState::Unpaid,
+                    estimated_blocks: None,
+                    extra_json: Some(serde_json::json!({
+                        "redirect_url": "https://example.com/pay/custom-lookup-id",
+                        "status": "pending"
+                    })),
+                })
+            }
+            _ => Err(cdk_common::payment::Error::UnsupportedPaymentOption),
+        }
+    }
+
+    async fn make_payment(
+        &self,
+        _unit: &CurrencyUnit,
+        _options: OutgoingPaymentOptions,
+    ) -> Result<cdk_common::payment::MakePaymentResponse, Self::Err> {
+        Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+    }
+
+    async fn wait_payment_event(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = cdk_common::payment::Event> + Send>>, Self::Err> {
+        Ok(Box::pin(futures::stream::empty()))
+    }
+
+    fn is_payment_event_stream_active(&self) -> bool {
+        false
+    }
+
+    fn cancel_payment_event_stream(&self) {}
+
+    async fn check_incoming_payment_status(
+        &self,
+        _payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<cdk_common::payment::WaitPaymentResponse>, Self::Err> {
+        Ok(vec![])
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<cdk_common::payment::MakePaymentResponse, Self::Err> {
+        Ok(cdk_common::payment::MakePaymentResponse {
+            payment_lookup_id: payment_identifier.clone(),
+            payment_proof: Some("proof".to_string()),
+            status: cdk_common::nuts::MeltQuoteState::Paid,
+            total_spent: Amount::new(24, CurrencyUnit::Sat),
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_custom_melt_quote_status_preserves_extra_json() {
+    setup_tracing();
+
+    let db_type = std::env::var("CDK_TEST_DB_TYPE").unwrap_or_else(|_| "memory".to_string());
+    let localstore = match db_type.to_lowercase().as_str() {
+        "memory" => Arc::new(cdk_sqlite::mint::memory::empty().await.expect("memory db")),
+        _ => {
+            let temp_dir = std::env::temp_dir().join(format!(
+                "cdk-test-custom-melt-extra-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&temp_dir).expect("temp dir");
+            let path = temp_dir.join("mint.db");
+            Arc::new(
+                cdk_sqlite::MintSqliteDatabase::new(path.to_str().expect("db path"))
+                    .await
+                    .expect("sqlite db"),
+            )
+        }
+    };
+
+    let mut mint_builder = cdk::mint::MintBuilder::new(localstore.clone());
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Custom("test-custom".to_string()),
+            cdk::mint::MintMeltLimits::new(1, 10_000),
+            Arc::new(CustomPaymentProcessor),
+        )
+        .await
+        .expect("custom payment processor");
+
+    mint_builder = mint_builder
+        .with_name("custom melt test mint".to_string())
+        .with_description("custom melt test mint".to_string())
+        .with_urls(vec!["https://example-mint".to_string()])
+        .with_limits(2000, 2000)
+        .with_batch_minting(Some(100), Some(vec!["bolt11".to_string()]));
+
+    let mint = mint_builder
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await
+        .expect("mint build");
+
+    mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000))
+        .await
+        .expect("quote ttl");
+
+    let response = mint
+        .get_melt_quote(cdk_common::MeltQuoteRequest::Custom(
+            cdk::nuts::MeltQuoteCustomRequest {
+                method: "test-custom".to_string(),
+                request: "custom-request".to_string(),
+                unit: CurrencyUnit::Sat,
+                extra: serde_json::json!({ "request_metadata": true }),
+            },
+        ))
+        .await
+        .expect("custom melt quote");
+
+    let stored_quote = mint
+        .localstore()
+        .get_melt_quote(response.quote().unwrap())
+        .await
+        .expect("db read")
+        .expect("stored quote");
+
+    assert_eq!(
+        stored_quote.extra_json,
+        Some(serde_json::json!({
+            "redirect_url": "https://example.com/pay/custom-lookup-id",
+            "status": "pending"
+        }))
     );
 }

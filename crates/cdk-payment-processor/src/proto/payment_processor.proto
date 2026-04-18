@@ -9,7 +9,7 @@ service CdkPaymentProcessor {
     rpc MakePayment(MakePaymentRequest) returns (MakePaymentResponse) {}
     rpc CheckIncomingPayment(CheckIncomingPaymentRequest) returns (CheckIncomingPaymentResponse) {}
     rpc CheckOutgoingPayment(CheckOutgoingPaymentRequest) returns (MakePaymentResponse) {}
-    rpc WaitIncomingPayment(EmptyRequest) returns (stream WaitIncomingPaymentResponse) {}
+    rpc WaitPaymentEvent(EmptyRequest) returns (stream PaymentEventResponse) {}
 }
 
 message EmptyRequest {}
@@ -23,7 +23,13 @@ message SettingsResponse {
   string unit = 1;
   Bolt11Settings bolt11 = 2;
   Bolt12Settings bolt12 = 3;
-  map<string, string> custom = 4;
+  OnchainSettings onchain = 4;
+  map<string, string> custom = 5;
+}
+
+message OnchainSettings {
+    uint32 confirmations = 1;
+    uint64 min_receive_amount_sat = 2;
 }
 
 message Bolt12Settings {
@@ -68,6 +74,33 @@ enum OutgoingPaymentRequestType {
   OUTGOING_PAYMENT_REQUEST_TYPE_BOLT11_INVOICE = 1;
   OUTGOING_PAYMENT_REQUEST_TYPE_BOLT12_OFFER = 2;
   OUTGOING_PAYMENT_REQUEST_TYPE_CUSTOM = 3;
+  OUTGOING_PAYMENT_REQUEST_TYPE_ONCHAIN = 4;
+}
+
+enum OutgoingPaymentOptionsType {
+  OUTGOING_PAYMENT_OPTIONS_TYPE_UNSPECIFIED = 0;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_BOLT11 = 1;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_BOLT12 = 2;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_CUSTOM = 3;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_ONCHAIN = 4;
+}
+
+message OnchainOutgoingPaymentOptions {
+  string address = 1;
+  AmountMessage amount = 2;
+  optional AmountMessage max_fee_amount = 3;
+  string quote_id = 4;
+  optional string tier = 5;
+  optional string metadata = 6;
+}
+
+message OutgoingPaymentVariant {
+  oneof options {
+    Bolt11OutgoingPaymentOptions bolt11 = 1;
+    Bolt12OutgoingPaymentOptions bolt12 = 2;
+    CustomOutgoingPaymentOptions custom = 3;
+    OnchainOutgoingPaymentOptions onchain = 4;
+  }
 }
 
 enum PaymentIdentifierType {
@@ -86,8 +119,12 @@ message PaymentIdentifier {
 
   oneof value {
     string hash = 2; // Used for PAYMENT_HASH and BOLT12_PAYMENT_HASH
-    string id = 3;   // Used for OFFER_ID, LABEL, and CUSTOM_ID
+    string id = 3;   // Used for OFFER_ID, LABEL, CUSTOM_ID and QUOTE_ID
   }
+}
+
+message OnchainIncomingPaymentOptions {
+  string quote_id = 1;
 }
 
 message IncomingPaymentOptions {
@@ -95,6 +132,7 @@ message IncomingPaymentOptions {
     Bolt11IncomingPaymentOptions bolt11 = 1;
     Bolt12IncomingPaymentOptions bolt12 = 2;
     CustomIncomingPaymentOptions custom = 3;
+    OnchainIncomingPaymentOptions onchain = 4;
   }
 }
 
@@ -152,6 +190,7 @@ message PaymentQuoteResponse {
   AmountMessage amount = 2;
   AmountMessage fee = 3;
   QuoteState state = 4;
+  optional uint32 estimated_blocks = 6;
   // Extra payment-method-specific fields as JSON string
   // For custom payment methods, these fields are flattened into the response
   optional string extra_json = 5;
@@ -178,21 +217,6 @@ message CustomOutgoingPaymentOptions {
   // Extra payment-method-specific fields as JSON string
   // These fields are flattened into the JSON representation on the client side
   optional string extra_json = 6;
-}
-
-enum OutgoingPaymentOptionsType {
-  OUTGOING_PAYMENT_OPTIONS_TYPE_UNSPECIFIED = 0;
-  OUTGOING_PAYMENT_OPTIONS_TYPE_BOLT11 = 1;
-  OUTGOING_PAYMENT_OPTIONS_TYPE_BOLT12 = 2;
-  OUTGOING_PAYMENT_OPTIONS_TYPE_CUSTOM = 3;
-}
-
-message OutgoingPaymentVariant {
-  oneof options {
-    Bolt11OutgoingPaymentOptions bolt11 = 1;
-    Bolt12OutgoingPaymentOptions bolt12 = 2;
-    CustomOutgoingPaymentOptions custom = 3;
-  }
 }
 
 message MakePaymentRequest {
@@ -229,3 +253,22 @@ message WaitIncomingPaymentResponse {
   AmountMessage payment_amount = 2;
   string payment_id = 3;
 }
+
+message PaymentSuccessfulResponse {
+  string quote_id = 1;
+  MakePaymentResponse details = 2;
+}
+
+message PaymentFailedResponse {
+  string quote_id = 1;
+  string reason = 2;
+}
+
+message PaymentEventResponse {
+  oneof event {
+    WaitIncomingPaymentResponse payment_received = 1;
+    PaymentSuccessfulResponse payment_successful = 2;
+    PaymentFailedResponse payment_failed = 3;
+  }
+}
+

@@ -42,9 +42,9 @@ impl From<CdkPaymentIdentifier> for PaymentIdentifier {
                 r#type: PaymentIdentifierType::PaymentId.into(),
                 value: Some(payment_identifier::Value::Hash(hex::encode(hash))),
             },
-            CdkPaymentIdentifier::QuoteId(id) => Self {
+            CdkPaymentIdentifier::QuoteId(quote_id) => Self {
                 r#type: PaymentIdentifierType::QuoteId.into(),
-                value: Some(payment_identifier::Value::Id(id.to_string())),
+                value: Some(payment_identifier::Value::Id(quote_id.to_string())),
             },
         }
     }
@@ -81,16 +81,17 @@ impl TryFrom<PaymentIdentifier> for CdkPaymentIdentifier {
             (PaymentIdentifierType::CustomId, Some(payment_identifier::Value::Id(id))) => {
                 Ok(CdkPaymentIdentifier::CustomId(id))
             }
+            (PaymentIdentifierType::QuoteId, Some(payment_identifier::Value::Id(id))) => {
+                Ok(CdkPaymentIdentifier::QuoteId(id.parse().map_err(|_| {
+                    crate::error::Error::InvalidPaymentIdentifier
+                })?))
+            }
             (PaymentIdentifierType::PaymentId, Some(payment_identifier::Value::Hash(hash))) => {
                 let decoded = hex::decode(hash)?;
                 let hash_array: [u8; 32] = decoded
                     .try_into()
                     .map_err(|_| crate::error::Error::InvalidHash)?;
                 Ok(CdkPaymentIdentifier::PaymentId(hash_array))
-            }
-            (PaymentIdentifierType::QuoteId, Some(payment_identifier::Value::Id(id))) => {
-                let id = id.parse().map_err(|_| crate::error::Error::InvalidHash)?;
-                Ok(CdkPaymentIdentifier::QuoteId(id))
             }
             _ => Err(crate::error::Error::InvalidPaymentIdentifier),
         }
@@ -215,7 +216,8 @@ impl From<CdkPaymentQuoteResponse> for PaymentQuoteResponse {
             amount: Some(value.amount.into()),
             fee: Some(value.fee.into()),
             state: QuoteState::from(value.state).into(),
-            extra_json: None,
+            extra_json: value.extra_json.map(|value| value.to_string()),
+            estimated_blocks: value.estimated_blocks,
         }
     }
 }
@@ -238,6 +240,10 @@ impl TryFrom<PaymentQuoteResponse> for CdkPaymentQuoteResponse {
                 .ok_or(crate::error::Error::MissingAmount)?
                 .try_into()?,
             state: state_val.into(),
+            extra_json: value
+                .extra_json
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok()),
+            estimated_blocks: value.estimated_blocks,
         })
     }
 }
@@ -339,5 +345,96 @@ impl TryFrom<WaitIncomingPaymentResponse> for WaitPaymentResponse {
                 .try_into()?,
             payment_id: value.payment_id,
         })
+    }
+}
+
+impl From<cdk_common::payment::Event> for PaymentEventResponse {
+    fn from(value: cdk_common::payment::Event) -> Self {
+        match value {
+            cdk_common::payment::Event::PaymentReceived(response) => Self {
+                event: Some(payment_event_response::Event::PaymentReceived(
+                    response.into(),
+                )),
+            },
+            cdk_common::payment::Event::PaymentSuccessful { quote_id, details } => Self {
+                event: Some(payment_event_response::Event::PaymentSuccessful(
+                    PaymentSuccessfulResponse {
+                        quote_id: quote_id.to_string(),
+                        details: Some(details.into()),
+                    },
+                )),
+            },
+            cdk_common::payment::Event::PaymentFailed { quote_id, reason } => Self {
+                event: Some(payment_event_response::Event::PaymentFailed(
+                    PaymentFailedResponse {
+                        quote_id: quote_id.to_string(),
+                        reason,
+                    },
+                )),
+            },
+        }
+    }
+}
+
+impl TryFrom<PaymentEventResponse> for cdk_common::payment::Event {
+    type Error = crate::error::Error;
+
+    fn try_from(value: PaymentEventResponse) -> Result<Self, Self::Error> {
+        match value.event {
+            Some(payment_event_response::Event::PaymentReceived(response)) => {
+                Ok(Self::PaymentReceived(response.try_into()?))
+            }
+            Some(payment_event_response::Event::PaymentSuccessful(response)) => {
+                let quote_id = cdk_common::QuoteId::from_str(&response.quote_id)
+                    .map_err(|_| crate::error::Error::InvalidPaymentIdentifier)?;
+                let details = response
+                    .details
+                    .ok_or(crate::error::Error::InvalidPaymentIdentifier)?
+                    .try_into()?;
+                Ok(Self::PaymentSuccessful { quote_id, details })
+            }
+            Some(payment_event_response::Event::PaymentFailed(response)) => {
+                let quote_id = cdk_common::QuoteId::from_str(&response.quote_id)
+                    .map_err(|_| crate::error::Error::InvalidPaymentIdentifier)?;
+                Ok(Self::PaymentFailed {
+                    quote_id,
+                    reason: response.reason,
+                })
+            }
+            None => Err(crate::error::Error::InvalidPaymentIdentifier),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::payment::{PaymentIdentifier, PaymentQuoteResponse as CdkPaymentQuoteResponse};
+    use cdk_common::{Amount, CurrencyUnit, MeltQuoteState};
+
+    use super::PaymentQuoteResponse;
+
+    #[test]
+    fn payment_quote_response_extra_json_roundtrip() {
+        let response = CdkPaymentQuoteResponse {
+            request_lookup_id: Some(PaymentIdentifier::CustomId("processor-quote".to_string())),
+            amount: Amount::new(100, CurrencyUnit::Sat),
+            fee: Amount::new(2, CurrencyUnit::Sat),
+            state: MeltQuoteState::Unpaid,
+            estimated_blocks: None,
+            extra_json: Some(serde_json::json!({
+                "method": "custom",
+                "redirect_url": "https://example.com/pay",
+                "nested": { "attempt": 1 }
+            })),
+        };
+
+        let proto: PaymentQuoteResponse = response.clone().into();
+        let roundtrip = CdkPaymentQuoteResponse::try_from(proto).expect("valid proto response");
+
+        assert_eq!(roundtrip.request_lookup_id, response.request_lookup_id);
+        assert_eq!(roundtrip.amount, response.amount);
+        assert_eq!(roundtrip.fee, response.fee);
+        assert_eq!(roundtrip.state, response.state);
+        assert_eq!(roundtrip.extra_json, response.extra_json);
     }
 }

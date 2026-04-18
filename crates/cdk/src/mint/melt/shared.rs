@@ -17,6 +17,21 @@ use crate::mint::subscription::PubSubManager;
 use crate::mint::MeltQuote;
 use crate::Mint;
 
+// A melt quote may only be finalized once. After that, only the exact same
+// backend settlement is treated as an idempotent duplicate success.
+fn melt_settlement_matches(
+    quote: &MeltQuote,
+    payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
+    payment_proof: &Option<String>,
+) -> bool {
+    let lookup_matches = quote
+        .request_lookup_id
+        .as_ref()
+        .is_none_or(|stored_lookup_id| stored_lookup_id == payment_lookup_id);
+
+    lookup_matches && quote.payment_proof == *payment_proof
+}
+
 /// Retrieves fee and amount configuration for the keyset matching the change outputs.
 ///
 /// Searches active keysets for one matching the first output's keyset_id.
@@ -119,16 +134,31 @@ pub async fn rollback_melt_quote(
         tx.delete_blinded_messages(blinded_secrets).await?;
     }
 
-    // Get and lock the quote, then reset state from Pending to Unpaid
+    // Duplicate failure delivery can happen after rollback already completed.
+    // Keep rollback idempotent by treating Unpaid as already handled and Paid
+    // as terminal success that must not be rolled back.
     let quote_option = if let Some(mut quote) = tx.get_melt_quote(quote_id).await? {
-        let previous_state = tx
-            .update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
-            .await?;
+        if quote.state == MeltQuoteState::Paid {
+            tracing::warn!("Ignoring rollback for already-paid melt quote {}", quote_id);
+            tx.rollback().await?;
+            return Ok(());
+        }
 
-        if previous_state != MeltQuoteState::Pending {
-            tracing::warn!(
-                "Unexpected quote state during rollback: expected Pending, got {}",
-                previous_state
+        if quote.state != MeltQuoteState::Unpaid {
+            let previous_state = tx
+                .update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
+                .await?;
+
+            if previous_state != MeltQuoteState::Pending {
+                tracing::warn!(
+                    "Unexpected quote state during rollback: expected Pending, got {}",
+                    previous_state
+                );
+            }
+        } else {
+            tracing::info!(
+                "Melt quote {} already rolled back, keeping it Unpaid",
+                quote_id
             );
         }
         Some(quote)
@@ -580,6 +610,31 @@ pub async fn finalize_melt_quote(
 
     let locked_quote = load_melt_quotes_exclusively(&mut tx, &quote.id).await?;
 
+    // Async payment streams may redeliver a prior success event. If the quote
+    // is already Paid, only the same settlement is allowed to no-op here.
+    let already_paid_with_matching_settlement = if locked_quote.state == MeltQuoteState::Paid {
+        if melt_settlement_matches(&locked_quote, payment_lookup_id, &payment_proof) {
+            tracing::info!(
+                "Melt quote {} already finalized with matching settlement, resuming cleanup",
+                quote.id
+            );
+            true
+        } else {
+            tracing::warn!(
+                "Melt quote {} already finalized with different settlement: stored lookup_id={:?}, incoming lookup_id={}, stored payment_proof={:?}, incoming payment_proof={:?}",
+                quote.id,
+                locked_quote.request_lookup_id,
+                payment_lookup_id,
+                locked_quote.payment_proof,
+                payment_proof,
+            );
+            tx.rollback().await?;
+            return Err(Error::PaidQuote);
+        }
+    } else {
+        false
+    };
+
     // Get melt request info
     let melt_request_info = match tx.get_melt_request_and_blinded_messages(&quote.id).await? {
         Some(info) => info,
@@ -598,7 +653,9 @@ pub async fn finalize_melt_quote(
             } else {
                 tx.rollback().await?;
             }
-            return Ok(None);
+
+            let sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
+            return Ok(if sigs.is_empty() { None } else { Some(sigs) });
         }
     };
 
@@ -620,7 +677,9 @@ pub async fn finalize_melt_quote(
         } else {
             tx.rollback().await?;
         }
-        return Ok(None);
+
+        let sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
+        return Ok(if sigs.is_empty() { None } else { Some(sigs) });
     }
 
     // Check if TX1 already completed (e.g., crash between TX1 commit and TX2 commit).
@@ -630,21 +689,13 @@ pub async fn finalize_melt_quote(
     //
     // We still need the proofs for fee calculation (operation recording), so fetch them
     // from the DB even in the already-Paid case.
-    let (proofs, quote) = if locked_quote.state == MeltQuoteState::Paid {
-        tracing::info!(
-            "Melt quote {} already Paid — TX1 previously committed, skipping to change/cleanup",
-            quote.id
-        );
-        // Fetch proofs for fee calculation (they're already Spent but still in DB).
-        // Clone out of Acquired to release the row lock before committing.
+    let (proofs, quote) = if already_paid_with_matching_settlement {
         let proofs = tx.get_proofs(&input_ys).await?.to_vec();
-        // Release the Acquired quote lock before committing TX1
         let locked_quote = locked_quote.inner();
         tx.commit().await?;
         (proofs, locked_quote)
     } else {
-        // Core finalization (marks proofs spent, updates quote)
-        let (proofs, quote) = finalize_melt_core(
+        finalize_melt_core(
             tx,
             pubsub,
             locked_quote,
@@ -655,13 +706,11 @@ pub async fn finalize_melt_quote(
             payment_proof.clone(),
             payment_lookup_id,
         )
-        .await?;
-
-        (proofs, quote)
+        .await?
     };
 
     // Process change (if needed) - opens new transaction
-    let (change_sigs, mut tx) = process_melt_change(
+    let (change_sigs, mut tx) = match process_melt_change(
         mint,
         db,
         &quote.id,
@@ -670,7 +719,20 @@ pub async fn finalize_melt_quote(
         melt_request_info.inputs_fee.clone(),
         melt_request_info.change_outputs.clone(),
     )
-    .await?;
+    .await
+    {
+        Ok(res) => res,
+        Err(Error::Database(cdk_common::database::Error::Duplicate)) => {
+            tracing::info!(
+                "Change signatures already exist for quote {}, fetching them.",
+                quote.id
+            );
+            let sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
+            let change_sigs = if sigs.is_empty() { None } else { Some(sigs) };
+            (change_sigs, db.begin_transaction().await?)
+        }
+        Err(e) => return Err(e),
+    };
 
     // Compute the fee breakdown from the spent proofs before cleanup.
     // We reuse the cloned proofs from TX1 / recovery so TX2 can atomically
@@ -727,6 +789,16 @@ pub async fn finalize_melt_quote(
             .add_completed_operation(&operation, &fee_breakdown.per_keyset)
             .await
         {
+            if matches!(err, database::Error::Duplicate) {
+                tracing::info!("Completed operation already exists for quote {}", quote.id);
+                let sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
+                tx.delete_melt_request(&quote.id).await?;
+                if let Some(op_id) = operation_id {
+                    tx.delete_saga(&op_id).await?;
+                }
+                tx.commit().await?;
+                return Ok(if sigs.is_empty() { None } else { Some(sigs) });
+            }
             tx.rollback().await?;
             return Err(err.into());
         }
