@@ -42,7 +42,7 @@ mod verification;
 
 pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
-pub use cdk_common::{MintQuoteRequest, MintQuoteResponse};
+pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 pub use issue::MintInput;
 pub use melt::PendingMelt;
 pub use verification::Verification;
@@ -321,6 +321,7 @@ impl Mint {
         let shutdown_notify = Arc::new(Notify::new());
 
         // Clone required components for the background task
+        let mint_clone = Arc::new(self.clone());
         let payment_processors = self.payment_processors.clone();
         let localstore = Arc::clone(&self.localstore);
         let pubsub_manager = Arc::clone(&self.pubsub_manager);
@@ -329,6 +330,7 @@ impl Mint {
         // Spawn the supervisor task
         let supervisor_handle = tokio::spawn(async move {
             Self::wait_for_paid_invoices(
+                mint_clone,
                 &payment_processors,
                 localstore,
                 pubsub_manager,
@@ -621,6 +623,7 @@ impl Mint {
 
     #[instrument(skip_all)]
     async fn wait_for_paid_invoices(
+        mint: Arc<Mint>,
         payment_processors: &HashMap<PaymentProcessorKey, DynMintPayment>,
         localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
@@ -646,6 +649,7 @@ impl Mint {
             tracing::info!("Starting payment wait task for {:?}", key);
 
             // Clone for the spawned task
+            let mint = Arc::clone(&mint);
             let processor = Arc::clone(processor);
             let localstore = Arc::clone(&localstore);
             let pubsub_manager = Arc::clone(&pubsub_manager);
@@ -653,6 +657,7 @@ impl Mint {
 
             join_set.spawn(async move {
                 let result = Self::wait_for_processor_payments(
+                    mint,
                     processor,
                     localstore,
                     pubsub_manager,
@@ -696,6 +701,7 @@ impl Mint {
     /// Handles payment waiting for a single processor
     #[instrument(skip_all)]
     async fn wait_for_processor_payments(
+        mint: Arc<Mint>,
         processor: DynMintPayment,
         localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
@@ -724,19 +730,97 @@ impl Mint {
                                             break;
                                         };
 
-                                        if let cdk_common::payment::Event::PaymentReceived(wait_payment_response) = event {
-                                            if let Err(e) = Self::handle_payment_notification(
-                                                &localstore,
-                                                &pubsub_manager,
-                                                wait_payment_response,
-                                            ).await {
-                                                tracing::warn!("Payment notification error: {:?}", e);
+                                        match event {
+                                            cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
+                                                if let Err(e) = Self::handle_payment_notification(
+                                                    &localstore,
+                                                    &pubsub_manager,
+                                                    wait_payment_response,
+                                                ).await {
+                                                    tracing::warn!("Payment notification error: {:?}", e);
+                                                }
+                                            }
+                                            cdk_common::payment::Event::PaymentSuccessful { quote_id, details } => {
+                                                tracing::info!(
+                                                    "Outgoing payment confirmed for quote {}: {:?}",
+                                                    quote_id,
+                                                    details.status,
+                                                );
+
+                                                let quote = localstore.get_melt_quote(&quote_id).await?;
+
+                                                if let Some(quote) = quote {
+                                                    let operation_id = localstore
+                                                        .get_melt_saga_by_quote_id(&quote_id)
+                                                        .await?
+                                                        .map(|s| s.operation_id);
+
+                                                    if let Err(e) = melt::shared::finalize_melt_quote(
+                                                        &mint,
+                                                        &localstore,
+                                                        &pubsub_manager,
+                                                        &quote,
+                                                        details.total_spent,
+                                                        details.payment_proof,
+                                                        &details.payment_lookup_id,
+                                                        operation_id,
+                                                    )
+                                                    .await
+                                                    {
+                                                        tracing::warn!(
+                                                            "Failed to finalize melt quote {}: {:?}",
+                                                            quote_id,
+                                                            e
+                                                        );
+                                                    }
+                                                } else {
+                                                    tracing::warn!("Outgoing payment confirmed for unknown quote {}", quote_id);
+                                                }
+                                            }
+                                            cdk_common::payment::Event::PaymentFailed { quote_id, reason } => {
+                                                tracing::warn!(
+                                                    "Outgoing payment failed for quote {}: {}",
+                                                    quote_id,
+                                                    reason,
+                                                );
+
+                                                let saga = localstore
+                                                    .get_melt_saga_by_quote_id(&quote_id)
+                                                    .await?;
+                                                if let Some(saga) = saga {
+                                                    let input_ys = localstore
+                                                        .get_proof_ys_by_operation_id(&saga.operation_id)
+                                                        .await?;
+                                                    let blinded_secrets = localstore
+                                                        .get_blinded_secrets_by_operation_id(&saga.operation_id)
+                                                        .await?;
+
+                                                    if let Err(e) = melt::shared::rollback_melt_quote(
+                                                        &localstore,
+                                                        &pubsub_manager,
+                                                        &quote_id,
+                                                        &input_ys,
+                                                        &blinded_secrets,
+                                                        &saga.operation_id,
+                                                    )
+                                                    .await
+                                                    {
+                                                        tracing::warn!(
+                                                            "Failed to rollback melt quote {}: {:?}",
+                                                            quote_id,
+                                                            e
+                                                        );
+                                                    }
+                                                } else {
+                                                    tracing::warn!("Outgoing payment failed for quote {} but rollback saga metadata is missing", quote_id);
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
                         }
+
                         Err(e) => {
                             tracing::warn!("Failed to get payment stream: {}", e);
                             tokio::time::sleep(Duration::from_secs(5)).await;
