@@ -283,25 +283,11 @@ impl PubSubManager {
                 self.publish(NotificationPayload::MeltQuoteBolt12Response(event));
             }
             cdk_common::PaymentMethod::Custom(ref method) => {
-                let request_str = match &quote.request {
-                    cdk_common::mint::MeltPaymentRequest::Custom { request, .. } => {
-                        Some(request.clone())
-                    }
-                    _ => None,
-                };
-
-                let response = cdk_common::nuts::MeltQuoteCustomResponse {
-                    quote: quote.id.clone(),
-                    amount: quote.amount().into(),
-                    fee_reserve: quote.fee_reserve().into(),
-                    state: new_state,
-                    expiry: quote.expiry,
-                    payment_preimage: payment_proof,
-                    change,
-                    request: request_str,
-                    unit: Some(quote.unit.clone()),
-                    extra: serde_json::Value::Null,
-                };
+                let mut response: cdk_common::nuts::MeltQuoteCustomResponse<QuoteId> =
+                    quote.clone().into();
+                response.state = new_state;
+                response.payment_preimage = payment_proof;
+                response.change = change;
 
                 self.publish(NotificationPayload::CustomMeltQuoteResponse(
                     method.clone(),

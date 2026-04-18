@@ -386,6 +386,7 @@ impl MintPayment for Lnd {
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
+                    extra_json: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(_) => {

@@ -863,6 +863,8 @@ pub struct MeltQuote {
     pub paid_time: Option<u64>,
     /// Payment method
     pub payment_method: PaymentMethod,
+    /// Extra payment-method-specific response fields
+    pub extra_json: Option<serde_json::Value>,
 }
 
 impl MeltQuote {
@@ -878,6 +880,7 @@ impl MeltQuote {
         request_lookup_id: Option<PaymentIdentifier>,
         options: Option<MeltOptions>,
         payment_method: PaymentMethod,
+        extra_json: Option<serde_json::Value>,
     ) -> Self {
         let id = id.unwrap_or_else(QuoteId::new_uuid);
 
@@ -895,6 +898,7 @@ impl MeltQuote {
             created_time: unix_time(),
             paid_time: None,
             payment_method,
+            extra_json,
         }
     }
 
@@ -935,6 +939,7 @@ impl MeltQuote {
         created_time: u64,
         paid_time: Option<u64>,
         payment_method: PaymentMethod,
+        extra_json: Option<serde_json::Value>,
     ) -> Self {
         Self {
             id,
@@ -950,6 +955,7 @@ impl MeltQuote {
             created_time,
             paid_time,
             payment_method,
+            extra_json,
         }
     }
 }
@@ -1071,6 +1077,28 @@ impl TryFrom<MintQuote> for crate::nuts::MintQuoteCustomResponse<String> {
         let quote: crate::nuts::MintQuoteCustomResponse<QuoteId> = quote.try_into()?;
 
         Ok(quote.into())
+    }
+}
+
+impl From<MeltQuote> for crate::nuts::MeltQuoteCustomResponse<QuoteId> {
+    fn from(melt_quote: MeltQuote) -> Self {
+        let request = match melt_quote.request {
+            MeltPaymentRequest::Custom { request, .. } => Some(request),
+            _ => None,
+        };
+
+        Self {
+            quote: melt_quote.id,
+            amount: melt_quote.amount.into(),
+            fee_reserve: melt_quote.fee_reserve.into(),
+            state: melt_quote.state,
+            expiry: melt_quote.expiry,
+            payment_preimage: melt_quote.payment_proof,
+            change: None,
+            request,
+            unit: Some(melt_quote.unit),
+            extra: melt_quote.extra_json.unwrap_or_default(),
+        }
     }
 }
 
@@ -1222,5 +1250,100 @@ mod offer_serde {
         Ok(Box::new(Offer::from_str(&s).map_err(|_| {
             serde::de::Error::custom("Invalid Bolt12 Offer")
         })?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use cashu::Bolt11Invoice;
+
+    use super::*;
+
+    #[test]
+    fn test_melt_quote_to_custom_response_with_custom_request() {
+        let melt_quote = MeltQuote::new(
+            Some(QuoteId::new_uuid()),
+            MeltPaymentRequest::Custom {
+                method: "custom".to_string(),
+                request: "custom_request_string".to_string(),
+            },
+            CurrencyUnit::Sat,
+            Amount::new(100, CurrencyUnit::Sat),
+            Amount::new(2, CurrencyUnit::Sat),
+            unix_time() + 3600,
+            None,
+            None,
+            PaymentMethod::Custom("custom".to_string()),
+            Some(serde_json::json!({"extra_field": "value"})),
+        );
+
+        let response: crate::nuts::MeltQuoteCustomResponse<QuoteId> = melt_quote.clone().into();
+
+        assert_eq!(response.quote, melt_quote.id);
+        assert_eq!(response.amount, 100.into());
+        assert_eq!(response.fee_reserve, 2.into());
+        assert_eq!(response.state, melt_quote.state);
+        assert_eq!(response.expiry, melt_quote.expiry);
+        assert_eq!(response.payment_preimage, melt_quote.payment_proof);
+        assert_eq!(response.change, None);
+        assert_eq!(response.request, Some("custom_request_string".to_string()));
+        assert_eq!(response.unit, Some(CurrencyUnit::Sat));
+        assert_eq!(response.extra, serde_json::json!({"extra_field": "value"}));
+    }
+
+    #[test]
+    fn test_melt_quote_to_custom_response_with_bolt11_request() {
+        let bolt11_str = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq";
+        let bolt11 = Bolt11Invoice::from_str(bolt11_str).unwrap();
+
+        let melt_quote = MeltQuote::new(
+            Some(QuoteId::new_uuid()),
+            MeltPaymentRequest::Bolt11 { bolt11 },
+            CurrencyUnit::Sat,
+            Amount::new(100, CurrencyUnit::Sat),
+            Amount::new(2, CurrencyUnit::Sat),
+            unix_time() + 3600,
+            None,
+            None,
+            PaymentMethod::BOLT11,
+            None,
+        );
+
+        let response: crate::nuts::MeltQuoteCustomResponse<QuoteId> = melt_quote.clone().into();
+
+        assert_eq!(response.quote, melt_quote.id);
+        assert_eq!(response.request, None);
+    }
+
+    #[test]
+    fn test_melt_quote_to_custom_response_with_bolt12_request() {
+        use bitcoin::secp256k1::{PublicKey as Secp256k1PublicKey, Secp256k1, SecretKey};
+        use lightning::offers::offer::OfferBuilder;
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::from_slice(&[0xcd; 32]).unwrap();
+        let pubkey = Secp256k1PublicKey::from_secret_key(&secp, &secret_key);
+        let offer = OfferBuilder::new(pubkey).build().unwrap();
+
+        let melt_quote = MeltQuote::new(
+            Some(QuoteId::new_uuid()),
+            MeltPaymentRequest::Bolt12 {
+                offer: Box::new(offer),
+            },
+            CurrencyUnit::Sat,
+            Amount::new(100, CurrencyUnit::Sat),
+            Amount::new(2, CurrencyUnit::Sat),
+            unix_time() + 3600,
+            None,
+            None,
+            PaymentMethod::BOLT12,
+            None,
+        );
+
+        let response: crate::nuts::MeltQuoteCustomResponse<QuoteId> = melt_quote.clone().into();
+
+        assert_eq!(response.quote, melt_quote.id);
+        assert_eq!(response.request, None);
     }
 }

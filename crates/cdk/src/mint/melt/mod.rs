@@ -251,6 +251,7 @@ impl Mint {
             payment_quote.request_lookup_id.clone(),
             *options,
             PaymentMethod::Known(KnownMethod::Bolt11),
+            payment_quote.extra_json,
         );
 
         tracing::debug!(
@@ -349,6 +350,7 @@ impl Mint {
             payment_quote.request_lookup_id.clone(),
             *options,
             PaymentMethod::Known(KnownMethod::Bolt12),
+            payment_quote.extra_json,
         );
 
         tracing::debug!(
@@ -481,6 +483,7 @@ impl Mint {
             payment_quote.request_lookup_id.clone(),
             None, // Custom methods don't use options
             PaymentMethod::from(method.as_str()),
+            payment_quote.extra_json,
         );
 
         tracing::debug!(

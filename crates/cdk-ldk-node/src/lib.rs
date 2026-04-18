@@ -666,6 +666,7 @@ impl MintPayment for CdkLdkNode {
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
+                    extra_json: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -702,6 +703,7 @@ impl MintPayment for CdkLdkNode {
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
+                    extra_json: None,
                 })
             }
         }

@@ -265,6 +265,8 @@ macro_rules! mint_db_test {
             get_proofs_fails_when_some_not_found,
             update_proofs_state_updates_proofs_with_state,
             get_mint_quotes_by_ids,
+            get_melt_quotes_by_request_lookup_id,
+            lock_melt_quote_and_related,
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {
