@@ -263,6 +263,7 @@ impl MintPayment for LNbits {
                     amount: Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?,
                     fee: Amount::new(fee, CurrencyUnit::Msat).convert_to(unit)?,
                     state: MeltQuoteState::Unpaid,
+                    extra_json: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(_bolt12_options) => {

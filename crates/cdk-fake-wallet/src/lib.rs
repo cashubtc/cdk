@@ -539,6 +539,7 @@ impl MintPayment for FakeWallet {
             amount,
             fee: Amount::new(fee, unit.clone()),
             state: MeltQuoteState::Unpaid,
+            extra_json: None,
         })
     }
 

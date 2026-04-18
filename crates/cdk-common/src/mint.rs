@@ -863,6 +863,8 @@ pub struct MeltQuote {
     pub paid_time: Option<u64>,
     /// Payment method
     pub payment_method: PaymentMethod,
+    /// Extra payment-method-specific response fields
+    pub extra_json: Option<serde_json::Value>,
 }
 
 impl MeltQuote {
@@ -878,6 +880,7 @@ impl MeltQuote {
         request_lookup_id: Option<PaymentIdentifier>,
         options: Option<MeltOptions>,
         payment_method: PaymentMethod,
+        extra_json: Option<serde_json::Value>,
     ) -> Self {
         let id = id.unwrap_or_else(QuoteId::new_uuid);
 
@@ -895,6 +898,7 @@ impl MeltQuote {
             created_time: unix_time(),
             paid_time: None,
             payment_method,
+            extra_json,
         }
     }
 
@@ -935,6 +939,7 @@ impl MeltQuote {
         created_time: u64,
         paid_time: Option<u64>,
         payment_method: PaymentMethod,
+        extra_json: Option<serde_json::Value>,
     ) -> Self {
         Self {
             id,
@@ -950,6 +955,7 @@ impl MeltQuote {
             created_time,
             paid_time,
             payment_method,
+            extra_json,
         }
     }
 }
@@ -1071,6 +1077,28 @@ impl TryFrom<MintQuote> for crate::nuts::MintQuoteCustomResponse<String> {
         let quote: crate::nuts::MintQuoteCustomResponse<QuoteId> = quote.try_into()?;
 
         Ok(quote.into())
+    }
+}
+
+impl From<MeltQuote> for crate::nuts::MeltQuoteCustomResponse<QuoteId> {
+    fn from(melt_quote: MeltQuote) -> Self {
+        let request = match melt_quote.request {
+            MeltPaymentRequest::Custom { request, .. } => Some(request),
+            _ => None,
+        };
+
+        Self {
+            quote: melt_quote.id,
+            amount: melt_quote.amount.into(),
+            fee_reserve: melt_quote.fee_reserve.into(),
+            state: melt_quote.state,
+            expiry: melt_quote.expiry,
+            payment_preimage: melt_quote.payment_proof,
+            change: None,
+            request,
+            unit: Some(melt_quote.unit),
+            extra: melt_quote.extra_json.unwrap_or_default(),
+        }
     }
 }
 
