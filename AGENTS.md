@@ -3,6 +3,32 @@
 Rust workspace (edition 2021) implementing the Cashu e-cash protocol.
 24 crates in `crates/`, stable Rust (see `rust-toolchain.toml`), MSRV 1.85.0.
 
+## Local Development Environment (Regtest)
+
+CDK provides a complete regtest environment with Bitcoin, Lightning nodes, and pre-configured mints for end-to-end testing.
+
+### Starting the Environment
+```bash
+# Enter the specialized shell with all dependencies
+nix develop .#regtest
+
+# Launch the full environment (Bitcoin + 4 LN nodes + 2 Mints)
+just regtest
+```
+*Note: This launches `mprocs`. If running in a non-interactive environment, use `just regtest-status` to check health.*
+
+### Interacting with Mints
+- **CLN Mint:** `http://127.0.0.1:8085` (Env: `$CDK_TEST_MINT_URL`)
+- **LND Mint:** `http://127.0.0.1:8087` (Env: `$CDK_TEST_MINT_URL_2`)
+
+### Common Helper Commands
+```bash
+just mint-info       # Show both mints' keysets and info
+just restart-mints   # Recompile and restart mints after code changes
+just btc-mine 10     # Mine 10 blocks to confirm payments/open channels
+just mint-test       # Run the full integration test suite against the environment
+```
+
 ## Build / Check / Test / Lint Commands
 
 ```bash

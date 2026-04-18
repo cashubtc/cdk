@@ -13,6 +13,12 @@ just regtest
 just regtest redb
 ```
 
+## Quick Start for Agents
+If you are an automated agent, use these commands to quickly prepare the environment:
+1. `nix develop .#regtest`
+2. `just regtest &` (Run in background if TUI is not needed)
+3. `until curl -s $CDK_TEST_MINT_URL/v1/info; do sleep 1; done` (Wait for readiness)
+
 The script will:
 1. Check for `mprocs` and offer to install it if missing
 2. Build necessary binaries
