@@ -45,6 +45,33 @@ Supported targets:
 | Android | aarch64, armv7, x86_64 |
 | iOS | aarch64 |
 
+## CI/CD — Publishing Workflow
+
+The `dart-publish.yml` workflow (in the CDK monorepo) builds native binaries,
+syncs sources to `cdk-dart`, and creates a tagged release. The following secrets
+and variables must be configured in the **CDK monorepo** repository settings
+(Settings → Secrets and variables → Actions).
+
+### Secrets
+
+| Name | Purpose |
+|---|---|
+| `DART_DEPLOY_KEY` | Personal access token (PAT) with `repo` scope on the `cdk-dart` target repo. Used to clone, push, and create releases. |
+
+#### How to create the PAT
+
+1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**.
+2. Create a token scoped to the `cdk-dart` repository with **Contents** (read/write) and **Metadata** (read) permissions.
+3. Add it as a repository secret named `DART_DEPLOY_KEY` in the monorepo.
+
+### Variables
+
+| Name | Purpose | Example |
+|---|---|---|
+| `CDK_DART_REPO` | Owner/repo of the target Dart package repository. | `cashubtc/cdk-dart` |
+
+Set this under **Settings → Secrets and variables → Actions → Variables**.
+
 ## License
 
 [MIT](https://github.com/cashubtc/cdk/blob/main/LICENSE)

@@ -9,10 +9,9 @@ on:
       cdk_version:
         description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
         required: false
-
 env:
-  CARGO_TERM_COLOR: always
-  CDK_DART_REPO: crodas/cdk-dart
+  CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
+
 
 jobs:
   dart-sync-sources:
@@ -24,7 +23,7 @@ jobs:
 
       - name: Clone cdk-dart
         run: |
-          git clone https://x-access-token:${{ secrets.DART_DEPLOY_KEY_TEST }}@github.com/${{ env.CDK_DART_REPO }}.git cdk-dart
+          git clone https://x-access-token:${{ secrets.DART_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
 
       - name: Copy bindings/dart to cdk-dart
         run: |
@@ -165,7 +164,7 @@ jobs:
           TAG="${{ inputs.release_tag }}"
           RELEASE_BRANCH="release/v${TAG#v}"
           git clone --branch "${RELEASE_BRANCH}" \
-            https://x-access-token:${{ secrets.DART_DEPLOY_KEY_TEST }}@github.com/${{ env.CDK_DART_REPO }}.git cdk-dart
+            https://x-access-token:${{ secrets.DART_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -174,7 +173,7 @@ jobs:
 
       - name: Install cross (Android)
         if: contains(matrix.target, 'android')
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5
 
       - name: Build (native)
         if: "!contains(matrix.target, 'android')"
@@ -221,7 +220,7 @@ jobs:
           TAG="${{ inputs.release_tag }}"
           RELEASE_BRANCH="release/v${TAG#v}"
           git clone --branch "${RELEASE_BRANCH}" \
-            https://x-access-token:${{ secrets.DART_DEPLOY_KEY_TEST }}@github.com/${{ env.CDK_DART_REPO }}.git cdk-dart
+            https://x-access-token:${{ secrets.DART_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
 
       - name: Download all native artifacts
         uses: actions/download-artifact@v4
@@ -284,16 +283,17 @@ jobs:
           RELEASE_BRANCH="release/v${TAG#v}"
           DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
           git checkout "${DEFAULT_BRANCH}"
-          git merge "${RELEASE_BRANCH}" --no-ff -m "release: ${TAG}"
+          git merge "${RELEASE_BRANCH}" --squash
+          git commit -m "release: ${TAG}"
           git tag -f "${TAG}"
           git push origin "${DEFAULT_BRANCH}" --tags -f
           git push origin --delete "${RELEASE_BRANCH}"
 
       - name: Create release on cdk-dart
         env:
-          GH_TOKEN: ${{ secrets.DART_DEPLOY_KEY_TEST }}
+          GH_TOKEN: ${{ secrets.DART_DEPLOY_KEY }}
         run: |
           gh release create "${{ inputs.release_tag }}" \
-            --repo ${{ env.CDK_DART_REPO }} \
+            --repo ${{ vars.CDK_DART_REPO }} \
             --title "Release ${{ inputs.release_tag }}" \
             --generate-notes
