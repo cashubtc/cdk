@@ -4,6 +4,7 @@ members = [
     "bindings/dart/rust",
     "bindings/swift/rust",
     "bindings/kotlin/rust",
+    "bindings/go/rust",
 ]
 exclude = [
     "fuzz",
