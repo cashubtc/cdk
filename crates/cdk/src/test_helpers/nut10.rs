@@ -1,6 +1,8 @@
 #![cfg(test)]
 //! Shared test helpers for spending condition tests (P2PK, HTLC, etc.)
 
+use std::sync::Arc;
+
 use cdk_common::dhke::blind_message;
 use cdk_common::nuts::nut10::Secret as Nut10Secret;
 use cdk_common::nuts::{
@@ -15,7 +17,7 @@ use crate::Error;
 
 /// Test mint wrapper with convenient access to common keyset info
 pub struct TestMintHelper {
-    pub mint: Mint,
+    pub mint: Arc<Mint>,
     pub active_sat_keyset_id: Id,
     pub public_keys_of_the_active_sat_keyset: Keys,
     /// Available denominations sorted largest first (e.g., [2147483648, 1073741824, ..., 2, 1])
@@ -50,7 +52,7 @@ impl TestMintHelper {
         available_amounts_sorted.sort_by(|a, b| b.cmp(a)); // Sort descending (largest first)
 
         Ok(TestMintHelper {
-            mint,
+            mint: Arc::new(mint),
             active_sat_keyset_id,
             public_keys_of_the_active_sat_keyset,
             available_amounts_sorted,
@@ -58,8 +60,8 @@ impl TestMintHelper {
     }
 
     /// Get a reference to the underlying mint
-    pub fn mint(&self) -> &Mint {
-        &self.mint
+    pub fn mint(&self) -> Arc<Mint> {
+        Arc::clone(&self.mint)
     }
 
     /// Split an amount into power-of-2 denominations

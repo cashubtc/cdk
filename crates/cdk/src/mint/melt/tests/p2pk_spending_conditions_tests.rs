@@ -4,6 +4,7 @@
 //! during melt operations.
 
 use std::str::FromStr;
+use std::sync::Arc;
 
 use cdk_common::dhke::construct_proofs;
 use cdk_common::melt::MeltQuoteRequest;
@@ -57,7 +58,7 @@ async fn test_p2pk_basic_sig_inputs() {
 
     // Step 3: Swap regular proofs for P2PK proofs (no signature needed on inputs)
     let swap_request = cdk_common::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
-    let swap_response = mint
+    let swap_response = Arc::clone(&mint)
         .process_swap_request(swap_request)
         .await
         .expect("Failed to swap for P2PK proofs");
@@ -104,7 +105,7 @@ async fn test_p2pk_basic_sig_inputs() {
     println!("✓ Melting WITHOUT signature failed verification as expected");
 
     // Also verify the actual melt fails
-    let melt_result = mint.melt(&melt_request_no_sig).await;
+    let melt_result = Arc::clone(&mint).melt(&melt_request_no_sig).await;
     assert!(
         melt_result.is_err(),
         "Actual melt should also fail without signature"
@@ -126,7 +127,12 @@ async fn test_p2pk_basic_sig_inputs() {
     println!("✓ P2PK SIG_INPUTS spending conditions verified successfully");
 
     // Perform the actual melt - this also verifies spending conditions internally
-    let melt_response = mint.melt(&melt_request).await.unwrap().await.unwrap();
+    let melt_response = Arc::clone(&mint)
+        .melt(&melt_request)
+        .await
+        .unwrap()
+        .await
+        .unwrap();
     println!("✓ Melt operation completed successfully!");
     println!("  Quote state: {}", melt_response.state);
     assert_eq!(melt_response.quote, melt_quote.quote);
