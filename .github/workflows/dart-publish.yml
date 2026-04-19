@@ -196,6 +196,22 @@ jobs:
             *)          strip --strip-all "$FILE" ;;
           esac
 
+      - name: Generate Dart bindings (darwin only)
+        if: matrix.target == 'aarch64-apple-darwin'
+        working-directory: cdk-dart/rust
+        run: |
+          mkdir -p ../generated-bindings
+          cargo run --release --bin uniffi-bindgen -- \
+            target/${{ matrix.target }}/release/${{ matrix.artifact }} \
+            --out-dir ../generated-bindings
+
+      - name: Upload generated bindings
+        if: matrix.target == 'aarch64-apple-darwin'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dart-bindings-generated
+          path: cdk-dart/generated-bindings/
+
       - name: Prepare artifact
         shell: bash
         run: |
@@ -245,6 +261,12 @@ jobs:
             done
           done
 
+      - name: Download generated bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: dart-bindings-generated
+          path: cdk-dart/lib/src/generated
+
       - name: Debug — commit and push prebuilt files
         working-directory: cdk-dart
         run: |
@@ -253,18 +275,6 @@ jobs:
           git add -A
           git diff --cached --quiet && echo "No changes to commit" || \
             (git commit -m "debug: prebuilt binaries before bindgen" && git push origin HEAD -f)
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Generate Dart bindings
-        working-directory: cdk-dart/rust
-        run: |
-          mkdir -p ../lib/src/generated
-          cargo run --release --bin uniffi-bindgen -- \
-            ../prebuilt/aarch64-apple-darwin/libcdk_ffi_dart.dylib \
-            --out-dir ../lib/src/generated
-          cargo clean
 
       - name: Commit to release branch
         working-directory: cdk-dart
