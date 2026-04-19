@@ -13,6 +13,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::mint::QuoteId;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
+use cdk::nuts::nutxx::MintQuoteByPubkeyRequest;
 use cdk::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     MeltQuoteBolt12Request, MeltQuoteCustomRequest, MintQuoteBolt11Request,
@@ -543,6 +544,57 @@ pub async fn cache_post_batch_mint(
     mint_state.cache.set(cache_key, result.deref()).await;
 
     Ok(result)
+}
+
+/// Generic handler for get mint quotes by pubkey
+#[instrument(skip_all, fields(method = ?method))]
+pub async fn post_mint_quote_by_pubkey(
+    auth: AuthHeader,
+    State(state): State<MintState>,
+    Path(method): Path<String>,
+    Json(payload): Json<Value>,
+) -> Result<Response, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuote(method.clone())),
+        )
+        .await
+        .map_err(into_response)?;
+
+    let request: MintQuoteByPubkeyRequest = serde_json::from_value(payload).map_err(|e| {
+        tracing::error!("Failed to parse request: {}", e);
+        into_response(cdk::Error::InvalidPaymentRequest)
+    })?;
+
+    let pubkeys = request
+        .pubkeys
+        .iter()
+        .map(|s| s.parse())
+        .collect::<Result<_, _>>()
+        .map_err(|e| {
+            tracing::error!("Invalid Public Key: {}", e);
+            into_response(cdk::Error::InvalidPaymentRequest)
+        })?;
+
+    let signatures = request
+        .pubkeys_signatures
+        .iter()
+        .map(|s| s.parse())
+        .collect::<Result<_, _>>()
+        .map_err(|e| {
+            tracing::error!("Invalid Signature: {}", e);
+            into_response(cdk::Error::SignatureMissingOrInvalid)
+        })?;
+
+    let response = state
+        .mint
+        .get_mint_quote_by_pubkey(pubkeys, signatures)
+        .await
+        .map_err(into_response)?;
+
+    Ok(Json(response).into_response())
 }
 
 #[cfg(test)]
