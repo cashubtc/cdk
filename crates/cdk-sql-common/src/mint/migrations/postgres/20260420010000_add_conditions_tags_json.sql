@@ -3,4 +3,4 @@
 -- current code expects `tags_json`. Migrates existing description values
 -- into NIP-88 tag arrays.
 ALTER TABLE conditions ADD COLUMN IF NOT EXISTS tags_json TEXT NOT NULL DEFAULT '[]';
-UPDATE conditions SET tags_json = '[["description",' || to_json(description)::text || ']]' WHERE description IS NOT NULL AND description != '' AND tags_json = '[]';
+UPDATE conditions SET tags_json = '[["description",' || CAST(to_json(description) AS TEXT) || ']]' WHERE description IS NOT NULL AND description != '' AND tags_json = '[]';
