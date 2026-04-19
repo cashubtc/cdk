@@ -9,17 +9,11 @@
 --   1. conditions.description -> conditions.tags_json (column rename)
 --   2. conditional_keysets (mapping table) -> conditional_keyset (full keyset table)
 
--- 1. Add tags_json column and migrate data from description.
---    Wraps old values into NIP-88 tags array: [["description", "<old value>"]].
---    Leaves description in place for safe rollback.
-ALTER TABLE conditions ADD COLUMN IF NOT EXISTS tags_json TEXT NOT NULL DEFAULT '[]';
-UPDATE conditions SET tags_json = '[["description",' || to_json(description)::text || ']]' WHERE description IS NOT NULL AND description != '';
-
--- 2. Drop the old mapping table (created by the original version of
+-- 1. Drop the old mapping table (created by the original version of
 --    20260216000000_add_conditions_tables).
 DROP TABLE IF EXISTS conditional_keysets;
 
--- 3. Create the full conditional_keyset table (matching the current codebase).
+-- 2. Create the full conditional_keyset table (matching the current codebase).
 CREATE TABLE IF NOT EXISTS conditional_keyset (
     id                     TEXT    PRIMARY KEY,
     unit                   TEXT    NOT NULL,
