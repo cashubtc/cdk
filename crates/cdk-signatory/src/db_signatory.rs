@@ -242,6 +242,17 @@ impl Signatory for DbSignatory {
 
         Ok((&(info, keyset)).into())
     }
+
+    #[tracing::instrument(skip(self))]
+    async fn deactivate_keyset(&self, id: Id) -> Result<(), Error> {
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.deactivate_keyset(id).await?;
+        tx.commit().await?;
+
+        self.reload_keys_from_db().await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

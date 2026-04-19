@@ -570,9 +570,23 @@ impl MintBuilder {
                     }
                 }
             } else {
-                // No active keyset for this unit
-                tracing::info!("Rotating keyset for unit {} (no active keyset found)", unit);
-                rotate = true;
+                // No active keyset for this unit. Check if any keyset (active or not) has
+                // ever existed. If inactive keysets exist, this is a deliberate deactivation
+                // and we should respect it. Only auto-create on first-time bootstrap.
+                let unit_has_history = active_keysets.keysets.iter().any(|k| k.unit == *unit);
+
+                if unit_has_history {
+                    tracing::info!(
+                        "No active keyset for unit {}, inactive keysets exist (respecting deliberate deactivation)",
+                        unit
+                    );
+                } else {
+                    tracing::info!(
+                        "No keyset history for unit {}, bootstrapping initial keyset",
+                        unit
+                    );
+                    rotate = true;
+                }
             }
 
             if rotate {

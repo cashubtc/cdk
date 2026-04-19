@@ -9,6 +9,8 @@ service Signatory {
   rpc Keysets(EmptyRequest) returns (KeysResponse);
   // rotates the keysets
   rpc RotateKeyset(RotationRequest) returns (KeyRotationResponse);
+  // deactivates a specific keyset by id
+  rpc DeactivateKeyset(DeactivateKeysetRequest) returns (BooleanResponse);
 }
 
 enum Constants {
@@ -141,6 +143,10 @@ enum ErrorCode {
 message Error {
   ErrorCode code = 1;
   string detail = 2;
+}
+
+message DeactivateKeysetRequest {
+  string id = 1;
 }
 
 message EmptyRequest {}

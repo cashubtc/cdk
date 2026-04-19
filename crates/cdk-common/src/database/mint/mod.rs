@@ -129,6 +129,9 @@ pub trait KeysDatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error
     /// Add Active Keyset
     async fn set_active_keyset(&mut self, unit: CurrencyUnit, id: Id) -> Result<(), Error>;
 
+    /// Deactivate a specific keyset by ID without activating a replacement
+    async fn deactivate_keyset(&mut self, id: Id) -> Result<(), Error>;
+
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error>;
 }

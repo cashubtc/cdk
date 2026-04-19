@@ -398,3 +398,176 @@ async fn test_rotate_keyset_with_expiry() {
     let active_count = keysets.keysets.iter().filter(|k| k.active).count();
     assert_eq!(active_count, 1, "Exactly one keyset should be active");
 }
+
+/// Test that rebuilding a mint from the same database after deactivating a keyset
+/// does NOT auto-create a replacement keyset. The builder should respect the
+/// deliberate deactivation because inactive keysets exist for that unit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_builder_respects_deactivation_across_restart() {
+    let mnemonic = Mnemonic::generate(12).unwrap();
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 1.into(),
+        percent_fee_reserve: 1.0,
+    };
+
+    let database = memory::empty().await.expect("valid db instance");
+
+    let fake_wallet = FakeWallet::new(
+        fee_reserve.clone(),
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
+
+    let localstore = Arc::new(database);
+    let mut mint_builder = MintBuilder::new(localstore.clone());
+
+    mint_builder = mint_builder
+        .with_name("regtest mint".to_string())
+        .with_description("regtest mint".to_string());
+
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 5_000),
+            Arc::new(fake_wallet),
+        )
+        .await
+        .unwrap();
+
+    let mint = mint_builder
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await
+        .unwrap();
+
+    // Verify an active Sat keyset exists
+    let active = mint.get_active_keysets();
+    let keyset_id = *active
+        .get(&CurrencyUnit::Sat)
+        .expect("should have active keyset");
+
+    // Deactivate the keyset
+    mint.deactivate_keyset(keyset_id).await.unwrap();
+
+    // Verify no active Sat keyset
+    let active = mint.get_active_keysets();
+    assert!(!active.contains_key(&CurrencyUnit::Sat));
+
+    // Drop the first mint
+    drop(mint);
+
+    // Build a NEW mint from the same localstore (simulates restart)
+    let fake_wallet2 = FakeWallet::new(
+        fee_reserve,
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
+
+    let mut mint_builder2 = MintBuilder::new(localstore.clone());
+
+    mint_builder2 = mint_builder2
+        .with_name("regtest mint".to_string())
+        .with_description("regtest mint".to_string());
+
+    mint_builder2
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 5_000),
+            Arc::new(fake_wallet2),
+        )
+        .await
+        .unwrap();
+
+    let mint2 = mint_builder2
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await
+        .unwrap();
+
+    // The new mint should have NO active Sat keyset
+    let active = mint2.get_active_keysets();
+    assert!(
+        !active.contains_key(&CurrencyUnit::Sat),
+        "Builder should not auto-create a keyset when inactive keysets exist for the unit"
+    );
+
+    // The inactive keyset should still be visible
+    let all_keysets = mint2.keysets();
+    let sat_keysets: Vec<_> = all_keysets
+        .keysets
+        .iter()
+        .filter(|k| k.unit == CurrencyUnit::Sat)
+        .collect();
+    assert_eq!(sat_keysets.len(), 1, "Should have exactly one Sat keyset");
+    assert!(!sat_keysets[0].active, "The Sat keyset should be inactive");
+    assert_eq!(
+        sat_keysets[0].id, keyset_id,
+        "The inactive keyset should be the same one we deactivated"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_deactivate_keyset() {
+    let mnemonic = Mnemonic::generate(12).unwrap();
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 1.into(),
+        percent_fee_reserve: 1.0,
+    };
+
+    let database = memory::empty().await.expect("valid db instance");
+
+    let fake_wallet = FakeWallet::new(
+        fee_reserve,
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
+
+    let localstore = Arc::new(database);
+    let mut mint_builder = MintBuilder::new(localstore.clone());
+
+    mint_builder = mint_builder
+        .with_name("regtest mint".to_string())
+        .with_description("regtest mint".to_string());
+
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 5_000),
+            Arc::new(fake_wallet),
+        )
+        .await
+        .unwrap();
+
+    let mint = mint_builder
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await
+        .unwrap();
+
+    // Verify we start with an active keyset
+    let active = mint.get_active_keysets();
+    let keyset_id = *active
+        .get(&CurrencyUnit::Sat)
+        .expect("should have active keyset");
+
+    // Deactivate by ID
+    mint.deactivate_keyset(keyset_id).await.unwrap();
+
+    // Verify no active keysets
+    let active = mint.get_active_keysets();
+    assert!(!active.contains_key(&CurrencyUnit::Sat));
+
+    // pubkeys endpoint returns empty (no active non-Auth keysets)
+    assert!(mint.pubkeys().keysets.is_empty());
+
+    // keysets endpoint still returns the keyset but marked inactive
+    let all_keysets = mint.keysets();
+    assert!(!all_keysets.keysets.is_empty());
+    assert!(all_keysets.keysets.iter().all(|k| !k.active));
+}

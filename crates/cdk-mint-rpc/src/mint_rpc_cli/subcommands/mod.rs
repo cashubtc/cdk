@@ -1,5 +1,7 @@
 //! Subcommands for the mint RPC CLI
 
+/// Module for deactivating a keyset
+mod deactivate_keyset;
 /// Module for rotating to the next keyset
 mod rotate_next_keyset;
 /// Module for updating mint contact information
@@ -25,6 +27,7 @@ mod update_ttl;
 /// Module for managing mint URLs
 mod update_urls;
 
+pub use deactivate_keyset::{deactivate_keyset, DeactivateKeysetCommand};
 pub use rotate_next_keyset::{rotate_next_keyset, RotateNextKeysetCommand};
 pub use update_contact::{add_contact, remove_contact, AddContactCommand, RemoveContactCommand};
 pub use update_icon_url::{update_icon_url, UpdateIconUrlCommand};

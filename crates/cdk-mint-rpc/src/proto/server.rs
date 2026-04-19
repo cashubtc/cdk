@@ -6,7 +6,7 @@ use std::sync::Arc;
 use cdk::mint::{Mint, MintQuote};
 use cdk::nuts::nut04::MintMethodSettings;
 use cdk::nuts::nut05::MeltMethodSettings;
-use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
+use cdk::nuts::{CurrencyUnit, Id, MintQuoteState, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk::Amount;
 use cdk_common::grpc::create_version_check_interceptor;
@@ -20,8 +20,8 @@ use tonic::{Request, Response, Status};
 
 use crate::cdk_mint_server::{CdkMint, CdkMintServer};
 use crate::{
-    ContactInfo, GetInfoRequest, GetInfoResponse, GetQuoteTtlRequest, GetQuoteTtlResponse,
-    RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
+    ContactInfo, DeactivateKeysetRequest, GetInfoRequest, GetInfoResponse, GetQuoteTtlRequest,
+    GetQuoteTtlResponse, RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
     UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest, UpdateNameRequest,
     UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request, UpdateQuoteTtlRequest,
     UpdateResponse, UpdateUrlRequest,
@@ -788,5 +788,23 @@ impl CdkMint for MintRPCServer {
             amounts: keyset_info.amounts,
             input_fee_ppk: keyset_info.input_fee_ppk,
         }))
+    }
+
+    /// Deactivates a specific keyset by ID
+    async fn deactivate_keyset(
+        &self,
+        request: Request<DeactivateKeysetRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let request = request.into_inner();
+
+        let id = Id::from_str(&request.id)
+            .map_err(|_| Status::invalid_argument("Invalid keyset id".to_string()))?;
+
+        self.mint
+            .deactivate_keyset(id)
+            .await
+            .map_err(|err| Status::internal(format!("Could not deactivate keyset: {err}")))?;
+
+        Ok(Response::new(UpdateResponse {}))
     }
 }
