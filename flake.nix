@@ -760,6 +760,7 @@
           [
             # Add additional build inputs here
             git
+            pre-commit
             pkg-config
             curl
             just
