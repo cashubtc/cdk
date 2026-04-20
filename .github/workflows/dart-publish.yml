@@ -1,0 +1,311 @@
+name: "FFI - Dart Bindings"
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag to create for release (e.g. v0.17.0)'
+        required: true
+      cdk_version:
+        description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
+        required: false
+env:
+  CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
+
+
+jobs:
+  dart-sync-sources:
+    name: "dart: Sync sources to cdk-dart"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Clone cdk-dart
+        run: |
+          git clone https://x-access-token:${{ secrets.DART_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
+
+      - name: Copy bindings/dart to cdk-dart
+        run: |
+          rsync -av --delete \
+            --exclude='.github' \
+            --exclude='target' \
+            --exclude='.git' \
+            bindings/dart/ cdk-dart/
+          cp rust-toolchain.toml cdk-dart/
+
+      - name: Update versions and resolve workspace references
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          CDK_VER="${{ inputs.cdk_version }}"
+          CDK_VER="${CDK_VER:-${TAG#v}}"
+          RELEASE_VER="${TAG#v}"
+          echo "Setting CDK version to ${CDK_VER}, release version to ${RELEASE_VER}"
+
+          # Helper: extract a value from [workspace.package] in root Cargo.toml
+          ws_pkg() {
+            sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+              | grep "^$1 " | head -1 | sed 's/.*= *"\(.*\)"/\1/'
+          }
+
+          # Helper: extract a workspace dependency version
+          ws_dep_ver() {
+            local line
+            line=$(sed -n '/^\[workspace\.dependencies\]/,/^\[/p' Cargo.toml \
+              | grep "^$1 " | head -1)
+            # Handle both: dep = "version" and dep = { ..., version = "x", ... }
+            if echo "$line" | grep -q 'version *= *"'; then
+              echo "$line" | sed 's/.*version *= *"\([^"]*\)".*/\1/'
+            else
+              echo "$line" | sed 's/.*= *"\([^"]*\)".*/\1/'
+            fi
+          }
+
+          # Read workspace values dynamically
+          WS_EDITION=$(ws_pkg edition)
+          WS_RUST_VERSION=$(ws_pkg rust-version)
+          WS_LICENSE=$(ws_pkg license)
+          WS_HOMEPAGE=$(ws_pkg homepage)
+          WS_REPOSITORY=$(ws_pkg repository)
+          WS_README=$(ws_pkg readme)
+          WS_UNIFFI_VER=$(ws_dep_ver uniffi)
+
+          echo "Workspace values: edition=${WS_EDITION} rust-version=${WS_RUST_VERSION} uniffi=${WS_UNIFFI_VER}"
+
+          # Update pubspec.yaml version
+          sed -i "s/^version: \".*\"/version: \"${RELEASE_VER}\"/" cdk-dart/pubspec.yaml
+
+          # Resolve workspace package fields in rust/Cargo.toml
+          sed -i \
+            -e "s/^edition\.workspace = true/edition = \"${WS_EDITION}\"/" \
+            -e "s/^rust-version\.workspace = true/rust-version = \"${WS_RUST_VERSION}\"/" \
+            -e "s/^license\.workspace = true/license = \"${WS_LICENSE}\"/" \
+            -e "s|^homepage\.workspace = true|homepage = \"${WS_HOMEPAGE}\"|" \
+            -e "s|^repository\.workspace = true|repository = \"${WS_REPOSITORY}\"|" \
+            -e "s/^version\.workspace = true/version = \"${CDK_VER}\"/" \
+            -e "s/^readme\.workspace = true/readme = \"${WS_README}\"/" \
+            cdk-dart/rust/Cargo.toml
+
+          # Resolve workspace dependency references
+          sed -i \
+            -e "s/cdk-ffi = { workspace = true/cdk-ffi = { version = \"=${CDK_VER}\", default-features = false/" \
+            -e "s/uniffi = { workspace = true/uniffi = { version = \"${WS_UNIFFI_VER}\"/" \
+            cdk-dart/rust/Cargo.toml
+
+          # Remove workspace lints reference
+          sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-dart/rust/Cargo.toml
+
+          # Add release profile
+          printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-dart/rust/Cargo.toml
+
+          cat cdk-dart/pubspec.yaml
+          echo "---"
+          cat cdk-dart/rust/Cargo.toml
+
+      - name: Push to cdk-dart release branch
+        working-directory: cdk-dart
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          RELEASE_BRANCH="release/v${TAG#v}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${RELEASE_BRANCH}"
+          git add -A
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "sync: update sources for ${TAG}"
+          git push origin "${RELEASE_BRANCH}" -f
+
+  dart-build-native:
+    name: "dart: Build ${{ matrix.target }}"
+    needs: [dart-sync-sources]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            artifact: libcdk_ffi_dart.so
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            artifact: libcdk_ffi_dart.so
+
+          # macOS
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            artifact: libcdk_ffi_dart.dylib
+
+          # Windows
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            artifact: cdk_ffi_dart.dll
+
+          # Android
+          - target: aarch64-linux-android
+            runner: ubuntu-22.04
+            artifact: libcdk_ffi_dart.so
+          - target: armv7-linux-androideabi
+            runner: ubuntu-22.04
+            artifact: libcdk_ffi_dart.so
+          - target: x86_64-linux-android
+            runner: ubuntu-22.04
+            artifact: libcdk_ffi_dart.so
+
+          # iOS
+          - target: aarch64-apple-ios
+            runner: macos-14
+            artifact: libcdk_ffi_dart.a
+
+    steps:
+      - name: Clone cdk-dart
+        shell: bash
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          RELEASE_BRANCH="release/v${TAG#v}"
+          git clone --branch "${RELEASE_BRANCH}" \
+            https://x-access-token:${{ secrets.DART_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross (Android)
+        if: contains(matrix.target, 'android')
+        run: cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5
+
+      - name: Build (native)
+        if: "!contains(matrix.target, 'android')"
+        working-directory: cdk-dart/rust
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross / Android)
+        if: contains(matrix.target, 'android')
+        working-directory: cdk-dart/rust
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Strip debug symbols
+        shell: bash
+        run: |
+          FILE="cdk-dart/rust/target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+          case "${{ matrix.target }}" in
+            *windows*)  strip --strip-all "$FILE" ;;
+            *apple*)    strip -S "$FILE" ;;
+            *android*)  "$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all "$FILE" ;;
+            *)          strip --strip-all "$FILE" ;;
+          esac
+
+      - name: Generate Dart bindings (darwin only)
+        if: matrix.target == 'aarch64-apple-darwin'
+        working-directory: cdk-dart/rust
+        run: |
+          mkdir -p ../generated-bindings
+          cargo run --release --bin uniffi-bindgen -- \
+            target/${{ matrix.target }}/release/${{ matrix.artifact }} \
+            --out-dir ../generated-bindings
+
+      - name: Upload generated bindings
+        if: matrix.target == 'aarch64-apple-darwin'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dart-bindings-generated
+          path: cdk-dart/generated-bindings/
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "cdk-dart/rust/target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
+             "dist/${{ matrix.target }}-${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dart-native-${{ matrix.target }}
+          path: dist/
+
+
+  dart-publish:
+    name: "dart: Publish to cdk-dart"
+    runs-on: ubuntu-latest
+    needs: [dart-build-native]
+    steps:
+      - name: Clone cdk-dart
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          RELEASE_BRANCH="release/v${TAG#v}"
+          git clone --branch "${RELEASE_BRANCH}" \
+            https://x-access-token:${{ secrets.DART_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          pattern: dart-native-*
+          merge-multiple: true
+
+      - name: Organize prebuilt binaries
+        run: |
+          mkdir -p cdk-dart/prebuilt
+
+          for f in artifacts/*; do
+            filename=$(basename "$f")
+            for suffix in libcdk_ffi_dart.so libcdk_ffi_dart.dylib libcdk_ffi_dart.a cdk_ffi_dart.dll; do
+              if [[ "$filename" == *"-${suffix}" ]]; then
+                target="${filename%-${suffix}}"
+                mkdir -p "cdk-dart/prebuilt/${target}"
+                cp "$f" "cdk-dart/prebuilt/${target}/${suffix}"
+                break
+              fi
+            done
+          done
+
+      - name: Download generated bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: dart-bindings-generated
+          path: cdk-dart/lib/src/generated
+
+      - name: Commit and push prebuilt files
+        working-directory: cdk-dart
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && echo "No changes to commit" || \
+            (git commit -m "prebuilt binaries before bindgen" && git push origin HEAD -f)
+
+      - name: Commit to release branch
+        working-directory: cdk-dart
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "release: ${{ inputs.release_tag }} — add bindings and prebuilt binaries"
+          git push origin HEAD -f
+
+      - name: Merge to master, tag, and cleanup
+        working-directory: cdk-dart
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          RELEASE_BRANCH="release/v${TAG#v}"
+          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+          git checkout "${DEFAULT_BRANCH}"
+          git merge "${RELEASE_BRANCH}" --squash
+          git commit -m "release: ${TAG}"
+          git tag -f "${TAG}"
+          git push origin "${DEFAULT_BRANCH}" --tags -f
+          git push origin --delete "${RELEASE_BRANCH}"
+
+      - name: Create release on cdk-dart
+        env:
+          GH_TOKEN: ${{ secrets.DART_DEPLOY_KEY }}
+        run: |
+          gh release create "${{ inputs.release_tag }}" \
+            --repo ${{ vars.CDK_DART_REPO }} \
+            --title "Release ${{ inputs.release_tag }}" \
+            --generate-notes
