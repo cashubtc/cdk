@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout monorepo
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Clone cdk-dart
         run: |
@@ -267,14 +269,14 @@ jobs:
           name: dart-bindings-generated
           path: cdk-dart/lib/src/generated
 
-      - name: Debug — commit and push prebuilt files
+      - name: Commit and push prebuilt files
         working-directory: cdk-dart
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --quiet && echo "No changes to commit" || \
-            (git commit -m "debug: prebuilt binaries before bindgen" && git push origin HEAD -f)
+            (git commit -m "prebuilt binaries before bindgen" && git push origin HEAD -f)
 
       - name: Commit to release branch
         working-directory: cdk-dart
