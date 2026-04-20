@@ -3,8 +3,6 @@
 //! Uses the `dlc-messages` crate for announcement TLV parsing
 //! and verification of oracle attestation signatures.
 
-use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{schnorr::Signature, Message, Secp256k1, XOnlyPublicKey};
 use dlc_messages::oracle_msgs::{
     EnumEventDescriptor, EventDescriptor, OracleAnnouncement, OracleEvent,
@@ -218,37 +216,17 @@ pub fn verify_oracle_attestation(
         .map_err(|_| Error::InvalidOracleSignature)
 }
 
-/// Verify that an oracle announcement's TLV signature is valid.
+/// Verify that an oracle announcement's signature is valid.
 ///
-/// The announcement contains a Schnorr signature over the serialized oracle event.
+/// Delegates to `dlc-messages`' own `OracleAnnouncement::validate()`, which
+/// signs/verifies over raw `Writeable::write()` bytes (no TLV wrapper).
 pub fn verify_announcement_signature(
     announcement: &OracleAnnouncement,
 ) -> Result<(), Error> {
     let secp = Secp256k1::verification_only();
-
-    // Serialize the oracle event for signature verification
-    let mut event_bytes = Vec::new();
-    dlc_messages::ser_impls::write_as_tlv(
-        &announcement.oracle_event,
-        &mut event_bytes,
-    )
-    .map_err(|e| {
-        Error::OracleAnnouncementVerificationFailed(format!("Event serialization: {}", e))
-    })?;
-
-    // Hash the serialized event
-    let event_hash = Sha256Hash::hash(&event_bytes).to_byte_array();
-    let message = Message::from_digest(event_hash);
-
-    // Verify the announcement signature
-    secp.verify_schnorr(
-        &announcement.announcement_signature,
-        &message,
-        &announcement.oracle_public_key,
-    )
-    .map_err(|_| {
-        Error::OracleAnnouncementVerificationFailed("Signature verification failed".into())
-    })
+    announcement
+        .validate(&secp)
+        .map_err(|e| Error::OracleAnnouncementVerificationFailed(e.to_string()))
 }
 
 #[cfg(test)]
