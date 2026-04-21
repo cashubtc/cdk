@@ -913,6 +913,19 @@ pub(crate) async fn get_index(
         supported_features.push((29, "Batched minting"));
     }
 
+    #[cfg(feature = "conditional-tokens")]
+    {
+        if mint_info.nuts.nut_ctf.is_some() {
+            supported_features.push((100, "Conditional Tokens (CTF)"));
+        }
+        if mint_info.nuts.nut_ctf_split_merge.is_some() {
+            supported_features.push((101, "CTF Split/Merge"));
+        }
+        if mint_info.nuts.nut_ctf_numeric.is_some() {
+            supported_features.push((102, "CTF Numeric"));
+        }
+    }
+
     // Avatar fallback letter
     let avatar_letter = name
         .chars()
