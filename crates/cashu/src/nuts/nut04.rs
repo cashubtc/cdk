@@ -377,6 +377,7 @@ pub struct MintQuoteCustomResponse<Q> {
     /// Currency unit
     pub unit: Option<CurrencyUnit>,
     /// Quote State
+    #[serde(default)]
     pub state: QuoteState,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,

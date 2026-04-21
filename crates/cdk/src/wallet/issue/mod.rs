@@ -76,7 +76,7 @@ impl Wallet {
                         unit: unit.clone(),
                         description,
                         pubkey: Some(secret_key.public_key()),
-                        extra: serde_json::from_str(&extra.unwrap_or_default())?,
+                        extra: serde_json::from_str(extra.as_deref().unwrap_or("{}"))?,
                     },
                 }
             }
