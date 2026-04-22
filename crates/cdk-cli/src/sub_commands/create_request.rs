@@ -81,6 +81,7 @@ pub async fn create_request(
         http_url: sub_command_args.http_url.clone(),
         nostr_relays: sub_command_args.nostr_relay.clone(),
         mints: sub_command_args.mints.clone(),
+        preferred_mints: None,
     };
 
     let (req, nostr_wait) = wallet_repository.create_request(params).await?;

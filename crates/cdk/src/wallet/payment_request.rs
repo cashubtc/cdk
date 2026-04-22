@@ -222,6 +222,27 @@ pub struct CreateRequestParams {
     pub nostr_relays: Option<Vec<String>>, // when transport == nostr
     /// Optional list of mint URLs the receiver trusts. If not provided, the wallet's current mints for the requested unit will be used.
     pub mints: Option<Vec<String>>,
+    /// Optional list of preferred mint URLs.
+    pub preferred_mints: Option<Vec<String>>,
+}
+
+impl Default for CreateRequestParams {
+    fn default() -> Self {
+        Self {
+            amount: None,
+            unit: "sat".to_string(),
+            description: None,
+            pubkeys: None,
+            num_sigs: 1,
+            hash: None,
+            preimage: None,
+            transport: "none".to_string(),
+            http_url: None,
+            nostr_relays: None,
+            mints: None,
+            preferred_mints: None,
+        }
+    }
 }
 
 /// Extra information needed to wait for an incoming Nostr payment
@@ -279,6 +300,7 @@ impl WalletRepository {
 
         // Get the list of mints accepted by the payment request (empty means any mint is accepted)
         let accepted_mints = &payment_request.mints;
+        let preferred_mints = &payment_request.preferred_mints;
 
         // Get the unit from the payment request, defaulting to Sat
         let unit = payment_request.unit.clone().unwrap_or(CurrencyUnit::Sat);
@@ -298,8 +320,12 @@ impl WalletRepository {
         } else {
             // No mint specified - find the best matching mint with highest balance
             let balances = self.get_balances().await?;
-            let mut best_wallet: Option<Arc<Wallet>> = None;
-            let mut best_balance = Amount::ZERO;
+            
+            let mut best_preferred_wallet: Option<Arc<Wallet>> = None;
+            let mut best_preferred_balance = Amount::ZERO;
+
+            let mut best_fallback_wallet: Option<Arc<Wallet>> = None;
+            let mut best_fallback_balance = Amount::ZERO;
 
             for (wallet_key, balance) in balances.iter() {
                 // Only consider wallets with matching unit
@@ -315,16 +341,26 @@ impl WalletRepository {
                     continue;
                 }
 
-                // Check balance meets requirements and is best so far
-                if *balance >= amount && *balance > best_balance {
-                    if let Ok(wallet) = self.get_wallet(&wallet_key.mint_url, &unit).await {
-                        best_balance = *balance;
-                        best_wallet = Some(Arc::new(wallet));
+                // Check balance meets requirements
+                if *balance >= amount {
+                    let is_preferred = preferred_mints.contains(&wallet_key.mint_url);
+                    
+                    if is_preferred && *balance > best_preferred_balance {
+                        if let Ok(wallet) = self.get_wallet(&wallet_key.mint_url, &unit).await {
+                            best_preferred_balance = *balance;
+                            best_preferred_wallet = Some(Arc::new(wallet));
+                        }
+                    } else if !is_preferred && *balance > best_fallback_balance {
+                        if let Ok(wallet) = self.get_wallet(&wallet_key.mint_url, &unit).await {
+                            best_fallback_balance = *balance;
+                            best_fallback_wallet = Some(Arc::new(wallet));
+                        }
                     }
                 }
             }
 
-            best_wallet
+            best_preferred_wallet
+                .or(best_fallback_wallet)
                 .map(|w| (*w).clone())
                 .ok_or(Error::InsufficientFunds)?
         };
@@ -477,6 +513,14 @@ impl WalletRepository {
             .filter_map(|url| MintUrl::from_str(&url).ok())
             .collect();
 
+        let preferred_mints: Vec<MintUrl> = params
+            .preferred_mints
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|url| MintUrl::from_str(&url).ok())
+            .collect();
+
         // Transports
         let transport_type = params.transport.to_lowercase();
         let (transports, nostr_info): (Vec<Transport>, Option<NostrWaitInfo>) =
@@ -546,6 +590,7 @@ impl WalletRepository {
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
             mints,
+            preferred_mints,
             description: params.description,
             transports,
             nut10,
@@ -575,6 +620,14 @@ impl WalletRepository {
         // Filter by the requested unit and extract unique mint URLs
         let mints: Vec<MintUrl> = params
             .mints
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|url| MintUrl::from_str(&url).ok())
+            .collect();
+
+        let preferred_mints: Vec<MintUrl> = params
+            .preferred_mints
             .clone()
             .unwrap_or_default()
             .into_iter()
@@ -615,6 +668,7 @@ impl WalletRepository {
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
             mints,
+            preferred_mints,
             description: params.description,
             transports,
             nut10,
