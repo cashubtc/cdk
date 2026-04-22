@@ -10,11 +10,16 @@ rust-version.workspace = true # MSRV
 description = "CDK onchain backend with bdk"
 readme = "README.md"
 
+[features]
+default = ["bitcoin-rpc", "esplora"]
+bitcoin-rpc = ["dep:bdk_bitcoind_rpc"]
+esplora = ["dep:bdk_esplora"]
+
 [dependencies]
 async-trait.workspace = true
 bdk_wallet = { version = "3.0.0", features = ["rusqlite", "keys-bip39"] }
-bdk_bitcoind_rpc = "0.21.0"
-bdk_esplora = { version = "0.22.1", features = ["async-https-rustls", "tokio"] }
+bdk_bitcoind_rpc = { version = "0.21.0", optional = true }
+bdk_esplora = { version = "0.22.1", features = ["async-https-rustls", "tokio"], optional = true }
 cdk-common = { workspace = true, features = ["mint"] }
 futures.workspace = true
 tokio.workspace = true 

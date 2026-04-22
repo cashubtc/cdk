@@ -554,7 +554,7 @@ mod tests {
         BatchOutputAssignment, SendBatchRecord, SendBatchState,
     };
     use crate::types::{PaymentMetadata, PaymentTier};
-    use crate::ChainSource;
+    use crate::{ChainSource, EsploraConfig};
 
     const TEST_TXID: &str = "0000000000000000000000000000000000000000000000000000000000000001";
 
@@ -577,10 +577,10 @@ mod tests {
             .await
             .expect("in-memory kv store");
 
-        let chain_source = ChainSource::Esplora {
+        let chain_source = ChainSource::Esplora(EsploraConfig {
             url: "http://127.0.0.1:1".to_string(),
             parallel_requests: 1,
-        };
+        });
 
         let fee_reserve = FeeReserve {
             min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),

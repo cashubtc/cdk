@@ -1,10 +1,8 @@
 //! Fee estimation utilities
-use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, RpcApi};
-use bdk_esplora::esplora_client::Builder;
 
 use crate::error::Error;
 use crate::types::PaymentTier;
-use crate::{CdkBdk, ChainSource};
+use crate::CdkBdk;
 
 // Constants for P2WPKH heuristic fee estimation
 const HEURISTIC_VBYTES_PER_INPUT: u64 = 68;
@@ -53,7 +51,7 @@ impl CdkBdk {
         }
 
         let target_blocks = target_blocks_for_tier(tier);
-        let rate_result = self.fetch_fee_rate_from_source(target_blocks).await;
+        let rate_result = self.chain_source.fetch_fee_rate(target_blocks).await;
 
         let rate = match rate_result {
             Ok(rate) => rate,
@@ -73,74 +71,5 @@ impl CdkBdk {
         }
 
         Ok(rate)
-    }
-
-    async fn fetch_fee_rate_from_source(&self, target_blocks: u16) -> Result<f64, Error> {
-        match &self.chain_source {
-            ChainSource::BitcoinRpc(rpc_config) => {
-                // Use a blocking spawn since Client is synchronous
-                let rpc_config = rpc_config.clone();
-                let host = rpc_config.host.clone();
-                let port = rpc_config.port;
-
-                tokio::task::spawn_blocking(move || {
-                    let rpc_client = Client::new(
-                        &format!("http://{}:{}", host, port),
-                        Auth::UserPass(rpc_config.user, rpc_config.password),
-                    )?;
-
-                    let estimate = rpc_client.estimate_smart_fee(target_blocks, None)?;
-
-                    if let Some(fee_rate_btc_per_kvb) = estimate.fee_rate {
-                        // convert BTC/kvB to sat/vB:
-                        // 1 BTC = 100,000,000 sat
-                        // 1 kvB = 1,000 vB
-                        // sat/vB = (BTC/kvB * 100,000,000) / 1,000 = BTC/kvB * 100_000
-                        let sat_per_vb = fee_rate_btc_per_kvb.to_btc() * 100_000.0;
-                        Ok(sat_per_vb)
-                    } else {
-                        Err(Error::FeeEstimationUnavailable)
-                    }
-                })
-                .await
-                .map_err(|e| Error::FeeEstimationFailed(e.to_string()))?
-            }
-            ChainSource::Esplora { url, .. } => {
-                let client = Builder::new(url)
-                    .build_async()
-                    .map_err(|e| Error::Esplora(e.to_string()))?;
-
-                let estimates = client
-                    .get_fee_estimates()
-                    .await
-                    .map_err(|e| Error::Esplora(e.to_string()))?;
-
-                // Esplora returns a map of target blocks (as u16) to fee rate (sat/vB as f64)
-                if let Some(&rate) = estimates.get(&target_blocks) {
-                    return Ok(rate);
-                }
-
-                // Fallback: find the closest available target block estimate that is >= our target
-                let mut available_targets: Vec<u16> = estimates.keys().copied().collect();
-                available_targets.sort_unstable();
-
-                for &t in &available_targets {
-                    if t >= target_blocks {
-                        if let Some(&rate) = estimates.get(&t) {
-                            return Ok(rate);
-                        }
-                    }
-                }
-
-                // If nothing >= target, take the largest available
-                if let Some(&t) = available_targets.last() {
-                    if let Some(&rate) = estimates.get(&t) {
-                        return Ok(rate);
-                    }
-                }
-
-                Err(Error::FeeEstimationUnavailable)
-            }
-        }
     }
 }

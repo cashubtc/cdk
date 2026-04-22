@@ -1,8 +1,5 @@
 use std::str::FromStr;
 
-use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, RawTx, RpcApi};
-use bdk_esplora::esplora_client::Builder;
-// use bdk_esplora::EsploraAsyncExt;
 use bdk_wallet::bitcoin::{Address, OutPoint, Transaction};
 use cdk_common::payment::{Event, MakePaymentResponse, PaymentIdentifier};
 use cdk_common::{Amount, CurrencyUnit, MeltQuoteState, QuoteId};
@@ -14,7 +11,7 @@ use crate::send::batch_transaction::record::BatchOutputAssignment;
 use crate::send::batch_transaction::{allocate_batch_fee, state as batch_state, SendBatch};
 use crate::send::payment_intent::{self, state as intent_state, SendIntent, SendIntentAny};
 use crate::types::PaymentTier;
-use crate::{CdkBdk, ChainSource};
+use crate::CdkBdk;
 
 impl CdkBdk {
     pub(crate) async fn finalize_send_intent_and_emit(
@@ -139,38 +136,7 @@ impl CdkBdk {
         &self,
         tx: Transaction,
     ) -> Result<(), Error> {
-        match &self.chain_source {
-            ChainSource::BitcoinRpc(rpc_config) => {
-                let rpc_client: Client = Client::new(
-                    &format!("http://{}:{}", rpc_config.host, rpc_config.port),
-                    Auth::UserPass(rpc_config.user.clone(), rpc_config.password.clone()),
-                )?;
-
-                tracing::info!(
-                    "Broadcasting transaction: {} via bitcoin rpc",
-                    tx.compute_txid()
-                );
-
-                rpc_client.send_raw_transaction(tx.raw_hex())?;
-            }
-            ChainSource::Esplora { url, .. } => {
-                let client = Builder::new(url)
-                    .build_async()
-                    .map_err(|e| Error::Esplora(e.to_string()))?;
-
-                tracing::info!(
-                    "Broadcasting transaction: {} via esplora",
-                    tx.compute_txid()
-                );
-
-                client
-                    .broadcast(&tx)
-                    .await
-                    .map_err(|e| Error::Esplora(e.to_string()))?;
-            }
-        }
-
-        Ok(())
+        self.chain_source.broadcast(tx).await
     }
 
     pub(crate) async fn run_batch_processor(
@@ -903,7 +869,7 @@ mod tests {
         use crate::send::batch_transaction::record::{
             BatchOutputAssignment, SendBatchRecord, SendBatchState,
         };
-        use crate::{CdkBdk, ChainSource};
+        use crate::{CdkBdk, ChainSource, EsploraConfig};
 
         const TEST_TXID: &str = "0000000000000000000000000000000000000000000000000000000000000001";
 
@@ -926,10 +892,10 @@ mod tests {
                 .await
                 .expect("in-memory kv store");
 
-            let chain_source = ChainSource::Esplora {
+            let chain_source = ChainSource::Esplora(EsploraConfig {
                 url: "http://127.0.0.1:1".to_string(),
                 parallel_requests: 1,
-            };
+            });
 
             let fee_reserve = FeeReserve {
                 min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),

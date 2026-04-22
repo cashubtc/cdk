@@ -32,13 +32,14 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 
-// use uuid::Uuid;
+pub use crate::chain::{BitcoinRpcConfig, ChainSource, EsploraConfig};
 pub use crate::error::Error;
 pub use crate::storage::{BdkStorage, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
 pub use crate::types::{
     BatchConfig, FeeEstimationConfig, PaymentMetadata, PaymentTier, SyncConfig,
 };
 
+pub mod chain;
 pub mod error;
 pub(crate) mod fee;
 pub mod receive;
@@ -98,33 +99,6 @@ pub struct CdkBdk {
     pub(crate) sync_config: SyncConfig,
     /// Cache for fee rate estimation: Tier -> (sat_per_vb, timestamp)
     pub(crate) fee_rate_cache: Arc<Mutex<std::collections::HashMap<PaymentTier, (f64, u64)>>>,
-}
-
-/// Configuration for connecting to Bitcoin RPC
-#[derive(Debug, Clone)]
-pub struct BitcoinRpcConfig {
-    /// Bitcoin RPC server hostname or IP address
-    pub host: String,
-    /// Bitcoin RPC server port number
-    pub port: u16,
-    /// Username for Bitcoin RPC authentication
-    pub user: String,
-    /// Password for Bitcoin RPC authentication
-    pub password: String,
-}
-
-/// Source of blockchain data for the BDK wallet
-#[derive(Debug, Clone)]
-pub enum ChainSource {
-    /// Use an Esplora server for blockchain data
-    Esplora {
-        /// URL of the Esplora server endpoint
-        url: String,
-        /// Number of parallel requests to use during sync
-        parallel_requests: usize,
-    },
-    /// Use Bitcoin Core RPC for blockchain data
-    BitcoinRpc(BitcoinRpcConfig),
 }
 
 impl CdkBdk {
@@ -687,10 +661,10 @@ mod tests {
             .await
             .expect("in-memory kv store");
 
-        let chain_source = ChainSource::Esplora {
+        let chain_source = ChainSource::Esplora(EsploraConfig {
             url: "http://127.0.0.1:1".to_string(),
             parallel_requests: 1,
-        };
+        });
 
         let fee_reserve = FeeReserve {
             min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),

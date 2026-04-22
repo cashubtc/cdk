@@ -36,6 +36,7 @@ pub enum Error {
     Wallet(String),
 
     /// Bitcoin RPC error
+    #[cfg(feature = "bitcoin-rpc")]
     #[error("Bitcoin RPC error: {0}")]
     BitcoinRpc(#[from] bdk_bitcoind_rpc::bitcoincore_rpc::Error),
 
@@ -141,7 +142,9 @@ impl Error {
             // retries them on the next tick regardless of the specific
             // sub-variant, so classifying the whole variant as transient
             // is accurate for operational purposes.
-            Self::Esplora(_) | Self::BitcoinRpc(_) => true,
+            #[cfg(feature = "bitcoin-rpc")]
+            Self::BitcoinRpc(_) => true,
+            Self::Esplora(_) => true,
             Self::Io(e) => matches!(
                 e.kind(),
                 std::io::ErrorKind::TimedOut

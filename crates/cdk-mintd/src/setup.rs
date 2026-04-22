@@ -486,10 +486,10 @@ impl OnchainBackendSetup for crate::config::Bdk {
                     .esplora_url
                     .clone()
                     .unwrap_or_else(|| "https://mutinynet.com/api".to_string());
-                cdk_bdk::ChainSource::Esplora {
+                cdk_bdk::ChainSource::Esplora(cdk_bdk::EsploraConfig {
                     url: esplora_url,
                     parallel_requests: 5,
-                }
+                })
             }
             _ => {
                 let host = self
