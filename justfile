@@ -421,7 +421,7 @@ update-msrv-lock:
 
     nix develop --ignore-environment .#stable --command bash -c '
         cargo update
-        echo "Updated Cargo.lock (stable 1.94.0)"
+        echo "Updated Cargo.lock (stable 1.95.0)"
     '
 
 itest db:
