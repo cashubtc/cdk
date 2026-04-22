@@ -305,6 +305,36 @@ pub struct Restored {
     pub pending: Amount,
 }
 
+/// Options for [`crate::wallet::Wallet::restore_with_opts`].
+///
+/// Defaults match the NUT-13 spec recommendation
+/// (<https://github.com/cashubtc/nuts/blob/main/13.md#generate-blindedmessages>):
+/// a batch of 100 blinded messages and three consecutive empty batches to
+/// signal end-of-history. Callers that need more conservative pacing or
+/// different gap tolerance can override either field.
+///
+/// Degenerate configurations (`batch_size == 0` and/or `max_gap == 0`) do
+/// not panic but produce a scan that terminates without recovering proofs:
+/// `max_gap == 0` skips the scan entirely, and `batch_size == 0` sends
+/// empty requests until `max_gap` is reached. Both are configuration
+/// errors; callers should use `Default` or positive values.
+#[derive(Debug, Clone)]
+pub struct RestoreOptions {
+    /// Number of blinded messages to request per batch.
+    pub batch_size: u32,
+    /// Number of consecutive empty batches that terminate the scan.
+    pub max_gap: u32,
+}
+
+impl Default for RestoreOptions {
+    fn default() -> Self {
+        Self {
+            batch_size: 100,
+            max_gap: 3,
+        }
+    }
+}
+
 /// Send options
 #[derive(Debug, Clone, Default)]
 pub struct SendOptions {
@@ -1138,5 +1168,25 @@ mod tests {
             conditions: None,
         };
         assert!(!proof_info.matches_conditions(&None, &None, &None, &Some(vec![dummy_condition])));
+    }
+
+    #[test]
+    fn restore_options_defaults_match_nut13_spec() {
+        // NUT-13 recommends batch_size=100 and gap_limit=3.
+        // https://github.com/cashubtc/nuts/blob/main/13.md#generate-blindedmessages
+        let opts = RestoreOptions::default();
+        assert_eq!(opts.batch_size, 100);
+        assert_eq!(opts.max_gap, 3);
+    }
+
+    #[test]
+    fn restore_options_custom_values_round_trip() {
+        let opts = RestoreOptions {
+            batch_size: 25,
+            max_gap: 2,
+        };
+        let cloned = opts.clone();
+        assert_eq!(cloned.batch_size, 25);
+        assert_eq!(cloned.max_gap, 2);
     }
 }
