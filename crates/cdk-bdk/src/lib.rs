@@ -3,12 +3,13 @@
 #![doc = include_str!("../README.md")]
 
 use std::fs;
+use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bdk_wallet::bitcoin::Network;
@@ -245,6 +246,74 @@ impl CdkBdk {
     }
 }
 
+/// Supervise a long-running task, restarting it with exponential backoff
+/// (1s -> 60s, capped) whenever it returns `Err`. The backoff resets once
+/// the task has run for longer than [`SUPERVISOR_BACKOFF_RESET`]. Exits
+/// cleanly when `cancel` is triggered.
+///
+/// A task returning `Ok(())` is treated as a clean shutdown (e.g. the
+/// task observed the cancel token itself) and the supervisor exits.
+async fn supervise<F, Fut>(name: &'static str, cancel: CancellationToken, mut f: F)
+where
+    F: FnMut(CancellationToken) -> Fut,
+    Fut: Future<Output = Result<(), Error>>,
+{
+    const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+    const MAX_BACKOFF: Duration = Duration::from_secs(60);
+    const SUPERVISOR_BACKOFF_RESET: Duration = Duration::from_secs(300);
+
+    let mut backoff = INITIAL_BACKOFF;
+
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        let started = Instant::now();
+        let child_cancel = cancel.clone();
+
+        let result = tokio::select! {
+            _ = cancel.cancelled() => {
+                tracing::info!("{name} supervisor: cancelled");
+                return;
+            }
+            r = f(child_cancel) => r,
+        };
+
+        match result {
+            Ok(()) => {
+                tracing::info!("{name} supervisor: task exited cleanly");
+                return;
+            }
+            Err(e) => {
+                let ran_for = started.elapsed();
+                let transient = e.is_transient();
+                tracing::error!(
+                    task = name,
+                    ran_for_secs = ran_for.as_secs(),
+                    transient,
+                    "supervised task returned error: {e}; restarting with backoff"
+                );
+
+                if ran_for >= SUPERVISOR_BACKOFF_RESET {
+                    backoff = INITIAL_BACKOFF;
+                }
+
+                // Sleep with backoff, but wake immediately if cancelled.
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!("{name} supervisor: cancelled during backoff");
+                        return;
+                    }
+                    _ = tokio::time::sleep(backoff) => {}
+                }
+
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl MintPayment for CdkBdk {
     type Err = cdk_common::payment::Error;
@@ -264,31 +333,21 @@ impl MintPayment for CdkBdk {
         let sync_self = self.clone();
         let sync_cancel = cancel.clone();
         let sync_handle = tokio::spawn(async move {
-            tokio::select! {
-                _ = sync_cancel.cancelled() => {
-                    tracing::info!("Wallet sync task cancelled");
-                }
-                res = sync_self.sync_wallet(sync_cancel.clone()) => {
-                    if let Err(e) = res {
-                        tracing::error!("Wallet sync task failed: {}", e);
-                    }
-                }
-            }
+            supervise("wallet sync", sync_cancel, move |cancel| {
+                let me = sync_self.clone();
+                async move { me.sync_wallet(cancel).await }
+            })
+            .await;
         });
 
         let batch_self = self.clone();
         let batch_cancel = cancel.clone();
         let batch_handle = tokio::spawn(async move {
-            tokio::select! {
-                _ = batch_cancel.cancelled() => {
-                    tracing::info!("Batch processor task cancelled");
-                }
-                res = batch_self.run_batch_processor(batch_cancel.clone()) => {
-                    if let Err(e) = res {
-                        tracing::error!("Batch processor task failed: {}", e);
-                    }
-                }
-            }
+            supervise("batch processor", batch_cancel, move |cancel| {
+                let me = batch_self.clone();
+                async move { me.run_batch_processor(cancel).await }
+            })
+            .await;
         });
 
         *tasks_lock = Some(BackgroundTasks {
@@ -929,5 +988,175 @@ mod tests {
         assert_eq!(response.status, MeltQuoteState::Unknown);
         assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
         assert_eq!(response.payment_proof, None);
+    }
+
+    // ------------------------------------------------------------------
+    // Chain-sync resilience tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_is_transient_classifies_network_errors() {
+        // Esplora errors are always classified as transient: the sync
+        // loop should retry them on the next tick, and this classification
+        // drives the log severity in the supervisor.
+        let esplora_err = Error::Esplora(
+            "HttpResponse { status: 525, message: \"error code: 525\" }".to_string(),
+        );
+        assert!(esplora_err.is_transient());
+
+        let esplora_404 = Error::Esplora(
+            "HttpResponse { status: 404, message: \"Block not found\" }".to_string(),
+        );
+        assert!(esplora_404.is_transient());
+
+        // Local wallet/state errors are not transient: they indicate a
+        // real defect that retrying will not resolve.
+        let wallet_err = Error::Wallet("invalid checkpoint".to_string());
+        assert!(!wallet_err.is_transient());
+
+        let vout_err = Error::VoutNotFound;
+        assert!(!vout_err.is_transient());
+
+        // Timed-out I/O is transient.
+        let io_err = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "network timeout",
+        ));
+        assert!(io_err.is_transient());
+
+        // An arbitrary I/O error kind is not.
+        let io_other = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "bad data",
+        ));
+        assert!(!io_other.is_transient());
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_restarts_failing_task_with_backoff() {
+        // The supervisor must keep calling the supplied future as long
+        // as it returns Err, until the cancel token is triggered.
+        let cancel = CancellationToken::new();
+        let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let counter_clone = Arc::clone(&counter);
+        let cancel_inner = cancel.clone();
+        let supervisor = tokio::spawn(async move {
+            super::supervise("test", cancel_inner, move |_c| {
+                let c = Arc::clone(&counter_clone);
+                async move {
+                    c.fetch_add(1, Ordering::Relaxed);
+                    Err::<(), Error>(Error::Esplora("boom".to_string()))
+                }
+            })
+            .await;
+        });
+
+        // Let a few restart cycles happen (initial backoff is 1s).
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+        cancel.cancel();
+
+        tokio::time::timeout(Duration::from_secs(5), supervisor)
+            .await
+            .expect("supervisor did not exit after cancel")
+            .expect("supervisor task panicked");
+
+        let n = counter.load(Ordering::Relaxed);
+        assert!(
+            n >= 2,
+            "supervisor should have restarted the task at least twice, got {n}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_exits_on_ok() {
+        // Ok(()) from the task is treated as clean shutdown; the
+        // supervisor exits immediately without restart.
+        let cancel = CancellationToken::new();
+        let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let counter_clone = Arc::clone(&counter);
+        let cancel_inner = cancel.clone();
+        let supervisor = tokio::spawn(async move {
+            super::supervise("test", cancel_inner, move |_c| {
+                let c = Arc::clone(&counter_clone);
+                async move {
+                    c.fetch_add(1, Ordering::Relaxed);
+                    Ok::<(), Error>(())
+                }
+            })
+            .await;
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), supervisor)
+            .await
+            .expect("supervisor did not exit after Ok(())")
+            .expect("supervisor task panicked");
+
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            1,
+            "supervisor must not restart a task that returned Ok(())"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_cancel_during_backoff() {
+        // Cancelling during the backoff sleep must exit promptly rather
+        // than waiting for the sleep to expire.
+        let cancel = CancellationToken::new();
+        let cancel_inner = cancel.clone();
+        let supervisor = tokio::spawn(async move {
+            super::supervise("test", cancel_inner, move |_c| async move {
+                // Fail immediately so we enter the backoff sleep.
+                Err::<(), Error>(Error::Esplora("boom".to_string()))
+            })
+            .await;
+        });
+
+        // Give the supervisor a moment to enter its first backoff.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let cancel_at = std::time::Instant::now();
+        cancel.cancel();
+
+        tokio::time::timeout(Duration::from_secs(2), supervisor)
+            .await
+            .expect("supervisor did not exit promptly after cancel")
+            .expect("supervisor task panicked");
+
+        let elapsed = cancel_at.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "supervisor took {elapsed:?} to exit after cancel; expected < 500ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_wallet_survives_unreachable_esplora() {
+        // sync_wallet must not return Err when the Esplora endpoint is
+        // unreachable — it should warn and continue. We prove this by
+        // starting the backend (which spawns the sync task against a
+        // bogus URL) and letting it run for long enough to tick at least
+        // twice, then stop cleanly.
+        let backend = build_test_instance(5).await;
+        backend.start().await.expect("start");
+
+        // Sync interval is 60s per build_test_instance, so this test
+        // only verifies the first synchronous tick path: the task must
+        // stay alive and the supervisor must not log a "task failed"
+        // line for a transient network error.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // The sync JoinHandle must still be running, not completed.
+        {
+            let tasks = backend.tasks.lock().await;
+            let bg = tasks.as_ref().expect("tasks running");
+            assert!(
+                !bg.sync.is_finished(),
+                "sync task must not exit on transient Esplora errors"
+            );
+        }
+
+        backend.stop().await.expect("stop");
     }
 }

@@ -126,3 +126,35 @@ impl From<Error> for cdk_common::payment::Error {
         Self::Onchain(Box::new(e))
     }
 }
+
+impl Error {
+    /// Returns `true` when the error is a transient network / upstream
+    /// condition that is expected to resolve on retry.
+    ///
+    /// This is used by the sync supervisor to decide whether to continue
+    /// retrying on the next tick (transient) or to treat the failure as
+    /// part of the backoff/restart policy (non-transient).
+    pub fn is_transient(&self) -> bool {
+        match self {
+            // Chain-source I/O is always transient: network blips, reorg
+            // races, upstream 5xx, DNS/TLS timeouts, etc. The sync loop
+            // retries them on the next tick regardless of the specific
+            // sub-variant, so classifying the whole variant as transient
+            // is accurate for operational purposes.
+            Self::Esplora(_) | Self::BitcoinRpc(_) => true,
+            Self::Io(e) => matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::WouldBlock
+            ),
+            _ => false,
+        }
+    }
+}

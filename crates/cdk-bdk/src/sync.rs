@@ -14,6 +14,10 @@ use tokio_util::sync::CancellationToken;
 use crate::error::Error;
 use crate::{CdkBdk, ChainSource, WalletWithDb};
 
+/// Threshold at which prolonged consecutive failures are escalated from
+/// `warn!` to `error!` so operators notice sustained outages.
+const SUSTAINED_FAILURE_THRESHOLD: u32 = 10;
+
 /// Apply a chunk of blocks to the wallet under a single lock acquisition,
 /// then persist.
 async fn apply_and_persist_chunk(
@@ -51,7 +55,49 @@ async fn apply_and_persist_chunk(
     Ok(())
 }
 
+/// Log a per-iteration failure at an appropriate severity based on how
+/// many consecutive failures have occurred.
+fn log_sync_failure(context: &str, err: &Error, consecutive: u32) {
+    if consecutive >= SUSTAINED_FAILURE_THRESHOLD {
+        tracing::error!(
+            consecutive_failures = consecutive,
+            transient = err.is_transient(),
+            "{context}: {err}"
+        );
+    } else {
+        tracing::warn!(
+            consecutive_failures = consecutive,
+            transient = err.is_transient(),
+            "{context}: {err}"
+        );
+    }
+}
+
 impl CdkBdk {
+    /// Run the reconciliation helpers that inspect the wallet after blocks
+    /// have been applied. Each helper's failure is logged but does not
+    /// tear down the sync task; a subsequent tick will retry naturally.
+    async fn run_reconciliation(&self) {
+        if let Err(e) = self.scan_for_new_payments().await {
+            tracing::warn!(
+                transient = e.is_transient(),
+                "scan_for_new_payments failed during reconciliation: {e}"
+            );
+        }
+        if let Err(e) = self.check_receive_saga_confirmations().await {
+            tracing::warn!(
+                transient = e.is_transient(),
+                "check_receive_saga_confirmations failed during reconciliation: {e}"
+            );
+        }
+        if let Err(e) = self.check_send_saga_confirmations().await {
+            tracing::warn!(
+                transient = e.is_transient(),
+                "check_send_saga_confirmations failed during reconciliation: {e}"
+            );
+        }
+    }
+
     pub(crate) async fn sync_wallet(&self, cancel_token: CancellationToken) -> Result<(), Error> {
         match &self.chain_source {
             ChainSource::BitcoinRpc(rpc_config) => {
@@ -62,8 +108,14 @@ impl CdkBdk {
 
                 // Persist RPC client across sync iterations; re-create on error.
                 let mut rpc_client: Option<Arc<Client>> = None;
+                let mut consecutive_failures: u32 = 0;
 
-                tracing::info!("Starting continuous block monitoring...");
+                tracing::info!(
+                    host = %rpc_config.host,
+                    port = rpc_config.port,
+                    interval_secs = self.sync_interval_secs,
+                    "Starting continuous block monitoring via Bitcoin RPC"
+                );
                 loop {
                     tokio::select! {
                         _ = cancel_token.cancelled() => {
@@ -88,8 +140,11 @@ impl CdkBdk {
                                             arc
                                         }
                                         Err(e) => {
+                                            consecutive_failures =
+                                                consecutive_failures.saturating_add(1);
                                             tracing::warn!(
                                                 error = %e,
+                                                consecutive_failures,
                                                 "Failed to construct Bitcoin RPC client; will retry on next tick"
                                             );
                                             continue;
@@ -113,6 +168,7 @@ impl CdkBdk {
                             );
 
                             let mut any_applied = false;
+                            let mut had_tick_error = false;
                             let mut chunk: Vec<BlockEvent<Block>> = Vec::with_capacity(apply_chunk_size);
 
                             loop {
@@ -127,9 +183,13 @@ impl CdkBdk {
                                             )
                                             .await
                                             {
-                                                tracing::error!(
-                                                    "Failed to apply block chunk: {}",
-                                                    e
+                                                had_tick_error = true;
+                                                consecutive_failures =
+                                                    consecutive_failures.saturating_add(1);
+                                                log_sync_failure(
+                                                    "Failed to apply block chunk",
+                                                    &e,
+                                                    consecutive_failures,
                                                 );
                                                 // Drop the RPC client so it is rebuilt next tick.
                                                 rpc_client = None;
@@ -140,10 +200,20 @@ impl CdkBdk {
                                     }
                                     Ok(None) => break,
                                     Err(e) => {
-                                        tracing::warn!(
-                                            "RPC error during sync: {}; will retry next tick",
-                                            e
-                                        );
+                                        had_tick_error = true;
+                                        consecutive_failures =
+                                            consecutive_failures.saturating_add(1);
+                                        if consecutive_failures >= SUSTAINED_FAILURE_THRESHOLD {
+                                            tracing::error!(
+                                                consecutive_failures,
+                                                "Bitcoin RPC error during sync: {e}; will retry next tick"
+                                            );
+                                        } else {
+                                            tracing::warn!(
+                                                consecutive_failures,
+                                                "Bitcoin RPC error during sync: {e}; will retry next tick"
+                                            );
+                                        }
                                         rpc_client = None;
                                         break;
                                     }
@@ -158,7 +228,14 @@ impl CdkBdk {
                                 )
                                 .await
                                 {
-                                    tracing::error!("Failed to apply final block chunk: {}", e);
+                                    had_tick_error = true;
+                                    consecutive_failures =
+                                        consecutive_failures.saturating_add(1);
+                                    log_sync_failure(
+                                        "Failed to apply final block chunk",
+                                        &e,
+                                        consecutive_failures,
+                                    );
                                     rpc_client = None;
                                 } else {
                                     any_applied = true;
@@ -177,10 +254,18 @@ impl CdkBdk {
                                 );
                             }
 
+                            if !had_tick_error {
+                                if consecutive_failures > 0 {
+                                    tracing::info!(
+                                        recovered_after = consecutive_failures,
+                                        "Bitcoin RPC sync recovered"
+                                    );
+                                }
+                                consecutive_failures = 0;
+                            }
+
                             if startup_reconciliation_pending || any_applied {
-                                self.scan_for_new_payments().await?;
-                                self.check_receive_saga_confirmations().await?;
-                                self.check_send_saga_confirmations().await?;
+                                self.run_reconciliation().await;
                                 startup_reconciliation_pending = false;
                             }
                         }
@@ -197,8 +282,14 @@ impl CdkBdk {
 
                 // Persist Esplora client across sync iterations; re-create on error.
                 let mut esplora_client: Option<AsyncClient> = None;
+                let mut consecutive_failures: u32 = 0;
 
-                tracing::info!("Starting esplora block sync...");
+                tracing::info!(
+                    url = %url,
+                    parallel_requests = *parallel_requests,
+                    interval_secs = self.sync_interval_secs,
+                    "Starting Esplora block sync"
+                );
                 loop {
                     tokio::select! {
                         _ = cancel_token.cancelled() => {
@@ -215,9 +306,13 @@ impl CdkBdk {
                                             c
                                         }
                                         Err(e) => {
-                                            tracing::warn!(
-                                                error = %e,
-                                                "Failed to construct Esplora client; will retry on next tick"
+                                            consecutive_failures =
+                                                consecutive_failures.saturating_add(1);
+                                            let err = Error::Esplora(e.to_string());
+                                            log_sync_failure(
+                                                "Failed to construct Esplora client",
+                                                &err,
+                                                consecutive_failures,
                                             );
                                             continue;
                                         }
@@ -232,27 +327,38 @@ impl CdkBdk {
                             };
 
                             // Phase B (no lock): execute the network sync.
-                            let sync_update = match client.sync(sync_request, *parallel_requests).await {
+                            let sync_update = match client
+                                .sync(sync_request, *parallel_requests)
+                                .await
+                            {
                                 Ok(u) => u,
                                 Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "Esplora sync failed; will retry on next tick"
+                                    consecutive_failures =
+                                        consecutive_failures.saturating_add(1);
+                                    let err = Error::Esplora(e.to_string());
+                                    log_sync_failure(
+                                        "Esplora sync failed",
+                                        &err,
+                                        consecutive_failures,
                                     );
+                                    // Drop client so the next tick rebuilds it.
                                     esplora_client = None;
                                     continue;
                                 }
                             };
 
                             // Phase C (short lock): apply the update and persist.
-                            let events = {
+                            let apply_result: Result<Vec<WalletEvent>, Error> = {
                                 let apply_start = Instant::now();
                                 let mut w = self.wallet_with_db.lock().await;
-                                let events = w
+                                let res = w
                                     .wallet
                                     .apply_update_events(sync_update)
-                                    .map_err(|e| Error::Wallet(e.to_string()))?;
-                                w.persist()?;
+                                    .map_err(|e| Error::Wallet(e.to_string()))
+                                    .and_then(|events| {
+                                        w.persist()?;
+                                        Ok(events)
+                                    });
                                 let elapsed_ms = apply_start.elapsed().as_millis() as u64;
                                 if elapsed_ms > warn_ms {
                                     tracing::warn!(
@@ -261,7 +367,21 @@ impl CdkBdk {
                                         "Wallet lock held longer than configured warning threshold during esplora apply"
                                     );
                                 }
-                                events
+                                res
+                            };
+
+                            let events = match apply_result {
+                                Ok(events) => events,
+                                Err(e) => {
+                                    consecutive_failures =
+                                        consecutive_failures.saturating_add(1);
+                                    log_sync_failure(
+                                        "Failed to apply Esplora update",
+                                        &e,
+                                        consecutive_failures,
+                                    );
+                                    continue;
+                                }
                             };
 
                             let tip = {
@@ -274,15 +394,21 @@ impl CdkBdk {
                                 tip.height
                             );
 
+                            if consecutive_failures > 0 {
+                                tracing::info!(
+                                    recovered_after = consecutive_failures,
+                                    "Esplora sync recovered"
+                                );
+                                consecutive_failures = 0;
+                            }
+
                             let has_relevant_events = events.iter().any(|e| matches!(
                                 e,
                                 WalletEvent::TxConfirmed { .. } | WalletEvent::ChainTipChanged { .. }
                             ));
 
                             if startup_reconciliation_pending || has_relevant_events {
-                                self.scan_for_new_payments().await?;
-                                self.check_receive_saga_confirmations().await?;
-                                self.check_send_saga_confirmations().await?;
+                                self.run_reconciliation().await;
                                 startup_reconciliation_pending = false;
                             }
                         }
