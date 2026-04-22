@@ -1819,6 +1819,79 @@ async fn test_fake_mint_duplicate_proofs_melt() {
     }
 }
 
+/// Regression test for cashubtc/cdk#1891.
+///
+/// Exercises the chained `prepare_melt(...).await?.confirm().await?` pattern
+/// that forced consumers to reach for `check_all_pending_proofs()` when the
+/// melt failed. After the fix, confirm() must auto-release reserved proofs on
+/// any failure path, so balance should be fully recovered without any
+/// explicit recovery call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_chained_confirm_auto_releases_proofs_on_failure() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    // Mint 100 sats
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+    proof_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+
+    let fake_description = FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Failed,
+        check_payment_state: MeltQuoteState::Failed,
+        pay_err: false,
+        check_err: false,
+    };
+    let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
+
+    // Chained pattern: if confirm fails, PreparedMelt is consumed and there is
+    // no handle to cancel. Auto-compensation must still run inside confirm().
+    let melt_result = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap()
+        .confirm()
+        .await;
+    assert!(melt_result.is_err(), "Melt should fail on Failed state");
+
+    // Do NOT call check_all_pending_proofs here — the whole point is that the
+    // wallet self-heals so consumers don't need to.
+    let pending = wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Pending]), None)
+        .await
+        .unwrap();
+    assert!(
+        pending.is_empty(),
+        "no proofs should remain Pending after auto-compensation"
+    );
+
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(100),
+        "balance should be fully recovered without explicit recovery calls"
+    );
+}
+
 /// Tests that wallet automatically recovers proofs after a failed melt operation
 /// by swapping them to new proofs, preventing loss of funds
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
