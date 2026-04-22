@@ -96,6 +96,12 @@ impl CdkBdk {
                 "check_send_saga_confirmations failed during reconciliation: {e}"
             );
         }
+        if let Err(e) = self.rebroadcast_stuck_batches().await {
+            tracing::warn!(
+                transient = e.is_transient(),
+                "rebroadcast_stuck_batches failed during reconciliation: {e}"
+            );
+        }
     }
 
     pub(crate) async fn sync_wallet(&self, cancel_token: CancellationToken) -> Result<(), Error> {

@@ -591,6 +591,91 @@ impl CdkBdk {
         }
         Ok(())
     }
+
+    /// Re-broadcast any `Broadcast`-state batch whose transaction the BDK
+    /// wallet does not currently know about.
+    ///
+    /// `Broadcast` state is persisted before the network send (see the
+    /// hot path in `build_sign_broadcast_batch`), so a transient Esplora
+    /// failure at the moment of broadcast can leave a batch durably in
+    /// that state with its tx never having reached the network. The
+    /// one-shot in `recover_send_saga` only covers process restarts;
+    /// this helper closes the steady-state gap by retrying on every
+    /// sync-reconciliation tick.
+    ///
+    /// Staleness signal: `wallet.get_tx(txid).is_none()`. If the wallet
+    /// sees the tx (confirmed or unconfirmed in mempool), we leave it
+    /// alone. Per-batch failures are logged and swallowed; the next
+    /// reconciliation tick retries naturally.
+    #[tracing::instrument(skip_all)]
+    pub(crate) async fn rebroadcast_stuck_batches(&self) -> Result<(), Error> {
+        let batches = self.storage.get_all_send_batches().await?;
+
+        // Collect candidates while holding the wallet lock (needed for
+        // `get_tx`), then drop the lock before any network I/O so the
+        // sync loop is never blocked on Esplora latency.
+        let candidates: Vec<(Uuid, String, Transaction)> = {
+            let wallet_with_db = self.wallet_with_db.lock().await;
+            batches
+                .into_iter()
+                .filter_map(|rec| {
+                    let crate::send::batch_transaction::record::SendBatchState::Broadcast {
+                        txid,
+                        tx_bytes,
+                        ..
+                    } = rec.state
+                    else {
+                        return None;
+                    };
+
+                    let parsed_txid = match bdk_wallet::bitcoin::Txid::from_str(&txid) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            tracing::warn!(
+                                batch_id = %rec.batch_id,
+                                txid = %txid,
+                                "Skipping rebroadcast: failed to parse persisted txid: {e}"
+                            );
+                            return None;
+                        }
+                    };
+
+                    if wallet_with_db.wallet.get_tx(parsed_txid).is_some() {
+                        // Wallet knows the tx (confirmed or in mempool);
+                        // no rebroadcast needed.
+                        return None;
+                    }
+
+                    match bdk_wallet::bitcoin::consensus::deserialize::<Transaction>(&tx_bytes) {
+                        Ok(tx) => Some((rec.batch_id, txid, tx)),
+                        Err(e) => {
+                            tracing::warn!(
+                                batch_id = %rec.batch_id,
+                                txid = %txid,
+                                "Skipping rebroadcast: failed to deserialize persisted tx: {e}"
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect()
+        };
+
+        for (batch_id, txid, tx) in candidates {
+            tracing::info!(%batch_id, %txid, "Rebroadcasting stuck batch");
+            if let Err(e) = self.broadcast_transaction_internal(tx).await {
+                tracing::warn!(
+                    %batch_id,
+                    %txid,
+                    transient = e.is_transient(),
+                    "Rebroadcast failed: {e}"
+                );
+                // Swallow: next reconciliation tick will retry.
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Pure helper that does the vout-derivation work for
@@ -799,5 +884,255 @@ mod tests {
         }]);
         let result = derive_vout_assignments_inner(Network::Regtest, &tx, &[intent], &[10, 20]);
         assert!(matches!(result, Err(Error::Wallet(_))));
+    }
+
+    // ── rebroadcast_stuck_batches ────────────────────────────────────
+
+    mod rebroadcast {
+        use std::str::FromStr;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use bdk_wallet::bitcoin::consensus;
+        use bdk_wallet::keys::bip39::Mnemonic;
+        use cdk_common::common::FeeReserve;
+        use cdk_common::{Amount, CurrencyUnit};
+        use uuid::Uuid;
+
+        use super::{BtcAmount, LockTime, Network, ScriptBuf, TxOut, Version};
+        use crate::send::batch_transaction::record::{
+            BatchOutputAssignment, SendBatchRecord, SendBatchState,
+        };
+        use crate::{CdkBdk, ChainSource};
+
+        const TEST_TXID: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+
+        /// Build a `CdkBdk` test instance with a bogus Esplora URL and an
+        /// empty BDK wallet. Because the wallet is empty, `get_tx` returns
+        /// `None` for any txid, which is exactly the staleness signal the
+        /// rebroadcast path is keyed on. The bogus URL means any call to
+        /// `broadcast_transaction_internal` fails quickly without touching
+        /// the network; `rebroadcast_stuck_batches` swallows that failure
+        /// and still returns `Ok(())`.
+        async fn build_test_instance() -> CdkBdk {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let path = tmp.keep();
+            let mnemonic = Mnemonic::from_str(
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            )
+            .expect("mnemonic");
+
+            let kv = cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory kv store");
+
+            let chain_source = ChainSource::Esplora {
+                url: "http://127.0.0.1:1".to_string(),
+                parallel_requests: 1,
+            };
+
+            let fee_reserve = FeeReserve {
+                min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),
+                percent_fee_reserve: 0.02,
+            };
+
+            CdkBdk::new(
+                mnemonic,
+                Network::Regtest,
+                chain_source,
+                path.to_string_lossy().into_owned(),
+                fee_reserve,
+                Arc::new(kv),
+                None,
+                1,
+                0,
+                60,
+                Some(5),
+                None,
+            )
+            .expect("build CdkBdk test instance")
+        }
+
+        /// Serialize a minimal valid transaction so `consensus::deserialize`
+        /// can round-trip it during rebroadcast.
+        fn valid_tx_bytes() -> Vec<u8> {
+            let tx = super::Transaction {
+                version: Version::TWO,
+                lock_time: LockTime::ZERO,
+                input: Vec::new(),
+                output: vec![TxOut {
+                    value: BtcAmount::from_sat(10_000),
+                    script_pubkey: ScriptBuf::new(),
+                }],
+            };
+            consensus::serialize(&tx)
+        }
+
+        /// No persisted batches → nothing to do; must return Ok.
+        #[tokio::test]
+        async fn rebroadcast_noop_when_storage_empty() {
+            let backend = build_test_instance().await;
+            tokio::time::timeout(Duration::from_secs(5), backend.rebroadcast_stuck_batches())
+                .await
+                .expect("rebroadcast timed out")
+                .expect("rebroadcast should not error");
+        }
+
+        /// A `Broadcast`-state batch whose tx the wallet does not know
+        /// about is a stuck batch. The method must attempt to rebroadcast,
+        /// fail (unreachable URL), log, and still return Ok. The batch
+        /// record must remain in `Broadcast` state for the next retry.
+        #[tokio::test]
+        async fn rebroadcast_stuck_batch_survives_transport_failure() {
+            let backend = build_test_instance().await;
+            let batch_id = Uuid::new_v4();
+            let intent_id = Uuid::new_v4();
+
+            let batch = SendBatchRecord {
+                batch_id,
+                state: SendBatchState::Broadcast {
+                    txid: TEST_TXID.to_string(),
+                    tx_bytes: valid_tx_bytes(),
+                    assignments: vec![BatchOutputAssignment {
+                        intent_id,
+                        vout: 0,
+                        fee_contribution_sat: 500,
+                    }],
+                    fee_sat: 500,
+                },
+            };
+            backend
+                .storage
+                .store_send_batch(&batch)
+                .await
+                .expect("store batch");
+
+            tokio::time::timeout(Duration::from_secs(10), backend.rebroadcast_stuck_batches())
+                .await
+                .expect("rebroadcast timed out")
+                .expect("rebroadcast should swallow transport errors");
+
+            // Batch must still be in Broadcast state for the next retry.
+            let after = backend
+                .storage
+                .get_send_batch(&batch_id)
+                .await
+                .expect("fetch batch")
+                .expect("batch still present");
+            assert!(
+                matches!(after.state, SendBatchState::Broadcast { .. }),
+                "batch must remain in Broadcast state after failed rebroadcast; got {:?}",
+                after.state
+            );
+        }
+
+        /// `Built`-state batches are not yet broadcast candidates. The
+        /// rebroadcast helper must ignore them entirely. We rely on the
+        /// method completing quickly without error; the garbage tx_bytes
+        /// would trigger a deserialize warning if the filter were wrong.
+        #[tokio::test]
+        async fn rebroadcast_ignores_built_batch() {
+            let backend = build_test_instance().await;
+            let batch_id = Uuid::new_v4();
+
+            let batch = SendBatchRecord {
+                batch_id,
+                state: SendBatchState::Built {
+                    psbt_bytes: vec![0xff],
+                    intent_ids: vec![Uuid::new_v4()],
+                },
+            };
+            backend
+                .storage
+                .store_send_batch(&batch)
+                .await
+                .expect("store batch");
+
+            tokio::time::timeout(Duration::from_secs(5), backend.rebroadcast_stuck_batches())
+                .await
+                .expect("rebroadcast timed out")
+                .expect("rebroadcast should not error");
+
+            // Built batches must be left untouched.
+            let after = backend
+                .storage
+                .get_send_batch(&batch_id)
+                .await
+                .expect("fetch batch")
+                .expect("batch still present");
+            assert!(matches!(after.state, SendBatchState::Built { .. }));
+        }
+
+        /// `Signed`-state batches are handled by recovery, not by the
+        /// steady-state rebroadcast loop. The helper must ignore them.
+        #[tokio::test]
+        async fn rebroadcast_ignores_signed_batch() {
+            let backend = build_test_instance().await;
+            let batch_id = Uuid::new_v4();
+
+            let batch = SendBatchRecord {
+                batch_id,
+                state: SendBatchState::Signed {
+                    tx_bytes: vec![0xff],
+                    assignments: vec![BatchOutputAssignment {
+                        intent_id: Uuid::new_v4(),
+                        vout: 0,
+                        fee_contribution_sat: 500,
+                    }],
+                    fee_sat: 500,
+                },
+            };
+            backend
+                .storage
+                .store_send_batch(&batch)
+                .await
+                .expect("store batch");
+
+            tokio::time::timeout(Duration::from_secs(5), backend.rebroadcast_stuck_batches())
+                .await
+                .expect("rebroadcast timed out")
+                .expect("rebroadcast should not error");
+
+            let after = backend
+                .storage
+                .get_send_batch(&batch_id)
+                .await
+                .expect("fetch batch")
+                .expect("batch still present");
+            assert!(matches!(after.state, SendBatchState::Signed { .. }));
+        }
+
+        /// A persisted txid that fails to parse must not abort the loop
+        /// or propagate an error. Other batches on the same tick would
+        /// still be processed; here we just verify no error is returned.
+        #[tokio::test]
+        async fn rebroadcast_skips_unparsable_txid() {
+            let backend = build_test_instance().await;
+            let batch_id = Uuid::new_v4();
+
+            let batch = SendBatchRecord {
+                batch_id,
+                state: SendBatchState::Broadcast {
+                    txid: "not-a-valid-txid".to_string(),
+                    tx_bytes: valid_tx_bytes(),
+                    assignments: vec![BatchOutputAssignment {
+                        intent_id: Uuid::new_v4(),
+                        vout: 0,
+                        fee_contribution_sat: 500,
+                    }],
+                    fee_sat: 500,
+                },
+            };
+            backend
+                .storage
+                .store_send_batch(&batch)
+                .await
+                .expect("store batch");
+
+            tokio::time::timeout(Duration::from_secs(5), backend.rebroadcast_stuck_batches())
+                .await
+                .expect("rebroadcast timed out")
+                .expect("rebroadcast should skip malformed txid gracefully");
+        }
     }
 }
