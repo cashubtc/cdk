@@ -352,6 +352,7 @@ mod tests {
     use super::*;
     use crate::nuts::nut05::MeltQuoteCustomResponse;
     use crate::nuts::nut23::MeltQuoteBolt11Response;
+    use crate::nuts::nut_onchain::MeltQuoteOnchainResponse;
     use crate::{Amount, CurrencyUnit, MeltQuoteState};
 
     fn bolt11_response(quote: &str) -> MeltQuoteBolt11Response<String> {
@@ -379,6 +380,20 @@ mod tests {
             change: None,
             request: Some("lno200".to_string()),
             unit: Some(CurrencyUnit::Sat),
+        }
+    }
+
+    fn onchain_response(quote: &str) -> MeltQuoteOnchainResponse<String> {
+        MeltQuoteOnchainResponse {
+            quote: quote.to_string(),
+            request: "bc1qonchainaddress".to_string(),
+            amount: Amount::from(400),
+            unit: CurrencyUnit::Sat,
+            fee: Amount::from(4),
+            estimated_blocks: 6,
+            state: MeltQuoteState::Paid,
+            expiry: 4000,
+            outpoint: Some("abcd...ef:0".to_string()),
         }
     }
 
@@ -423,6 +438,26 @@ mod tests {
         assert_eq!(r.expiry(), 2000);
         assert_eq!(r.payment_proof(), Some("preimage-12"));
         assert_eq!(r.request(), Some("lno200"));
+    }
+
+    #[test]
+    fn melt_quote_response_accessors_onchain() {
+        let r = MeltQuoteResponse::Onchain(onchain_response("qoc"));
+        assert_eq!(r.method(), PaymentMethod::Known(KnownMethod::Onchain));
+        assert_eq!(r.quote(), "qoc");
+        assert_eq!(r.amount(), Amount::from(400));
+        // fee_reserve() reads `fee` on onchain (field name differs from Bolt11/Bolt12)
+        assert_eq!(r.fee_reserve(), Amount::from(4));
+        assert_eq!(r.state(), MeltQuoteState::Paid);
+        assert_eq!(r.expiry(), 4000);
+        // payment_proof() is the outpoint, not a Lightning preimage
+        assert_eq!(r.payment_proof(), Some("abcd...ef:0"));
+        // Onchain melts never carry NUT-08 change
+        assert!(r.change().is_none());
+        // `request` is non-Option on onchain; accessor wraps in Some
+        assert_eq!(r.request(), Some("bc1qonchainaddress"));
+        // `unit` is non-Option on onchain; accessor wraps in Some
+        assert_eq!(r.unit(), Some(CurrencyUnit::Sat));
     }
 
     #[test]

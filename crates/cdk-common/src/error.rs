@@ -603,6 +603,7 @@ impl Error {
             | Self::DuplicateOutputs
             | Self::MultipleUnits
             | Self::UnitMismatch
+            | Self::OnchainQuoteLookupIdMismatch { .. }
             | Self::SigAllUsedInMelt
             | Self::TokenAlreadySpent
             | Self::TokenPending

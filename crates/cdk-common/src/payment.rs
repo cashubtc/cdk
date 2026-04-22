@@ -525,6 +525,12 @@ pub struct CreateIncomingPaymentResponse {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct MakePaymentResponse {
     /// Payment hash
+    ///
+    /// For onchain payments, this MUST be
+    /// `PaymentIdentifier::QuoteId(quote_id)` where `quote_id` is the value
+    /// supplied by the mint in
+    /// [`OnchainOutgoingPaymentOptions::quote_id`]. See that field for the
+    /// full echo contract.
     pub payment_lookup_id: PaymentIdentifier,
     /// Payment proof
     pub payment_proof: Option<String>,
@@ -546,6 +552,13 @@ impl MakePaymentResponse {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct PaymentQuoteResponse {
     /// Request look up id
+    ///
+    /// For onchain quotes, this MUST be
+    /// `Some(PaymentIdentifier::QuoteId(quote_id))` where `quote_id` is the
+    /// value supplied by the mint in
+    /// [`OnchainOutgoingPaymentOptions::quote_id`]. The mint validates this
+    /// echo and rejects mismatches — see
+    /// [`OnchainOutgoingPaymentOptions::quote_id`] for the full contract.
     pub request_lookup_id: Option<PaymentIdentifier>,
     /// Amount (typed with unit for compile-time safety)
     pub amount: Amount<CurrencyUnit>,
