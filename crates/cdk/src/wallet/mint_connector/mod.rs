@@ -19,7 +19,10 @@ use crate::nuts::{
 use crate::wallet::AuthWallet;
 
 pub mod http_client;
+pub mod rate_limiter;
 pub mod transport;
+
+pub use rate_limiter::RateLimiter;
 
 /// Auth HTTP Client with async transport
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
