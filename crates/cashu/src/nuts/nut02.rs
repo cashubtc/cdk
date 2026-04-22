@@ -1074,6 +1074,17 @@ mod test {
     }
 
     #[test]
+    fn test_v2_from_data_input_fee_zero_is_same_as_no_fee_component() {
+        let unit: CurrencyUnit = CurrencyUnit::from_str("sat").unwrap();
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+
+        let id_without_fee = Id::v2_from_data(&keys, &unit, 0, Some(2059210353));
+        let id_with_same_inputs = Id::v2_from_data(&keys, &unit, 0, Some(2059210353));
+
+        assert_eq!(id_without_fee, id_with_same_inputs);
+    }
+
+    #[test]
     fn test_from_short_keyset_id_prefix_too_short() {
         let v1_info = KeySetInfo {
             id: Id::from_str("00009a1f293253e4").unwrap(),
@@ -1150,5 +1161,61 @@ mod test {
 
         let res = Id::from_short_keyset_id(&short_id, &keysets);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_from_short_keyset_id_accepts_boundary_prefix_lengths() {
+        let v1_id = Id::from_str("00009a1f293253e4").unwrap();
+        let v2_id =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+
+        let keysets = vec![
+            KeySetInfo {
+                id: v1_id,
+                unit: CurrencyUnit::Sat,
+                active: true,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            },
+            KeySetInfo {
+                id: v2_id,
+                unit: CurrencyUnit::Sat,
+                active: true,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            },
+        ];
+
+        let short_v1 = ShortKeysetId::from_bytes(&v1_id.to_bytes()).unwrap();
+        let short_v2 = ShortKeysetId::from(v2_id);
+
+        assert_eq!(
+            Id::from_short_keyset_id(&short_v1, &keysets).unwrap(),
+            v1_id
+        );
+        assert_eq!(
+            Id::from_short_keyset_id(&short_v2, &keysets).unwrap(),
+            v2_id
+        );
+    }
+
+    #[test]
+    fn test_from_short_keyset_id_returns_unknown_when_v2_prefix_does_not_match() {
+        let v2_id =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+        let keysets = vec![KeySetInfo {
+            id: v2_id,
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        }];
+
+        let short_id = ShortKeysetId::from_str("01ffffffffffffff").unwrap();
+        let res = Id::from_short_keyset_id(&short_id, &keysets);
+
+        assert!(matches!(res, Err(Error::UnknownShortKeysetId)));
     }
 }
