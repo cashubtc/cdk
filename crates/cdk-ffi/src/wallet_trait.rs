@@ -332,6 +332,19 @@ impl WalletTraitDef for Wallet {
         Ok(PreparedMelt::new(self.inner().clone(), &prepared))
     }
 
+    async fn prepare_melt_token(
+        &self,
+        quote_id: &str,
+        token: &str,
+        metadata: HashMap<String, String>,
+    ) -> Result<PreparedMelt, Self::Error> {
+        let prepared = self
+            .inner()
+            .prepare_melt_token(quote_id, token, metadata)
+            .await?;
+        Ok(PreparedMelt::new(self.inner().clone(), &prepared))
+    }
+
     async fn swap(
         &self,
         amount: Option<Self::Amount>,

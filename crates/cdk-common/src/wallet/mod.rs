@@ -870,6 +870,14 @@ pub trait Wallet: Send + Sync {
         metadata: HashMap<String, String>,
     ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 
+    /// Prepare a melt operation using proofs from a token directly
+    async fn prepare_melt_token(
+        &self,
+        quote_id: &str,
+        token: &str,
+        metadata: HashMap<String, String>,
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
+
     /// Swap proofs
     async fn swap(
         &self,
