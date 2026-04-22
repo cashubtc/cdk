@@ -17,4 +17,7 @@ pub enum Error {
     /// NUT-26 bech32m encoding error
     #[error(transparent)]
     Nut26Error(#[from] crate::nuts::nut26::Error),
+    /// Mutually exclusive fields
+    #[error("mints and preferred_mints are mutually exclusive")]
+    MutuallyExclusiveMints,
 }

@@ -36,6 +36,10 @@ pub struct PaymentRequest {
     #[serde(rename = "m")]
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub mints: Vec<MintUrl>,
+    /// Preferred Mints
+    #[serde(rename = "pm")]
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub preferred_mints: Vec<MintUrl>,
     /// Description
     #[serde(rename = "d")]
     pub description: Option<String>,
@@ -90,7 +94,12 @@ impl FromStr for PaymentRequest {
             .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
         let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
 
-        Ok(ciborium::from_reader(&decoded[..])?)
+        let request: PaymentRequest = ciborium::from_reader(&decoded[..])?;
+        if !request.mints.is_empty() && !request.preferred_mints.is_empty() {
+            return Err(Error::MutuallyExclusiveMints);
+        }
+
+        Ok(request)
     }
 }
 
@@ -102,6 +111,7 @@ pub struct PaymentRequestBuilder {
     unit: Option<CurrencyUnit>,
     single_use: Option<bool>,
     mints: Vec<MintUrl>,
+    preferred_mints: Vec<MintUrl>,
     description: Option<String>,
     transports: Vec<Transport>,
     nut10: Option<Nut10SecretRequest>,
@@ -150,6 +160,18 @@ impl PaymentRequestBuilder {
         self
     }
 
+    /// Set preferred mints
+    pub fn preferred_mints(mut self, preferred_mints: Vec<MintUrl>) -> Self {
+        self.preferred_mints = preferred_mints;
+        self
+    }
+
+    /// Add a preferred mint
+    pub fn add_preferred_mint(mut self, mint: MintUrl) -> Self {
+        self.preferred_mints.push(mint);
+        self
+    }
+
     /// Set description
     pub fn description<S: Into<String>>(mut self, description: S) -> Self {
         self.description = Some(description.into());
@@ -175,17 +197,22 @@ impl PaymentRequestBuilder {
     }
 
     /// Build the PaymentRequest
-    pub fn build(self) -> PaymentRequest {
-        PaymentRequest {
+    pub fn build(self) -> Result<PaymentRequest, Error> {
+        if !self.mints.is_empty() && !self.preferred_mints.is_empty() {
+            return Err(Error::MutuallyExclusiveMints);
+        }
+
+        Ok(PaymentRequest {
             payment_id: self.payment_id,
             amount: self.amount,
             unit: self.unit,
             single_use: self.single_use,
             mints: self.mints,
+            preferred_mints: self.preferred_mints,
             description: self.description,
             transports: self.transports,
             nut10: self.nut10,
-        }
+        })
     }
 }
 
@@ -249,6 +276,7 @@ mod tests {
             mints: vec!["https://nofees.testnut.cashu.space"
                 .parse()
                 .expect("valid mint url")],
+            preferred_mints: vec![],
             description: None,
             transports: vec![transport.clone()],
             nut10: None,
@@ -291,7 +319,8 @@ mod tests {
             .unit(CurrencyUnit::Sat)
             .add_mint(mint_url.clone())
             .add_transport(transport.clone())
-            .build();
+            .build()
+            .unwrap();
 
         // Verify the built request
         assert_eq!(&request.payment_id.clone().unwrap(), "b7a90176");
@@ -372,7 +401,8 @@ mod tests {
             .payment_id("test123")
             .amount(Amount::from(100))
             .nut10(secret_request.clone())
-            .build();
+            .build()
+            .unwrap();
 
         assert_eq!(payment_request.nut10, Some(secret_request));
     }
@@ -393,7 +423,8 @@ mod tests {
             .unit(CurrencyUnit::Sat)
             .amount(10)
             .mints(mint_urls)
-            .build();
+            .build()
+            .unwrap();
 
         let payment_request_str = payment_request.to_string();
 
@@ -417,7 +448,8 @@ mod tests {
             .unit(CurrencyUnit::Sat)
             .amount(10)
             .nut10(nut10.into())
-            .build();
+            .build()
+            .unwrap();
 
         let payment_request_str = payment_request.to_string();
 
@@ -444,7 +476,8 @@ mod tests {
             .payment_id("test-p2pk-id")
             .description("P2PK locked payment")
             .nut10(nut10.into())
-            .build();
+            .build()
+            .unwrap();
 
         // Convert to string representation
         let payment_request_str = payment_request.to_string();
@@ -693,6 +726,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: Some("Test both formats".to_string()),
             transports: vec![],
             nut10: None,
@@ -730,5 +764,54 @@ mod tests {
         let decoded_uppercase =
             PaymentRequest::from_str(&bech32_uppercase).expect("Should decode uppercase bech32");
         assert_eq!(decoded_uppercase.payment_id, payment_request.payment_id);
+    }
+
+    #[test]
+    fn test_preferred_mints_payment_request() {
+        let json = r#"{
+          "i": "pm_test",
+          "a": 100,
+          "u": "sat",
+          "pm": ["https://mint.example.com"]
+        }"#;
+
+        let expected_encoded =
+            "creqApGFpZ3BtX3Rlc3RhYRhkYXVjc2F0YnBtgXgYaHR0cHM6Ly9taW50LmV4YW1wbGUuY29t";
+
+        let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(payment_request.payment_id.as_ref().unwrap(), "pm_test");
+        assert_eq!(payment_request.amount.unwrap(), Amount::from(100));
+        assert_eq!(payment_request.unit.clone().unwrap(), CurrencyUnit::Sat);
+        assert!(payment_request.mints.is_empty());
+        assert_eq!(
+            payment_request.preferred_mints,
+            vec![MintUrl::from_str("https://mint.example.com").unwrap()]
+        );
+
+        let encoded = payment_request.to_string();
+        // Ciborium encodes None fields as null because we don't have skip_serializing_if = "Option::is_none"
+        // so we just test round trip instead of exact match with expected_encoded
+        let decoded = PaymentRequest::from_str(&encoded).unwrap();
+        assert_eq!(payment_request, decoded);
+
+        let decoded_from_spec = PaymentRequest::from_str(expected_encoded).unwrap();
+        assert_eq!(decoded_from_spec.payment_id.as_ref().unwrap(), "pm_test");
+
+        // Test mutually exclusive mints error
+        let invalid_json = r#"{
+          "i": "pm_test",
+          "a": 100,
+          "u": "sat",
+          "m": ["https://mint.example.com"],
+          "pm": ["https://mint.example.com"]
+        }"#;
+
+        let invalid_req: PaymentRequest = serde_json::from_str(invalid_json).unwrap();
+        let mut invalid_encoded = Vec::new();
+        ciborium::into_writer(&invalid_req, &mut invalid_encoded).unwrap();
+        let invalid_encoded_str =
+            format!("creqA{}", general_purpose::URL_SAFE.encode(invalid_encoded));
+        assert!(PaymentRequest::from_str(&invalid_encoded_str).is_err());
     }
 }

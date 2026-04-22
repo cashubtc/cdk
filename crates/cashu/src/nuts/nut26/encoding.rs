@@ -145,6 +145,7 @@ impl PaymentRequest {
     ///     unit: Some(cashu::nuts::CurrencyUnit::Sat),
     ///     single_use: None,
     ///     mints: vec![MintUrl::from_str("https://mint.example.com")?],
+    ///     preferred_mints: vec![],
     ///     description: None,
     ///     transports: vec![],
     ///     nut10: None,
@@ -221,6 +222,7 @@ impl PaymentRequest {
         let mut unit: Option<CurrencyUnit> = None;
         let mut single_use: Option<bool> = None;
         let mut mints: Vec<MintUrl> = Vec::new();
+        let mut preferred_mints: Vec<MintUrl> = Vec::new();
         let mut description: Option<String> = None;
         let mut transports: Vec<Transport> = Vec::new();
         let mut nut10: Option<Nut10SecretRequest> = None;
@@ -292,10 +294,21 @@ impl PaymentRequest {
                     // nut10: sub-TLV
                     nut10 = Some(Self::decode_nut10(&value)?);
                 }
+                0x09 => {
+                    // preferred_mints: string (repeatable)
+                    let mint_str = String::from_utf8(value).map_err(|_| Error::InvalidUtf8)?;
+                    let mint_url =
+                        MintUrl::from_str(&mint_str).map_err(|_| Error::InvalidStructure)?;
+                    preferred_mints.push(mint_url);
+                }
                 _ => {
                     // Unknown tags are ignored
                 }
             }
+        }
+
+        if !mints.is_empty() && !preferred_mints.is_empty() {
+            return Err(Error::MutuallyExclusiveMints);
         }
 
         Ok(PaymentRequest {
@@ -304,6 +317,7 @@ impl PaymentRequest {
             unit,
             single_use,
             mints,
+            preferred_mints,
             description,
             transports,
             nut10,
@@ -358,8 +372,12 @@ impl PaymentRequest {
 
         // 0x08 nut10: sub-TLV
         if let Some(ref nut10) = self.nut10 {
-            let nut10_bytes = Self::encode_nut10(nut10)?;
-            writer.write_tlv(0x08, &nut10_bytes);
+            writer.write_tlv(0x08, &Self::encode_nut10(nut10)?);
+        }
+
+        // 0x09 preferred_mints: string (repeatable)
+        for mint in &self.preferred_mints {
+            writer.write_tlv(0x09, mint.to_string().as_bytes());
         }
 
         Ok(writer.into_bytes())
@@ -787,6 +805,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: Some(true),
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: Some("Test payment".to_string()),
             transports: vec![transport],
             nut10: None,
@@ -816,6 +835,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -844,6 +864,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: Some("P2PK locked payment".to_string()),
             transports: vec![],
             nut10: Some(nut10.clone()),
@@ -866,6 +887,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -911,6 +933,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -930,6 +953,7 @@ mod tests {
             unit: Some(CurrencyUnit::Usd),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1106,6 +1130,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: Some("Nostr payment".to_string()),
             transports: vec![transport],
             nut10: None,
@@ -1150,6 +1175,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: Some("Nostr payment with relays".to_string()),
             transports: vec![transport],
             nut10: None,
@@ -1197,6 +1223,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: Some(true),
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: Some("Coffee".to_string()),
             transports: vec![transport],
             nut10: None,
@@ -1273,6 +1300,7 @@ mod tests {
                 MintUrl::from_str("https://mint2.example.com").unwrap(),
                 MintUrl::from_str("https://testnut.cashu.space").unwrap(),
             ],
+            preferred_mints: vec![],
             description: Some("Payment with multiple transports and mints".to_string()),
             transports: vec![transport1, transport2],
             nut10: None,
@@ -1767,6 +1795,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: Some("Test payment description".to_string()),
             transports: vec![],
             nut10: None,
@@ -1802,6 +1831,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: Some(true),
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1832,6 +1862,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: Some(false),
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1862,6 +1893,7 @@ mod tests {
             unit: Some(CurrencyUnit::Msat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1893,6 +1925,7 @@ mod tests {
             unit: Some(CurrencyUnit::Usd),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -2087,6 +2120,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: None,
             transports: vec![], // Empty transports = in-band per NUT-26
             nut10: None,
@@ -2186,6 +2220,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -2223,6 +2258,7 @@ mod tests {
             unit: Some(CurrencyUnit::Custom("btc".to_string())),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            preferred_mints: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -2240,5 +2276,41 @@ mod tests {
 
         assert_eq!(decoded.unit, Some(CurrencyUnit::Custom("btc".to_string())));
         assert_eq!(decoded.payment_id, Some("custom_unit".to_string()));
+    }
+
+    #[test]
+    fn test_preferred_mints_payment_request_nut26() {
+        let json = r#"{
+          "i": "pm_test",
+          "a": 100,
+          "u": "sat",
+          "pm": ["https://mint.example.com"]
+        }"#;
+
+        let expected_encoded = "CREQB1QYQQWURDTA6X2UM5QGQQSQQQQQQQQQQQVSPSQQGQPYQPS6R5W3C8XW309AKKJMN59EJHSCTDWPKX2TNRDAKSYWN0VM";
+
+        let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
+
+        let encoded = payment_request.to_bech32_string().unwrap();
+        assert_eq!(encoded.to_uppercase(), expected_encoded);
+
+        let decoded = PaymentRequest::from_bech32_string(&encoded).unwrap();
+        assert_eq!(payment_request, decoded);
+
+        let decoded_from_spec = PaymentRequest::from_bech32_string(expected_encoded).unwrap();
+        assert_eq!(decoded_from_spec.payment_id.as_ref().unwrap(), "pm_test");
+
+        // Test mutually exclusive mints error
+        let invalid_json = r#"{
+          "i": "pm_test",
+          "a": 100,
+          "u": "sat",
+          "m": ["https://mint.example.com"],
+          "pm": ["https://mint.example.com"]
+        }"#;
+
+        let invalid_req: PaymentRequest = serde_json::from_str(invalid_json).unwrap();
+        let invalid_encoded = invalid_req.to_bech32_string().unwrap();
+        assert!(PaymentRequest::from_bech32_string(&invalid_encoded).is_err());
     }
 }
