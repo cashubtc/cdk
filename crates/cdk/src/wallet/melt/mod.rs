@@ -85,21 +85,22 @@ impl<'a> PendingMelt<'a> {
     async fn wait(self) -> Result<FinalizedMelt, Error> {
         let quote_id = self.saga.quote().id.clone();
         let wallet = self.saga.wallet;
+        let operation_id = self.saga.state_data.operation_id;
 
-        let mut subscription = match self.saga.quote().payment_method {
+        let subscribe_result = match self.saga.quote().payment_method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
                 wallet
                     .subscribe(WalletSubscription::Bolt11MeltQuoteState(vec![
                         quote_id.clone()
                     ]))
-                    .await?
+                    .await
             }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
                 wallet
                     .subscribe(WalletSubscription::Bolt12MeltQuoteState(vec![
                         quote_id.clone()
                     ]))
-                    .await?
+                    .await
             }
             PaymentMethod::Custom(ref method) => {
                 wallet
@@ -107,7 +108,14 @@ impl<'a> PendingMelt<'a> {
                         method.to_string(),
                         vec![quote_id.clone()],
                     ))
-                    .await?
+                    .await
+            }
+        };
+
+        let mut subscription = match subscribe_result {
+            Ok(subscription) => subscription,
+            Err(err) => {
+                return wallet.recover_failed_melt_confirm(operation_id, err).await;
             }
         };
 
@@ -177,19 +185,27 @@ impl<'a> PendingMelt<'a> {
                                 change
                             };
 
-                            let finalized = self
+                            match self
                                 .saga
                                 .finalize(state, payment_proof, change, self.metadata)
-                                .await?;
-
-                            return Ok(FinalizedMelt::new(
-                                finalized.quote_id().to_string(),
-                                finalized.state(),
-                                finalized.payment_proof().map(|s| s.to_string()),
-                                finalized.amount(),
-                                finalized.fee_paid(),
-                                finalized.into_change(),
-                            ));
+                                .await
+                            {
+                                Ok(finalized) => {
+                                    return Ok(FinalizedMelt::new(
+                                        finalized.quote_id().to_string(),
+                                        finalized.state(),
+                                        finalized.payment_proof().map(|s| s.to_string()),
+                                        finalized.amount(),
+                                        finalized.fee_paid(),
+                                        finalized.into_change(),
+                                    ));
+                                }
+                                Err(err) => {
+                                    return wallet
+                                        .recover_failed_melt_confirm(operation_id, err)
+                                        .await;
+                                }
+                            }
                         }
                         MeltQuoteState::Failed
                         | MeltQuoteState::Unpaid
@@ -201,7 +217,8 @@ impl<'a> PendingMelt<'a> {
                     }
                 }
                 None => {
-                    return Err(Error::Custom("Subscription closed".to_string()));
+                    let err = Error::Custom("Subscription closed".to_string());
+                    return wallet.recover_failed_melt_confirm(operation_id, err).await;
                 }
             }
         }
@@ -287,7 +304,7 @@ impl MeltConfirmOptions {
 }
 
 /// A prepared melt operation that can be confirmed or cancelled.
-#[must_use = "must be confirmed or canceled to release reserved proofs"]
+#[must_use = "must be confirmed or canceled; confirm auto-recovers reserved proofs on failure"]
 pub struct PreparedMelt<'a> {
     /// The saga in the Prepared state
     saga: MeltSaga<'a, Prepared>,
@@ -377,6 +394,11 @@ impl<'a> PreparedMelt<'a> {
     /// If the mint supports async payments (NUT-05), this may complete faster by
     /// not blocking on the payment processing.
     ///
+    /// If the confirm path fails before returning a [`FinalizedMelt`], the wallet
+    /// runs melt saga recovery using the persisted saga state. If recovery shows
+    /// the melt actually completed, this method still returns the recovered melt.
+    /// Otherwise, the original confirm error or a recovery error is returned.
+    ///
     /// # Example
     ///
     /// ```rust,no_run
@@ -413,6 +435,12 @@ impl<'a> PreparedMelt<'a> {
     /// This method waits for the payment to complete and returns the finalized melt.
     /// If the mint supports async payments (NUT-05), this may complete faster by
     /// not blocking on the payment processing.
+    ///
+    /// If the confirm path fails before returning a [`FinalizedMelt`], the wallet
+    /// runs melt saga recovery using the persisted saga state so proofs do not
+    /// remain stuck in an intermediate state. If recovery determines the melt
+    /// actually completed, this method returns the recovered melt. Recovery
+    /// errors are surfaced directly.
     pub async fn confirm_with_options(
         self,
         options: MeltConfirmOptions,
@@ -504,13 +532,39 @@ impl<'a> PreparedMelt<'a> {
     /// Note: This waits for the mint's initial response, which may block if the mint
     /// does not support async payments. Only returns `Pending` if the mint explicitly
     /// supports and accepts async melt requests.
+    ///
+    /// If confirm fails before returning a [`MeltOutcome`], this method runs melt
+    /// saga recovery using the persisted saga state so proofs do not stay stuck
+    /// in an intermediate state. If recovery determines the melt actually
+    /// completed, this method returns `MeltOutcome::Paid`. Recovery errors are
+    /// surfaced directly.
     pub async fn confirm_prefer_async_with_options(
         self,
         options: MeltConfirmOptions,
     ) -> Result<MeltOutcome<'a>, Error> {
-        let melt_requested = self.saga.request_melt_with_options(options).await?;
+        let operation_id = self.saga.operation_id();
+        let wallet = self.saga.wallet;
+        let metadata = self.metadata;
 
-        let result = melt_requested.execute_async(self.metadata.clone()).await?;
+        let melt_requested = match self.saga.request_melt_with_options(options).await {
+            Ok(melt_requested) => melt_requested,
+            Err(err) => {
+                let finalized = wallet
+                    .recover_failed_melt_confirm(operation_id, err)
+                    .await?;
+                return Ok(MeltOutcome::Paid(finalized));
+            }
+        };
+
+        let result = match melt_requested.execute_async(metadata.clone()).await {
+            Ok(result) => result,
+            Err(err) => {
+                let finalized = wallet
+                    .recover_failed_melt_confirm(operation_id, err)
+                    .await?;
+                return Ok(MeltOutcome::Paid(finalized));
+            }
+        };
 
         match result {
             MeltSagaResult::Finalized(finalized) => Ok(MeltOutcome::Paid(FinalizedMelt::new(
@@ -523,7 +577,7 @@ impl<'a> PreparedMelt<'a> {
             ))),
             MeltSagaResult::Pending(pending_saga) => Ok(MeltOutcome::Pending(PendingMelt {
                 saga: pending_saga,
-                metadata: self.metadata,
+                metadata,
             })),
         }
     }
@@ -694,8 +748,15 @@ impl Wallet {
             db_saga,
         );
 
-        let melt_requested = saga.request_melt_with_options(options).await?;
-        let result = melt_requested.execute_async(metadata.clone()).await?;
+        let melt_requested = match saga.request_melt_with_options(options).await {
+            Ok(melt_requested) => melt_requested,
+            Err(err) => return self.recover_failed_melt_confirm(operation_id, err).await,
+        };
+
+        let result = match melt_requested.execute_async(metadata.clone()).await {
+            Ok(result) => result,
+            Err(err) => return self.recover_failed_melt_confirm(operation_id, err).await,
+        };
 
         match result {
             MeltSagaResult::Finalized(finalized) => Ok(FinalizedMelt::new(
@@ -716,6 +777,36 @@ impl Wallet {
         }
     }
 
+    /// Run melt recovery after a failed confirm path.
+    ///
+    /// This uses the persisted saga state as the source of truth, matching crash
+    /// recovery semantics. If recovery proves the melt actually completed, the
+    /// recovered [`FinalizedMelt`] is returned. If recovery compensates or leaves
+    /// the saga pending, the original confirm error is returned. Recovery errors
+    /// are surfaced directly so callers know cleanup did not complete.
+    #[instrument(skip(self))]
+    async fn recover_failed_melt_confirm(
+        &self,
+        operation_id: Uuid,
+        original_err: Error,
+    ) -> Result<FinalizedMelt, Error> {
+        let saga = match self.localstore.get_saga(&operation_id).await? {
+            Some(saga) => saga,
+            None => return Err(original_err),
+        };
+
+        match self.resume_melt_saga(&saga).await? {
+            Some(finalized) if finalized.state() == MeltQuoteState::Paid => {
+                tracing::info!(
+                    "Melt operation {} recovered to Paid after confirm error",
+                    operation_id
+                );
+                Ok(finalized)
+            }
+            Some(_) | None => Err(original_err),
+        }
+    }
+
     /// Internal method called by `PreparedMelt::cancel` with cached data.
     ///
     /// Not intended for direct use - use [`PreparedMelt::cancel`] instead.
@@ -733,9 +824,18 @@ impl Wallet {
         all_ys.extend(proofs_to_swap.ys()?);
 
         if !all_ys.is_empty() {
-            self.localstore
-                .update_proofs_state(all_ys, State::Unspent)
-                .await?;
+            let current = self.localstore.get_proofs_by_ys(all_ys).await?;
+            let ys_to_revert: Vec<_> = current
+                .into_iter()
+                .filter(|proof| proof.state == State::Reserved || proof.state == State::Pending)
+                .map(|proof| proof.y)
+                .collect();
+
+            if !ys_to_revert.is_empty() {
+                self.localstore
+                    .update_proofs_state(ys_to_revert, State::Unspent)
+                    .await?;
+            }
         }
 
         if let Err(e) = self.localstore.release_melt_quote(&operation_id).await {
@@ -1152,5 +1252,142 @@ impl Wallet {
         };
 
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk_common::nuts::State;
+
+    use crate::wallet::saga::test_utils::{
+        create_test_db, test_keyset_id, test_mint_url, test_proof_info,
+    };
+    use crate::wallet::test_utils::{create_test_wallet_with_mock, MockMintConnector};
+
+    #[tokio::test]
+    async fn test_cancel_prepared_melt_reverts_reserved_proofs() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let operation_id = uuid::Uuid::new_v4();
+
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Reserved);
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        wallet
+            .cancel_prepared_melt(operation_id, vec![proof], vec![])
+            .await
+            .unwrap();
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Unspent);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_prepared_melt_reverts_pending_proofs() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let operation_id = uuid::Uuid::new_v4();
+
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Pending);
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        wallet
+            .cancel_prepared_melt(operation_id, vec![proof], vec![])
+            .await
+            .unwrap();
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Unspent);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_prepared_melt_preserves_spent_proofs() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let operation_id = uuid::Uuid::new_v4();
+
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Spent);
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        wallet
+            .cancel_prepared_melt(operation_id, vec![], vec![proof])
+            .await
+            .unwrap();
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Spent);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_prepared_melt_mixed_states_only_reverts_reserved_and_pending() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let operation_id = uuid::Uuid::new_v4();
+
+        let reserved = test_proof_info(keyset_id, 100, mint_url.clone(), State::Reserved);
+        let pending = test_proof_info(keyset_id, 200, mint_url.clone(), State::Pending);
+        let spent = test_proof_info(keyset_id, 300, mint_url.clone(), State::Spent);
+
+        let reserved_y = reserved.y;
+        let pending_y = pending.y;
+        let spent_y = spent.y;
+
+        let reserved_proof = reserved.proof.clone();
+        let pending_proof = pending.proof.clone();
+        let spent_proof = spent.proof.clone();
+
+        db.update_proofs(vec![reserved, pending, spent], vec![])
+            .await
+            .unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        wallet
+            .cancel_prepared_melt(
+                operation_id,
+                vec![reserved_proof, pending_proof],
+                vec![spent_proof],
+            )
+            .await
+            .unwrap();
+
+        let stored = db
+            .get_proofs_by_ys(vec![reserved_y, pending_y, spent_y])
+            .await
+            .unwrap();
+        let state_for = |y| {
+            stored
+                .iter()
+                .find(|proof| proof.y == y)
+                .map(|proof| proof.state)
+        };
+        assert_eq!(state_for(reserved_y), Some(State::Unspent));
+        assert_eq!(state_for(pending_y), Some(State::Unspent));
+        assert_eq!(state_for(spent_y), Some(State::Spent));
     }
 }

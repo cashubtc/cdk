@@ -1899,6 +1899,138 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
     );
 }
 
+/// Regression test for cashubtc/cdk#1891.
+///
+/// Exercises the chained `prepare_melt(...).await?.confirm().await?` pattern
+/// where `PreparedMelt` is consumed on failure. The wallet should recover via
+/// the persisted melt saga without requiring `check_all_pending_proofs()`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_chained_confirm_auto_releases_proofs_on_failure() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+    proof_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+
+    let fake_description = FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Failed,
+        check_payment_state: MeltQuoteState::Failed,
+        pay_err: false,
+        check_err: false,
+    };
+    let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
+
+    let melt_result = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap()
+        .confirm()
+        .await;
+    assert!(melt_result.is_err(), "Melt should fail on Failed state");
+
+    let pending = wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Pending]), None)
+        .await
+        .unwrap();
+    assert!(
+        pending.is_empty(),
+        "no proofs should remain Pending after automatic saga recovery"
+    );
+
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(100),
+        "balance should be fully recovered without explicit recovery calls"
+    );
+}
+
+/// Regression test for the recovered-paid confirm path.
+///
+/// If the initial melt request errors locally but recovery sees the quote as
+/// `Paid`, chained `prepare_melt(...).confirm()` should still return success.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_chained_confirm_recovers_paid_melt() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("Failed to create new wallet");
+
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+    proof_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let old_balance = wallet.total_balance().await.expect("balance");
+
+    let fake_description = FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Failed,
+        check_payment_state: MeltQuoteState::Paid,
+        pay_err: true,
+        check_err: false,
+    };
+    let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
+
+    let melt = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap()
+        .confirm()
+        .await
+        .expect("confirm should recover to Paid");
+
+    assert_eq!(melt.fee_paid(), Amount::ZERO);
+    assert_eq!(melt.amount(), Amount::from(7));
+    assert_eq!(
+        old_balance - melt.amount(),
+        wallet.total_balance().await.expect("new balance")
+    );
+
+    let pending = wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Pending]), None)
+        .await
+        .unwrap();
+    assert!(
+        pending.is_empty(),
+        "paid recovery should not leave pending proofs"
+    );
+}
+
 /// Tests that concurrent melt attempts for the same invoice result in exactly one success
 ///
 /// This test verifies the race condition protection: when multiple melt quotes exist for the
