@@ -320,7 +320,7 @@ impl WalletRepository {
         } else {
             // No mint specified - find the best matching mint with highest balance
             let balances = self.get_balances().await?;
-            
+
             let mut best_preferred_wallet: Option<Arc<Wallet>> = None;
             let mut best_preferred_balance = Amount::ZERO;
 
@@ -344,7 +344,7 @@ impl WalletRepository {
                 // Check balance meets requirements
                 if *balance >= amount {
                     let is_preferred = preferred_mints.contains(&wallet_key.mint_url);
-                    
+
                     if is_preferred && *balance > best_preferred_balance {
                         if let Ok(wallet) = self.get_wallet(&wallet_key.mint_url, &unit).await {
                             best_preferred_balance = *balance;
