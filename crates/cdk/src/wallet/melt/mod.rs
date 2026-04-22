@@ -583,7 +583,17 @@ impl Wallet {
         })
     }
 
-    /// Prepare a melt operation using proofs from an encoded token directly.
+    /// Prepare a melt operation from an encoded token.
+    ///
+    /// Decodes the token, validates the currency unit and mint URL against the
+    /// wallet's current configuration, extracts the proofs using the wallet's
+    /// keyset state (required for correct `KeysetsV2` amount resolution), and
+    /// delegates to [`prepare_melt_proofs`](Wallet::prepare_melt_proofs).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::UnsupportedUnit`] if the token's unit does not match the wallet's unit.
+    /// - [`Error::IncorrectMint`] if the token's mint URL does not match the wallet's mint.
     #[instrument(skip(self, token, metadata))]
     pub async fn prepare_melt_token(
         &self,
@@ -592,6 +602,11 @@ impl Wallet {
         metadata: HashMap<String, String>,
     ) -> Result<PreparedMelt<'_>, Error> {
         let token = Token::from_str(token)?;
+
+        let unit = token.unit().unwrap_or_default();
+        if unit != self.unit {
+            return Err(Error::UnsupportedUnit);
+        }
 
         if token.mint_url()? != self.mint_url {
             return Err(Error::IncorrectMint);
@@ -1174,5 +1189,108 @@ impl Wallet {
         };
 
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use crate::nuts::nut00::token::Token;
+    use crate::nuts::CurrencyUnit;
+
+    /// A real, validly-encoded V3 token from the cashu test suite.
+    /// Mint: https://8333.space:3338, unit: sat, 2 proofs (2 sat + 8 sat).
+    const VALID_V3_TOKEN: &str = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91IHZlcnkgbXVjaC4ifQ==";
+
+    /// Verifies that a valid V3 token is parsed correctly and all fields are
+    /// extracted as expected. This is the foundation of `prepare_melt_token`.
+    #[test]
+    fn test_valid_v3_token_parses_correctly() {
+        let token = Token::from_str(VALID_V3_TOKEN).expect("Token should parse");
+
+        match token {
+            Token::TokenV3(ref v3) => {
+                assert_eq!(
+                    v3.mint_urls()[0].to_string(),
+                    "https://8333.space:3338",
+                    "Mint URL should be extracted correctly"
+                );
+                assert_eq!(
+                    token.unit().unwrap_or_default(),
+                    CurrencyUnit::Sat,
+                    "Token unit should be sat"
+                );
+                assert_eq!(
+                    v3.token[0].proofs.len(),
+                    2,
+                    "Token should contain 2 proofs"
+                );
+            }
+            _ => panic!("Expected a V3 token"),
+        }
+    }
+
+    /// Verifies that proof amounts are correctly extracted from the token.
+    /// This is critical because `prepare_melt_token` relies on proof amounts
+    /// to select the right inputs for the melt quote.
+    #[test]
+    fn test_valid_v3_token_proof_amounts() {
+        use crate::Amount;
+
+        let token = Token::from_str(VALID_V3_TOKEN).expect("Token should parse");
+
+        match token {
+            Token::TokenV3(ref v3) => {
+                assert_eq!(
+                    v3.token[0].proofs[0].amount,
+                    Amount::from(2),
+                    "First proof amount should be 2 sat"
+                );
+                assert_eq!(
+                    v3.token[0].proofs[1].amount,
+                    Amount::from(8),
+                    "Second proof amount should be 8 sat"
+                );
+            }
+            _ => panic!("Expected a V3 token"),
+        }
+    }
+
+    /// Verifies that a completely invalid string fails to parse.
+    /// `prepare_melt_token` must propagate this error to the caller.
+    #[test]
+    fn test_invalid_token_string_returns_error() {
+        let result = Token::from_str("not_a_valid_cashu_token");
+        assert!(
+            result.is_err(),
+            "Parsing a garbage string should return an error"
+        );
+    }
+
+    /// Verifies that a token's unit can be extracted and compared.
+    /// This underpins the `UnsupportedUnit` guard in `prepare_melt_token`.
+    #[test]
+    fn test_token_unit_is_sat() {
+        let token = Token::from_str(VALID_V3_TOKEN).expect("Token should parse");
+        let unit = token.unit().unwrap_or_default();
+        assert_eq!(
+            unit,
+            CurrencyUnit::Sat,
+            "Token unit must match CurrencyUnit::Sat for this fixture"
+        );
+    }
+
+    /// Verifies that a token's mint URL can be extracted and compared.
+    /// This underpins the `IncorrectMint` guard in `prepare_melt_token`.
+    #[test]
+    fn test_token_mint_url_extraction() {
+        let token = Token::from_str(VALID_V3_TOKEN).expect("Token should parse");
+        let mint_url = token.mint_url().expect("Token should have a mint URL");
+        assert_eq!(
+            mint_url.to_string(),
+            "https://8333.space:3338",
+            "Mint URL must match the fixture token's mint"
+        );
     }
 }
