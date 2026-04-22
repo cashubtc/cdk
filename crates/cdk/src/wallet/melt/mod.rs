@@ -461,7 +461,11 @@ impl<'a> PreparedMelt<'a> {
 
         match result {
             Ok(finalized) => Ok(finalized),
-            Err(err) => wallet.compensate_failed_melt_confirm(operation_id, err).await,
+            Err(err) => {
+                wallet
+                    .compensate_failed_melt_confirm(operation_id, err)
+                    .await
+            }
         }
     }
 

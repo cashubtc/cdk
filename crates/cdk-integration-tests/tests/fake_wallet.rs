@@ -1819,13 +1819,11 @@ async fn test_fake_mint_duplicate_proofs_melt() {
     }
 }
 
-/// Regression test for cashubtc/cdk#1891.
-///
 /// Exercises the chained `prepare_melt(...).await?.confirm().await?` pattern
-/// that forced consumers to reach for `check_all_pending_proofs()` when the
-/// melt failed. After the fix, confirm() must auto-release reserved proofs on
-/// any failure path, so balance should be fully recovered without any
-/// explicit recovery call.
+/// that used to force consumers to reach for `check_all_pending_proofs()` when
+/// the melt failed. confirm() must auto-release reserved proofs on any failure
+/// path, so balance should be fully recovered without any explicit recovery
+/// call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_chained_confirm_auto_releases_proofs_on_failure() {
     let wallet = Wallet::new(
