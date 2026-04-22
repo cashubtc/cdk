@@ -161,7 +161,11 @@ impl PaymentRequest {
 
     /// Get the list of preferred mint URLs
     pub fn preferred_mints(&self) -> Vec<String> {
-        self.inner.preferred_mints.iter().map(|m| m.to_string()).collect()
+        self.inner
+            .preferred_mints
+            .iter()
+            .map(|m| m.to_string())
+            .collect()
     }
 
     /// Get the description
