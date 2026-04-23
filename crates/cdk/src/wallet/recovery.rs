@@ -49,6 +49,13 @@ pub struct RecoveryReport {
     pub failed: usize,
 }
 
+impl RecoveryReport {
+    /// Returns true if no operations were recovered, compensated, skipped, or failed.
+    pub fn is_empty(&self) -> bool {
+        self.recovered == 0 && self.compensated == 0 && self.skipped == 0 && self.failed == 0
+    }
+}
+
 /// Result of a saga recovery operation.
 ///
 /// Used by individual saga resume functions to indicate the outcome.
