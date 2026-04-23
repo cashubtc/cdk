@@ -124,4 +124,165 @@ impl Wallet {
         let token_str = Token::try_from(binary_token)?.to_string();
         self.receive(token_str.as_str(), opts).await
     }
+
+    /// Receive an encoded token offline without contacting the mint
+    #[instrument(skip_all)]
+    pub async fn receive_offline(
+        &self,
+        encoded_token: &str,
+        opts: cdk_common::wallet::OfflineReceiveOptions,
+    ) -> Result<Amount, Error> {
+        let token = Token::from_str(encoded_token)?;
+
+        let unit = token.unit().unwrap_or_default();
+        ensure_cdk!(unit == self.unit, Error::UnsupportedUnit);
+
+        let mint_url = token.mint_url()?;
+        ensure_cdk!(self.mint_url == mint_url, Error::IncorrectMint);
+
+        if !opts.trusted_mints.is_empty() {
+            ensure_cdk!(opts.trusted_mints.contains(&mint_url), Error::IncorrectMint);
+        }
+
+        if let Token::TokenV3(token) = &token {
+            ensure_cdk!(!token.is_multi_mint(), Error::MultiMintTokenNotSupported);
+        }
+
+        let keysets_info = self.load_mint_keysets().await?;
+        use cdk_common::ProofsMethods;
+        let mut proofs = token.proofs(&keysets_info)?;
+        let proofs_ys = proofs.ys()?;
+
+        let mut total_amount = Amount::ZERO;
+
+        for proof in &mut proofs {
+            if opts.require_dleq {
+                ensure_cdk!(proof.dleq.is_some(), Error::DleqProofNotProvided);
+            }
+
+            if proof.dleq.is_some() {
+                let keys = self.load_keyset_keys(proof.keyset_id).await?;
+                let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
+                proof.verify_dleq(key)?;
+            }
+
+            if opts.require_locked {
+                use crate::nuts::nut10::Kind;
+                let secret_res: Result<crate::nuts::nut10::Secret, _> = proof.secret.clone().try_into();
+                if let Ok(secret) = secret_res {
+                    let is_p2pk = match secret.kind() {
+                        Kind::P2PK => true,
+                        _ => false,
+                    };
+                    ensure_cdk!(
+                        is_p2pk,
+                        Error::InvalidSpendConditions("Token must be P2PK locked".to_string())
+                    );
+                } else {
+                    return Err(Error::InvalidSpendConditions(
+                        "Token must be P2PK locked".to_string(),
+                    ));
+                }
+            }
+
+            if let Some(min_locktime) = opts.minimum_locktime {
+                let secret_res: Result<crate::nuts::nut10::Secret, _> = proof.secret.clone().try_into();
+                if let Ok(secret) = secret_res {
+                    let conditions: Result<crate::nuts::Conditions, _> = secret
+                        .secret_data()
+                        .tags()
+                        .cloned()
+                        .unwrap_or_default()
+                        .try_into();
+                    if let Ok(conditions) = conditions {
+                        if let Some(locktime) = conditions.locktime {
+                            ensure_cdk!(
+                                locktime >= min_locktime,
+                                Error::InvalidSpendConditions(format!(
+                                    "Locktime {} is less than required {}",
+                                    locktime, min_locktime
+                                ))
+                            );
+                        } else {
+                            return Err(Error::LocktimeNotProvided);
+                        }
+                    } else {
+                        return Err(Error::LocktimeNotProvided);
+                    }
+                } else {
+                    return Err(Error::LocktimeNotProvided);
+                }
+            }
+
+            total_amount += proof.amount;
+        }
+
+        use crate::nuts::State;
+        use crate::wallet::ProofInfo;
+        use cdk_common::util::unix_time;
+        use cdk_common::wallet::{Transaction, TransactionDirection};
+
+        let proofs_info = proofs
+            .clone()
+            .into_iter()
+            .map(|p| {
+                ProofInfo::new(
+                    p,
+                    self.mint_url.clone(),
+                    State::PendingReceive,
+                    self.unit.clone(),
+                )
+            })
+            .collect::<Result<Vec<ProofInfo>, _>>()?;
+
+        self.localstore.update_proofs(proofs_info, vec![]).await?;
+
+        let memo = token.memo().clone();
+
+        self.localstore
+            .add_transaction(Transaction {
+                mint_url: self.mint_url.clone(),
+                direction: TransactionDirection::Incoming,
+                amount: total_amount,
+                fee: Amount::ZERO,
+                unit: self.unit.clone(),
+                ys: proofs_ys,
+                timestamp: unix_time(),
+                memo,
+                metadata: std::collections::HashMap::new(),
+                quote_id: None,
+                payment_request: None,
+                payment_proof: None,
+                payment_method: None,
+                saga_id: None,
+            })
+            .await?;
+
+        Ok(total_amount)
+    }
+
+    /// Finalize pending offline receives by attempting to swap them
+    #[instrument(skip_all)]
+    pub async fn finalize_pending_receives(&self) -> Result<Amount, Error> {
+        use crate::nuts::State;
+
+        let proofs_info = self
+            .localstore
+            .get_proofs(
+                Some(self.mint_url.clone()),
+                Some(self.unit.clone()),
+                Some(vec![State::PendingReceive]),
+                None,
+            )
+            .await?;
+
+        if proofs_info.is_empty() {
+            return Ok(Amount::ZERO);
+        }
+
+        let proofs: Proofs = proofs_info.into_iter().map(|p| p.proof).collect();
+
+        self.receive_proofs(proofs, ReceiveOptions::default(), None, None)
+            .await
+    }
 }

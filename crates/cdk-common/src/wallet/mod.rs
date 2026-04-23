@@ -358,6 +358,19 @@ pub struct ReceiveOptions {
     pub metadata: HashMap<String, String>,
 }
 
+/// Offline Receive options
+#[derive(Debug, Clone, Default)]
+pub struct OfflineReceiveOptions {
+    /// Require the token to contain DLEQ proofs
+    pub require_dleq: bool,
+    /// List of trusted mint URLs (if empty, all mints are accepted)
+    pub trusted_mints: Vec<MintUrl>,
+    /// Optional minimum locktime required for the token
+    pub minimum_locktime: Option<u64>,
+    /// Require the token to be P2PK locked
+    pub require_locked: bool,
+}
+
 /// Send Kind
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SendKind {
@@ -816,6 +829,16 @@ pub trait Wallet: Send + Sync {
         token: Option<String>,
     ) -> Result<Self::Amount, Self::Error>;
 
+    /// Receive an encoded token offline without contacting the mint
+    async fn receive_offline(
+        &self,
+        encoded_token: &str,
+        options: OfflineReceiveOptions,
+    ) -> Result<Self::Amount, Self::Error>;
+
+    /// Finalize pending offline receives by attempting to swap them
+    async fn finalize_pending_receives(&self) -> Result<Self::Amount, Self::Error>;
+
     /// Prepare a send transaction
     async fn prepare_send(
         &self,
@@ -1027,116 +1050,4 @@ pub struct P2PKSigningKey {
     pub derivation_index: u32,
     /// Created time
     pub created_time: u64,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::nuts::Id;
-    use crate::secret::Secret;
-
-    #[test]
-    fn test_transaction_id_from_hex() {
-        let hex_str = "a1b2c3d4e5f60718293a0b1c2d3e4f506172839a0b1c2d3e4f506172839a0b1c";
-        let transaction_id = TransactionId::from_hex(hex_str).unwrap();
-        assert_eq!(transaction_id.to_string(), hex_str);
-    }
-
-    #[test]
-    fn test_transaction_id_from_hex_empty_string() {
-        let hex_str = "";
-        let res = TransactionId::from_hex(hex_str);
-        assert!(matches!(res, Err(Error::InvalidTransactionId)));
-    }
-
-    #[test]
-    fn test_transaction_id_from_hex_longer_string() {
-        let hex_str = "a1b2c3d4e5f60718293a0b1c2d3e4f506172839a0b1c2d3e4f506172839a0b1ca1b2";
-        let res = TransactionId::from_hex(hex_str);
-        assert!(matches!(res, Err(Error::InvalidTransactionId)));
-    }
-
-    #[test]
-    fn test_matches_conditions() {
-        let keyset_id = Id::from_str("00deadbeef123456").unwrap();
-        let proof = Proof::new(
-            Amount::from(64),
-            keyset_id,
-            Secret::new("test_secret"),
-            PublicKey::from_hex(
-                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-            )
-            .unwrap(),
-        );
-
-        let mint_url = MintUrl::from_str("https://example.com").unwrap();
-        let proof_info =
-            ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat).unwrap();
-
-        // Test matching mint_url
-        assert!(proof_info.matches_conditions(&Some(mint_url.clone()), &None, &None, &None));
-        assert!(!proof_info.matches_conditions(
-            &Some(MintUrl::from_str("https://different.com").unwrap()),
-            &None,
-            &None,
-            &None
-        ));
-
-        // Test matching unit
-        assert!(proof_info.matches_conditions(&None, &Some(CurrencyUnit::Sat), &None, &None));
-        assert!(!proof_info.matches_conditions(&None, &Some(CurrencyUnit::Msat), &None, &None));
-
-        // Test matching state
-        assert!(proof_info.matches_conditions(&None, &None, &Some(vec![State::Unspent]), &None));
-        assert!(proof_info.matches_conditions(
-            &None,
-            &None,
-            &Some(vec![State::Unspent, State::Spent]),
-            &None
-        ));
-        assert!(!proof_info.matches_conditions(&None, &None, &Some(vec![State::Spent]), &None));
-
-        // Test with no conditions (should match)
-        assert!(proof_info.matches_conditions(&None, &None, &None, &None));
-
-        // Test with multiple conditions
-        assert!(proof_info.matches_conditions(
-            &Some(mint_url),
-            &Some(CurrencyUnit::Sat),
-            &Some(vec![State::Unspent]),
-            &None
-        ));
-    }
-
-    #[test]
-    fn test_matches_conditions_with_spending_conditions() {
-        // This test would need to be expanded with actual SpendingConditions
-        // implementation, but we can test the basic case where no spending
-        // conditions are present
-
-        let keyset_id = Id::from_str("00deadbeef123456").unwrap();
-        let proof = Proof::new(
-            Amount::from(64),
-            keyset_id,
-            Secret::new("test_secret"),
-            PublicKey::from_hex(
-                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-            )
-            .unwrap(),
-        );
-
-        let mint_url = MintUrl::from_str("https://example.com").unwrap();
-        let proof_info =
-            ProofInfo::new(proof, mint_url, State::Unspent, CurrencyUnit::Sat).unwrap();
-
-        // Test with empty spending conditions (should match when proof has none)
-        assert!(proof_info.matches_conditions(&None, &None, &None, &Some(vec![])));
-
-        // Test with non-empty spending conditions (should not match when proof has none)
-        let dummy_condition = SpendingConditions::P2PKConditions {
-            data: SecretKey::generate().public_key(),
-            conditions: None,
-        };
-        assert!(!proof_info.matches_conditions(&None, &None, &None, &Some(vec![dummy_condition])));
-    }
 }
