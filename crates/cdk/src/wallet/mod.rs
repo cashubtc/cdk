@@ -79,7 +79,7 @@ pub use bip321::{
 };
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
-pub use cdk_common::wallet::{ReceiveOptions, RestoreOptions, SendMemo, SendOptions};
+pub use cdk_common::wallet::{NUT13Options, ReceiveOptions, SendMemo, SendOptions};
 pub use keysets::KeysetFilter;
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
@@ -87,7 +87,7 @@ pub use mint_connector::{
     AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector,
 };
 #[cfg(feature = "nostr")]
-pub use nostr_backup::{BackupOptions, BackupRestoreOptions, BackupResult, RestoreResult};
+pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResult};
 pub use payment_request::CreateRequestParams;
 #[cfg(feature = "nostr")]
 pub use payment_request::NostrWaitInfo;
@@ -520,10 +520,10 @@ impl Wallet {
     /// [`Wallet::restore_with_opts`](Self::restore_with_opts). Call that
     /// directly if you need to override the batch size or gap limit.
     pub async fn restore(&self) -> Result<Restored, Error> {
-        self.restore_with_opts(RestoreOptions::default()).await
+        self.restore_with_opts(NUT13Options::default()).await
     }
 
-    /// Restore proofs from the mint using the given [`RestoreOptions`].
+    /// Restore proofs from the mint using the given [`NUT13Options`].
     ///
     /// Scans each keyset in batches of `opts.batch_size` blinded messages
     /// and stops after `opts.max_gap` consecutive empty batches. Lowering
@@ -532,7 +532,7 @@ impl Wallet {
     /// [`RateLimiter`](crate::wallet::RateLimiter) are orthogonal pacing
     /// controls that still apply.
     #[instrument(skip(self))]
-    pub async fn restore_with_opts(&self, opts: RestoreOptions) -> Result<Restored, Error> {
+    pub async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, Error> {
         let batch_size = opts.batch_size;
         let max_gap = opts.max_gap;
 

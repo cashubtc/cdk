@@ -354,6 +354,39 @@ pub fn encode_receive_options(options: ReceiveOptions) -> Result<String, FfiErro
     Ok(serde_json::to_string(&options)?)
 }
 
+/// FFI-compatible NUT-13 restore options
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct NUT13Options {
+    /// Number of blinded messages to request per batch
+    pub batch_size: u32,
+    /// Number of consecutive empty batches that terminate the scan
+    pub max_gap: u32,
+}
+
+impl Default for NUT13Options {
+    fn default() -> Self {
+        cdk::wallet::NUT13Options::default().into()
+    }
+}
+
+impl From<NUT13Options> for cdk::wallet::NUT13Options {
+    fn from(opts: NUT13Options) -> Self {
+        cdk::wallet::NUT13Options {
+            batch_size: opts.batch_size,
+            max_gap: opts.max_gap,
+        }
+    }
+}
+
+impl From<cdk::wallet::NUT13Options> for NUT13Options {
+    fn from(opts: cdk::wallet::NUT13Options) -> Self {
+        NUT13Options {
+            batch_size: opts.batch_size,
+            max_gap: opts.max_gap,
+        }
+    }
+}
+
 /// FFI-compatible PreparedSend
 ///
 /// This wraps the data from a prepared send operation along with a reference

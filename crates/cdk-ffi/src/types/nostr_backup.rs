@@ -1,8 +1,8 @@
 //! FFI types for Nostr mint backup (NUT-27)
 
 use cdk::wallet::{
-    BackupOptions as CdkBackupOptions, BackupRestoreOptions as CdkBackupRestoreOptions,
-    BackupResult as CdkBackupResult, RestoreResult as CdkRestoreResult,
+    BackupOptions as CdkBackupOptions, BackupResult as CdkBackupResult,
+    RestoreOptions as CdkRestoreOptions, RestoreResult as CdkRestoreResult,
 };
 
 use super::MintUrl;
@@ -37,9 +37,9 @@ impl Default for RestoreOptions {
     }
 }
 
-impl From<RestoreOptions> for CdkBackupRestoreOptions {
+impl From<RestoreOptions> for CdkRestoreOptions {
     fn from(options: RestoreOptions) -> Self {
-        CdkBackupRestoreOptions::new().timeout(std::time::Duration::from_secs(options.timeout_secs))
+        CdkRestoreOptions::new().timeout(std::time::Duration::from_secs(options.timeout_secs))
     }
 }
 

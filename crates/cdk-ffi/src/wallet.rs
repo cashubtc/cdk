@@ -154,6 +154,12 @@ impl Wallet {
         Ok(restored.into())
     }
 
+    /// Restore wallet from seed with custom NUT-13 options
+    pub async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, FfiError> {
+        let restored = self.inner.restore_with_opts(opts.into()).await?;
+        Ok(restored.into())
+    }
+
     /// Verify token DLEQ proofs
     pub async fn verify_token_dleq(&self, token: std::sync::Arc<Token>) -> Result<(), FfiError> {
         let cdk_token = token.inner.clone();

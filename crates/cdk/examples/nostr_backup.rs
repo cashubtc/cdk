@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use cdk::wallet::{BackupOptions, BackupRestoreOptions, WalletRepositoryBuilder};
+use cdk::wallet::{BackupOptions, RestoreOptions, WalletRepositoryBuilder};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -161,7 +161,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  Fetching backup from relays...");
 
     let restore_result = new_wallet
-        .restore_mints(relays.clone(), true, BackupRestoreOptions::default())
+        .restore_mints(relays.clone(), true, RestoreOptions::default())
         .await?;
 
     println!("  + Restore complete!");

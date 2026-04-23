@@ -38,12 +38,12 @@ impl BackupOptions {
 
 /// Options for restore operations
 #[derive(Debug, Clone)]
-pub struct BackupRestoreOptions {
+pub struct RestoreOptions {
     /// Timeout for waiting for relay responses
     pub timeout: Duration,
 }
 
-impl Default for BackupRestoreOptions {
+impl Default for RestoreOptions {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(10),
@@ -51,7 +51,7 @@ impl Default for BackupRestoreOptions {
     }
 }
 
-impl BackupRestoreOptions {
+impl RestoreOptions {
     /// Create new restore options
     pub fn new() -> Self {
         Self::default()
@@ -178,7 +178,7 @@ impl WalletRepository {
     /// let result = wallet.restore_mints(
     ///     relays,
     ///     true, // automatically add mints
-    ///     BackupRestoreOptions::default(),
+    ///     RestoreOptions::default(),
     /// ).await?;
     /// println!("Restored {} mints, {} newly added", result.mint_count, result.mints_added);
     /// ```
@@ -187,7 +187,7 @@ impl WalletRepository {
         &self,
         relays: Vec<S>,
         add_mints: bool,
-        options: BackupRestoreOptions,
+        options: RestoreOptions,
     ) -> Result<RestoreResult, Error>
     where
         S: AsRef<str>,
@@ -264,7 +264,7 @@ impl WalletRepository {
     pub async fn fetch_backup<S>(
         &self,
         relays: Vec<S>,
-        options: BackupRestoreOptions,
+        options: RestoreOptions,
     ) -> Result<MintBackup, Error>
     where
         S: AsRef<str>,

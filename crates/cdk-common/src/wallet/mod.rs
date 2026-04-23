@@ -312,21 +312,15 @@ pub struct Restored {
 /// a batch of 100 blinded messages and three consecutive empty batches to
 /// signal end-of-history. Callers that need more conservative pacing or
 /// different gap tolerance can override either field.
-///
-/// Degenerate configurations (`batch_size == 0` and/or `max_gap == 0`) do
-/// not panic but produce a scan that terminates without recovering proofs:
-/// `max_gap == 0` skips the scan entirely, and `batch_size == 0` sends
-/// empty requests until `max_gap` is reached. Both are configuration
-/// errors; callers should use `Default` or positive values.
 #[derive(Debug, Clone)]
-pub struct RestoreOptions {
+pub struct NUT13Options {
     /// Number of blinded messages to request per batch.
     pub batch_size: u32,
     /// Number of consecutive empty batches that terminate the scan.
     pub max_gap: u32,
 }
 
-impl Default for RestoreOptions {
+impl Default for NUT13Options {
     fn default() -> Self {
         Self {
             batch_size: 100,
@@ -929,6 +923,9 @@ pub trait Wallet: Send + Sync {
     /// Restore wallet from seed
     async fn restore(&self) -> Result<Restored, Self::Error>;
 
+    /// Restore wallet from seed with custom [`NUT13Options`]
+    async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, Self::Error>;
+
     /// Verify DLEQ proofs in a token
     async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error>;
 
@@ -1171,17 +1168,17 @@ mod tests {
     }
 
     #[test]
-    fn restore_options_defaults_match_nut13_spec() {
+    fn nut13_options_defaults_match_nut13_spec() {
         // NUT-13 recommends batch_size=100 and gap_limit=3.
         // https://github.com/cashubtc/nuts/blob/main/13.md#generate-blindedmessages
-        let opts = RestoreOptions::default();
+        let opts = NUT13Options::default();
         assert_eq!(opts.batch_size, 100);
         assert_eq!(opts.max_gap, 3);
     }
 
     #[test]
-    fn restore_options_custom_values_round_trip() {
-        let opts = RestoreOptions {
+    fn nut13_options_custom_values_round_trip() {
+        let opts = NUT13Options {
             batch_size: 25,
             max_gap: 2,
         };
