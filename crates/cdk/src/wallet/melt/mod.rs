@@ -654,6 +654,7 @@ impl Wallet {
         ensure_cdk!(self.mint_url == token.mint_url()?, Error::IncorrectMint);
 
         let keysets_info = self.load_mint_keysets().await?;
+        println!("{:?}", keysets_info);
         let proofs = token.proofs(&keysets_info)?;
 
         self.prepare_melt_proofs(quote_id, proofs, metadata).await
@@ -1281,14 +1282,20 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::str::FromStr;
     use std::sync::Arc;
 
-    use cdk_common::nuts::State;
+    use cdk_common::nuts::{CurrencyUnit, State};
+    use cdk_common::Id;
 
+    use super::*;
     use crate::wallet::saga::test_utils::{
         create_test_db, test_keyset_id, test_mint_url, test_proof_info,
     };
-    use crate::wallet::test_utils::{create_test_wallet_with_mock, MockMintConnector};
+    use crate::wallet::test_utils::{
+        create_test_wallet_with_mock, test_melt_quote, test_proof, MockMintConnector,
+    };
 
     #[tokio::test]
     async fn test_cancel_prepared_melt_reverts_reserved_proofs() {
@@ -1413,5 +1420,80 @@ mod tests {
         assert_eq!(state_for(reserved_y), Some(State::Unspent));
         assert_eq!(state_for(pending_y), Some(State::Unspent));
         assert_eq!(state_for(spent_y), Some(State::Spent));
+    }
+
+    async fn create_test_wallet_with_quote() -> (Wallet, String) {
+        let db = create_test_db().await;
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        (wallet, quote_id)
+    }
+
+    fn build_token(mint_url: cdk_common::mint_url::MintUrl, unit: CurrencyUnit) -> String {
+        let proofs = vec![test_proof(test_keyset_id(), 1000)];
+        Token::new(mint_url, proofs, None, unit).to_string()
+    }
+
+    #[tokio::test]
+    async fn test_prepare_melt_token_rejects_wrong_unit() {
+        let (wallet, quote_id) = create_test_wallet_with_quote().await;
+        let encoded_token = build_token(test_mint_url(), CurrencyUnit::Usd);
+
+        let result = wallet
+            .prepare_melt_token(&quote_id, &encoded_token, HashMap::new())
+            .await;
+
+        assert!(matches!(result, Err(Error::UnsupportedUnit)));
+    }
+
+    #[tokio::test]
+    async fn test_prepare_melt_token_rejects_wrong_mint() {
+        let (wallet, quote_id) = create_test_wallet_with_quote().await;
+        let encoded_token = build_token(
+            cdk_common::mint_url::MintUrl::from_str("https://other-mint.example.com").unwrap(),
+            CurrencyUnit::Sat,
+        );
+
+        let result = wallet
+            .prepare_melt_token(&quote_id, &encoded_token, HashMap::new())
+            .await;
+
+        assert!(matches!(result, Err(Error::IncorrectMint)));
+    }
+
+    #[tokio::test]
+    async fn test_prepare_melt_token_accepts_valid_token() {
+        let db = create_test_db().await;
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let proof = test_proof(Id::from_str("0094d5a774c40a32").unwrap(), 1010);
+        let encoded_token =
+            Token::new(test_mint_url(), vec![proof], None, CurrencyUnit::Sat).to_string();
+
+        let prepared = wallet
+            .prepare_melt_token(&quote_id, &encoded_token, HashMap::new())
+            .await
+            .unwrap();
+
+        let reserved = db
+            .get_reserved_proofs(&prepared.operation_id())
+            .await
+            .unwrap();
+
+        assert_eq!(reserved.len(), 1);
+        assert_eq!(reserved[0].state, State::Reserved);
+        assert_eq!(reserved[0].proof.amount, Amount::from(1010_u64));
     }
 }
