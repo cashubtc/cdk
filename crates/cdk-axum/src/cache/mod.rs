@@ -100,8 +100,22 @@ impl From<config::Config> for HttpCache {
             ),
             #[cfg(feature = "redis")]
             config::Backend::Redis(redis_config) => {
-                let client = redis::Client::open(redis_config.connection_string)
-                    .expect("Failed to create Redis client");
+                let client = if redis_config.use_cluster {
+                    let nodes = redis_config
+                        .cluster_nodes
+                        .expect("Redis cluster nodes not provided");
+                    let client = redis::cluster::ClusterClient::new(nodes)
+                        .expect("Failed to create Redis cluster client");
+                    RedisClient::Cluster(client)
+                } else {
+                    let connection_string = redis_config
+                        .connection_string
+                        .unwrap_or_else(|| "redis://127.0.0.1:6379".to_string());
+                    let client = redis::Client::open(connection_string)
+                        .expect("Failed to create Redis client");
+                    RedisClient::Standard(client)
+                };
+
                 let storage = HttpCacheRedis::new(client).set_prefix(
                     redis_config
                         .key_prefix
