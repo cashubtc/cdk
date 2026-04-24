@@ -6,6 +6,10 @@ pub const ENV_CDK_MINTD_CACHE_BACKEND: &str = "CDK_MINTD_CACHE_BACKEND";
 pub const ENV_CDK_MINTD_CACHE_REDIS_URL: &str = "CDK_MINTD_CACHE_REDIS_URL";
 #[cfg(feature = "redis")]
 pub const ENV_CDK_MINTD_CACHE_REDIS_KEY_PREFIX: &str = "CDK_MINTD_CACHE_REDIS_KEY_PREFIX";
+#[cfg(feature = "redis")]
+pub const ENV_CDK_MINTD_CACHE_REDIS_USE_CLUSTER: &str = "CDK_MINTD_CACHE_REDIS_USE_CLUSTER";
+#[cfg(feature = "redis")]
+pub const ENV_CDK_MINTD_CACHE_REDIS_CLUSTER_NODES: &str = "CDK_MINTD_CACHE_REDIS_CLUSTER_NODES";
 
 pub const ENV_CDK_MINTD_CACHE_TTI: &str = "CDK_MINTD_CACHE_TTI";
 pub const ENV_CDK_MINTD_CACHE_TTL: &str = "CDK_MINTD_CACHE_TTL";
@@ -27,14 +31,23 @@ impl Backend {
             #[cfg(feature = "redis")]
             "redis" => {
                 // Get Redis configuration from environment
-                let connection_string = std::env::var(ENV_CDK_MINTD_CACHE_REDIS_URL)
-                    .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+                let connection_string = std::env::var(ENV_CDK_MINTD_CACHE_REDIS_URL).ok();
 
                 let key_prefix = std::env::var(ENV_CDK_MINTD_CACHE_REDIS_KEY_PREFIX).ok();
+
+                let use_cluster = std::env::var(ENV_CDK_MINTD_CACHE_REDIS_USE_CLUSTER)
+                    .map(|v| v.to_lowercase() == "true")
+                    .unwrap_or(false);
+
+                let cluster_nodes = std::env::var(ENV_CDK_MINTD_CACHE_REDIS_CLUSTER_NODES)
+                    .ok()
+                    .map(|v| v.split(',').map(|s| s.trim().to_string()).collect());
 
                 Some(Self::Redis(super::backend::RedisConfig {
                     connection_string,
                     key_prefix,
+                    use_cluster,
+                    cluster_nodes,
                 }))
             }
             _ => None,
@@ -70,14 +83,23 @@ impl Config {
                 // If Redis backend is selected, parse Redis configuration
                 #[cfg(feature = "redis")]
                 if matches!(self.backend, Backend::Redis(_)) {
-                    let connection_string = env::var(ENV_CDK_MINTD_CACHE_REDIS_URL)
-                        .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+                    let connection_string = env::var(ENV_CDK_MINTD_CACHE_REDIS_URL).ok();
 
                     let key_prefix = env::var(ENV_CDK_MINTD_CACHE_REDIS_KEY_PREFIX).ok();
+
+                    let use_cluster = env::var(ENV_CDK_MINTD_CACHE_REDIS_USE_CLUSTER)
+                        .map(|v| v.to_lowercase() == "true")
+                        .unwrap_or(false);
+
+                    let cluster_nodes = env::var(ENV_CDK_MINTD_CACHE_REDIS_CLUSTER_NODES)
+                        .ok()
+                        .map(|v| v.split(',').map(|s| s.trim().to_string()).collect());
 
                     self.backend = Backend::Redis(super::backend::RedisConfig {
                         connection_string,
                         key_prefix,
+                        use_cluster,
+                        cluster_nodes,
                     });
                 }
             }
