@@ -323,8 +323,7 @@ impl CdkBdk {
                 self.batch_config.fee_estimation.fallback_sat_per_vb
             });
 
-        let fee_rate =
-            bdk_wallet::bitcoin::FeeRate::from_sat_per_vb_unchecked(sat_per_vb.ceil() as u64);
+        let fee_rate = bdk_wallet::bitcoin::FeeRate::from_sat_per_vb_u32(sat_per_vb.ceil() as u32);
         tx_builder.fee_rate(fee_rate);
 
         let mut psbt = match tx_builder.finish() {
