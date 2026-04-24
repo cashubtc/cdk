@@ -10,7 +10,27 @@ rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 
+[features]
+default = ["bitreq"]
+bitreq = ["dep:bitreq"]
+reqwest = ["dep:reqwest"]
+tor = [
+    "dep:arti-client",
+    "dep:arti-hyper",
+    "dep:getrandom",
+    "dep:http",
+    "dep:hyper",
+    "dep:tls-api",
+    "dep:tls-api-native-tls",
+    "dep:tokio",
+    "dep:tor-rtcompat",
+]
+
 [dependencies]
+async-trait.workspace = true
+cashu.workspace = true
+serde_urlencoded = "0.7"
+regex.workspace = true
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -19,17 +39,25 @@ tracing.workspace = true
 url.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest = { workspace = true }
-regex = { workspace = true }
+bitreq = { version = "0.3.4", features = ["async", "async-https-rustls", "json-using-serde", "proxy"], optional = true }
+arti-client = { version = "0.19.0", optional = true, default-features = false, features = ["tokio", "rustls"] }
+arti-hyper = { version = "0.19.0", optional = true }
+getrandom = { version = "0.2", optional = true }
+http = { version = "0.2", optional = true }
+hyper = { version = "1.9.0", optional = true, features = ["client", "http1", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+tls-api = { version = "0.9", optional = true }
+tls-api-native-tls = { version = "0.9", optional = true }
+tokio = { workspace = true, features = ["sync"], optional = true }
+tor-rtcompat = { version = "0.19.0", optional = true, features = ["tokio", "rustls"] }
 tokio-tungstenite = { workspace = true, features = [
     "rustls", "rustls-tls-native-roots", "connect"
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["WebSocket", "MessageEvent", "CloseEvent", "ErrorEvent", "BinaryType"] }
+web-sys = { version = "0.3", features = ["WebSocket", "MessageEvent", "CloseEvent", "ErrorEvent", "BinaryType", "Request", "RequestInit", "Response", "Headers"] }
 js-sys = "0.3"
 futures-channel = "0.3"
 
