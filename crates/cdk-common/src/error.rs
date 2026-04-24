@@ -3,6 +3,7 @@
 use std::array::TryFromSliceError;
 use std::fmt;
 
+#[cfg(feature = "mint")]
 use cashu::quote_id::QuoteId;
 use cashu::{CurrencyUnit, PaymentMethod};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -10,6 +11,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::nuts::Id;
+#[cfg(feature = "mint")]
 use crate::payment::PaymentIdentifier;
 use crate::util::hex;
 #[cfg(feature = "wallet")]
@@ -141,6 +143,7 @@ pub enum Error {
     /// [`PaymentQuoteResponse::request_lookup_id`](crate::payment::PaymentQuoteResponse).
     /// This error is returned when the mint layer detects a violation of that
     /// contract during onchain melt quote construction.
+    #[cfg(feature = "mint")]
     #[error(
         "Onchain backend returned request_lookup_id {got:?} that does not match \
          mint-supplied quote_id {expected}"
@@ -603,7 +606,6 @@ impl Error {
             | Self::DuplicateOutputs
             | Self::MultipleUnits
             | Self::UnitMismatch
-            | Self::OnchainQuoteLookupIdMismatch { .. }
             | Self::SigAllUsedInMelt
             | Self::TokenAlreadySpent
             | Self::TokenPending
@@ -633,6 +635,9 @@ impl Error {
             | Self::Bip321Parse(_)
             | Self::Bip321Encode(_)
             | Self::LightningAddressParse(_) => true,
+
+            #[cfg(feature = "mint")]
+            Self::OnchainQuoteLookupIdMismatch { .. } => true,
 
             // HTTP Errors
             Self::HttpError(Some(status), _) => {

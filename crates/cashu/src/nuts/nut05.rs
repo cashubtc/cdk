@@ -519,7 +519,6 @@ pub struct MeltQuoteCustomResponse<Q> {
     pub extra: serde_json::Value,
 }
 
-#[cfg(feature = "mint")]
 impl<Q: ToString> MeltQuoteCustomResponse<Q> {
     /// Convert the MeltQuoteCustomResponse with a quote type Q to a String
     pub fn to_string_id(&self) -> MeltQuoteCustomResponse<String> {

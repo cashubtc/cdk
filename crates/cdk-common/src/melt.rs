@@ -27,6 +27,7 @@ impl<Q: ToString> MeltQuoteOnchainOptions<Q> {
     }
 }
 
+#[cfg(feature = "mint")]
 impl From<MeltQuoteOnchainOptions<crate::QuoteId>> for MeltQuoteOnchainOptions<String> {
     fn from(value: MeltQuoteOnchainOptions<crate::QuoteId>) -> Self {
         value.to_string_id()
@@ -237,6 +238,7 @@ impl<Q: ToString> MeltQuoteResponse<Q> {
     }
 }
 
+#[cfg(feature = "mint")]
 impl From<MeltQuoteResponse<crate::QuoteId>> for MeltQuoteResponse<String> {
     fn from(value: MeltQuoteResponse<crate::QuoteId>) -> Self {
         value.to_string_id()
@@ -277,12 +279,14 @@ impl<Q: ToString> MeltQuoteCreateResponse<Q> {
     }
 }
 
+#[cfg(feature = "mint")]
 impl From<MeltQuoteCreateResponse<crate::QuoteId>> for MeltQuoteCreateResponse<String> {
     fn from(value: MeltQuoteCreateResponse<crate::QuoteId>) -> Self {
         value.to_string_id()
     }
 }
 
+#[cfg(feature = "mint")]
 impl<Q> From<crate::mint::MeltQuote> for MeltQuoteResponse<Q>
 where
     Q: From<crate::QuoteId>,
