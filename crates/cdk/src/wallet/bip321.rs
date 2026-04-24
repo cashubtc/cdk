@@ -308,48 +308,61 @@ fn extract_payment_methods<'a>(
 
 impl fmt::Display for Bip321UriBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("bitcoin:")?;
+        let mut uri = String::from("BITCOIN:");
 
-        // On-chain address goes in the path
         if let Some(ref addr) = self.onchain_address {
-            f.write_str(addr)?;
+            uri.push_str(&uppercase_qr_address(addr));
         }
 
         let mut query_params = form_urlencoded::Serializer::new(String::new());
 
         if let Some(amount_sats) = self.amount_sats {
             let amount_btc = format_btc_amount_from_sats(amount_sats);
-            query_params.append_pair("amount", &amount_btc);
+            query_params.append_pair("AMOUNT", &amount_btc);
         }
 
         if let Some(ref label) = self.label {
-            query_params.append_pair("label", label);
+            query_params.append_pair("LABEL", &label.to_ascii_uppercase());
         }
 
         if let Some(ref message) = self.message {
-            query_params.append_pair("message", message);
+            query_params.append_pair("MESSAGE", &message.to_ascii_uppercase());
         }
 
         if let Some(ref bolt11) = self.bolt11_invoice {
-            query_params.append_pair("lightning", bolt11);
+            query_params.append_pair("LIGHTNING", &bolt11.to_ascii_uppercase());
         }
 
         if let Some(ref bolt12) = self.bolt12_offer {
-            query_params.append_pair("lno", bolt12);
+            query_params.append_pair("LNO", &bolt12.to_ascii_uppercase());
         }
 
         if let Some(ref creq) = self.cashu_request_str {
-            query_params.append_pair("creq", creq);
+            query_params.append_pair("CREQ", &creq.to_ascii_uppercase());
         }
 
         let query_string = query_params.finish();
         if !query_string.is_empty() {
-            f.write_str("?")?;
-            f.write_str(&query_string)?;
+            uri.push('?');
+            uri.push_str(&query_string);
         }
 
-        Ok(())
+        f.write_str(&uri)
     }
+}
+
+fn uppercase_qr_address(address: &str) -> String {
+    if is_qr_friendly_segwit_address(address) {
+        return address.to_ascii_uppercase();
+    }
+
+    address.to_string()
+}
+
+fn is_qr_friendly_segwit_address(address: &str) -> bool {
+    let lowercase = address.to_ascii_lowercase();
+
+    lowercase.starts_with("bc1") || lowercase.starts_with("tb1") || lowercase.starts_with("bcrt1")
 }
 
 /// Format satoshis to BTC string without trailing zeros, per BIP 21.
@@ -377,8 +390,8 @@ mod tests {
     }
 
     fn assert_has_creq(uri: &str) {
-        assert!(uri.starts_with("bitcoin:?") || uri.starts_with("bitcoin:bc1"));
-        assert!(uri.contains("creq="));
+        assert!(uri.starts_with("BITCOIN:?") || uri.starts_with("BITCOIN:BC1"));
+        assert!(uri.contains("CREQ="));
     }
 
     fn assert_demo_cashu(parsed: &ParsedPaymentInstruction) {
@@ -410,16 +423,16 @@ mod tests {
             .with_message("Coffee payment".to_string())
             .to_string();
 
-        assert!(uri.starts_with(&format!("bitcoin:{addr}?")));
-        assert!(uri.contains("creq="));
-        assert!(uri.contains("amount=0.001"));
-        assert!(uri.contains("message=Coffee+payment"));
+        assert!(uri.starts_with(&format!("BITCOIN:{}?", addr.to_ascii_uppercase())));
+        assert!(uri.contains("CREQ="));
+        assert!(uri.contains("AMOUNT=0.001"));
+        assert!(uri.contains("MESSAGE=COFFEE+PAYMENT"));
     }
 
     #[test]
     fn test_bip321_uri_empty_params() {
         let uri = Bip321UriBuilder::new().to_string();
-        assert_eq!(uri, "bitcoin:");
+        assert_eq!(uri, "BITCOIN:");
     }
 
     #[test]
@@ -436,7 +449,7 @@ mod tests {
             .with_label("a=b&c=d".to_string())
             .with_message("hello world".to_string())
             .to_string();
-        assert_eq!(uri, "bitcoin:?label=a%3Db%26c%3Dd&message=hello+world");
+        assert_eq!(uri, "BITCOIN:?LABEL=A%3DB%26C%3DD&MESSAGE=HELLO+WORLD");
     }
 
     #[tokio::test]
@@ -449,19 +462,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_bip321_uri_with_cashu() {
-        let uri = format!("bitcoin:?creq={TEST_CREQ}");
+        let uri = format!("BITCOIN:?CREQ={TEST_CREQ}");
         let parsed = parse_payment_instruction(&uri, bitcoin::Network::Bitcoin)
             .await
-            .expect("should parse bitcoin: URI with creq");
+            .expect("should parse BITCOIN: URI with CREQ");
         assert_demo_cashu(&parsed);
     }
 
     #[tokio::test]
     async fn test_parse_bip321_uri_with_cashu_and_amount() {
-        let uri = format!("bitcoin:?creq={TEST_CREQ}&amount=0.00001");
+        let uri = format!("BITCOIN:?CREQ={TEST_CREQ}&AMOUNT=0.00001");
         let parsed = parse_payment_instruction(&uri, bitcoin::Network::Bitcoin)
             .await
-            .expect("should parse bitcoin: URI with creq and amount");
+            .expect("should parse BITCOIN: URI with CREQ and AMOUNT");
 
         assert_eq!(parsed.cashu_requests.len(), 1);
         assert_eq!(parsed.amount_msats, Some(1_000_000));
@@ -521,9 +534,9 @@ mod tests {
             .with_onchain_address("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq".to_string())
             .with_amount_sats(100_000)
             .to_string();
-        assert!(uri.contains("creq="));
-        assert!(uri.contains("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"));
-        assert!(uri.contains("amount=0.001"));
+        assert!(uri.contains("CREQ="));
+        assert!(uri.contains("BC1QAR0SRRR7XFKVY5L643LYDNW9RE59GTZZWF5MDQ"));
+        assert!(uri.contains("AMOUNT=0.001"));
     }
 
     #[tokio::test]
@@ -544,10 +557,10 @@ mod tests {
         let uri = Bip321UriBuilder::new()
             .with_bolt12_offer(offer.to_string())
             .to_string();
-        assert!(uri.starts_with("bitcoin:?"));
-        assert!(uri.contains(&format!("lno={offer}")));
-        assert!(!uri.contains("creq="));
-        assert!(!uri.contains("lightning="));
+        assert!(uri.starts_with("BITCOIN:?"));
+        assert!(uri.contains(&format!("LNO={}", offer.to_ascii_uppercase())));
+        assert!(!uri.contains("CREQ="));
+        assert!(!uri.contains("LIGHTNING="));
     }
 
     #[test]
@@ -555,7 +568,37 @@ mod tests {
         let uri = Bip321UriBuilder::new()
             .with_label("Donation".to_string())
             .to_string();
-        assert!(uri.contains("label=Donation"));
+        assert!(uri.contains("LABEL=DONATION"));
+    }
+
+    #[test]
+    fn test_base58_address_preserved() {
+        let addr = "175tWpb8K1S7NmH4Zx6rewF9WQrcZv245W";
+        let uri = Bip321UriBuilder::new()
+            .with_onchain_address(addr.to_string())
+            .to_string();
+
+        assert_eq!(uri, format!("BITCOIN:{addr}"));
+    }
+
+    #[test]
+    fn test_testnet_segwit_address_is_uppercased() {
+        let addr = "tb1qghfhmd4zh7ncpmxl3qzhmq566jk8ckq4gafnmg";
+        let uri = Bip321UriBuilder::new()
+            .with_onchain_address(addr.to_string())
+            .to_string();
+
+        assert_eq!(uri, format!("BITCOIN:{}", addr.to_ascii_uppercase()));
+    }
+
+    #[test]
+    fn test_regtest_segwit_address_is_uppercased() {
+        let addr = "bcrt1qxlvaw9k0v4m4u6sz5s4z7qjv3f4x0n8xk5m9z2";
+        let uri = Bip321UriBuilder::new()
+            .with_onchain_address(addr.to_string())
+            .to_string();
+
+        assert_eq!(uri, format!("BITCOIN:{}", addr.to_ascii_uppercase()));
     }
 
     #[tokio::test]
