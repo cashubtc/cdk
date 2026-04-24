@@ -38,6 +38,8 @@ pub enum State {
     Reserved,
     /// Pending spent (i.e., spent but not yet swapped by receiver)
     PendingSpent,
+    /// Pending receive (i.e. offline received but not yet swapped)
+    PendingReceive,
 }
 
 impl fmt::Display for State {
@@ -48,6 +50,7 @@ impl fmt::Display for State {
             Self::Pending => "PENDING",
             Self::Reserved => "RESERVED",
             Self::PendingSpent => "PENDING_SPENT",
+            Self::PendingReceive => "PENDING_RECEIVE",
         };
 
         write!(f, "{s}")
@@ -64,6 +67,7 @@ impl FromStr for State {
             "PENDING" => Ok(Self::Pending),
             "RESERVED" => Ok(Self::Reserved),
             "PENDING_SPENT" => Ok(Self::PendingSpent),
+            "PENDING_RECEIVE" => Ok(Self::PendingReceive),
             _ => Err(Error::UnknownState),
         }
     }

@@ -450,6 +450,11 @@ impl Wallet {
                 ProofState::Pending => self.inner.get_pending_proofs().await?,
                 ProofState::Reserved => self.inner.get_reserved_proofs().await?,
                 ProofState::PendingSpent => self.inner.get_pending_spent_proofs().await?,
+                ProofState::PendingReceive => {
+                    self.inner
+                        .get_proofs_by_states(vec![cdk::nuts::State::PendingReceive])
+                        .await?
+                }
                 ProofState::Spent => {
                     // CDK doesn't have a method to get spent proofs directly
                     // They are removed from the database when spent

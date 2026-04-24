@@ -546,4 +546,22 @@ impl WalletTraitDef for Wallet {
         let signing_key = WalletTraitDef::get_signing_key(self.inner().as_ref(), pubkey).await?;
         Ok(signing_key)
     }
+
+    /// Receive a token offline: verify DLEQ proofs and store in PendingReceive state.
+    async fn receive_offline(
+        &self,
+        encoded_token: &str,
+        options: cdk_common::wallet::OfflineReceiveOptions,
+    ) -> Result<Self::Amount, Self::Error> {
+        let amount =
+            WalletTraitDef::receive_offline(self.inner().as_ref(), encoded_token, options).await?;
+        Ok(amount.into())
+    }
+
+    /// Finalize all pending receives by swapping them with the mint.
+    async fn finalize_pending_receives(&self) -> Result<Self::Amount, Self::Error> {
+        let amount =
+            WalletTraitDef::finalize_pending_receives(self.inner().as_ref()).await?;
+        Ok(amount.into())
+    }
 }
