@@ -525,7 +525,10 @@ where
             MeltQuoteRequest::Custom(req) => {
                 let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
                     self.transport_http_post(url, auth_token, req).await?;
-                Ok(MeltQuoteCreateResponse::Custom((request.method(), response)))
+                Ok(MeltQuoteCreateResponse::Custom((
+                    request.method(),
+                    response,
+                )))
             }
         }
     }
