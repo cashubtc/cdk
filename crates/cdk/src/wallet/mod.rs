@@ -79,7 +79,7 @@ pub use bip321::{
 };
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
-pub use cdk_common::wallet::{ReceiveOptions, SendMemo, SendOptions};
+pub use cdk_common::wallet::{NUT13Options, ReceiveOptions, SendMemo, SendOptions};
 pub use keysets::KeysetFilter;
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
@@ -513,9 +513,29 @@ impl Wallet {
         Ok(SplitTarget::Values(values))
     }
 
-    /// Restore
-    #[instrument(skip(self))]
+    /// Restore proofs from the mint using the NUT-13 spec defaults (batch
+    /// size 100, gap 3).
+    ///
+    /// This is a thin wrapper over
+    /// [`Wallet::restore_with_opts`](Self::restore_with_opts). Call that
+    /// directly if you need to override the batch size or gap limit.
     pub async fn restore(&self) -> Result<Restored, Error> {
+        self.restore_with_opts(NUT13Options::default()).await
+    }
+
+    /// Restore proofs from the mint using the given [`NUT13Options`].
+    ///
+    /// Scans each keyset in batches of `opts.batch_size` blinded messages
+    /// and stops after `opts.max_gap` consecutive empty batches. Lowering
+    /// `batch_size` trades scan latency for a gentler request pattern; the
+    /// mint's rate limit and the wallet's configured
+    /// [`RateLimiter`](crate::wallet::RateLimiter) are orthogonal pacing
+    /// controls that still apply.
+    #[instrument(skip(self))]
+    pub async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, Error> {
+        let batch_size = opts.batch_size;
+        let max_gap = opts.max_gap;
+
         // Check that mint is in store of mints
         if self
             .localstore
@@ -532,23 +552,20 @@ impl Wallet {
 
         for keyset in keysets {
             let keys = self.load_keyset_keys(keyset.id).await?;
-            let mut empty_batch = 0;
-            let mut start_counter = 0;
+            let mut empty_batch: u32 = 0;
+            let mut start_counter: u32 = 0;
             // Track the highest counter value that had a signature
             let mut highest_counter: Option<u32> = None;
 
-            while empty_batch.lt(&3) {
-                let premint_secrets = PreMintSecrets::restore_batch(
-                    keyset.id,
-                    &self.seed,
-                    start_counter,
-                    start_counter + 100,
-                )?;
+            while empty_batch < max_gap {
+                let batch_end = start_counter.saturating_add(batch_size);
+                let premint_secrets =
+                    PreMintSecrets::restore_batch(keyset.id, &self.seed, start_counter, batch_end)?;
 
                 tracing::debug!(
                     "Attempting to restore counter {}-{} for mint {} keyset {}",
                     start_counter,
-                    start_counter + 100,
+                    batch_end,
                     self.mint_url,
                     keyset.id
                 );
@@ -561,7 +578,7 @@ impl Wallet {
 
                 if response.signatures.is_empty() {
                     empty_batch += 1;
-                    start_counter += 100;
+                    start_counter = start_counter.saturating_add(batch_size);
                     continue;
                 }
 
@@ -663,7 +680,7 @@ impl Wallet {
                     .await?;
 
                 empty_batch = 0;
-                start_counter += 100;
+                start_counter = start_counter.saturating_add(batch_size);
             }
 
             if let Some(highest) = highest_counter {

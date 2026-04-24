@@ -389,6 +389,14 @@ impl WalletTraitDef for Wallet {
         Ok(restored)
     }
 
+    async fn restore_with_opts(
+        &self,
+        opts: cdk_common::wallet::NUT13Options,
+    ) -> Result<cdk_common::wallet::Restored, Self::Error> {
+        let restored = WalletTraitDef::restore_with_opts(self.inner().as_ref(), opts).await?;
+        Ok(restored)
+    }
+
     async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error> {
         WalletTraitDef::verify_token_dleq(self.inner().as_ref(), token_str).await?;
         Ok(())

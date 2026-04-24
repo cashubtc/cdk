@@ -326,6 +326,14 @@ impl WalletTrait for super::Wallet {
         self.restore().await
     }
 
+    #[instrument(skip(self))]
+    async fn restore_with_opts(
+        &self,
+        opts: cdk_common::wallet::NUT13Options,
+    ) -> Result<Restored, Self::Error> {
+        self.restore_with_opts(opts).await
+    }
+
     #[instrument(skip(self, token_str))]
     async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error> {
         let token = cdk_common::nuts::nut00::token::Token::from_str(token_str)?;
