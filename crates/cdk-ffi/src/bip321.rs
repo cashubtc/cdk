@@ -106,7 +106,7 @@ mod tests {
     const TEST_BOLT11: &str = "lnbc100n1ptest";
 
     fn assert_uri_prefix(uri: &str) {
-        assert!(uri.starts_with("bitcoin:?"));
+        assert!(uri.starts_with("BITCOIN:?"));
     }
 
     #[test]
@@ -118,8 +118,8 @@ mod tests {
         );
 
         assert_uri_prefix(&uri);
-        assert!(uri.contains(&format!("creq={TEST_CREQ}")));
-        assert!(uri.contains(&format!("lightning={TEST_BOLT11}")));
+        assert!(uri.contains(&format!("CREQ={TEST_CREQ}")));
+        assert!(uri.contains(&format!("LIGHTNING={}", TEST_BOLT11.to_ascii_uppercase())));
     }
 
     #[test]
@@ -127,9 +127,9 @@ mod tests {
         let uri = create_bip321_uri(Some(TEST_CREQ.to_string()), None, None);
 
         assert_uri_prefix(&uri);
-        assert!(uri.contains("creq="));
-        assert!(!uri.contains("lightning="));
-        assert!(!uri.contains("lno="));
+        assert!(uri.contains("CREQ="));
+        assert!(!uri.contains("LIGHTNING="));
+        assert!(!uri.contains("LNO="));
     }
 
     #[test]
@@ -137,8 +137,8 @@ mod tests {
         let uri = create_bip321_uri(None, Some(TEST_BOLT11.to_string()), None);
 
         assert_uri_prefix(&uri);
-        assert!(uri.contains(&format!("lightning={TEST_BOLT11}")));
-        assert!(!uri.contains("creq="));
+        assert!(uri.contains(&format!("LIGHTNING={}", TEST_BOLT11.to_ascii_uppercase())));
+        assert!(!uri.contains("CREQ="));
     }
 
     #[test]
@@ -152,14 +152,14 @@ mod tests {
         );
 
         assert_uri_prefix(&uri);
-        assert!(uri.contains("creq="));
-        assert!(uri.contains("lightning="));
-        assert!(uri.contains("lno="));
+        assert!(uri.contains("CREQ="));
+        assert!(uri.contains("LIGHTNING="));
+        assert!(uri.contains("LNO="));
     }
 
     #[test]
     fn test_create_bip321_uri_empty() {
         let uri = create_bip321_uri(None, None, None);
-        assert_eq!(uri, "bitcoin:");
+        assert_eq!(uri, "BITCOIN:");
     }
 }
