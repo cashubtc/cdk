@@ -612,7 +612,7 @@
 
               # Generate Kotlin bindings
               cargo run --release -p cdk-ffi-kotlin --bin uniffi-bindgen -- generate \
-                --library "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+                --library "target/${hostTarget}/release/libcdk_ffi.$LIB_EXT" \
                 --language kotlin \
                 --out-dir target/kotlin-bindings \
                 --no-format
@@ -627,8 +627,8 @@
               # Copy generated Kotlin sources
               cp -r target/kotlin-bindings/org $out/cdk-jvm/src/main/kotlin/
 
-              # Copy native library (renamed to libcdk_ffi for JNA convention)
-              cp "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+              # Copy native library
+              cp "target/${hostTarget}/release/libcdk_ffi.$LIB_EXT" \
                 "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT"
 
               # Strip debug symbols
