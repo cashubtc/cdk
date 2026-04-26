@@ -119,3 +119,47 @@ just binding-kotlin
 # Run tests
 just test-kotlin
 ```
+
+## CI/CD — Publishing Workflow
+
+The `kotlin-publish.yml` workflow (in the CDK monorepo) builds native binaries
+for all platforms, syncs sources to `cdk-kotlin`, publishes to Maven Central,
+and creates a tagged GitHub release. The following secrets and variables must be
+configured in the **CDK monorepo** repository settings
+(Settings → Secrets and variables → Actions).
+
+### Secrets
+
+| Name | Purpose |
+|---|---|
+| `KOTLIN_DEPLOY_KEY` | Personal access token (PAT) with `repo` scope on the `cdk-kotlin` target repo. Used to clone, push, and create releases. |
+| `SONATYPE_USERNAME` | Maven Central (Sonatype OSSRH) username for publishing. |
+| `SONATYPE_PASSWORD` | Maven Central (Sonatype OSSRH) password or token. |
+| `SIGNING_KEY` | ASCII-armored GPG private key for signing Maven artifacts. |
+| `SIGNING_PASSWORD` | Passphrase for the GPG signing key. |
+
+#### How to create the PAT
+
+1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**.
+2. Create a token scoped to the `cdk-kotlin` repository with **Contents** (read/write) and **Metadata** (read) permissions.
+3. Add it as a repository secret named `KOTLIN_DEPLOY_KEY` in the monorepo.
+
+#### Maven Central (Sonatype) setup
+
+1. Register at [central.sonatype.com](https://central.sonatype.com/) and claim the `org.cashudevkit` namespace.
+2. Generate a user token under **Account → User Token**.
+3. Add the username and password as `SONATYPE_USERNAME` and `SONATYPE_PASSWORD` secrets.
+
+#### GPG signing key
+
+1. Generate a key: `gpg --full-generate-key` (RSA 4096, no expiry is fine for CI).
+2. Export the ASCII-armored private key: `gpg --armor --export-secret-keys <KEY_ID>`.
+3. Add the full output as the `SIGNING_KEY` secret and the passphrase as `SIGNING_PASSWORD`.
+
+### Variables
+
+| Name | Purpose | Example |
+|---|---|---|
+| `CDK_KOTLIN_REPO` | Owner/repo of the target Kotlin package repository. | `cashubtc/cdk-kotlin` |
+
+Set this under **Settings → Secrets and variables → Actions → Variables**.
