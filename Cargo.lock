@@ -1831,6 +1831,7 @@ dependencies = [
  "bitcoin 0.32.8",
  "cdk-common",
  "lightning-invoice",
+ "mockito",
  "once_cell",
  "reqwest",
  "serde",
