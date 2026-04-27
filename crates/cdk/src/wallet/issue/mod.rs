@@ -109,7 +109,9 @@ impl Wallet {
             .client
             .get_mint_quote_status(mint_quote.payment_method.clone(), &mint_quote.id)
             .await?;
-        mint_quote.state = mint_quote_response.state();
+        if let Some(state) = mint_quote_response.state() {
+            mint_quote.state = state;
+        }
 
         match &mint_quote_response {
             MintQuoteResponse::Bolt11(response) => match response.state {
@@ -126,16 +128,22 @@ impl Wallet {
                 mint_quote.amount_issued = response.amount_issued;
                 mint_quote.amount_paid = response.amount_paid;
             }
-            MintQuoteResponse::Custom { response, .. } => match response.state {
-                MintQuoteState::Paid => {
-                    mint_quote.amount_paid = response.amount.unwrap_or_default();
+            MintQuoteResponse::Custom {
+                response, state, ..
+            } => {
+                if let Some(state) = state {
+                    match state {
+                        MintQuoteState::Paid => {
+                            mint_quote.amount_paid = response.amount.unwrap_or_default();
+                        }
+                        MintQuoteState::Issued => {
+                            mint_quote.amount_paid = response.amount.unwrap_or_default();
+                            mint_quote.amount_issued = response.amount.unwrap_or_default();
+                        }
+                        MintQuoteState::Unpaid => (),
+                    }
                 }
-                MintQuoteState::Issued => {
-                    mint_quote.amount_paid = response.amount.unwrap_or_default();
-                    mint_quote.amount_issued = response.amount.unwrap_or_default();
-                }
-                MintQuoteState::Unpaid => (),
-            },
+            }
         }
 
         Ok(())
@@ -420,7 +428,9 @@ impl Wallet {
         let quote = match existing_quote {
             Some(mut existing) => {
                 // Update the existing quote with new state
-                existing.state = response.state();
+                if let Some(state) = response.state() {
+                    existing.state = state;
+                }
                 match &response {
                     MintQuoteResponse::Bolt12(r) => {
                         existing.amount_paid = r.amount_paid;
@@ -431,10 +441,14 @@ impl Wallet {
                             existing.amount_paid = amount;
                         }
                     }
-                    MintQuoteResponse::Custom { response: r, .. } => {
-                        if let Some(amount) = r.amount {
-                            existing.amount_paid = amount;
-                            existing.amount_issued = amount;
+                    MintQuoteResponse::Custom {
+                        response: r, state, ..
+                    } => {
+                        if state.is_some() {
+                            if let Some(amount) = r.amount {
+                                existing.amount_paid = amount;
+                                existing.amount_issued = amount;
+                            }
                         }
                     }
                 }

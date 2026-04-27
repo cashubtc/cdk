@@ -177,8 +177,6 @@ pub struct MintQuoteCustomResponse {
     pub quote: String,
     /// Request string
     pub request: String,
-    /// State of the quote
-    pub state: QuoteState,
     /// Expiry timestamp (optional)
     pub expiry: Option<u64>,
     /// Amount (optional)
@@ -205,7 +203,6 @@ impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomRespons
         Self {
             quote: response.quote,
             request: response.request,
-            state: response.state.into(),
             expiry: response.expiry,
             amount: response.amount.map(Into::into),
             unit: response.unit.map(Into::into),

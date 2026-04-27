@@ -1052,7 +1052,6 @@ impl TryFrom<crate::mint::MintQuote> for crate::nuts::MintQuoteCustomResponse<Qu
 
     fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
         Ok(crate::nuts::MintQuoteCustomResponse {
-            state: mint_quote.state(),
             quote: mint_quote.id.clone(),
             request: mint_quote.request,
             expiry: Some(mint_quote.expiry),
@@ -1108,9 +1107,11 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
             Ok(MintQuoteResponse::Bolt12(bolt12_response))
         } else {
             let method = quote.payment_method.clone();
+            let state = quote.state();
             let custom_response = crate::nuts::MintQuoteCustomResponse::try_from(quote)?;
             Ok(MintQuoteResponse::Custom {
                 method,
+                state: Some(state),
                 response: custom_response,
             })
         }

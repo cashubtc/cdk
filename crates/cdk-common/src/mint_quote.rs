@@ -92,6 +92,8 @@ pub enum MintQuoteResponse<Q> {
     Custom {
         /// Payment method identifier
         method: PaymentMethod,
+        /// Quote state, when the response source provides it
+        state: Option<crate::nuts::nut23::QuoteState>,
         /// Payment method specific response
         response: MintQuoteCustomResponse<Q>,
     },
@@ -125,11 +127,11 @@ impl<Q> MintQuoteResponse<Q> {
         }
     }
 
-    /// Returns the quote state.
-    pub fn state(&self) -> crate::nuts::nut23::QuoteState {
+    /// Returns the quote state when available.
+    pub fn state(&self) -> Option<crate::nuts::nut23::QuoteState> {
         match self {
-            Self::Bolt11(r) => r.state,
-            Self::Bolt12(r) => {
+            Self::Bolt11(r) => Some(r.state),
+            Self::Bolt12(r) => Some({
                 if r.amount_issued > Amount::ZERO {
                     crate::nuts::nut23::QuoteState::Issued
                 } else if r.amount_paid >= r.amount.unwrap_or(Amount::ZERO) {
@@ -137,8 +139,8 @@ impl<Q> MintQuoteResponse<Q> {
                 } else {
                     crate::nuts::nut23::QuoteState::Unpaid
                 }
-            }
-            Self::Custom { response: r, .. } => r.state,
+            }),
+            Self::Custom { state, .. } => *state,
         }
     }
 

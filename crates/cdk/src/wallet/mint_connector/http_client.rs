@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use cdk_common::{
     nut19, MeltQuoteBolt11Response, MeltQuoteRequest, MeltQuoteResponse, Method,
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteRequest,
-    MintQuoteResponse, ProtectedEndpoint, RoutePath,
+    MintQuoteResponse, MintQuoteState, ProtectedEndpoint, RoutePath,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -28,6 +28,18 @@ use crate::nuts::{
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 
 type Cache = (u64, HashSet<(nut19::Method, nut19::Path)>);
+
+fn take_custom_mint_quote_state(
+    response: &mut MintQuoteCustomResponse<String>,
+) -> Option<MintQuoteState> {
+    let serde_json::Value::Object(fields) = &mut response.extra else {
+        return None;
+    };
+
+    fields
+        .remove("state")
+        .and_then(|state| serde_json::from_value(state).ok())
+}
 
 /// Http Client
 #[derive(Debug, Clone)]
@@ -280,10 +292,13 @@ where
                 Ok(MintQuoteResponse::Bolt12(response))
             }
             MintQuoteRequest::Custom { request: req, .. } => {
-                let response: cdk_common::nut04::MintQuoteCustomResponse<String> =
+                let mut response: cdk_common::nut04::MintQuoteCustomResponse<String> =
                     self.transport.http_post(url, auth_token, req).await?;
+                let state =
+                    take_custom_mint_quote_state(&mut response).or(Some(MintQuoteState::Unpaid));
                 Ok(MintQuoteResponse::Custom {
                     method: request.method(),
+                    state,
                     response,
                 })
             }
@@ -342,10 +357,15 @@ where
                     .get_auth_token(Method::Get, RoutePath::MintQuote(method_name.clone()))
                     .await?;
 
-                let response: MintQuoteCustomResponse<String> =
+                let mut response: MintQuoteCustomResponse<String> =
                     self.transport.http_get(url, auth_token).await?;
+                let state = take_custom_mint_quote_state(&mut response);
 
-                Ok(MintQuoteResponse::Custom { method, response })
+                Ok(MintQuoteResponse::Custom {
+                    method,
+                    state,
+                    response,
+                })
             }
         }
     }
@@ -773,15 +793,12 @@ mod tests {
     /// serializes as a JSON array.
     #[tokio::test]
     async fn test_post_mint_quote_custom_sends_request_object() {
-        use cdk_common::nuts::nut23::QuoteState;
-
         // Build a canned MintQuoteCustomResponse<String> for the mock
         let canned_response = MintQuoteCustomResponse::<String> {
             quote: "test-quote-id".to_string(),
             request: "paypal://pay?id=123".to_string(),
             amount: Some(cdk_common::Amount::from(1000)),
             unit: Some(cdk_common::CurrencyUnit::Sat),
-            state: QuoteState::Unpaid,
             expiry: Some(9999999),
             pubkey: None,
             extra: serde_json::Value::Null,

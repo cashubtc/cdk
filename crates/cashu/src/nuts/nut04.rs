@@ -13,7 +13,6 @@ use thiserror::Error;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
 use crate::nut00::KnownMethod;
-use crate::nut23::QuoteState;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
 #[cfg(feature = "mint")]
@@ -350,7 +349,6 @@ pub struct MintQuoteCustomRequest {
 /// ```json
 /// {
 ///   "quote": "abc123",
-///   "state": "UNPAID",
 ///   "amount": 1000,
 ///   "paypal_link": "https://paypal.me/merchant",
 ///   "paypal_email": "merchant@example.com"
@@ -358,7 +356,7 @@ pub struct MintQuoteCustomRequest {
 /// ```
 ///
 /// This separation enables proper validation layering: the mint verifies
-/// well-defined fields (amount, unit, state, etc.) while passing extra through
+/// well-defined fields (amount, unit, etc.) while passing extra through
 /// to the gRPC payment processor for method-specific validation.
 ///
 /// It also provides a clean upgrade path: when a payment method becomes speced,
@@ -376,9 +374,6 @@ pub struct MintQuoteCustomResponse<Q> {
     pub amount: Option<Amount>,
     /// Currency unit
     pub unit: Option<CurrencyUnit>,
-    /// Quote State
-    #[serde(default)]
-    pub state: QuoteState,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
     /// NUT-19 Pubkey
@@ -405,7 +400,6 @@ impl<Q: ToString> MintQuoteCustomResponse<Q> {
             quote: self.quote.to_string(),
             request: self.request.clone(),
             amount: self.amount,
-            state: self.state,
             unit: self.unit.clone(),
             expiry: self.expiry,
             pubkey: self.pubkey,
@@ -423,7 +417,6 @@ impl From<MintQuoteCustomResponse<QuoteId>> for MintQuoteCustomResponse<String> 
             amount: value.amount,
             unit: value.unit,
             expiry: value.expiry,
-            state: value.state,
             pubkey: value.pubkey,
             extra: value.extra,
         }
@@ -494,5 +487,39 @@ mod tests {
             }
             _ => panic!("Expected Bolt11 options with description = true"),
         }
+    }
+
+    #[test]
+    fn custom_mint_quote_response_has_no_typed_state() {
+        let response = MintQuoteCustomResponse {
+            quote: "abc123".to_string(),
+            request: "paypal://pay?id=123".to_string(),
+            amount: Some(Amount::from(1000)),
+            unit: Some(CurrencyUnit::Sat),
+            expiry: Some(9999999),
+            pubkey: None,
+            extra: serde_json::Value::Null,
+        };
+
+        let serialized = to_string(&response).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        assert!(parsed.get("state").is_none());
+    }
+
+    #[test]
+    fn custom_mint_quote_legacy_state_is_extra() {
+        let response: MintQuoteCustomResponse<String> = from_str(
+            r#"{
+                "quote": "abc123",
+                "request": "paypal://pay?id=123",
+                "amount": 1000,
+                "unit": "sat",
+                "state": "PAID"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.extra["state"], json!("PAID"));
     }
 }

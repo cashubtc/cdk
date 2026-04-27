@@ -195,6 +195,7 @@ pub async fn get_check_mint_custom_quote(
                 cdk::mint::MintQuoteResponse::Custom {
                     method: quote_method,
                     response,
+                    ..
                 } => {
                     if quote_method.to_string() != method {
                         return Err(into_response(cdk::Error::InvalidPaymentMethod));
@@ -254,6 +255,7 @@ pub async fn post_batch_check_mint_quote(
                     cdk::mint::MintQuoteResponse::Custom {
                         method: _,
                         response,
+                        ..
                     } => Ok(response),
                     _ => Err(cdk::Error::InvalidPaymentMethod),
                 })
