@@ -13,7 +13,6 @@ use thiserror::Error;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
 use crate::nut00::KnownMethod;
-use crate::nut23::QuoteState;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
 #[cfg(feature = "mint")]
@@ -350,15 +349,16 @@ pub struct MintQuoteCustomRequest {
 /// ```json
 /// {
 ///   "quote": "abc123",
-///   "state": "UNPAID",
 ///   "amount": 1000,
+///   "amount_paid": 0,
+///   "amount_issued": 0,
 ///   "paypal_link": "https://paypal.me/merchant",
 ///   "paypal_email": "merchant@example.com"
 /// }
 /// ```
 ///
 /// This separation enables proper validation layering: the mint verifies
-/// well-defined fields (amount, unit, state, etc.) while passing extra through
+/// well-defined fields (amount, unit, etc.) while passing extra through
 /// to the gRPC payment processor for method-specific validation.
 ///
 /// It also provides a clean upgrade path: when a payment method becomes speced,
@@ -374,10 +374,12 @@ pub struct MintQuoteCustomResponse<Q> {
     pub request: String,
     /// Amount
     pub amount: Option<Amount>,
+    /// Amount that has been paid
+    pub amount_paid: Amount,
+    /// Amount that has been issued
+    pub amount_issued: Amount,
     /// Currency unit
     pub unit: Option<CurrencyUnit>,
-    /// Quote State
-    pub state: QuoteState,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
     /// NUT-19 Pubkey
@@ -404,7 +406,8 @@ impl<Q: ToString> MintQuoteCustomResponse<Q> {
             quote: self.quote.to_string(),
             request: self.request.clone(),
             amount: self.amount,
-            state: self.state,
+            amount_paid: self.amount_paid,
+            amount_issued: self.amount_issued,
             unit: self.unit.clone(),
             expiry: self.expiry,
             pubkey: self.pubkey,
@@ -420,9 +423,10 @@ impl From<MintQuoteCustomResponse<QuoteId>> for MintQuoteCustomResponse<String> 
             quote: value.quote.to_string(),
             request: value.request,
             amount: value.amount,
+            amount_paid: value.amount_paid,
+            amount_issued: value.amount_issued,
             unit: value.unit,
             expiry: value.expiry,
-            state: value.state,
             pubkey: value.pubkey,
             extra: value.extra,
         }
@@ -493,5 +497,27 @@ mod tests {
             }
             _ => panic!("Expected Bolt11 options with description = true"),
         }
+    }
+
+    #[test]
+    fn custom_mint_quote_response_has_no_typed_state() {
+        let response = MintQuoteCustomResponse {
+            quote: "abc123".to_string(),
+            request: "paypal://pay?id=123".to_string(),
+            amount: Some(Amount::from(1000)),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            unit: Some(CurrencyUnit::Sat),
+            expiry: Some(9999999),
+            pubkey: None,
+            extra: serde_json::Value::Null,
+        };
+
+        let serialized = to_string(&response).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        assert!(parsed.get("state").is_none());
+        assert_eq!(parsed["amount_paid"], json!(0));
+        assert_eq!(parsed["amount_issued"], json!(0));
     }
 }

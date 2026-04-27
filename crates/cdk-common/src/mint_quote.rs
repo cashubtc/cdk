@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::nuts::nut00::KnownMethod;
 use crate::nuts::nut04::{MintQuoteCustomRequest, MintQuoteCustomResponse};
-use crate::nuts::nut23::{MintQuoteBolt11Request, MintQuoteBolt11Response};
+use crate::nuts::nut23::{MintQuoteBolt11Request, MintQuoteBolt11Response, QuoteState};
 use crate::nuts::nut25::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use crate::{Amount, CurrencyUnit, PaymentMethod, PublicKey};
 
@@ -125,20 +125,15 @@ impl<Q> MintQuoteResponse<Q> {
         }
     }
 
-    /// Returns the quote state.
-    pub fn state(&self) -> crate::nuts::nut23::QuoteState {
+    /// Returns the quote state derived from the response data.
+    pub fn state(&self) -> Option<QuoteState> {
         match self {
-            Self::Bolt11(r) => r.state,
-            Self::Bolt12(r) => {
-                if r.amount_issued > Amount::ZERO {
-                    crate::nuts::nut23::QuoteState::Issued
-                } else if r.amount_paid >= r.amount.unwrap_or(Amount::ZERO) {
-                    crate::nuts::nut23::QuoteState::Paid
-                } else {
-                    crate::nuts::nut23::QuoteState::Unpaid
-                }
-            }
-            Self::Custom { response: r, .. } => r.state,
+            Self::Bolt11(r) => Some(r.state),
+            Self::Bolt12(r) => Some(quote_state_from_amounts(r.amount_paid, r.amount_issued)),
+            Self::Custom { response, .. } => Some(quote_state_from_amounts(
+                response.amount_paid,
+                response.amount_issued,
+            )),
         }
     }
 
@@ -149,5 +144,73 @@ impl<Q> MintQuoteResponse<Q> {
             Self::Bolt12(r) => r.expiry,
             Self::Custom { response: r, .. } => r.expiry,
         }
+    }
+}
+
+pub(crate) fn quote_state_from_amounts(amount_paid: Amount, amount_issued: Amount) -> QuoteState {
+    if amount_paid == Amount::ZERO && amount_issued == Amount::ZERO {
+        return QuoteState::Unpaid;
+    }
+
+    match amount_paid.cmp(&amount_issued) {
+        std::cmp::Ordering::Less | std::cmp::Ordering::Equal => QuoteState::Issued,
+        std::cmp::Ordering::Greater => QuoteState::Paid,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn custom_response(amount_paid: Amount, amount_issued: Amount) -> MintQuoteResponse<String> {
+        MintQuoteResponse::Custom {
+            method: PaymentMethod::Custom("custom".to_string()),
+            response: MintQuoteCustomResponse {
+                quote: "quote".to_string(),
+                request: "custom-request".to_string(),
+                amount: Some(Amount::from(100)),
+                amount_paid,
+                amount_issued,
+                unit: Some(CurrencyUnit::Sat),
+                expiry: None,
+                pubkey: None,
+                extra: serde_json::Value::Null,
+            },
+        }
+    }
+
+    #[test]
+    fn custom_state_is_derived_from_amount_counters() {
+        assert_eq!(
+            custom_response(Amount::ZERO, Amount::ZERO).state(),
+            Some(QuoteState::Unpaid)
+        );
+        assert_eq!(
+            custom_response(Amount::from(100), Amount::ZERO).state(),
+            Some(QuoteState::Paid)
+        );
+        assert_eq!(
+            custom_response(Amount::from(100), Amount::from(100)).state(),
+            Some(QuoteState::Issued)
+        );
+    }
+
+    #[test]
+    fn bolt12_state_uses_unissued_amount() {
+        let response = MintQuoteResponse::Bolt12(MintQuoteBolt12Response {
+            quote: "quote".to_string(),
+            request: "bolt12-request".to_string(),
+            amount: Some(Amount::from(100)),
+            unit: CurrencyUnit::Sat,
+            expiry: None,
+            pubkey: PublicKey::from_hex(
+                "02a8cda4cf448bfce9a9e46e588c06ea1780fcb94e3bbdf3277f42995d403a8b0c",
+            )
+            .expect("valid public key"),
+            amount_paid: Amount::from(100),
+            amount_issued: Amount::from(40),
+        });
+
+        assert_eq!(response.state(), Some(QuoteState::Paid));
     }
 }

@@ -16,9 +16,8 @@ use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
-    CurrencyUnit, Id, KeySet, KeysetResponse, MeltRequest, MintInfo, MintQuoteBolt11Response,
-    MintRequest, MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest,
-    SwapResponse,
+    CurrencyUnit, Id, KeySet, KeysetResponse, MeltRequest, MintInfo, MintRequest, MintResponse,
+    PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
@@ -158,7 +157,7 @@ impl MintConnector for DirectMintConnection {
         &self,
         _method: &PaymentMethod,
         request: BatchCheckMintQuoteRequest<String>,
-    ) -> Result<Vec<MintQuoteBolt11Response<String>>, Error> {
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
         let quote_ids: Vec<QuoteId> = request
             .quotes
             .iter()

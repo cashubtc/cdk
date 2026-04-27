@@ -716,7 +716,8 @@ mod tests {
             "request": "custom-request",
             "amount": 42,
             "unit": "sat",
-            "state": "UNPAID",
+            "amount_paid": 0,
+            "amount_issued": 0,
             "expiry": 1234,
             "pubkey": null,
             "extra_field": "value"

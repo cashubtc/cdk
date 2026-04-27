@@ -247,4 +247,3 @@ message PaymentEventResponse {
     PaymentFailedResponse payment_failed = 3;
   }
 }
-

@@ -1087,7 +1087,9 @@ impl TryFrom<MintQuote> for MintQuoteCustomResponse<QuoteId> {
     type Error = Error;
 
     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
-        let state = quote.state();
+        let amount_paid = quote.amount_paid().into();
+        let amount_issued = quote.amount_issued().into();
+
         Ok(MintQuoteCustomResponse {
             quote: quote.id,
             request: quote.request,
@@ -1095,7 +1097,8 @@ impl TryFrom<MintQuote> for MintQuoteCustomResponse<QuoteId> {
             expiry: Some(quote.expiry),
             pubkey: quote.pubkey,
             amount: quote.amount.map(Into::into),
-            state,
+            amount_paid,
+            amount_issued,
             extra: quote.extra_json.unwrap_or_default(),
         })
     }
@@ -1171,6 +1174,19 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
                 method,
                 response: custom_response,
             })
+        }
+    }
+}
+
+impl From<MintQuoteResponse<QuoteId>> for MintQuoteResponse<String> {
+    fn from(response: MintQuoteResponse<QuoteId>) -> Self {
+        match response {
+            MintQuoteResponse::Bolt11(response) => MintQuoteResponse::Bolt11(response.into()),
+            MintQuoteResponse::Bolt12(response) => MintQuoteResponse::Bolt12(response.into()),
+            MintQuoteResponse::Custom { method, response } => MintQuoteResponse::Custom {
+                method,
+                response: response.into(),
+            },
         }
     }
 }
