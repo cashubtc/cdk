@@ -400,7 +400,7 @@ where
         &self,
         method: &PaymentMethod,
         request: BatchCheckMintQuoteRequest<String>,
-    ) -> Result<Vec<MintQuoteBolt11Response<String>>, Error> {
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
         let url =
             self.mint_url
                 .join_paths(&["v1", "mint", "quote", &method.to_string(), "check"])?;
@@ -409,7 +409,39 @@ where
             .get_auth_token(Method::Post, RoutePath::MintQuote(method.to_string()))
             .await?;
 
-        self.transport.http_post(url, auth_token, &request).await
+        match method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => {
+                let responses: Vec<MintQuoteBolt11Response<String>> =
+                    self.transport.http_post(url, auth_token, &request).await?;
+                Ok(responses
+                    .into_iter()
+                    .map(MintQuoteResponse::Bolt11)
+                    .collect())
+            }
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                let responses: Vec<MintQuoteBolt12Response<String>> =
+                    self.transport.http_post(url, auth_token, &request).await?;
+                Ok(responses
+                    .into_iter()
+                    .map(MintQuoteResponse::Bolt12)
+                    .collect())
+            }
+            PaymentMethod::Custom(method_name) => {
+                let responses: Vec<MintQuoteCustomResponse<String>> =
+                    self.transport.http_post(url, auth_token, &request).await?;
+                Ok(responses
+                    .into_iter()
+                    .map(|mut response| {
+                        let state = take_custom_mint_quote_state(&mut response);
+                        MintQuoteResponse::Custom {
+                            method: PaymentMethod::Custom(method_name.clone()),
+                            state,
+                            response,
+                        }
+                    })
+                    .collect())
+            }
+        }
     }
 
     /// Batch mint tokens [NUT-29]
@@ -750,6 +782,8 @@ mod tests {
         captured_payload: Arc<Mutex<Option<serde_json::Value>>>,
         /// Canned JSON string returned by `http_post`.
         post_response: Arc<Mutex<Option<String>>>,
+        /// Canned JSON string returned by `http_get`.
+        get_response: Arc<Mutex<Option<String>>>,
     }
 
     impl fmt::Debug for MockTransport {
@@ -779,7 +813,13 @@ mod tests {
         where
             R: DeserializeOwned,
         {
-            unimplemented!()
+            let json = self
+                .get_response
+                .lock()
+                .expect("lock")
+                .clone()
+                .expect("no mock response set");
+            serde_json::from_str(&json).map_err(|e| Error::Custom(e.to_string()))
         }
 
         async fn http_post<P, R>(
@@ -818,6 +858,8 @@ mod tests {
             quote: "test-quote-id".to_string(),
             request: "paypal://pay?id=123".to_string(),
             amount: Some(cdk_common::Amount::from(1000)),
+            amount_paid: Some(cdk_common::Amount::ZERO),
+            amount_issued: Some(cdk_common::Amount::ZERO),
             unit: Some(cdk_common::CurrencyUnit::Sat),
             expiry: Some(9999999),
             pubkey: None,
@@ -828,6 +870,7 @@ mod tests {
         let transport = MockTransport {
             captured_payload: Arc::new(Mutex::new(None)),
             post_response: Arc::new(Mutex::new(Some(canned_json))),
+            get_response: Arc::new(Mutex::new(None)),
         };
         let captured = transport.captured_payload.clone();
 
@@ -875,5 +918,78 @@ mod tests {
         let parsed = parsed.expect("already checked");
         assert_eq!(parsed.amount, cdk_common::Amount::from(1000));
         assert_eq!(parsed.unit, cdk_common::CurrencyUnit::Sat);
+    }
+
+    #[tokio::test]
+    async fn test_get_mint_quote_custom_derives_state_from_amounts() {
+        let canned_json = serde_json::json!({
+            "quote": "test-quote-id",
+            "request": "paypal://pay?id=123",
+            "amount": 1000,
+            "amount_paid": 1000,
+            "amount_issued": 0,
+            "unit": "sat"
+        })
+        .to_string();
+
+        let transport = MockTransport {
+            get_response: Arc::new(Mutex::new(Some(canned_json))),
+            ..Default::default()
+        };
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+
+        let response = client
+            .get_mint_quote_status(PaymentMethod::Custom("paypal".to_string()), "test-quote-id")
+            .await
+            .expect("custom quote status");
+
+        assert_eq!(response.state(), Some(MintQuoteState::Paid));
+        match response {
+            MintQuoteResponse::Custom {
+                state, response, ..
+            } => {
+                assert_eq!(state, None);
+                assert_eq!(response.amount_paid, Some(cdk_common::Amount::from(1000)));
+                assert_eq!(response.amount_issued, Some(cdk_common::Amount::ZERO));
+            }
+            _ => panic!("expected custom response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_batch_check_mint_quote_custom_parses_custom_responses() {
+        let canned_json = serde_json::json!([
+            {
+                "quote": "test-quote-id",
+                "request": "paypal://pay?id=123",
+                "amount": 1000,
+                "amount_paid": 1000,
+                "amount_issued": 1000,
+                "unit": "sat"
+            }
+        ])
+        .to_string();
+
+        let transport = MockTransport {
+            post_response: Arc::new(Mutex::new(Some(canned_json))),
+            ..Default::default()
+        };
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+
+        let responses = client
+            .post_batch_check_mint_quote_status(
+                &PaymentMethod::Custom("paypal".to_string()),
+                BatchCheckMintQuoteRequest {
+                    quotes: vec!["test-quote-id".to_string()],
+                },
+            )
+            .await
+            .expect("custom batch quote status");
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].state(), Some(MintQuoteState::Issued));
+        assert!(matches!(responses[0], MintQuoteResponse::Custom { .. }));
     }
 }

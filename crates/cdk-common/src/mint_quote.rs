@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::nuts::nut00::KnownMethod;
 use crate::nuts::nut04::{MintQuoteCustomRequest, MintQuoteCustomResponse};
-use crate::nuts::nut23::{MintQuoteBolt11Request, MintQuoteBolt11Response};
+use crate::nuts::nut23::{MintQuoteBolt11Request, MintQuoteBolt11Response, QuoteState};
 use crate::nuts::nut25::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use crate::{Amount, CurrencyUnit, PaymentMethod, PublicKey};
 
@@ -92,8 +92,9 @@ pub enum MintQuoteResponse<Q> {
     Custom {
         /// Payment method identifier
         method: PaymentMethod,
-        /// Quote state, when the response source provides it
-        state: Option<crate::nuts::nut23::QuoteState>,
+        /// Legacy quote state, when older custom responses provide it
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<QuoteState>,
         /// Payment method specific response
         response: MintQuoteCustomResponse<Q>,
     },
@@ -128,19 +129,18 @@ impl<Q> MintQuoteResponse<Q> {
     }
 
     /// Returns the quote state when available.
-    pub fn state(&self) -> Option<crate::nuts::nut23::QuoteState> {
+    pub fn state(&self) -> Option<QuoteState> {
         match self {
             Self::Bolt11(r) => Some(r.state),
-            Self::Bolt12(r) => Some({
-                if r.amount_issued > Amount::ZERO {
-                    crate::nuts::nut23::QuoteState::Issued
-                } else if r.amount_paid >= r.amount.unwrap_or(Amount::ZERO) {
-                    crate::nuts::nut23::QuoteState::Paid
-                } else {
-                    crate::nuts::nut23::QuoteState::Unpaid
+            Self::Bolt12(r) => Some(quote_state_from_amounts(r.amount_paid, r.amount_issued)),
+            Self::Custom {
+                response, state, ..
+            } => match (response.amount_paid, response.amount_issued) {
+                (Some(amount_paid), Some(amount_issued)) => {
+                    Some(quote_state_from_amounts(amount_paid, amount_issued))
                 }
-            }),
-            Self::Custom { state, .. } => *state,
+                _ => *state,
+            },
         }
     }
 
@@ -151,5 +151,98 @@ impl<Q> MintQuoteResponse<Q> {
             Self::Bolt12(r) => r.expiry,
             Self::Custom { response: r, .. } => r.expiry,
         }
+    }
+}
+
+pub(crate) fn quote_state_from_amounts(amount_paid: Amount, amount_issued: Amount) -> QuoteState {
+    if amount_paid == Amount::ZERO && amount_issued == Amount::ZERO {
+        return QuoteState::Unpaid;
+    }
+
+    match amount_paid.cmp(&amount_issued) {
+        std::cmp::Ordering::Less | std::cmp::Ordering::Equal => QuoteState::Issued,
+        std::cmp::Ordering::Greater => QuoteState::Paid,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn custom_response(
+        amount_paid: Option<Amount>,
+        amount_issued: Option<Amount>,
+    ) -> MintQuoteResponse<String> {
+        MintQuoteResponse::Custom {
+            method: PaymentMethod::Custom("custom".to_string()),
+            state: None,
+            response: MintQuoteCustomResponse {
+                quote: "quote".to_string(),
+                request: "custom-request".to_string(),
+                amount: Some(Amount::from(100)),
+                amount_paid,
+                amount_issued,
+                unit: Some(CurrencyUnit::Sat),
+                expiry: None,
+                pubkey: None,
+                extra: serde_json::Value::Null,
+            },
+        }
+    }
+
+    #[test]
+    fn custom_state_is_derived_from_amount_counters() {
+        assert_eq!(
+            custom_response(Some(Amount::ZERO), Some(Amount::ZERO)).state(),
+            Some(QuoteState::Unpaid)
+        );
+        assert_eq!(
+            custom_response(Some(Amount::from(100)), Some(Amount::ZERO)).state(),
+            Some(QuoteState::Paid)
+        );
+        assert_eq!(
+            custom_response(Some(Amount::from(100)), Some(Amount::from(100))).state(),
+            Some(QuoteState::Issued)
+        );
+    }
+
+    #[test]
+    fn custom_state_falls_back_to_legacy_state_when_amounts_are_missing() {
+        let response = MintQuoteResponse::Custom {
+            method: PaymentMethod::Custom("custom".to_string()),
+            state: Some(QuoteState::Paid),
+            response: MintQuoteCustomResponse {
+                quote: "quote".to_string(),
+                request: "custom-request".to_string(),
+                amount: Some(Amount::from(100)),
+                amount_paid: None,
+                amount_issued: None,
+                unit: Some(CurrencyUnit::Sat),
+                expiry: None,
+                pubkey: None,
+                extra: serde_json::Value::Null,
+            },
+        };
+
+        assert_eq!(response.state(), Some(QuoteState::Paid));
+    }
+
+    #[test]
+    fn bolt12_state_uses_unissued_amount() {
+        let response = MintQuoteResponse::Bolt12(MintQuoteBolt12Response {
+            quote: "quote".to_string(),
+            request: "bolt12-request".to_string(),
+            amount: Some(Amount::from(100)),
+            unit: CurrencyUnit::Sat,
+            expiry: None,
+            pubkey: PublicKey::from_hex(
+                "02a8cda4cf448bfce9a9e46e588c06ea1780fcb94e3bbdf3277f42995d403a8b0c",
+            )
+            .expect("valid public key"),
+            amount_paid: Amount::from(100),
+            amount_issued: Amount::from(40),
+        });
+
+        assert_eq!(response.state(), Some(QuoteState::Paid));
     }
 }

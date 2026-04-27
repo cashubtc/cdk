@@ -17,6 +17,55 @@ use crate::wallet::recovery::RecoveryAction;
 use crate::wallet::{MintQuote, MintQuoteState};
 use crate::{Amount, Error, Wallet};
 
+fn apply_mint_quote_response(quote: &mut MintQuote, response: &MintQuoteResponse<String>) {
+    match response {
+        MintQuoteResponse::Bolt11(response) => {
+            quote.state = response.state;
+            match response.state {
+                MintQuoteState::Paid => {
+                    quote.amount_paid = response.amount.unwrap_or_default();
+                }
+                MintQuoteState::Issued => {
+                    let amount = response.amount.unwrap_or_default();
+                    quote.amount_paid = amount;
+                    quote.amount_issued = amount;
+                }
+                MintQuoteState::Unpaid => (),
+            }
+        }
+        MintQuoteResponse::Bolt12(response) => {
+            quote.amount_paid = response.amount_paid;
+            quote.amount_issued = response.amount_issued;
+            quote.update_state_from_amounts();
+        }
+        MintQuoteResponse::Custom {
+            response, state, ..
+        } => match (response.amount_paid, response.amount_issued) {
+            (Some(amount_paid), Some(amount_issued)) => {
+                quote.amount_paid = amount_paid;
+                quote.amount_issued = amount_issued;
+                quote.update_state_from_amounts();
+            }
+            _ => {
+                if let Some(state) = state {
+                    quote.state = *state;
+                    match state {
+                        MintQuoteState::Paid => {
+                            quote.amount_paid = response.amount.unwrap_or_default();
+                        }
+                        MintQuoteState::Issued => {
+                            let amount = response.amount.unwrap_or_default();
+                            quote.amount_paid = amount;
+                            quote.amount_issued = amount;
+                        }
+                        MintQuoteState::Unpaid => (),
+                    }
+                }
+            }
+        },
+    }
+}
+
 impl Wallet {
     /// Create a mint quote for the given payment method and amount
     #[instrument(skip(self, method))]
@@ -87,7 +136,7 @@ impl Wallet {
         let request_str = response.request().to_string();
         let expiry = response.expiry();
 
-        let quote = MintQuote::new(
+        let mut quote = MintQuote::new(
             quote_id,
             mint_url,
             method.clone(),
@@ -97,6 +146,7 @@ impl Wallet {
             expiry.unwrap_or(0),
             Some(secret_key),
         );
+        apply_mint_quote_response(&mut quote, &response);
 
         self.localstore.add_mint_quote(quote.clone()).await?;
 
@@ -109,42 +159,7 @@ impl Wallet {
             .client
             .get_mint_quote_status(mint_quote.payment_method.clone(), &mint_quote.id)
             .await?;
-        if let Some(state) = mint_quote_response.state() {
-            mint_quote.state = state;
-        }
-
-        match &mint_quote_response {
-            MintQuoteResponse::Bolt11(response) => match response.state {
-                MintQuoteState::Paid => {
-                    mint_quote.amount_paid = mint_quote.amount.unwrap_or_default();
-                }
-                MintQuoteState::Issued => {
-                    mint_quote.amount_paid = mint_quote.amount.unwrap_or_default();
-                    mint_quote.amount_issued = mint_quote.amount.unwrap_or_default();
-                }
-                MintQuoteState::Unpaid => (),
-            },
-            MintQuoteResponse::Bolt12(response) => {
-                mint_quote.amount_issued = response.amount_issued;
-                mint_quote.amount_paid = response.amount_paid;
-            }
-            MintQuoteResponse::Custom {
-                response, state, ..
-            } => {
-                if let Some(state) = state {
-                    match state {
-                        MintQuoteState::Paid => {
-                            mint_quote.amount_paid = response.amount.unwrap_or_default();
-                        }
-                        MintQuoteState::Issued => {
-                            mint_quote.amount_paid = response.amount.unwrap_or_default();
-                            mint_quote.amount_issued = response.amount.unwrap_or_default();
-                        }
-                        MintQuoteState::Unpaid => (),
-                    }
-                }
-            }
-        }
+        apply_mint_quote_response(mint_quote, &mint_quote_response);
 
         Ok(())
     }
@@ -427,31 +442,7 @@ impl Wallet {
 
         let quote = match existing_quote {
             Some(mut existing) => {
-                // Update the existing quote with new state
-                if let Some(state) = response.state() {
-                    existing.state = state;
-                }
-                match &response {
-                    MintQuoteResponse::Bolt12(r) => {
-                        existing.amount_paid = r.amount_paid;
-                        existing.amount_issued = r.amount_issued;
-                    }
-                    MintQuoteResponse::Bolt11(r) => {
-                        if let Some(amount) = r.amount {
-                            existing.amount_paid = amount;
-                        }
-                    }
-                    MintQuoteResponse::Custom {
-                        response: r, state, ..
-                    } => {
-                        if state.is_some() {
-                            if let Some(amount) = r.amount {
-                                existing.amount_paid = amount;
-                                existing.amount_issued = amount;
-                            }
-                        }
-                    }
-                }
+                apply_mint_quote_response(&mut existing, &response);
                 existing
             }
             None => {
@@ -466,7 +457,7 @@ impl Wallet {
                     MintQuoteResponse::Bolt12(r) => Some(r.unit.clone()),
                     MintQuoteResponse::Custom { response: r, .. } => r.unit.clone(),
                 };
-                MintQuote::new(
+                let mut quote = MintQuote::new(
                     quote_id.to_string(),
                     self.mint_url.clone(),
                     method,
@@ -475,7 +466,9 @@ impl Wallet {
                     response.request().to_string(),
                     response.expiry().unwrap_or(0),
                     None,
-                )
+                );
+                apply_mint_quote_response(&mut quote, &response);
+                quote
             }
         };
 
@@ -530,15 +523,7 @@ impl Wallet {
 
         // Update local quotes with response data
         for (quote, response) in quotes.iter_mut().zip(responses.iter()) {
-            quote.state = response.state;
-            if let Some(amount) = response.amount {
-                if quote.state == MintQuoteState::Issued {
-                    quote.amount_paid = amount;
-                    quote.amount_issued = amount;
-                } else if quote.state == MintQuoteState::Paid {
-                    quote.amount_paid = amount;
-                }
-            }
+            apply_mint_quote_response(quote, response);
             self.localstore.add_mint_quote(quote.clone()).await?;
         }
 

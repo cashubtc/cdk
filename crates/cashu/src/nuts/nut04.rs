@@ -350,6 +350,8 @@ pub struct MintQuoteCustomRequest {
 /// {
 ///   "quote": "abc123",
 ///   "amount": 1000,
+///   "amount_paid": 0,
+///   "amount_issued": 0,
 ///   "paypal_link": "https://paypal.me/merchant",
 ///   "paypal_email": "merchant@example.com"
 /// }
@@ -372,6 +374,12 @@ pub struct MintQuoteCustomResponse<Q> {
     pub request: String,
     /// Amount
     pub amount: Option<Amount>,
+    /// Amount that has been paid
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_paid: Option<Amount>,
+    /// Amount that has been issued
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_issued: Option<Amount>,
     /// Currency unit
     pub unit: Option<CurrencyUnit>,
     /// Unix timestamp until the quote is valid
@@ -400,6 +408,8 @@ impl<Q: ToString> MintQuoteCustomResponse<Q> {
             quote: self.quote.to_string(),
             request: self.request.clone(),
             amount: self.amount,
+            amount_paid: self.amount_paid,
+            amount_issued: self.amount_issued,
             unit: self.unit.clone(),
             expiry: self.expiry,
             pubkey: self.pubkey,
@@ -415,6 +425,8 @@ impl From<MintQuoteCustomResponse<QuoteId>> for MintQuoteCustomResponse<String> 
             quote: value.quote.to_string(),
             request: value.request,
             amount: value.amount,
+            amount_paid: value.amount_paid,
+            amount_issued: value.amount_issued,
             unit: value.unit,
             expiry: value.expiry,
             pubkey: value.pubkey,
@@ -495,6 +507,8 @@ mod tests {
             quote: "abc123".to_string(),
             request: "paypal://pay?id=123".to_string(),
             amount: Some(Amount::from(1000)),
+            amount_paid: Some(Amount::ZERO),
+            amount_issued: Some(Amount::ZERO),
             unit: Some(CurrencyUnit::Sat),
             expiry: Some(9999999),
             pubkey: None,
@@ -505,6 +519,8 @@ mod tests {
         let parsed: serde_json::Value = from_str(&serialized).unwrap();
 
         assert!(parsed.get("state").is_none());
+        assert_eq!(parsed["amount_paid"], json!(0));
+        assert_eq!(parsed["amount_issued"], json!(0));
     }
 
     #[test]
@@ -521,5 +537,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(response.extra["state"], json!("PAID"));
+        assert_eq!(response.amount_paid, None);
+        assert_eq!(response.amount_issued, None);
     }
 }
