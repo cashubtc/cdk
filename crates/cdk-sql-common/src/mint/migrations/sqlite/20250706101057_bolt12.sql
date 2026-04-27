@@ -76,6 +76,6 @@ ALTER TABLE melt_quote ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'bolt11';
 ALTER TABLE melt_quote ADD COLUMN options TEXT;
 ALTER TABLE melt_quote ADD COLUMN request_lookup_id_kind TEXT NOT NULL DEFAULT 'payment_hash';
 
-CREATE INDEX IF NOT EXISTS idx_melt_quote_request_lookup_id_and_kind ON mint_quote(request_lookup_id, request_lookup_id_kind);
+CREATE INDEX IF NOT EXISTS idx_melt_quote_request_lookup_id_and_kind ON melt_quote(request_lookup_id, request_lookup_id_kind);
 
 ALTER TABLE melt_quote DROP COLUMN msat_to_pay;

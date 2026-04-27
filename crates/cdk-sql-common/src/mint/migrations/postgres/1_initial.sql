@@ -95,6 +95,6 @@ CREATE TABLE mint_quote_issued (
   FOREIGN KEY (quote_id) REFERENCES mint_quote(id)
 );
 CREATE INDEX idx_mint_quote_issued_quote_id ON mint_quote_issued(quote_id);
-CREATE INDEX idx_melt_quote_request_lookup_id_and_kind ON mint_quote(
+CREATE INDEX idx_melt_quote_request_lookup_id_and_kind ON melt_quote(
   request_lookup_id, request_lookup_id_kind
 );
