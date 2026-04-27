@@ -170,14 +170,26 @@ impl Transport for Async {
         let response = request
             .send()
             .await
-            .map_err(|e| Error::HttpError(None, e.to_string()))?
+            .map_err(|e| Error::HttpError(None, e.to_string()))?;
+
+        let status = response.status();
+        let body = response
             .text()
             .await
             .map_err(|e| Error::HttpError(None, e.to_string()))?;
 
-        serde_json::from_str::<R>(&response).map_err(|err| {
+        if !(200..300).contains(&status) {
+            // Attempt to strictly parse as a Cashu ErrorResponse (requires the 'code' field).
+            // This avoids laundering generic errors into ErrorCode::Unknown(999).
+            if let Ok(err_resp) = serde_json::from_str::<ErrorResponse>(&body) {
+                return Err(err_resp.into());
+            }
+            return Err(Error::HttpError(Some(status), body));
+        }
+
+        serde_json::from_str::<R>(&body).map_err(|err| {
             tracing::warn!("Http Response error: {}", err);
-            match ErrorResponse::from_json(&response) {
+            match ErrorResponse::from_json(&body) {
                 Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
                 Err(err) => err.into(),
             }
@@ -206,15 +218,24 @@ impl Transport for Async {
             .await
             .map_err(|e| Error::HttpError(None, e.to_string()))?;
 
-        let response = response
+        let status = response.status();
+        let body = response
             .text()
             .await
             .map_err(|e| Error::HttpError(None, e.to_string()))?;
 
-        serde_json::from_str::<R>(&response).map_err(|err| {
+        if !(200..300).contains(&status) {
+            // Attempt to strictly parse as a Cashu ErrorResponse (requires the 'code' field).
+            // This avoids laundering generic errors into ErrorCode::Unknown(999).
+            if let Ok(err_resp) = serde_json::from_str::<ErrorResponse>(&body) {
+                return Err(err_resp.into());
+            }
+            return Err(Error::HttpError(Some(status), body));
+        }
+
+        serde_json::from_str::<R>(&body).map_err(|err| {
             tracing::warn!("Http Response error: {}", err);
-            tracing::debug!("{:?}", response);
-            match ErrorResponse::from_json(&response) {
+            match ErrorResponse::from_json(&body) {
                 Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
                 Err(err) => err.into(),
             }
@@ -224,3 +245,102 @@ impl Transport for Async {
 
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub mod tor_transport;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    /// Spawn a one-shot HTTP server that replies with the given status line and
+    /// body to the first request it receives. Returns the URL to connect to.
+    async fn spawn_canned_response(status_line: &'static str, body: &'static str) -> Url {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+
+        let response = format!(
+            "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        Url::parse(&format!("http://{}/", addr)).expect("valid url")
+    }
+
+    /// Regression test for https://github.com/cashubtc/cdk/issues/1914
+    ///
+    /// A 429 response with a body that does not match the Cashu ErrorResponse
+    /// schema (e.g. nutshell's `{"detail":"Rate limit exceeded."}`) must surface
+    /// as `Error::HttpError(Some(429), body)` instead of being laundered into
+    /// `ErrorCode::Unknown(999)` by `ErrorResponse::from_value`.
+    #[tokio::test]
+    async fn http_post_surfaces_429_status() {
+        let url = spawn_canned_response(
+            "HTTP/1.1 429 Too Many Requests",
+            r#"{"detail":"Rate limit exceeded."}"#,
+        )
+        .await;
+
+        let transport = Async::default();
+        let result: Result<serde_json::Value, Error> =
+            transport.http_post(url, None, &serde_json::json!({})).await;
+
+        match result {
+            Err(Error::HttpError(Some(429), body)) => {
+                assert!(
+                    body.contains("Rate limit exceeded"),
+                    "body should be preserved, got: {body}"
+                );
+            }
+            other => panic!("expected HttpError(Some(429), _), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_get_surfaces_429_status() {
+        let url = spawn_canned_response(
+            "HTTP/1.1 429 Too Many Requests",
+            r#"{"detail":"Rate limit exceeded."}"#,
+        )
+        .await;
+
+        let transport = Async::default();
+        let result: Result<serde_json::Value, Error> = transport.http_get(url, None).await;
+
+        match result {
+            Err(Error::HttpError(Some(429), body)) => {
+                assert!(body.contains("Rate limit exceeded"));
+            }
+            other => panic!("expected HttpError(Some(429), _), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_post_surfaces_400_mint_error() {
+        let url = spawn_canned_response(
+            "HTTP/1.1 400 Bad Request",
+            r#"{"code": 1000, "detail": "Token already spent"}"#,
+        )
+        .await;
+
+        let transport = Async::default();
+        let result: Result<serde_json::Value, Error> =
+            transport.http_post(url, None, &serde_json::json!({})).await;
+
+        match result {
+            Err(Error::UnknownErrorResponse(msg)) if msg.contains("1000") => {}
+            other => panic!("expected Error::UnknownErrorResponse containing 1000, got {other:?}"),
+        }
+    }
+}

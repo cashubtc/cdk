@@ -42,7 +42,7 @@ mod verification;
 
 pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
-pub use cdk_common::{MintQuoteRequest, MintQuoteResponse};
+pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 pub use issue::MintInput;
 pub use melt::PendingMelt;
 pub use verification::Verification;
@@ -321,6 +321,7 @@ impl Mint {
         let shutdown_notify = Arc::new(Notify::new());
 
         // Clone required components for the background task
+        let mint_clone = Arc::new(self.clone());
         let payment_processors = self.payment_processors.clone();
         let localstore = Arc::clone(&self.localstore);
         let pubsub_manager = Arc::clone(&self.pubsub_manager);
@@ -329,6 +330,7 @@ impl Mint {
         // Spawn the supervisor task
         let supervisor_handle = tokio::spawn(async move {
             Self::wait_for_paid_invoices(
+                mint_clone,
                 &payment_processors,
                 localstore,
                 pubsub_manager,
@@ -621,6 +623,7 @@ impl Mint {
 
     #[instrument(skip_all)]
     async fn wait_for_paid_invoices(
+        mint: Arc<Mint>,
         payment_processors: &HashMap<PaymentProcessorKey, DynMintPayment>,
         localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
@@ -632,7 +635,7 @@ impl Mint {
         let mut seen_processors = Vec::new();
         for (key, processor) in payment_processors {
             // Skip if processor is already active
-            if processor.is_wait_invoice_active() {
+            if processor.is_payment_event_stream_active() {
                 continue;
             }
 
@@ -646,6 +649,7 @@ impl Mint {
             tracing::info!("Starting payment wait task for {:?}", key);
 
             // Clone for the spawned task
+            let mint = Arc::clone(&mint);
             let processor = Arc::clone(processor);
             let localstore = Arc::clone(&localstore);
             let pubsub_manager = Arc::clone(&pubsub_manager);
@@ -653,6 +657,7 @@ impl Mint {
 
             join_set.spawn(async move {
                 let result = Self::wait_for_processor_payments(
+                    mint,
                     processor,
                     localstore,
                     pubsub_manager,
@@ -696,6 +701,7 @@ impl Mint {
     /// Handles payment waiting for a single processor
     #[instrument(skip_all)]
     async fn wait_for_processor_payments(
+        mint: Arc<Mint>,
         processor: DynMintPayment,
         localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
@@ -707,7 +713,7 @@ impl Mint {
         loop {
             tokio::select! {
                 _ = &mut shutdown_future => {
-                    processor.cancel_wait_invoice();
+                    processor.cancel_payment_event_stream();
                     break;
                 }
                 result = processor.wait_payment_event() => {
@@ -716,7 +722,7 @@ impl Mint {
                             loop {
                                 tokio::select! {
                                     _ = &mut shutdown_future => {
-                                        processor.cancel_wait_invoice();
+                                        processor.cancel_payment_event_stream();
                                         return Ok(());
                                     }
                                     maybe_event = stream.next() => {
@@ -734,11 +740,57 @@ impl Mint {
                                                     tracing::warn!("Payment notification error: {:?}", e);
                                                 }
                                             }
+                                            cdk_common::payment::Event::PaymentSuccessful { quote_id, details } => {
+                                                tracing::info!(
+                                                    "Outgoing payment confirmed for quote {}: status {}",
+                                                    quote_id,
+                                                    details.status,
+                                                );
+
+                                                if let Err(e) = Self::handle_successful_melt_payment_event(
+                                                    &mint,
+                                                    &localstore,
+                                                    &pubsub_manager,
+                                                    &quote_id,
+                                                    details,
+                                                )
+                                                .await
+                                                {
+                                                    tracing::warn!(
+                                                        "Failed to process successful payment event for quote {}: {}",
+                                                        quote_id,
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                            cdk_common::payment::Event::PaymentFailed { quote_id, reason } => {
+                                                tracing::warn!(
+                                                    "Outgoing payment failed for quote {}: {}",
+                                                    quote_id,
+                                                    reason,
+                                                );
+
+                                                if let Err(e) = Self::handle_failed_melt_payment_event(
+                                                    &mint,
+                                                    &localstore,
+                                                    &pubsub_manager,
+                                                    &quote_id,
+                                                )
+                                                .await
+                                                {
+                                                    tracing::warn!(
+                                                        "Failed to process failed payment event for quote {}: {}",
+                                                        quote_id,
+                                                        e
+                                                    );
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+
                         Err(e) => {
                             tracing::warn!("Failed to get payment stream: {}", e);
                             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -748,6 +800,129 @@ impl Mint {
             }
         }
         Ok(())
+    }
+
+    #[instrument(skip_all)]
+    pub(crate) async fn handle_successful_melt_payment_event(
+        mint: &Arc<Mint>,
+        localstore: &DynMintDatabase,
+        pubsub_manager: &Arc<PubSubManager>,
+        quote_id: &QuoteId,
+        payment_response: cdk_common::payment::MakePaymentResponse,
+    ) -> Result<(), Error> {
+        let Some(mut quote) = localstore.get_melt_quote(quote_id).await? else {
+            tracing::warn!("Outgoing payment event for unknown quote {}", quote_id);
+            return Ok(());
+        };
+
+        let saga = localstore.get_melt_saga_by_quote_id(quote_id).await?;
+
+        match quote.state {
+            MeltQuoteState::Paid => {
+                if saga.is_none() {
+                    tracing::info!(
+                        "Ignoring successful payment event for already finalized melt quote {}",
+                        quote_id
+                    );
+                    return Ok(());
+                }
+            }
+            MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
+                tracing::info!(
+                    "Ignoring successful payment event for already resolved melt quote {} in state {}",
+                    quote_id,
+                    quote.state
+                );
+                return Ok(());
+            }
+            MeltQuoteState::Pending => {}
+            MeltQuoteState::Unknown => {
+                tracing::warn!(
+                    "Ignoring outgoing payment event for melt quote {} in unexpected state {}",
+                    quote_id,
+                    quote.state
+                );
+                return Ok(());
+            }
+        }
+
+        let Some(saga) = saga else {
+            tracing::warn!(
+                "Successful payment event for quote {} but finalization saga metadata is missing",
+                quote_id
+            );
+            return Ok(());
+        };
+
+        saga_recovery::process_melt_saga_outcome(
+            &saga,
+            &mut quote,
+            &payment_response,
+            localstore,
+            pubsub_manager,
+            mint,
+        )
+        .await
+    }
+
+    #[instrument(skip_all)]
+    pub(crate) async fn handle_failed_melt_payment_event(
+        mint: &Arc<Mint>,
+        localstore: &DynMintDatabase,
+        pubsub_manager: &Arc<PubSubManager>,
+        quote_id: &QuoteId,
+    ) -> Result<(), Error> {
+        let Some(mut quote) = localstore.get_melt_quote(quote_id).await? else {
+            tracing::warn!("Outgoing payment event for unknown quote {}", quote_id);
+            return Ok(());
+        };
+
+        match quote.state {
+            MeltQuoteState::Pending => {}
+            MeltQuoteState::Paid => {
+                tracing::info!(
+                    "Ignoring failed payment event for already paid melt quote {}",
+                    quote_id
+                );
+                return Ok(());
+            }
+            MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
+                tracing::info!(
+                    "Ignoring failed payment event for already resolved melt quote {} in state {}",
+                    quote_id,
+                    quote.state
+                );
+                return Ok(());
+            }
+            MeltQuoteState::Unknown => {
+                tracing::warn!(
+                    "Ignoring failed payment event for melt quote {} in unexpected state {}",
+                    quote_id,
+                    quote.state
+                );
+                return Ok(());
+            }
+        }
+
+        let Some(saga) = localstore.get_melt_saga_by_quote_id(quote_id).await? else {
+            tracing::warn!(
+                "Failed payment event for quote {} but rollback saga metadata is missing",
+                quote_id
+            );
+            return Ok(());
+        };
+
+        let payment_response = mint.check_melt_payment_status(&quote).await?;
+
+        saga_recovery::process_melt_saga_outcome(
+            &saga,
+            &mut quote,
+            &payment_response,
+            localstore,
+            pubsub_manager,
+            mint,
+        )
+        .await
     }
 
     /// Handle payment notification without needing full Mint instance
@@ -1117,11 +1292,21 @@ impl Mint {
 mod tests {
 
     use std::str::FromStr;
+    use std::sync::Arc;
 
+    use cdk_common::melt::MeltQuoteRequest;
+    use cdk_common::mint::{OperationKind, SagaStateEnum};
+    use cdk_common::nut00::KnownMethod;
+    use cdk_common::nuts::MeltQuoteBolt11Request;
+    use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
+    use cdk_common::PaymentMethod;
+    use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
     use cdk_signatory::signatory::RotateKeyArguments;
     use cdk_sqlite::mint::memory::new_with_state;
 
     use super::*;
+    use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
+    use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 
     #[derive(Default)]
     struct MintConfig<'a> {
@@ -1278,6 +1463,240 @@ mod tests {
             .get_keyset_info(&keyset_info.id)
             .expect("keyset should be found");
         assert_eq!(stored.final_expiry, Some(expiry));
+    }
+
+    #[tokio::test]
+    async fn successful_payment_event_replays_cleanup_for_paid_quote_with_saga() {
+        let mint = create_test_mint().await.unwrap();
+        let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+        let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+        let melt_request = create_test_melt_request(&proofs, &quote);
+
+        let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+        let saga = MeltSaga::new(
+            Arc::new(mint.clone()),
+            mint.localstore(),
+            mint.pubsub_manager(),
+        );
+        let setup_saga = saga
+            .setup_melt(
+                &melt_request,
+                verification,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+            )
+            .await
+            .unwrap();
+
+        let (payment_saga, decision) = setup_saga
+            .attempt_internal_settlement(&melt_request)
+            .await
+            .unwrap();
+        let operation_id = assert_single_melt_saga_operation_id(&mint).await;
+        let PaymentOutcome::Confirmed(_confirmed_saga) =
+            payment_saga.make_payment(decision).await.unwrap()
+        else {
+            panic!("Expected Confirmed outcome");
+        };
+        let payment_result = MakePaymentResponse {
+            payment_lookup_id: PaymentIdentifier::CustomId(quote.id.to_string()),
+            payment_proof: None,
+            status: MeltQuoteState::Paid,
+            total_spent: quote.amount(),
+        };
+
+        let finalized_quote = mint
+            .localstore
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        crate::mint::melt::shared::finalize_melt_quote(
+            &mint,
+            &mint.localstore,
+            &mint.pubsub_manager,
+            &finalized_quote,
+            payment_result.total_spent.clone(),
+            payment_result.payment_proof.clone(),
+            &payment_result.payment_lookup_id,
+            Some(operation_id),
+        )
+        .await
+        .unwrap();
+
+        Mint::handle_successful_melt_payment_event(
+            &Arc::new(mint.clone()),
+            &mint.localstore,
+            &mint.pubsub_manager,
+            &quote.id,
+            payment_result,
+        )
+        .await
+        .unwrap();
+
+        let persisted_quote = mint
+            .localstore
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .expect("quote should still exist");
+        assert_eq!(persisted_quote.state, MeltQuoteState::Paid);
+
+        let sagas = mint
+            .localstore
+            .get_incomplete_sagas(OperationKind::Melt)
+            .await
+            .unwrap();
+        assert!(
+            !sagas.iter().any(|s| s.operation_id == operation_id),
+            "saga should be deleted after replayed success finalization"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_payment_event_ignored_for_paid_quote_without_saga() {
+        let mint = create_test_mint().await.unwrap();
+        let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+        let payment_result = MakePaymentResponse {
+            payment_lookup_id: PaymentIdentifier::CustomId(quote.id.to_string()),
+            payment_proof: None,
+            status: MeltQuoteState::Paid,
+            total_spent: Amount::from(9_000).with_unit(CurrencyUnit::Sat),
+        };
+        let mut tx = mint.localstore.begin_transaction().await.unwrap();
+        let mut stored_quote = tx.get_melt_quote(&quote.id).await.unwrap().unwrap();
+        tx.update_melt_quote_state(&mut stored_quote, MeltQuoteState::Pending, None)
+            .await
+            .unwrap();
+        tx.update_melt_quote_state(&mut stored_quote, MeltQuoteState::Paid, None)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        Mint::handle_successful_melt_payment_event(
+            &Arc::new(mint.clone()),
+            &mint.localstore,
+            &mint.pubsub_manager,
+            &quote.id,
+            payment_result,
+        )
+        .await
+        .unwrap();
+
+        let sagas = mint
+            .localstore
+            .get_incomplete_sagas(OperationKind::Melt)
+            .await
+            .unwrap();
+        assert!(sagas.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_payment_event_ignored_for_paid_quote() {
+        let mint = create_test_mint().await.unwrap();
+        let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+        let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+        let melt_request = create_test_melt_request(&proofs, &quote);
+
+        let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+        let saga = MeltSaga::new(
+            Arc::new(mint.clone()),
+            mint.localstore(),
+            mint.pubsub_manager(),
+        );
+        let _setup_saga = saga
+            .setup_melt(
+                &melt_request,
+                verification,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+            )
+            .await
+            .unwrap();
+
+        let operation_id = assert_single_melt_saga_operation_id(&mint).await;
+        let mut tx = mint.localstore.begin_transaction().await.unwrap();
+        let mut stored_quote = tx.get_melt_quote(&quote.id).await.unwrap().unwrap();
+        tx.update_melt_quote_state(&mut stored_quote, MeltQuoteState::Paid, None)
+            .await
+            .unwrap();
+        tx.update_saga(
+            &operation_id,
+            SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentAttempted),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        Mint::handle_failed_melt_payment_event(
+            &Arc::new(mint.clone()),
+            &mint.localstore,
+            &mint.pubsub_manager,
+            &quote.id,
+        )
+        .await
+        .unwrap();
+
+        let persisted_quote = mint
+            .localstore
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .expect("quote should still exist");
+        assert_eq!(persisted_quote.state, MeltQuoteState::Paid);
+
+        let sagas = mint
+            .localstore
+            .get_incomplete_sagas(OperationKind::Melt)
+            .await
+            .unwrap();
+        assert!(sagas.iter().any(|s| s.operation_id == operation_id));
+    }
+
+    async fn create_test_melt_quote(mint: &crate::mint::Mint, amount: Amount) -> MeltQuote {
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Paid,
+            check_payment_state: MeltQuoteState::Paid,
+            pay_err: false,
+            check_err: false,
+        };
+
+        let amount_msats: u64 = amount.into();
+        let invoice = create_fake_invoice(
+            amount_msats,
+            serde_json::to_string(&fake_description).unwrap(),
+        );
+
+        let request = MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+            request: invoice,
+            unit: CurrencyUnit::Sat,
+            options: None,
+        });
+
+        let quote_response = mint.get_melt_quote(request).await.unwrap();
+
+        mint.localstore
+            .get_melt_quote(quote_response.quote())
+            .await
+            .unwrap()
+            .expect("quote should exist in database")
+    }
+
+    fn create_test_melt_request(
+        proofs: &cdk_common::nuts::Proofs,
+        quote: &MeltQuote,
+    ) -> cdk_common::nuts::MeltRequest<cdk_common::QuoteId> {
+        cdk_common::nuts::MeltRequest::new(quote.id.clone(), proofs.clone(), None)
+    }
+
+    async fn assert_single_melt_saga_operation_id(mint: &crate::mint::Mint) -> uuid::Uuid {
+        let sagas = mint
+            .localstore
+            .get_incomplete_sagas(OperationKind::Melt)
+            .await
+            .unwrap();
+
+        assert_eq!(sagas.len(), 1, "expected exactly one melt saga");
+        sagas[0].operation_id
     }
 
     #[tokio::test]

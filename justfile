@@ -116,7 +116,7 @@ coverage:
   fi
   # Clean up previous coverage data
   cargo llvm-cov clean --workspace
-  
+
   # Start PostgreSQL for cdk-postgres tests
   echo "Starting PostgreSQL for coverage..."
   start-postgres
@@ -124,7 +124,7 @@ coverage:
   # Run unit tests with coverage (all workspace crates including cdk-postgres)
   echo "Running unit tests coverage..."
   cargo llvm-cov --no-report --lib --workspace --exclude cdk-integration-tests
-  
+
   # Run pure integration tests with coverage (memory backend)
   echo "Running pure integration tests coverage (memory)..."
   CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
@@ -132,7 +132,7 @@ coverage:
   # Run pure integration tests with coverage (sqlite backend)
   echo "Running pure integration tests coverage (sqlite)..."
   CDK_TEST_DB_TYPE=sqlite cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
-  
+
   # Generate report
   echo "Generating coverage report..."
   cargo llvm-cov report --lcov --output-path lcov.info
@@ -413,15 +413,15 @@ lint:
 update-msrv-lock:
     #!/usr/bin/env bash
     set -euo pipefail
-    
+
     nix develop --ignore-environment .#msrv --command bash -c '
         cp Cargo.lock Cargo.lock.msrv
         echo "Copied Cargo.lock to Cargo.lock.msrv (MSRV 1.85.0)"
     '
-    
+
     nix develop --ignore-environment .#stable --command bash -c '
         cargo update
-        echo "Updated Cargo.lock (stable 1.94.0)"
+        echo "Updated Cargo.lock (stable)"
     '
 
 itest db:
@@ -901,6 +901,7 @@ test-kotlin:
   set -euo pipefail
   cd "{{justfile_directory()}}/bindings/kotlin"
   ./gradlew :cdk-jvm:test
+
 
 # Generate Swift FFI bindings and XCFramework
 binding-swift:

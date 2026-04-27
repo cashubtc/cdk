@@ -225,8 +225,8 @@ pub struct MeltQuoteBolt11Response {
     pub state: QuoteState,
     /// Expiry timestamp
     pub expiry: u64,
-    /// Payment preimage (optional)
-    pub payment_preimage: Option<String>,
+    /// Payment proof (optional)
+    pub payment_proof: Option<String>,
     /// Request string (optional)
     pub request: Option<String>,
     /// Unit (optional)
@@ -241,7 +241,7 @@ impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Respons
             fee_reserve: response.fee_reserve.into(),
             state: response.state.into(),
             expiry: response.expiry,
-            payment_preimage: response.payment_preimage,
+            payment_proof: response.payment_preimage,
             request: response.request,
             unit: response.unit.map(Into::into),
         }
@@ -264,8 +264,8 @@ pub struct MeltQuoteCustomResponse {
     pub state: QuoteState,
     /// Expiry timestamp
     pub expiry: u64,
-    /// Payment preimage (optional)
-    pub payment_preimage: Option<String>,
+    /// Payment proof (optional)
+    pub payment_proof: Option<String>,
     /// Request string (optional)
     pub request: Option<String>,
     /// Unit (optional)
@@ -291,7 +291,7 @@ impl From<cdk::nuts::MeltQuoteCustomResponse<String>> for MeltQuoteCustomRespons
             fee_reserve: response.fee_reserve.into(),
             state: response.state.into(),
             expiry: response.expiry,
-            payment_preimage: response.payment_preimage,
+            payment_proof: response.payment_preimage,
             request: response.request,
             unit: response.unit.map(Into::into),
             extra,
@@ -351,8 +351,8 @@ pub struct MeltQuote {
     pub state: QuoteState,
     /// Expiry timestamp
     pub expiry: u64,
-    /// Payment preimage
-    pub payment_preimage: Option<String>,
+    /// Payment proof
+    pub payment_proof: Option<String>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Operation ID that reserved this quote
@@ -373,7 +373,7 @@ impl From<cdk::wallet::MeltQuote> for MeltQuote {
             fee_reserve: quote.fee_reserve.into(),
             state: quote.state.into(),
             expiry: quote.expiry,
-            payment_preimage: quote.payment_preimage.clone(),
+            payment_proof: quote.payment_proof.clone(),
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
             version: quote.version,
@@ -394,7 +394,7 @@ impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
             fee_reserve: quote.fee_reserve.into(),
             state: quote.state.into(),
             expiry: quote.expiry,
-            payment_preimage: quote.payment_preimage,
+            payment_proof: quote.payment_proof,
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation,
             version: quote.version,

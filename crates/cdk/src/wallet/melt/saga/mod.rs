@@ -91,7 +91,7 @@ async fn finalize_melt_common<'a>(
     final_proofs: &Proofs,
     premint_secrets: &PreMintSecrets,
     state: MeltQuoteState,
-    payment_preimage: Option<String>,
+    payment_proof: Option<String>,
     change: Option<Vec<crate::nuts::BlindSignature>>,
     metadata: HashMap<String, String>,
 ) -> Result<MeltSaga<'a, Finalized>, Error> {
@@ -180,7 +180,7 @@ async fn finalize_melt_common<'a>(
             metadata,
             quote_id: Some(quote_info.id.clone()),
             payment_request: Some(quote_info.request.clone()),
-            payment_proof: payment_preimage.clone(),
+            payment_proof: payment_proof.clone(),
             payment_method: Some(quote_info.payment_method.clone()),
             saga_id: Some(operation_id),
         })
@@ -210,7 +210,7 @@ async fn finalize_melt_common<'a>(
             state,
             amount: quote_info.amount,
             fee,
-            payment_proof: payment_preimage,
+            payment_proof,
             change: change_proofs,
         },
     })
@@ -890,7 +890,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
         let melt_response = match melt_result {
             Ok(response) => response,
             Err(error) => {
-                // Check for known terminal errors first
+                // Check for known unrecoverable errors first
                 if matches!(error, Error::RequestAlreadyPaid) {
                     tracing::info!("Invoice already paid by another wallet - releasing proofs");
                     self.handle_failure().await;
@@ -977,7 +977,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             }
         };
 
-        match melt_response.state {
+        match melt_response.state() {
             MeltQuoteState::Paid => {
                 let finalized = finalize_melt_common(
                     self.wallet,
@@ -986,9 +986,9 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                     &self.state_data.quote,
                     &self.state_data.final_proofs,
                     &self.state_data.premint_secrets,
-                    melt_response.state,
-                    melt_response.payment_preimage,
-                    melt_response.change,
+                    melt_response.state(),
+                    melt_response.payment_proof().map(|s| s.to_string()),
+                    melt_response.change().cloned(),
                     metadata,
                 )
                 .await?;
@@ -1015,7 +1015,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                 tracing::warn!(
                     "Melt quote {} returned unexpected state {:?}",
                     quote_info.id,
-                    melt_response.state
+                    melt_response.state()
                 );
                 let finalized = finalize_melt_common(
                     self.wallet,
@@ -1024,9 +1024,9 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                     &self.state_data.quote,
                     &self.state_data.final_proofs,
                     &self.state_data.premint_secrets,
-                    melt_response.state,
-                    melt_response.payment_preimage,
-                    melt_response.change,
+                    melt_response.state(),
+                    melt_response.payment_proof().map(|s| s.to_string()),
+                    melt_response.change().cloned(),
                     metadata,
                 )
                 .await?;
@@ -1076,7 +1076,7 @@ impl<'a> MeltSaga<'a, PaymentPending> {
     pub async fn finalize(
         self,
         state: MeltQuoteState,
-        payment_preimage: Option<String>,
+        payment_proof: Option<String>,
         change: Option<Vec<crate::nuts::BlindSignature>>,
         metadata: HashMap<String, String>,
     ) -> Result<MeltSaga<'a, Finalized>, Error> {
@@ -1088,7 +1088,7 @@ impl<'a> MeltSaga<'a, PaymentPending> {
             &self.state_data.final_proofs,
             &self.state_data.premint_secrets,
             state,
-            payment_preimage,
+            payment_proof,
             change,
             metadata,
         )

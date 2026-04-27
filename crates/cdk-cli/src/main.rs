@@ -57,8 +57,8 @@ struct Cli {
     #[arg(short, long)]
     proxy: Option<Url>,
     /// Currency unit to use for the wallet
-    #[arg(short, long, default_value = "sat")]
-    unit: String,
+    #[arg(short, long, global = true)]
+    unit: Option<String>,
     /// Disable all interactive prompts; commands must provide required arguments.
     #[arg(short, long)]
     non_interactive: bool,
@@ -220,8 +220,14 @@ async fn main() -> Result<()> {
     let seed = mnemonic.to_seed_normalized("");
 
     // Parse currency unit from args
-    let currency_unit = CurrencyUnit::from_str(&args.unit)
-        .unwrap_or_else(|_| CurrencyUnit::Custom(args.unit.clone()));
+    let currency_unit = match args.unit {
+        Some(unit) => match unit.to_lowercase().as_str() {
+            "" => bail!("Currency unit cannot be empty. Omit the flag to use the default 'sat'."),
+            _ => Some(CurrencyUnit::from_str(&unit).unwrap_or(CurrencyUnit::Custom(unit))),
+        },
+        None => None,
+    };
+    let default_unit = currency_unit.clone().unwrap_or(CurrencyUnit::Sat);
 
     // Create WalletRepository using builder pattern
     let wallet_repository = {
@@ -246,34 +252,38 @@ async fn main() -> Result<()> {
     for wallet in wallets {
         // Recover from incomplete operations (required after wallet creation)
         let recovery = wallet.recover_incomplete_sagas().await?;
-        println!(
-            "Recovered {} operations, {} compensated, {} skipped, {} failed",
-            recovery.recovered, recovery.compensated, recovery.skipped, recovery.failed
-        );
+        if !recovery.is_empty() {
+            println!(
+                "Recovered {} operations, {} compensated, {} skipped, {} failed",
+                recovery.recovered, recovery.compensated, recovery.skipped, recovery.failed
+            );
+        }
     }
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {
             sub_commands::decode_token::decode_token(sub_command_args)
         }
-        Commands::Balance => sub_commands::balance::balance(&wallet_repository).await,
+        Commands::Balance => {
+            sub_commands::balance::balance(&wallet_repository, currency_unit.as_ref()).await
+        }
         Commands::Melt(sub_command_args) => {
-            sub_commands::melt::pay(&wallet_repository, sub_command_args, &currency_unit).await
+            sub_commands::melt::pay(&wallet_repository, sub_command_args, &default_unit).await
         }
         Commands::Receive(sub_command_args) => {
             sub_commands::receive::receive(
                 &wallet_repository,
                 sub_command_args,
                 &work_dir,
-                &currency_unit,
+                &default_unit,
             )
             .await
         }
         Commands::Send(sub_command_args) => {
-            sub_commands::send::send(&wallet_repository, sub_command_args, &currency_unit).await
+            sub_commands::send::send(&wallet_repository, sub_command_args, &default_unit).await
         }
         Commands::Transfer(sub_command_args) => {
-            sub_commands::transfer::transfer(&wallet_repository, sub_command_args, &currency_unit)
+            sub_commands::transfer::transfer(&wallet_repository, sub_command_args, &default_unit)
                 .await
         }
         Commands::CheckPending => {
@@ -286,13 +296,13 @@ async fn main() -> Result<()> {
             sub_commands::mint_info::mint_info(args.proxy, sub_command_args).await
         }
         Commands::Mint(sub_command_args) => {
-            sub_commands::mint::mint(&wallet_repository, sub_command_args, &currency_unit).await
+            sub_commands::mint::mint(&wallet_repository, sub_command_args, &default_unit).await
         }
         Commands::MintBatch(sub_command_args) => {
             sub_commands::mint_batch::mint_batch(
                 &wallet_repository,
                 sub_command_args,
-                &currency_unit,
+                &default_unit,
             )
             .await
         }
@@ -303,14 +313,14 @@ async fn main() -> Result<()> {
             sub_commands::burn::burn(&wallet_repository, sub_command_args).await
         }
         Commands::Restore(sub_command_args) => {
-            sub_commands::restore::restore(&wallet_repository, sub_command_args, &currency_unit)
+            sub_commands::restore::restore(&wallet_repository, sub_command_args, &default_unit)
                 .await
         }
         Commands::UpdateMintUrl(sub_command_args) => {
             sub_commands::update_mint_url::update_mint_url(
                 &wallet_repository,
                 sub_command_args,
-                &currency_unit,
+                &default_unit,
             )
             .await
         }
@@ -324,14 +334,14 @@ async fn main() -> Result<()> {
             sub_commands::pay_request::pay_request(&wallet_repository, sub_command_args).await
         }
         Commands::Resolve(sub_command_args) => {
-            sub_commands::resolve::resolve(&wallet_repository, sub_command_args, &currency_unit)
+            sub_commands::resolve::resolve(&wallet_repository, sub_command_args, &default_unit)
                 .await
         }
         Commands::CreateRequest(sub_command_args) => {
             sub_commands::create_request::create_request(
                 &wallet_repository,
                 sub_command_args,
-                &currency_unit,
+                &default_unit,
             )
             .await
         }
@@ -340,7 +350,7 @@ async fn main() -> Result<()> {
                 &wallet_repository,
                 sub_command_args,
                 &work_dir,
-                &currency_unit,
+                &default_unit,
             )
             .await
         }
@@ -370,7 +380,7 @@ async fn main() -> Result<()> {
             sub_commands::generate_public_key::generate_public_key(
                 &wallet_repository,
                 sub_command_args,
-                &currency_unit,
+                &default_unit,
             )
             .await
         }
@@ -378,7 +388,7 @@ async fn main() -> Result<()> {
             sub_commands::get_public_keys::get_public_keys(
                 &wallet_repository,
                 sub_command_args,
-                &currency_unit,
+                &default_unit,
             )
             .await
         }

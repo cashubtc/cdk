@@ -22,8 +22,8 @@ use cashu::Amount;
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{
-    CurrencyUnit, MeltQuoteState, MeltRequest, MintRequest, PaymentMethod, PreMintSecrets, Proofs,
-    SecretKey, State, SwapRequest,
+    CurrencyUnit, MeltQuoteState, MeltRequest, MintQuoteState, MintRequest, PaymentMethod,
+    PreMintSecrets, Proofs, SecretKey, State, SwapRequest,
 };
 use cdk::wallet::types::TransactionDirection;
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
@@ -536,13 +536,13 @@ async fn test_fake_melt_change_in_quote() {
         .await
         .unwrap();
 
-    assert!(melt_response.change.is_some());
+    assert!(melt_response.change().is_some());
 
     let check = client
         .get_melt_quote_status(PaymentMethod::BOLT11, &melt_quote.id)
         .await
         .unwrap();
-    let mut melt_change = melt_response.change.unwrap();
+    let mut melt_change = melt_response.change().unwrap().clone();
     melt_change.sort_by_key(|a| a.amount);
 
     let mut check = match check {
@@ -1899,6 +1899,138 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
     );
 }
 
+/// Regression test for cashubtc/cdk#1891.
+///
+/// Exercises the chained `prepare_melt(...).await?.confirm().await?` pattern
+/// where `PreparedMelt` is consumed on failure. The wallet should recover via
+/// the persisted melt saga without requiring `check_all_pending_proofs()`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_chained_confirm_auto_releases_proofs_on_failure() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+    proof_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+
+    let fake_description = FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Failed,
+        check_payment_state: MeltQuoteState::Failed,
+        pay_err: false,
+        check_err: false,
+    };
+    let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
+
+    let melt_result = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap()
+        .confirm()
+        .await;
+    assert!(melt_result.is_err(), "Melt should fail on Failed state");
+
+    let pending = wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Pending]), None)
+        .await
+        .unwrap();
+    assert!(
+        pending.is_empty(),
+        "no proofs should remain Pending after automatic saga recovery"
+    );
+
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(100),
+        "balance should be fully recovered without explicit recovery calls"
+    );
+}
+
+/// Regression test for the recovered-paid confirm path.
+///
+/// If the initial melt request errors locally but recovery sees the quote as
+/// `Paid`, chained `prepare_melt(...).confirm()` should still return success.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_chained_confirm_recovers_paid_melt() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("Failed to create new wallet");
+
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+        .await
+        .unwrap();
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+    proof_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let old_balance = wallet.total_balance().await.expect("balance");
+
+    let fake_description = FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Failed,
+        check_payment_state: MeltQuoteState::Paid,
+        pay_err: true,
+        check_err: false,
+    };
+    let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
+
+    let melt = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap()
+        .confirm()
+        .await
+        .expect("confirm should recover to Paid");
+
+    assert_eq!(melt.fee_paid(), Amount::ZERO);
+    assert_eq!(melt.amount(), Amount::from(7));
+    assert_eq!(
+        old_balance - melt.amount(),
+        wallet.total_balance().await.expect("new balance")
+    );
+
+    let pending = wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Pending]), None)
+        .await
+        .unwrap();
+    assert!(
+        pending.is_empty(),
+        "paid recovery should not leave pending proofs"
+    );
+}
+
 /// Tests that concurrent melt attempts for the same invoice result in exactly one success
 ///
 /// This test verifies the race condition protection: when multiple melt quotes exist for the
@@ -2552,4 +2684,88 @@ async fn test_check_mint_quote_status_updates_after_minting() {
         !unissued_ids.contains(&mint_quote.id.as_str()),
         "Fully minted quote should not appear in unissued quotes"
     );
+}
+
+/// Tests that Bolt12 payment notifications persist `amount_issued` updates.
+///
+/// This catches regressions where the wallet updates `amount_paid` from the
+/// notification stream but forgets to persist `amount_issued`, causing
+/// `check_mint_quote_status` to drift from the notification-driven state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_check_mint_quote_status_updates_amount_issued_for_bolt12() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT12, Some(Amount::from(100)), None, None)
+        .await
+        .expect("failed to create Bolt12 quote");
+
+    let mut payment_stream = wallet.payment_stream(&mint_quote);
+    let paid_amount = payment_stream
+        .next()
+        .await
+        .expect("payment event")
+        .expect("no payment stream error")
+        .1
+        .expect("Bolt12 payment stream should return remaining amount to mint");
+
+    let quote_after_notification = wallet
+        .localstore
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("quote lookup should succeed")
+        .expect("quote should remain in localstore after notification");
+
+    assert_eq!(quote_after_notification.amount_paid, Amount::from(100));
+    assert_eq!(
+        quote_after_notification.amount_issued,
+        Amount::ZERO,
+        "payment notification should not mark funds as issued before minting"
+    );
+
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await
+        .expect("minting should succeed");
+    let minted_amount = proofs.total_amount().expect("proofs should total");
+
+    assert_eq!(minted_amount, paid_amount);
+
+    let quote_after_mint = wallet
+        .check_mint_quote_status(&mint_quote.id)
+        .await
+        .expect("quote status check should succeed");
+
+    assert_eq!(quote_after_mint.payment_method, PaymentMethod::BOLT12);
+    assert_eq!(quote_after_mint.amount_paid, minted_amount);
+    assert_eq!(
+        quote_after_mint.amount_issued, minted_amount,
+        "amount_issued should match the issued amount after Bolt12 minting"
+    );
+    assert_eq!(
+        quote_after_mint.state,
+        MintQuoteState::Issued,
+        "quote should be fully issued after minting"
+    );
+
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
+    let mint_response = http_client
+        .get_mint_quote_status(PaymentMethod::BOLT12, &mint_quote.id)
+        .await
+        .expect("mint quote status request should succeed");
+
+    match mint_response {
+        cdk_common::MintQuoteResponse::Bolt12(response) => {
+            assert_eq!(response.amount_paid, minted_amount);
+            assert_eq!(response.amount_issued, minted_amount);
+        }
+        response => panic!("expected Bolt12 quote response, got {response:?}"),
+    }
 }

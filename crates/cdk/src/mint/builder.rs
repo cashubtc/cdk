@@ -739,11 +739,11 @@ mod tests {
             unimplemented!()
         }
 
-        fn is_wait_invoice_active(&self) -> bool {
+        fn is_payment_event_stream_active(&self) -> bool {
             false
         }
 
-        fn cancel_wait_invoice(&self) {}
+        fn cancel_payment_event_stream(&self) {}
 
         async fn check_incoming_payment_status(
             &self,

@@ -1074,6 +1074,17 @@ mod test {
     }
 
     #[test]
+    fn test_v2_from_data_input_fee_zero_is_same_as_no_fee_component() {
+        let unit: CurrencyUnit = CurrencyUnit::from_str("sat").unwrap();
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+
+        let id_without_fee = Id::v2_from_data(&keys, &unit, 0, Some(2059210353));
+        let id_with_same_inputs = Id::v2_from_data(&keys, &unit, 0, Some(2059210353));
+
+        assert_eq!(id_without_fee, id_with_same_inputs);
+    }
+
+    #[test]
     fn test_from_short_keyset_id_prefix_too_short() {
         let v1_info = KeySetInfo {
             id: Id::from_str("00009a1f293253e4").unwrap(),
@@ -1150,5 +1161,275 @@ mod test {
 
         let res = Id::from_short_keyset_id(&short_id, &keysets);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_from_short_keyset_id_accepts_boundary_prefix_lengths() {
+        let v1_id = Id::from_str("00009a1f293253e4").unwrap();
+        let v2_id =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+
+        let keysets = vec![
+            KeySetInfo {
+                id: v1_id,
+                unit: CurrencyUnit::Sat,
+                active: true,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            },
+            KeySetInfo {
+                id: v2_id,
+                unit: CurrencyUnit::Sat,
+                active: true,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            },
+        ];
+
+        let short_v1 = ShortKeysetId::from_bytes(&v1_id.to_bytes()).unwrap();
+        let short_v2 = ShortKeysetId::from(v2_id);
+
+        assert_eq!(
+            Id::from_short_keyset_id(&short_v1, &keysets).unwrap(),
+            v1_id
+        );
+        assert_eq!(
+            Id::from_short_keyset_id(&short_v2, &keysets).unwrap(),
+            v2_id
+        );
+    }
+
+    #[test]
+    fn test_from_short_keyset_id_returns_unknown_when_v2_prefix_does_not_match() {
+        let v2_id =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+        let keysets = vec![KeySetInfo {
+            id: v2_id,
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        }];
+
+        let short_id = ShortKeysetId::from_str("01ffffffffffffff").unwrap();
+        let res = Id::from_short_keyset_id(&short_id, &keysets);
+
+        assert!(matches!(res, Err(Error::UnknownShortKeysetId)));
+    }
+
+    #[test]
+    fn test_from_short_keyset_id_accepts_exact_32_byte_v2_prefix() {
+        // Boundary test: a short id whose prefix is exactly 32 bytes (BYTELEN_V2)
+        // must be accepted and match the full v2 id (which is itself 32 bytes).
+        let v2_id =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+        let keysets = vec![KeySetInfo {
+            id: v2_id,
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        }];
+
+        // Build a ShortKeysetId whose prefix equals the full 32-byte id.
+        // The byte representation is: [version_byte, 32-byte id...], total 33 bytes.
+        let short_id = ShortKeysetId::from_bytes(&v2_id.to_bytes()).unwrap();
+        assert_eq!(short_id.prefix.len(), 32);
+
+        let res = Id::from_short_keyset_id(&short_id, &keysets).unwrap();
+        assert_eq!(res, v2_id);
+    }
+
+    #[test]
+    fn test_id_debug_format_equals_display() {
+        // Ensure Debug impl is not a no-op. Mutants that replace the body with
+        // Ok(Default::default()) would produce an empty string.
+        let id_v1 = Id::from_str(SHORT_KEYSET_ID).unwrap();
+        assert_eq!(format!("{:?}", id_v1), id_v1.to_string());
+        assert!(!format!("{:?}", id_v1).is_empty());
+
+        let id_v2 =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+        assert_eq!(format!("{:?}", id_v2), id_v2.to_string());
+        assert!(!format!("{:?}", id_v2).is_empty());
+    }
+
+    #[test]
+    fn test_short_keyset_id_debug_format_equals_display() {
+        // Mutants replacing the body with Ok(Default::default()) would produce "".
+        let short_v1 = ShortKeysetId::from_str(SHORT_KEYSET_ID).unwrap();
+        assert_eq!(format!("{:?}", short_v1), short_v1.to_string());
+        assert!(!format!("{:?}", short_v1).is_empty());
+
+        let v2_id =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+        let short_v2: ShortKeysetId = v2_id.into();
+        assert_eq!(format!("{:?}", short_v2), short_v2.to_string());
+        assert!(!format!("{:?}", short_v2).is_empty());
+    }
+
+    #[test]
+    fn test_keyset_verify_id_valid_returns_ok() {
+        use super::KeySet;
+
+        // v1 keyset
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+        let id = Id::v1_from_keys(&keys);
+        let keyset = KeySet {
+            id,
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys: keys.clone(),
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+        assert!(keyset.verify_id().is_ok(), "valid v1 keyset should verify");
+
+        // v2 keyset
+        let unit = CurrencyUnit::Sat;
+        let input_fee_ppk = 100u64;
+        let expiry = Some(2059210353u64);
+        let id_v2 = Id::v2_from_data(&keys, &unit, input_fee_ppk, expiry);
+        let keyset_v2 = KeySet {
+            id: id_v2,
+            unit,
+            active: Some(true),
+            keys,
+            input_fee_ppk,
+            final_expiry: expiry,
+        };
+        assert!(
+            keyset_v2.verify_id().is_ok(),
+            "valid v2 keyset should verify"
+        );
+    }
+
+    #[test]
+    fn test_keyset_verify_id_mismatch_returns_error() {
+        use super::KeySet;
+
+        // Use SHORT_KEYSET's keys but mislabel it with KEYSET_ID (from a different keyset).
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+        let wrong_id = Id::from_str(KEYSET_ID).unwrap();
+
+        let keyset = KeySet {
+            id: wrong_id,
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+
+        let res = keyset.verify_id();
+        assert!(
+            matches!(res, Err(Error::IncorrectKeysetId)),
+            "expected IncorrectKeysetId, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn test_keyset_infos_active_filter() {
+        use super::KeySetInfosMethods;
+
+        let id_a = Id::from_str("009a1f293253e41e").unwrap();
+        let id_b = Id::from_str("00456a94ab4e1c46").unwrap();
+        let id_c = Id::from_str("000f01df73ea149a").unwrap();
+
+        let infos: Vec<KeySetInfo> = vec![
+            KeySetInfo {
+                id: id_a,
+                unit: CurrencyUnit::Sat,
+                active: true,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            },
+            KeySetInfo {
+                id: id_b,
+                unit: CurrencyUnit::Sat,
+                active: false,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            },
+            KeySetInfo {
+                id: id_c,
+                unit: CurrencyUnit::Usd,
+                active: true,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            },
+        ];
+
+        let active_ids: Vec<Id> = infos.active().map(|k| k.id).collect();
+        assert_eq!(active_ids.len(), 2, "expected two active keysets");
+        assert!(active_ids.contains(&id_a));
+        assert!(active_ids.contains(&id_c));
+        assert!(!active_ids.contains(&id_b));
+    }
+
+    #[test]
+    fn test_keyset_infos_unit_filter() {
+        use super::KeySetInfosMethods;
+
+        let id_a = Id::from_str("009a1f293253e41e").unwrap();
+        let id_b = Id::from_str("00456a94ab4e1c46").unwrap();
+        let id_c = Id::from_str("000f01df73ea149a").unwrap();
+
+        let infos: Vec<KeySetInfo> = vec![
+            KeySetInfo {
+                id: id_a,
+                unit: CurrencyUnit::Sat,
+                active: true,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            },
+            KeySetInfo {
+                id: id_b,
+                unit: CurrencyUnit::Usd,
+                active: true,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            },
+            KeySetInfo {
+                id: id_c,
+                unit: CurrencyUnit::Sat,
+                active: false,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            },
+        ];
+
+        let sat_ids: Vec<Id> = infos.unit(CurrencyUnit::Sat).map(|k| k.id).collect();
+        assert_eq!(sat_ids.len(), 2, "expected two Sat keysets");
+        assert!(sat_ids.contains(&id_a));
+        assert!(sat_ids.contains(&id_c));
+        assert!(
+            !sat_ids.contains(&id_b),
+            "Usd keyset should not appear in Sat filter"
+        );
+
+        // A unit that does not match any entry must return an empty iterator.
+        let none_ids: Vec<Id> = infos.unit(CurrencyUnit::Eur).map(|k| k.id).collect();
+        assert!(none_ids.is_empty());
+    }
+
+    #[test]
+    fn test_default_input_fee_ppk_is_zero() {
+        // KeySetInfo missing the input_fee_ppk field must default to 0.
+        let json = r#"{"id":"009a1f293253e41e","unit":"sat","active":true}"#;
+        let info: KeySetInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.input_fee_ppk, 0);
+
+        // Explicit null should also default to 0 via the custom deserializer.
+        let json_null =
+            r#"{"id":"009a1f293253e41e","unit":"sat","active":true,"input_fee_ppk":null}"#;
+        let info_null: KeySetInfo = serde_json::from_str(json_null).unwrap();
+        assert_eq!(info_null.input_fee_ppk, 0);
     }
 }

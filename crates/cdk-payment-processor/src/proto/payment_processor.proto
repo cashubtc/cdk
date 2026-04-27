@@ -9,7 +9,7 @@ service CdkPaymentProcessor {
     rpc MakePayment(MakePaymentRequest) returns (MakePaymentResponse) {}
     rpc CheckIncomingPayment(CheckIncomingPaymentRequest) returns (CheckIncomingPaymentResponse) {}
     rpc CheckOutgoingPayment(CheckOutgoingPaymentRequest) returns (MakePaymentResponse) {}
-    rpc WaitIncomingPayment(EmptyRequest) returns (stream WaitIncomingPaymentResponse) {}
+    rpc WaitPaymentEvent(EmptyRequest) returns (stream PaymentEventResponse) {}
 }
 
 message EmptyRequest {}
@@ -78,6 +78,7 @@ enum PaymentIdentifierType {
   PAYMENT_IDENTIFIER_TYPE_BOLT12_PAYMENT_HASH = 4;
   PAYMENT_IDENTIFIER_TYPE_CUSTOM_ID = 5;
   PAYMENT_IDENTIFIER_TYPE_PAYMENT_ID = 6;
+  PAYMENT_IDENTIFIER_TYPE_QUOTE_ID = 7;
 }
 
 message PaymentIdentifier {
@@ -227,4 +228,22 @@ message WaitIncomingPaymentResponse {
   PaymentIdentifier payment_identifier = 1;
   AmountMessage payment_amount = 2;
   string payment_id = 3;
+}
+
+message PaymentSuccessfulResponse {
+  string quote_id = 1;
+  MakePaymentResponse details = 2;
+}
+
+message PaymentFailedResponse {
+  string quote_id = 1;
+  string reason = 2;
+}
+
+message PaymentEventResponse {
+  oneof event {
+    WaitIncomingPaymentResponse payment_received = 1;
+    PaymentSuccessfulResponse payment_successful = 2;
+    PaymentFailedResponse payment_failed = 3;
+  }
 }

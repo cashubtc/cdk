@@ -123,7 +123,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.94.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.95.0".default.override {
           targets = [
             "wasm32-unknown-unknown"
             "aarch64-apple-ios"
@@ -371,7 +371,7 @@
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin";
+            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-bindings-releaser";
           }
         );
 
@@ -1226,6 +1226,9 @@
                   cargo update serde_with --precise 3.17.0
                   cargo update time --precise 0.3.44
                   cargo update unicode-segmentation --precise 1.12.0
+                  cargo update icu_normalizer --precise 2.0.1
+                  cargo update icu_provider --precise 2.1.1
+                  cargo update icu_locale_core --precise 2.1.1
                ";
                 buildInputs = baseBuildInputs ++ [ msrv_toolchain ];
                 inherit nativeBuildInputs;

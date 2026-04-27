@@ -23,7 +23,7 @@ use cdk_common::payment::{
     MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
     WaitPaymentResponse,
 };
-use cdk_common::util::hex;
+use cdk_common::util::{hex, unix_time};
 use cdk_common::Bolt11Invoice;
 use error::Error;
 use futures::{Stream, StreamExt};
@@ -197,12 +197,12 @@ impl MintPayment for Lnd {
     }
 
     #[instrument(skip_all)]
-    fn is_wait_invoice_active(&self) -> bool {
+    fn is_payment_event_stream_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)
     }
 
     #[instrument(skip_all)]
-    fn cancel_wait_invoice(&self) {
+    fn cancel_payment_event_stream(&self) {
         self.wait_invoice_cancel_token.cancel()
     }
 
@@ -386,6 +386,7 @@ impl MintPayment for Lnd {
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
+                    extra_json: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(_) => {
@@ -634,6 +635,13 @@ impl MintPayment for Lnd {
                 let invoice_request = lnrpc::Invoice {
                     value_msat: u64::from(amount_msat) as i64,
                     memo: description,
+                    expiry: unix_expiry
+                        .map(|t| {
+                            t.checked_sub(unix_time())
+                                .ok_or(payment::Error::InvalidExpiry)
+                        })
+                        .transpose()?
+                        .unwrap_or_default() as i64,
                     ..Default::default()
                 };
 
@@ -651,10 +659,12 @@ impl MintPayment for Lnd {
                 let payment_identifier =
                     PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
 
+                let expiry = bolt11.expires_at().map(|t| t.as_secs());
+
                 Ok(CreateIncomingPaymentResponse {
                     request_lookup_id: payment_identifier,
                     request: bolt11.to_string(),
-                    expiry: unix_expiry,
+                    expiry,
                     extra_json: None,
                 })
             }
