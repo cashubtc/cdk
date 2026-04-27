@@ -375,11 +375,9 @@ pub struct MintQuoteCustomResponse<Q> {
     /// Amount
     pub amount: Option<Amount>,
     /// Amount that has been paid
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub amount_paid: Option<Amount>,
+    pub amount_paid: Amount,
     /// Amount that has been issued
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub amount_issued: Option<Amount>,
+    pub amount_issued: Amount,
     /// Currency unit
     pub unit: Option<CurrencyUnit>,
     /// Unix timestamp until the quote is valid
@@ -507,8 +505,8 @@ mod tests {
             quote: "abc123".to_string(),
             request: "paypal://pay?id=123".to_string(),
             amount: Some(Amount::from(1000)),
-            amount_paid: Some(Amount::ZERO),
-            amount_issued: Some(Amount::ZERO),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
             unit: Some(CurrencyUnit::Sat),
             expiry: Some(9999999),
             pubkey: None,
@@ -521,23 +519,5 @@ mod tests {
         assert!(parsed.get("state").is_none());
         assert_eq!(parsed["amount_paid"], json!(0));
         assert_eq!(parsed["amount_issued"], json!(0));
-    }
-
-    #[test]
-    fn custom_mint_quote_legacy_state_is_extra() {
-        let response: MintQuoteCustomResponse<String> = from_str(
-            r#"{
-                "quote": "abc123",
-                "request": "paypal://pay?id=123",
-                "amount": 1000,
-                "unit": "sat",
-                "state": "PAID"
-            }"#,
-        )
-        .unwrap();
-
-        assert_eq!(response.extra["state"], json!("PAID"));
-        assert_eq!(response.amount_paid, None);
-        assert_eq!(response.amount_issued, None);
     }
 }

@@ -181,10 +181,10 @@ pub struct MintQuoteCustomResponse {
     pub expiry: Option<u64>,
     /// Amount (optional)
     pub amount: Option<Amount>,
-    /// Amount paid (optional)
-    pub amount_paid: Option<Amount>,
-    /// Amount issued (optional)
-    pub amount_issued: Option<Amount>,
+    /// Amount paid
+    pub amount_paid: Amount,
+    /// Amount issued
+    pub amount_issued: Amount,
     /// Unit (optional)
     pub unit: Option<CurrencyUnit>,
     /// Pubkey (optional)
@@ -209,8 +209,8 @@ impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomRespons
             request: response.request,
             expiry: response.expiry,
             amount: response.amount.map(Into::into),
-            amount_paid: response.amount_paid.map(Into::into),
-            amount_issued: response.amount_issued.map(Into::into),
+            amount_paid: response.amount_paid.into(),
+            amount_issued: response.amount_issued.into(),
             unit: response.unit.map(Into::into),
             pubkey: response.pubkey.map(|p| p.to_string()),
             extra,

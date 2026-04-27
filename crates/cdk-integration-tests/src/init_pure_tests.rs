@@ -114,15 +114,12 @@ impl MintConnector for DirectMintConnection {
                     .get_mint_quote(cdk::mint::MintQuoteRequest::Custom { method, request })
                     .await?;
                 match response {
-                    cdk_common::MintQuoteResponse::Custom {
-                        method,
-                        state,
-                        response,
-                    } => Ok(MintQuoteResponse::Custom {
-                        method,
-                        state,
-                        response: response.to_string_id(),
-                    }),
+                    cdk_common::MintQuoteResponse::Custom { method, response } => {
+                        Ok(MintQuoteResponse::Custom {
+                            method,
+                            response: response.to_string_id(),
+                        })
+                    }
                     _ => Err(Error::InvalidPaymentMethod),
                 }
             }

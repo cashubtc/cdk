@@ -92,9 +92,6 @@ pub enum MintQuoteResponse<Q> {
     Custom {
         /// Payment method identifier
         method: PaymentMethod,
-        /// Legacy quote state, when older custom responses provide it
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        state: Option<QuoteState>,
         /// Payment method specific response
         response: MintQuoteCustomResponse<Q>,
     },
@@ -128,19 +125,15 @@ impl<Q> MintQuoteResponse<Q> {
         }
     }
 
-    /// Returns the quote state when available.
+    /// Returns the quote state derived from the response data.
     pub fn state(&self) -> Option<QuoteState> {
         match self {
             Self::Bolt11(r) => Some(r.state),
             Self::Bolt12(r) => Some(quote_state_from_amounts(r.amount_paid, r.amount_issued)),
-            Self::Custom {
-                response, state, ..
-            } => match (response.amount_paid, response.amount_issued) {
-                (Some(amount_paid), Some(amount_issued)) => {
-                    Some(quote_state_from_amounts(amount_paid, amount_issued))
-                }
-                _ => *state,
-            },
+            Self::Custom { response, .. } => Some(quote_state_from_amounts(
+                response.amount_paid,
+                response.amount_issued,
+            )),
         }
     }
 
@@ -169,13 +162,9 @@ pub(crate) fn quote_state_from_amounts(amount_paid: Amount, amount_issued: Amoun
 mod tests {
     use super::*;
 
-    fn custom_response(
-        amount_paid: Option<Amount>,
-        amount_issued: Option<Amount>,
-    ) -> MintQuoteResponse<String> {
+    fn custom_response(amount_paid: Amount, amount_issued: Amount) -> MintQuoteResponse<String> {
         MintQuoteResponse::Custom {
             method: PaymentMethod::Custom("custom".to_string()),
-            state: None,
             response: MintQuoteCustomResponse {
                 quote: "quote".to_string(),
                 request: "custom-request".to_string(),
@@ -193,38 +182,17 @@ mod tests {
     #[test]
     fn custom_state_is_derived_from_amount_counters() {
         assert_eq!(
-            custom_response(Some(Amount::ZERO), Some(Amount::ZERO)).state(),
+            custom_response(Amount::ZERO, Amount::ZERO).state(),
             Some(QuoteState::Unpaid)
         );
         assert_eq!(
-            custom_response(Some(Amount::from(100)), Some(Amount::ZERO)).state(),
+            custom_response(Amount::from(100), Amount::ZERO).state(),
             Some(QuoteState::Paid)
         );
         assert_eq!(
-            custom_response(Some(Amount::from(100)), Some(Amount::from(100))).state(),
+            custom_response(Amount::from(100), Amount::from(100)).state(),
             Some(QuoteState::Issued)
         );
-    }
-
-    #[test]
-    fn custom_state_falls_back_to_legacy_state_when_amounts_are_missing() {
-        let response = MintQuoteResponse::Custom {
-            method: PaymentMethod::Custom("custom".to_string()),
-            state: Some(QuoteState::Paid),
-            response: MintQuoteCustomResponse {
-                quote: "quote".to_string(),
-                request: "custom-request".to_string(),
-                amount: Some(Amount::from(100)),
-                amount_paid: None,
-                amount_issued: None,
-                unit: Some(CurrencyUnit::Sat),
-                expiry: None,
-                pubkey: None,
-                extra: serde_json::Value::Null,
-            },
-        };
-
-        assert_eq!(response.state(), Some(QuoteState::Paid));
     }
 
     #[test]

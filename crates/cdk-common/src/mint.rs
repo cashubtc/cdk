@@ -1097,8 +1097,8 @@ impl TryFrom<MintQuote> for MintQuoteCustomResponse<QuoteId> {
             expiry: Some(quote.expiry),
             pubkey: quote.pubkey,
             amount: quote.amount.map(Into::into),
-            amount_paid: Some(amount_paid),
-            amount_issued: Some(amount_issued),
+            amount_paid,
+            amount_issued,
             extra: quote.extra_json.unwrap_or_default(),
         })
     }
@@ -1169,11 +1169,9 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
             Ok(MintQuoteResponse::Bolt12(bolt12_response))
         } else {
             let method = quote.payment_method.clone();
-            let state = quote.state();
             let custom_response = MintQuoteCustomResponse::try_from(quote)?;
             Ok(MintQuoteResponse::Custom {
                 method,
-                state: Some(state),
                 response: custom_response,
             })
         }
@@ -1185,13 +1183,8 @@ impl From<MintQuoteResponse<QuoteId>> for MintQuoteResponse<String> {
         match response {
             MintQuoteResponse::Bolt11(response) => MintQuoteResponse::Bolt11(response.into()),
             MintQuoteResponse::Bolt12(response) => MintQuoteResponse::Bolt12(response.into()),
-            MintQuoteResponse::Custom {
+            MintQuoteResponse::Custom { method, response } => MintQuoteResponse::Custom {
                 method,
-                state,
-                response,
-            } => MintQuoteResponse::Custom {
-                method,
-                state,
                 response: response.into(),
             },
         }

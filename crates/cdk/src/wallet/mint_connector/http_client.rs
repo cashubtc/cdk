@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use cdk_common::{
     nut19, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, Method,
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteRequest,
-    MintQuoteResponse, MintQuoteState, ProtectedEndpoint, RoutePath,
+    MintQuoteResponse, ProtectedEndpoint, RoutePath,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -28,18 +28,6 @@ use crate::nuts::{
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 
 type Cache = (u64, HashSet<(nut19::Method, nut19::Path)>);
-
-fn take_custom_mint_quote_state(
-    response: &mut MintQuoteCustomResponse<String>,
-) -> Option<MintQuoteState> {
-    let serde_json::Value::Object(fields) = &mut response.extra else {
-        return None;
-    };
-
-    fields
-        .remove("state")
-        .and_then(|state| serde_json::from_value(state).ok())
-}
 
 /// Http Client
 #[derive(Debug, Clone)]
@@ -292,13 +280,10 @@ where
                 Ok(MintQuoteResponse::Bolt12(response))
             }
             MintQuoteRequest::Custom { request: req, .. } => {
-                let mut response: cdk_common::nut04::MintQuoteCustomResponse<String> =
+                let response: cdk_common::nut04::MintQuoteCustomResponse<String> =
                     self.transport.http_post(url, auth_token, req).await?;
-                let state =
-                    take_custom_mint_quote_state(&mut response).or(Some(MintQuoteState::Unpaid));
                 Ok(MintQuoteResponse::Custom {
                     method: request.method(),
-                    state,
                     response,
                 })
             }
@@ -356,15 +341,10 @@ where
                     .get_auth_token(Method::Get, RoutePath::MintQuote(method_name.clone()))
                     .await?;
 
-                let mut response: MintQuoteCustomResponse<String> =
+                let response: MintQuoteCustomResponse<String> =
                     self.transport.http_get(url, auth_token).await?;
-                let state = take_custom_mint_quote_state(&mut response);
 
-                Ok(MintQuoteResponse::Custom {
-                    method,
-                    state,
-                    response,
-                })
+                Ok(MintQuoteResponse::Custom { method, response })
             }
         }
     }
@@ -431,13 +411,9 @@ where
                     self.transport.http_post(url, auth_token, &request).await?;
                 Ok(responses
                     .into_iter()
-                    .map(|mut response| {
-                        let state = take_custom_mint_quote_state(&mut response);
-                        MintQuoteResponse::Custom {
-                            method: PaymentMethod::Custom(method_name.clone()),
-                            state,
-                            response,
-                        }
+                    .map(|response| MintQuoteResponse::Custom {
+                        method: PaymentMethod::Custom(method_name.clone()),
+                        response,
                     })
                     .collect())
             }
@@ -768,6 +744,7 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
+    use cdk_common::MintQuoteState;
     use serde::de::DeserializeOwned;
 
     use super::*;
@@ -858,8 +835,8 @@ mod tests {
             quote: "test-quote-id".to_string(),
             request: "paypal://pay?id=123".to_string(),
             amount: Some(cdk_common::Amount::from(1000)),
-            amount_paid: Some(cdk_common::Amount::ZERO),
-            amount_issued: Some(cdk_common::Amount::ZERO),
+            amount_paid: cdk_common::Amount::ZERO,
+            amount_issued: cdk_common::Amount::ZERO,
             unit: Some(cdk_common::CurrencyUnit::Sat),
             expiry: Some(9999999),
             pubkey: None,
@@ -946,12 +923,9 @@ mod tests {
 
         assert_eq!(response.state(), Some(MintQuoteState::Paid));
         match response {
-            MintQuoteResponse::Custom {
-                state, response, ..
-            } => {
-                assert_eq!(state, None);
-                assert_eq!(response.amount_paid, Some(cdk_common::Amount::from(1000)));
-                assert_eq!(response.amount_issued, Some(cdk_common::Amount::ZERO));
+            MintQuoteResponse::Custom { response, .. } => {
+                assert_eq!(response.amount_paid, cdk_common::Amount::from(1000));
+                assert_eq!(response.amount_issued, cdk_common::Amount::ZERO);
             }
             _ => panic!("expected custom response"),
         }

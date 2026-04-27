@@ -38,31 +38,11 @@ fn apply_mint_quote_response(quote: &mut MintQuote, response: &MintQuoteResponse
             quote.amount_issued = response.amount_issued;
             quote.update_state_from_amounts();
         }
-        MintQuoteResponse::Custom {
-            response, state, ..
-        } => match (response.amount_paid, response.amount_issued) {
-            (Some(amount_paid), Some(amount_issued)) => {
-                quote.amount_paid = amount_paid;
-                quote.amount_issued = amount_issued;
-                quote.update_state_from_amounts();
-            }
-            _ => {
-                if let Some(state) = state {
-                    quote.state = *state;
-                    match state {
-                        MintQuoteState::Paid => {
-                            quote.amount_paid = response.amount.unwrap_or_default();
-                        }
-                        MintQuoteState::Issued => {
-                            let amount = response.amount.unwrap_or_default();
-                            quote.amount_paid = amount;
-                            quote.amount_issued = amount;
-                        }
-                        MintQuoteState::Unpaid => (),
-                    }
-                }
-            }
-        },
+        MintQuoteResponse::Custom { response, .. } => {
+            quote.amount_paid = response.amount_paid;
+            quote.amount_issued = response.amount_issued;
+            quote.update_state_from_amounts();
+        }
     }
 }
 
