@@ -159,6 +159,15 @@ impl PaymentRequest {
         self.inner.mints.iter().map(|m| m.to_string()).collect()
     }
 
+    /// Get the list of preferred mint URLs
+    pub fn preferred_mints(&self) -> Vec<String> {
+        self.inner
+            .preferred_mints
+            .iter()
+            .map(|m| m.to_string())
+            .collect()
+    }
+
     /// Get the description
     pub fn description(&self) -> Option<String> {
         self.inner.description.clone()
@@ -200,6 +209,8 @@ pub struct CreateRequestParams {
     pub nostr_relays: Option<Vec<String>>,
     /// Optional list of mint URLs the receiver trusts. If not provided, the wallet's current mints for the requested unit will be used.
     pub mints: Option<Vec<String>>,
+    /// Optional list of preferred mint URLs. Mints in this list are preferred over the ones in `mints`. Mutually exclusive with `mints`.
+    pub preferred_mints: Option<Vec<String>>,
 }
 
 impl Default for CreateRequestParams {
@@ -216,6 +227,7 @@ impl Default for CreateRequestParams {
             http_url: None,
             nostr_relays: None,
             mints: None,
+            preferred_mints: None,
         }
     }
 }
@@ -234,6 +246,7 @@ impl From<CreateRequestParams> for cdk::wallet::payment_request::CreateRequestPa
             http_url: params.http_url,
             nostr_relays: params.nostr_relays,
             mints: params.mints,
+            preferred_mints: params.preferred_mints,
         }
     }
 }
@@ -252,6 +265,7 @@ impl From<cdk::wallet::payment_request::CreateRequestParams> for CreateRequestPa
             http_url: params.http_url,
             nostr_relays: params.nostr_relays,
             mints: params.mints,
+            preferred_mints: params.preferred_mints,
         }
     }
 }
