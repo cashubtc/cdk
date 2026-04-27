@@ -8,8 +8,8 @@ DROP INDEX IF EXISTS unique_request_lookup_id_melt;
 -- Create a non-unique index for lookup performance
 CREATE INDEX IF NOT EXISTS idx_melt_quote_request_lookup_id ON melt_quote(request_lookup_id);
 
--- Create a partial unique index to enforce that only one quote per lookup_id can be PENDING or PAID
+-- Create a partial unique index to enforce that only one quote per lookup_id/kind can be PENDING or PAID
 -- This provides database-level enforcement of the constraint
 CREATE UNIQUE INDEX IF NOT EXISTS unique_pending_paid_lookup_id
-ON melt_quote(request_lookup_id)
+ON melt_quote(request_lookup_id, request_lookup_id_kind)
 WHERE state IN ('PENDING', 'PAID');
