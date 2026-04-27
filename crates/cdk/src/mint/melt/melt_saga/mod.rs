@@ -576,7 +576,7 @@ impl MeltSaga<SetupComplete> {
     pub async fn make_payment(
         self,
         settlement: SettlementDecision,
-    ) -> Result<MeltSaga<PaymentConfirmed>, Error> {
+    ) -> Result<PaymentOutcome, Error> {
         let payment_result = match settlement {
             SettlementDecision::Internal { amount } => self.handle_internal_payment(amount),
             SettlementDecision::RequiresExternalPayment => {
@@ -597,21 +597,21 @@ impl MeltSaga<SetupComplete> {
                             "Lightning payment for quote {} unknown.",
                             self.state_data.quote.id
                         );
-                        return Err(Error::PendingQuote);
+                        return Ok(PaymentOutcome::Pending);
                     }
                     MeltQuoteState::Pending => {
                         tracing::warn!(
                             "LN payment pending, proofs remain pending for quote: {}",
                             self.state_data.quote.id
                         );
-                        return Err(Error::PendingQuote);
+                        return Ok(PaymentOutcome::Pending);
                     }
                 }
             }
         };
 
         // Transition to PaymentConfirmed state
-        Ok(MeltSaga {
+        Ok(PaymentOutcome::Confirmed(Box::new(MeltSaga {
             mint: self.mint,
             db: self.db,
             pubsub: self.pubsub,
@@ -623,7 +623,7 @@ impl MeltSaga<SetupComplete> {
                 quote: self.state_data.quote,
                 payment_result,
             },
-        })
+        })))
     }
 
     fn handle_internal_payment(&self, amount: Amount<CurrencyUnit>) -> MakePaymentResponse {
@@ -934,6 +934,21 @@ impl MeltSaga<PaymentConfirmed> {
 
         Ok(response)
     }
+}
+
+/// Outcome of attempting to make a melt payment.
+///
+/// Returned from [`MeltSaga::make_payment`] to distinguish between a payment
+/// that completed (and is ready to finalize) and one that the backend reports
+/// as still in flight (and must be resolved asynchronously via the pending
+/// melt wait loop or a payment event).
+pub enum PaymentOutcome {
+    /// Payment was confirmed by the backend; the saga is ready to be finalized.
+    Confirmed(Box<MeltSaga<PaymentConfirmed>>),
+    /// Payment is still pending at the backend. Inputs and outputs remain
+    /// reserved and the quote is left in `Pending`; finalization or rollback
+    /// will happen later via a payment event or a status-check reconciliation.
+    Pending,
 }
 
 impl<S> MeltSaga<S> {

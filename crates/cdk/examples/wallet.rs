@@ -28,10 +28,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Recover from incomplete operations (required after wallet creation)
     let recovery: RecoveryReport = wallet.recover_incomplete_sagas().await?;
-    println!(
-        "Recovered {} operations, {} compensated, {} skipped, {} failed",
-        recovery.recovered, recovery.compensated, recovery.skipped, recovery.failed
-    );
+    if !recovery.is_empty() {
+        println!(
+            "Recovered {} operations, {} compensated, {} skipped, {} failed",
+            recovery.recovered, recovery.compensated, recovery.skipped, recovery.failed
+        );
+    }
 
     // Check and mint pending mint quotes (optional, requires network)
     let minted = wallet.mint_unissued_quotes().await?;
