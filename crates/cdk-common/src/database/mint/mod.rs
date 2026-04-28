@@ -5,7 +5,7 @@ use std::ops::{Deref, DerefMut};
 
 use async_trait::async_trait;
 use cashu::quote_id::QuoteId;
-use cashu::Amount;
+use cashu::{Amount, PaymentMethod};
 
 use super::{DbTransactionFinalizer, Error};
 use crate::mint::{
@@ -363,6 +363,7 @@ pub trait QuotesDatabase {
     /// Get Mint Quotes By Pubkey
     async fn get_mint_quotes_by_pubkey(
         &self,
+        method: PaymentMethod,
         pubkeys: &[PublicKey],
     ) -> Result<Vec<MintMintQuote>, Self::Err>;
     /// Get [`mint::MeltQuote`]

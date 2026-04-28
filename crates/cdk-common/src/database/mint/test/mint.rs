@@ -1071,6 +1071,7 @@ where
 
     let secret_key = SecretKey::generate();
     let pubkey = secret_key.public_key();
+    let method = cashu::PaymentMethod::Known(KnownMethod::Bolt11);
 
     let mint_quote = MintQuote::new(
         None,
@@ -1082,7 +1083,7 @@ where
         Some(pubkey),
         Amount::new(100, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
-        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        method.clone(),
         0,
         vec![],
         vec![],
@@ -1094,7 +1095,10 @@ where
     tx.add_mint_quote(mint_quote.clone()).await.unwrap();
     tx.commit().await.unwrap();
 
-    let retrieved = db.get_mint_quotes_by_pubkey(&[pubkey]).await.unwrap();
+    let retrieved = db
+        .get_mint_quotes_by_pubkey(method.clone(), &[pubkey])
+        .await
+        .unwrap();
     assert!(!retrieved.is_empty());
     let retrieved = retrieved.first().unwrap();
     assert_eq!(retrieved.id, mint_quote.id);

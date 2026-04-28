@@ -424,6 +424,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn get_mint_quote_by_pubkey(
         &self,
+        method: PaymentMethod,
         pubkeys: Vec<PublicKey>,
         signatures: Vec<Signature>,
     ) -> Result<Vec<MintQuoteResponse<QuoteId>>, Error> {
@@ -449,7 +450,10 @@ impl Mint {
         }
 
         let result: Result<Vec<MintQuoteResponse<QuoteId>>, Error> = async {
-            let quotes = self.localstore.get_mint_quotes_by_pubkey(&pubkeys).await?;
+            let quotes = self
+                .localstore
+                .get_mint_quotes_by_pubkey(method, &pubkeys)
+                .await?;
 
             quotes
                 .iter()

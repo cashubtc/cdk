@@ -1201,6 +1201,7 @@ where
 
     async fn get_mint_quotes_by_pubkey(
         &self,
+        method: PaymentMethod,
         pubkeys: &[PublicKey],
     ) -> Result<Vec<MintQuote>, Self::Err> {
         if pubkeys.is_empty() {
@@ -1227,9 +1228,11 @@ where
             FROM
                 mint_quote
             WHERE pubkey IN (:pubkeys)
+            AND payment_method = :method
             "#,
         )?
         .bind_vec("pubkeys", pubkeys.iter().map(|pk| pk.to_hex()).collect())?
+        .bind("method", method.as_str())
         .fetch_all(&*conn)
         .await?
         .into_iter()
