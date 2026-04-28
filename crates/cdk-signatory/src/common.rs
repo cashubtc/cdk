@@ -34,6 +34,14 @@ pub async fn init_keysets(
             keysets.sort_by_key(|b| std::cmp::Reverse(b.derivation_path_index));
 
             if let Some(highest_index_keyset) = keysets.first() {
+                if highest_index_keyset.is_expired() {
+                    tracing::info!(
+                        "Highest index keyset for unit {} has expired, skipping reactivation",
+                        unit
+                    );
+                    continue;
+                }
+
                 // Check if it matches our criteria
                 if highest_index_keyset.input_fee_ppk == *input_fee_ppk
                     && highest_index_keyset.amounts == *amounts

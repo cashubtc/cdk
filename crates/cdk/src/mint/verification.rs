@@ -76,6 +76,13 @@ impl Mint {
                         );
                         return Err(Error::InactiveKeyset);
                     }
+                    if keyset.is_expired() {
+                        tracing::debug!(
+                            "Transaction attempted with expired keyset in outputs: {}.",
+                            id
+                        );
+                        return Err(Error::ExpiredKeyset);
+                    }
                     keyset_units.insert(keyset.unit);
                 }
                 None => {
@@ -114,6 +121,13 @@ impl Mint {
         for id in &inputs_keyset_ids {
             match self.get_keyset_info(id) {
                 Some(keyset) => {
+                    if keyset.is_expired() {
+                        tracing::debug!(
+                            "Transaction attempted with expired keyset in inputs: {}.",
+                            id
+                        );
+                        return Err(Error::ExpiredKeyset);
+                    }
                     keyset_units.insert(keyset.unit);
                 }
                 None => {

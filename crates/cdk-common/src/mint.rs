@@ -1019,6 +1019,13 @@ pub struct MintKeySetInfo {
     pub issuer_version: Option<IssuerVersion>,
 }
 
+impl MintKeySetInfo {
+    /// Returns true if `final_expiry` is set and strictly in the past.
+    pub fn is_expired(&self) -> bool {
+        self.final_expiry.is_some_and(|expiry| expiry < unix_time())
+    }
+}
+
 /// Default fee
 pub fn default_fee() -> u64 {
     0
@@ -1375,5 +1382,52 @@ mod tests {
 
         assert_eq!(response.quote, melt_quote.id);
         assert_eq!(response.request, None);
+    }
+
+    fn dummy_mint_keyset_info(final_expiry: Option<u64>) -> MintKeySetInfo {
+        use std::str::FromStr;
+        MintKeySetInfo {
+            id: Id::from_str("009a1f293253e41e").unwrap(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            valid_from: 0,
+            derivation_path: "m/0'/0'/0'".parse().unwrap(),
+            derivation_path_index: Some(0),
+            amounts: vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
+            input_fee_ppk: 0,
+            final_expiry,
+            issuer_version: None,
+        }
+    }
+
+    #[test]
+    fn test_is_expired_none() {
+        let info = dummy_mint_keyset_info(None);
+        assert!(!info.is_expired());
+    }
+
+    #[test]
+    fn test_is_expired_far_future() {
+        let info = dummy_mint_keyset_info(Some(unix_time() + 1_000_000));
+        assert!(!info.is_expired());
+    }
+
+    #[test]
+    fn test_is_expired_exactly_now_is_not_expired() {
+        // strict less-than: expiry == now is not yet expired
+        let info = dummy_mint_keyset_info(Some(unix_time()));
+        assert!(!info.is_expired());
+    }
+
+    #[test]
+    fn test_is_expired_one_second_ago() {
+        let info = dummy_mint_keyset_info(Some(unix_time() - 1));
+        assert!(info.is_expired());
+    }
+
+    #[test]
+    fn test_is_expired_zero() {
+        let info = dummy_mint_keyset_info(Some(0));
+        assert!(info.is_expired());
     }
 }
