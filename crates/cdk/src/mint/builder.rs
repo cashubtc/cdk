@@ -540,6 +540,10 @@ impl MintBuilder {
             let mut rotate = false;
 
             if let Some(keyset) = keyset {
+                if keyset.is_expired() {
+                    tracing::warn!("Active keyset for unit {} has expired; not rotating", unit);
+                    continue;
+                }
                 // Check if fee matches
                 if keyset.input_fee_ppk != *fee {
                     tracing::info!(

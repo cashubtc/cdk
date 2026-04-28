@@ -89,6 +89,14 @@ pub struct SignatoryKeySet {
     pub version: u32,
 }
 
+impl SignatoryKeySet {
+    /// Returns true if `final_expiry` is set and strictly in the past.
+    pub fn is_expired(&self) -> bool {
+        self.final_expiry
+            .is_some_and(|expiry| expiry < cdk_common::util::unix_time())
+    }
+}
+
 impl From<&SignatoryKeySet> for KeySet {
     fn from(val: &SignatoryKeySet) -> Self {
         val.to_owned().into()
@@ -171,4 +179,61 @@ pub trait Signatory {
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::str::FromStr;
+
+    use cdk_common::nuts::nut01::Keys;
+    use cdk_common::util::unix_time;
+    use cdk_common::{CurrencyUnit, Id};
+
+    use super::*;
+
+    fn dummy_signatory_keyset(final_expiry: Option<u64>) -> SignatoryKeySet {
+        SignatoryKeySet {
+            id: Id::from_str("009a1f293253e41e").unwrap(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            keys: Keys::new(BTreeMap::new()),
+            amounts: vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
+            input_fee_ppk: 0,
+            final_expiry,
+            issuer_version: None,
+            version: 0,
+        }
+    }
+
+    #[test]
+    fn test_is_expired_none() {
+        let ks = dummy_signatory_keyset(None);
+        assert!(!ks.is_expired());
+    }
+
+    #[test]
+    fn test_is_expired_far_future() {
+        let ks = dummy_signatory_keyset(Some(unix_time() + 1_000_000));
+        assert!(!ks.is_expired());
+    }
+
+    #[test]
+    fn test_is_expired_exactly_now_is_not_expired() {
+        // strict less-than: expiry == now is not yet expired
+        let ks = dummy_signatory_keyset(Some(unix_time()));
+        assert!(!ks.is_expired());
+    }
+
+    #[test]
+    fn test_is_expired_one_second_ago() {
+        let ks = dummy_signatory_keyset(Some(unix_time() - 1));
+        assert!(ks.is_expired());
+    }
+
+    #[test]
+    fn test_is_expired_zero() {
+        let ks = dummy_signatory_keyset(Some(0));
+        assert!(ks.is_expired());
+    }
 }

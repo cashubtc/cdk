@@ -138,6 +138,9 @@ impl Signatory for DbSignatory {
                 if !info.active {
                     return Err(Error::InactiveKeyset);
                 }
+                if info.is_expired() {
+                    return Err(Error::ExpiredKeyset);
+                }
 
                 let key_pair = key.keys.get(&amount).ok_or(Error::UnknownKeySet)?;
                 let c = sign_message(&key_pair.secret_key, &blinded_secret)?;
@@ -250,10 +253,52 @@ mod test {
 
     use bitcoin::key::Secp256k1;
     use bitcoin::Network;
+    use cdk_common::nuts::SecretKey;
     use cdk_common::util::hex;
+    use cdk_common::util::unix_time;
     use cdk_common::{Amount, MintKeySet, PublicKey};
 
     use super::*;
+
+    #[tokio::test]
+    async fn blind_sign_rejects_expired_keyset() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = DbSignatory::new(
+            store,
+            b"test-seed-for-unit-tests",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let expired_keyset = signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: Some(unix_time() - 1),
+            })
+            .await
+            .expect("rotate_keyset");
+
+        // Expiry check runs before crypto, so an unsigned blinded secret is fine here.
+        let blinded_secret = SecretKey::generate().public_key();
+        let msg = BlindedMessage::new(Amount::from(1), expired_keyset.id, blinded_secret);
+
+        let result = signatory.blind_sign(vec![msg]).await;
+
+        assert!(
+            matches!(result, Err(Error::ExpiredKeyset)),
+            "expected ExpiredKeyset error, got: {:?}",
+            result
+        );
+    }
 
     #[test]
     fn mint_mod_generate_keyset_from_seed() {
