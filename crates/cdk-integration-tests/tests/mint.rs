@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use bip39::Mnemonic;
 use cashu::nut00::KnownMethod;
+use cashu::util::unix_time;
 use cashu::PaymentMethod;
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::CurrencyUnit;
@@ -397,4 +398,103 @@ async fn test_rotate_keyset_with_expiry() {
     // Exactly one should be active
     let active_count = keysets.keysets.iter().filter(|k| k.active).count();
     assert_eq!(active_count, 1, "Exactly one keyset should be active");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_builder_does_not_replace_all_expired_keysets() {
+    use cdk_common::database::mint::KeysDatabase;
+
+    let mnemonic = Mnemonic::generate(12).unwrap();
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 1.into(),
+        percent_fee_reserve: 1.0,
+    };
+
+    let database = memory::empty().await.expect("valid db instance");
+    let localstore = Arc::new(database);
+
+    let fake_wallet1 = FakeWallet::new(
+        fee_reserve.clone(),
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
+    let mut builder1 = MintBuilder::new(localstore.clone());
+    builder1 = builder1
+        .with_name("test mint".to_string())
+        .with_description("test mint".to_string());
+    builder1
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 5_000),
+            Arc::new(fake_wallet1),
+        )
+        .await
+        .unwrap();
+    let mint = builder1
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await
+        .unwrap();
+    mint.set_quote_ttl(QuoteTTL::new(10000, 10000))
+        .await
+        .unwrap();
+
+    assert_eq!(mint.keysets().keysets.len(), 1);
+
+    let future_expiry = unix_time() + 1_000_000;
+    let new_keyset = mint
+        .rotate_keyset(
+            CurrencyUnit::Sat,
+            cdk_integration_tests::standard_keyset_amounts(32),
+            0,
+            true,
+            Some(future_expiry),
+        )
+        .await
+        .unwrap();
+
+    let count_before_rebuild = mint.keysets().keysets.len();
+    assert_eq!(count_before_rebuild, 2);
+
+    // Mutate final_expiry to be in the past via localstore upsert.
+    drop(mint);
+    {
+        let mut info = KeysDatabase::get_keyset_info(&*localstore, &new_keyset.id)
+            .await
+            .unwrap()
+            .expect("rotated keyset should be present in localstore");
+        info.final_expiry = Some(unix_time().saturating_sub(1));
+        let mut tx = KeysDatabase::begin_transaction(&*localstore).await.unwrap();
+        tx.add_keyset_info(info).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    let fake_wallet2 = FakeWallet::new(
+        fee_reserve,
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
+    let mut builder2 = MintBuilder::new(localstore.clone());
+    builder2 = builder2
+        .with_name("test mint".to_string())
+        .with_description("test mint".to_string());
+    builder2
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 5_000),
+            Arc::new(fake_wallet2),
+        )
+        .await
+        .unwrap();
+    let mint2 = builder2
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await
+        .unwrap();
+
+    assert_eq!(mint2.keysets().keysets.len(), count_before_rebuild);
 }
