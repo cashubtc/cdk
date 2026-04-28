@@ -59,7 +59,7 @@ impl MintInput {
 
                 let unique_ids: std::collections::HashSet<_> = batch.quotes.iter().collect();
                 if unique_ids.len() != batch.quotes.len() {
-                    return Err(Error::DuplicateInputs);
+                    return Err(Error::DuplicateQuoteIds);
                 }
 
                 if let Some(ref amounts) = batch.quote_amounts {
@@ -596,7 +596,7 @@ impl Mint {
 
             let unique_ids: std::collections::HashSet<_> = quote_ids.iter().collect();
             if unique_ids.len() != quote_ids.len() {
-                return Err(Error::DuplicateInputs);
+                return Err(Error::DuplicateQuoteIds);
             }
 
             let mut responses = Vec::with_capacity(quote_ids.len());
@@ -666,7 +666,7 @@ impl Mint {
                 if let Some(max_batch_size) = settings.max_batch_size {
                     let max = usize::try_from(max_batch_size).unwrap_or(usize::MAX);
                     if batch.quotes.len() > max {
-                        return Err(Error::MaxInputsExceeded {
+                        return Err(Error::BatchSizeExceeded {
                             actual: batch.quotes.len(),
                             max,
                         });
@@ -1337,7 +1337,7 @@ mod batch_mint_tests {
             .await;
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::DuplicateInputs));
+        assert!(matches!(result.unwrap_err(), Error::DuplicateQuoteIds));
     }
 
     #[tokio::test]
@@ -1605,7 +1605,7 @@ mod batch_mint_tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            Error::MaxInputsExceeded { actual: 2, max: 1 }
+            Error::BatchSizeExceeded { actual: 2, max: 1 }
         ));
     }
 

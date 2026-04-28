@@ -232,6 +232,17 @@ pub enum Error {
         /// Maximum allowed outputs
         max: usize,
     },
+    /// Duplicate quote IDs provided in a batch request (NUT-29)
+    #[error("Duplicate quote IDs")]
+    DuplicateQuoteIds,
+    /// Maximum batch size exceeded (NUT-29)
+    #[error("Maximum batch size exceeded: {actual} provided, max {max}")]
+    BatchSizeExceeded {
+        /// Actual batch size provided
+        actual: usize,
+        /// Maximum allowed batch size
+        max: usize,
+    },
     /// Proof content too large (secret or witness exceeds max length)
     #[error("Proof content too large: {actual} bytes, max {max}")]
     ProofContentTooLarge {
@@ -577,6 +588,8 @@ impl Error {
             | Self::TransactionUnbalanced(_, _, _)
             | Self::DuplicateInputs
             | Self::DuplicateOutputs
+            | Self::DuplicateQuoteIds
+            | Self::BatchSizeExceeded { .. }
             | Self::MultipleUnits
             | Self::UnitMismatch
             | Self::SigAllUsedInMelt
@@ -1006,6 +1019,14 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::MaxOutputsExceeded,
                 detail: err.to_string()
             },
+            Error::DuplicateQuoteIds => ErrorResponse {
+                code: ErrorCode::DuplicateQuoteIds,
+                detail: err.to_string(),
+            },
+            Error::BatchSizeExceeded { .. } => ErrorResponse {
+                code: ErrorCode::BatchSizeExceeded,
+                detail: err.to_string(),
+            },
             // Fallback for any remaining errors - use Unknown(99999) instead of TokenNotVerified
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(50000),
@@ -1057,6 +1078,8 @@ impl From<ErrorResponse> for Error {
             }
             ErrorCode::DuplicateInputs => Self::DuplicateInputs,
             ErrorCode::DuplicateOutputs => Self::DuplicateOutputs,
+            ErrorCode::DuplicateQuoteIds => Self::DuplicateQuoteIds,
+            ErrorCode::BatchSizeExceeded => Self::BatchSizeExceeded { actual: 0, max: 0 },
             ErrorCode::MultipleUnits => Self::MultipleUnits,
             ErrorCode::UnitMismatch => Self::UnitMismatch,
             ErrorCode::AmountlessInvoiceNotSupported => Self::AmountLessNotAllowed,
@@ -1127,6 +1150,10 @@ pub enum ErrorCode {
     MaxInputsExceeded,
     /// The max number of outputs is exceeded
     MaxOutputsExceeded,
+    /// Duplicate quote IDs provided in a batch (11016)
+    DuplicateQuoteIds,
+    /// Batch size exceeds mint limit (11017)
+    BatchSizeExceeded,
     // 12xxx - Keyset errors
     /// Keyset is not known (12001)
     KeysetNotFound,
@@ -1198,6 +1225,8 @@ impl ErrorCode {
             11013 => Self::UnsupportedUnit,
             11014 => Self::MaxInputsExceeded,
             11015 => Self::MaxOutputsExceeded,
+            11016 => Self::DuplicateQuoteIds,
+            11017 => Self::BatchSizeExceeded,
             // 12xxx - Keyset errors
             12001 => Self::KeysetNotFound,
             12002 => Self::KeysetInactive,
@@ -1244,6 +1273,8 @@ impl ErrorCode {
             Self::UnsupportedUnit => 11013,
             Self::MaxInputsExceeded => 11014,
             Self::MaxOutputsExceeded => 11015,
+            Self::DuplicateQuoteIds => 11016,
+            Self::BatchSizeExceeded => 11017,
             // 12xxx - Keyset errors
             Self::KeysetNotFound => 12001,
             Self::KeysetInactive => 12002,
