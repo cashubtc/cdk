@@ -171,102 +171,107 @@ impl Mint {
         melt_request: &MeltQuoteBolt11Request,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("get_melt_bolt11_quote");
-        let MeltQuoteBolt11Request {
-            request,
-            unit,
-            options,
-            ..
-        } = melt_request;
+        let metrics = super::MintMetricGuard::new("get_melt_bolt11_quote");
 
-        let ln = self
-            .payment_processors
-            .get(&PaymentProcessorKey::new(
-                unit.clone(),
-                PaymentMethod::Known(KnownMethod::Bolt11),
-            ))
-            .ok_or_else(|| {
-                tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
+        let result = async {
+            let MeltQuoteBolt11Request {
+                request,
+                unit,
+                options,
+                ..
+            } = melt_request;
 
-                Error::UnsupportedUnit
-            })?;
+            let ln = self
+                .payment_processors
+                .get(&PaymentProcessorKey::new(
+                    unit.clone(),
+                    PaymentMethod::Known(KnownMethod::Bolt11),
+                ))
+                .ok_or_else(|| {
+                    tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
 
-        let bolt11 = Bolt11OutgoingPaymentOptions {
-            bolt11: melt_request.request.clone(),
-            max_fee_amount: None,
-            timeout_secs: None,
-            melt_options: melt_request.options,
-        };
+                    Error::UnsupportedUnit
+                })?;
 
-        let payment_quote = ln
-            .get_payment_quote(
-                &melt_request.unit,
-                OutgoingPaymentOptions::Bolt11(Box::new(bolt11)),
-            )
-            .await
-            .map_err(|err| {
-                tracing::error!(
-                    "Could not get payment quote for mint quote, {} bolt11, {}",
-                    unit,
+            let bolt11 = Bolt11OutgoingPaymentOptions {
+                bolt11: melt_request.request.clone(),
+                max_fee_amount: None,
+                timeout_secs: None,
+                melt_options: melt_request.options,
+            };
+
+            let payment_quote = ln
+                .get_payment_quote(
+                    &melt_request.unit,
+                    OutgoingPaymentOptions::Bolt11(Box::new(bolt11)),
+                )
+                .await
+                .map_err(|err| {
+                    tracing::error!(
+                        "Could not get payment quote for mint quote, {} bolt11, {}",
+                        unit,
+                        err
+                    );
+
                     err
-                );
+                })?;
 
-                #[cfg(feature = "prometheus")]
-                {
-                    METRICS.dec_in_flight_requests("get_melt_bolt11_quote");
-                    METRICS.record_mint_operation("get_melt_bolt11_quote", false);
-                    METRICS.record_error();
-                }
-                err
-            })?;
+            if payment_quote.unit() != unit {
+                return Err(Error::UnitMismatch);
+            }
 
-        if payment_quote.unit() != unit {
-            return Err(Error::UnitMismatch);
+            // Validate using processor quote amount for currency conversion
+            self.check_melt_request_acceptable(
+                payment_quote.amount.clone(),
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                request.to_string(),
+                *options,
+            )
+            .await?;
+
+            // Extract values for quote creation
+            let quote_amount = payment_quote.amount;
+            let quote_fee = payment_quote.fee;
+
+            let melt_ttl = self.quote_ttl().await?.melt_ttl;
+
+            let quote = MeltQuote::new(
+                None,
+                MeltPaymentRequest::Bolt11 {
+                    bolt11: request.clone(),
+                },
+                unit.clone(),
+                quote_amount.clone(),
+                quote_fee,
+                unix_time() + melt_ttl,
+                payment_quote.request_lookup_id.clone(),
+                *options,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+            );
+
+            tracing::debug!(
+                "New {} melt quote {} for {} {} with request id {:?}",
+                quote.payment_method,
+                quote.id,
+                quote_amount,
+                unit,
+                payment_quote.request_lookup_id
+            );
+
+            let mut tx = self.localstore.begin_transaction().await?;
+            tx.add_melt_quote(quote.clone()).await?;
+            tx.commit().await?;
+
+            Ok(quote.into())
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            metrics.record(result.is_ok());
         }
 
-        // Validate using processor quote amount for currency conversion
-        self.check_melt_request_acceptable(
-            payment_quote.amount.clone(),
-            PaymentMethod::Known(KnownMethod::Bolt11),
-            request.to_string(),
-            *options,
-        )
-        .await?;
-
-        // Extract values for quote creation
-        let quote_amount = payment_quote.amount;
-        let quote_fee = payment_quote.fee;
-
-        let melt_ttl = self.quote_ttl().await?.melt_ttl;
-
-        let quote = MeltQuote::new(
-            None,
-            MeltPaymentRequest::Bolt11 {
-                bolt11: request.clone(),
-            },
-            unit.clone(),
-            quote_amount.clone(),
-            quote_fee,
-            unix_time() + melt_ttl,
-            payment_quote.request_lookup_id.clone(),
-            *options,
-            PaymentMethod::Known(KnownMethod::Bolt11),
-        );
-
-        tracing::debug!(
-            "New {} melt quote {} for {} {} with request id {:?}",
-            quote.payment_method,
-            quote.id,
-            quote_amount,
-            unit,
-            payment_quote.request_lookup_id
-        );
-
-        let mut tx = self.localstore.begin_transaction().await?;
-        tx.add_melt_quote(quote.clone()).await?;
-        tx.commit().await?;
-
-        Ok(quote.into())
+        result
     }
 
     /// Implementation of get_melt_bolt12_quote
@@ -275,102 +280,109 @@ impl Mint {
         &self,
         melt_request: &MeltQuoteBolt12Request,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
-        let MeltQuoteBolt12Request {
-            request,
-            unit,
-            options,
-        } = melt_request;
+        #[cfg(feature = "prometheus")]
+        let metrics = super::MintMetricGuard::new("get_melt_bolt12_quote");
 
-        let ln = self
-            .payment_processors
-            .get(&PaymentProcessorKey::new(
-                unit.clone(),
-                PaymentMethod::Known(KnownMethod::Bolt12),
-            ))
-            .ok_or_else(|| {
-                tracing::info!("Could not get ln backend for {}, bolt12 ", unit);
+        let result = async {
+            let MeltQuoteBolt12Request {
+                request,
+                unit,
+                options,
+            } = melt_request;
 
-                Error::UnsupportedUnit
-            })?;
+            let ln = self
+                .payment_processors
+                .get(&PaymentProcessorKey::new(
+                    unit.clone(),
+                    PaymentMethod::Known(KnownMethod::Bolt12),
+                ))
+                .ok_or_else(|| {
+                    tracing::info!("Could not get ln backend for {}, bolt12 ", unit);
 
-        let offer = Offer::from_str(&melt_request.request).map_err(|_| Error::Bolt12parse)?;
+                    Error::UnsupportedUnit
+                })?;
 
-        let outgoing_payment_options = Bolt12OutgoingPaymentOptions {
-            offer: offer.clone(),
-            max_fee_amount: None,
-            timeout_secs: None,
-            melt_options: *options,
-        };
+            let offer = Offer::from_str(&melt_request.request).map_err(|_| Error::Bolt12parse)?;
 
-        let payment_quote = ln
-            .get_payment_quote(
-                &melt_request.unit,
-                OutgoingPaymentOptions::Bolt12(Box::new(outgoing_payment_options)),
-            )
-            .await
-            .map_err(|err| {
-                tracing::error!(
-                    "Could not get payment quote for mint quote, {} bolt12, {}",
-                    unit,
+            let outgoing_payment_options = Bolt12OutgoingPaymentOptions {
+                offer: offer.clone(),
+                max_fee_amount: None,
+                timeout_secs: None,
+                melt_options: *options,
+            };
+
+            let payment_quote = ln
+                .get_payment_quote(
+                    &melt_request.unit,
+                    OutgoingPaymentOptions::Bolt12(Box::new(outgoing_payment_options)),
+                )
+                .await
+                .map_err(|err| {
+                    tracing::error!(
+                        "Could not get payment quote for mint quote, {} bolt12, {}",
+                        unit,
+                        err
+                    );
+
                     err
-                );
+                })?;
 
-                err
-            })?;
+            if payment_quote.unit() != unit {
+                return Err(Error::UnitMismatch);
+            }
 
-        if payment_quote.unit() != unit {
-            return Err(Error::UnitMismatch);
+            // Validate using processor quote amount for currency conversion
+            self.check_melt_request_acceptable(
+                payment_quote.amount.clone(),
+                PaymentMethod::Known(KnownMethod::Bolt12),
+                request.clone(),
+                *options,
+            )
+            .await?;
+
+            // Extract values for quote creation
+            let quote_amount = payment_quote.amount;
+            let quote_fee = payment_quote.fee;
+
+            let payment_request = MeltPaymentRequest::Bolt12 {
+                offer: Box::new(offer),
+            };
+
+            let quote = MeltQuote::new(
+                None,
+                payment_request,
+                unit.clone(),
+                quote_amount.clone(),
+                quote_fee,
+                unix_time() + self.quote_ttl().await?.melt_ttl,
+                payment_quote.request_lookup_id.clone(),
+                *options,
+                PaymentMethod::Known(KnownMethod::Bolt12),
+            );
+
+            tracing::debug!(
+                "New {} melt quote {} for {} {} with request id {:?}",
+                quote.payment_method,
+                quote.id,
+                quote_amount,
+                unit,
+                payment_quote.request_lookup_id
+            );
+
+            let mut tx = self.localstore.begin_transaction().await?;
+            tx.add_melt_quote(quote.clone()).await?;
+            tx.commit().await?;
+
+            Ok(quote.into())
         }
-
-        // Validate using processor quote amount for currency conversion
-        self.check_melt_request_acceptable(
-            payment_quote.amount.clone(),
-            PaymentMethod::Known(KnownMethod::Bolt12),
-            request.clone(),
-            *options,
-        )
-        .await?;
-
-        // Extract values for quote creation
-        let quote_amount = payment_quote.amount;
-        let quote_fee = payment_quote.fee;
-
-        let payment_request = MeltPaymentRequest::Bolt12 {
-            offer: Box::new(offer),
-        };
-
-        let quote = MeltQuote::new(
-            None,
-            payment_request,
-            unit.clone(),
-            quote_amount.clone(),
-            quote_fee,
-            unix_time() + self.quote_ttl().await?.melt_ttl,
-            payment_quote.request_lookup_id.clone(),
-            *options,
-            PaymentMethod::Known(KnownMethod::Bolt12),
-        );
-
-        tracing::debug!(
-            "New {} melt quote {} for {} {} with request id {:?}",
-            quote.payment_method,
-            quote.id,
-            quote_amount,
-            unit,
-            payment_quote.request_lookup_id
-        );
-
-        let mut tx = self.localstore.begin_transaction().await?;
-        tx.add_melt_quote(quote.clone()).await?;
-        tx.commit().await?;
+        .await;
 
         #[cfg(feature = "prometheus")]
         {
-            METRICS.dec_in_flight_requests("get_melt_bolt11_quote");
-            METRICS.record_mint_operation("get_melt_bolt11_quote", true);
+            metrics.record(result.is_ok());
         }
 
-        Ok(quote.into())
+        result
     }
 
     /// Implementation of get_melt_custom_quote
