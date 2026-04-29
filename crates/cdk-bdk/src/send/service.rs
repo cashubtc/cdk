@@ -14,6 +14,31 @@ use crate::types::PaymentTier;
 use crate::CdkBdk;
 
 impl CdkBdk {
+    async fn fail_send_intents(&self, intents: &[SendIntent<intent_state::Pending>], reason: &str) {
+        for intent in intents {
+            if let Ok(quote_id) = QuoteId::from_str(&intent.quote_id) {
+                if let Err(err) = self.payment_sender.send(Event::PaymentFailed {
+                    quote_id,
+                    reason: reason.to_string(),
+                }) {
+                    tracing::error!(
+                        "Could not send payment failed event for intent {}: {}",
+                        intent.intent_id,
+                        err
+                    );
+                }
+            }
+
+            if let Err(err) = self.storage.delete_send_intent(&intent.intent_id).await {
+                tracing::error!(
+                    "Failed to delete send intent {} after terminal batch failure: {}",
+                    intent.intent_id,
+                    err
+                );
+            }
+        }
+    }
+
     pub(crate) async fn finalize_send_intent_and_emit(
         &self,
         intent: SendIntent<intent_state::AwaitingConfirmation>,
@@ -330,6 +355,12 @@ impl CdkBdk {
             Ok(psbt) => psbt,
             Err(e) => {
                 tracing::error!("Failed to build batch PSBT: {}", e);
+
+                let error_text = e.to_string();
+                if error_text.to_ascii_lowercase().contains("dust") {
+                    self.fail_send_intents(&intents, &error_text).await;
+                }
+
                 return Err(Error::Wallet(e.to_string()));
             }
         };

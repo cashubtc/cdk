@@ -102,6 +102,30 @@ pub struct CdkBdk {
 }
 
 impl CdkBdk {
+    pub(crate) fn validate_send_amount_against_dust(
+        &self,
+        address: &str,
+        amount_sat: u64,
+    ) -> Result<(), Error> {
+        let address = bdk_wallet::bitcoin::Address::from_str(address)
+            .map_err(|e| Error::Wallet(e.to_string()))?
+            .require_network(self.network)
+            .map_err(|e| Error::Wallet(e.to_string()))?;
+
+        let dust_limit = bdk_wallet::bitcoin::TxOut::minimal_non_dust(address.script_pubkey())
+            .value
+            .to_sat();
+
+        if amount_sat < dust_limit {
+            return Err(Error::DustOutput {
+                amount: amount_sat,
+                dust_limit,
+            });
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn confirmations_satisfied(&self, tip_height: u32, anchor_height: u32) -> bool {
         if tip_height < anchor_height {
             return false;
@@ -391,6 +415,11 @@ impl MintPayment for CdkBdk {
 
         let tier = PaymentTier::from_optional_str(onchain_options.tier.as_deref());
 
+        self.validate_send_amount_against_dust(
+            &onchain_options.address,
+            onchain_options.amount.clone().to_u64(),
+        )?;
+
         let sat_per_vb = self
             .estimate_fee_rate_sat_per_vb(tier)
             .await
@@ -442,6 +471,8 @@ impl MintPayment for CdkBdk {
         let address = onchain_options.address;
         let amount = onchain_options.amount;
         let quote_id = onchain_options.quote_id;
+
+        self.validate_send_amount_against_dust(&address, amount.clone().to_u64())?;
 
         let max_fee = onchain_options
             .max_fee_amount
@@ -819,6 +850,55 @@ mod tests {
             Amount::new(0, CurrencyUnit::Sat),
             "Pending onchain response MUST use 0 sentinel; the real \
              total_spent is only known after the batch transaction is built"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_payment_quote_rejects_dust_output() {
+        let backend = build_test_instance(5).await;
+        let (_quote_id, options) = onchain_options_for(1);
+
+        let err = backend
+            .get_payment_quote(&CurrencyUnit::Sat, options)
+            .await
+            .expect_err("dust output should be rejected at quote time");
+
+        let cdk_common::payment::Error::Onchain(inner) = err else {
+            panic!("expected onchain error");
+        };
+
+        let backend_err = inner
+            .downcast_ref::<Error>()
+            .expect("expected cdk-bdk backend error");
+        assert!(matches!(backend_err, Error::DustOutput { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_make_payment_rejects_dust_output_without_persisting_intent() {
+        let backend = build_test_instance(5).await;
+        let (quote_id, options) = onchain_options_for(1);
+
+        let err = backend
+            .make_payment(&CurrencyUnit::Sat, options)
+            .await
+            .expect_err("dust output should be rejected before enqueue");
+
+        let cdk_common::payment::Error::Onchain(inner) = err else {
+            panic!("expected onchain error");
+        };
+
+        let backend_err = inner
+            .downcast_ref::<Error>()
+            .expect("expected cdk-bdk backend error");
+        assert!(matches!(backend_err, Error::DustOutput { .. }));
+        assert!(
+            backend
+                .storage
+                .get_send_intent_by_quote_id(&quote_id.to_string())
+                .await
+                .expect("lookup send intent by quote id")
+                .is_none(),
+            "dust rejection must not leave a pending send intent behind"
         );
     }
 
