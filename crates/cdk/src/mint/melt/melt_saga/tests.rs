@@ -11,10 +11,15 @@
 use std::str::FromStr;
 
 use cdk_common::melt::MeltQuoteRequest;
-use cdk_common::mint::{MeltFinalizationData, MeltSagaState, OperationKind, Saga, SagaStateEnum};
+use cdk_common::mint::{
+    MeltFinalizationData, MeltPaymentRequest, MeltQuote, MeltSagaState, OperationKind, Saga,
+    SagaStateEnum,
+};
 use cdk_common::nut00::KnownMethod;
+use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
 use cdk_common::nuts::{MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk_common::payment::PaymentIdentifier;
+use cdk_common::util::unix_time;
 use cdk_common::{Amount, MintQuoteBolt11Request, PaymentMethod, ProofsMethods, State};
 
 use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
@@ -34,6 +39,190 @@ async fn test_melt_saga_initial_state_creation() {
 
     let _saga = MeltSaga::new(std::sync::Arc::new(mint.clone()), db, pubsub);
     // Type system enforces Initial state - if this compiles, test passes
+}
+
+#[tokio::test]
+async fn test_onchain_setup_uses_selected_fee_option_for_balance() {
+    let mint = create_test_mint().await.unwrap();
+    let quote = create_test_onchain_melt_quote(&mint).await;
+
+    let proofs = mint_test_proofs(&mint, Amount::from(9_500)).await.unwrap();
+    let melt_request = create_test_melt_request(&proofs, &quote).estimated_blocks(1);
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Onchain),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(setup.state_data.quote.selected_estimated_blocks, Some(1));
+    assert_eq!(setup.state_data.quote.fee_reserve().value(), 500);
+
+    let stored = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .expect("quote must remain persisted");
+    assert_eq!(stored.selected_estimated_blocks, Some(1));
+    assert_eq!(stored.fee_reserve().value(), 500);
+}
+
+#[tokio::test]
+async fn test_onchain_setup_rejects_amount_for_unselected_fee_option() {
+    let mint = create_test_mint().await.unwrap();
+    let quote = create_test_onchain_melt_quote(&mint).await;
+
+    let proofs = mint_test_proofs(&mint, Amount::from(9_200)).await.unwrap();
+    let melt_request = create_test_melt_request(&proofs, &quote).estimated_blocks(1);
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let err = match saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Onchain),
+        )
+        .await
+    {
+        Ok(_) => panic!("selected fee option must drive exact onchain balance"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(
+        err,
+        cdk_common::Error::TransactionUnbalanced(9_200, 9_000, 500)
+    ));
+}
+
+/// Test: onchain melt setup accepts change outputs.
+///
+/// Change outputs on an onchain melt are used to return the unused portion of
+/// the over-allocated `fee_reserve` as ecash. Per
+/// `MeltOnchainRequest.outputs` (see `cashu::nut_onchain`), the wallet MAY
+/// attach blinded messages and the mint MUST NOT reject the request for that
+/// reason alone.
+///
+/// Regression guard: a previous revision returned
+/// `Error::InvalidPaymentRequest` whenever an onchain melt carried any change
+/// outputs. This caused silent `code: 50000` failures for every real-world
+/// onchain melt, because wallets always attach change blinded messages so
+/// that the mint can refund unused fee reserve after the transaction is
+/// broadcast for less than the quoted `fee_reserve`.
+#[tokio::test]
+async fn test_onchain_setup_accepts_change_outputs() {
+    use cdk_common::nuts::MeltRequest;
+
+    use crate::test_helpers::mint::create_test_blinded_messages;
+
+    let mint = create_test_mint().await.unwrap();
+    let quote = create_test_onchain_melt_quote(&mint).await;
+
+    // amount = 9_000, fee_reserve (blocks=1) = 500 -> inputs must total 9_500.
+    // The wallet attaches blinded messages to cover the possible refund of the
+    // over-allocated fee reserve. The mint must accept the request despite the
+    // presence of those change outputs.
+    let proofs = mint_test_proofs(&mint, Amount::from(9_500)).await.unwrap();
+    let (blinded_messages, _premint) = create_test_blinded_messages(&mint, Amount::from(500))
+        .await
+        .unwrap();
+
+    let melt_request =
+        MeltRequest::new(quote.id.clone(), proofs, Some(blinded_messages)).estimated_blocks(1);
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Onchain),
+        )
+        .await
+        .expect("onchain melt setup must accept change outputs");
+
+    assert_eq!(setup.state_data.quote.selected_estimated_blocks, Some(1));
+    assert_eq!(setup.state_data.quote.fee_reserve().value(), 500);
+}
+
+/// Test: onchain melt setup rejects a request with no selected `estimated_blocks`.
+#[tokio::test]
+async fn test_onchain_setup_rejects_missing_estimated_blocks() {
+    let mint = create_test_mint().await.unwrap();
+    let quote = create_test_onchain_melt_quote(&mint).await;
+
+    let proofs = mint_test_proofs(&mint, Amount::from(9_500)).await.unwrap();
+    // Deliberately do NOT call `.estimated_blocks(...)`.
+    let melt_request = create_test_melt_request(&proofs, &quote);
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let err = match saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Onchain),
+        )
+        .await
+    {
+        Ok(_) => panic!("onchain melt must require selected_estimated_blocks"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, cdk_common::Error::InvalidPaymentRequest));
+}
+
+/// Test: onchain melt setup rejects an `estimated_blocks` value not in `fee_options`.
+#[tokio::test]
+async fn test_onchain_setup_rejects_estimated_blocks_not_in_fee_options() {
+    let mint = create_test_mint().await.unwrap();
+    let quote = create_test_onchain_melt_quote(&mint).await;
+
+    let proofs = mint_test_proofs(&mint, Amount::from(9_500)).await.unwrap();
+    // Quote's fee_options contains only `estimated_blocks` of 1 and 6; 42 is invalid.
+    let melt_request = create_test_melt_request(&proofs, &quote).estimated_blocks(42);
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let err = match saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Onchain),
+        )
+        .await
+    {
+        Ok(_) => panic!("onchain melt must reject unknown estimated_blocks"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, cdk_common::Error::InvalidPaymentRequest));
 }
 
 // ============================================================================
@@ -3223,6 +3412,43 @@ async fn create_test_melt_quote(
         .await
         .unwrap()
         .expect("Quote should exist in database");
+
+    quote
+}
+
+async fn create_test_onchain_melt_quote(mint: &crate::mint::Mint) -> cdk_common::mint::MeltQuote {
+    let quote = MeltQuote::new_onchain(
+        None,
+        MeltPaymentRequest::Onchain {
+            address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq".to_string(),
+        },
+        cdk_common::CurrencyUnit::Sat,
+        Amount::new(9_000, cdk_common::CurrencyUnit::Sat),
+        unix_time() + 3600,
+        None,
+        None,
+        vec![
+            MeltQuoteOnchainFeeOption {
+                fee_reserve: Amount::from(500),
+                estimated_blocks: 1,
+            },
+            MeltQuoteOnchainFeeOption {
+                fee_reserve: Amount::from(200),
+                estimated_blocks: 6,
+            },
+        ],
+    )
+    .expect("well-formed onchain quote must construct");
+
+    let mut tx = mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("transaction must start");
+    tx.add_melt_quote(quote.clone())
+        .await
+        .expect("quote must persist");
+    tx.commit().await.expect("quote transaction must commit");
 
     quote
 }

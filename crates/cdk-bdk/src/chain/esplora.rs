@@ -11,6 +11,15 @@ use crate::chain::EsploraConfig;
 use crate::error::Error;
 use crate::CdkBdk;
 
+const MIN_ESPLORA_BACKOFF: Duration = Duration::from_secs(5);
+const MAX_ESPLORA_BACKOFF: Duration = Duration::from_secs(300);
+
+fn next_esplora_backoff(backoff: &mut Duration) -> Duration {
+    let current = *backoff;
+    *backoff = (*backoff * 2).min(MAX_ESPLORA_BACKOFF);
+    current
+}
+
 pub(crate) async fn sync_esplora(
     cdk_bdk: &CdkBdk,
     config: &EsploraConfig,
@@ -18,13 +27,16 @@ pub(crate) async fn sync_esplora(
 ) -> Result<(), Error> {
     let url = &config.url;
     let parallel_requests = config.parallel_requests;
-    let mut sync_interval = interval(Duration::from_secs(cdk_bdk.sync_interval_secs));
+    let configured_interval = Duration::from_secs(cdk_bdk.sync_interval_secs);
+    let initial_backoff = configured_interval.max(MIN_ESPLORA_BACKOFF);
+    let mut sync_interval = interval(configured_interval);
     let mut startup_reconciliation_pending = true;
     let warn_ms = cdk_bdk.sync_config.lock_hold_warn_ms;
 
     // Persist Esplora client across sync iterations; re-create on error.
     let mut esplora_client: Option<AsyncClient> = None;
     let mut consecutive_failures: u32 = 0;
+    let mut backoff = initial_backoff;
 
     tracing::info!(
         url = %url,
@@ -56,6 +68,12 @@ pub(crate) async fn sync_esplora(
                                     &err,
                                     consecutive_failures,
                                 );
+                                let retry_delay = next_esplora_backoff(&mut backoff);
+                                tracing::warn!(
+                                    retry_delay_secs = retry_delay.as_secs(),
+                                    "Backing off Esplora sync retry"
+                                );
+                                sync_interval.reset_after(retry_delay);
                                 continue;
                             }
                         }
@@ -82,6 +100,12 @@ pub(crate) async fn sync_esplora(
                         );
                         // Drop client so the next tick rebuilds it.
                         esplora_client = None;
+                        let retry_delay = next_esplora_backoff(&mut backoff);
+                        tracing::warn!(
+                            retry_delay_secs = retry_delay.as_secs(),
+                            "Backing off Esplora sync retry"
+                        );
+                        sync_interval.reset_after(retry_delay);
                         continue;
                     }
                 };
@@ -140,6 +164,7 @@ pub(crate) async fn sync_esplora(
                     );
                     consecutive_failures = 0;
                 }
+                backoff = initial_backoff;
 
                 let has_relevant_events = events.iter().any(|e| matches!(
                     e,

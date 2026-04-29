@@ -12,6 +12,9 @@ pub enum Error {
     /// Fee estimation unavailable
     #[error("Fee estimation unavailable")]
     FeeEstimationUnavailable,
+    /// Wallet has no spendable UTXOs available for an onchain quote
+    #[error("No spendable UTXOs available for onchain payment quote")]
+    NoSpendableUtxos,
     /// Start called but tasks are already running
     #[error("Start called but background tasks are already running")]
     AlreadyStarted,
@@ -96,6 +99,15 @@ pub enum Error {
     /// No valid fee allocation exists for the batch
     #[error("No valid fee allocation for batch")]
     NoValidFeeAllocation,
+
+    /// Requested recipient output is below the dust limit for its script type
+    #[error("Requested output amount {amount} sats is below dust limit {dust_limit} sats")]
+    DustOutput {
+        /// Requested recipient amount in sats
+        amount: u64,
+        /// Minimum non-dust amount for the destination script in sats
+        dust_limit: u64,
+    },
 
     /// Batch record is missing an output assignment for one of its member intents.
     ///

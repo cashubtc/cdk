@@ -444,18 +444,7 @@ impl OnchainBackendSetup for crate::config::Bdk {
         use bip39::Mnemonic;
         use bitcoin::Network;
 
-        // Reject `num_confs = 0`: the confirmation check still requires the
-        // transaction to have an on-chain anchor, so 0 actually means
-        // "confirmed in any block" rather than the intuitive "accept
-        // unconfirmed". This is almost never what an operator wants, so fail
-        // fast at startup with a clear error instead of silently accepting it.
-        if self.num_confs == 0 {
-            bail!(
-                "BDK num_confs must be >= 1 (0 is rejected because it still \
-                 requires an on-chain anchor and is almost never intended; \
-                 use 1 for 'any confirmation')"
-            );
-        }
+        self.validate().map_err(anyhow::Error::msg)?;
 
         let fee_reserve = FeeReserve {
             min_fee_reserve: self.reserve_fee_min,
@@ -488,7 +477,7 @@ impl OnchainBackendSetup for crate::config::Bdk {
                     .unwrap_or_else(|| "https://mutinynet.com/api".to_string());
                 cdk_bdk::ChainSource::Esplora(cdk_bdk::EsploraConfig {
                     url: esplora_url,
-                    parallel_requests: 5,
+                    parallel_requests: self.esplora_parallel_requests.max(1),
                 })
             }
             _ => {
@@ -530,6 +519,7 @@ impl OnchainBackendSetup for crate::config::Bdk {
             Some(self.batch_config.clone().into()),
             self.num_confs,
             self.min_receive_amount_sat,
+            self.min_send_amount_sat,
             self.sync_interval_secs,
             None,
             None,
@@ -542,6 +532,14 @@ impl OnchainBackendSetup for crate::config::Bdk {
 #[cfg(feature = "bdk")]
 impl From<crate::config::BatchConfig> for cdk_bdk::BatchConfig {
     fn from(config: crate::config::BatchConfig) -> Self {
+        let fee_estimation = cdk_bdk::FeeEstimationConfig {
+            fallback_sat_per_vb: config.fee_fallback_sat_per_vb,
+            cache_ttl_secs: config.fee_cache_ttl_secs,
+            quote_max_input_count: config.quote_max_input_count,
+            quote_fixed_safety_sat: config.quote_fixed_safety_sat,
+            quote_safety_multiplier: config.quote_safety_multiplier,
+        };
+
         Self {
             poll_interval: Duration::from_secs(config.poll_interval_secs),
             max_batch_size: config.max_batch_size,
@@ -549,7 +547,7 @@ impl From<crate::config::BatchConfig> for cdk_bdk::BatchConfig {
             economy_deadline: Duration::from_secs(config.economy_deadline_secs),
             min_batch_threshold: config.min_batch_threshold,
             max_intent_age: Some(Duration::from_secs(24 * 60 * 60)),
-            fee_estimation: Default::default(),
+            fee_estimation,
         }
     }
 }

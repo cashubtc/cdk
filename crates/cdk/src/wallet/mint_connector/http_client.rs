@@ -22,8 +22,8 @@ use crate::nuts::nut00::{KnownMethod, PaymentMethod};
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
-    Id, KeySet, KeysResponse, KeysetResponse, MeltRequest, MintInfo, MintRequest, MintResponse,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    Id, KeySet, KeysResponse, KeysetResponse, MeltOnchainRequest, MeltRequest, MintInfo,
+    MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 
@@ -500,11 +500,9 @@ where
                 Ok(MeltQuoteCreateResponse::Bolt12(response))
             }
             MeltQuoteRequest::Onchain(req) => {
-                let responses: Vec<cdk_common::nut_onchain::MeltQuoteOnchainResponse<String>> =
+                let response: cdk_common::nut_onchain::MeltQuoteOnchainResponse<String> =
                     self.transport.http_post(url, auth_token, req).await?;
-                Ok(MeltQuoteCreateResponse::Onchain(
-                    cdk_common::melt::MeltQuoteOnchainOptions { quotes: responses },
-                ))
+                Ok(MeltQuoteCreateResponse::Onchain(response))
             }
             MeltQuoteRequest::Custom(req) => {
                 let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
@@ -633,7 +631,21 @@ where
                     .await?;
                 Ok(MeltQuoteResponse::Bolt12(res))
             }
-            _ => {
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                let request = MeltOnchainRequest {
+                    quote: request.quote_id().clone(),
+                    estimated_blocks: request
+                        .selected_estimated_blocks()
+                        .ok_or(Error::InvalidPaymentRequest)?,
+                    inputs: request.inputs().clone(),
+                    outputs: request.outputs().clone(),
+                };
+                let res: cdk_common::nuts::MeltQuoteOnchainResponse<String> = self
+                    .retriable_http_request(nut19::Method::Post, path, auth_token, &request)
+                    .await?;
+                Ok(MeltQuoteResponse::Onchain(res))
+            }
+            PaymentMethod::Custom(_) => {
                 let res: cdk_common::nuts::MeltQuoteCustomResponse<String> = self
                     .retriable_http_request(nut19::Method::Post, path, auth_token, &request)
                     .await?;

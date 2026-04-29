@@ -20,6 +20,7 @@ use bdk_wallet::template::Bip84;
 use bdk_wallet::{KeychainKind, PersistedWallet, Wallet};
 use cdk_common::common::FeeReserve;
 use cdk_common::database::KVStore;
+use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse, MintPayment,
     OnchainSettings, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
@@ -93,6 +94,8 @@ pub struct CdkBdk {
     pub(crate) num_confs: u32,
     /// Minimum on-chain receive amount that should count toward minting
     pub(crate) min_receive_amount_sat: u64,
+    /// Minimum on-chain send amount accepted for melts
+    pub(crate) min_send_amount_sat: u64,
     /// Sync interval in seconds
     pub(crate) sync_interval_secs: u64,
     /// Blockchain sync configuration
@@ -102,6 +105,30 @@ pub struct CdkBdk {
 }
 
 impl CdkBdk {
+    pub(crate) fn validate_send_amount_against_dust(
+        &self,
+        address: &str,
+        amount_sat: u64,
+    ) -> Result<(), Error> {
+        let address = bdk_wallet::bitcoin::Address::from_str(address)
+            .map_err(|e| Error::Wallet(e.to_string()))?
+            .require_network(self.network)
+            .map_err(|e| Error::Wallet(e.to_string()))?;
+
+        let dust_limit = bdk_wallet::bitcoin::TxOut::minimal_non_dust(address.script_pubkey())
+            .value
+            .to_sat();
+
+        if amount_sat < dust_limit {
+            return Err(Error::DustOutput {
+                amount: amount_sat,
+                dust_limit,
+            });
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn confirmations_satisfied(&self, tip_height: u32, anchor_height: u32) -> bool {
         if tip_height < anchor_height {
             return false;
@@ -158,6 +185,7 @@ impl CdkBdk {
         batch_config: Option<BatchConfig>,
         num_confs: u32,
         min_receive_amount_sat: u64,
+        min_send_amount_sat: u64,
         sync_interval_secs: u64,
         shutdown_timeout_secs: Option<u64>,
         sync_config: Option<SyncConfig>,
@@ -213,6 +241,7 @@ impl CdkBdk {
             batch_notify: Arc::new(Notify::new()),
             num_confs,
             min_receive_amount_sat,
+            min_send_amount_sat,
             sync_interval_secs,
             sync_config: sync_config.unwrap_or_default(),
             fee_rate_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -374,6 +403,7 @@ impl MintPayment for CdkBdk {
             onchain: Some(OnchainSettings {
                 confirmations: self.num_confs,
                 min_receive_amount_sat: self.min_receive_amount_sat,
+                min_send_amount_sat: self.min_send_amount_sat,
             }),
             custom: std::collections::HashMap::new(),
         })
@@ -391,6 +421,12 @@ impl MintPayment for CdkBdk {
 
         let tier = PaymentTier::from_optional_str(onchain_options.tier.as_deref());
 
+        self.validate_send_amount_against_dust(
+            &onchain_options.address,
+            onchain_options.amount.clone().to_u64(),
+        )?;
+        let amount_sat = onchain_options.amount.clone().to_u64();
+
         let sat_per_vb = self
             .estimate_fee_rate_sat_per_vb(tier)
             .await
@@ -403,11 +439,44 @@ impl MintPayment for CdkBdk {
                 self.batch_config.fee_estimation.fallback_sat_per_vb
             });
 
-        // Use a heuristic for quoting (faster, no wallet lock required)
-        let vbytes = fee::estimate_batch_vbytes_heuristic(1);
-        let estimated_fee_sat = (sat_per_vb * vbytes as f64).ceil() as u64;
+        let recipient_script = bdk_wallet::bitcoin::Address::from_str(&onchain_options.address)
+            .map_err(|e| Error::Wallet(e.to_string()))?
+            .require_network(self.network)
+            .map_err(|e| Error::Wallet(e.to_string()))?
+            .script_pubkey();
+
+        let utxo_values_sat: Vec<u64> = {
+            let wallet_with_db = self.wallet_with_db.lock().await;
+            wallet_with_db
+                .wallet
+                .list_unspent()
+                .take(fee::QUOTE_UTXO_SCAN_LIMIT)
+                .map(|utxo| utxo.txout.value.to_sat())
+                .collect()
+        };
+        if utxo_values_sat.is_empty() {
+            return Err(Error::NoSpendableUtxos.into());
+        }
+
+        let vbytes = fee::estimate_quote_vbytes(
+            amount_sat,
+            sat_per_vb,
+            recipient_script.as_script(),
+            &utxo_values_sat,
+            &self.batch_config.fee_estimation,
+        );
+        let estimated_fee_sat = fee::apply_quote_fee_safety(
+            fee::estimate_quote_fee_without_safety(sat_per_vb, vbytes),
+            &self.batch_config.fee_estimation,
+        );
 
         let fee_reserve_sat = self.fee_reserve_for_estimate(estimated_fee_sat);
+
+        let estimated_blocks = match tier {
+            PaymentTier::Immediate => 1,
+            PaymentTier::Standard => 6,
+            PaymentTier::Economy => 144,
+        };
 
         // Echo the mint-supplied `quote_id` verbatim per the
         // `OnchainOutgoingPaymentOptions.quote_id` contract. The mint
@@ -419,13 +488,11 @@ impl MintPayment for CdkBdk {
             fee: Amount::new(fee_reserve_sat, CurrencyUnit::Sat),
             state: MeltQuoteState::Unpaid,
             extra_json: None,
-            estimated_blocks: Some(
-                match PaymentTier::from_optional_str(onchain_options.tier.as_deref()) {
-                    PaymentTier::Immediate => 1,
-                    PaymentTier::Standard => 6,
-                    PaymentTier::Economy => 144,
-                },
-            ),
+            estimated_blocks: Some(estimated_blocks),
+            fee_options: Some(vec![MeltQuoteOnchainFeeOption {
+                fee_reserve: Amount::from(fee_reserve_sat),
+                estimated_blocks,
+            }]),
         })
     }
 
@@ -442,6 +509,8 @@ impl MintPayment for CdkBdk {
         let address = onchain_options.address;
         let amount = onchain_options.amount;
         let quote_id = onchain_options.quote_id;
+
+        self.validate_send_amount_against_dust(&address, amount.clone().to_u64())?;
 
         let max_fee = onchain_options
             .max_fee_amount
@@ -639,18 +708,32 @@ impl MintPayment for CdkBdk {
 mod tests {
     use std::str::FromStr;
 
-    use bdk_wallet::bitcoin::Network;
+    use bdk_wallet::bitcoin::hashes::Hash as _;
+    use bdk_wallet::bitcoin::{
+        absolute, transaction, Network, OutPoint, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    };
     use bdk_wallet::keys::bip39::Mnemonic;
     use cdk_common::common::FeeReserve;
     use cdk_common::payment::MintPayment;
 
     use super::*;
-    use crate::fee::estimate_batch_vbytes_heuristic;
+    use crate::fee::{
+        apply_quote_fee_safety, estimate_quote_fee_without_safety, estimate_quote_input_count,
+        estimate_quote_vbytes,
+    };
 
     /// Build a `CdkBdk` instance pointed at a bogus Esplora URL so the sync
     /// loop spins without needing a real backend. The ticks are short so
     /// shutdown tests run quickly.
     async fn build_test_instance(shutdown_timeout_secs: u64) -> CdkBdk {
+        build_test_instance_with_tempdir(shutdown_timeout_secs)
+            .await
+            .0
+    }
+
+    async fn build_test_instance_with_tempdir(
+        shutdown_timeout_secs: u64,
+    ) -> (CdkBdk, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mnemonic = Mnemonic::from_str(
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
@@ -671,7 +754,7 @@ mod tests {
             percent_fee_reserve: 0.02,
         };
 
-        CdkBdk::new(
+        let backend = CdkBdk::new(
             mnemonic,
             Network::Regtest,
             chain_source,
@@ -681,11 +764,42 @@ mod tests {
             None,
             1,
             0,
+            546,
             60,
             Some(shutdown_timeout_secs),
             None,
         )
-        .expect("build CdkBdk test instance")
+        .expect("build CdkBdk test instance");
+
+        (backend, tmp)
+    }
+
+    async fn fund_backend_wallet(backend: &CdkBdk, amount_sat: u64) {
+        let mut wallet_with_db = backend.wallet_with_db.lock().await;
+        let funding_script = wallet_with_db
+            .wallet
+            .reveal_next_address(KeychainKind::External)
+            .address
+            .script_pubkey();
+        let funding_tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                script_sig: Default::default(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bdk_wallet::bitcoin::Amount::from_sat(amount_sat),
+                script_pubkey: funding_script,
+            }],
+        };
+
+        wallet_with_db
+            .wallet
+            .apply_unconfirmed_txs([(funding_tx, 0)]);
+        wallet_with_db.persist().expect("persist funded wallet");
     }
 
     #[tokio::test]
@@ -731,24 +845,61 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_batch_vbytes_heuristic_single_recipient() {
-        // 1 recipient → 2 inputs, 2 outputs (1 recipient + 1 change)
-        // overhead 11 + 2*68 + 2*31 = 11 + 136 + 62 = 209
-        assert_eq!(estimate_batch_vbytes_heuristic(1), 209);
+    fn test_quote_input_count_uses_utxo_sample_with_padding() {
+        let config = FeeEstimationConfig::default();
+
+        assert_eq!(
+            estimate_quote_input_count(50_000, 1.0, &[100_000], &config),
+            2,
+            "one covering UTXO should still reserve one extra input"
+        );
     }
 
     #[test]
-    fn test_estimate_batch_vbytes_heuristic_zero_recipients() {
-        // max(1, 0) → 1 assumed recipient → 2 inputs, 1 output
-        // overhead 11 + 2*68 + 1*31 = 11 + 136 + 31 = 178
-        assert_eq!(estimate_batch_vbytes_heuristic(0), 178);
+    fn test_quote_input_count_falls_back_to_max_when_sample_cannot_cover() {
+        let config = FeeEstimationConfig {
+            quote_max_input_count: 12,
+            ..FeeEstimationConfig::default()
+        };
+        let tiny_utxos = vec![1_000; 100];
+
+        assert_eq!(
+            estimate_quote_input_count(50_000, 1.0, &tiny_utxos, &config),
+            12,
+            "insufficient bounded sample should quote the configured maximum"
+        );
     }
 
     #[test]
-    fn test_estimate_batch_vbytes_heuristic_multi_recipient() {
-        // 5 recipients → 10 inputs, 6 outputs
-        // overhead 11 + 10*68 + 6*31 = 11 + 680 + 186 = 877
-        assert_eq!(estimate_batch_vbytes_heuristic(5), 877);
+    fn test_quote_fee_safety_adds_multiplier_and_fixed_margin() {
+        let config = FeeEstimationConfig {
+            quote_safety_multiplier: 1.25,
+            quote_fixed_safety_sat: 500,
+            ..FeeEstimationConfig::default()
+        };
+
+        assert_eq!(apply_quote_fee_safety(1_000, &config), 1_750);
+    }
+
+    #[test]
+    fn test_quote_vbytes_uses_default_input_count_without_utxo_sample() {
+        let config = FeeEstimationConfig::default();
+        let address =
+            bdk_wallet::bitcoin::Address::from_str("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080")
+                .expect("address")
+                .require_network(Network::Regtest)
+                .expect("regtest address");
+
+        let vbytes = estimate_quote_vbytes(
+            50_000,
+            1.0,
+            address.script_pubkey().as_script(),
+            &[],
+            &config,
+        );
+
+        assert_eq!(vbytes, 11 + (4 * 75) + 31 + 31);
+        assert_eq!(estimate_quote_fee_without_safety(1.0, vbytes), vbytes);
     }
 
     #[tokio::test]
@@ -766,6 +917,55 @@ mod tests {
             tier_err.is_err(),
             "fee rate estimation should fail against bogus Esplora URL"
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_payment_quote_does_not_stage_wallet_changes() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        fund_backend_wallet(&backend, 100_000).await;
+        let (_quote_id, options) = onchain_options_for(10_000);
+
+        backend
+            .get_payment_quote(&CurrencyUnit::Sat, options)
+            .await
+            .expect("quote should succeed with fallback fee rate");
+
+        let wallet_with_db = backend.wallet_with_db.lock().await;
+        assert!(
+            wallet_with_db.wallet.staged().is_none(),
+            "quote estimation must not mutate or stage BDK wallet state"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_payment_quote_rejects_empty_wallet() {
+        let backend = build_test_instance(5).await;
+        let (_quote_id, options) = onchain_options_for(10_000);
+
+        let err = backend
+            .get_payment_quote(&CurrencyUnit::Sat, options)
+            .await
+            .expect_err("empty wallet should not receive an onchain quote");
+
+        let cdk_common::payment::Error::Onchain(inner) = err else {
+            panic!("expected onchain error");
+        };
+
+        let backend_err = inner
+            .downcast_ref::<Error>()
+            .expect("expected cdk-bdk backend error");
+        assert!(matches!(backend_err, Error::NoSpendableUtxos));
+    }
+
+    #[tokio::test]
+    async fn test_get_settings_reports_min_send_amount() {
+        let backend = build_test_instance(5).await;
+
+        let settings = backend.get_settings().await.expect("settings");
+        let onchain = settings.onchain.expect("onchain settings");
+
+        assert_eq!(onchain.min_receive_amount_sat, 0);
+        assert_eq!(onchain.min_send_amount_sat, 546);
     }
 
     // ------------------------------------------------------------------
@@ -819,6 +1019,55 @@ mod tests {
             Amount::new(0, CurrencyUnit::Sat),
             "Pending onchain response MUST use 0 sentinel; the real \
              total_spent is only known after the batch transaction is built"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_payment_quote_rejects_dust_output() {
+        let backend = build_test_instance(5).await;
+        let (_quote_id, options) = onchain_options_for(1);
+
+        let err = backend
+            .get_payment_quote(&CurrencyUnit::Sat, options)
+            .await
+            .expect_err("dust output should be rejected at quote time");
+
+        let cdk_common::payment::Error::Onchain(inner) = err else {
+            panic!("expected onchain error");
+        };
+
+        let backend_err = inner
+            .downcast_ref::<Error>()
+            .expect("expected cdk-bdk backend error");
+        assert!(matches!(backend_err, Error::DustOutput { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_make_payment_rejects_dust_output_without_persisting_intent() {
+        let backend = build_test_instance(5).await;
+        let (quote_id, options) = onchain_options_for(1);
+
+        let err = backend
+            .make_payment(&CurrencyUnit::Sat, options)
+            .await
+            .expect_err("dust output should be rejected before enqueue");
+
+        let cdk_common::payment::Error::Onchain(inner) = err else {
+            panic!("expected onchain error");
+        };
+
+        let backend_err = inner
+            .downcast_ref::<Error>()
+            .expect("expected cdk-bdk backend error");
+        assert!(matches!(backend_err, Error::DustOutput { .. }));
+        assert!(
+            backend
+                .storage
+                .get_send_intent_by_quote_id(&quote_id.to_string())
+                .await
+                .expect("lookup send intent by quote id")
+                .is_none(),
+            "dust rejection must not leave a pending send intent behind"
         );
     }
 

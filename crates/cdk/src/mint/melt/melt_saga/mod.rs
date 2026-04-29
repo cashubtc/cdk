@@ -239,7 +239,7 @@ impl MeltSaga<Initial> {
             input_amount.clone().into(), // total_redeemed (convert to untyped)
             fee_breakdown.total, // fee_collected
             None,         // complete_at
-            Some(payment_method), // payment_method
+            Some(payment_method.clone()), // payment_method
         );
 
         // Add proofs to the database
@@ -273,6 +273,33 @@ impl MeltSaga<Initial> {
         if input_unit != Some(quote.unit.clone()) {
             tx.rollback().await?;
             return Err(Error::UnitMismatch);
+        }
+
+        if payment_method == cdk_common::PaymentMethod::Known(KnownMethod::Onchain) {
+            let Some(estimated_blocks) = melt_request.selected_estimated_blocks() else {
+                tracing::warn!(
+                    quote_id = %quote.id,
+                    "onchain melt rejected: request is missing selected_estimated_blocks",
+                );
+                tx.rollback().await?;
+                return Err(Error::InvalidPaymentRequest);
+            };
+
+            if let Err(err) = quote.select_onchain_fee_option(estimated_blocks) {
+                let available: Vec<u32> = quote
+                    .fee_options()
+                    .iter()
+                    .map(|option| option.estimated_blocks)
+                    .collect();
+                tracing::warn!(
+                    quote_id = %quote.id,
+                    requested_estimated_blocks = estimated_blocks,
+                    available_estimated_blocks = ?available,
+                    "onchain melt rejected: selected estimated_blocks is not valid for this quote: {err}",
+                );
+                tx.rollback().await?;
+                return Err(err);
+            }
         }
 
         match previous_state {
@@ -312,7 +339,14 @@ impl MeltSaga<Initial> {
             .checked_add(&fee_reserve)?
             .checked_add(&inputs_fee)?;
 
-        if input_amount < required_total.clone() {
+        let amount_mismatch =
+            if payment_method == cdk_common::PaymentMethod::Known(KnownMethod::Onchain) {
+                input_amount != required_total
+            } else {
+                input_amount < required_total.clone()
+            };
+
+        if amount_mismatch {
             tracing::info!(
                 "Melt request unbalanced: inputs {}, amount {}, fee_reserve {}, input_fee {}, required {}",
                 input_amount,

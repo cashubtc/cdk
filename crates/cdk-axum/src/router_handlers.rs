@@ -1164,6 +1164,11 @@ where
     T: Into<ErrorResponse>,
 {
     let err_response: ErrorResponse = error.into();
+    tracing::debug!(
+        code = ?err_response.code,
+        detail = %err_response.detail,
+        "mint returning error response",
+    );
     // Per NUT-00 spec: "In case of an error, mints respond with the HTTP status code 400"
     (StatusCode::BAD_REQUEST, Json(err_response)).into_response()
 }

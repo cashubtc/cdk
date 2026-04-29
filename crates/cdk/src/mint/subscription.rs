@@ -349,10 +349,9 @@ impl PubSubManager {
                 ));
             }
             cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Onchain) => {
-                // Onchain melts never return NUT-08 change outputs.
-                let _ = change;
                 let mut event: MeltQuoteOnchainResponse<QuoteId> = quote.clone().into();
                 event.state = new_state;
+                event.change = change;
                 self.publish(NotificationPayload::MeltQuoteOnchainResponse(event));
             }
         }

@@ -566,6 +566,7 @@ impl MintPayment for FakeWallet {
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
                     estimated_blocks: None,
+                    fee_options: None,
                 });
             }
             OutgoingPaymentOptions::Onchain(_) => {
@@ -588,6 +589,7 @@ impl MintPayment for FakeWallet {
             state: MeltQuoteState::Unpaid,
             extra_json: None,
             estimated_blocks: None,
+            fee_options: None,
         })
     }
 

@@ -494,11 +494,24 @@ impl MintBuilder {
             // Handle onchain methods
             PaymentMethod::Known(KnownMethod::Onchain) => {
                 if let Some(onchain_settings) = settings.onchain {
+                    let mint_min = Amount::from(
+                        limits
+                            .mint_min
+                            .to_u64()
+                            .max(onchain_settings.min_receive_amount_sat),
+                    );
+                    let melt_min = Amount::from(
+                        limits
+                            .melt_min
+                            .to_u64()
+                            .max(onchain_settings.min_send_amount_sat),
+                    );
+
                     // Add to NUT04 (mint)
                     let mint_method_settings = MintMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
-                        min_amount: Some(limits.mint_min),
+                        min_amount: Some(mint_min),
                         max_amount: Some(limits.mint_max),
                         options: Some(MintMethodOptions::Onchain {
                             confirmations: onchain_settings.confirmations,
@@ -511,7 +524,7 @@ impl MintBuilder {
                     let melt_method_settings = MeltMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
-                        min_amount: Some(limits.melt_min),
+                        min_amount: Some(melt_min),
                         max_amount: Some(limits.melt_max),
                         options: None,
                     };
@@ -720,8 +733,8 @@ mod tests {
     use async_trait::async_trait;
     use cdk_common::payment::{
         Bolt11Settings, Bolt12Settings, CreateIncomingPaymentResponse, Event,
-        IncomingPaymentOptions, MakePaymentResponse, OutgoingPaymentOptions, PaymentIdentifier,
-        PaymentQuoteResponse, SettingsResponse,
+        IncomingPaymentOptions, MakePaymentResponse, OnchainSettings, OutgoingPaymentOptions,
+        PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
     };
     use cdk_sqlite::mint::memory;
     use futures::Stream;
@@ -1144,6 +1157,138 @@ mod tests {
         // NUT04 and NUT05 should remain empty since the custom method is not in settings
         assert_eq!(mint_info.nuts.nut04.methods.len(), 0);
         assert_eq!(mint_info.nuts.nut05.methods.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_add_payment_processor_onchain_uses_backend_min_receive_amount() {
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let mut builder = MintBuilder::new(localstore);
+
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8, 16, 32],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+
+        let settings = SettingsResponse {
+            unit: "sat".to_string(),
+            bolt11: None,
+            bolt12: None,
+            onchain: Some(OnchainSettings {
+                confirmations: 6,
+                min_receive_amount_sat: 1000,
+                min_send_amount_sat: 546,
+            }),
+            custom: HashMap::new(),
+        };
+
+        let payment_processor = Arc::new(MockPaymentProcessor { settings });
+        let unit = CurrencyUnit::Sat;
+        let method = PaymentMethod::Known(KnownMethod::Onchain);
+        let limits = MintMeltLimits::new(100, 10000);
+
+        builder
+            .add_payment_processor(unit.clone(), method.clone(), limits, payment_processor)
+            .await
+            .unwrap();
+
+        let mint_info = builder.current_mint_info();
+
+        assert_eq!(mint_info.nuts.nut04.methods.len(), 1);
+        let mint_method = &mint_info.nuts.nut04.methods[0];
+        assert_eq!(mint_method.method, method);
+        assert_eq!(mint_method.unit, unit);
+        assert_eq!(mint_method.min_amount, Some(Amount::from(1000)));
+        assert_eq!(mint_method.max_amount, Some(limits.mint_max));
+        assert!(matches!(
+            mint_method.options,
+            Some(MintMethodOptions::Onchain { confirmations: 6 })
+        ));
+
+        assert_eq!(mint_info.nuts.nut05.methods.len(), 1);
+        let melt_method = &mint_info.nuts.nut05.methods[0];
+        assert_eq!(melt_method.min_amount, Some(Amount::from(546)));
+    }
+
+    #[tokio::test]
+    async fn test_add_payment_processor_onchain_keeps_higher_configured_mint_min() {
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let mut builder = MintBuilder::new(localstore);
+
+        let settings = SettingsResponse {
+            unit: "sat".to_string(),
+            bolt11: None,
+            bolt12: None,
+            onchain: Some(OnchainSettings {
+                confirmations: 1,
+                min_receive_amount_sat: 1000,
+                min_send_amount_sat: 546,
+            }),
+            custom: HashMap::new(),
+        };
+
+        let payment_processor = Arc::new(MockPaymentProcessor { settings });
+        let limits = MintMeltLimits::new(2000, 10000);
+
+        builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Onchain),
+                limits,
+                payment_processor,
+            )
+            .await
+            .unwrap();
+
+        let mint_info = builder.current_mint_info();
+        let mint_method = &mint_info.nuts.nut04.methods[0];
+
+        assert_eq!(mint_method.min_amount, Some(Amount::from(2000)));
+    }
+
+    #[tokio::test]
+    async fn test_add_payment_processor_onchain_keeps_higher_configured_melt_min() {
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let mut builder = MintBuilder::new(localstore);
+
+        let settings = SettingsResponse {
+            unit: "sat".to_string(),
+            bolt11: None,
+            bolt12: None,
+            onchain: Some(OnchainSettings {
+                confirmations: 1,
+                min_receive_amount_sat: 1000,
+                min_send_amount_sat: 546,
+            }),
+            custom: HashMap::new(),
+        };
+
+        let payment_processor = Arc::new(MockPaymentProcessor { settings });
+        let limits = MintMeltLimits {
+            mint_min: Amount::from(1),
+            mint_max: Amount::from(10_000),
+            melt_min: Amount::from(2_000),
+            melt_max: Amount::from(10_000),
+        };
+
+        builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Onchain),
+                limits,
+                payment_processor,
+            )
+            .await
+            .unwrap();
+
+        let mint_info = builder.current_mint_info();
+        let melt_method = &mint_info.nuts.nut05.methods[0];
+
+        assert_eq!(melt_method.min_amount, Some(Amount::from(2_000)));
     }
 
     #[tokio::test]

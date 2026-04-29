@@ -406,14 +406,18 @@ mod tests {
     fn notification_payload_onchain_melt_roundtrip() {
         let resp: MeltQuoteOnchainResponse<String> = MeltQuoteOnchainResponse {
             quote: "abc".to_string(),
-            request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
             amount: Amount::from(100_000),
             unit: CurrencyUnit::Sat,
-            fee: Amount::from(5_000),
-            estimated_blocks: 1,
             state: MeltQuoteState::Pending,
             expiry: 1701704757,
+            request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
+            fee_options: vec![crate::nut_onchain::MeltQuoteOnchainFeeOption {
+                fee_reserve: Amount::from(5_000),
+                estimated_blocks: 1,
+            }],
+            selected_estimated_blocks: Some(1),
             outpoint: Some("3b7f3b85:2".to_string()),
+            change: None,
         };
         let payload: NotificationPayload<String> =
             NotificationPayload::MeltQuoteOnchainResponse(resp.clone());

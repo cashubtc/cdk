@@ -90,6 +90,6 @@ pub use nut27::{
 };
 pub use nut29::{BatchCheckMintQuoteRequest, BatchMintRequest, Settings as Nut29Settings};
 pub use nut_onchain::{
-    MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MintQuoteOnchainRequest,
+    MeltOnchainRequest, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MintQuoteOnchainRequest,
     MintQuoteOnchainResponse,
 };

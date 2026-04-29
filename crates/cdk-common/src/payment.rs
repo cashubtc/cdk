@@ -16,6 +16,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::mint::{MeltPaymentRequest, MeltQuote};
+use crate::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
 use crate::nuts::{CurrencyUnit, MeltQuoteState};
 use crate::{Amount, QuoteId};
 
@@ -403,13 +404,14 @@ impl OutgoingPaymentOptions {
                     amount: melt_quote.amount(),
                     max_fee_amount: Some(fee_reserve),
                     quote_id: melt_quote.id,
-                    // TODO(#TBD): Propagate tier and metadata from MeltQuote
-                    // once the quote struct carries them. Hard-wired to None
-                    // today because MeltQuote has no tier/metadata fields, so
-                    // cdk-bdk's Standard/Economy batching is unreachable via
-                    // the standard melt flow. Load-bearing pair of this site:
-                    // crates/cdk/src/mint/melt/mod.rs (get_melt_onchain_quote_impl).
-                    tier: None,
+                    tier: melt_quote
+                        .selected_estimated_blocks
+                        .map(|blocks| match blocks {
+                            1 => "immediate".to_string(),
+                            6 => "standard".to_string(),
+                            144 => "economy".to_string(),
+                            _ => blocks.to_string(),
+                        }),
                     metadata: None,
                 }),
             )),
@@ -591,8 +593,26 @@ pub struct PaymentQuoteResponse {
     pub state: MeltQuoteState,
     /// Extra payment-method-specific fields
     pub extra_json: Option<serde_json::Value>,
-    /// Estimated confirmation target in blocks for onchain quotes
+    /// Estimated confirmation target in blocks for onchain quotes.
+    ///
+    /// Onchain backends must return explicit `fee_options`; this field remains
+    /// a convenience mirror of the quoted or selected confirmation target.
     pub estimated_blocks: Option<u32>,
+    /// Explicit onchain fee options the backend is willing to honor.
+    ///
+    /// For onchain melt quotes the mint enforces the NUT `fee_options` rules:
+    ///
+    /// - MUST be non-empty.
+    /// - MUST NOT contain duplicate `estimated_blocks` values.
+    /// - MUST NOT contain duplicate `fee_reserve` values.
+    ///
+    /// Onchain backends must return `Some(vec)` here. Violations produce
+    /// [`Error::OnchainFeeOptionsEmpty`](crate::Error::OnchainFeeOptionsEmpty),
+    /// [`Error::OnchainFeeOptionsDuplicateBlocks`](crate::Error::OnchainFeeOptionsDuplicateBlocks),
+    /// or
+    /// [`Error::OnchainFeeOptionsDuplicateFee`](crate::Error::OnchainFeeOptionsDuplicateFee)
+    /// and the quote is not persisted.
+    pub fee_options: Option<Vec<MeltQuoteOnchainFeeOption>>,
 }
 
 impl PaymentQuoteResponse {
@@ -627,6 +647,8 @@ pub struct OnchainSettings {
     pub confirmations: u32,
     /// Minimum incoming onchain payment amount accepted by the backend
     pub min_receive_amount_sat: u64,
+    /// Minimum outgoing onchain payment amount accepted by the backend
+    pub min_send_amount_sat: u64,
 }
 
 /// Payment processor settings response

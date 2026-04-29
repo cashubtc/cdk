@@ -2,13 +2,25 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// Configuration for fee estimation
+/// Configuration for BDK fee estimation.
+///
+/// Fee rates are cached per payment tier. Melt quote fees use a conservative
+/// weight estimate because the quote is created before BDK performs final coin
+/// selection. These knobs expose the operator-facing tradeoffs: fallback fee
+/// rate, maximum quote size, and quote safety padding. Internal constants cover
+/// the lower-level wallet sampling and input weight assumptions.
 #[derive(Debug, Clone)]
 pub struct FeeEstimationConfig {
-    /// Used when chain-source estimation fails (sat/vB)
+    /// Fee rate used when chain-source estimation fails, in sat/vB.
     pub fallback_sat_per_vb: f64,
-    /// How long a per-tier estimate is cached in seconds
+    /// How long a per-tier fee-rate estimate is cached, in seconds.
     pub cache_ttl_secs: u64,
+    /// Maximum input count reserved at quote time.
+    pub quote_max_input_count: usize,
+    /// Fixed safety margin added to quote-time fee estimates, in sats.
+    pub quote_fixed_safety_sat: u64,
+    /// Multiplicative safety margin applied after the raw quote fee estimate.
+    pub quote_safety_multiplier: f64,
 }
 
 impl Default for FeeEstimationConfig {
@@ -16,6 +28,9 @@ impl Default for FeeEstimationConfig {
         Self {
             fallback_sat_per_vb: 2.0,
             cache_ttl_secs: 60,
+            quote_max_input_count: 24,
+            quote_fixed_safety_sat: 500,
+            quote_safety_multiplier: 1.25,
         }
     }
 }

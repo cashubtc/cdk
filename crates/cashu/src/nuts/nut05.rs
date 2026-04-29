@@ -96,6 +96,9 @@ pub struct MeltRequest<Q> {
     #[serde(default)]
     #[cfg_attr(feature = "swagger", schema(value_type = bool))]
     prefer_async: bool,
+    /// Selected estimated confirmation target for onchain melts
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    estimated_blocks: Option<u32>,
 }
 
 #[cfg(feature = "mint")]
@@ -108,6 +111,7 @@ impl TryFrom<MeltRequest<String>> for MeltRequest<QuoteId> {
             inputs: value.inputs,
             outputs: value.outputs,
             prefer_async: value.prefer_async,
+            estimated_blocks: value.estimated_blocks,
         })
     }
 }
@@ -146,6 +150,7 @@ where
             inputs: inputs.without_dleqs(),
             outputs,
             prefer_async: false,
+            estimated_blocks: None,
         }
     }
 
@@ -158,6 +163,17 @@ where
     /// Get the prefer_async flag
     pub fn is_prefer_async(&self) -> bool {
         self.prefer_async
+    }
+
+    /// Set the selected estimated confirmation target for onchain melts.
+    pub fn estimated_blocks(mut self, estimated_blocks: u32) -> Self {
+        self.estimated_blocks = Some(estimated_blocks);
+        self
+    }
+
+    /// Get the selected estimated confirmation target for onchain melts.
+    pub fn selected_estimated_blocks(&self) -> Option<u32> {
+        self.estimated_blocks
     }
 
     /// Get quote

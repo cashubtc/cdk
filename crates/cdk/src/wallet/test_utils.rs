@@ -413,6 +413,10 @@ pub struct MockMintConnector {
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Response for post_swap calls
     pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
+    /// Response for post_melt calls
+    pub post_melt_response: Mutex<Option<Result<MeltQuoteResponse<String>, Error>>>,
+    /// Last post_melt method/request captured by the mock
+    pub last_post_melt_request: Mutex<Option<(PaymentMethod, MeltRequest<String>)>>,
     /// Response for LNURL pay request calls
     pub lnurl_pay_request_response:
         Mutex<Option<Result<crate::lightning_address::LnurlPayResponse, Error>>>,
@@ -443,6 +447,8 @@ impl MockMintConnector {
             melt_quote_status_response: Mutex::new(None),
             post_mint_response: Mutex::new(None),
             post_swap_response: Mutex::new(None),
+            post_melt_response: Mutex::new(None),
+            last_post_melt_request: Mutex::new(None),
             lnurl_pay_request_response: Mutex::new(None),
             lnurl_invoice_response: Mutex::new(None),
             #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -535,6 +541,14 @@ impl MockMintConnector {
 
     pub fn set_post_swap_response(&self, response: Result<SwapResponse, Error>) {
         *self.post_swap_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_post_melt_response(&self, response: Result<MeltQuoteResponse<String>, Error>) {
+        *self.post_melt_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn last_post_melt_request(&self) -> Option<(PaymentMethod, MeltRequest<String>)> {
+        self.last_post_melt_request.lock().unwrap().clone()
     }
 
     pub fn set_lnurl_pay_request_response(
@@ -707,10 +721,15 @@ impl MintConnector for MockMintConnector {
 
     async fn post_melt(
         &self,
-        _method: &PaymentMethod,
-        _request: MeltRequest<String>,
+        method: &PaymentMethod,
+        request: MeltRequest<String>,
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        unimplemented!()
+        *self.last_post_melt_request.lock().unwrap() = Some((method.clone(), request));
+        self.post_melt_response
+            .lock()
+            .unwrap()
+            .take()
+            .expect("MockMintConnector: post_melt called without configured response")
     }
 
     async fn post_batch_check_mint_quote_status(

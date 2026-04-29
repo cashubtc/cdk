@@ -1,8 +1,6 @@
 use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::MeltQuote;
-use cdk_common::{
-    MeltQuoteCreateResponse, MeltQuoteOnchainOptions, MeltQuoteRequest, PaymentMethod,
-};
+use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, PaymentMethod};
 use tracing::instrument;
 
 use crate::nuts::MeltQuoteOnchainRequest;
@@ -12,6 +10,7 @@ fn wallet_melt_quote_from_onchain_response(
     mint_url: &crate::mint_url::MintUrl,
     unit: &crate::nuts::CurrencyUnit,
     response: cdk_common::MeltQuoteOnchainResponse<String>,
+    fee_option: cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption,
 ) -> MeltQuote {
     MeltQuote {
         id: response.quote,
@@ -19,11 +18,11 @@ fn wallet_melt_quote_from_onchain_response(
         amount: response.amount,
         request: response.request,
         unit: unit.clone(),
-        fee_reserve: response.fee,
+        fee_reserve: fee_option.fee_reserve,
         state: response.state,
         expiry: response.expiry,
         payment_proof: response.outpoint.clone(),
-        estimated_blocks: Some(response.estimated_blocks),
+        estimated_blocks: Some(fee_option.estimated_blocks),
         payment_method: PaymentMethod::Known(KnownMethod::Onchain),
         used_by_operation: None,
         version: 0,
@@ -51,15 +50,15 @@ impl Wallet {
             .await?;
 
         let quote_res = match quote_res {
-            MeltQuoteCreateResponse::Onchain(MeltQuoteOnchainOptions { quotes }) => quotes,
+            MeltQuoteCreateResponse::Onchain(quote) => quote,
             _ => return Err(Error::InvalidPaymentMethod),
         };
 
         let mut filtered_quotes = Vec::new();
 
-        for quote in quote_res {
+        for fee_option in quote_res.fee_options.clone() {
             if let Some(max_fee) = max_fee_amount {
-                if quote.fee > max_fee {
+                if fee_option.fee_reserve > max_fee {
                     continue;
                 }
             }
@@ -67,7 +66,8 @@ impl Wallet {
             filtered_quotes.push(wallet_melt_quote_from_onchain_response(
                 &self.mint_url,
                 &self.unit,
-                quote,
+                quote_res.clone(),
+                fee_option,
             ));
         }
 

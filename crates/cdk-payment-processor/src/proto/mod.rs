@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse,
     PaymentIdentifier as CdkPaymentIdentifier, PaymentQuoteResponse as CdkPaymentQuoteResponse,
@@ -218,6 +219,30 @@ impl From<CdkPaymentQuoteResponse> for PaymentQuoteResponse {
             state: QuoteState::from(value.state).into(),
             extra_json: value.extra_json.map(|value| value.to_string()),
             estimated_blocks: value.estimated_blocks,
+            fee_options: value
+                .fee_options
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        }
+    }
+}
+
+impl From<MeltQuoteOnchainFeeOption> for OnchainFeeOption {
+    fn from(value: MeltQuoteOnchainFeeOption) -> Self {
+        Self {
+            fee_reserve: value.fee_reserve.into(),
+            estimated_blocks: value.estimated_blocks,
+        }
+    }
+}
+
+impl From<OnchainFeeOption> for MeltQuoteOnchainFeeOption {
+    fn from(value: OnchainFeeOption) -> Self {
+        Self {
+            fee_reserve: value.fee_reserve.into(),
+            estimated_blocks: value.estimated_blocks,
         }
     }
 }
@@ -244,6 +269,13 @@ impl TryFrom<PaymentQuoteResponse> for CdkPaymentQuoteResponse {
                 .extra_json
                 .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok()),
             estimated_blocks: value.estimated_blocks,
+            fee_options: (!value.fee_options.is_empty()).then(|| {
+                value
+                    .fee_options
+                    .into_iter()
+                    .map(Into::into)
+                    .collect::<Vec<_>>()
+            }),
         })
     }
 }
@@ -410,8 +442,9 @@ impl TryFrom<PaymentEventResponse> for cdk_common::payment::Event {
 mod tests {
     use std::str::FromStr;
 
+    use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
     use cdk_common::payment::{
-        Event, MakePaymentResponse, PaymentIdentifier,
+        Event, MakePaymentResponse, OnchainSettings, PaymentIdentifier,
         PaymentQuoteResponse as CdkPaymentQuoteResponse, WaitPaymentResponse,
     };
     use cdk_common::{Amount, CurrencyUnit, MeltQuoteState, QuoteId};
@@ -431,6 +464,10 @@ mod tests {
                 "redirect_url": "https://example.com/pay",
                 "nested": { "attempt": 1 }
             })),
+            fee_options: Some(vec![MeltQuoteOnchainFeeOption {
+                fee_reserve: Amount::from(2),
+                estimated_blocks: 6,
+            }]),
         };
 
         let proto: PaymentQuoteResponse = response.clone().into();
@@ -441,6 +478,30 @@ mod tests {
         assert_eq!(roundtrip.fee, response.fee);
         assert_eq!(roundtrip.state, response.state);
         assert_eq!(roundtrip.extra_json, response.extra_json);
+        assert_eq!(roundtrip.fee_options, response.fee_options);
+    }
+
+    #[test]
+    fn onchain_settings_min_send_roundtrip() {
+        let settings = OnchainSettings {
+            confirmations: 3,
+            min_receive_amount_sat: 1_000,
+            min_send_amount_sat: 546,
+        };
+
+        let proto = super::OnchainSettings {
+            confirmations: settings.confirmations,
+            min_receive_amount_sat: settings.min_receive_amount_sat,
+            min_send_amount_sat: settings.min_send_amount_sat,
+        };
+
+        let roundtrip = OnchainSettings {
+            confirmations: proto.confirmations,
+            min_receive_amount_sat: proto.min_receive_amount_sat,
+            min_send_amount_sat: proto.min_send_amount_sat,
+        };
+
+        assert_eq!(roundtrip, settings);
     }
 
     #[test]

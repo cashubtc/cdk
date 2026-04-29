@@ -669,6 +669,7 @@ impl MintPayment for CdkLdkNode {
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
                     estimated_blocks: None,
+                    fee_options: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -707,6 +708,7 @@ impl MintPayment for CdkLdkNode {
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
                     estimated_blocks: None,
+                    fee_options: None,
                 })
             }
             OutgoingPaymentOptions::Onchain(_) => {

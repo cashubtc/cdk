@@ -205,6 +205,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             onchain: settings.onchain.map(|o| super::OnchainSettings {
                 confirmations: o.confirmations,
                 min_receive_amount_sat: o.min_receive_amount_sat,
+                min_send_amount_sat: o.min_send_amount_sat,
             }),
             custom: settings.custom,
         }))

@@ -266,6 +266,7 @@ impl MintPayment for LNbits {
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
                     estimated_blocks: None,
+                    fee_options: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(_bolt12_options) => {

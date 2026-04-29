@@ -155,6 +155,40 @@ pub enum Error {
         got: Option<PaymentIdentifier>,
     },
 
+    /// Mint attempted to construct an onchain melt quote with zero
+    /// `fee_options`.
+    ///
+    /// Per NUT the mint MUST return at least one `fee_options` item on every
+    /// onchain melt quote. This error is returned when either the payment
+    /// backend failed to provide any confirmation-target data, or the mint
+    /// would have persisted a quote with an empty `fee_options` vec.
+    #[cfg(feature = "mint")]
+    #[error("Onchain melt quote must contain at least one fee_options entry")]
+    OnchainFeeOptionsEmpty,
+
+    /// `fee_options` contains two entries with the same `estimated_blocks`
+    /// value.
+    ///
+    /// Per NUT the mint MUST NOT return multiple `fee_options` items with the
+    /// same `estimated_blocks` value in one quote.
+    #[cfg(feature = "mint")]
+    #[error("Duplicate estimated_blocks {blocks} in onchain fee_options")]
+    OnchainFeeOptionsDuplicateBlocks {
+        /// The duplicated `estimated_blocks` value.
+        blocks: u32,
+    },
+
+    /// `fee_options` contains two entries with the same `fee` value.
+    ///
+    /// Per NUT the mint MUST NOT return multiple `fee_options` items with the
+    /// same `fee` value in one quote.
+    #[cfg(feature = "mint")]
+    #[error("Duplicate fee {fee} in onchain fee_options")]
+    OnchainFeeOptionsDuplicateFee {
+        /// The duplicated fee value (raw amount, no unit).
+        fee: u64,
+    },
+
     /// BIP353 address resolution error
     #[error("Failed to resolve BIP353 address: {0}")]
     Bip353Resolve(String),
@@ -654,7 +688,10 @@ impl Error {
             | Self::LightningAddressParse(_) => true,
 
             #[cfg(feature = "mint")]
-            Self::OnchainQuoteLookupIdMismatch { .. } => true,
+            Self::OnchainQuoteLookupIdMismatch { .. }
+            | Self::OnchainFeeOptionsEmpty
+            | Self::OnchainFeeOptionsDuplicateBlocks { .. }
+            | Self::OnchainFeeOptionsDuplicateFee { .. } => true,
 
             // HTTP Errors
             Self::HttpError(Some(status), _) => {

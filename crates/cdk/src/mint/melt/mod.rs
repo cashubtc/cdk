@@ -18,8 +18,7 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::subscription::Params;
 use cdk_common::{
     MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse, MeltQuoteCustomRequest,
-    MeltQuoteCustomResponse, MeltQuoteOnchainOptions, MeltQuoteOnchainRequest,
-    MeltQuoteOnchainResponse, MeltQuoteResponse,
+    MeltQuoteCustomResponse, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MeltQuoteResponse,
 };
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -291,11 +290,9 @@ impl Mint {
             MeltQuoteRequest::Bolt12(bolt12_request) => Ok(MeltQuoteCreateResponse::Bolt12(
                 self.get_melt_bolt12_quote_impl(&bolt12_request).await?,
             )),
-            MeltQuoteRequest::Onchain(onchain_request) => {
-                Ok(MeltQuoteCreateResponse::Onchain(MeltQuoteOnchainOptions {
-                    quotes: self.get_melt_onchain_quote_impl(&onchain_request).await?,
-                }))
-            }
+            MeltQuoteRequest::Onchain(onchain_request) => Ok(MeltQuoteCreateResponse::Onchain(
+                self.get_melt_onchain_quote_impl(&onchain_request).await?,
+            )),
             MeltQuoteRequest::Custom(request) => {
                 let quote = self.get_melt_custom_quote_impl(&request).await?;
                 let method = PaymentMethod::from(request.method.as_str());
@@ -532,7 +529,7 @@ impl Mint {
     async fn get_melt_onchain_quote_impl(
         &self,
         melt_request: &MeltQuoteOnchainRequest,
-    ) -> Result<Vec<MeltQuoteOnchainResponse<QuoteId>>, Error> {
+    ) -> Result<MeltQuoteOnchainResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("get_melt_onchain_quote");
 
@@ -564,12 +561,9 @@ impl Mint {
             amount: melt_request.amount.with_unit(unit.clone()),
             max_fee_amount: None,
             quote_id: quote_id.clone(),
-            // TODO(#TBD): Emit one quote per supported tier
-            // (immediate/standard/economy) and persist the tier on each
-            // MeltQuote. Today a single tier-less quote is produced, making
-            // Standard/Economy batching in cdk-bdk unreachable via the
-            // standard melt flow. Matching load-bearing site:
-            // crates/cdk-common/src/payment.rs (from_melt_quote_with_fee).
+            // TODO(#TBD): Let wallets request a specific tier when creating
+            // an onchain quote. Today the default backend tier is used until
+            // the wallet selects one of the returned `fee_options`.
             tier: None,
             metadata: None,
         };
@@ -625,21 +619,28 @@ impl Mint {
         // the validated echo.
         let request_lookup_id = Some(PaymentIdentifier::QuoteId(quote_id.clone()));
 
-        let quote = MeltQuote::new(
+        // Onchain backends must return explicit `fee_options`; the mint
+        // validates them before persisting the quote.
+        let Some(fee_options) = payment_quote.fee_options.clone() else {
+            return Err(Error::OnchainFeeOptionsEmpty);
+        };
+
+        // `MeltQuote::new_onchain` applies the NUT validation
+        // (non-empty + unique estimated_blocks + unique fee_reserve). Failures are
+        // returned before the quote is persisted, so a backend that violates
+        // the contract never leaves state behind in the mint.
+        let quote = MeltQuote::new_onchain(
             Some(quote_id),
             MeltPaymentRequest::Onchain {
                 address: melt_request.request.clone(),
             },
             unit.clone(),
             payment_quote.amount,
-            payment_quote.fee,
             unix_time() + melt_ttl,
             request_lookup_id,
-            None,
-            PaymentMethod::Known(KnownMethod::Onchain),
             payment_quote.extra_json,
-            payment_quote.estimated_blocks,
-        );
+            fee_options,
+        )?;
 
         let mut tx = self.localstore.begin_transaction().await?;
         tx.add_melt_quote(quote.clone()).await?;
@@ -651,7 +652,7 @@ impl Mint {
             METRICS.record_mint_operation("get_melt_onchain_quote", true);
         }
 
-        Ok(vec![quote.into()])
+        Ok(quote.into())
     }
 
     /// Implementation of get_melt_custom_quote
@@ -870,9 +871,8 @@ impl Mint {
                 })
             }
             PaymentMethod::Known(KnownMethod::Onchain) => {
-                // Onchain melts never return NUT-08 change outputs.
-                let _ = change;
-                let response: MeltQuoteOnchainResponse<QuoteId> = quote.clone().into();
+                let mut response: MeltQuoteOnchainResponse<QuoteId> = quote.clone().into();
+                response.change = change.clone();
                 MeltQuoteResponse::Onchain(response)
             }
             _ => {

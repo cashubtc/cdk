@@ -2315,6 +2315,7 @@ impl MintPayment for CustomPaymentProcessor {
                         "redirect_url": "https://example.com/pay/custom-lookup-id",
                         "status": "pending"
                     })),
+                    fee_options: None,
                 })
             }
             _ => Err(cdk_common::payment::Error::UnsupportedPaymentOption),

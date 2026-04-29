@@ -14,11 +14,11 @@ use axum::response::{IntoResponse, Response};
 use cdk::mint::QuoteId;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
-    BatchCheckMintQuoteRequest, BatchMintRequest, MeltQuoteBolt11Request, MeltQuoteBolt12Request,
-    MeltQuoteCustomRequest, MeltQuoteOnchainRequest, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
-    MintQuoteCustomRequest, MintQuoteOnchainRequest, MintQuoteOnchainResponse, MintRequest,
-    MintResponse,
+    BatchCheckMintQuoteRequest, BatchMintRequest, MeltOnchainRequest, MeltQuoteBolt11Request,
+    MeltQuoteBolt12Request, MeltQuoteCustomRequest, MeltQuoteOnchainRequest,
+    MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteBolt12Request,
+    MintQuoteBolt12Response, MintQuoteCustomRequest, MintQuoteOnchainRequest,
+    MintQuoteOnchainResponse, MintRequest, MintResponse,
 };
 use cdk::{MeltQuoteCreateResponse, MeltQuoteResponse};
 use serde_json::Value;
@@ -88,7 +88,7 @@ fn melt_quote_create_response_to_json(response: MeltQuoteCreateResponse<QuoteId>
     match response {
         MeltQuoteCreateResponse::Bolt11(r) => Json(r).into_response(),
         MeltQuoteCreateResponse::Bolt12(r) => Json(r).into_response(),
-        MeltQuoteCreateResponse::Onchain(r) => Json(r.quotes).into_response(),
+        MeltQuoteCreateResponse::Onchain(r) => Json(r).into_response(),
         MeltQuoteCreateResponse::Custom((_, r)) => Json(r).into_response(),
     }
 }
@@ -452,7 +452,7 @@ pub async fn post_melt_custom_quote(
                 .map_err(into_response)?;
 
             return match response {
-                MeltQuoteCreateResponse::Onchain(r) => Ok(Json(r.quotes).into_response()),
+                MeltQuoteCreateResponse::Onchain(r) => Ok(Json(r).into_response()),
                 _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
             };
         }
@@ -537,22 +537,6 @@ async fn post_melt_custom_internal(
     Ok(res)
 }
 
-/// Melt tokens with custom payment method
-#[instrument(skip_all, fields(method = ?method))]
-pub async fn post_melt_custom(
-    auth: AuthHeader,
-    prefer: PreferHeader,
-    State(state): State<MintState>,
-    Path(method): Path<String>,
-    Json(payload): Json<cdk::nuts::MeltRequest<QuoteId>>,
-) -> Result<Response, Response> {
-    let res = post_melt_custom_internal(auth, prefer, state, method, payload)
-        .await
-        .map_err(into_response)?;
-
-    Ok(melt_quote_response_to_json(res))
-}
-
 // ============================================================================
 // CACHED HANDLERS FOR NUT-19 SUPPORT
 // ============================================================================
@@ -597,18 +581,25 @@ pub async fn cache_post_melt_custom(
     prefer: PreferHeader,
     state: State<MintState>,
     method: Path<String>,
-    payload: Json<cdk::nuts::MeltRequest<QuoteId>>,
+    payload: Json<Value>,
 ) -> Result<Response, Response> {
     use std::ops::Deref;
 
     let State(mint_state) = state.clone();
-    let json_extracted_payload = payload.deref();
+    let method = method.0;
+    tracing::debug!(method = %method, "melt request received");
+    let parsed_payload = parse_melt_payload(&method, payload.deref().clone())?;
 
-    let cache_key = match mint_state.cache.calculate_key(json_extracted_payload) {
+    let cache_key = match mint_state.cache.calculate_key(&parsed_payload) {
         Some(key) => key,
         None => {
             // Could not calculate key, just return the handler result
-            return post_melt_custom(auth, prefer, state, method, payload).await;
+            let result =
+                post_melt_custom_internal(auth, prefer, mint_state.clone(), method, parsed_payload)
+                    .await
+                    .map_err(into_response)?;
+
+            return Ok(melt_quote_response_to_json(result));
         }
     };
 
@@ -625,7 +616,7 @@ pub async fn cache_post_melt_custom(
         prefer,
         mint_state.clone(),
         method.clone(),
-        json_extracted_payload.clone(),
+        parsed_payload,
     )
     .await
     .map_err(into_response)?;
@@ -633,6 +624,36 @@ pub async fn cache_post_melt_custom(
     mint_state.cache.set(cache_key, &result).await;
 
     Ok(melt_quote_response_to_json(result))
+}
+
+// The `Err` variant carries an axum `Response` (a pre-built 400 with the full
+// body), which is large but matches the style used throughout this module.
+// Refactoring to a boxed/smaller error would be a cross-cutting change outside
+// the scope of this bug fix.
+#[allow(clippy::result_large_err)]
+fn parse_melt_payload(
+    method: &str,
+    payload: Value,
+) -> Result<cdk::nuts::MeltRequest<QuoteId>, Response> {
+    if method == "onchain" {
+        let request: MeltOnchainRequest<QuoteId> =
+            serde_json::from_value(payload).map_err(|e| {
+                tracing::warn!(
+                    method = %method,
+                    "failed to parse onchain melt request body: {e}",
+                );
+                into_response(cdk::Error::InvalidPaymentRequest)
+            })?;
+        Ok(request.into())
+    } else {
+        serde_json::from_value(payload).map_err(|e| {
+            tracing::warn!(
+                method = %method,
+                "failed to parse melt request body: {e}",
+            );
+            into_response(cdk::Error::InvalidPaymentRequest)
+        })
+    }
 }
 
 /// Cached version of post_batch_mint for NUT-19 caching support

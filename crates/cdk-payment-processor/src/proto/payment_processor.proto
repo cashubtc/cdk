@@ -30,6 +30,7 @@ message SettingsResponse {
 message OnchainSettings {
     uint32 confirmations = 1;
     uint64 min_receive_amount_sat = 2;
+    uint64 min_send_amount_sat = 3;
 }
 
 message Bolt12Settings {
@@ -198,9 +199,15 @@ message PaymentQuoteResponse {
   AmountMessage fee = 3;
   QuoteState state = 4;
   optional uint32 estimated_blocks = 6;
+  repeated OnchainFeeOption fee_options = 7;
   // Extra payment-method-specific fields as JSON string
   // For custom payment methods, these fields are flattened into the response
   optional string extra_json = 5;
+}
+
+message OnchainFeeOption {
+  uint64 fee_reserve = 1;
+  uint32 estimated_blocks = 2;
 }
 
 message Bolt11OutgoingPaymentOptions {

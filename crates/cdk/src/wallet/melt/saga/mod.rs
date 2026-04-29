@@ -40,14 +40,14 @@ use cdk_common::wallet::{
     MeltOperationData, MeltQuote, MeltSagaState, OperationData, ProofInfo, Transaction,
     TransactionDirection, WalletSaga, WalletSagaState,
 };
-use cdk_common::MeltQuoteState;
+use cdk_common::{MeltQuoteState, PaymentMethod};
 use tracing::instrument;
 use uuid::Uuid;
 
 use self::compensation::{ReleaseMeltQuote, RevertProofReservation};
 use self::state::{Finalized, Initial, MeltRequested, PaymentPending, Prepared};
 use super::MeltConfirmOptions;
-use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::nut00::{KnownMethod, ProofsMethods};
 use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, State};
 use crate::util::unix_time;
 use crate::wallet::keysets::KeysetFilter;
@@ -877,9 +877,23 @@ impl<'a> MeltSaga<'a, MeltRequested> {
         let request = MeltRequest::new(
             quote_info.id.clone(),
             self.state_data.final_proofs.clone(),
-            Some(self.state_data.premint_secrets.blinded_messages()),
+            if self.state_data.premint_secrets.is_empty() {
+                None
+            } else {
+                Some(self.state_data.premint_secrets.blinded_messages())
+            },
         )
         .prefer_async(true);
+
+        let request = if quote_info.payment_method == PaymentMethod::Known(KnownMethod::Onchain) {
+            request.estimated_blocks(
+                quote_info
+                    .estimated_blocks
+                    .ok_or(Error::InvalidPaymentRequest)?,
+            )
+        } else {
+            request
+        };
 
         let melt_result = self
             .wallet
@@ -1225,8 +1239,11 @@ mod tests {
     use std::sync::Arc;
 
     use cdk_common::amount::{FeeAndAmounts, SplitTarget};
-    use cdk_common::nuts::State;
-    use cdk_common::MeltQuoteState;
+    use cdk_common::nut00::KnownMethod;
+    use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
+    use cdk_common::nuts::{CurrencyUnit, State};
+    use cdk_common::wallet::OperationData;
+    use cdk_common::{MeltQuoteOnchainResponse, MeltQuoteResponse, MeltQuoteState, PaymentMethod};
     use uuid::Uuid;
 
     use super::{finalize_melt_common, MeltSaga};
@@ -1236,6 +1253,7 @@ mod tests {
         create_test_db, create_test_wallet_with_mock, test_keyset_id, test_melt_quote,
         test_mint_url, test_proof_info, MockMintConnector,
     };
+    use crate::wallet::MeltConfirmOptions;
     use crate::{Amount, Error};
 
     #[tokio::test]
@@ -1315,6 +1333,89 @@ mod tests {
         assert_eq!(
             stored[0].used_by_operation,
             Some(prepared.state_data.operation_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_onchain_melt_sends_change_outputs_when_change_expected() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let proof_info = test_proof_info(keyset_id, 1200, mint_url.clone());
+        let proof = proof_info.proof.clone();
+
+        let mut quote = test_melt_quote();
+        quote.amount = Amount::from(1000);
+        quote.fee_reserve = Amount::from(10);
+        quote.payment_method = PaymentMethod::Known(KnownMethod::Onchain);
+        quote.request = "bcrt1qtestaddress".to_string();
+        quote.estimated_blocks = Some(6);
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote.clone()).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        mock_client.set_post_melt_response(Ok(MeltQuoteResponse::Onchain(
+            MeltQuoteOnchainResponse {
+                quote: quote_id.clone(),
+                amount: quote.amount,
+                unit: CurrencyUnit::Sat,
+                state: MeltQuoteState::Pending,
+                expiry: quote.expiry,
+                request: quote.request.clone(),
+                fee_options: vec![MeltQuoteOnchainFeeOption {
+                    fee_reserve: quote.fee_reserve,
+                    estimated_blocks: 6,
+                }],
+                selected_estimated_blocks: Some(6),
+                outpoint: None,
+                change: None,
+            },
+        )));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+
+        let saga = MeltSaga::new(&wallet);
+        let requested = saga
+            .prepare_with_proofs(&quote_id, vec![proof], HashMap::new())
+            .await
+            .unwrap()
+            .request_melt_with_options(MeltConfirmOptions::new())
+            .await
+            .unwrap();
+
+        let stored_saga = db
+            .get_saga(&requested.state_data.operation_id)
+            .await
+            .unwrap()
+            .expect("melt saga must be stored");
+        let OperationData::Melt(data) = stored_saga.data else {
+            panic!("stored saga must contain melt operation data");
+        };
+        assert!(
+            data.change_amount
+                .is_some_and(|amount| amount > Amount::ZERO),
+            "onchain melt should record expected change amount"
+        );
+        assert!(
+            data.change_blinded_messages
+                .as_ref()
+                .is_some_and(|outputs| !outputs.is_empty()),
+            "onchain melt should persist blinded change outputs for recovery"
+        );
+
+        let _result = requested.execute_async(HashMap::new()).await.unwrap();
+        let (method, request) = mock_client
+            .last_post_melt_request()
+            .expect("post_melt request must be captured");
+
+        assert_eq!(method, PaymentMethod::Known(KnownMethod::Onchain));
+        assert_eq!(request.selected_estimated_blocks(), Some(6));
+        assert!(
+            request
+                .outputs()
+                .as_ref()
+                .is_some_and(|outputs| !outputs.is_empty()),
+            "onchain melt request should include blinded change outputs"
         );
     }
 

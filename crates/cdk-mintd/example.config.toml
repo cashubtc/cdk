@@ -119,6 +119,8 @@ onchain_backend = "none"
 # mnemonic = "your twelve or twenty-four word mnemonic phrase here"
 # network = "regtest"  # REQUIRED: mainnet, testnet, signet, regtest (no default)
 # num_confs = 3        # Number of confirmations required (must be >= 1; 0 is rejected)
+# min_receive_amount_sat = 1000  # Minimum inbound amount that counts toward minting
+# min_send_amount_sat = 546      # Minimum outbound melt/send amount (must be >= 1)
 # chain_source_type = "bitcoinrpc"  # esplora, bitcoinrpc
 #
 # # Bitcoin RPC configuration (when chain_source_type = "bitcoinrpc")
@@ -130,6 +132,18 @@ onchain_backend = "none"
 #
 # # Esplora configuration (when chain_source_type = "esplora")
 # # esplora_url = "https://mutinynet.com/api"
+# # Keep low for public Esplora servers to avoid rate limits.
+# # esplora_parallel_requests = 1
+#
+# # Conservative quote-time fee estimation. These values intentionally
+# # over-reserve so the exact payment-time BDK fee is unlikely to exceed the
+# # quoted reserve. Excess reserve is returned as change in the melt flow.
+# # [bdk.batch_config]
+# # fee_fallback_sat_per_vb = 2.0
+# # fee_cache_ttl_secs = 60
+# # quote_max_input_count = 24
+# # quote_fixed_safety_sat = 500
+# # quote_safety_multiplier = 1.25
 
 # [cln]
 # rpc_path = "/path/to/.lightning/bitcoin/lightning-rpc"

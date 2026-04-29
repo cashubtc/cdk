@@ -259,6 +259,21 @@ pub struct BatchConfig {
     /// non-immediate batch
     #[serde(default = "default_bdk_min_batch_threshold")]
     pub min_batch_threshold: usize,
+    /// Quote-time fallback fee rate used when chain estimation fails, in sat/vB.
+    #[serde(default = "default_bdk_fee_fallback_sat_per_vb")]
+    pub fee_fallback_sat_per_vb: f64,
+    /// Fee-rate cache TTL, in seconds.
+    #[serde(default = "default_bdk_fee_cache_ttl_secs")]
+    pub fee_cache_ttl_secs: u64,
+    /// Maximum input count reserved for a quote estimate.
+    #[serde(default = "default_bdk_quote_max_input_count")]
+    pub quote_max_input_count: usize,
+    /// Fixed safety margin added to quote-time fee estimates, in sats.
+    #[serde(default = "default_bdk_quote_fixed_safety_sat")]
+    pub quote_fixed_safety_sat: u64,
+    /// Multiplicative safety margin applied after the raw quote fee estimate.
+    #[serde(default = "default_bdk_quote_safety_multiplier")]
+    pub quote_safety_multiplier: f64,
 }
 
 #[cfg(feature = "bdk")]
@@ -270,6 +285,11 @@ impl Default for BatchConfig {
             standard_deadline_secs: default_bdk_standard_deadline_secs(),
             economy_deadline_secs: default_bdk_economy_deadline_secs(),
             min_batch_threshold: default_bdk_min_batch_threshold(),
+            fee_fallback_sat_per_vb: default_bdk_fee_fallback_sat_per_vb(),
+            fee_cache_ttl_secs: default_bdk_fee_cache_ttl_secs(),
+            quote_max_input_count: default_bdk_quote_max_input_count(),
+            quote_fixed_safety_sat: default_bdk_quote_fixed_safety_sat(),
+            quote_safety_multiplier: default_bdk_quote_safety_multiplier(),
         }
     }
 }
@@ -289,6 +309,13 @@ pub struct Bdk {
     pub chain_source_type: Option<String>,
     /// Esplora URL (when chain_source_type = "esplora")
     pub esplora_url: Option<String>,
+    /// Number of parallel Esplora requests during wallet sync.
+    ///
+    /// Public Esplora servers often rate-limit bursty clients, so the default
+    /// is conservative. Increase only when using a private or higher-limit
+    /// Esplora server.
+    #[serde(default = "default_bdk_esplora_parallel_requests")]
+    pub esplora_parallel_requests: usize,
     /// Bitcoin RPC host (when chain_source_type = "bitcoinrpc")
     pub bitcoind_rpc_host: Option<String>,
     /// Bitcoin RPC port
@@ -313,6 +340,9 @@ pub struct Bdk {
     /// Minimum receive amount in sats
     #[serde(default = "default_bdk_min_receive_amount_sat")]
     pub min_receive_amount_sat: u64,
+    /// Minimum send amount in sats
+    #[serde(default = "default_bdk_min_send_amount_sat")]
+    pub min_send_amount_sat: u64,
     /// Wallet sync interval in seconds
     #[serde(default = "default_bdk_sync_interval_secs")]
     pub sync_interval_secs: u64,
@@ -327,6 +357,7 @@ impl Default for Bdk {
             network: None,
             chain_source_type: None,
             esplora_url: None,
+            esplora_parallel_requests: default_bdk_esplora_parallel_requests(),
             bitcoind_rpc_host: None,
             bitcoind_rpc_port: None,
             bitcoind_rpc_user: None,
@@ -335,8 +366,30 @@ impl Default for Bdk {
             batch_config: BatchConfig::default(),
             num_confs: default_bdk_num_confs(),
             min_receive_amount_sat: default_bdk_min_receive_amount_sat(),
+            min_send_amount_sat: default_bdk_min_send_amount_sat(),
             sync_interval_secs: default_bdk_sync_interval_secs(),
         }
+    }
+}
+
+#[cfg(feature = "bdk")]
+impl Bdk {
+    /// Validate BDK settings that must be rejected before the backend starts.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.num_confs == 0 {
+            return Err(
+                "BDK num_confs must be >= 1 (0 is rejected because it still \
+                 requires an on-chain anchor and is almost never intended; \
+                 use 1 for 'any confirmation')"
+                    .to_string(),
+            );
+        }
+
+        if self.min_send_amount_sat == 0 {
+            return Err("BDK min_send_amount_sat must be >= 1".to_string());
+        }
+
+        Ok(())
     }
 }
 
@@ -351,8 +404,18 @@ fn default_bdk_min_receive_amount_sat() -> u64 {
 }
 
 #[cfg(feature = "bdk")]
+fn default_bdk_min_send_amount_sat() -> u64 {
+    546
+}
+
+#[cfg(feature = "bdk")]
 fn default_bdk_sync_interval_secs() -> u64 {
     30
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_esplora_parallel_requests() -> usize {
+    1
 }
 
 #[cfg(feature = "bdk")]
@@ -378,6 +441,31 @@ fn default_bdk_economy_deadline_secs() -> u64 {
 #[cfg(feature = "bdk")]
 fn default_bdk_min_batch_threshold() -> usize {
     1
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_fee_fallback_sat_per_vb() -> f64 {
+    2.0
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_fee_cache_ttl_secs() -> u64 {
+    60
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_quote_max_input_count() -> usize {
+    24
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_quote_fixed_safety_sat() -> u64 {
+    500
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_quote_safety_multiplier() -> f64 {
+    1.25
 }
 
 #[cfg(feature = "lnbits")]
@@ -980,6 +1068,14 @@ mod tests {
 
     use super::*;
 
+    #[cfg(feature = "bdk")]
+    fn clear_bdk_env_vars() {
+        std::env::remove_var(crate::env_vars::BDK_MNEMONIC_ENV_VAR);
+        std::env::remove_var(crate::env_vars::BDK_NETWORK_ENV_VAR);
+        std::env::remove_var(crate::env_vars::BDK_MIN_SEND_AMOUNT_SAT_ENV_VAR);
+        std::env::remove_var(crate::env_vars::ENV_ONCHAIN_BACKEND);
+    }
+
     #[test]
     fn test_info_debug_impl() {
         // Create a sample Info struct with test data
@@ -1024,6 +1120,77 @@ mod tests {
 
         // The empty mnemonic should still be hashed
         assert!(debug_output.contains("<hashed: "));
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_default_min_send_amount_sat() {
+        assert_eq!(Bdk::default().min_send_amount_sat, 546);
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_config_min_send_amount_sat_override() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_bdk_min_send_config");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[bdk]
+min_send_amount_sat = 1200
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings = Settings::new(Some(&config_path));
+
+        assert_eq!(
+            settings
+                .bdk
+                .as_ref()
+                .expect("bdk config should be present")
+                .min_send_amount_sat,
+            1200
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_env_min_send_amount_sat_override() {
+        clear_bdk_env_vars();
+        std::env::set_var(crate::env_vars::ENV_ONCHAIN_BACKEND, "bdk");
+        std::env::set_var(crate::env_vars::BDK_NETWORK_ENV_VAR, "regtest");
+        std::env::set_var(crate::env_vars::BDK_MIN_SEND_AMOUNT_SAT_ENV_VAR, "777");
+
+        let mut settings = Settings::default();
+        settings.from_env().expect("Failed to apply env vars");
+
+        assert_eq!(
+            settings
+                .bdk
+                .as_ref()
+                .expect("bdk config should be present")
+                .min_send_amount_sat,
+            777
+        );
+
+        clear_bdk_env_vars();
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_min_send_amount_sat_zero_rejected() {
+        let bdk = Bdk {
+            min_send_amount_sat: 0,
+            ..Default::default()
+        };
+
+        let err = bdk.validate().expect_err("zero send minimum should fail");
+
+        assert!(err.contains("min_send_amount_sat"));
     }
 
     #[test]

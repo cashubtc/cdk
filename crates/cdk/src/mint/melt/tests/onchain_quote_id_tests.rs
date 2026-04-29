@@ -6,6 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::nut00::KnownMethod;
+use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
 use cdk_common::nuts::{CurrencyUnit, MeltQuoteState};
 use cdk_common::payment::{
     self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
@@ -36,6 +37,16 @@ enum EchoBehavior {
     WrongVariant(String),
 }
 
+/// What to put in [`PaymentQuoteResponse::fee_options`].
+#[derive(Debug, Clone)]
+enum FeeOptionsBehavior {
+    /// Return neither `fee_options` nor `estimated_blocks` — the mint must
+    /// reject with `OnchainFeeOptionsEmpty`.
+    None,
+    /// Return an explicit, well-formed multi-tier `fee_options` list.
+    Explicit(Vec<MeltQuoteOnchainFeeOption>),
+}
+
 /// Minimal `MintPayment` mock that only implements the onchain quote path.
 ///
 /// Everything else (incoming payments, `make_payment`, status polling) is
@@ -48,10 +59,11 @@ struct OnchainQuoteMock {
     fee: Amount<CurrencyUnit>,
     confirmations: u32,
     echo: EchoBehavior,
+    fee_options: FeeOptionsBehavior,
 }
 
 impl OnchainQuoteMock {
-    fn new(echo: EchoBehavior) -> Self {
+    fn with_fee_options(echo: EchoBehavior, fee_options: FeeOptionsBehavior) -> Self {
         let unit = CurrencyUnit::Sat;
         Self {
             amount: Amount::new(1_000, unit.clone()),
@@ -59,6 +71,7 @@ impl OnchainQuoteMock {
             unit,
             confirmations: 1,
             echo,
+            fee_options,
         }
     }
 }
@@ -75,6 +88,7 @@ impl MintPayment for OnchainQuoteMock {
             onchain: Some(OnchainSettings {
                 confirmations: self.confirmations,
                 min_receive_amount_sat: 0,
+                min_send_amount_sat: 0,
             }),
             custom: std::collections::HashMap::new(),
         })
@@ -106,13 +120,19 @@ impl MintPayment for OnchainQuoteMock {
             EchoBehavior::WrongVariant(label) => Some(PaymentIdentifier::CustomId(label.clone())),
         };
 
+        let (estimated_blocks, fee_options) = match &self.fee_options {
+            FeeOptionsBehavior::None => (None, None),
+            FeeOptionsBehavior::Explicit(options) => (None, Some(options.clone())),
+        };
+
         Ok(PaymentQuoteResponse {
             request_lookup_id,
             amount: self.amount.clone(),
             fee: self.fee.clone(),
             state: MeltQuoteState::Unpaid,
             extra_json: None,
-            estimated_blocks: Some(6),
+            estimated_blocks,
+            fee_options,
         })
     }
 
@@ -152,8 +172,22 @@ impl MintPayment for OnchainQuoteMock {
 }
 
 async fn create_onchain_test_mint(echo: EchoBehavior) -> Result<Mint, Error> {
+    create_onchain_test_mint_with_fee_options(
+        echo,
+        FeeOptionsBehavior::Explicit(vec![MeltQuoteOnchainFeeOption {
+            fee_reserve: Amount::from(10),
+            estimated_blocks: 6,
+        }]),
+    )
+    .await
+}
+
+async fn create_onchain_test_mint_with_fee_options(
+    echo: EchoBehavior,
+    fee_options: FeeOptionsBehavior,
+) -> Result<Mint, Error> {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
-        Arc::new(OnchainQuoteMock::new(echo));
+        Arc::new(OnchainQuoteMock::with_fee_options(echo, fee_options));
 
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
     let mut mint_builder = MintBuilder::new(db.clone());
@@ -202,8 +236,8 @@ async fn onchain_quote_uses_mint_generated_id_when_backend_echoes() {
         cdk_common::MeltQuoteCreateResponse::Onchain(o) => o,
         other => panic!("expected onchain quote response, got {:?}", other),
     };
-    assert_eq!(options.quotes.len(), 1, "expected single tier-less quote");
-    let quote_id = options.quotes[0].quote.clone();
+    assert_eq!(options.fee_options.len(), 1, "expected single fee option");
+    let quote_id = options.quote.clone();
 
     // The stored quote must be retrievable under that id, and its persisted
     // `request_lookup_id` must be the deterministic echo (so the saga's
@@ -315,4 +349,156 @@ async fn onchain_quote_rejects_wrong_identifier_variant() {
 
     let quotes = mint.localstore().get_melt_quotes().await.unwrap();
     assert!(quotes.is_empty());
+}
+
+/// Backend returns neither `fee_options` nor `estimated_blocks` — the mint
+/// MUST reject with `OnchainFeeOptionsEmpty` rather than inventing a
+/// default confirmation target, and nothing must be persisted.
+#[tokio::test]
+async fn onchain_quote_rejects_empty_fee_options() {
+    let mint =
+        create_onchain_test_mint_with_fee_options(EchoBehavior::Echo, FeeOptionsBehavior::None)
+            .await
+            .unwrap();
+
+    let err = mint
+        .get_melt_quote(onchain_melt_request())
+        .await
+        .expect_err("missing fee_options + estimated_blocks must be rejected");
+
+    match err {
+        Error::OnchainFeeOptionsEmpty => {}
+        other => panic!("expected OnchainFeeOptionsEmpty, got {other:?}"),
+    }
+
+    let quotes = mint.localstore().get_melt_quotes().await.unwrap();
+    assert!(
+        quotes.is_empty(),
+        "no MeltQuote may be persisted when the backend violates the \
+         fee_options contract"
+    );
+}
+
+/// Backend returns `fee_options` with duplicate `estimated_blocks` — must
+/// reject with `OnchainFeeOptionsDuplicateBlocks` and persist nothing.
+#[tokio::test]
+async fn onchain_quote_rejects_duplicate_estimated_blocks() {
+    let dup_blocks = vec![
+        MeltQuoteOnchainFeeOption {
+            fee_reserve: Amount::from(100),
+            estimated_blocks: 6,
+        },
+        MeltQuoteOnchainFeeOption {
+            fee_reserve: Amount::from(200),
+            estimated_blocks: 6,
+        },
+    ];
+
+    let mint = create_onchain_test_mint_with_fee_options(
+        EchoBehavior::Echo,
+        FeeOptionsBehavior::Explicit(dup_blocks),
+    )
+    .await
+    .unwrap();
+
+    let err = mint
+        .get_melt_quote(onchain_melt_request())
+        .await
+        .expect_err("duplicate estimated_blocks must be rejected");
+
+    match err {
+        Error::OnchainFeeOptionsDuplicateBlocks { blocks: 6 } => {}
+        other => panic!("expected OnchainFeeOptionsDuplicateBlocks {{ blocks: 6 }}, got {other:?}"),
+    }
+
+    let quotes = mint.localstore().get_melt_quotes().await.unwrap();
+    assert!(quotes.is_empty());
+}
+
+/// Backend returns `fee_options` with duplicate `fee_reserve` — must reject with
+/// `OnchainFeeOptionsDuplicateFee` and persist nothing.
+#[tokio::test]
+async fn onchain_quote_rejects_duplicate_fee() {
+    let dup_fee = vec![
+        MeltQuoteOnchainFeeOption {
+            fee_reserve: Amount::from(100),
+            estimated_blocks: 1,
+        },
+        MeltQuoteOnchainFeeOption {
+            fee_reserve: Amount::from(100),
+            estimated_blocks: 6,
+        },
+    ];
+
+    let mint = create_onchain_test_mint_with_fee_options(
+        EchoBehavior::Echo,
+        FeeOptionsBehavior::Explicit(dup_fee),
+    )
+    .await
+    .unwrap();
+
+    let err = mint
+        .get_melt_quote(onchain_melt_request())
+        .await
+        .expect_err("duplicate fee must be rejected");
+
+    match err {
+        Error::OnchainFeeOptionsDuplicateFee { fee: 100 } => {}
+        other => panic!("expected OnchainFeeOptionsDuplicateFee {{ fee: 100 }}, got {other:?}"),
+    }
+
+    let quotes = mint.localstore().get_melt_quotes().await.unwrap();
+    assert!(quotes.is_empty());
+}
+
+/// Happy path with multiple well-formed tiers: the quote persists and the
+/// returned response echoes the full `fee_options` list verbatim.
+#[tokio::test]
+async fn onchain_quote_accepts_multi_tier_fee_options() {
+    let tiers = vec![
+        MeltQuoteOnchainFeeOption {
+            fee_reserve: Amount::from(500),
+            estimated_blocks: 1,
+        },
+        MeltQuoteOnchainFeeOption {
+            fee_reserve: Amount::from(200),
+            estimated_blocks: 6,
+        },
+        MeltQuoteOnchainFeeOption {
+            fee_reserve: Amount::from(50),
+            estimated_blocks: 144,
+        },
+    ];
+
+    let mint = create_onchain_test_mint_with_fee_options(
+        EchoBehavior::Echo,
+        FeeOptionsBehavior::Explicit(tiers.clone()),
+    )
+    .await
+    .unwrap();
+
+    let response = mint.get_melt_quote(onchain_melt_request()).await.unwrap();
+    let options = match response {
+        cdk_common::MeltQuoteCreateResponse::Onchain(o) => o,
+        other => panic!("expected onchain quote response, got {other:?}"),
+    };
+
+    assert_eq!(
+        options.fee_options, tiers,
+        "mint must round-trip fee_options verbatim when the backend supplies \
+         a well-formed list"
+    );
+    assert!(
+        options.selected_estimated_blocks.is_none(),
+        "selected_estimated_blocks must be None until the wallet picks a tier"
+    );
+
+    // The persisted quote must carry the same list (fixed for lifetime).
+    let stored = mint
+        .localstore()
+        .get_melt_quote(&options.quote)
+        .await
+        .unwrap()
+        .expect("quote must be persisted");
+    assert_eq!(stored.fee_options(), tiers.as_slice());
 }

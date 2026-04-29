@@ -40,6 +40,7 @@ let backend = CdkBdk::new(
     Some(BatchConfig::default()),
     num_confs,
     min_receive_amount_sat,
+    min_send_amount_sat,
     sync_interval_secs,
     Some(30),                    // shutdown_timeout_secs
     Some(SyncConfig::default()),
