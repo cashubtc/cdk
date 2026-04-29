@@ -21,8 +21,8 @@ use crate::cdk_payment::MakePaymentResponse;
 use crate::mint::melt::shared;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::Verification;
-use crate::mint::{MeltQuoteBolt11Response, MeltRequest};
-use crate::Mint;
+use crate::mint::MeltRequest;
+use crate::{MeltQuoteResponse, Mint};
 
 mod compensation;
 mod state;
@@ -576,7 +576,7 @@ impl MeltSaga<SetupComplete> {
     pub async fn make_payment(
         self,
         settlement: SettlementDecision,
-    ) -> Result<MeltSaga<PaymentConfirmed>, Error> {
+    ) -> Result<PaymentOutcome, Error> {
         let payment_result = match settlement {
             SettlementDecision::Internal { amount } => self.handle_internal_payment(amount),
             SettlementDecision::RequiresExternalPayment => {
@@ -597,21 +597,21 @@ impl MeltSaga<SetupComplete> {
                             "Lightning payment for quote {} unknown.",
                             self.state_data.quote.id
                         );
-                        return Err(Error::PendingQuote);
+                        return Ok(PaymentOutcome::Pending);
                     }
                     MeltQuoteState::Pending => {
                         tracing::warn!(
                             "LN payment pending, proofs remain pending for quote: {}",
                             self.state_data.quote.id
                         );
-                        return Err(Error::PendingQuote);
+                        return Ok(PaymentOutcome::Pending);
                     }
                 }
             }
         };
 
         // Transition to PaymentConfirmed state
-        Ok(MeltSaga {
+        Ok(PaymentOutcome::Confirmed(Box::new(MeltSaga {
             mint: self.mint,
             db: self.db,
             pubsub: self.pubsub,
@@ -623,7 +623,7 @@ impl MeltSaga<SetupComplete> {
                 quote: self.state_data.quote,
                 payment_result,
             },
-        })
+        })))
     }
 
     fn handle_internal_payment(&self, amount: Amount<CurrencyUnit>) -> MakePaymentResponse {
@@ -858,7 +858,7 @@ impl MeltSaga<PaymentConfirmed> {
     /// - `BlindedMessageAlreadySigned`: Change outputs already signed
     /// - `UnitMismatch`: Failed to convert payment amount to quote unit
     #[instrument(skip_all)]
-    pub async fn finalize(self) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    pub async fn finalize(mut self) -> Result<MeltQuoteResponse<QuoteId>, Error> {
         tracing::info!("TX2: Finalizing melt (mark spent + change)");
 
         let total_spent: Amount<CurrencyUnit> = self
@@ -871,7 +871,7 @@ impl MeltSaga<PaymentConfirmed> {
                 Error::UnitMismatch
             })?;
 
-        let payment_preimage = self.state_data.payment_result.payment_proof.clone();
+        let payment_proof = self.state_data.payment_result.payment_proof.clone();
         let payment_lookup_id = &self.state_data.payment_result.payment_lookup_id;
 
         // Persist Finalizing state so crash recovery knows TX1 may have completed.
@@ -881,7 +881,7 @@ impl MeltSaga<PaymentConfirmed> {
             let finalization_data = MeltFinalizationData {
                 total_spent: total_spent.clone(),
                 payment_lookup_id: payment_lookup_id.clone(),
-                payment_proof: payment_preimage.clone(),
+                payment_proof: payment_proof.clone(),
             };
             tx.update_saga_with_finalization_data(
                 &self.operation_id,
@@ -904,7 +904,7 @@ impl MeltSaga<PaymentConfirmed> {
             &self.pubsub,
             &self.state_data.quote,
             total_spent,
-            payment_preimage.clone(),
+            payment_proof.clone(),
             payment_lookup_id,
             Some(self.operation_id),
         )
@@ -928,20 +928,27 @@ impl MeltSaga<PaymentConfirmed> {
             METRICS.record_mint_operation("melt_bolt11", true);
         }
 
-        let response = MeltQuoteBolt11Response {
-            amount: self.state_data.quote.amount().into(),
-            payment_preimage,
-            change,
-            quote: self.state_data.quote.id.clone(),
-            fee_reserve: self.state_data.quote.fee_reserve().into(),
-            state: MeltQuoteState::Paid,
-            expiry: self.state_data.quote.expiry,
-            request: Some(self.state_data.quote.request.to_string()),
-            unit: Some(self.state_data.quote.unit.clone()),
-        };
+        self.state_data.quote.payment_proof = payment_proof;
+        self.state_data.quote.state = MeltQuoteState::Paid;
+        let response = self.state_data.quote.into_response(change);
 
         Ok(response)
     }
+}
+
+/// Outcome of attempting to make a melt payment.
+///
+/// Returned from [`MeltSaga::make_payment`] to distinguish between a payment
+/// that completed (and is ready to finalize) and one that the backend reports
+/// as still in flight (and must be resolved asynchronously via the pending
+/// melt wait loop or a payment event).
+pub enum PaymentOutcome {
+    /// Payment was confirmed by the backend; the saga is ready to be finalized.
+    Confirmed(Box<MeltSaga<PaymentConfirmed>>),
+    /// Payment is still pending at the backend. Inputs and outputs remain
+    /// reserved and the quote is left in `Pending`; finalization or rollback
+    /// will happen later via a payment event or a status-check reconciliation.
+    Pending,
 }
 
 impl<S> MeltSaga<S> {

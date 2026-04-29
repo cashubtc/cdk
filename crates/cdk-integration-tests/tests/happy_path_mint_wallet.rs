@@ -918,13 +918,13 @@ async fn test_fake_melt_change_in_quote() {
         .await
         .unwrap();
 
-    assert!(melt_response.change.is_some());
+    assert!(melt_response.change().is_some());
 
     let check = client
         .get_melt_quote_status(PaymentMethod::BOLT11, &melt_quote.id)
         .await
         .unwrap();
-    let mut melt_change = melt_response.change.unwrap();
+    let mut melt_change = melt_response.change().unwrap().clone();
     melt_change.sort_by_key(|a| a.amount);
 
     let mut check = match check {

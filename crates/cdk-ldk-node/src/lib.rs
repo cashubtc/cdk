@@ -324,9 +324,9 @@ impl CdkLdkNode {
         tracing::info!("Cancelling event handler");
         self.events_cancel_token.cancel();
 
-        // Cancel any wait_invoice streams
-        if self.is_wait_invoice_active() {
-            tracing::info!("Cancelling wait_invoice stream");
+        // Cancel any payment event streams
+        if self.is_payment_event_stream_active() {
+            tracing::info!("Cancelling payment event stream");
             self.wait_invoice_cancel_token.cancel();
         }
 
@@ -539,10 +539,12 @@ impl MintPayment for CdkLdkNode {
                     .convert_to(&CurrencyUnit::Msat)?
                     .into();
                 let description = bolt11_options.description.unwrap_or_default();
-                let time = bolt11_options
-                    .unix_expiry
-                    .map(|t| t - unix_time())
-                    .unwrap_or(36000);
+                let time = match bolt11_options.unix_expiry {
+                    Some(t) => t
+                        .checked_sub(unix_time())
+                        .ok_or(payment::Error::InvalidExpiry)?,
+                    None => 36000,
+                };
 
                 let description = Bolt11InvoiceDescription::Direct(
                     Description::new(description).map_err(|_| Error::InvalidDescription)?,
@@ -575,7 +577,13 @@ impl MintPayment for CdkLdkNode {
                     unix_expiry,
                 } = *bolt12_options;
 
-                let time = unix_expiry.map(|t| (t - unix_time()) as u32);
+                let time = unix_expiry
+                    .map(|t| {
+                        t.checked_sub(unix_time())
+                            .ok_or(payment::Error::InvalidExpiry)
+                            .map(|t| t as u32)
+                    })
+                    .transpose()?;
 
                 let offer = match amount {
                     Some(amount) => {
@@ -658,6 +666,7 @@ impl MintPayment for CdkLdkNode {
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
+                    extra_json: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -694,6 +703,7 @@ impl MintPayment for CdkLdkNode {
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
+                    extra_json: None,
                 })
             }
         }
@@ -927,13 +937,13 @@ impl MintPayment for CdkLdkNode {
         Ok(stream)
     }
 
-    /// Is wait invoice active
-    fn is_wait_invoice_active(&self) -> bool {
+    /// Is payment event stream active
+    fn is_payment_event_stream_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)
     }
 
-    /// Cancel wait invoice
-    fn cancel_wait_invoice(&self) {
+    /// Cancel payment event stream
+    fn cancel_payment_event_stream(&self) {
         self.wait_invoice_cancel_token.cancel()
     }
 

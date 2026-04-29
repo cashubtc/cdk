@@ -104,13 +104,13 @@ impl MintPayment for Cln {
         })
     }
 
-    /// Is wait invoice active
-    fn is_wait_invoice_active(&self) -> bool {
+    /// Is payment event stream active
+    fn is_payment_event_stream_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)
     }
 
-    /// Cancel wait invoice
-    fn cancel_wait_invoice(&self) {
+    /// Cancel payment event stream
+    fn cancel_payment_event_stream(&self) {
         self.wait_invoice_cancel_token.cancel()
     }
 
@@ -361,6 +361,7 @@ impl MintPayment for Cln {
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
+                    extra_json: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -392,6 +393,7 @@ impl MintPayment for Cln {
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
+                    extra_json: None,
                 })
             }
         }
@@ -585,11 +587,15 @@ impl MintPayment for Cln {
                 let amount_msat =
                     AmountOrAny::Amount(CLN_Amount::from_msat(amount_converted.value()));
 
+                let expiry = unix_expiry
+                    .map(|t| t.checked_sub(time_now).ok_or(payment::Error::InvalidExpiry))
+                    .transpose()?;
+
                 let request = InvoiceRequest {
                     amount_msat,
                     description: description.unwrap_or_default(),
                     label: label.clone(),
-                    expiry: unix_expiry.map(|t| t - time_now),
+                    expiry,
                     fallbacks: None,
                     preimage: None,
                     cltv: None,

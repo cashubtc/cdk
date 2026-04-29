@@ -194,9 +194,11 @@ impl MintKeyPair {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::str::FromStr;
 
     use super::*;
+    use crate::Amount;
 
     #[test]
     fn pubkey() {
@@ -246,5 +248,33 @@ mod tests {
 }"#;
         let response: Result<Keys, serde_json::Error> = serde_json::from_str(incorrect_1);
         assert!(response.is_ok());
+    }
+
+    #[test]
+    fn test_keys_deref_and_keys_access_same_map() {
+        let pubkey = PublicKey::from_str(
+            "03a40f20667ed53513075dc51e715ff2046cad64eb68960632269ba7f0210e38bc",
+        )
+        .unwrap();
+
+        let keys = Keys::new(BTreeMap::from([(Amount::ONE, pubkey)]));
+
+        assert_eq!(keys.deref().len(), 1);
+        assert_eq!(keys.keys().len(), 1);
+        assert_eq!(keys.amount_key(Amount::ONE), Some(pubkey));
+        assert!(keys.amount_key(Amount::from(2_u64)).is_none());
+    }
+
+    #[test]
+    fn test_mint_keys_deref_and_deref_mut_access_underlying_map() {
+        let secret_key = SecretKey::generate();
+        let keypair = MintKeyPair::from_secret_key(secret_key);
+        let amount = Amount::ONE;
+
+        let mut mint_keys = MintKeys::new(BTreeMap::new());
+        mint_keys.deref_mut().insert(amount, keypair.clone());
+
+        assert_eq!(mint_keys.deref().len(), 1);
+        assert_eq!(mint_keys.deref().get(&amount), Some(&keypair));
     }
 }

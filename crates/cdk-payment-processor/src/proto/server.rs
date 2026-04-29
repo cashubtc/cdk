@@ -22,8 +22,7 @@ use super::cdk_payment_processor_server::{CdkPaymentProcessor, CdkPaymentProcess
 use crate::error::Error;
 use crate::proto::{TryFromProtoAmount, *};
 
-type ResponseStream =
-    Pin<Box<dyn Stream<Item = Result<WaitIncomingPaymentResponse, Status>> + Send>>;
+type ResponseStream = Pin<Box<dyn Stream<Item = Result<PaymentEventResponse, Status>> + Send>>;
 
 /// Payment Processor
 #[derive(Clone)]
@@ -477,14 +476,14 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         Ok(Response::new(check_response.into()))
     }
 
-    type WaitIncomingPaymentStream = ResponseStream;
+    type WaitPaymentEventStream = ResponseStream;
 
     #[allow(clippy::incompatible_msrv)]
     #[instrument(skip_all)]
-    async fn wait_incoming_payment(
+    async fn wait_payment_event(
         &self,
         _request: Request<EmptyRequest>,
-    ) -> Result<Response<Self::WaitIncomingPaymentStream>, Status> {
+    ) -> Result<Response<Self::WaitPaymentEventStream>, Status> {
         tracing::debug!("Server waiting for payment stream");
         let (tx, rx) = mpsc::channel(128);
 
@@ -495,26 +494,20 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                 tokio::select! {
                     _ = shutdown_clone.notified() => {
                         tracing::info!("Shutdown signal received, stopping task");
-                        ln.cancel_wait_invoice();
+                        ln.cancel_payment_event_stream();
                         break;
                     }
                     result = ln.wait_payment_event() => {
                         match result {
                             Ok(mut stream) => {
                                 while let Some(event) = stream.next().await {
-                                    match event {
-                                        cdk_common::payment::Event::PaymentReceived(payment_response) => {
-                                            match tx.send(Result::<_, Status>::Ok(payment_response.into()))
-                                            .await
-                                            {
-                                                Ok(_) => {
-                                                    // Response was queued to be sent to client
-                                                }
-                                                Err(item) => {
-                                                    tracing::error!("Error adding incoming payment to stream: {}", item);
-                                                    break;
-                                                }
-                                            }
+                                    match tx.send(Result::<_, Status>::Ok(event.into())).await {
+                                        Ok(_) => {
+                                            // Response was queued to be sent to client
+                                        }
+                                        Err(item) => {
+                                            tracing::error!("Error adding payment event to stream: {}", item);
+                                            break;
                                         }
                                     }
                                 }
@@ -531,7 +524,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
 
         let output_stream = ReceiverStream::new(rx);
         Ok(Response::new(
-            Box::pin(output_stream) as Self::WaitIncomingPaymentStream
+            Box::pin(output_stream) as Self::WaitPaymentEventStream
         ))
     }
 }

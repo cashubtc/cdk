@@ -207,6 +207,9 @@ impl TorAsync {
 
         if !(200..300).contains(&status) {
             let text = String::from_utf8_lossy(&bytes).to_string();
+            if let Ok(err_resp) = serde_json::from_str::<ErrorResponse>(&text) {
+                return Err(err_resp.into());
+            }
             return Err(Error::HttpError(Some(status), text));
         }
 

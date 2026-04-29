@@ -263,7 +263,7 @@ impl PubSubManager {
     pub fn melt_quote_status(
         &self,
         quote: &MeltQuote,
-        payment_preimage: Option<String>,
+        payment_proof: Option<String>,
         change: Option<Vec<BlindSignature>>,
         new_state: MeltQuoteState,
     ) {
@@ -271,37 +271,23 @@ impl PubSubManager {
             cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
                 let mut event: MeltQuoteBolt11Response<QuoteId> = quote.clone().into();
                 event.state = new_state;
-                event.payment_preimage = payment_preimage;
+                event.payment_preimage = payment_proof;
                 event.change = change;
                 self.publish(NotificationPayload::MeltQuoteBolt11Response(event));
             }
             cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
                 let mut event: MeltQuoteBolt12Response<QuoteId> = quote.clone().into();
                 event.state = new_state;
-                event.payment_preimage = payment_preimage;
+                event.payment_preimage = payment_proof;
                 event.change = change;
                 self.publish(NotificationPayload::MeltQuoteBolt12Response(event));
             }
             cdk_common::PaymentMethod::Custom(ref method) => {
-                let request_str = match &quote.request {
-                    cdk_common::mint::MeltPaymentRequest::Custom { request, .. } => {
-                        Some(request.clone())
-                    }
-                    _ => None,
-                };
-
-                let response = cdk_common::nuts::MeltQuoteCustomResponse {
-                    quote: quote.id.clone(),
-                    amount: quote.amount().into(),
-                    fee_reserve: quote.fee_reserve().into(),
-                    state: new_state,
-                    expiry: quote.expiry,
-                    payment_preimage,
-                    change,
-                    request: request_str,
-                    unit: Some(quote.unit.clone()),
-                    extra: serde_json::Value::Null,
-                };
+                let mut response: cdk_common::nuts::MeltQuoteCustomResponse<QuoteId> =
+                    quote.clone().into();
+                response.state = new_state;
+                response.payment_preimage = payment_proof;
+                response.change = change;
 
                 self.publish(NotificationPayload::CustomMeltQuoteResponse(
                     method.clone(),

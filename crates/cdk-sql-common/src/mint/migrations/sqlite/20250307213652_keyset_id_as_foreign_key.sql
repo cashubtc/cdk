@@ -17,7 +17,7 @@ CREATE TABLE proof_new (
 );
 
 -- Copy data from old proof table to new one
-INSERT INTO proof_new SELECT * FROM proof;
+INSERT INTO proof_new (y, amount, keyset_id, secret, c, witness, state, quote_id) SELECT y, amount, keyset_id, secret, c, witness, state, quote_id FROM proof;
 
 -- Create new blind_signature table with foreign key constraint
 CREATE TABLE blind_signature_new (
@@ -31,7 +31,7 @@ CREATE TABLE blind_signature_new (
 );
 
 -- Copy data from old blind_signature table to new one
-INSERT INTO blind_signature_new SELECT * FROM blind_signature;
+INSERT INTO blind_signature_new (y, amount, keyset_id, c, quote_id, dleq_e, dleq_s) SELECT y, amount, keyset_id, c, quote_id, dleq_e, dleq_s FROM blind_signature;
 
 -- Drop old tables
 DROP TABLE IF EXISTS proof;

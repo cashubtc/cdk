@@ -223,8 +223,9 @@ pub struct MeltQuote {
     pub state: MeltQuoteState,
     /// Expiration time of quote
     pub expiry: u64,
-    /// Payment preimage
-    pub payment_preimage: Option<String>,
+    /// Payment proof (e.g. Lightning preimage or onchain outpoint)
+    #[serde(alias = "payment_preimage")]
+    pub payment_proof: Option<String>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Operation ID that has reserved this quote (for saga pattern)
@@ -419,6 +420,7 @@ pub struct Transaction {
     /// Payment request (e.g., BOLT11 invoice, BOLT12 offer)
     pub payment_request: Option<String>,
     /// Payment proof (e.g., preimage for Lightning melt transactions)
+    #[serde(alias = "payment_preimage")]
     pub payment_proof: Option<String>,
     /// Payment method (e.g., Bolt11, Bolt12) for mint/melt transactions
     #[serde(default)]
@@ -865,6 +867,18 @@ pub trait Wallet: Send + Sync {
         &self,
         quote_id: &str,
         proofs: Proofs,
+        metadata: HashMap<String, String>,
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
+
+    /// Prepare a melt operation from an encoded token
+    ///
+    /// Decodes the token, extracts proofs (handling keyset state internally),
+    /// and prepares the melt. This is useful when the caller has a token and
+    /// wants to skip manual decoding, which requires keyset state for v2 keysets.
+    async fn prepare_melt_token(
+        &self,
+        quote_id: &str,
+        encoded_token: &str,
         metadata: HashMap<String, String>,
     ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 

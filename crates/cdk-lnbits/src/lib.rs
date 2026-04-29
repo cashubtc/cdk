@@ -154,11 +154,11 @@ impl MintPayment for LNbits {
         Ok(self.settings.clone())
     }
 
-    fn is_wait_invoice_active(&self) -> bool {
+    fn is_payment_event_stream_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)
     }
 
-    fn cancel_wait_invoice(&self) {
+    fn cancel_payment_event_stream(&self) {
         self.wait_invoice_cancel_token.cancel()
     }
 
@@ -263,6 +263,7 @@ impl MintPayment for LNbits {
                     amount: Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?,
                     fee: Amount::new(fee, CurrencyUnit::Msat).convert_to(unit)?,
                     state: MeltQuoteState::Unpaid,
+                    extra_json: None,
                 })
             }
             OutgoingPaymentOptions::Bolt12(_bolt12_options) => {
@@ -347,7 +348,9 @@ impl MintPayment for LNbits {
                 let unix_expiry = bolt11_options.unix_expiry;
 
                 let time_now = unix_time();
-                let expiry = unix_expiry.map(|t| t - time_now);
+                let expiry = unix_expiry
+                    .map(|t| t.checked_sub(time_now).ok_or(payment::Error::InvalidExpiry))
+                    .transpose()?;
 
                 let invoice_request = CreateInvoiceRequest {
                     amount: amount.to_sat()?,
