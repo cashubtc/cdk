@@ -646,6 +646,17 @@ where
             )),
         }
     }
+
+    /// Create a new [`AuthHttpClient`] with a provided transport implementation.
+    pub fn with_transport(mint_url: MintUrl, transport: T, cat: Option<AuthToken>) -> Self {
+        Self {
+            transport: transport.into(),
+            mint_url,
+            cat: Arc::new(RwLock::new(
+                cat.unwrap_or(AuthToken::ClearAuth("".to_string())),
+            )),
+        }
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
