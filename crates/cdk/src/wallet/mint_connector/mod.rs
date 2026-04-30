@@ -34,6 +34,16 @@ pub type TorAuthHttpClient = http_client::AuthHttpClient<transport::TorAsync>;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub type TorHttpClient = http_client::HttpClient<transport::TorAsync>;
 
+/// Http Client with rate-limited async transport
+pub type RateLimitedHttpClient =
+    http_client::HttpClient<transport::rate_limit::RateLimitedTransport<transport::Async>>;
+
+/// Auth Http Client with rate-limited async transport
+pub type RateLimitedAuthHttpClient =
+    http_client::AuthHttpClient<transport::rate_limit::RateLimitedTransport<transport::Async>>;
+
+pub use transport::rate_limit::RateLimitConfig;
+
 /// Interface that connects a wallet to a mint. Typically represents an [HttpClient].
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
