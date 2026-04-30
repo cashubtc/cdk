@@ -177,6 +177,8 @@ impl std::str::FromStr for LnBackend {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ln {
     pub ln_backend: LnBackend,
+    #[serde(default)]
+    pub unit: CurrencyUnit,
     pub invoice_description: Option<String>,
     pub min_mint: Amount,
     pub max_mint: Amount,
@@ -188,12 +190,30 @@ impl Default for Ln {
     fn default() -> Self {
         Ln {
             ln_backend: LnBackend::default(),
+            unit: CurrencyUnit::default(),
             invoice_description: None,
             min_mint: 1.into(),
             max_mint: 500_000.into(),
             min_melt: 1.into(),
             max_melt: 500_000.into(),
         }
+    }
+}
+
+fn deserialize_ln<'de, D>(deserializer: D) -> Result<Vec<Ln>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum LnOneOrMany {
+        Many(Vec<Ln>),
+        One(Ln),
+    }
+
+    match LnOneOrMany::deserialize(deserializer)? {
+        LnOneOrMany::Many(v) => Ok(v),
+        LnOneOrMany::One(l) => Ok(vec![l]),
     }
 }
 
@@ -647,7 +667,8 @@ fn default_blind() -> AuthType {
 pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
-    pub ln: Ln,
+    #[serde(default, deserialize_with = "deserialize_ln")]
+    pub ln: Vec<Ln>,
     /// Transaction limits for DoS protection
     #[serde(default)]
     pub limits: Limits,
