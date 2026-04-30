@@ -307,3 +307,133 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod integration_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::time::{Duration, Instant};
+    use url::Url;
+
+    use super::super::{Async, Transport};
+    use super::{RateLimitConfig, RateLimitedTransport, TokenBucket};
+
+    /// Spawn a loopback HTTP server that accepts up to `num_requests`
+    /// connections, replies 200 with `{}`, and increments the counter.
+    async fn spawn_counting_server(num_requests: usize) -> (Url, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+
+        tokio::spawn(async move {
+            for _ in 0..num_requests {
+                if let Ok((mut socket, _)) = listener.accept().await {
+                    let mut buf = [0u8; 2048];
+                    let _ = socket.read(&mut buf).await;
+                    let body = "{}";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body,
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                    counter_clone.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        });
+
+        let url = Url::parse(&format!("http://{}/", addr)).expect("valid url");
+        (url, counter)
+    }
+
+    /// The bucket gates real HTTP traffic through the Transport trait, not
+    /// just in isolation. Capacity 2 with 2/sec refill means the third call
+    /// must wait ~500ms and the fourth ~1s.
+    #[tokio::test]
+    async fn rate_limited_transport_paces_real_http() {
+        let (url, _counter) = spawn_counting_server(4).await;
+
+        let bucket = TokenBucket::new(RateLimitConfig {
+            capacity: 2,
+            refill_per_minute: 120,
+        });
+        let transport = RateLimitedTransport::with_bucket(Async::default(), bucket);
+
+        let start = Instant::now();
+        let mut elapsed = Vec::with_capacity(4);
+        for _ in 0..4 {
+            let _: serde_json::Value = transport
+                .http_get(url.clone(), None)
+                .await
+                .expect("request succeeds");
+            elapsed.push(start.elapsed());
+        }
+
+        assert!(
+            elapsed[0] < Duration::from_millis(200),
+            "burst call 1 should be fast: {:?}",
+            elapsed[0]
+        );
+        assert!(
+            elapsed[1] < Duration::from_millis(200),
+            "burst call 2 should be fast: {:?}",
+            elapsed[1]
+        );
+        assert!(
+            elapsed[2] >= Duration::from_millis(400),
+            "call 3 should wait for refill: {:?}",
+            elapsed[2]
+        );
+        assert!(
+            elapsed[3] >= Duration::from_millis(900),
+            "call 4 should wait for second refill: {:?}",
+            elapsed[3]
+        );
+    }
+
+    /// Two transports cloning the same bucket share the rate-limit budget.
+    /// This is the mechanism the wallet uses to pace blind-auth and main
+    /// traffic together.
+    #[tokio::test]
+    async fn shared_bucket_paces_two_transports() {
+        let (url, _counter) = spawn_counting_server(3).await;
+
+        let bucket = TokenBucket::new(RateLimitConfig {
+            capacity: 2,
+            refill_per_minute: 120,
+        });
+        let transport_a = RateLimitedTransport::with_bucket(Async::default(), bucket.clone());
+        let transport_b = RateLimitedTransport::with_bucket(Async::default(), bucket);
+
+        // Drain the shared bucket via transport_a.
+        let _: serde_json::Value = transport_a
+            .http_get(url.clone(), None)
+            .await
+            .expect("a1");
+        let _: serde_json::Value = transport_a
+            .http_get(url.clone(), None)
+            .await
+            .expect("a2");
+
+        // transport_b sees an empty bucket and must wait for refill.
+        let start = Instant::now();
+        let _: serde_json::Value = transport_b
+            .http_get(url.clone(), None)
+            .await
+            .expect("b1");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(400),
+            "transport_b should wait because the shared bucket is empty: {:?}",
+            elapsed
+        );
+    }
+}
