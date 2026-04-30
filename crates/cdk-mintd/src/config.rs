@@ -880,6 +880,79 @@ mod tests {
         assert!(debug_output.contains("<hashed: "));
     }
 
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_multi_backend_config_parses() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_multi_backend_config");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[[ln]]
+ln_backend = "fakewallet"
+unit = "sat"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+
+[[ln]]
+ln_backend = "fakewallet"
+unit = "eur"
+min_mint = 1
+max_mint = 1000
+min_melt = 1
+max_melt = 1000
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings = Settings::new(Some(&config_path));
+
+        assert_eq!(settings.ln.len(), 2);
+
+        assert_eq!(settings.ln[0].ln_backend, LnBackend::FakeWallet);
+        assert_eq!(settings.ln[0].unit, CurrencyUnit::Sat);
+        let max_mint_0: u64 = settings.ln[0].max_mint.into();
+        assert_eq!(max_mint_0, 500_000);
+
+        assert_eq!(settings.ln[1].ln_backend, LnBackend::FakeWallet);
+        assert_eq!(settings.ln[1].unit, CurrencyUnit::Eur);
+        let max_mint_1: u64 = settings.ln[1].max_mint.into();
+        assert_eq!(max_mint_1, 1_000);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_legacy_ln_block_parses() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_legacy_ln_block");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[ln]
+ln_backend = "fakewallet"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings = Settings::new(Some(&config_path));
+
+        assert_eq!(settings.ln.len(), 1);
+        assert_eq!(settings.ln[0].ln_backend, LnBackend::FakeWallet);
+        assert_eq!(settings.ln[0].unit, CurrencyUnit::Sat);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
     /// Test that configuration can be loaded purely from environment variables
     /// without requiring a config.toml file with backend sections.
     ///
