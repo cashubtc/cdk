@@ -304,4 +304,19 @@ mod tests {
         let builder = WalletBuilder::default();
         assert_eq!(builder.metadata_cache_ttl, Some(Duration::from_secs(3600)));
     }
+
+    #[test]
+    fn test_rate_limiting_default_on() {
+        let builder = WalletBuilder::default();
+        assert!(
+            builder.rate_limiter.is_some(),
+            "rate limiting should be enabled by default"
+        );
+    }
+
+    #[test]
+    fn test_without_rate_limiting_disables() {
+        let builder = WalletBuilder::default().without_rate_limiting();
+        assert!(builder.rate_limiter.is_none());
+    }
 }

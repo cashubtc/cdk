@@ -179,3 +179,131 @@ where
         self.inner.http_post(url, auth_token, payload).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_default_config() {
+        let config = RateLimitConfig::default();
+        assert_eq!(config.capacity, 20);
+        assert_eq!(config.refill_per_minute, 20);
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity must be > 0")]
+    fn test_zero_capacity_panics() {
+        let _ = TokenBucket::new(RateLimitConfig {
+            capacity: 0,
+            refill_per_minute: 20,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "refill_per_minute must be > 0")]
+    fn test_zero_refill_panics() {
+        let _ = TokenBucket::new(RateLimitConfig {
+            capacity: 20,
+            refill_per_minute: 0,
+        });
+    }
+
+    #[tokio::test]
+    async fn test_acquire_within_capacity() {
+        let bucket = TokenBucket::new(RateLimitConfig {
+            capacity: 5,
+            refill_per_minute: 60,
+        });
+
+        // Should acquire up to capacity without waiting
+        for _ in 0..5 {
+            bucket.acquire().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_acquire_blocks_when_empty() {
+        let bucket = TokenBucket::new(RateLimitConfig {
+            capacity: 1,
+            refill_per_minute: 6000, // 100/sec so the wait is short
+        });
+
+        // Drain the bucket
+        bucket.acquire().await;
+
+        // Next acquire should block briefly then succeed
+        let start = Instant::now();
+        bucket.acquire().await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed.as_millis() >= 5,
+            "Expected some wait time, got {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_refill_does_not_exceed_capacity() {
+        let bucket = TokenBucket::new(RateLimitConfig {
+            capacity: 3,
+            refill_per_minute: 60_000, // fast refill for test
+        });
+
+        // Drain one token
+        bucket.acquire().await;
+
+        // Wait long enough to overshoot capacity if uncapped
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Should still only get capacity tokens (capped at 3)
+        for _ in 0..3 {
+            bucket.acquire().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_acquire() {
+        let bucket = TokenBucket::new(RateLimitConfig {
+            capacity: 10,
+            refill_per_minute: 600, // 10/sec
+        });
+
+        // Spawn 10 tasks all acquiring at once
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let b = bucket.clone();
+            handles.push(tokio::spawn(async move {
+                b.acquire().await;
+            }));
+        }
+
+        // All should complete (we have 10 capacity)
+        for handle in handles {
+            handle.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bucket_new_starts_full() {
+        let bucket = TokenBucket::new(RateLimitConfig {
+            capacity: 25,
+            refill_per_minute: 25,
+        });
+
+        // Should be able to drain all 25 without waiting
+        let start = Instant::now();
+        for _ in 0..25 {
+            bucket.acquire().await;
+        }
+        let elapsed = start.elapsed();
+
+        // All 25 should be near-instant (well under 100ms)
+        assert!(
+            elapsed.as_millis() < 100,
+            "Draining full bucket took too long: {:?}",
+            elapsed
+        );
+    }
+}
