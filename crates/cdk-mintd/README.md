@@ -186,6 +186,32 @@ engine = "postgres"
 url = "postgresql://mint_user:password@localhost:5432/cdk_mint"
 ```
 
+### With Multiple Lightning Backends
+
+A single mint can serve more than one currency unit by configuring a separate backend per unit. Replace the single `[ln]` block with one `[[ln]]` block per `(unit, method)` pair, and keep the existing per-backend config sections (`[cln]`, `[lnbits]`, etc.) as-is.
+
+```toml
+[[ln]]
+ln_backend = "cln"
+unit = "sat"
+
+[[ln]]
+ln_backend = "lnbits"
+unit = "eur"
+
+[cln]
+rpc_path = "/home/bitcoin/.lightning/bitcoin/lightning-rpc"
+
+[lnbits]
+admin_api_key = "..."
+invoice_api_key = "..."
+lnbits_api = "https://lnbits.example.com"
+```
+
+Each `[[ln]]` block carries its own `min_mint`, `max_mint`, `min_melt`, `max_melt` if you want different limits per unit. Two entries colliding on the same `(unit, method)` pair are rejected at startup.
+
+The legacy single `[ln]` form is still accepted; it's equivalent to one `[[ln]]` entry with `unit = "sat"` (the default). `CDK_MINTD_LN_*` environment variables only apply when there is exactly one (or zero) `[[ln]]` entry — multi-backend setups must be configured via the file.
+
 ## Directory Structure
 
 After setup and first run, your directory will look like:
