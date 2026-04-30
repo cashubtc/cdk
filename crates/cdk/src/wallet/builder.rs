@@ -11,10 +11,9 @@ use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
-use crate::wallet::mint_connector::transport;
 use crate::wallet::mint_connector::transport::rate_limit::TokenBucket;
 use crate::wallet::mint_connector::{
-    AuthHttpClient, RateLimitConfig, RateLimitedAuthHttpClient, RateLimitedHttpClient,
+    transport, AuthHttpClient, RateLimitConfig, RateLimitedAuthHttpClient, RateLimitedHttpClient,
 };
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::{HttpClient, MintConnector, SubscriptionManager, Wallet};
