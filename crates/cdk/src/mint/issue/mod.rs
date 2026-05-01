@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use bitcoin::secp256k1::schnorr::Signature;
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
+use cdk_common::nut00::KnownMethod;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
     IncomingPaymentOptions, WaitPaymentResponse,
@@ -10,8 +12,9 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteState, MintRequest, MintResponse,
-    NotificationPayload, PublicKey,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteRequest,
+    MintQuoteResponse, MintQuoteState, MintRequest, MintResponse, NotificationPayload,
+    PaymentMethod, PublicKey,
 };
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -21,8 +24,6 @@ use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
 use crate::Mint;
 
 mod auth;
-
-use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 
 /// Input enum to handle both single and batch mint formats (internal to CDK, not spec)
 #[derive(Debug, Clone)]
@@ -407,6 +408,105 @@ impl Mint {
         {
             METRICS.dec_in_flight_requests("mint_quotes");
             METRICS.record_mint_operation("mint_quotes", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
+            }
+        }
+
+        result
+    }
+
+    /// Retrieves mint quotes with pubkey from the database
+    ///
+    /// # Returns
+    /// * `Vec<MintQuote>` - List of mint quotes filtered by pubkeys
+    /// * `Error` if database access fails
+    #[instrument(skip_all)]
+    pub async fn get_mint_quote_by_pubkey(
+        &self,
+        method: PaymentMethod,
+        pubkeys: Vec<PublicKey>,
+        signatures: Vec<Signature>,
+    ) -> Result<Vec<MintQuoteResponse<QuoteId>>, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("mint_quotes_by_pubkeys");
+
+        pubkeys.len().ne(&signatures.len()).then(|| {
+            #[cfg(feature = "prometheus")]
+            METRICS.record_error();
+
+            tracing::error!("Signatures must be the same length of publickeys");
+            Error::SignatureMissingOrInvalid
+        });
+
+        for (pubkey, signature) in pubkeys.iter().zip(signatures.iter()) {
+            pubkey.verify(&pubkey.serialize(), signature).map_err(|e| {
+                #[cfg(feature = "prometheus")]
+                METRICS.record_error();
+
+                tracing::error!("Failed to validate signature: {}", e);
+                Error::SignatureMissingOrInvalid
+            })?;
+        }
+
+        let result: Result<Vec<MintQuoteResponse<QuoteId>>, Error> = async {
+            let quotes = self
+                .localstore
+                .get_mint_quotes_by_pubkey(method, &pubkeys)
+                .await?;
+
+            quotes
+                .iter()
+                .map(|q| match q.payment_method {
+                    PaymentMethod::Known(KnownMethod::Bolt11) => {
+                        Ok(MintQuoteResponse::Bolt11(MintQuoteBolt11Response::<
+                            QuoteId,
+                        > {
+                            quote: q.id.clone(),
+                            request: q.request.clone(),
+                            amount: q.amount.clone().map(|a| a.into()),
+                            unit: Some(q.unit.clone()),
+                            state: q.state(),
+                            expiry: Some(q.expiry),
+                            pubkey: q.pubkey,
+                        }))
+                    }
+                    PaymentMethod::Known(KnownMethod::Bolt12) => {
+                        Ok(MintQuoteResponse::Bolt12(MintQuoteBolt12Response::<
+                            QuoteId,
+                        > {
+                            quote: q.id.clone(),
+                            request: q.request.clone(),
+                            amount: q.amount.clone().map(|a| a.into()),
+                            unit: q.unit.clone(),
+                            expiry: Some(q.expiry),
+                            pubkey: q.pubkey.ok_or(Error::PubkeyRequired)?,
+                            amount_paid: q.amount_paid().into(),
+                            amount_issued: q.amount_issued().into(),
+                        }))
+                    }
+                    _ => Ok(MintQuoteResponse::Custom {
+                        method: q.payment_method.clone(),
+                        response: MintQuoteCustomResponse {
+                            quote: q.id.clone(),
+                            request: q.request.clone(),
+                            amount: q.amount.clone().map(|a| a.into()),
+                            unit: Some(q.unit.clone()),
+                            state: q.state(),
+                            expiry: Some(q.expiry),
+                            pubkey: q.pubkey,
+                            extra: q.extra_json.clone().unwrap_or_default(),
+                        },
+                    }),
+                })
+                .collect()
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("mint_quotes_by_pubkeys");
+            METRICS.record_mint_operation("mint_quotes_by_pubkeys", result.is_ok());
             if result.is_err() {
                 METRICS.record_error();
             }
