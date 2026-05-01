@@ -1,12 +1,13 @@
-import XCTest
+import Testing
+import Foundation
 @testable import Cdk
 
-final class CdkTests: XCTestCase {
-    private var wallet: Wallet!
-    private var dbPath: String!
+@Suite("Cdk Wallet Tests")
+struct CdkTests {
+    private let wallet: Wallet
+    private let dbPath: String
 
-    override func setUp() async throws {
-        try await super.setUp()
+    init() async throws {
         let tempDir = FileManager.default.temporaryDirectory
         dbPath = tempDir.appendingPathComponent(UUID().uuidString + ".sqlite").path
         wallet = try Wallet(
@@ -18,20 +19,14 @@ final class CdkTests: XCTestCase {
         )
     }
 
-    override func tearDown() async throws {
-        wallet = nil
-        if let path = dbPath {
-            try? FileManager.default.removeItem(atPath: path)
-        }
-        try await super.tearDown()
-    }
-
-    func testInitialBalanceIsZero() async throws {
+    @Test("Initial balance is zero")
+    func initialBalanceIsZero() async throws {
         let balance = try await wallet.totalBalance()
-        XCTAssertEqual(balance.value, 0, "New wallet should have zero balance")
+        #expect(balance.value == 0, "New wallet should have zero balance")
     }
 
-    func testMintFlow() async throws {
+    @Test("Mint flow completes successfully")
+    func mintFlow() async throws {
         let quote = try await wallet.mintQuote(
             paymentMethod: .bolt11,
             amount: Amount(value: 100),
@@ -39,8 +34,8 @@ final class CdkTests: XCTestCase {
             extra: nil
         )
 
-        XCTAssertFalse(quote.id.isEmpty, "Quote should have a non-empty id")
-        XCTAssertFalse(quote.request.isEmpty, "Quote should have a non-empty payment request")
+        #expect(!quote.id.isEmpty, "Quote should have a non-empty id")
+        #expect(!quote.request.isEmpty, "Quote should have a non-empty payment request")
 
         // testnut pays quotes automatically, wait briefly for payment to settle
         try await Task.sleep(nanoseconds: 3_000_000_000)
@@ -51,9 +46,9 @@ final class CdkTests: XCTestCase {
             spendingConditions: nil
         )
 
-        XCTAssertFalse(proofs.isEmpty, "Should have received proofs")
+        #expect(!proofs.isEmpty, "Should have received proofs")
 
         let balance = try await wallet.totalBalance()
-        XCTAssertEqual(balance.value, 100, "Balance should be 100 after minting")
+        #expect(balance.value == 100, "Balance should be 100 after minting")
     }
 }
