@@ -406,13 +406,21 @@ impl WalletTrait for super::Wallet {
             .await
     }
 
-    #[instrument(skip(self))]
-    async fn get_proofs_by_states(
+    async fn get_proofs_fee_by_count(
         &self,
-        states: Vec<cdk_common::nuts::State>,
-    ) -> Result<Proofs, Self::Error> {
-        self.get_proofs_by_states(states).await
+        proofs_per_keyset: HashMap<Id, u64>,
+    ) -> Result<cdk_common::fees::ProofsFeeBreakdown, Self::Error> {
+        self.get_proofs_fee_by_count(proofs_per_keyset).await
     }
+
+    async fn get_proofs_with(
+        &self,
+        state: Option<Vec<cdk_common::nuts::State>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
+    ) -> Result<Proofs, Self::Error> {
+        self.get_proofs_with(state, spending_conditions).await
+    }
+
     /// generates and stores public key in database
     async fn generate_public_key(&self) -> Result<PublicKey, Self::Error> {
         return self.generate_public_key().await;

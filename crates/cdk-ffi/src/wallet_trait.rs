@@ -499,12 +499,23 @@ impl WalletTraitDef for Wallet {
         Ok(quote.into())
     }
 
-    async fn get_proofs_by_states(
+    async fn get_proofs_fee_by_count(
         &self,
-        states: Vec<cdk_common::nuts::State>,
+        proofs_per_keyset: HashMap<cdk_common::nuts::Id, u64>,
+    ) -> Result<cdk_common::fees::ProofsFeeBreakdown, Self::Error> {
+        WalletTraitDef::get_proofs_fee_by_count(self.inner().as_ref(), proofs_per_keyset)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn get_proofs_with(
+        &self,
+        state: Option<Vec<cdk_common::nuts::State>>,
+        spending_conditions: Option<Vec<cdk_common::nuts::SpendingConditions>>,
     ) -> Result<cdk_common::Proofs, Self::Error> {
-        let proofs = WalletTraitDef::get_proofs_by_states(self.inner().as_ref(), states).await?;
-        Ok(proofs)
+        WalletTraitDef::get_proofs_with(self.inner().as_ref(), state, spending_conditions)
+            .await
+            .map_err(Into::into)
     }
 
     /// generates and stores public key in database
