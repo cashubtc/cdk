@@ -1283,3 +1283,85 @@ async fn test_redeem_rejects_duplicate_oracle_sigs() {
         "duplicate oracle sigs from same pubkey should not satisfy threshold=2"
     );
 }
+
+/// Regression test: a redeem call that fails (e.g. unbalanced inputs/outputs) MUST NOT
+/// persist `winning_outcome` / `attested_at` for the condition. Otherwise any party
+/// holding a valid public oracle witness could permanently lock the condition into an
+/// "attested" state without spending real conditional proofs, locking out all losing-side
+/// holders.
+#[tokio::test]
+async fn test_failed_redeem_does_not_persist_attestation() {
+    use cdk_common::nuts::nut_ctf::AttestationStatus;
+
+    let mint = create_test_mint().await.unwrap();
+    let regular_keyset_id = get_regular_keyset_id(&mint);
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["YES", "NO"], "test-event");
+
+    let amount = Amount::from(10);
+    let regular_proofs = mint_test_proofs(&mint, amount).await.unwrap();
+
+    let condition_response = mint
+        .register_condition(enum_condition_request("Griefing regression", vec![hex_tlv]))
+        .await
+        .unwrap();
+    let condition_id = condition_response.condition_id.clone();
+
+    let partition_response = mint
+        .register_partition(
+            &condition_id,
+            RegisterPartitionRequest {
+                collateral: "sat".to_string(),
+                partition: None,
+                parent_collection_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let conditional_proofs =
+        swap_to_conditional(&mint, regular_proofs, yes_keyset_id, amount).await;
+
+    // Attach a perfectly valid oracle witness — exactly what an attacker who watches the
+    // oracle's public attestation would have access to.
+    let witness = create_oracle_witness(&oracle, "YES");
+    let mut proofs_with_witness = conditional_proofs;
+    for proof in &mut proofs_with_witness {
+        proof.witness = Some(Witness::OracleWitness(witness.clone()));
+    }
+
+    // But sum the outputs to a larger amount than the inputs cover — this fails the balance
+    // check, which (after the fix) runs BEFORE record_attestation. Pre-fix this branch
+    // wrote the attestation anyway.
+    let (oversized_outputs, _) =
+        create_premint(&mint, regular_keyset_id, Amount::from(100));
+
+    let result = mint
+        .process_redeem_outcome(RedeemOutcomeRequest {
+            inputs: proofs_with_witness,
+            outputs: oversized_outputs,
+        })
+        .await;
+
+    assert!(
+        result.is_err(),
+        "unbalanced redeem must fail before any DB writes"
+    );
+
+    let info = mint.get_condition(&condition_id).await.unwrap();
+    let status = info
+        .attestation
+        .as_ref()
+        .map(|a| a.status.clone())
+        .unwrap_or(AttestationStatus::Pending);
+    assert_eq!(
+        status,
+        AttestationStatus::Pending,
+        "failed redeem must not persist attestation; condition should remain pending"
+    );
+    assert!(
+        info.attestation.as_ref().and_then(|a| a.winning_outcome.as_ref()).is_none(),
+        "failed redeem must not persist a winning_outcome"
+    );
+}

@@ -102,6 +102,11 @@ pub const MAX_PARTITION_KEYS: usize = 256;
 /// Maximum number of oracle announcements per condition
 pub const MAX_ANNOUNCEMENTS: usize = 32;
 
+/// Maximum number of oracle signature entries the mint will iterate in a redemption
+/// witness. Caps the cost of the per-entry parse/HashMap-lookup loop on attacker
+/// input. Set to 2 * `MAX_ANNOUNCEMENTS` to leave headroom for retry/resigning.
+pub const MAX_ORACLE_WITNESS_SIGS: usize = MAX_ANNOUNCEMENTS * 2;
+
 /// Maximum byte length of tags when serialized as JSON
 pub const MAX_TAGS_JSON_LENGTH: usize = 4096;
 

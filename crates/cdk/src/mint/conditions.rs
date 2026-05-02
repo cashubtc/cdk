@@ -133,15 +133,24 @@ impl Mint {
 
         // 4. Check for existing condition (idempotency or conflict)
         if let Some(existing) = self.localstore.get_condition(&condition_id).await? {
-            // Validate parameters match for true idempotency
-            let existing_announcements: Vec<String> =
+            // Validate parameters match for true idempotency. condition_id binds to
+            // the *sorted* oracle pubkeys, so two requests with the same announcement
+            // set in different submission orders produce the same condition_id —
+            // compare announcement and tag arrays as multisets, not in submission order.
+            let mut existing_announcements: Vec<String> =
                 serde_json::from_str(&existing.announcements_json)?;
-            let existing_tags: Vec<Vec<String>> =
+            let mut existing_tags: Vec<Vec<String>> =
                 serde_json::from_str(&existing.tags_json).unwrap_or_default();
+            existing_announcements.sort();
+            existing_tags.sort();
+            let mut request_announcements = request.announcements.clone();
+            let mut request_tags = request.tags.clone();
+            request_announcements.sort();
+            request_tags.sort();
             if existing.threshold != request.threshold
-                || existing_tags != request.tags
+                || existing_tags != request_tags
                 || existing.condition_type != request.condition_type
-                || existing_announcements != request.announcements
+                || existing_announcements != request_announcements
                 || existing.lo_bound != request.lo_bound
                 || existing.hi_bound != request.hi_bound
                 || existing.precision != request.precision

@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cdk_common::nuts::nut_ctf::dlc;
 use cdk_common::nuts::nut_ctf::{
     compute_numeric_payout, from_hex, parse_outcome_collection, to_hex, OracleWitness,
-    RedeemOutcomeRequest, RedeemOutcomeResponse,
+    RedeemOutcomeRequest, RedeemOutcomeResponse, MAX_ORACLE_WITNESS_SIGS,
 };
 use cdk_common::nuts::Witness;
 use tracing::instrument;
@@ -37,6 +37,13 @@ fn verify_enum_threshold(
     witness: &OracleWitness,
     threshold: u32,
 ) -> Result<String, Error> {
+    if witness.oracle_sigs.len() > MAX_ORACLE_WITNESS_SIGS {
+        return Err(Error::Custom(format!(
+            "OracleWitness.oracle_sigs exceeds maximum of {}",
+            MAX_ORACLE_WITNESS_SIGS
+        )));
+    }
+
     let mut verified_oracle_pubkeys: HashSet<String> = HashSet::new();
     let mut attested_outcome: Option<String> = None;
 
@@ -86,6 +93,13 @@ fn verify_numeric_threshold(
     witness: &OracleWitness,
     threshold: u32,
 ) -> Result<i64, Error> {
+    if witness.oracle_sigs.len() > MAX_ORACLE_WITNESS_SIGS {
+        return Err(Error::Custom(format!(
+            "OracleWitness.oracle_sigs exceeds maximum of {}",
+            MAX_ORACLE_WITNESS_SIGS
+        )));
+    }
+
     let mut verified_oracle_pubkeys: HashSet<String> = HashSet::new();
     let mut attested_value: Option<i64> = None;
 
@@ -296,10 +310,44 @@ impl Mint {
                 return Err(Error::OracleNotAttestedOutcome);
             }
 
+            // Verify inputs and balance BEFORE recording attestation. Otherwise
+            // any party with a valid oracle witness (public once published) could
+            // permanently set winning_outcome without holding real conditional
+            // proofs, locking out all losing-side holders.
+            let input_amount: u64 = inputs.iter().map(|p| u64::from(p.amount)).sum();
+            let output_amount: u64 = outputs.iter().map(|o| u64::from(o.amount)).sum();
+
+            if input_amount < output_amount {
+                return Err(Error::TransactionUnbalanced(
+                    input_amount,
+                    output_amount,
+                    0,
+                ));
+            }
+
+            let input_verification = self.verify_inputs(inputs).await?;
+
             record_attestation(&*self.localstore, condition_id, &winning_collection).await?;
+
+            let init_saga = crate::mint::swap::swap_saga::SwapSaga::new(
+                self,
+                self.localstore.clone(),
+                self.pubsub_manager.clone(),
+            );
+
+            let setup_saga = init_saga
+                .setup_swap(inputs, outputs, None, input_verification)
+                .await?;
+
+            let signed_saga = setup_saga.sign_outputs().await?;
+            let swap_response = signed_saga.finalize().await?;
+
+            return Ok(RedeemOutcomeResponse {
+                signatures: swap_response.signatures,
+            });
         }
 
-        // 6. Balance check
+        // 6. Balance check (already-attested branch)
         let input_amount: u64 = inputs.iter().map(|p| u64::from(p.amount)).sum();
         let output_amount: u64 = outputs.iter().map(|o| u64::from(o.amount)).sum();
 
@@ -353,9 +401,14 @@ impl Mint {
             Error::Custom("Numeric condition missing hi_bound".into())
         })?;
 
-        // Determine the attested value
+        // Determine the attested value. For the "not yet attested" branch,
+        // verify the oracle witness up front but defer record_attestation until
+        // after inputs and balance have been validated. Otherwise any party with
+        // a valid public oracle witness could permanently fix winning_outcome
+        // without holding real conditional proofs.
+        let pending_attestation: Option<i64>;
         let attested_value: i64 = if condition.attestation_status == STATUS_ATTESTED {
-            // Already attested — parse stored value
+            pending_attestation = None;
             condition
                 .winning_outcome
                 .as_deref()
@@ -363,17 +416,12 @@ impl Mint {
                 .parse()
                 .map_err(|_| Error::Custom("Invalid stored attested value".into()))?
         } else {
-            // Not yet attested — verify digit signatures
             let witness = Self::extract_oracle_witness(inputs)?;
             let (ann_hex, pubkey_index) =
                 parse_announcements_with_index(&condition.announcements_json)?;
             let value =
                 verify_numeric_threshold(&ann_hex, &pubkey_index, &witness, condition.threshold)?;
-
-            // Record attestation (store attested value as string)
-            let value_str = value.to_string();
-            record_attestation(&*self.localstore, condition_id, &value_str).await?;
-
+            pending_attestation = Some(value);
             value
         };
 
@@ -403,6 +451,13 @@ impl Mint {
 
         // Verify inputs and execute via unbalanced swap saga
         let input_verification = self.verify_inputs(inputs).await?;
+
+        // Now that inputs are valid, persist attestation if this is the first
+        // successful redemption.
+        if let Some(value) = pending_attestation {
+            let value_str = value.to_string();
+            record_attestation(&*self.localstore, condition_id, &value_str).await?;
+        }
 
         let init_saga = crate::mint::swap::swap_saga::SwapSaga::new(
             self,

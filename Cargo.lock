@@ -1273,6 +1273,8 @@ dependencies = [
  "axum 0.8.8",
  "cdk",
  "cdk-prometheus",
+ "cdk-signatory",
+ "cdk-sqlite",
  "futures",
  "maud",
  "moka",

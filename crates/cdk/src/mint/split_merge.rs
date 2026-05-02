@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use cdk_common::mint::StoredPartition;
 use cdk_common::nuts::nut_ctf::{
     parse_outcome_collection, validate_partition, CtfMergeRequest, CtfMergeResponse,
     CtfSplitRequest, CtfSplitResponse, ZERO_COLLECTION_ID,
@@ -15,6 +16,34 @@ use super::conditions::STATUS_PENDING;
 use super::swap::swap_saga::SwapSaga;
 use super::Mint;
 use crate::Error;
+
+/// Normalize an outcome-collection key into its canonical sorted "a|b" form.
+fn normalize_oc_key(key: &str) -> String {
+    let mut elements = parse_outcome_collection(key);
+    elements.sort();
+    elements.join("|")
+}
+
+/// Find the stored partition whose key set matches the request's keys exactly
+/// (after normalization). Returns the matched partition so callers can read its
+/// `parent_collection_id` instead of guessing from `any()`.
+fn find_matching_partition<'a>(
+    stored_partitions: &'a [StoredPartition],
+    request_keys: &[String],
+) -> Result<&'a StoredPartition, Error> {
+    let request_normalized: HashSet<String> =
+        request_keys.iter().map(|k| normalize_oc_key(k)).collect();
+
+    for sp in stored_partitions {
+        let stored_keys: Vec<String> = serde_json::from_str(&sp.partition_json)?;
+        let stored_normalized: HashSet<String> =
+            stored_keys.iter().map(|k| normalize_oc_key(k)).collect();
+        if stored_normalized == request_normalized {
+            return Ok(sp);
+        }
+    }
+    Err(Error::ConditionNotFound)
+}
 
 impl Mint {
     /// Process a CTF split request (POST /v1/ctf/split)
@@ -96,17 +125,18 @@ impl Mint {
         }
         let per_oc_total = per_oc_total.ok_or(Error::SplitAmountMismatch)?;
 
-        // 6. Verify inputs use a regular keyset (for root) or parent collection keyset (for nested)
+        // 6. Verify inputs use a regular keyset (for root) or parent collection keyset (for nested).
+        // Determine root/nested from the *specific* partition this split targets, not from
+        // `any()` over all partitions — a condition may have both root and nested partitions
+        // registered, and the input-keyset rules differ per partition.
         let input_keyset_ids: HashSet<_> = inputs.iter().map(|p| p.keyset_id).collect();
-        // Determine if this is a root or nested split by checking parent_collection_id
         let stored_partitions = self
             .localstore
             .get_partitions_for_condition(&request.condition_id)
             .await?;
 
-        let is_root = stored_partitions
-            .iter()
-            .any(|sp| sp.parent_collection_id == ZERO_COLLECTION_ID);
+        let target_partition = find_matching_partition(&stored_partitions, &output_keys)?;
+        let is_root = target_partition.parent_collection_id == ZERO_COLLECTION_ID;
 
         if is_root {
             // For root conditions: inputs must use regular (non-conditional) keysets
@@ -246,15 +276,16 @@ impl Mint {
         }
         let per_oc_total = per_oc_total.ok_or(Error::MergeAmountMismatch)?;
 
-        // 6. Validate outputs use regular keyset (for root) or parent keyset (for nested)
+        // 6. Validate outputs use regular keyset (for root) or parent keyset (for nested).
+        // Determine root/nested from the *specific* partition this merge targets, not from
+        // `any()` over all partitions.
         let stored_partitions = self
             .localstore
             .get_partitions_for_condition(&request.condition_id)
             .await?;
 
-        let is_root = stored_partitions
-            .iter()
-            .any(|sp| sp.parent_collection_id == ZERO_COLLECTION_ID);
+        let target_partition = find_matching_partition(&stored_partitions, &input_keys)?;
+        let is_root = target_partition.parent_collection_id == ZERO_COLLECTION_ID;
 
         if is_root {
             let output_keyset_ids: HashSet<_> = outputs.iter().map(|o| o.keyset_id).collect();
